@@ -620,6 +620,32 @@ def compare_scans(
         ):
             port_meta[pid] = (pnum, proto, svc, hid, ip)
 
+    # Per-port state in each scan, ONLY for the capped rows we return.
+    # The openness diff above uses NOT-IN subqueries (no full state maps),
+    # so these were never built — port_rows referenced undefined
+    # a_port_states/b_port_states and raised NameError.  Bounded lookup
+    # restores accurate state_a/state_b (e.g. a newly-open port shows its
+    # prior non-open state in scan A) without materialising every port.
+    a_port_states: Dict[int, str] = {}
+    b_port_states: Dict[int, str] = {}
+    if port_ids_needed:
+        a_port_states = dict(
+            db.query(models.PortScanHistory.port_id, models.PortScanHistory.state_at_scan)
+            .filter(
+                models.PortScanHistory.scan_id == a,
+                models.PortScanHistory.port_id.in_(port_ids_needed),
+            )
+            .all()
+        )
+        b_port_states = dict(
+            db.query(models.PortScanHistory.port_id, models.PortScanHistory.state_at_scan)
+            .filter(
+                models.PortScanHistory.scan_id == b,
+                models.PortScanHistory.port_id.in_(port_ids_needed),
+            )
+            .all()
+        )
+
     def port_rows(ids) -> List[ScanDiffPortChange]:
         rows = []
         for pid in ids[:cap]:

@@ -2834,7 +2834,8 @@ def test_recon_session_list_filters_by_status(
         f"/api/v1/projects/{test_project.id}/recon-sessions/?status=active"
     )
     assert resp.status_code == 200, resp.text
-    rows = resp.json()
+    # v2.86.10 — list endpoints return a Paginated envelope {items,total,…}.
+    rows = resp.json()["items"]
     assert all(r["status"] == "active" for r in rows)
     assert len(rows) == 1
 
@@ -3126,7 +3127,8 @@ def test_execution_session_list_returns_per_project_rows(
         f"/api/v1/projects/{test_project.id}/execution-sessions/"
     )
     assert resp.status_code == 200, resp.text
-    rows = resp.json()
+    # v2.86.10 — list endpoints return a Paginated envelope {items,total,…}.
+    rows = resp.json()["items"]
     assert len(rows) == 2
     by_id = {r["id"]: r for r in rows}
     assert by_id[es1.id]["result_count"] == 2
@@ -3160,7 +3162,8 @@ def test_execution_session_list_filters_by_status_and_plan(
         f"/api/v1/projects/{test_project.id}/execution-sessions/?status=active"
     )
     assert resp.status_code == 200
-    rows = resp.json()
+    # v2.86.10 — list endpoints return a Paginated envelope {items,total,…}.
+    rows = resp.json()["items"]
     assert all(r["status"] == "active" for r in rows)
     assert len(rows) == 1
 
@@ -3169,4 +3172,4 @@ def test_execution_session_list_filters_by_status_and_plan(
         f"/api/v1/projects/{test_project.id}/execution-sessions/?test_plan_id={test_plan.id}"
     )
     assert resp2.status_code == 200
-    assert all(r["test_plan_id"] == test_plan.id for r in resp2.json())
+    assert all(r["test_plan_id"] == test_plan.id for r in resp2.json()["items"])

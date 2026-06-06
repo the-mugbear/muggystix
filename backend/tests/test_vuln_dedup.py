@@ -135,15 +135,19 @@ def test_one_bad_finding_does_not_lose_the_host(
     bad_plugin_seen = {"count": 0}
 
     def flaky_flush(*a, **kw):
-        # Spot the pending Vulnerability with plugin_id == "22222" and
-        # raise on its flush.  Subsequent flushes (after the savepoint
-        # rolls back) succeed.
+        # Spot the pending Vulnerability with plugin_id == "22222" and raise
+        # on its flush — EVERY time it's pending.  The service now processes
+        # findings in a batch SAVEPOINT and, on failure, retries the batch
+        # finding-by-finding; a row that fails persistently must be isolated
+        # (write_failures=1), not silently recovered.  A one-shot failure
+        # would just be retried away, which is correct behaviour but a
+        # different scenario than this test pins.
         pending = [
             obj for obj in svc.db.new
             if obj.__class__.__name__ == "Vulnerability"
             and getattr(obj, "plugin_id", None) == "22222"
         ]
-        if pending and bad_plugin_seen["count"] == 0:
+        if pending:
             bad_plugin_seen["count"] += 1
             raise IntegrityError("forced", params={}, orig=Exception("flush failure"))
         return real_flush(*a, **kw)
