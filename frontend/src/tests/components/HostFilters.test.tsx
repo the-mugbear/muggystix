@@ -39,15 +39,16 @@ describe('HostFilters layout', () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     // Genuinely-advanced filters stay behind the disclosure.
-    expect(screen.queryByText('Min risk score')).not.toBeInTheDocument();
+    // (The "Min risk score" filter is currently hidden entirely via
+    // featureFlags.RISK_SCORING_ENABLED — risk scoring is broken; see TODO.md.)
+    expect(screen.queryByText('Port states')).not.toBeInTheDocument();
   });
 
   it('keeps less-common filters in the single "More filters" disclosure', async () => {
     const user = userEvent.setup();
     renderFilters();
     await user.click(screen.getByRole('button', { name: /More filters/i }));
-    await waitFor(() => expect(screen.getByText('Min risk score')).toBeInTheDocument());
-    expect(screen.getByText('Port states')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Port states')).toBeInTheDocument());
     expect(screen.getByText('Technologies')).toBeInTheDocument();
   });
 });

@@ -450,7 +450,12 @@ _FIELD_SPECS: List[FieldSpec] = [
               value_source="tag"),
     FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
               value_source="label"),
-    FieldSpec("risk", _b_risk),
+    # TODO(risk-scoring): `risk:` is hidden while risk scoring is broken
+    # (HostRiskAssessment is unpopulated, so risk:N matches nothing).
+    # Re-enable this FieldSpec when risk scoring is reworked (admin-tunable
+    # weights); _b_risk / P.risk_predicate are left intact.  See TODO.md and
+    # frontend featureFlags.RISK_SCORING_ENABLED.
+    # FieldSpec("risk", _b_risk),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES)),
     FieldSpec("assigned", _b_assigned),
     FieldSpec("scan", _b_scan, value_source="scan"),
@@ -586,7 +591,7 @@ EXAMPLES: List[dict] = [
     {"label": "Open 80 AND 443", "q": "port:80 port:443"},
     {"label": "Untested criticals", "q": "has:critical AND NOT has:tested"},
     {"label": "Log4Shell-exposed web", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
-    {"label": "Exploitable, high risk", "q": "has:exploit AND risk:80"},
+    {"label": "Critical and exploitable", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},
     {"label": "nginx servers", "q": "header:nginx OR tech:nginx"},
 ]

@@ -2,7 +2,6 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
-  Shield,
   KeyRound,
   Terminal,
   FileText,
@@ -37,14 +36,10 @@ const sections: ReferenceSection[] = [
     tone: 'info',
     group: 'Guides',
   },
-  {
-    title: 'Risk Assessment',
-    description: 'How risk scores are calculated, severity levels explained, and port classifications.',
-    Icon: Shield,
-    path: '/risk-assessment',
-    tone: 'warning',
-    group: 'Operational Reference',
-  },
+  // TODO(risk-scoring): the "Risk Assessment" reference card is removed while
+  // risk scoring is in a broken state (HostRiskAssessment is unpopulated).
+  // Restore it when risk scoring is reworked (admin-tunable weights). See
+  // TODO.md and frontend/src/config/featureFlags.ts.
   {
     title: 'Default Credentials',
     description: 'Searchable database of vendor default credentials for security testing.',

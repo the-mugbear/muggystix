@@ -203,8 +203,7 @@ const UserGuide: React.FC = () => {
           <div>
             <Para>
               The <strong>Hosts</strong> page is the primary triage interface. It shows all
-              discovered hosts in a sortable, filterable table with inline port summaries and risk
-              indicators.
+              discovered hosts in a sortable, filterable table with inline port summaries.
             </Para>
             <Subhead>Query Bar (boolean search)</Subhead>
             <Para>
@@ -213,7 +212,7 @@ const UserGuide: React.FC = () => {
               language for precise queries:
             </Para>
             <UnorderedList>
-              <li><strong>Fields</strong> — <code className="font-mono">port:</code>, <code className="font-mono">os:</code>, <code className="font-mono">service:</code>, <code className="font-mono">subnet:</code>, <code className="font-mono">tag:</code>, <code className="font-mono">risk:</code>, <code className="font-mono">has:</code> (e.g. <code className="font-mono">has:exploit</code>), and evidence fields <code className="font-mono">cve:</code>, <code className="font-mono">vuln:</code>, <code className="font-mono">header:</code>, <code className="font-mono">note:</code>.</li>
+              <li><strong>Fields</strong> — <code className="font-mono">port:</code>, <code className="font-mono">os:</code>, <code className="font-mono">service:</code>, <code className="font-mono">subnet:</code>, <code className="font-mono">tag:</code>, <code className="font-mono">has:</code> (e.g. <code className="font-mono">has:exploit</code>), and evidence fields <code className="font-mono">cve:</code>, <code className="font-mono">vuln:</code>, <code className="font-mono">header:</code>, <code className="font-mono">note:</code>.</li>
               <li><strong>Operators</strong> — combine with <code className="font-mono">AND</code> / <code className="font-mono">OR</code> / <code className="font-mono">NOT</code> and parentheses. A comma is OR within one field (<code className="font-mono">port:80,443</code>); repeating a field is AND (<code className="font-mono">port:80 port:443</code> = has <em>both</em>).</li>
               <li><strong>Examples</strong> — <code className="font-mono">cve:CVE-2021-44228 OR vuln:"log4j"</code>, <code className="font-mono">os:windows AND NOT tag:test</code>, <code className="font-mono">port:443 has:exploit</code>.</li>
               <li><strong>Live feedback</strong> — the bar validates as you type and shows the live match count; press <code className="font-mono">/</code> to focus it.</li>
@@ -221,7 +220,7 @@ const UserGuide: React.FC = () => {
             </UnorderedList>
             <Subhead>Key Features</Subhead>
             <UnorderedList>
-              <li><strong>Filter panel</strong> — point-and-click filters for state, OS, ports, services, subnets, tags, risk level, review status, assignment, and scan; they combine with the query bar (AND).</li>
+              <li><strong>Filter panel</strong> — point-and-click filters for state, OS, ports, services, subnets, tags, review status, assignment, and scan; they combine with the query bar (AND).</li>
               <li><strong>Sorting</strong> — Sort by critical / high findings, open ports, notes count, last seen, hostname, or IP (IP sorts numerically by octet).</li>
               <li><strong>Review Workflow</strong> — Mark hosts as Watching, In Review, or Reviewed to track progress.</li>
               <li><strong>Notes</strong> — Add threaded notes to hosts with @mentions for team collaboration.</li>
@@ -327,25 +326,10 @@ const UserGuide: React.FC = () => {
           </div>
         ),
       },
-      {
-        title: 'Risk Assessment',
-        content: (
-          <div>
-            <Para>
-              BlueStick automatically calculates risk scores for hosts based on exposed
-              services, known vulnerabilities, and network context. See the{' '}
-              <button
-                type="button"
-                onClick={() => navigate('/risk-assessment')}
-                className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
-              >
-                Risk Assessment Documentation
-              </button>{' '}
-              for details on scoring methodology, severity levels, and port classifications.
-            </Para>
-          </div>
-        ),
-      },
+      // TODO(risk-scoring): the "Risk Assessment" guide section is removed while
+      // risk scoring is in a broken state (HostRiskAssessment is unpopulated).
+      // Restore it when risk scoring is reworked (admin-tunable weights). See
+      // TODO.md and frontend/src/config/featureFlags.ts.
       {
         title: 'Export & Reporting',
         content: (

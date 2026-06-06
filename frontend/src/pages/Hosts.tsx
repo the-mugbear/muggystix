@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { ColumnDef, ExpandedState, Row, RowSelectionState } from '@tanstack/react-table';
+import { RISK_SCORING_ENABLED } from '../config/featureFlags';
 import {
   getHosts,
   getHostFilterData,
@@ -1329,7 +1330,10 @@ export default function Hosts() {
         label: 'Has been tested',
         onDelete: () => clearFilterKey('hasTestExecution'),
       });
-    if (filters.minRiskScore !== undefined)
+    // Risk-score filter hidden while risk scoring is broken (see
+    // featureFlags.RISK_SCORING_ENABLED / TODO.md) — don't surface its chip
+    // even if a min_risk_score lingers in the URL.
+    if (RISK_SCORING_ENABLED && filters.minRiskScore !== undefined)
       chips.push({
         key: 'minRiskScore',
         label: `Min risk score ≥ ${filters.minRiskScore}`,
