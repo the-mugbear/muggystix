@@ -16,27 +16,14 @@ import { useNavigate } from 'react-router-dom';
 import { Command as CommandPrimitive } from 'cmdk';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import {
-  Bot,
-  ClipboardList,
-  Compass,
-  FileWarning,
   Folder,
-  KeyRound,
   LogOut,
-  MessageSquareHeart,
-  Network as NetworkIcon,
   Palette,
   Search as SearchIcon,
-  Settings,
   ShieldCheck,
-  Sparkles,
-  TerminalSquare,
 } from 'lucide-react';
 import {
-  ActivityPulseIcon,
-  AlertHexIcon,
   ScanLinesIcon,
-  ScopeIcon,
   ServerStackIcon,
 } from './AppIcons';
 import { useAppTheme, type AppThemeName } from '../contexts/ThemeContext';
@@ -53,108 +40,10 @@ import {
 } from '../services/api';
 import { cn } from '../utils/cn';
 
-type IconComponent = React.FC<{ className?: string }>;
-
-interface NavCommand {
-  label: string;
-  path: string;
-  requiredRole: string;
-  Icon: IconComponent;
-  /** Extra keywords for cmdk's match haystack. */
-  keywords?: string[];
-}
-
-const NAV_COMMANDS: NavCommand[] = [
-  { label: 'Portfolio', path: '/portfolio', requiredRole: 'viewer', Icon: Folder },
-  { label: 'Operations', path: '/operations', requiredRole: 'viewer', Icon: Sparkles },
-  { label: 'Scans', path: '/scans', requiredRole: 'viewer', Icon: ScanLinesIcon },
-  { label: 'Hosts', path: '/hosts', requiredRole: 'viewer', Icon: ServerStackIcon },
-  {
-    label: 'Collaboration',
-    path: '/activity',
-    requiredRole: 'viewer',
-    Icon: ActivityPulseIcon,
-    keywords: ['notes', 'team', 'comments'],
-  },
-  {
-    label: 'Agent Runs',
-    path: '/agent-activity',
-    requiredRole: 'viewer',
-    Icon: Bot,
-    keywords: ['agent', 'sessions', 'llm'],
-  },
-  { label: 'Scopes', path: '/scopes', requiredRole: 'analyst', Icon: ScopeIcon },
-  {
-    label: 'Recon Runs',
-    path: '/recon/runs',
-    requiredRole: 'viewer',
-    Icon: Compass,
-    keywords: ['discovery'],
-  },
-  { label: 'Test Plans', path: '/test-plans', requiredRole: 'viewer', Icon: ShieldCheck },
-  {
-    label: 'Executions',
-    path: '/executions',
-    requiredRole: 'viewer',
-    Icon: TerminalSquare,
-    keywords: ['runs'],
-  },
-  {
-    label: 'Ingestion Results',
-    path: '/parse-errors',
-    requiredRole: 'analyst',
-    Icon: AlertHexIcon,
-    keywords: ['errors', 'parse'],
-  },
-  {
-    label: 'Agent Feedback',
-    path: '/feedback',
-    requiredRole: 'admin',
-    Icon: MessageSquareHeart,
-  },
-  {
-    label: 'LLM Providers',
-    path: '/llm-settings',
-    requiredRole: 'viewer',
-    Icon: Sparkles,
-    keywords: ['ai', 'openai', 'anthropic', 'gemini'],
-  },
-  {
-    label: 'Scanner Integrations',
-    path: '/integrations',
-    requiredRole: 'analyst',
-    Icon: KeyRound,
-    keywords: ['nessus', 'shodan', 'api'],
-  },
-  {
-    label: 'Project Settings',
-    path: '/project-settings',
-    requiredRole: 'analyst',
-    Icon: Settings,
-    keywords: ['members'],
-  },
-  {
-    label: 'Reference',
-    path: '/reference',
-    requiredRole: 'viewer',
-    Icon: NetworkIcon,
-    keywords: ['docs', 'help', 'guide'],
-  },
-  {
-    label: 'Profile',
-    path: '/profile',
-    requiredRole: 'viewer',
-    Icon: Settings,
-    keywords: ['account', 'password'],
-  },
-  {
-    label: 'System Settings',
-    path: '/system-settings',
-    requiredRole: 'admin',
-    Icon: Settings,
-    keywords: ['users', 'admin'],
-  },
-];
+// Page nav entries come from the navigation manifest
+// (src/config/navigation.tsx) — the single source of truth shared with
+// the Layout sidebar and App.tsx route gates.  Add/re-gate pages there.
+import { NAV_COMMANDS } from '../config/navigation';
 
 export interface CommandPaletteProps {
   open: boolean;

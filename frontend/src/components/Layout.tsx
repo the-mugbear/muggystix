@@ -4,9 +4,7 @@ import {
   FolderOpen,
   MenuIcon,
   Repeat,
-  ShieldCheck,
   Sparkles,
-  Settings as SettingsIcon,
 } from 'lucide-react';
 import { useAppTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -16,10 +14,8 @@ import { getUnreadNotificationCount } from '../services/api';
 import { formatStatusLabel } from '../utils/statusMeta';
 import { cn } from '../utils/cn';
 import {
-  ActivityPulseIcon,
   BellRingsIcon,
   PaletteSwatchIcon,
-  ServerStackIcon,
 } from './AppIcons';
 import UserMenu from './UserMenu';
 import ProjectSelector from './ProjectSelector';
@@ -44,6 +40,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import logger from '../utils/logger';
+import { HUBS, type Hub } from '../config/navigation';
 
 interface LayoutProps {
   children: ReactNode;
@@ -72,91 +69,10 @@ const DRAWER_WIDTH_PX = `${DRAWER_WIDTH}px`;
 // the "Switch project" affordance in the topbar chip.
 // ---------------------------------------------------------------------------
 
-interface HubChild {
-  label: string;
-  path: string;
-  requiredRole: string;
-}
-
-interface Hub {
-  id: string;
-  label: string;
-  path: string;
-  Icon: React.FC<{ className?: string }>;
-  requiredRole: string;
-  /** Empty when the hub destination IS its own page (Operations). */
-  children: HubChild[];
-}
-
-const HUBS: Hub[] = [
-  {
-    id: 'operations',
-    label: 'Operations',
-    path: '/operations',
-    Icon: Sparkles,
-    requiredRole: 'viewer',
-    children: [],
-  },
-  {
-    id: 'inventory',
-    label: 'Inventory',
-    path: '/inventory',
-    Icon: ServerStackIcon,
-    requiredRole: 'viewer',
-    children: [
-      { label: 'Scans', path: '/scans', requiredRole: 'viewer' },
-      { label: 'Hosts', path: '/hosts', requiredRole: 'viewer' },
-      { label: 'Scopes', path: '/scopes', requiredRole: 'analyst' },
-      { label: 'Topology', path: '/network-topology', requiredRole: 'viewer' },
-    ],
-  },
-  {
-    id: 'workflows',
-    label: 'Workflows',
-    path: '/workflows',
-    Icon: ShieldCheck,
-    requiredRole: 'viewer',
-    children: [
-      { label: 'Recon Runs', path: '/recon/runs', requiredRole: 'viewer' },
-      { label: 'Test Plans', path: '/test-plans', requiredRole: 'viewer' },
-      { label: 'Executions', path: '/executions', requiredRole: 'viewer' },
-      { label: 'Agent Runs', path: '/agent-activity', requiredRole: 'viewer' },
-    ],
-  },
-  {
-    id: 'collaboration',
-    label: 'Collaboration',
-    path: '/collaboration',
-    Icon: ActivityPulseIcon,
-    requiredRole: 'viewer',
-    children: [
-      { label: 'Activity', path: '/activity', requiredRole: 'viewer' },
-      // v2.58.0 — cross-project SOC-correlation surface.  Different
-      // intent from /activity (notes/notifications timeline) and
-      // /agent-activity (per-project agent timeline): "what tools ran
-      // across all my projects at time X" for correlating against SOC
-      // alerts.
-      { label: 'Tool Activity', path: '/tool-activity', requiredRole: 'viewer' },
-      { label: 'Agent Feedback', path: '/feedback', requiredRole: 'admin' },
-    ],
-  },
-  {
-    id: 'settings',
-    label: 'Settings',
-    path: '/settings',
-    Icon: SettingsIcon,
-    requiredRole: 'viewer',
-    children: [
-      { label: 'Project', path: '/project-settings', requiredRole: 'analyst' },
-      { label: 'LLM Providers', path: '/llm-settings', requiredRole: 'viewer' },
-      { label: 'Scanner Integrations', path: '/integrations', requiredRole: 'analyst' },
-      { label: 'System', path: '/system-settings', requiredRole: 'admin' },
-      { label: 'Profile', path: '/profile', requiredRole: 'viewer' },
-      { label: 'Reference', path: '/reference', requiredRole: 'viewer' },
-      { label: 'Ingestion Results', path: '/parse-errors', requiredRole: 'analyst' },
-    ],
-  },
-];
+// IA hubs + their child tab strips are derived from the navigation
+// manifest (src/config/navigation.tsx) — the single source of truth
+// shared with App.tsx routes and the command palette.  Add or re-gate a
+// page there, not here.
 
 // v4.7.5 — platform detection moved to utils/platform.ts so the
 // KeyboardShortcutsDialog can use the same isMacLike()/commandModifierLabel()
