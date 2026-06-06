@@ -18,17 +18,11 @@ from app.schemas.schemas import HostFollowInfo, HostFollowUpdate
 from app.services.host_follow_service import HostFollowService
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import safe_dispatch
+# CR4-2 — serializer moved to the service layer (was defined here and
+# imported back by host_serialization, a service -> router dependency).
+from app.services.host_serialization import _serialize_follow
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-
-def _serialize_follow(follow: HostFollow) -> HostFollowInfo:
-    return HostFollowInfo(
-        status=follow.status,
-        last_viewed_at=follow.last_viewed_at,
-        created_at=follow.created_at,
-        updated_at=follow.updated_at,
-    )
 
 
 @router.post(

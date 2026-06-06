@@ -8,11 +8,10 @@ durable **per-user/per-project "since your last visit"** diff backed by
 the ``operations_cursors`` table — so "what changed while I was away?"
 survives across devices instead of living in one browser's localStorage.
 
-The three section aggregations are reused verbatim from ``dashboard.py``
-by calling those route functions directly (their ``Depends(...)``
-defaults are inert when called with explicit kwargs).  Keeping a single
-implementation means the standalone widgets and the workbench can never
-drift.
+The three section aggregations live in ``operations_read_service`` and are
+called as plain functions by both this composer and the standalone
+dashboard widgets — one implementation, so the two surfaces can never
+drift, with no router-to-router dependency (CR4-2).
 """
 import logging
 from datetime import datetime, timezone
@@ -32,10 +31,13 @@ from app.db.models_auth import User
 from app.db.models_project import Project
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project
-from app.api.v1.endpoints.dashboard import (
-    get_my_attention_queue,
-    get_my_tasks,
-    get_team_review,
+# CR4-2 — depend on the read service, not the dashboard route handlers.
+# Previously this composed the workbench by *calling* dashboard's route
+# functions, making one router depend on another's handlers.
+from app.services.operations_read_service import (
+    compute_my_attention_queue,
+    compute_my_tasks,
+    compute_team_review,
     MyAttentionResponse,
     MyTasksResponse,
     TeamReviewResponse,
@@ -171,19 +173,13 @@ def get_workbench(
 ):
     """Batch the Operations personal-work surface into one response.
 
-    Reuses the dashboard aggregations so the standalone widgets and the
+    Reuses the read-service aggregations so the standalone widgets and the
     workbench cannot drift.  ``since_last_visit`` reflects the durable
     per-user cursor; advance it with ``POST /workbench/seen``.
     """
-    my_queue = get_my_attention_queue(
-        db=db, current_user=current_user, project=project, limit=10,
-    )
-    my_tasks = get_my_tasks(
-        db=db, current_user=current_user, project=project, limit=15,
-    )
-    team_review = get_team_review(
-        db=db, current_user=current_user, project=project, limit=500,
-    )
+    my_queue = compute_my_attention_queue(db, current_user, project, limit=10)
+    my_tasks = compute_my_tasks(db, current_user, project, limit=15)
+    team_review = compute_team_review(db, current_user, project, limit=500)
     since = _compute_since_last_visit(db, current_user, project)
 
     return WorkbenchResponse(

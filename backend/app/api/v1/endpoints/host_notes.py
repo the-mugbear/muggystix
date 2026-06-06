@@ -24,34 +24,12 @@ from app.services.webhook_dispatcher import safe_dispatch
 from app.services.host_follow_service import (
     HostFollowService, VALID_NOTE_TYPES, NoteHasRepliesError,
 )
+# CR4-2 — serializer moved to the service layer (was defined here and
+# imported back by host_serialization, a service -> router dependency).
+from app.services.host_serialization import _serialize_note
 from app.db.cursor_upsert import upsert_user_project_cursor
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-
-def _serialize_note(note: HostNoteModel) -> HostNote:
-    author_name = None
-    if note.author:
-        author_name = note.author.full_name or note.author.username
-    assignee_name = None
-    if note.assignee:
-        assignee_name = note.assignee.full_name or note.assignee.username
-    return HostNote(
-        id=note.id,
-        body=note.body,
-        status=note.status,
-        author_id=note.user_id,
-        author_name=author_name,
-        parent_id=note.parent_id,
-        assignee_id=note.assignee_id,
-        assignee_name=assignee_name,
-        due_at=note.due_at,
-        note_type=note.note_type,
-        resolution_summary=note.resolution_summary,
-        pinned=bool(note.pinned),
-        created_at=note.created_at,
-        updated_at=note.updated_at,
-    )
 
 
 @router.get(

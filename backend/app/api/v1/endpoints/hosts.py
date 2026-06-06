@@ -29,8 +29,7 @@ from app.db import models
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
-from app.api.v1.endpoints.host_follow import _serialize_follow
-from app.api.v1.endpoints.host_notes import _serialize_note
+from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
 from app.db.models_risk import HostRiskAssessment
 from app.schemas.schemas import (
     Host as HostSchema,

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Host
 from app.db.models_agent import (
     TestPlan, TestPlanEntry, TestPlanHistory,
-    TestPlanStatus, TestEntryStatus,
+    TestPlanStatus, TestEntryStatus, TestExecutionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -429,6 +429,32 @@ class TestPlanService:
             )
             if actual != expected:
                 raise ValueError("Conflict: entry was modified by another actor")
+
+        # CR4-1 — proposed_tests defines the test_index positions that
+        # TestExecutionResult rows reference.  Once any result exists for
+        # this entry, reordering or replacing the array silently
+        # re-attributes recorded evidence to a different test, corrupting
+        # the audit trail.  Freeze the array in that case (a 409 to the
+        # caller).  Pre-execution edits by plan-gen are unaffected — there
+        # are no results yet — so this only bites the genuinely unsafe path.
+        if (
+            "proposed_tests" in updates
+            and updates["proposed_tests"] != entry.proposed_tests
+        ):
+            has_results = (
+                self.db.query(TestExecutionResult.id)
+                .filter(TestExecutionResult.entry_id == entry.id)
+                .first()
+                is not None
+            )
+            if has_results:
+                raise ValueError(
+                    "Cannot modify proposed_tests once execution results "
+                    "exist for this entry — results reference tests by "
+                    "position (test_index), so changing the list would "
+                    "re-attribute recorded evidence. Clone the plan to "
+                    "revise the test list."
+                )
 
         for field in (
             "priority", "test_phase", "proposed_tests", "rationale",

@@ -20,9 +20,46 @@ from typing import List, Optional
 from app.db import models
 from app.db.models import HostFollow, HostNote as HostNoteModel
 from app.db.models_vulnerability import Vulnerability
-from app.api.v1.endpoints.host_follow import _serialize_follow
-from app.api.v1.endpoints.host_notes import _serialize_note
-from app.schemas.schemas import HostVulnerabilitySummary
+from app.schemas.schemas import HostVulnerabilitySummary, HostNote, HostFollowInfo
+
+
+# CR4-2 — these two ORM->schema mappers used to live in the host_follow /
+# host_notes routers and were imported back into this service, making a
+# service depend on routers.  They are pure serialization, so they belong
+# here; the routers now import them from this module.
+
+def _serialize_follow(follow: HostFollow) -> HostFollowInfo:
+    return HostFollowInfo(
+        status=follow.status,
+        last_viewed_at=follow.last_viewed_at,
+        created_at=follow.created_at,
+        updated_at=follow.updated_at,
+    )
+
+
+def _serialize_note(note: HostNoteModel) -> HostNote:
+    author_name = None
+    if note.author:
+        author_name = note.author.full_name or note.author.username
+    assignee_name = None
+    if note.assignee:
+        assignee_name = note.assignee.full_name or note.assignee.username
+    return HostNote(
+        id=note.id,
+        body=note.body,
+        status=note.status,
+        author_id=note.user_id,
+        author_name=author_name,
+        parent_id=note.parent_id,
+        assignee_id=note.assignee_id,
+        assignee_name=assignee_name,
+        due_at=note.due_at,
+        note_type=note.note_type,
+        resolution_summary=note.resolution_summary,
+        pinned=bool(note.pinned),
+        created_at=note.created_at,
+        updated_at=note.updated_at,
+    )
 
 
 # Ranking used when ordering vulnerabilities within a host's payload.

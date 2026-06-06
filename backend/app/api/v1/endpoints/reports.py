@@ -11,8 +11,7 @@ from app.services.report_templates import ReportTemplates
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project
-from app.api.v1.endpoints.host_follow import _serialize_follow
-from app.api.v1.endpoints.host_notes import _serialize_note
+from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
 from app.api.v1.endpoints.hosts import _build_filtered_host_query, HostFilterParams
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory

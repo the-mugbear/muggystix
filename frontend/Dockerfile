@@ -41,13 +41,17 @@ RUN rm -f package-lock.json \
 # Cache-busting argument
 ARG CACHE_BUST=default_value
 
-# API URL and backend version arguments for build-time environment variables
+# API URL and version arguments for build-time environment variables
 ARG REACT_APP_API_URL
 ARG BACKEND_VERSION
+# CR4-8 — platform_version.json isn't in the frontend-only build context, so
+# the frontend version is passed in here; generate-build-info.js reads it.
+ARG FRONTEND_VERSION
 
 # Set environment variables for build process
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
 ENV BACKEND_VERSION=$BACKEND_VERSION
+ENV FRONTEND_VERSION=$FRONTEND_VERSION
 
 # Backward compatibility for scripts expecting REACT_APP_BACKEND_VERSION
 ENV REACT_APP_BACKEND_VERSION=$BACKEND_VERSION

@@ -2,13 +2,35 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-// Read version from package.json
+// Frontend version: platform_version.json is the single source of truth
+// (CR4-8 — package.json had silently drifted to 5.10.0 while the platform
+// file said 5.15.0, so the VersionFooter reported a stale build).  An env
+// override wins for Docker builds (the build context is just frontend/, so
+// ../platform_version.json isn't present there — frontend/Dockerfile passes
+// FRONTEND_VERSION through as a build-arg); package.json is the final
+// fallback for `npm run build` run outside the repo.
 let packageVersion = '1.0.0';
-try {
-  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-  packageVersion = packageJson.version;
-} catch (error) {
-  console.warn('Could not read package.json version:', error.message);
+if (process.env.FRONTEND_VERSION) {
+  packageVersion = process.env.FRONTEND_VERSION;
+} else if (process.env.REACT_APP_FRONTEND_VERSION) {
+  packageVersion = process.env.REACT_APP_FRONTEND_VERSION;
+} else {
+  try {
+    const platformVersions = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', 'platform_version.json'), 'utf8'),
+    );
+    if (!platformVersions.frontend) {
+      throw new Error('platform_version.json has no "frontend" field');
+    }
+    packageVersion = platformVersions.frontend;
+  } catch (error) {
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+      packageVersion = packageJson.version;
+    } catch (innerError) {
+      console.warn('Could not read package.json version:', innerError.message);
+    }
+  }
 }
 
 // Generate build information

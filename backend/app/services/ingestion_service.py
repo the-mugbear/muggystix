@@ -100,13 +100,21 @@ class IngestionService:
             #
             # Hard-fail at startup so the operator sees the problem
             # immediately.  The error message includes the exact fix.
+            # CR4-5c — recommend least-privilege ownership, NOT chmod 777.
+            # This directory holds uploaded scan data (often sensitive
+            # target/host detail); a world-writable mount lets any local
+            # account tamper with the ingestion queue.  Fix is to give the
+            # container's app UID (999, appuser) ownership at 0750.
             msg = (
                 f"Ingestion storage {self._storage_root} is not writable: {exc}. "
                 f"This usually means the host volume mount has wrong ownership. "
-                f"Fix on the host with:  chmod 777 uploads/ingestion_queue  "
-                f"(or chown the directory to UID 1000 if you run the containers "
-                f"as the default app user).  Refusing to start — fix the volume "
-                f"and restart the container."
+                f"Fix on the host by giving the container's app user ownership "
+                f"(do NOT chmod 777 — this directory holds sensitive scan data):  "
+                f"sudo chown -R 999:999 uploads/ingestion_queue && "
+                f"sudo chmod 750 uploads/ingestion_queue  "
+                f"(999 is the default appuser UID/GID; adjust if you run the "
+                f"containers as a different user).  Refusing to start — fix the "
+                f"volume and restart the container."
             )
             logger.critical(msg)
             raise RuntimeError(msg) from exc

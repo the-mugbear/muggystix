@@ -232,10 +232,25 @@ ensure_env() {
 # ------------------------------------------------------------------
 ensure_uploads_dir() {
     mkdir -p uploads/ingestion_queue
-    # 1777 (sticky bit) allows the container's appuser (UID 999) to write
-    # while preventing users from deleting each other's files.  Full 777
-    # would work but is unnecessarily permissive on shared hosts.
-    chmod 1777 uploads/ingestion_queue
+    # CR4-5c — this queue holds uploaded scan data (sensitive target/host
+    # detail), so prefer least privilege over a world-writable mount.  The
+    # container runs as appuser (UID/GID 999); give 999 ownership at 0750.
+    # chown needs root, so try sudo when we aren't already root.  Only if
+    # neither path works do we fall back to a world-writable mount, and we
+    # warn loudly so the operator knows it's not the intended posture.
+    if chown 999:999 uploads/ingestion_queue 2>/dev/null \
+        || { command -v sudo >/dev/null 2>&1 && sudo chown 999:999 uploads/ingestion_queue 2>/dev/null; }; then
+        chmod 750 uploads/ingestion_queue
+    else
+        echo "WARNING: could not chown uploads/ingestion_queue to 999:999 (needs root)."
+        echo "         For least privilege run:"
+        echo "           sudo chown -R 999:999 uploads/ingestion_queue && sudo chmod 750 uploads/ingestion_queue"
+        echo "         Falling back to a world-writable mount so the container can"
+        echo "         still write the queue — tighten this once you have root."
+        # Sticky bit so users can't delete each other's files in the
+        # world-writable fallback.
+        chmod 1777 uploads/ingestion_queue
+    fi
 }
 
 # ------------------------------------------------------------------
