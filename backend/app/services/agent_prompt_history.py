@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.33.0",
+        "app_version": "2.109.0",
+        "summary": (
+            "Single-sourced the execution safety rules (CR5 Refactor #3).  The "
+            "live execution prompt and the offline bundle instructions each "
+            "carried their own copy of the mandatory approval/sanity-check/"
+            "result-recording block and had drifted (rule 2 read differently "
+            "live vs offline); both now render the canonical rules from "
+            "app.services.agent_policy.SAFETY_RULES, with a golden parity test. "
+            "Rule wording is the unified form (sanity check = source IP / "
+            "reverse DNS / banner grab to verify the intended target; record "
+            "every command + outcome).  AGENTS.md remains the authoritative "
+            "detailed protocol; the prompt carries the terse skeleton."
+        ),
+    },
+    {
         "version": "1.32.0",
         "app_version": "2.85.0",
         "summary": (

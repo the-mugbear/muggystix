@@ -29,6 +29,7 @@ from app.core.config import settings
 # be a trailing comment on this constant now lives as structured data in
 # agent_prompt_history.
 from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.agent_policy import render_safety_rules
 
 logger = logging.getLogger(__name__)
 
@@ -907,12 +908,8 @@ def build_execution_instructions(
         provenance +
         f"## Agent Execution Instructions\n\n"
         f"You are executing approved tests from a test plan in BlueStick.\n\n"
-        f"**SAFETY RULES (mandatory — do not skip):**\n"
-        f"1. **NEVER run a command without showing it to the user and getting explicit approval.**\n"
-        f"2. Before testing each host, perform a **sanity check** to verify you are reaching the intended target.\n"
-        f"3. If a sanity check fails, **STOP and ask the user** for guidance. Do not proceed.\n"
-        f"4. Record all results to the API as you go.\n\n"
-        f"**Workflow-scoped guide:** {agents_guide_url}\n"
+        + render_safety_rules() + "\n"
+        + f"**Workflow-scoped guide:** {agents_guide_url}\n"
         f"Fetch with `curl -sk '{agents_guide_url}'` for the execution "
         f"slice of AGENTS.md (sanity check methods, test result status "
         f"values, execution context shape, raw output storage). The URL "

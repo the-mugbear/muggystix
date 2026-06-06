@@ -50,6 +50,7 @@ from app.db.models_agent import (
 from app.services.agent_prompt_service import (
     PROMPT_VERSION, resolve_base_url,
 )
+from app.services.agent_policy import render_safety_rules
 
 
 # JSON Schema (draft-07) for the results file a remote agent produces.
@@ -176,12 +177,8 @@ def _build_offline_instructions(
         f"**Session ID:** {session_id}\n"
         f"**Entries:** {entry_count} host(s) to test\n"
         f"**Prompt version:** {PROMPT_VERSION}\n\n"
-        f"**SAFETY RULES (mandatory — do not skip):**\n"
-        f"1. NEVER run a command without showing it to the user and getting explicit approval.\n"
-        f"2. Before testing each host, perform a sanity check (source IP, reverse DNS, banner grab).\n"
-        f"3. If a sanity check fails or looks suspicious, STOP and ask the user.\n"
-        f"4. Record EVERY command and its outcome — executed, skipped, or failed.\n\n"
-        f"### Step 1 — Load the bundle\n"
+        + render_safety_rules() + "\n"
+        + f"### Step 1 — Load the bundle\n"
         f"Read `plan.json` to get the list of hosts and proposed tests for each. "
         f"Each entry has a stable `entry_id` and a zero-based `test_index` into "
         f"`proposed_tests` — use those two fields to correlate results.\n\n"
