@@ -56,6 +56,7 @@ from app.services.host_query import (
 from app.services.host_serialization import (
     SEVERITY_ORDER,
     LIST_DISCOVERY_CAP,
+    discovery_dict as _discovery_dict,
     build_vuln_summary as _build_vuln_summary,
     serialize_host_base as _serialize_host_base,
     serialize_host_detail as _serialize_host_detail,
@@ -301,15 +302,12 @@ def get_hosts_v2(
     # never renders NSE script bodies, so we deliberately DON'T eager-load
     # Port.scripts or Host.host_scripts here; the list serializer emits
     # script-free ports (serialize_port_light) and never touches those
-    # relationships, so dropping them avoids both the payload bloat AND a
-    # lazy-load N+1.  Detail still loads them.
+    # relationships.  Review #5 — we ALSO don't eager-load notes or
+    # scan_history (a host can have thousands of rows); the list only shows
+    # the 3 newest notes + 6 newest discoveries, fetched with bounded
+    # window queries below, plus aggregate counts.  Detail loads everything.
     query = query.options(
         selectinload(models.Host.ports),
-        selectinload(models.Host.notes).selectinload(models.HostNote.author),
-        # review #8a — _serialize_note reads note.assignee; eager-load it so
-        # the notes slice doesn't trigger an N+1 over assignees.
-        selectinload(models.Host.notes).selectinload(models.HostNote.assignee),
-        selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
         # Eager-load tag + its definition so serialize_host_base reads
         # host.tag_assignments[].tag without an N+1 per host.
         selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
@@ -318,6 +316,77 @@ def get_hosts_v2(
     # Apply pagination and return
     hosts = query.offset(skip).limit(limit).all()
     host_ids = [host.id for host in hosts]
+
+    # Review #5 — bounded per-host slices via window queries instead of
+    # materialising every child row.  Aggregate note counts; top-3 notes;
+    # top-(cap) distinct-scan discoveries.
+    note_count_map: Dict[int, int] = {}
+    notes_by_host: Dict[int, list] = {}
+    discoveries_by_host: Dict[int, list] = {}
+    if host_ids:
+        note_count_map = dict(
+            db.query(models.HostNote.host_id, func.count(models.HostNote.id))
+            .filter(models.HostNote.host_id.in_(host_ids))
+            .group_by(models.HostNote.host_id)
+            .all()
+        )
+        note_rn = func.row_number().over(
+            partition_by=models.HostNote.host_id,
+            order_by=(models.HostNote.created_at.desc(), models.HostNote.id.desc()),
+        ).label("rn")
+        ranked_notes = (
+            db.query(models.HostNote.id.label("nid"), note_rn)
+            .filter(models.HostNote.host_id.in_(host_ids))
+            .subquery()
+        )
+        top_note_ids = [
+            r.nid for r in db.query(ranked_notes.c.nid).filter(ranked_notes.c.rn <= 3).all()
+        ]
+        if top_note_ids:
+            for n in (
+                db.query(models.HostNote)
+                .filter(models.HostNote.id.in_(top_note_ids))
+                .options(
+                    selectinload(models.HostNote.author),
+                    selectinload(models.HostNote.assignee),
+                )
+                .all()
+            ):
+                notes_by_host.setdefault(n.host_id, []).append(n)
+            for arr in notes_by_host.values():
+                arr.sort(key=lambda n: (n.created_at or n.updated_at or datetime.min), reverse=True)
+
+        # Discoveries: window the newest history rows per host (over-fetch a
+        # little so distinct-scan dedupe still yields up to the cap), join scan.
+        disc_rn = func.row_number().over(
+            partition_by=models.HostScanHistory.host_id,
+            order_by=(models.HostScanHistory.discovered_at.desc(), models.HostScanHistory.id.desc()),
+        ).label("rn")
+        ranked_hist = (
+            db.query(models.HostScanHistory.id.label("hid"), disc_rn)
+            .filter(models.HostScanHistory.host_id.in_(host_ids))
+            .subquery()
+        )
+        top_hist_ids = [
+            r.hid for r in db.query(ranked_hist.c.hid)
+            .filter(ranked_hist.c.rn <= LIST_DISCOVERY_CAP * 2).all()
+        ]
+        if top_hist_ids:
+            hist_rows = (
+                db.query(models.HostScanHistory)
+                .filter(models.HostScanHistory.id.in_(top_hist_ids))
+                .options(selectinload(models.HostScanHistory.scan))
+                .all()
+            )
+            hist_rows.sort(key=lambda h: (h.discovered_at or datetime.min), reverse=True)
+            seen_by_host: Dict[int, set] = {}
+            for h in hist_rows:
+                seen = seen_by_host.setdefault(h.host_id, set())
+                bucket = discoveries_by_host.setdefault(h.host_id, [])
+                if h.scan_id in seen or len(bucket) >= LIST_DISCOVERY_CAP:
+                    continue
+                seen.add(h.scan_id)
+                bucket.append(_discovery_dict(h))
 
     vuln_error = False
     try:
@@ -444,25 +513,28 @@ def get_hosts_v2(
 
     serialized_hosts = []
     for host in hosts:
-        serialized = _serialize_host_base(host, vuln_map.get(host.id))
+        # Review #5 — pass the windowed discoveries + aggregate note_count so
+        # the base serializer never touches the (unloaded) notes/scan_history
+        # relationships.
+        serialized = _serialize_host_base(
+            host, vuln_map.get(host.id),
+            discoveries=discoveries_by_host.get(host.id, []),
+            note_count=note_count_map.get(host.id, 0),
+        )
         follow = follow_map.get(host.id)
         serialized["follow"] = _serialize_follow(follow) if follow else None
 
-        # RV-8 — list-weight payload: script-free ports, no host_scripts,
-        # and discoveries capped to what the row renders.
+        # RV-8 — list-weight payload: script-free ports, no host_scripts.
         serialized["ports"] = [_serialize_port_light(p) for p in host.ports]
         serialized["host_scripts"] = []
-        serialized["discoveries"] = serialized["discoveries"][:LIST_DISCOVERY_CAP]
 
-        host_notes = sorted(host.notes, key=lambda note: note.created_at or note.updated_at or datetime.min, reverse=True)
-        serialized["note_count"] = len(host_notes)
         serialized["test_plan_entry_count"] = tp_count_map.get(host.id, 0)
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
         serialized["assignees"] = assignee_map.get(host.id, [])
         serialized["notes"] = [
-            _serialize_note(note) for note in host_notes[:3]
+            _serialize_note(note) for note in notes_by_host.get(host.id, [])
         ]
         serialized_hosts.append(serialized)
 

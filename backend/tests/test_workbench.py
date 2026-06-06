@@ -52,6 +52,38 @@ def _make_vuln(db_session, host_id, scan_id, severity, created_at=None):
     return v
 
 
+def test_workbench_query_count_is_bounded(client, db_session, test_project):
+    """Review #6 — regression guard / query-count tracing: one /workbench
+    request must stay well under a fan-out bound (it composes several
+    aggregations on one connection).  Seed a little data so every section
+    runs its real query."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    scan = models.Scan(project_id=test_project.id, filename="qc.xml")
+    host = _make_host(db_session, test_project.id, "10.9.9.1")
+    db_session.add(scan)
+    db_session.flush()
+    _make_vuln(db_session, host.id, scan.id, VulnerabilitySeverity.CRITICAL)
+    db_session.flush()
+
+    counter = {"n": 0}
+
+    def _count(conn, cursor, statement, params, context, executemany):
+        counter["n"] += 1
+
+    event.listen(Engine, "after_cursor_execute", _count)
+    try:
+        r = client.get(_url(test_project.id))
+        assert r.status_code == 200, r.text
+    finally:
+        event.remove(Engine, "after_cursor_execute", _count)
+
+    # Bound is a regression guard, not a target — currently ~12; flag a
+    # fan-out blow-up (e.g. an N+1 creeping into a section).
+    assert counter["n"] <= 16, f"workbench issued {counter['n']} SQL statements"
+
+
 def test_workbench_returns_all_sections(client, test_project):
     r = client.get(_url(test_project.id))
     assert r.status_code == 200, r.text

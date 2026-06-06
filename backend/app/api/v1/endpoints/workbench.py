@@ -105,15 +105,18 @@ def _compute_since_last_visit(
     last_viewed = cursor.last_viewed_at if cursor else None
     is_first = last_viewed is None
 
-    # Scans
-    scan_q = db.query(models.Scan).filter(models.Scan.project_id == project.id)
+    # Scans — latest row + total count in ONE query via a COUNT() window
+    # (was a separate count() + first(); review #6).
+    scan_q = db.query(
+        models.Scan, func.count().over().label("total"),
+    ).filter(models.Scan.project_id == project.id)
     if last_viewed is not None:
         scan_q = scan_q.filter(models.Scan.created_at > last_viewed)
-    new_scan_count = scan_q.count()
-    latest = (
-        scan_q.order_by(models.Scan.created_at.desc()).first()
-        if new_scan_count else None
-    )
+    latest_row = scan_q.order_by(models.Scan.created_at.desc()).first()
+    if latest_row is None:
+        latest, new_scan_count = None, 0
+    else:
+        latest, new_scan_count = latest_row[0], int(latest_row[1])
 
     # Hosts (first_seen is the discovery timestamp)
     host_q = db.query(func.count(models.Host.id)).filter(

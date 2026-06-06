@@ -9,6 +9,37 @@ from __future__ import annotations
 from app.db import models
 
 
+def test_list_windows_notes_and_discoveries(client, db_session, test_project, test_user):
+    """Review #5 — the list returns the 3 newest notes (with a full
+    note_count) and ≤6 distinct-scan discoveries, without loading every
+    child row."""
+    host = models.Host(project_id=test_project.id, ip_address="10.4.5.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    # 5 notes — only the 3 newest should come back, but note_count == 5.
+    for i in range(5):
+        db_session.add(models.HostNote(
+            host_id=host.id, user_id=test_user.id, body=f"note {i}",
+            status=models.NoteStatus.OPEN,
+        ))
+    # 9 distinct scans / history rows — discoveries cap at 6.
+    for i in range(9):
+        s = models.Scan(project_id=test_project.id, filename=f"d{i}.xml")
+        db_session.add(s)
+        db_session.flush()
+        db_session.add(models.HostScanHistory(host_id=host.id, scan_id=s.id))
+    db_session.flush()
+
+    item = next(
+        h for h in client.get(f"/api/v1/projects/{test_project.id}/hosts/").json()["items"]
+        if h["id"] == host.id
+    )
+    assert item["note_count"] == 5
+    assert len(item["notes"]) == 3
+    assert len(item["discoveries"]) == 6
+    assert len({d["scan_id"] for d in item["discoveries"]}) == 6  # distinct scans
+
+
 def _seed_host_with_scripts(db_session, project_id, ip="10.4.0.1"):
     scan = models.Scan(project_id=project_id, filename="s.xml")
     host = models.Host(project_id=project_id, ip_address=ip, state="up")

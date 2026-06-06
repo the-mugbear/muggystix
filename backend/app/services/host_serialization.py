@@ -53,38 +53,54 @@ def build_vuln_summary(data: Optional[dict]) -> Optional[HostVulnerabilitySummar
     )
 
 
-def serialize_host_base(host: models.Host, vuln_data: Optional[dict]) -> dict:
-    """Common host fields used by both the list and the detail endpoints."""
-    note_count = len(getattr(host, "notes", []))
-    history_entries = sorted(
-        list(getattr(host, "scan_history", []) or []),
-        key=lambda entry: entry.discovered_at or datetime.min,
-        reverse=True,
-    )
+def discovery_dict(history) -> dict:
+    """One ``discoveries[]`` entry from a HostScanHistory row (+ its scan).
 
-    discoveries: List[dict] = []
-    seen_scan_ids = set()
-    for history in history_entries:
-        if history.scan_id in seen_scan_ids:
-            continue
-        seen_scan_ids.add(history.scan_id)
-        scan = getattr(history, "scan", None)
-        # Surface the scan's actual time window in addition to the row's
-        # ingest timestamp.  `discovered_at` is when we INGESTED the
-        # observation (often hours/days after the scan ran); `start_time`
-        # and `end_time` are when the tool was actually probing the
-        # network.  SOC alert correlation needs the latter — analysts
-        # ask "what was running at 14:32?", not "what got uploaded?".
-        discoveries.append({
-            "scan_id": history.scan_id,
-            "scan_filename": getattr(scan, "filename", None) if scan else None,
-            "scan_type": getattr(scan, "scan_type", None) if scan else None,
-            "tool_name": getattr(scan, "tool_name", None) if scan else None,
-            "scan_start": getattr(scan, "start_time", None) if scan else None,
-            "scan_end": getattr(scan, "end_time", None) if scan else None,
-            "command_line": getattr(scan, "command_line", None) if scan else None,
-            "discovered_at": history.discovered_at,
-        })
+    ``discovered_at`` is the INGEST time; ``scan_start``/``scan_end`` are when
+    the tool was actually probing — what SOC-alert correlation needs.
+    """
+    scan = getattr(history, "scan", None)
+    return {
+        "scan_id": history.scan_id,
+        "scan_filename": getattr(scan, "filename", None) if scan else None,
+        "scan_type": getattr(scan, "scan_type", None) if scan else None,
+        "tool_name": getattr(scan, "tool_name", None) if scan else None,
+        "scan_start": getattr(scan, "start_time", None) if scan else None,
+        "scan_end": getattr(scan, "end_time", None) if scan else None,
+        "command_line": getattr(scan, "command_line", None) if scan else None,
+        "discovered_at": history.discovered_at,
+    }
+
+
+def serialize_host_base(
+    host: models.Host,
+    vuln_data: Optional[dict],
+    *,
+    discoveries: Optional[List[dict]] = None,
+    note_count: Optional[int] = None,
+) -> dict:
+    """Common host fields used by both the list and the detail endpoints.
+
+    ``discoveries`` / ``note_count`` may be supplied precomputed (the LIST
+    endpoint passes windowed top-N + aggregate counts so it never has to
+    eager-load every note/scan-history row — review #5).  When omitted, they
+    are derived from the loaded relationships (the detail endpoint's path).
+    """
+    if note_count is None:
+        note_count = len(getattr(host, "notes", []) or [])
+    if discoveries is None:
+        history_entries = sorted(
+            list(getattr(host, "scan_history", []) or []),
+            key=lambda entry: entry.discovered_at or datetime.min,
+            reverse=True,
+        )
+        discoveries = []
+        seen_scan_ids = set()
+        for history in history_entries:
+            if history.scan_id in seen_scan_ids:
+                continue
+            seen_scan_ids.add(history.scan_id)
+            discoveries.append(discovery_dict(history))
 
     # Tags attached to this host.  ``tag_assignments`` is selectin-loaded;
     # callers that show tags should also eager-load ``tag_assignments.tag``
