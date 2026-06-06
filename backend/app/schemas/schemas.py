@@ -710,6 +710,9 @@ class DNSRecordBase(BaseModel):
     record_type: str
     value: str
     ttl: Optional[int] = None
+    # Which resolver produced this answer (dnsx -resp); null for sources
+    # that don't attribute a resolver (e.g. CSV / PTR imports).
+    resolver_name: Optional[str] = None
 
 class DNSRecord(DNSRecordBase):
     id: int

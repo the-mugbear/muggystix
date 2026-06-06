@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, ChevronRight } from 'lucide-react';
-import { getScan, getHostsByScan } from '../services/api';
-import type { Host } from '../services/api';
+import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, ChevronRight, Globe } from 'lucide-react';
+import { getScan, getHostsByScan, getScanDnsRecords } from '../services/api';
+import type { Host, DNSRecord } from '../services/api';
 import CommandExplanation from '../components/CommandExplanation';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -88,6 +88,7 @@ const ScanDetail: React.FC = () => {
   const fromHost = (location.state as { fromHost?: { id: number; ip: string } } | null)?.fromHost;
   const [scan, setScan] = useState<any>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
+  const [dnsRecords, setDnsRecords] = useState<DNSRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState('hosts');
@@ -101,11 +102,16 @@ const ScanDetail: React.FC = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([getScan(parseInt(scanId)), getHostsByScan(parseInt(scanId))])
-      .then(([s, h]) => {
+    Promise.all([
+      getScan(parseInt(scanId)),
+      getHostsByScan(parseInt(scanId)),
+      getScanDnsRecords(parseInt(scanId)),
+    ])
+      .then(([s, h, dns]) => {
         if (!cancelled) {
           setScan(s);
           setHosts(h);
+          setDnsRecords(dns);
         }
       })
       .catch((err) => {
@@ -209,6 +215,9 @@ const ScanDetail: React.FC = () => {
                   before clicking through. */}
               <TabsTrigger value="hosts"><Computer className="size-4" aria-hidden /> Hosts ({totalHostCount})</TabsTrigger>
               <TabsTrigger value="ports"><Shield className="size-4" aria-hidden /> All Ports ({totalPortCount})</TabsTrigger>
+              {dnsRecords.length > 0 && (
+                <TabsTrigger value="dns"><Globe className="size-4" aria-hidden /> DNS Records ({dnsRecords.length})</TabsTrigger>
+              )}
               <TabsTrigger value="command"><Terminal className="size-4" aria-hidden /> Command</TabsTrigger>
             </TabsList>
             <TabsContent value="hosts">
@@ -490,6 +499,62 @@ const ScanDetail: React.FC = () => {
                 </>
               )}
             </TabsContent>
+            {dnsRecords.length > 0 && (
+              <TabsContent value="dns">
+                {/* DNS-resolution scans (e.g. dnsx) persist every answer,
+                    but only A/AAAA become hosts — so CNAME/MX/NS/TXT
+                    records are listed here where they'd otherwise be
+                    invisible. */}
+                <ul className="space-y-xs md:hidden">
+                  {dnsRecords.map((r) => (
+                    <li key={r.id} className="rounded-panel border border-border p-sm">
+                      <div className="flex items-center gap-xs">
+                        <Badge variant="secondary" className="whitespace-nowrap">{r.record_type}</Badge>
+                        <span className="min-w-0 flex-1 truncate font-mono text-metadata text-foreground">{r.domain}</span>
+                      </div>
+                      <div className="mt-xxs break-all font-mono text-caption text-muted-foreground">{r.value}</div>
+                      {r.resolver_name && (
+                        <div className="mt-xxs text-caption text-muted-foreground">via {r.resolver_name}</div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <div className="hidden md:block">
+                  <div className="rounded-panel border border-border">
+                    <Table className="table-fixed">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-20">Type</TableHead>
+                          <TableHead className="w-1/4">Name</TableHead>
+                          <TableHead>Value</TableHead>
+                          <TableHead className="w-40">Resolver</TableHead>
+                          <TableHead className="w-20">TTL</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {dnsRecords.map((r) => (
+                          <TableRow key={r.id}>
+                            <TableCell>
+                              <Badge variant="secondary" className="whitespace-nowrap">{r.record_type}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0 font-mono">{r.domain}</div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0 font-mono">{r.value}</div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0 text-muted-foreground">{r.resolver_name || '—'}</div>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">{r.ttl ?? '—'}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              </TabsContent>
+            )}
             <TabsContent value="command">
               <CommandExplanation scanId={parseInt(scanId!)} />
             </TabsContent>

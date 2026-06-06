@@ -919,6 +919,44 @@ def get_scan_eyewitness_results(
 
     return results
 
+@router.get("/{scan_id}/dns-records", response_model=List[DNSRecord])
+def get_scan_dns_records(
+    scan_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """DNS records produced by a scan (e.g. dnsx resolution output).
+
+    A DNS-resolution scan persists one DNSRecord per (record_type, domain,
+    value, resolver) tuple, but only A/AAAA answers create host inventory
+    rows — so CNAME/MX/NS/TXT/etc. records were stored yet had no surface.
+    This lists every record for the scan so the operator can see the full
+    answer set, not just the hosts it produced.
+    """
+    scan = db.query(models.Scan).filter(
+        models.Scan.id == scan_id,
+        models.Scan.project_id == project.id,
+    ).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    return (
+        db.query(models.DNSRecord)
+        .filter(models.DNSRecord.scan_id == scan_id)
+        .order_by(
+            models.DNSRecord.record_type.asc(),
+            models.DNSRecord.domain.asc(),
+            models.DNSRecord.value.asc(),
+            models.DNSRecord.id.asc(),
+        )
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
 @router.get("/{scan_id}/out-of-scope", response_model=List[OutOfScopeHost])
 def get_scan_out_of_scope_hosts(
     scan_id: int,
