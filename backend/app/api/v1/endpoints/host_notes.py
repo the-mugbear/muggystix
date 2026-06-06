@@ -12,16 +12,17 @@ logger = logging.getLogger(__name__)
 from app.db.session import get_db
 from app.db import models
 from app.db.models import HostNote as HostNoteModel, NoteStatus, ActivityCursor
-from app.db.models_auth import User
+from app.db.models_auth import User, UserRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project, ProjectRole
+from app.db.models_project import Project, ProjectRole, ProjectMembership
 from app.schemas.schemas import (
     HostNote, HostNoteCreate, HostNoteUpdate, HostNoteStatusHistoryEntry,
 )
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import safe_dispatch
-from app.services.host_follow_service import HostFollowService
+from app.services.host_follow_service import HostFollowService, VALID_NOTE_TYPES
+from app.db.cursor_upsert import upsert_user_project_cursor
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -99,22 +100,12 @@ def mark_activity_seen(
 ):
     """Advance the caller's Activity cursor for THIS project only (RV-6)."""
     now = datetime.now(timezone.utc)
-    cursor = (
-        db.query(ActivityCursor)
-        .filter(
-            ActivityCursor.user_id == current_user.id,
-            ActivityCursor.project_id == project.id,
-        )
-        .first()
+    # Race-safe upsert (review #9).
+    upsert_user_project_cursor(
+        db, ActivityCursor,
+        user_id=current_user.id, project_id=project.id,
+        ts_column="last_seen_at", ts_value=now,
     )
-    if cursor is None:
-        cursor = ActivityCursor(
-            user_id=current_user.id, project_id=project.id, last_seen_at=now,
-        )
-        db.add(cursor)
-    else:
-        cursor.last_seen_at = now
-    db.commit()
     return Response(status_code=204)
 
 
@@ -142,7 +133,19 @@ def get_note_activity(
     )
 
     if status:
-        query = query.filter(HostNoteModel.status == status)
+        # review #5 — filter by THREAD (root) status, not the per-message
+        # status: return every message of threads whose root has `status`,
+        # so the feed agrees with the root-status badge the UI renders.
+        root_ids_with_status = (
+            db.query(HostNoteModel.id)
+            .join(models.Host, HostNoteModel.host_id == models.Host.id)
+            .filter(
+                models.Host.project_id == project.id,
+                HostNoteModel.parent_id.is_(None),
+                HostNoteModel.status == status,
+            )
+        )
+        query = query.filter(HostNoteModel.thread_root_id.in_(root_ids_with_status))
 
     if author_id:
         query = query.filter(HostNoteModel.user_id == author_id)
@@ -207,10 +210,16 @@ def get_note_activity(
     total_notes = db.query(func.count(HostNoteModel.id)).join(
         models.Host, HostNoteModel.host_id == models.Host.id
     ).filter(models.Host.project_id == project.id).scalar() or 0
+    # review #5 — status counts are THREAD counts by root status (root
+    # notes only), matching the thread-status filter above so totals and
+    # filtered results can't contradict each other.
     status_counts = dict(
         db.query(HostNoteModel.status, func.count(HostNoteModel.id))
         .join(models.Host, HostNoteModel.host_id == models.Host.id)
-        .filter(models.Host.project_id == project.id)
+        .filter(
+            models.Host.project_id == project.id,
+            HostNoteModel.parent_id.is_(None),
+        )
         .group_by(HostNoteModel.status)
         .all()
     )
@@ -436,60 +445,113 @@ def update_host_note(
 
     provided = payload.model_fields_set
     follow_service = HostFollowService(db)
-    note = None
-    body_changed = False
 
-    # 1) Body edit — AUTHOR ONLY.
-    if "body" in provided and payload.body is not None:
-        try:
-            note = follow_service.update_note_body(
-                note_id, current_user.id, body=payload.body, host_id=host_id,
-            )
-            body_changed = True
-        except ValueError:
-            raise HTTPException(status_code=404, detail="Note not found")
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Only the author can edit a note's body")
+    # Resolve target + thread root up front so we can validate everything
+    # BEFORE mutating, capture the pre-change root status for the status
+    # notification, and never partially commit (review #1).
+    target = (
+        db.query(HostNoteModel)
+        .filter(HostNoteModel.id == note_id, HostNoteModel.host_id == host_id)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    root = follow_service._root_note(target)
+    old_status = root.status
 
-    # 2) Thread work-state — ANY project member.
+    # Validate assignee membership up front (review #3) — mirror host
+    # assignment: assignee must be an active user, and (unless a global
+    # admin) a member of this project.  null clears the assignee.
+    if "assignee_id" in provided and payload.assignee_id is not None:
+        assignee = db.query(User).filter(
+            User.id == payload.assignee_id, User.is_active.is_(True)
+        ).first()
+        if not assignee:
+            raise HTTPException(status_code=404, detail="Assignee not found")
+        if assignee.role != UserRole.ADMIN:
+            is_member = db.query(ProjectMembership).filter(
+                ProjectMembership.project_id == project.id,
+                ProjectMembership.user_id == assignee.id,
+            ).first()
+            if not is_member:
+                raise HTTPException(
+                    status_code=400, detail="Assignee is not a member of this project"
+                )
+
+    # Collect thread-meta fields (model_fields_set distinguishes omitted
+    # from an explicit null that clears a nullable field).
     meta = {}
     if "status" in provided and payload.status is not None:
         meta["status"] = NoteStatus(payload.status.value)
     for key in ("assignee_id", "due_at", "note_type", "resolution_summary", "pinned"):
         if key in provided:
             meta[key] = getattr(payload, key)
-    status_changed = "status" in meta
-    if meta:
-        try:
-            note = follow_service.update_thread_meta(
-                note_id, current_user.id, host_id=host_id, **meta,
-            )
-        except ValueError as exc:
-            msg = str(exc)
-            if msg == "Note not found":
-                raise HTTPException(status_code=404, detail="Note not found")
-            # resolve-requires-summary / invalid note_type → 400.
-            raise HTTPException(status_code=400, detail=msg)
 
-    if note is None:
-        # Empty payload — return the current note unchanged.
-        note = (
-            db.query(HostNoteModel)
-            .filter(HostNoteModel.id == note_id, HostNoteModel.host_id == host_id)
-            .first()
+    want_body = "body" in provided and payload.body is not None
+
+    # Validate EVERYTHING before mutating anything (review #1) — a rejected
+    # field must never leave a committed body edit, and validating up front
+    # means the failure path needs no rollback at all.
+    if want_body and target.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the author can edit a note's body")
+    if meta.get("note_type") and meta["note_type"] not in VALID_NOTE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid note_type; expected one of {sorted(VALID_NOTE_TYPES)}",
         )
-        if note is None:
-            raise HTTPException(status_code=404, detail="Note not found")
+    if meta.get("status") == NoteStatus.RESOLVED:
+        eff_summary = (
+            meta["resolution_summary"] if "resolution_summary" in meta
+            else root.resolution_summary
+        )
+        if not (eff_summary and str(eff_summary).strip()):
+            raise HTTPException(
+                status_code=400, detail="Resolving a thread requires a resolution summary"
+            )
 
-    # Best-effort notifications (audit finding H3 contract) — mentions
-    # only re-fire on a body change; the core write already committed in
-    # the service, so a notification failure never loses the edit.
+    # Apply body (author-only) + thread-meta (any analyst) in ONE
+    # transaction; both service calls defer their commit so the PATCH is
+    # all-or-nothing.  Validation already passed, so the only failure here
+    # is an unexpected DB error.
+    note = root
+    body_changed = False
+    try:
+        if want_body:
+            note = follow_service.update_note_body(
+                note_id, current_user.id, body=payload.body, host_id=host_id, commit=False,
+            )
+            body_changed = True
+        if meta:
+            note = follow_service.update_thread_meta(
+                note_id, current_user.id, host_id=host_id, commit=False, **meta,
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(note)
+    db.refresh(note, attribute_names=["author", "assignee"])
+    new_status = note.status
+    status_changed = bool("status" in meta and new_status != old_status)
+
+    # Best-effort notifications in a SEPARATE transaction — the note write
+    # already committed, so a notification failure can't lose the edit
+    # (audit H3 contract).  Restores in-app status-change notifications to
+    # the thread author/participants (review #2), not just the webhook.
     mention_warning: Optional[str] = None
     mention_notifs = []
     try:
         notification_service = NotificationService(db)
         if body_changed and payload.body:
             mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
+        if status_changed:
+            notification_service.notify_status_change(
+                note,
+                old_status.value if hasattr(old_status, "value") else str(old_status),
+                new_status.value if hasattr(new_status, "value") else str(new_status),
+                current_user, project,
+            )
         db.commit()
     except Exception:
         logger.exception(
@@ -519,14 +581,14 @@ def update_host_note(
                 context={"host_id": host_id, "note_id": note_id},
             )
         if status_changed:
-            new_status = meta["status"].value if hasattr(meta["status"], "value") else str(meta["status"])
+            ns = new_status.value if hasattr(new_status, "value") else str(new_status)
             safe_dispatch(
                 db,
                 project_id=project.id,
                 event="note_status_change",
-                title=f"Note thread on {host_label} → {new_status}",
+                title=f"Note thread on {host_label} → {ns}",
                 body=(note.resolution_summary or "")[:280],
-                context={"host_id": host_id, "note_id": note.id, "status": new_status},
+                context={"host_id": host_id, "note_id": note.id, "status": ns},
             )
 
     serialized = _serialize_note(note)
@@ -558,8 +620,12 @@ def get_host_note_history(
     if note is None:
         raise HTTPException(status_code=404, detail="Note not found")
 
+    # review #5 — status history is thread-level; resolve a reply id to its
+    # root so requesting history through a reply doesn't return the reply's
+    # (empty) history.
     follow_service = HostFollowService(db)
-    rows = follow_service.get_status_history(note_id)
+    root_id = note.thread_root_id or follow_service._root_note(note).id
+    rows = follow_service.get_status_history(root_id)
     return [
         HostNoteStatusHistoryEntry(
             id=r.id,

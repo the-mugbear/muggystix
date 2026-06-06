@@ -144,6 +144,7 @@ class HostFollowService:
         # notify the parent's author across the project boundary.  Same-
         # host check enforces that threading stays within one host (and
         # therefore one project).
+        parent = None
         if parent_id is not None:
             parent = (
                 self.db.query(HostNote)
@@ -154,6 +155,10 @@ class HostFollowService:
                 raise ValueError("parent_id must reference a note on the same host")
         note = HostNote(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
         self.db.add(note)
+        self.db.flush()  # assign note.id before stamping thread_root_id
+        # Persist the thread root (review #5): a root note points at itself;
+        # a reply inherits its parent's root.
+        note.thread_root_id = parent.thread_root_id or parent.id if parent else note.id
         self.db.commit()
         self.db.refresh(note)
         self.db.refresh(note, attribute_names=["author"])
@@ -181,12 +186,17 @@ class HostFollowService:
         user_id: int,
         body: str,
         host_id: Optional[int] = None,
+        commit: bool = True,
     ) -> HostNote:
         """Edit a note's body — AUTHOR ONLY (P3 permission split).
 
         Body is authored content; only its writer may change it.  Thread
         work-state (status/assignee/resolution/…) is a separate concern
         handled by ``update_thread_meta`` and is open to any project member.
+
+        ``commit=False`` applies the change to the session WITHOUT
+        committing, so the endpoint can apply body + thread-meta in ONE
+        transaction (avoids the partial-commit-then-400 bug — review #1).
         """
         note = self.db.query(HostNote).filter(HostNote.id == note_id).first()
         if not note:
@@ -196,9 +206,10 @@ class HostFollowService:
         if host_id is not None and note.host_id != host_id:
             raise ValueError("Note not found")
         note.body = body
-        self.db.commit()
-        self.db.refresh(note)
-        self.db.refresh(note, attribute_names=["author"])
+        if commit:
+            self.db.commit()
+            self.db.refresh(note)
+            self.db.refresh(note, attribute_names=["author"])
         return note
 
     def update_thread_meta(
@@ -213,6 +224,7 @@ class HostFollowService:
         note_type=_UNSET,
         resolution_summary=_UNSET,
         pinned=_UNSET,
+        commit: bool = True,
     ) -> HostNote:
         """Update a thread's work-state — ANY project member (P3).
 
@@ -221,6 +233,11 @@ class HostFollowService:
         ``HostNoteStatusHistory`` row on every status transition and
         enforces resolve-requires-summary.  Fields left as ``_UNSET`` are
         untouched; passing ``None`` clears a nullable field.
+
+        NOTE: ``assignee_id`` is NOT membership-validated here — the caller
+        (endpoint) must ensure the assignee is an active project member
+        (review #3), mirroring host assignment.  ``commit=False`` defers
+        the commit to the caller for one-transaction PATCHes (review #1).
         """
         target = self.db.query(HostNote).filter(HostNote.id == note_id).first()
         if not target:
@@ -267,9 +284,10 @@ class HostFollowService:
                 ),
             ))
 
-        self.db.commit()
-        self.db.refresh(note)
-        self.db.refresh(note, attribute_names=["author", "assignee"])
+        if commit:
+            self.db.commit()
+            self.db.refresh(note)
+            self.db.refresh(note, attribute_names=["author", "assignee"])
         return note
 
     def get_status_history(self, note_id: int) -> List[HostNoteStatusHistory]:

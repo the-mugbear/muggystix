@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models import OperationsCursor
+from app.db.cursor_upsert import upsert_user_project_cursor
 from app.db.models_vulnerability import Vulnerability
 from app.db.models_auth import User
 from app.db.models_project import Project
@@ -122,21 +123,21 @@ def _compute_since_last_visit(
         host_q = host_q.filter(models.Host.first_seen > last_viewed)
     new_host_count = host_q.scalar() or 0
 
-    # Findings by severity (join to Host for project scope)
-    def _vuln_count(severity: str) -> int:
-        q = (
-            db.query(func.count(Vulnerability.id))
-            .join(models.Host, Vulnerability.host_id == models.Host.id)
-            .filter(
-                models.Host.project_id == project.id,
-                # Cast the PG enum to text before lower() — same approach
-                # portfolio.py uses to avoid an enum type mismatch.
-                func.lower(Vulnerability.severity.cast(String)) == severity,
-            )
+    # Findings by severity — ONE grouped query for critical + high (was two
+    # separate scans; review #7).  Cast the PG enum to text before lower(),
+    # same approach portfolio.py uses to avoid an enum type mismatch.
+    sev_col = func.lower(Vulnerability.severity.cast(String))
+    sev_q = (
+        db.query(sev_col, func.count(Vulnerability.id))
+        .join(models.Host, Vulnerability.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id == project.id,
+            sev_col.in_(("critical", "high")),
         )
-        if last_viewed is not None:
-            q = q.filter(Vulnerability.created_at > last_viewed)
-        return q.scalar() or 0
+    )
+    if last_viewed is not None:
+        sev_q = sev_q.filter(Vulnerability.created_at > last_viewed)
+    sev_counts = dict(sev_q.group_by(sev_col).all())
 
     return SinceLastVisit(
         last_viewed_at=last_viewed,
@@ -146,8 +147,8 @@ def _compute_since_last_visit(
         latest_scan_filename=latest.filename if latest else None,
         latest_scan_created_at=latest.created_at if latest else None,
         new_host_count=new_host_count,
-        new_critical_findings=_vuln_count("critical"),
-        new_high_findings=_vuln_count("high"),
+        new_critical_findings=int(sev_counts.get("critical", 0)),
+        new_high_findings=int(sev_counts.get("high", 0)),
     )
 
 
@@ -206,15 +207,11 @@ def mark_workbench_seen(
     the timestamp forward.
     """
     now = datetime.now(timezone.utc)
-    cursor = _get_cursor(db, current_user.id, project.id)
-    if cursor is None:
-        cursor = OperationsCursor(
-            user_id=current_user.id,
-            project_id=project.id,
-            last_viewed_at=now,
-        )
-        db.add(cursor)
-    else:
-        cursor.last_viewed_at = now
-    db.commit()
+    # Race-safe upsert (review #9) — concurrent first-time visits across
+    # tabs/devices would otherwise collide on the unique constraint.
+    upsert_user_project_cursor(
+        db, OperationsCursor,
+        user_id=current_user.id, project_id=project.id,
+        ts_column="last_viewed_at", ts_value=now,
+    )
     return MarkSeenResponse(last_viewed_at=now)

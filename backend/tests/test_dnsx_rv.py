@@ -54,6 +54,47 @@ def test_a_record_creates_host_and_records_carry_scan_id(
     assert rows and all(r.scan_id == scan.id for r in rows)
 
 
+def test_a_record_does_not_overwrite_existing_hostname(db_session, test_project, tmp_path):
+    """CR-A2/#4 — a forward A record must not clobber an existing
+    (PTR/scanner) hostname; many vhosts share one IP."""
+    # Pre-existing host with a canonical hostname (e.g. from a PTR/scan).
+    existing = models.Host(
+        project_id=test_project.id, ip_address="93.184.216.34",
+        hostname="canonical.example.net", state="up",
+    )
+    db_session.add(existing)
+    db_session.flush()
+
+    path = _write_jsonl(tmp_path, "vhost.jsonl", [
+        {"host": "some-other-vhost.example.com", "a": ["93.184.216.34"],
+         "resolver": ["1.1.1.1:53"], "status_code": "NOERROR"},
+    ])
+    DnsxParser(db_session).parse_file(str(path), path.name, project_id=test_project.id)
+    db_session.flush()
+
+    db_session.refresh(existing)
+    assert existing.hostname == "canonical.example.net"  # preserved, not overwritten
+
+
+def test_a_record_fills_empty_hostname(db_session, test_project, tmp_path):
+    """A/AAAA still populates an EMPTY hostname (and creates missing hosts)."""
+    existing = models.Host(
+        project_id=test_project.id, ip_address="93.184.216.35",
+        hostname=None, state="unknown",
+    )
+    db_session.add(existing)
+    db_session.flush()
+
+    path = _write_jsonl(tmp_path, "fill.jsonl", [
+        {"host": "fills-empty.example.com", "a": ["93.184.216.35"],
+         "resolver": ["1.1.1.1:53"], "status_code": "NOERROR"},
+    ])
+    DnsxParser(db_session).parse_file(str(path), path.name, project_id=test_project.id)
+    db_session.flush()
+    db_session.refresh(existing)
+    assert existing.hostname == "fills-empty.example.com"
+
+
 def test_srv_and_caa_records_parsed(db_session, test_project, tmp_path):
     path = _write_jsonl(tmp_path, "srvcaa.jsonl", [
         {"host": "_sip._tcp.example.com", "srv": ["10 60 5060 sip.example.com"],

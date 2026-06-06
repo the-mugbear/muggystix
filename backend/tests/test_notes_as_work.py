@@ -139,6 +139,59 @@ def test_invalid_note_type_rejected(client, db_session, test_project, test_user)
     assert r.status_code == 400, r.text
 
 
+def test_patch_is_atomic_no_partial_commit(client, db_session, test_project, test_user):
+    """CR-A1/#1 — a PATCH with a valid body but invalid metadata (resolve
+    without summary) must 400 AND leave the body unchanged (no partial
+    commit)."""
+    host = _make_host(db_session, test_project.id, "10.5.6.1")
+    note = _make_note(db_session, host.id, test_user.id, body="original body")
+
+    r = client.patch(
+        _note_url(test_project.id, host.id, note.id),
+        json={"body": "rewritten body", "status": "resolved"},  # no summary → 400
+    )
+    assert r.status_code == 400, r.text
+    db_session.expire_all()
+    refreshed = db_session.query(HostNote).filter(HostNote.id == note.id).first()
+    assert refreshed.body == "original body"  # body NOT committed
+    assert refreshed.status == NoteStatus.OPEN
+
+
+def test_status_change_notifies_thread_author(client, db_session, test_project, test_user):
+    """CR-A1/#2 — a status change by a non-author creates an in-app
+    notification for the note author (not just a webhook)."""
+    from app.db.models_project import Notification
+    author = _make_user(db_session, "note-owner")
+    host = _make_host(db_session, test_project.id, "10.5.7.1")
+    note = _make_note(db_session, host.id, author.id)  # authored by someone else
+
+    # Actor is the admin client (id 1); changes status → author notified.
+    r = client.patch(
+        _note_url(test_project.id, host.id, note.id), json={"status": "in_progress"},
+    )
+    assert r.status_code == 200, r.text
+    notifs = (
+        db_session.query(Notification)
+        .filter(Notification.user_id == author.id, Notification.type == "status_change")
+        .all()
+    )
+    assert len(notifs) >= 1
+
+
+def test_assignee_must_be_project_member(client, db_session, test_project, test_user):
+    """CR-A1/#3 — assigning to a non-member is rejected with 400."""
+    outsider = _make_user(db_session, "outsider-nomember")  # no membership
+    host = _make_host(db_session, test_project.id, "10.5.8.1")
+    note = _make_note(db_session, host.id, test_user.id)
+
+    r = client.patch(
+        _note_url(test_project.id, host.id, note.id),
+        json={"assignee_id": outsider.id},
+    )
+    assert r.status_code == 400, r.text
+    assert "member" in r.json()["detail"].lower()
+
+
 def test_viewer_role_blocked_from_note_mutations(db_session, test_project):
     """RV-4 — note write endpoints gate on ProjectRole.ANALYST, so a
     project VIEWER is rejected (global admins bypass; tested elsewhere)."""
@@ -166,6 +219,11 @@ def test_analyst_role_allowed_note_mutations(db_session, test_project):
 
 def test_assignee_pinned_and_clear(client, db_session, test_project, test_user):
     other = _make_user(db_session, "assignee-target")
+    # CR-A1/#3 — assignee must be a project member.
+    db_session.add(ProjectMembership(
+        project_id=test_project.id, user_id=other.id, role="analyst",
+    ))
+    db_session.flush()
     host = _make_host(db_session, test_project.id, "10.5.5.1")
     note = _make_note(db_session, host.id, test_user.id)
 

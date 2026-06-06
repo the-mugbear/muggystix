@@ -783,20 +783,26 @@ def get_my_tasks(
         for entry, plan, host in ordered
     ]
 
-    # Deduped union total + per-bucket counts (independent of `limit`).
-    def _count(extra_cond) -> int:
-        return (
-            db.query(func.count(distinct(TestPlanEntry.id)))
-            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
-            .filter(*base_filters, extra_cond)
-            .scalar()
-        ) or 0
-
-    total_open = _count(or_(assigned_cond, in_review_cond, triage_cond))
+    # Deduped union total + per-bucket counts in ONE query via conditional
+    # aggregation (review #7) — was four separate COUNT round trips.
+    # ``count(distinct(case((cond, id))))`` counts the matching ids per
+    # bucket (case → NULL when false; count ignores NULLs).
+    counts_row = (
+        db.query(
+            func.count(distinct(TestPlanEntry.id)).label("total"),
+            func.count(distinct(case((assigned_cond, TestPlanEntry.id)))).label("assigned"),
+            func.count(distinct(case((in_review_cond, TestPlanEntry.id)))).label("in_review"),
+            func.count(distinct(case((triage_cond, TestPlanEntry.id)))).label("triage"),
+        )
+        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+        .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
+        .one()
+    )
+    total_open = counts_row.total or 0
     reason_counts = MyTasksReasonCounts(
-        assigned=_count(assigned_cond),
-        in_review=_count(in_review_cond) if in_review_host_ids else 0,
-        triage=_count(triage_cond),
+        assigned=counts_row.assigned or 0,
+        in_review=counts_row.in_review or 0,
+        triage=counts_row.triage or 0,
     )
 
     return MyTasksResponse(

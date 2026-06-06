@@ -306,6 +306,9 @@ def get_hosts_v2(
     query = query.options(
         selectinload(models.Host.ports),
         selectinload(models.Host.notes).selectinload(models.HostNote.author),
+        # review #8a — _serialize_note reads note.assignee; eager-load it so
+        # the notes slice doesn't trigger an N+1 over assignees.
+        selectinload(models.Host.notes).selectinload(models.HostNote.assignee),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
         # Eager-load tag + its definition so serialize_host_base reads
         # host.tag_assignments[].tag without an N+1 per host.
@@ -811,6 +814,9 @@ def get_hosts_by_scan_v2(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
         selectinload(models.Host.notes).selectinload(models.HostNote.author),
+        # review #8a — _serialize_note reads note.assignee; eager-load it so
+        # the notes slice doesn't trigger an N+1 over assignees.
+        selectinload(models.Host.notes).selectinload(models.HostNote.assignee),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
     ).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id

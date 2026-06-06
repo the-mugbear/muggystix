@@ -196,7 +196,11 @@ class DnsxParser:
                     # the PTR path, so a dnsx run that only resolves names
                     # no longer produces a host-less "empty" scan.
                     if record_type in ("A", "AAAA") and _is_valid_ip(value_str):
-                        if self._update_host_hostname(scan.id, value_str, host):
+                        # overwrite=False — never clobber an existing PTR /
+                        # scanner hostname with a forward-resolved vhost name.
+                        if self._update_host_hostname(
+                            scan.id, value_str, host, overwrite=False,
+                        ):
                             a_hosts_created += 1
 
             ptr_values = row.get("ptr")
@@ -320,11 +324,20 @@ class DnsxParser:
         )
         return True
 
-    def _update_host_hostname(self, scan_id: int, ip_address: str, hostname: str) -> bool:
+    def _update_host_hostname(
+        self, scan_id: int, ip_address: str, hostname: str, overwrite: bool = True,
+    ) -> bool:
         """Mirror DNSParser's PTR special-case: a successful reverse
         lookup populates Host.hostname when the row exists, or creates
         a new host with ``state='unknown'`` when it doesn't.
         Returns True if the inventory was touched.
+
+        ``overwrite`` controls clobbering an EXISTING hostname.  PTR
+        (authoritative reverse DNS) overwrites.  Forward A/AAAA passes
+        ``overwrite=False`` (review #4): many virtual hosts share one IP,
+        so import order must not replace a trusted PTR/scanner hostname
+        with an arbitrary vhost name — A/AAAA only fills an empty hostname
+        or creates a missing host.
         """
         existing = (
             self.db.query(models.Host)
@@ -335,6 +348,8 @@ class DnsxParser:
             .first()
         )
         if existing:
+            if existing.hostname and not overwrite:
+                return False  # preserve the canonical hostname
             if not existing.hostname or existing.hostname != hostname:
                 existing.hostname = hostname
                 return True

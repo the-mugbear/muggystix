@@ -784,6 +784,11 @@ class HostNote(Base):
     # before the fix) or wiping shared annotations (CASCADE).
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     parent_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True)
+    # Persisted thread root (review #5): id of the thread's root note
+    # (== self for a root note).  Lets activity status filters/counts query
+    # by the THREAD's status (the root's) instead of a reply's, and resolves
+    # history by root — without an ancestor walk per request.
+    thread_root_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True, index=True)
     body = Column(Text, nullable=False)
     status = Column(SQLEnum(NoteStatus), nullable=False, default=NoteStatus.OPEN)
     # Thread-level work fields (P3) — semantically belong to the ROOT note
@@ -804,7 +809,15 @@ class HostNote(Base):
     # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
     author = relationship("User", foreign_keys=[user_id], back_populates="host_notes")
     assignee = relationship("User", foreign_keys=[assignee_id])
-    replies = relationship("HostNote", backref=backref("parent", remote_side="HostNote.id"), lazy="selectin")
+    # foreign_keys pinned to parent_id — there are two self-FKs now
+    # (parent_id + thread_root_id), so the parent/replies join must be
+    # explicit or SQLAlchemy can't pick one.
+    replies = relationship(
+        "HostNote",
+        backref=backref("parent", remote_side="HostNote.id"),
+        foreign_keys="HostNote.parent_id",
+        lazy="selectin",
+    )
 
 
 class HostNoteStatusHistory(Base):
