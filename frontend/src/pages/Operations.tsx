@@ -21,8 +21,7 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
-import MyQueueCard from '../components/MyQueueCard';
-import MyTasksCard from '../components/MyTasksCard';
+import MyWorkCard from '../components/MyWorkCard';
 import TeamReviewCard from '../components/TeamReviewCard';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -983,36 +982,19 @@ const Operations: React.FC = () => {
               so an operator viewing All runs lost sight of their own
               review queue entirely.  Prop-driven from the single
               /workbench fetch (P2). */}
-          {/* RV-DESIGN — group the two personal surfaces under one "My
-              work" header with an explainer, so they read as one workspace
-              instead of two cards an analyst must reconcile.  Queue and
-              Tasks are different axes (hosts vs test-plan steps), so they
-              stay as two panels rather than one mixed list. */}
+          {/* RV-DESIGN2 — ONE prioritised "My work" list merging host
+              investigations (In Review) and the test-plan steps the caller
+              owns, so there's a single queue to work rather than two cards
+              to reconcile.  Both arrays come from the single /workbench
+              fetch; the merge + ranking is in MyWorkCard. */}
           <div className="mb-md">
-            <h2 className="text-subheading font-semibold">My work</h2>
-            <p className="mb-sm text-caption text-muted-foreground">
-              <strong>Queue</strong> — hosts you're investigating (marked In Review).{' '}
-              <strong>Tasks</strong> — the specific test-plan steps you own: assigned to you,
-              on a host in your queue, or unassigned critical/high awaiting triage.
-            </p>
-            <div className="grid grid-cols-1 gap-sm lg:grid-cols-12">
-              <div className="lg:col-span-7">
-                <MyQueueCard
-                  data={workbench?.my_queue ?? null}
-                  loading={workbenchLoading}
-                  error={workbenchError}
-                  onRetry={reload}
-                />
-              </div>
-              <div className="lg:col-span-5">
-                <MyTasksCard
-                  data={workbench?.my_tasks ?? null}
-                  loading={workbenchLoading}
-                  error={workbenchError}
-                  onRetry={reload}
-                />
-              </div>
-            </div>
+            <MyWorkCard
+              queue={workbench?.my_queue ?? null}
+              tasks={workbench?.my_tasks ?? null}
+              loading={workbenchLoading}
+              error={workbenchError}
+              onRetry={reload}
+            />
           </div>
           {/* Team Review — the project-wide review roster (who has
               which hosts In Review), so operators can plan coverage
