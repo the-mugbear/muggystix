@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, FolderOpen, RefreshCw, SquareArrowOutUpRight } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, FolderOpen, RefreshCw, SquareArrowOutUpRight, Users } from 'lucide-react';
+import ProjectMembersSheet from '../components/ProjectMembersSheet';
 import {
   getPortfolioDashboard,
   PortfolioDashboardResponse,
@@ -114,6 +115,8 @@ const PortfolioDashboard: React.FC = () => {
   const [sortBy, setSortBy] = useState<SortField>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [reloadNonce, setReloadNonce] = useState(0);
+  // SOC-P1/P2 — project whose members sheet is open.
+  const [membersCard, setMembersCard] = useState<ProjectCard | null>(null);
   // P4 — "needs attention" filter, URL-synced (?attention=1) so a
   // triage view is shareable/bookmarkable.
   const [searchParams, setSearchParams] = useSearchParams();
@@ -385,15 +388,16 @@ const PortfolioDashboard: React.FC = () => {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <SortableHeader field="name" label="Project" className="w-[20%]" />
+                    <SortableHeader field="name" label="Project" className="w-[18%]" />
                     <TableHead className="w-[9%]">Status</TableHead>
                     <TableHead className="w-[9%]">Health</TableHead>
-                    <SortableHeader field="hosts" label="Hosts" className="w-[9%]" />
-                    <SortableHeader field="open_ports" label="Open Ports" className="w-[9%]" />
-                    <SortableHeader field="scans" label="Scans" className="w-[7%]" />
-                    <SortableHeader field="last_scan" label="Last Scan" className="w-[11%]" />
-                    <SortableHeader field="review" label="Review" className="w-[12%]" />
-                    <TableHead className="w-[14%]">Findings</TableHead>
+                    <TableHead className="w-[10%]">Team</TableHead>
+                    <SortableHeader field="hosts" label="Hosts" className="w-[8%]" />
+                    <SortableHeader field="open_ports" label="Open Ports" className="w-[8%]" />
+                    <SortableHeader field="scans" label="Scans" className="w-[6%]" />
+                    <SortableHeader field="last_scan" label="Last Scan" className="w-[10%]" />
+                    <SortableHeader field="review" label="Review" className="w-[10%]" />
+                    <TableHead className="w-[12%]">Findings</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -460,6 +464,22 @@ const PortfolioDashboard: React.FC = () => {
                                 Review {card.pending_plan_reviews}
                                 <SquareArrowOutUpRight className="size-3" aria-hidden />
                               </button>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col items-start gap-xxs">
+                            <button
+                              type="button"
+                              onClick={() => setMembersCard(card)}
+                              className="inline-flex items-center gap-xxs rounded text-metadata text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              aria-label={`View members of ${card.name}`}
+                            >
+                              <Users className="size-3.5" aria-hidden />
+                              {card.member_count} member{card.member_count === 1 ? '' : 's'}
+                            </button>
+                            {card.user_role && (
+                              <Badge variant="muted" className="capitalize">{card.user_role}</Badge>
                             )}
                           </div>
                         </TableCell>
@@ -571,6 +591,16 @@ const PortfolioDashboard: React.FC = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* SOC-P1/P2 — members roster + (admin) inline management. */}
+      <ProjectMembersSheet
+        projectId={membersCard?.id ?? null}
+        projectName={membersCard?.name ?? ''}
+        canManage={hasRole('admin') || membersCard?.user_role === 'admin'}
+        open={membersCard !== null}
+        onOpenChange={(o) => { if (!o) setMembersCard(null); }}
+        onChanged={reload}
+      />
     </div>
   );
 };

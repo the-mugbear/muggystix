@@ -1329,6 +1329,47 @@ export const listProjectMembers = async (): Promise<ProjectMember[]> => {
   return response.data;
 };
 
+// --- Cross-project member management (SoC manager / Portfolio) ---
+// Absolute project paths (not the active-project `p()`) so the Portfolio
+// can view/manage any project's roster.
+
+export interface UserDirectoryEntry {
+  id: number;
+  username: string;
+  full_name?: string | null;
+  email?: string | null;
+}
+
+export const getProjectMembers = async (projectId: number): Promise<ProjectMember[]> => {
+  const response = await api.get(`/projects/${projectId}/members`);
+  return response.data;
+};
+
+export const getUserDirectory = async (): Promise<UserDirectoryEntry[]> => {
+  const response = await api.get('/users/directory');
+  return response.data;
+};
+
+export const addProjectMember = async (
+  projectId: number, userId: number, role: string,
+): Promise<ProjectMember> => {
+  const response = await api.post(`/projects/${projectId}/members`, { user_id: userId, role });
+  return response.data;
+};
+
+export const updateProjectMemberRole = async (
+  projectId: number, userId: number, role: string,
+): Promise<ProjectMember> => {
+  const response = await api.put(`/projects/${projectId}/members/${userId}`, { role });
+  return response.data;
+};
+
+export const removeProjectMember = async (
+  projectId: number, userId: number,
+): Promise<void> => {
+  await api.delete(`/projects/${projectId}/members/${userId}`);
+};
+
 // ---------------------------------------------------------------------------
 // Outbound webhooks (v2.73.0)
 // ---------------------------------------------------------------------------
