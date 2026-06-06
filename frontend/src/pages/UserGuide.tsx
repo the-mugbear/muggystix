@@ -194,6 +194,16 @@ const UserGuide: React.FC = () => {
               View upload history and any parse errors on the <strong>Ingestion Results</strong>{' '}
               page. Failed uploads show detailed error messages to help diagnose format issues.
             </Para>
+            <Subhead>Viewing scan results</Subhead>
+            <Para>
+              Open a scan from the <strong>Scans</strong> list to see its hosts, ports, and the
+              command that produced it. <strong>DNS-resolution scans</strong> (e.g.{' '}
+              <code className="font-mono">dnsx</code>) also get a <strong>DNS Records</strong> tab:
+              only A / AAAA answers become hosts, so CNAME / MX / NS / TXT records are listed there
+              with their resolver and TTL — the full answer set, not just the hosts the scan
+              produced. The tab shows the true record count and notes when a very large result set
+              is truncated.
+            </Para>
           </div>
         ),
       },
@@ -315,6 +325,13 @@ const UserGuide: React.FC = () => {
               Each test plan entry specifies a host, priority level, test phase (reconnaissance
               through reporting), proposed techniques, and rationale. Users can also create plans
               manually through the UI for offline agent workflows.
+            </Para>
+            <Para>
+              Once a plan is <strong>approved</strong> (or an execution session has started), an
+              entry's <strong>proposed test list is locked</strong> — execution results reference
+              tests by position, so changing the list afterwards would mis-attribute recorded
+              evidence. Revise tests while the plan is still in Draft/Proposed, or clone the plan to
+              start a fresh revision.
             </Para>
             <Alert variant="info" className="mt-sm">
               <AlertDescription>
