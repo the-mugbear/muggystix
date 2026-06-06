@@ -390,9 +390,17 @@ def list_members(
         ProjectMembership.project_id == project_id
     ).all()
 
+    # SOC-P3 — batch the user lookup instead of one query per membership.
+    user_ids = [m.user_id for m in memberships]
+    users_by_id = {}
+    if user_ids:
+        users_by_id = {
+            u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()
+        }
+
     result = []
     for m in memberships:
-        user = db.query(User).filter(User.id == m.user_id).first()
+        user = users_by_id.get(m.user_id)
         resp = MembershipResponse(
             id=m.id,
             project_id=m.project_id,

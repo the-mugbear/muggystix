@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, FolderOpen, RefreshCw, SquareArrowOutUpRight, Users } from 'lucide-react';
 import ProjectMembersSheet from '../components/ProjectMembersSheet';
+import PortfolioTeam from '../components/PortfolioTeam';
 import {
   getPortfolioDashboard,
   PortfolioDashboardResponse,
@@ -91,6 +92,7 @@ const healthWhy = (card: ProjectCard): string => {
 
 // P4 — attention reason codes → display.
 const ATTENTION_META: Record<string, { label: string; tone: Tone }> = {
+  no_admin: { label: 'No admin', tone: 'destructive' },
   blocked_session: { label: 'Blocked run', tone: 'destructive' },
   pending_review: { label: 'Pending review', tone: 'warning' },
   no_data: { label: 'No data', tone: 'muted' },
@@ -101,7 +103,7 @@ const ATTENTION_META: Record<string, { label: string; tone: Tone }> = {
 };
 // Only these workflow signals — unrepresented by any other column — render
 // as chips, plus pending_review which renders as the Review action below.
-const ATTENTION_CHIP_CODES = ['blocked_session', 'no_data'];
+const ATTENTION_CHIP_CODES = ['no_admin', 'blocked_session', 'no_data'];
 
 const PortfolioDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -125,6 +127,22 @@ const PortfolioDashboard: React.FC = () => {
     const params = new URLSearchParams(searchParams);
     if (on) params.set('attention', '1');
     else params.delete('attention');
+    setSearchParams(params, { replace: true });
+  };
+  // SOC-P4 — Projects | Team view toggle (URL-synced ?view=team).
+  const view = searchParams.get('view') === 'team' ? 'team' : 'projects';
+  const setView = (v: 'projects' | 'team') => {
+    const params = new URLSearchParams(searchParams);
+    if (v === 'team') params.set('view', 'team');
+    else params.delete('view');
+    setSearchParams(params, { replace: true });
+  };
+  // SOC-P3 — admin-only "projects without an admin" governance filter.
+  const noAdminOnly = searchParams.get('no_admin') === '1';
+  const setNoAdminOnly = (on: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (on) params.set('no_admin', '1');
+    else params.delete('no_admin');
     setSearchParams(params, { replace: true });
   };
 
@@ -163,6 +181,7 @@ const PortfolioDashboard: React.FC = () => {
     let list = data.projects;
     if (statusFilter) list = list.filter((p) => p.status === statusFilter);
     if (attentionOnly) list = list.filter((p) => p.attention_reasons.length > 0);
+    if (noAdminOnly) list = list.filter((p) => !p.has_admin);
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...list].sort((a, b) => {
       switch (sortBy) {
@@ -180,7 +199,7 @@ const PortfolioDashboard: React.FC = () => {
           return a.name.localeCompare(b.name) * dir;
       }
     });
-  }, [data, statusFilter, attentionOnly, sortBy, sortDir]);
+  }, [data, statusFilter, attentionOnly, noAdminOnly, sortBy, sortDir]);
 
   const statusCounts = useMemo(() => {
     if (!data) return {};
@@ -188,6 +207,41 @@ const PortfolioDashboard: React.FC = () => {
     for (const p of data.projects) counts[p.status] = (counts[p.status] || 0) + 1;
     return counts;
   }, [data]);
+
+  // SOC-P4 — Projects | Team segmented toggle, shared across views.
+  const viewTabs = (
+    <div className="inline-flex overflow-hidden rounded-control border border-border" role="group" aria-label="Portfolio view">
+      {(['projects', 'team'] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={view === v}
+          onClick={() => setView(v)}
+          className={cn(
+            'px-sm py-xxs text-metadata capitalize transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            v === 'team' && 'border-l border-border',
+            view === v ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+          )}
+        >
+          {v}
+        </button>
+      ))}
+    </div>
+  );
+
+  // Team view is self-contained (PortfolioTeam fetches its own data), so it
+  // renders independently of the project-dashboard load state.
+  if (view === 'team') {
+    return (
+      <div className="p-md md:p-lg">
+        <div className="mb-md flex flex-wrap items-center justify-between gap-sm">
+          <h1 className="text-page-title font-semibold">Team</h1>
+          {viewTabs}
+        </div>
+        <PortfolioTeam />
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -281,6 +335,7 @@ const PortfolioDashboard: React.FC = () => {
             </p>
           </div>
         </div>
+        {viewTabs}
       </div>
 
       <Card className="sticky z-10 mb-md" style={stickyBelowChrome}>
@@ -308,6 +363,10 @@ const PortfolioDashboard: React.FC = () => {
               {summary.blocked_sessions_total > 0 && (
                 <Badge variant="destructive">{summary.blocked_sessions_total} blocked run{summary.blocked_sessions_total === 1 ? '' : 's'}</Badge>
               )}
+              {/* SOC-P3 — governance: projects with no admin (admin-only). */}
+              {hasRole('admin') && summary.projects_without_admin > 0 && (
+                <Badge variant="destructive">{summary.projects_without_admin} without admin</Badge>
+              )}
             </div>
           </div>
 
@@ -327,6 +386,23 @@ const PortfolioDashboard: React.FC = () => {
                 </span>
               )}
             </Button>
+            {/* SOC-P3 — admin-only "no admins" governance filter (URL-synced). */}
+            {hasRole('admin') && (
+              <Button
+                size="sm"
+                variant={noAdminOnly ? 'default' : 'outline'}
+                aria-pressed={noAdminOnly}
+                onClick={() => setNoAdminOnly(!noAdminOnly)}
+              >
+                <Users className="size-4" aria-hidden />
+                No admins
+                {summary.projects_without_admin > 0 && (
+                  <span className="ml-xxs rounded-full bg-background/30 px-xxs text-micro">
+                    {summary.projects_without_admin}
+                  </span>
+                )}
+              </Button>
+            )}
             <div className="min-w-40">
               <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
                 <SelectTrigger aria-label="Filter projects by status">
@@ -351,14 +427,20 @@ const PortfolioDashboard: React.FC = () => {
           <CardContent className="p-xl text-center">
             <FolderOpen className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
             <p className="text-metadata text-muted-foreground">
-              {attentionOnly
+              {noAdminOnly
+                ? 'Every project has an admin. 🎉'
+                : attentionOnly
                 ? 'No projects currently need attention. 🎉'
                 : statusFilter
                 ? 'No projects match the selected filter.'
                 : 'No projects available.'}
             </p>
             <div className="mt-sm flex justify-center gap-xs">
-              {attentionOnly ? (
+              {noAdminOnly ? (
+                <Button size="sm" variant="outline" onClick={() => setNoAdminOnly(false)}>
+                  Show all projects
+                </Button>
+              ) : attentionOnly ? (
                 <Button size="sm" variant="outline" onClick={() => setAttentionOnly(false)}>
                   Show all projects
                 </Button>

@@ -11,11 +11,12 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, text
+from sqlalchemy import func, text, distinct
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db import models
+from app.db.models import HostFollow, FollowStatus
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_agent import (
@@ -67,6 +68,9 @@ class ProjectCard(BaseModel):
     blocked_sessions: int = 0         # execution sessions paused/failed
     member_count: int = 0
     user_role: Optional[str] = None   # caller's project role (None if global-admin non-member)
+    # SOC-P3 governance
+    has_admin: bool = True
+    admins: List[str] = []
 
 
 class PortfolioSummary(BaseModel):
@@ -83,6 +87,7 @@ class PortfolioSummary(BaseModel):
     projects_no_data: int = 0
     pending_approvals_total: int = 0
     blocked_sessions_total: int = 0
+    projects_without_admin: int = 0
 
 
 class PortfolioDashboardResponse(BaseModel):
@@ -310,6 +315,23 @@ def get_portfolio_dashboard(
         .all()
     )
 
+    # SOC-P3 governance — admin members per project (names), batched.  A
+    # project with no admin is a governance risk (no one can manage its
+    # membership), surfaced as the ``no_admin`` attention reason.
+    from app.db.models_auth import User as _User
+    admin_rows = (
+        db.query(ProjectMembership.project_id, _User.full_name, _User.username)
+        .join(_User, _User.id == ProjectMembership.user_id)
+        .filter(
+            ProjectMembership.project_id.in_(project_ids),
+            ProjectMembership.role == "admin",
+        )
+        .all()
+    )
+    admins_map: Dict[int, List[str]] = {}
+    for pid, full_name, username in admin_rows:
+        admins_map.setdefault(pid, []).append(full_name or username)
+
     # ------------------------------------------------------------------
     # Build response
     # ------------------------------------------------------------------
@@ -326,6 +348,7 @@ def get_portfolio_dashboard(
     projects_no_data = 0
     pending_approvals_total = 0
     blocked_sessions_total = 0
+    projects_without_admin = 0
 
     for p in projects:
         hc = host_counts.get(p.id, 0)
@@ -370,6 +393,8 @@ def get_portfolio_dashboard(
         role = my_roles.get(p.id)
         if role is None and current_user.role == UserRole.ADMIN:
             role = "admin"
+        admins = admins_map.get(p.id, [])
+        has_admin = len(admins) > 0
 
         # Attention reasons — a project can trip several at once.  Stable
         # codes; the frontend maps them to labels + row actions.
@@ -382,6 +407,8 @@ def get_portfolio_dashboard(
             reasons.append("pending_review")
         if blocked_sessions > 0:
             reasons.append("blocked_session")
+        if not has_admin:
+            reasons.append("no_admin")  # SOC-P3 governance risk
         if is_stale:
             reasons.append("stale")
         if hc == 0:
@@ -403,6 +430,8 @@ def get_portfolio_dashboard(
             projects_no_data += 1
         pending_approvals_total += pending_reviews
         blocked_sessions_total += blocked_sessions
+        if not has_admin:
+            projects_without_admin += 1
 
         cards.append(ProjectCard(
             id=p.id,
@@ -428,6 +457,8 @@ def get_portfolio_dashboard(
             blocked_sessions=blocked_sessions,
             member_count=member_count,
             user_role=role,
+            has_admin=has_admin,
+            admins=admins,
         ))
 
     return PortfolioDashboardResponse(
@@ -444,6 +475,122 @@ def get_portfolio_dashboard(
             projects_no_data=projects_no_data,
             pending_approvals_total=pending_approvals_total,
             blocked_sessions_total=blocked_sessions_total,
+            projects_without_admin=projects_without_admin,
         ),
         projects=cards,
     )
+
+
+# ---------------------------------------------------------------------------
+# SOC-P4 — cross-project team roster + per-member workload.
+# Member-centric view (who's on what, and how loaded), complementing the
+# project-centric dashboard above.
+# ---------------------------------------------------------------------------
+
+class TeamMemberProject(BaseModel):
+    project_id: int
+    project_name: str
+    role: str
+
+
+class TeamMember(BaseModel):
+    user_id: int
+    username: str
+    full_name: Optional[str] = None
+    project_count: int = 0
+    projects: List[TeamMemberProject] = []
+    open_tasks: int = 0          # assigned, non-terminal entries (visible projects)
+    hosts_in_review: int = 0     # distinct hosts the member has In Review
+
+
+class TeamResponse(BaseModel):
+    members: List[TeamMember] = []
+    total_members: int = 0
+
+
+@router.get("/team", response_model=TeamResponse)
+def get_portfolio_team(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cross-project team roster across the projects the caller can see
+    (global admins: all non-archived; members: their projects).  Each row
+    is a person with their per-project roles and current workload
+    (assigned open tasks + hosts In Review).  All counts are batched."""
+    if current_user.role == UserRole.ADMIN:
+        project_ids = [
+            pid for (pid,) in db.query(Project.id).filter(Project.is_archived.is_(False)).all()
+        ]
+    else:
+        project_ids = [
+            pid for (pid,) in (
+                db.query(Project.id)
+                .join(ProjectMembership, ProjectMembership.project_id == Project.id)
+                .filter(
+                    ProjectMembership.user_id == current_user.id,
+                    Project.is_archived.is_(False),
+                )
+                .all()
+            )
+        ]
+    if not project_ids:
+        return TeamResponse(members=[], total_members=0)
+
+    # Membership rows (one grouped pass via joins).
+    rows = (
+        db.query(
+            User.id, User.username, User.full_name,
+            Project.id, Project.name, ProjectMembership.role,
+        )
+        .join(ProjectMembership, ProjectMembership.user_id == User.id)
+        .join(Project, Project.id == ProjectMembership.project_id)
+        .filter(ProjectMembership.project_id.in_(project_ids))
+        .all()
+    )
+
+    # Per-user open assigned tasks (non-terminal entries on accepted plans).
+    task_counts = dict(
+        db.query(TestPlanEntry.assigned_to_id, func.count(TestPlanEntry.id))
+        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+        .filter(
+            TestPlan.project_id.in_(project_ids),
+            TestPlan.status.in_(("approved", "in_progress", "completed")),
+            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
+            TestPlanEntry.assigned_to_id.isnot(None),
+        )
+        .group_by(TestPlanEntry.assigned_to_id)
+        .all()
+    )
+    # Per-user distinct hosts In Review.
+    review_counts = dict(
+        db.query(HostFollow.user_id, func.count(distinct(HostFollow.host_id)))
+        .join(models.Host, HostFollow.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id.in_(project_ids),
+            HostFollow.status == FollowStatus.IN_REVIEW,
+        )
+        .group_by(HostFollow.user_id)
+        .all()
+    )
+
+    members: Dict[int, TeamMember] = {}
+    for uid, username, full_name, pid, pname, role in rows:
+        m = members.get(uid)
+        if m is None:
+            m = TeamMember(
+                user_id=uid, username=username, full_name=full_name,
+                open_tasks=task_counts.get(uid, 0) or 0,
+                hosts_in_review=review_counts.get(uid, 0) or 0,
+            )
+            members[uid] = m
+        m.projects.append(TeamMemberProject(project_id=pid, project_name=pname, role=role))
+
+    for m in members.values():
+        m.project_count = len(m.projects)
+        m.projects.sort(key=lambda x: x.project_name.lower())
+
+    roster = sorted(
+        members.values(),
+        key=lambda m: (-(m.open_tasks + m.hosts_in_review), (m.full_name or m.username).lower()),
+    )
+    return TeamResponse(members=roster, total_members=len(roster))

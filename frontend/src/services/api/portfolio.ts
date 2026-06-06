@@ -45,6 +45,9 @@ export interface ProjectCard {
   blocked_sessions: number;
   member_count: number;
   user_role: string | null;
+  // SOC-P3 governance.
+  has_admin: boolean;
+  admins: string[];
 }
 
 export interface PortfolioSummary {
@@ -61,6 +64,7 @@ export interface PortfolioSummary {
   projects_no_data: number;
   pending_approvals_total: number;
   blocked_sessions_total: number;
+  projects_without_admin: number;
 }
 
 export interface PortfolioDashboardResponse {
@@ -70,5 +74,33 @@ export interface PortfolioDashboardResponse {
 
 export const getPortfolioDashboard = async (): Promise<PortfolioDashboardResponse> => {
   const response = await api.get('/portfolio/dashboard');
+  return response.data;
+};
+
+// --- SOC-P4 cross-project team roster ---
+
+export interface TeamMemberProject {
+  project_id: number;
+  project_name: string;
+  role: string;
+}
+
+export interface TeamMember {
+  user_id: number;
+  username: string;
+  full_name: string | null;
+  project_count: number;
+  projects: TeamMemberProject[];
+  open_tasks: number;
+  hosts_in_review: number;
+}
+
+export interface TeamResponse {
+  members: TeamMember[];
+  total_members: number;
+}
+
+export const getPortfolioTeam = async (): Promise<TeamResponse> => {
+  const response = await api.get('/portfolio/team');
   return response.data;
 };
