@@ -82,7 +82,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       SSL_ENABLED: ${SSL_MODE:-false}
       APP_VERSION: ${APP_VERSION:-2.103.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.14.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.15.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, FolderOpen, RefreshCw, SquareArrowOutUpRight, Users } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, FolderOpen, RefreshCw, SquareArrowOutUpRight, Users } from 'lucide-react';
 import ProjectMembersSheet from '../components/ProjectMembersSheet';
+import PortfolioProjectDetail from '../components/PortfolioProjectDetail';
 import PortfolioTeam from '../components/PortfolioTeam';
 import {
   getPortfolioDashboard,
@@ -36,7 +37,11 @@ import { cn } from '../utils/cn';
 import { formatApiError } from '../utils/apiErrors';
 import { stickyBelowChrome } from '../utils/uiStyles';
 
-type SortField = 'name' | 'hosts' | 'open_ports' | 'scans' | 'last_scan' | 'review';
+type SortField = 'attention' | 'name' | 'hosts' | 'open_ports' | 'scans' | 'last_scan' | 'review';
+
+// Worst-first severity rank for the default ordering — the most damning
+// projects float to the top without any filtering (focus, not a to-do list).
+const HEALTH_RANK: Record<string, number> = { critical: 0, warning: 1, stale: 2, healthy: 3 };
 type SortDir = 'asc' | 'desc';
 
 type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'muted' | 'secondary' | 'outline';
@@ -114,11 +119,13 @@ const PortfolioDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
-  const [sortBy, setSortBy] = useState<SortField>('name');
+  const [sortBy, setSortBy] = useState<SortField>('attention');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [reloadNonce, setReloadNonce] = useState(0);
   // SOC-P1/P2 — project whose members sheet is open.
   const [membersCard, setMembersCard] = useState<ProjectCard | null>(null);
+  // PF-REDESIGN — project row expanded to its focus-detail panel.
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   // P4 — "needs attention" filter, URL-synced (?attention=1) so a
   // triage view is shareable/bookmarkable.
   const [searchParams, setSearchParams] = useSearchParams();
@@ -185,6 +192,17 @@ const PortfolioDashboard: React.FC = () => {
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...list].sort((a, b) => {
       switch (sortBy) {
+        case 'attention': {
+          // Default: worst-first — health severity, then critical findings,
+          // then number of attention signals, then name.  Ignores sortDir.
+          const hr = (HEALTH_RANK[a.health] ?? 9) - (HEALTH_RANK[b.health] ?? 9);
+          if (hr !== 0) return hr;
+          const cr = b.vuln_summary.critical - a.vuln_summary.critical;
+          if (cr !== 0) return cr;
+          const ar = b.attention_reasons.length - a.attention_reasons.length;
+          if (ar !== 0) return ar;
+          return a.name.localeCompare(b.name);
+        }
         case 'hosts':
           return (a.host_count - b.host_count) * dir;
         case 'open_ports':
@@ -345,28 +363,14 @@ const PortfolioDashboard: React.FC = () => {
               {filteredProjects.length} project{filteredProjects.length === 1 ? '' : 's'}
               {statusFilter ? ` with status "${statusFilter.replace('_', ' ')}"` : ''}
             </p>
+            {/* Factual inventory only — the cumulative attention rollups
+                ("N with critical / pending / blocked / no-admin") were a
+                never-zero to-do list, not a focusing aid.  Focus now comes
+                from worst-first ordering + the filters, not running totals. */}
             <div className="mt-xxs flex flex-wrap gap-xs">
               <Badge variant="outline">{summary.total_hosts.toLocaleString()} hosts</Badge>
               <Badge variant="outline">{summary.total_open_ports.toLocaleString()} open ports</Badge>
               <Badge variant="outline">{summary.total_scans} scans</Badge>
-              {summary.total_unreviewed > 0 && (
-                <Badge variant="outline" className="border-warning/40 text-warning">
-                  {summary.total_unreviewed} unreviewed
-                </Badge>
-              )}
-              {summary.projects_with_critical > 0 && (
-                <Badge variant="destructive">{summary.projects_with_critical} with critical</Badge>
-              )}
-              {summary.pending_approvals_total > 0 && (
-                <Badge variant="warning">{summary.pending_approvals_total} pending review</Badge>
-              )}
-              {summary.blocked_sessions_total > 0 && (
-                <Badge variant="destructive">{summary.blocked_sessions_total} blocked run{summary.blocked_sessions_total === 1 ? '' : 's'}</Badge>
-              )}
-              {/* SOC-P3 — governance: projects with no admin (admin-only). */}
-              {hasRole('admin') && summary.projects_without_admin > 0 && (
-                <Badge variant="destructive">{summary.projects_without_admin} without admin</Badge>
-              )}
             </div>
           </div>
 
@@ -494,22 +498,36 @@ const PortfolioDashboard: React.FC = () => {
                     // action is fired from an explicit <button> in the
                     // primary cell so AT users hear "Open project NAME"
                     // instead of inheriting the row's grid semantics.
+                    const isExpanded = expandedId === card.id;
                     return (
-                      <NavigableTableRow key={card.id}>
+                      <React.Fragment key={card.id}>
+                      <NavigableTableRow>
                         <TableCell className="min-w-0 p-0">
-                          <button
-                            type="button"
-                            onClick={() => handleProjectClick(card)}
-                            className="block w-full px-md py-xs text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            aria-label={`Open project ${card.name}`}
-                          >
-                            <p className="truncate font-semibold">{card.name}</p>
-                            {card.description && (
-                              <p className="line-clamp-2 text-caption text-muted-foreground">
-                                {card.description}
-                              </p>
-                            )}
-                          </button>
+                          <div className="flex items-center">
+                            {/* Chevron toggles the focus-detail panel. */}
+                            <button
+                              type="button"
+                              onClick={() => setExpandedId(isExpanded ? null : card.id)}
+                              aria-expanded={isExpanded}
+                              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${card.name}`}
+                              className="shrink-0 px-xs py-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              {isExpanded ? <ChevronDown className="size-4" aria-hidden /> : <ChevronRight className="size-4" aria-hidden />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleProjectClick(card)}
+                              className="block min-w-0 flex-1 py-xs pr-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              aria-label={`Open project ${card.name}`}
+                            >
+                              <p className="truncate font-semibold">{card.name}</p>
+                              {card.description && (
+                                <p className="line-clamp-2 text-caption text-muted-foreground">
+                                  {card.description}
+                                </p>
+                              )}
+                            </button>
+                          </div>
                         </TableCell>
                         <TableCell>
                           <Badge variant={projectStatusTone(card.status)}>
@@ -553,9 +571,9 @@ const PortfolioDashboard: React.FC = () => {
                           <div className="flex flex-col items-start gap-xxs">
                             <button
                               type="button"
-                              onClick={() => setMembersCard(card)}
+                              onClick={() => setExpandedId(isExpanded ? null : card.id)}
                               className="inline-flex items-center gap-xxs rounded text-metadata text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              aria-label={`View members of ${card.name}`}
+                              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${card.name} — ${card.member_count} members`}
                             >
                               <Users className="size-3.5" aria-hidden />
                               {card.member_count} member{card.member_count === 1 ? '' : 's'}
@@ -665,6 +683,18 @@ const PortfolioDashboard: React.FC = () => {
                           )}
                         </TableCell>
                       </NavigableTableRow>
+                      {isExpanded && (
+                        <TableRow>
+                          <TableCell colSpan={10} className="p-0">
+                            <PortfolioProjectDetail
+                              card={card}
+                              onOpen={switchAndGo}
+                              onManageMembers={setMembersCard}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </React.Fragment>
                     );
                   })}
                 </TableBody>
