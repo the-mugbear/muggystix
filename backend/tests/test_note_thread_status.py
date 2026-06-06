@@ -53,3 +53,27 @@ def test_thread_status_filter_counts_and_history(client, db_session, test_projec
     # History requested via the REPLY id resolves to the thread root.
     hist = client.get(f"{base}/{reply['id']}/history").json()
     assert any(h["to_status"] == "resolved" for h in hist)
+
+
+def test_combined_reply_patch_returns_reply_not_root(client, db_session, test_project):
+    """CR3-#4 — a reply PATCH with body + thread metadata returns the
+    EDITED REPLY (and applies status to the root), not the root."""
+    host = _make_host(db_session, test_project.id, "10.10.1.1")
+    base = _notes_base(test_project.id, host.id)
+    root = client.post(base, json={"body": "root body", "status": "open"}).json()
+    reply = client.post(base, json={"body": "reply body", "parent_id": root["id"]}).json()
+
+    r = client.patch(
+        f"{base}/{reply['id']}",
+        json={"body": "edited reply", "status": "resolved", "resolution_summary": "done"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Response is the edited reply, with its new body — not the root.
+    assert body["id"] == reply["id"]
+    assert body["body"] == "edited reply"
+
+    # The root absorbed the status change.
+    roots = client.get(base).json()
+    root_now = next(n for n in roots if n["id"] == root["id"])
+    assert root_now["status"] == "resolved"

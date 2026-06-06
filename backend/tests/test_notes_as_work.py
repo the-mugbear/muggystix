@@ -192,6 +192,49 @@ def test_assignee_must_be_project_member(client, db_session, test_project, test_
     assert "member" in r.json()["detail"].lower()
 
 
+def test_delete_root_with_replies_rejected(client, db_session, test_project, test_user):
+    """CR3-#3 — deleting a thread root that still has replies returns 409
+    (the self-FKs have no ON DELETE)."""
+    host = _make_host(db_session, test_project.id, "10.5.9.1")
+    root = _make_note(db_session, host.id, test_user.id)
+    _make_note(db_session, host.id, test_user.id, parent_id=root.id, body="reply")
+    db_session.flush()
+
+    r = client.delete(_note_url(test_project.id, host.id, root.id))
+    assert r.status_code == 409, r.text
+    # The reply itself (a leaf) can still be deleted.
+    reply = (
+        db_session.query(HostNote)
+        .filter(HostNote.parent_id == root.id)
+        .first()
+    )
+    assert client.delete(_note_url(test_project.id, host.id, reply.id)).status_code == 204
+
+
+def test_status_change_notifies_all_thread_participants(client, db_session, test_project):
+    """CR3-#2 — a status change notifies EVERY thread participant (root +
+    reply authors), not just the root author."""
+    from app.db.models_project import Notification
+    a = _make_user(db_session, "thread-a")
+    b = _make_user(db_session, "thread-b")
+    host = _make_host(db_session, test_project.id, "10.5.10.1")
+    root = _make_note(db_session, host.id, a.id)
+    root.thread_root_id = root.id
+    reply = _make_note(db_session, host.id, b.id, parent_id=root.id)
+    reply.thread_root_id = root.id
+    db_session.flush()
+
+    # Actor is the admin client (id 1) — both a and b should be notified.
+    r = client.patch(_note_url(test_project.id, host.id, root.id), json={"status": "in_progress"})
+    assert r.status_code == 200, r.text
+    notified = {
+        n.user_id for n in db_session.query(Notification)
+        .filter(Notification.type == "status_change").all()
+    }
+    assert a.id in notified
+    assert b.id in notified
+
+
 def test_viewer_role_blocked_from_note_mutations(db_session, test_project):
     """RV-4 — note write endpoints gate on ProjectRole.ANALYST, so a
     project VIEWER is rejected (global admins bypass; tested elsewhere)."""

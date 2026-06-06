@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 # Sentinel so thread-meta updates can distinguish "field omitted" from
 # "field explicitly set to None" (e.g. clearing an assignee or due date).
 _UNSET = object()
+
+
+class NoteHasRepliesError(Exception):
+    """Raised when deleting a note that still has replies/thread members —
+    the self-FKs (parent_id, thread_root_id) have no ON DELETE, so the DB
+    would reject it.  The endpoint maps this to HTTP 409 (review #3)."""
 
 # Thread-level work fields that any project member may edit (vs body /
 # delete, which stay author-only).
@@ -307,6 +313,22 @@ class HostFollowService:
             raise PermissionError("Cannot delete another user's note")
         if host_id is not None and note.host_id != host_id:
             raise ValueError("Note not found")
+        # review #3 — replies reference this note via parent_id AND
+        # thread_root_id (both self-FKs with no ON DELETE), so deleting a
+        # note that still has descendants would raise a raw DB FK error.
+        # Reject cleanly; the operator must resolve/delete replies first.
+        has_replies = (
+            self.db.query(HostNote.id)
+            .filter(
+                HostNote.id != note.id,
+                or_(HostNote.parent_id == note.id, HostNote.thread_root_id == note.id),
+            )
+            .first()
+        )
+        if has_replies:
+            raise NoteHasRepliesError(
+                "This note still has replies; delete or move them first."
+            )
         self.db.delete(note)
         self.db.commit()
 

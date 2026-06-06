@@ -21,7 +21,9 @@ from app.schemas.schemas import (
 )
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import safe_dispatch
-from app.services.host_follow_service import HostFollowService, VALID_NOTE_TYPES
+from app.services.host_follow_service import (
+    HostFollowService, VALID_NOTE_TYPES, NoteHasRepliesError,
+)
 from app.db.cursor_upsert import upsert_user_project_cursor
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -513,16 +515,22 @@ def update_host_note(
     # transaction; both service calls defer their commit so the PATCH is
     # all-or-nothing.  Validation already passed, so the only failure here
     # is an unexpected DB error.
-    note = root
+    # review #3-round #4 — keep the EDITED note (the target reply) distinct
+    # from the thread ROOT.  Body edits + @mentions + the response belong to
+    # the edited note; status/assignee/etc. + the status notification belong
+    # to the root.  Previously a combined reply PATCH reassigned `note` to
+    # the root, so mentions parsed the root's body and the response returned
+    # the root instead of the edited reply.
+    edited_note = target
     body_changed = False
     try:
         if want_body:
-            note = follow_service.update_note_body(
+            edited_note = follow_service.update_note_body(
                 note_id, current_user.id, body=payload.body, host_id=host_id, commit=False,
             )
             body_changed = True
         if meta:
-            note = follow_service.update_thread_meta(
+            root = follow_service.update_thread_meta(
                 note_id, current_user.id, host_id=host_id, commit=False, **meta,
             )
         db.commit()
@@ -530,9 +538,7 @@ def update_host_note(
         db.rollback()
         raise
 
-    db.refresh(note)
-    db.refresh(note, attribute_names=["author", "assignee"])
-    new_status = note.status
+    new_status = root.status
     status_changed = bool("status" in meta and new_status != old_status)
 
     # Best-effort notifications in a SEPARATE transaction — the note write
@@ -544,10 +550,10 @@ def update_host_note(
     try:
         notification_service = NotificationService(db)
         if body_changed and payload.body:
-            mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
+            mention_notifs = notification_service.process_note_mentions(edited_note, current_user, project) or []
         if status_changed:
             notification_service.notify_status_change(
-                note,
+                root,
                 old_status.value if hasattr(old_status, "value") else str(old_status),
                 new_status.value if hasattr(new_status, "value") else str(new_status),
                 current_user, project,
@@ -587,11 +593,16 @@ def update_host_note(
                 project_id=project.id,
                 event="note_status_change",
                 title=f"Note thread on {host_label} → {ns}",
-                body=(note.resolution_summary or "")[:280],
-                context={"host_id": host_id, "note_id": note.id, "status": ns},
+                body=(root.resolution_summary or "")[:280],
+                context={"host_id": host_id, "note_id": root.id, "status": ns},
             )
 
-    serialized = _serialize_note(note)
+    # Response: the edited reply when the body changed (what the client
+    # edited); otherwise the thread root (where the metadata lives).
+    response_note = edited_note if body_changed else root
+    db.refresh(response_note)
+    db.refresh(response_note, attribute_names=["author", "assignee"])
+    serialized = _serialize_note(response_note)
     if mention_warning:
         return serialized.model_copy(update={"mention_warning": mention_warning})
     return serialized
@@ -667,4 +678,6 @@ def delete_host_note(
         raise HTTPException(status_code=404, detail="Note not found")
     except PermissionError:
         raise HTTPException(status_code=403, detail="Not authorized to delete this note")
+    except NoteHasRepliesError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return Response(status_code=204)

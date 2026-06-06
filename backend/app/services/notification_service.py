@@ -124,14 +124,27 @@ class NotificationService:
         host = note.host
         host_label = host.ip_address if host else f"host #{note.host_id}"
 
-        # Collect users to notify: note author + parent note author
-        notify_user_ids = set()
-        if note.user_id != actor.id:
+        # Collect users to notify: EVERY distinct author in the thread, not
+        # just the root + immediate parent (review #3-round #2).  Status is
+        # set on the thread root (parent_id is null), so the old parent
+        # lookup found nobody and reply authors were never notified.  Resolve
+        # the thread root and notify all its participants, minus the actor.
+        root_id = getattr(note, "thread_root_id", None) or note.id
+        participant_rows = (
+            self.db.query(HostNote.user_id)
+            .filter(
+                HostNote.thread_root_id == root_id,
+                HostNote.user_id.isnot(None),
+                HostNote.user_id != actor.id,
+            )
+            .distinct()
+            .all()
+        )
+        notify_user_ids = {uid for (uid,) in participant_rows}
+        # Defensive fallback for any pre-backfill note with a null
+        # thread_root_id: still notify the root author.
+        if note.user_id and note.user_id != actor.id:
             notify_user_ids.add(note.user_id)
-        if note.parent_id:
-            parent = self.db.query(HostNote).filter(HostNote.id == note.parent_id).first()
-            if parent and parent.user_id != actor.id:
-                notify_user_ids.add(parent.user_id)
 
         for user_id in notify_user_ids:
             notification = Notification(

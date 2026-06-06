@@ -144,11 +144,16 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({ queue, tasks, loading, e
   const shown = expanded ? items : items.slice(0, PREVIEW);
 
   // Non-zero reason breakdown across the merged set.
-  const reasonCounts = React.useMemo(() => {
-    const c: Record<MyTaskReason, number> = { assigned: 0, in_review: 0, triage: 0 };
-    for (const it of items) c[it.reason] += 1;
-    return c;
-  }, [items]);
+  // Authoritative totals from the server (the merged item list is capped at
+  // the per-source fetch limits, so it must NOT be treated as the total —
+  // review CR3-#1).  reason_counts is the server's task breakdown.
+  const totalHosts = queue?.in_review_count ?? 0;
+  const totalTasks = tasks?.total_open ?? 0;
+  const shownHosts = items.filter((i) => i.kind === 'host').length;
+  const shownTasks = items.filter((i) => i.kind === 'task').length;
+  const moreHosts = totalHosts > shownHosts;
+  const moreTasks = totalTasks > shownTasks;
+  const taskReasons = tasks?.reason_counts;
 
   return (
     <Card className="h-full">
@@ -160,21 +165,19 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({ queue, tasks, loading, e
               Hosts you're investigating and the test-plan steps you own, in one
               prioritised queue.
             </p>
-            {items.length > 0 && (
+            {(totalHosts > 0 || totalTasks > 0) && (
               <div className="mt-xxs flex flex-wrap items-center gap-xxs">
-                {(['assigned', 'in_review', 'triage'] as MyTaskReason[])
-                  .filter((r) => reasonCounts[r] > 0)
-                  .map((r) => (
-                    <Badge key={r} variant={REASON_META[r].tone}>
-                      {reasonCounts[r]} {REASON_META[r].label.toLowerCase()}
-                    </Badge>
-                  ))}
+                <Badge variant="secondary">{totalHosts} In Review</Badge>
+                <Badge variant="outline">{totalTasks} task{totalTasks === 1 ? '' : 's'}</Badge>
+                {taskReasons && taskReasons.assigned > 0 && (
+                  <Badge variant={REASON_META.assigned.tone}>{taskReasons.assigned} assigned</Badge>
+                )}
+                {taskReasons && taskReasons.triage > 0 && (
+                  <Badge variant={REASON_META.triage.tone}>{taskReasons.triage} triage</Badge>
+                )}
               </div>
             )}
           </div>
-          <Button size="sm" variant="outline" className="shrink-0" onClick={() => navigate('/hosts?follow_status=in_review')}>
-            All In Review
-          </Button>
         </div>
 
         {loading ? (
@@ -244,18 +247,49 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({ queue, tasks, loading, e
                 </button>
               </li>
             ))}
-            {items.length > PREVIEW && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="mt-xs self-start"
-                onClick={() => setExpanded((v) => !v)}
-              >
-                {expanded ? 'Show fewer' : `Show all ${items.length}`}
-                <SquareArrowOutUpRight className="size-3" aria-hidden />
-              </Button>
-            )}
           </ul>
+        )}
+
+        {/* Footer — expand the FETCHED rows, plus honest "X of Y" totals and
+            links to the complete lists.  The merged list is capped at the
+            fetch limits, so "Show more" never implies it's everything
+            (review CR3-#1). */}
+        {!loading && !error && items.length > 0 && (
+          <div className="mt-sm flex flex-wrap items-center gap-x-md gap-y-xxs">
+            {items.length > PREVIEW && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+              >
+                {expanded ? 'Show fewer' : `Show ${items.length - PREVIEW} more here`}
+              </button>
+            )}
+            <span className="text-caption text-muted-foreground">
+              Showing {shownHosts} of {totalHosts} host{totalHosts === 1 ? '' : 's'} ·{' '}
+              {shownTasks} of {totalTasks} task{totalTasks === 1 ? '' : 's'}
+            </span>
+            <div className="ml-auto flex items-center gap-md">
+              {moreHosts && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/hosts?follow_status=in_review')}
+                  className="inline-flex items-center gap-xxs text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                >
+                  All In Review <SquareArrowOutUpRight className="size-3" aria-hidden />
+                </button>
+              )}
+              {moreTasks && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/test-plans')}
+                  className="inline-flex items-center gap-xxs text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                >
+                  All tasks <SquareArrowOutUpRight className="size-3" aria-hidden />
+                </button>
+              )}
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>

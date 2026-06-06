@@ -40,6 +40,33 @@ def _unread(client, pid):
     return client.get(f"/api/v1/projects/{pid}/hosts/notes/unread-count").json()["unread_count"]
 
 
+def test_cursor_upsert_is_monotonic(db_session, test_project, test_user):
+    """CR3-#7 — a late older write must not move the cursor backward."""
+    from datetime import datetime, timezone, timedelta
+    from app.db.cursor_upsert import upsert_user_project_cursor
+    from app.db.models import OperationsCursor
+
+    t1 = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
+    t0 = t1 - timedelta(hours=1)
+
+    upsert_user_project_cursor(
+        db_session, OperationsCursor, user_id=test_user.id, project_id=test_project.id,
+        ts_column="last_viewed_at", ts_value=t1,
+    )
+    # An out-of-order OLDER write lands last — must be ignored.
+    upsert_user_project_cursor(
+        db_session, OperationsCursor, user_id=test_user.id, project_id=test_project.id,
+        ts_column="last_viewed_at", ts_value=t0,
+    )
+    row = (
+        db_session.query(OperationsCursor)
+        .filter(OperationsCursor.user_id == test_user.id,
+                OperationsCursor.project_id == test_project.id)
+        .one()
+    )
+    assert row.last_viewed_at.replace(tzinfo=None) == t1.replace(tzinfo=None)
+
+
 def test_activity_seen_does_not_leak_across_projects(client, db_session, test_project):
     proj_b = Project(name="rv6-proj-b", slug="rv6-proj-b")
     db_session.add(proj_b)
