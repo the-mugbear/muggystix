@@ -151,14 +151,19 @@ def list_projects(
     # auto-selects via MRU instead.
     projects = query.order_by(Project.name.asc()).all()
 
-    # Attach member counts
+    # RV-11 — member counts in ONE grouped query instead of a count() per
+    # project (N+1).  Empty projects simply fall back to 0 via .get().
+    member_counts = dict(
+        db.query(ProjectMembership.project_id, func.count(ProjectMembership.id))
+        .filter(ProjectMembership.project_id.in_([p.id for p in projects]))
+        .group_by(ProjectMembership.project_id)
+        .all()
+    ) if projects else {}
+
     result = []
     for p in projects:
-        count = db.query(func.count(ProjectMembership.id)).filter(
-            ProjectMembership.project_id == p.id
-        ).scalar()
         resp = ProjectResponse.model_validate(p)
-        resp.member_count = count
+        resp.member_count = member_counts.get(p.id, 0)
         result.append(resp)
 
     return result
@@ -174,7 +179,10 @@ def list_projects(
 def create_project(
     data: ProjectCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    # RV-3 — project creation is a global-admin action.  Previously this
+    # only required authentication, so any user could create a project and
+    # be auto-granted its admin role, bypassing the UI's admin-only policy.
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """Create a new project. The creator is automatically added as a project admin."""
     # Check name uniqueness
@@ -198,6 +206,9 @@ def create_project(
         slug=slug,
         description=data.description,
         status=data.status or "active",
+        # RV-3 — keep is_archived consistent with status at creation, so a
+        # project created as "archived" doesn't linger active in selection.
+        is_archived=(data.status == "archived"),
         start_date=data.start_date,
         end_date=data.end_date,
         created_by_id=current_user.id,

@@ -87,7 +87,11 @@ class User(Base):
     # project annotations; preserving them as "by deleted user" matches
     # the policy of every other audit-shape column in v2.86.2.  DB FK
     # is SET NULL + nullable=True (see host_notes.user_id).
-    host_notes = relationship("HostNote", back_populates="author")
+    # foreign_keys pins this to HostNote.user_id — HostNote also has
+    # assignee_id (a second FK to users), so the path must be explicit.
+    host_notes = relationship(
+        "HostNote", back_populates="author", foreign_keys="HostNote.user_id",
+    )
 
 
 class UserSession(Base):

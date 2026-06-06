@@ -554,9 +554,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   };
 
   const handleUpdateNoteStatus = async (noteId: number, status: NoteStatus) => {
+    // P3 — resolving a thread requires a summary (the backend rejects a
+    // summary-less resolve with 400). Capture it up front so the operator
+    // gets a clear prompt instead of an opaque error.
+    let resolutionSummary: string | undefined;
+    if (status === 'resolved') {
+      const entered = window.prompt(
+        'Resolution summary (required) — what was the outcome of this thread?',
+      );
+      if (entered === null || !entered.trim()) {
+        if (entered !== null) toast.error('A resolution summary is required to resolve a thread.');
+        return;
+      }
+      resolutionSummary = entered.trim();
+    }
     setNoteActionId(noteId);
     try {
-      const response = await updateHostNote(hostId, noteId, { status });
+      const response = await updateHostNote(hostId, noteId, {
+        status,
+        ...(resolutionSummary ? { resolution_summary: resolutionSummary } : {}),
+      });
       setNotes((previous) => previous.map((note) => (note.id === noteId ? response : note)));
       setHost((previous) =>
         previous

@@ -35,6 +35,16 @@ export interface ProjectCard {
   review_progress_pct: number;
   unreviewed_hosts: number;
   vuln_summary: VulnSummaryBrief;
+  /** Derived rollup: 'critical' | 'warning' | 'stale' | 'healthy'. */
+  health: string;
+  // P4 control-plane signals.
+  attention_reasons: string[];
+  pending_plan_reviews: number;
+  open_tasks: number;
+  active_sessions: number;
+  blocked_sessions: number;
+  member_count: number;
+  user_role: string | null;
 }
 
 export interface PortfolioSummary {
@@ -44,6 +54,13 @@ export interface PortfolioSummary {
   total_open_ports: number;
   total_scans: number;
   total_unreviewed: number;
+  // P4 attention rollups.
+  projects_requiring_attention: number;
+  projects_with_critical: number;
+  stale_projects: number;
+  projects_no_data: number;
+  pending_approvals_total: number;
+  blocked_sessions_total: number;
 }
 
 export interface PortfolioDashboardResponse {

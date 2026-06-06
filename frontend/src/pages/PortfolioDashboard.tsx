@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowUp, ArrowUpDown, FolderOpen, RefreshCw } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, FolderOpen, RefreshCw, SquareArrowOutUpRight } from 'lucide-react';
 import {
   getPortfolioDashboard,
   PortfolioDashboardResponse,
@@ -54,6 +54,54 @@ const projectStatusTone = (status: string | null | undefined): Tone => {
   }
 };
 
+// Health is a backend-derived rollup (critical findings > exposure/low-review
+// > staleness > healthy). Surfacing it gives the "is this project OK at a
+// glance?" answer the per-column numbers don't.
+const HEALTH_META: Record<string, { tone: Tone; label: string }> = {
+  critical: { tone: 'destructive', label: 'Critical' },
+  warning: { tone: 'warning', label: 'Warning' },
+  stale: { tone: 'muted', label: 'Stale' },
+  healthy: { tone: 'success', label: 'Healthy' },
+};
+
+const healthMeta = (health: string | null | undefined): { tone: Tone; label: string } =>
+  HEALTH_META[health ?? 'healthy'] ?? HEALTH_META.healthy;
+
+// One-line explanation of WHAT drove the (single, worst-signal) health
+// rollup — surfaced as the Health badge's tooltip so "Critical" isn't an
+// unexplained label.  Mirrors the backend derivation order.
+const healthWhy = (card: ProjectCard): string => {
+  const v = card.vuln_summary;
+  switch (card.health) {
+    case 'critical':
+      return `${v.critical} critical finding${v.critical === 1 ? '' : 's'}`;
+    case 'warning':
+      return v.high > 0
+        ? `${v.high} high finding${v.high === 1 ? '' : 's'}`
+        : `${Math.round(card.review_progress_pct)}% of hosts reviewed`;
+    case 'stale':
+      return card.days_since_last_scan != null
+        ? `No scan in ${card.days_since_last_scan} days`
+        : 'No scans yet';
+    default:
+      return 'No outstanding risk signals';
+  }
+};
+
+// P4 — attention reason codes → display.
+const ATTENTION_META: Record<string, { label: string; tone: Tone }> = {
+  blocked_session: { label: 'Blocked run', tone: 'destructive' },
+  pending_review: { label: 'Pending review', tone: 'warning' },
+  no_data: { label: 'No data', tone: 'muted' },
+  // The remaining reasons (critical_findings / high_findings / stale /
+  // unreviewed) drive the "Needs attention" filter but are NOT rendered as
+  // chips — each already has a dedicated column (Findings / Last Scan /
+  // Review) or the Health badge, so a chip would just duplicate it.
+};
+// Only these workflow signals — unrepresented by any other column — render
+// as chips, plus pending_review which renders as the Review action below.
+const ATTENTION_CHIP_CODES = ['blocked_session', 'no_data'];
+
 const PortfolioDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { projects, selectProject } = useProject();
@@ -66,6 +114,16 @@ const PortfolioDashboard: React.FC = () => {
   const [sortBy, setSortBy] = useState<SortField>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [reloadNonce, setReloadNonce] = useState(0);
+  // P4 — "needs attention" filter, URL-synced (?attention=1) so a
+  // triage view is shareable/bookmarkable.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const attentionOnly = searchParams.get('attention') === '1';
+  const setAttentionOnly = (on: boolean) => {
+    const params = new URLSearchParams(searchParams);
+    if (on) params.set('attention', '1');
+    else params.delete('attention');
+    setSearchParams(params, { replace: true });
+  };
 
   const reload = () => setReloadNonce((n) => n + 1);
 
@@ -78,15 +136,15 @@ const PortfolioDashboard: React.FC = () => {
       .finally(() => setLoading(false));
   }, [reloadNonce]);
 
-  const handleProjectClick = (card: ProjectCard) => {
+  // P4 — row actions must switch the active project BEFORE navigating so
+  // the destination opens scoped to the right project.
+  const switchAndGo = (card: ProjectCard, to: string) => {
     const proj = projects.find((p) => p.id === card.id);
     if (proj) selectProject(proj);
-    // /dashboard was a permanent redirect to /operations — clicking a
-    // project card was producing a visible route flicker and landing
-    // somewhere unintended.  Navigate directly to the operations hub
-    // (audit C5).
-    navigate('/operations');
+    navigate(to);
   };
+
+  const handleProjectClick = (card: ProjectCard) => switchAndGo(card, '/operations');
 
   const handleSort = (field: SortField) => {
     if (sortBy === field) {
@@ -101,6 +159,7 @@ const PortfolioDashboard: React.FC = () => {
     if (!data) return [];
     let list = data.projects;
     if (statusFilter) list = list.filter((p) => p.status === statusFilter);
+    if (attentionOnly) list = list.filter((p) => p.attention_reasons.length > 0);
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...list].sort((a, b) => {
       switch (sortBy) {
@@ -118,7 +177,7 @@ const PortfolioDashboard: React.FC = () => {
           return a.name.localeCompare(b.name) * dir;
       }
     });
-  }, [data, statusFilter, sortBy, sortDir]);
+  }, [data, statusFilter, attentionOnly, sortBy, sortDir]);
 
   const statusCounts = useMemo(() => {
     if (!data) return {};
@@ -237,23 +296,49 @@ const PortfolioDashboard: React.FC = () => {
                   {summary.total_unreviewed} unreviewed
                 </Badge>
               )}
+              {summary.projects_with_critical > 0 && (
+                <Badge variant="destructive">{summary.projects_with_critical} with critical</Badge>
+              )}
+              {summary.pending_approvals_total > 0 && (
+                <Badge variant="warning">{summary.pending_approvals_total} pending review</Badge>
+              )}
+              {summary.blocked_sessions_total > 0 && (
+                <Badge variant="destructive">{summary.blocked_sessions_total} blocked run{summary.blocked_sessions_total === 1 ? '' : 's'}</Badge>
+              )}
             </div>
           </div>
 
-          <div className="min-w-40">
-            <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
-              <SelectTrigger aria-label="Filter projects by status">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All ({summary.total_projects})</SelectItem>
-                {Object.entries(statusCounts).map(([status, count]) => (
-                  <SelectItem key={status} value={status}>
-                    {status.replace('_', ' ')} ({count})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="flex flex-wrap items-center gap-sm">
+            {/* P4 — "needs attention" triage filter (URL-synced). */}
+            <Button
+              size="sm"
+              variant={attentionOnly ? 'default' : 'outline'}
+              aria-pressed={attentionOnly}
+              onClick={() => setAttentionOnly(!attentionOnly)}
+            >
+              <AlertTriangle className="size-4" aria-hidden />
+              Needs attention
+              {summary.projects_requiring_attention > 0 && (
+                <span className="ml-xxs rounded-full bg-background/30 px-xxs text-micro">
+                  {summary.projects_requiring_attention}
+                </span>
+              )}
+            </Button>
+            <div className="min-w-40">
+              <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
+                <SelectTrigger aria-label="Filter projects by status">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All ({summary.total_projects})</SelectItem>
+                  {Object.entries(statusCounts).map(([status, count]) => (
+                    <SelectItem key={status} value={status}>
+                      {status.replace('_', ' ')} ({count})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -263,10 +348,18 @@ const PortfolioDashboard: React.FC = () => {
           <CardContent className="p-xl text-center">
             <FolderOpen className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
             <p className="text-metadata text-muted-foreground">
-              {statusFilter ? 'No projects match the selected filter.' : 'No projects available.'}
+              {attentionOnly
+                ? 'No projects currently need attention. 🎉'
+                : statusFilter
+                ? 'No projects match the selected filter.'
+                : 'No projects available.'}
             </p>
             <div className="mt-sm flex justify-center gap-xs">
-              {statusFilter ? (
+              {attentionOnly ? (
+                <Button size="sm" variant="outline" onClick={() => setAttentionOnly(false)}>
+                  Show all projects
+                </Button>
+              ) : statusFilter ? (
                 <Button size="sm" variant="outline" onClick={() => setStatusFilter('')}>
                   Show all projects
                 </Button>
@@ -292,13 +385,14 @@ const PortfolioDashboard: React.FC = () => {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <SortableHeader field="name" label="Project" className="w-[22%]" />
-                    <TableHead className="w-[10%]">Status</TableHead>
-                    <SortableHeader field="hosts" label="Hosts" className="w-[10%]" />
-                    <SortableHeader field="open_ports" label="Open Ports" className="w-[10%]" />
-                    <SortableHeader field="scans" label="Scans" className="w-[8%]" />
-                    <SortableHeader field="last_scan" label="Last Scan" className="w-[12%]" />
-                    <SortableHeader field="review" label="Review" className="w-[14%]" />
+                    <SortableHeader field="name" label="Project" className="w-[20%]" />
+                    <TableHead className="w-[9%]">Status</TableHead>
+                    <TableHead className="w-[9%]">Health</TableHead>
+                    <SortableHeader field="hosts" label="Hosts" className="w-[9%]" />
+                    <SortableHeader field="open_ports" label="Open Ports" className="w-[9%]" />
+                    <SortableHeader field="scans" label="Scans" className="w-[7%]" />
+                    <SortableHeader field="last_scan" label="Last Scan" className="w-[11%]" />
+                    <SortableHeader field="review" label="Review" className="w-[12%]" />
                     <TableHead className="w-[14%]">Findings</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -335,6 +429,39 @@ const PortfolioDashboard: React.FC = () => {
                           <Badge variant={projectStatusTone(card.status)}>
                             {formatStatusLabel(card.status)}
                           </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-xxs">
+                            {/* Health = single worst-signal rollup; the
+                                title explains what drove it (the per-signal
+                                detail lives in the Findings / Last Scan /
+                                Review columns, so chips here only show
+                                workflow exceptions not shown elsewhere). */}
+                            <span title={`${healthMeta(card.health).label} — ${healthWhy(card)}`}>
+                              <Badge variant={healthMeta(card.health).tone}>
+                                {healthMeta(card.health).label}
+                              </Badge>
+                            </span>
+                            {ATTENTION_CHIP_CODES.some((c) => card.attention_reasons.includes(c)) && (
+                              <div className="flex flex-wrap gap-xxs">
+                                {ATTENTION_CHIP_CODES.filter((c) => card.attention_reasons.includes(c)).map((c) => (
+                                  <Badge key={c} variant={ATTENTION_META[c].tone} className="text-micro">
+                                    {ATTENTION_META[c].label}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                            {card.pending_plan_reviews > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => switchAndGo(card, '/test-plans')}
+                                className="inline-flex items-center gap-xxs rounded text-micro text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              >
+                                Review {card.pending_plan_reviews}
+                                <SquareArrowOutUpRight className="size-3" aria-hidden />
+                              </button>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="truncate">

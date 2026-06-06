@@ -210,7 +210,11 @@ const Activity: React.FC = () => {
           latestNote: latest,
           latestTimestamp: getNoteTimestamp(latest),
           participantNames: participants,
-          latestStatus: latest.status,
+          // Thread status comes from the ROOT note (server-supplied), not the
+          // newest reply — otherwise replying to a resolved thread (replies
+          // post as "open") makes it look reopened. Fall back to per-note
+          // status only if the backend didn't supply the root status.
+          latestStatus: latest.thread_root_status ?? latest.status,
           hostNoteCount: latest.host_note_count,
         };
       })

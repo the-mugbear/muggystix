@@ -1,19 +1,23 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Info, Loader2, MessageCircleQuestion, RefreshCw, SquareArrowOutUpRight } from 'lucide-react';
+import { Info, Loader2, MessageCircleQuestion, RefreshCw, Sparkles, SquareArrowOutUpRight, X } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
   DashboardStats,
   ProjectCoverageResponse,
   ScopeCoverageRow,
+  SinceLastVisit,
   StalenessResponse,
   TestPlanSummary,
+  WorkbenchResponse,
   getDashboardStats,
   getProjectCoverage,
   getStaleness,
   getTestPlans,
+  getWorkbench,
   listAgentSessions,
+  markWorkbenchSeen,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -99,15 +103,22 @@ const SEVERITY_SEGMENTS: Array<{
   { key: 'info', label: 'Info', color: 'bg-muted-foreground/40' },
 ];
 
-const SecuritySnapshot: React.FC<{
+// RV-UI — "Security snapshot" (exposure/findings) and "Project coverage"
+// (pipeline progress) answered different questions but both described
+// overall project state and both led with a redundant Hosts tile.  Merged
+// into one "Project state" card with an Exposure row and a Coverage row;
+// Hosts now appears once (in Exposure).
+const ProjectStateCard: React.FC<{
   stats: DashboardStats | null;
-  loading: boolean;
-}> = ({ stats, loading }) => {
-  if (loading && !stats) {
+  statsLoading: boolean;
+  coverage: ProjectCoverageResponse | null;
+  coverageLoading: boolean;
+}> = ({ stats, statsLoading, coverage, coverageLoading }) => {
+  if ((statsLoading && !stats) || (coverageLoading && !coverage)) {
     return (
       <Card className="mb-md" aria-busy="true">
         <CardContent className="p-md" role="status" aria-live="polite">
-          <span className="sr-only">Loading security snapshot…</span>
+          <span className="sr-only">Loading project state…</span>
           <div className="grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-6">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="h-20 rounded-panel bg-muted/40 animate-pulse" />
@@ -117,91 +128,146 @@ const SecuritySnapshot: React.FC<{
       </Card>
     );
   }
-  if (!stats) return null;
+  if (!stats && !coverage) return null;
 
-  const vuln = stats.vulnerability_stats;
+  const vuln = stats?.vulnerability_stats;
   const sevTotal = vuln
     ? vuln.critical + vuln.high + vuln.medium + vuln.low + vuln.info
     : 0;
+  const busy = statsLoading || coverageLoading;
 
   return (
-    <Card className="mb-md" aria-busy={loading || undefined}>
+    <Card className="mb-md" aria-busy={busy || undefined}>
       <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">Security snapshot</h2>
+        <h2 className="text-subheading font-semibold">Project state</h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          Project-wide totals at a glance. Findings come from vulnerability scanners (Nessus,
-          OpenVAS, …).
+          Exposure (findings from vulnerability scanners) and assessment coverage
+          (pipeline progress) at a glance.
         </p>
 
-        <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-6">
-          <CoverageStatTile
-            label="Hosts"
-            value={stats.total_hosts.toLocaleString()}
-            subtle={`${stats.up_hosts.toLocaleString()} marked up`}
-            hint={
-              'Total distinct hosts in the project. "marked up" counts only hosts a scanner ' +
-              'explicitly tagged with host-status "up" (e.g. an nmap host that reported Up). ' +
-              'Hosts ingested from masscan lists, naabu, DNS records, or subnet seeds are often ' +
-              'left "unknown" even when they have open ports and are clearly reachable — so this ' +
-              'number is usually far lower than the host total and is NOT a liveness count. ' +
-              'For reachability, look at open ports / per-host detail.'
-            }
-          />
-          <CoverageStatTile label="Open ports" value={stats.open_ports.toLocaleString()} />
-          <CoverageStatTile
-            label="Hosts with vulns"
-            value={(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()}
-          />
-          <CoverageStatTile label="Critical" value={(vuln?.critical ?? 0).toLocaleString()} />
-          <CoverageStatTile label="High" value={(vuln?.high ?? 0).toLocaleString()} />
-          <CoverageStatTile
-            label="Findings"
-            value={(vuln?.total_vulnerabilities ?? 0).toLocaleString()}
-          />
-        </div>
+        {stats && (
+          <div className="mb-md">
+            <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Exposure</h3>
+            <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-6">
+              <CoverageStatTile
+                label="Hosts"
+                value={stats.total_hosts.toLocaleString()}
+                subtle={`${stats.up_hosts.toLocaleString()} marked up`}
+                hint={
+                  'Total distinct hosts in the project. "marked up" counts only hosts a scanner ' +
+                  'explicitly tagged with host-status "up" (e.g. an nmap host that reported Up). ' +
+                  'Hosts ingested from masscan lists, naabu, DNS records, or subnet seeds are often ' +
+                  'left "unknown" even when they have open ports and are clearly reachable — so this ' +
+                  'number is usually far lower than the host total and is NOT a liveness count. ' +
+                  'For reachability, look at open ports / per-host detail.'
+                }
+              />
+              <CoverageStatTile label="Open ports" value={stats.open_ports.toLocaleString()} />
+              <CoverageStatTile
+                label="Hosts with vulns"
+                value={(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()}
+              />
+              <CoverageStatTile label="Critical" value={(vuln?.critical ?? 0).toLocaleString()} />
+              <CoverageStatTile label="High" value={(vuln?.high ?? 0).toLocaleString()} />
+              <CoverageStatTile
+                label="Findings"
+                value={(vuln?.total_vulnerabilities ?? 0).toLocaleString()}
+              />
+            </div>
 
-        {vuln && sevTotal > 0 ? (
-          <div>
-            <div
-              className="mb-xs flex h-3 w-full overflow-hidden rounded-full bg-muted/40"
-              role="img"
-              aria-label="Vulnerability severity distribution"
-            >
-              {SEVERITY_SEGMENTS.map((seg) => {
-                const count = vuln[seg.key];
-                if (count <= 0) return null;
-                return (
-                  <div
-                    key={seg.key}
-                    className={seg.color}
-                    style={{ width: `${(count / sevTotal) * 100}%` }}
-                    title={`${seg.label}: ${count.toLocaleString()}`}
-                  />
-                );
-              })}
-            </div>
-            <div className="flex flex-wrap gap-x-md gap-y-xxs">
-              {SEVERITY_SEGMENTS.map((seg) => (
-                <span
-                  key={seg.key}
-                  className="inline-flex items-center gap-xxs text-caption text-muted-foreground"
+            {vuln && sevTotal > 0 ? (
+              <div>
+                <div
+                  className="mb-xs flex h-3 w-full overflow-hidden rounded-full bg-muted/40"
+                  role="img"
+                  aria-label="Vulnerability severity distribution"
                 >
-                  <span
-                    className={cn('inline-block size-2 rounded-full', seg.color)}
-                    aria-hidden
-                  />
-                  {seg.label}{' '}
-                  <span className="font-medium text-foreground">
-                    {vuln[seg.key].toLocaleString()}
-                  </span>
-                </span>
-              ))}
-            </div>
+                  {SEVERITY_SEGMENTS.map((seg) => {
+                    const count = vuln[seg.key];
+                    if (count <= 0) return null;
+                    return (
+                      <div
+                        key={seg.key}
+                        className={seg.color}
+                        style={{ width: `${(count / sevTotal) * 100}%` }}
+                        title={`${seg.label}: ${count.toLocaleString()}`}
+                      />
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-x-md gap-y-xxs">
+                  {SEVERITY_SEGMENTS.map((seg) => (
+                    <span
+                      key={seg.key}
+                      className="inline-flex items-center gap-xxs text-caption text-muted-foreground"
+                    >
+                      <span
+                        className={cn('inline-block size-2 rounded-full', seg.color)}
+                        aria-hidden
+                      />
+                      {seg.label}{' '}
+                      <span className="font-medium text-foreground">
+                        {vuln[seg.key].toLocaleString()}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-metadata text-muted-foreground">
+                No vulnerabilities detected yet — upload a Nessus or OpenVAS scan to populate findings.
+              </p>
+            )}
           </div>
-        ) : (
-          <p className="text-metadata text-muted-foreground">
-            No vulnerabilities detected yet — upload a Nessus or OpenVAS scan to populate findings.
-          </p>
+        )}
+
+        {coverage && (
+          <div>
+            <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Coverage</h3>
+            <p className="mb-sm text-caption text-muted-foreground">
+              Hosts by pipeline stage — the gap counts surface what isn't planned or executed yet.
+            </p>
+            <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3">
+              <CoverageStatTile
+                label="With plan entries"
+                value={coverage.hosts_with_plan_entry.toLocaleString()}
+                subtle={
+                  coverage.hosts_no_plan > 0
+                    ? `${coverage.hosts_no_plan.toLocaleString()} not yet in any plan`
+                    : 'all hosts planned'
+                }
+              />
+              <CoverageStatTile
+                label="With execution results"
+                value={coverage.hosts_with_execution_result.toLocaleString()}
+                subtle={
+                  coverage.hosts_no_execution > 0
+                    ? `${coverage.hosts_no_execution.toLocaleString()} not yet tested`
+                    : 'all hosts tested'
+                }
+              />
+              <CoverageStatTile
+                label="Outside scope"
+                value={coverage.hosts_outside_scope.toLocaleString()}
+                subtle={
+                  coverage.total_scopes === 0
+                    ? 'no scopes declared'
+                    : 'discovered but unscoped'
+                }
+              />
+            </div>
+
+            {coverage.scopes.length > 0 && (
+              <div>
+                <h3 className="mb-xs text-metadata font-semibold">
+                  Scope coverage ({coverage.total_scopes})
+                </h3>
+                {coverage.scopes.map((row) => (
+                  <ScopeCoverageRowDisplay key={row.scope_id} row={row} />
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -330,81 +396,6 @@ const ScopeCoverageRowDisplay: React.FC<{ row: ScopeCoverageRow }> = ({ row }) =
         {row.discovered_in_scope === 1 ? '' : 's'} discovered
       </span>
     </div>
-  );
-};
-
-const CoverageSection: React.FC<{
-  coverage: ProjectCoverageResponse | null;
-  loading: boolean;
-}> = ({ coverage, loading }) => {
-  if (loading && !coverage) {
-    return (
-      <Card className="mb-md" aria-busy="true">
-        <CardContent className="p-md" role="status" aria-live="polite">
-          <span className="sr-only">Loading project coverage…</span>
-          <div className="grid grid-cols-2 gap-sm md:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-20 rounded-panel bg-muted/40 animate-pulse" />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-  if (!coverage) return null;
-
-  return (
-    <Card className="mb-md" aria-busy={loading || undefined}>
-      <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">Project coverage</h2>
-        <p className="mb-sm text-caption text-muted-foreground">
-          Hosts discovered in this project, broken down by pipeline stage. The gap counts surface
-          what hasn't been planned or executed yet.
-        </p>
-
-        <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-4">
-          <CoverageStatTile label="Hosts discovered" value={coverage.total_hosts.toLocaleString()} />
-          <CoverageStatTile
-            label="With plan entries"
-            value={coverage.hosts_with_plan_entry.toLocaleString()}
-            subtle={
-              coverage.hosts_no_plan > 0
-                ? `${coverage.hosts_no_plan.toLocaleString()} not yet in any plan`
-                : 'all hosts planned'
-            }
-          />
-          <CoverageStatTile
-            label="With execution results"
-            value={coverage.hosts_with_execution_result.toLocaleString()}
-            subtle={
-              coverage.hosts_no_execution > 0
-                ? `${coverage.hosts_no_execution.toLocaleString()} not yet tested`
-                : 'all hosts tested'
-            }
-          />
-          <CoverageStatTile
-            label="Outside scope"
-            value={coverage.hosts_outside_scope.toLocaleString()}
-            subtle={
-              coverage.total_scopes === 0
-                ? 'no scopes declared'
-                : 'discovered but unscoped'
-            }
-          />
-        </div>
-
-        {coverage.scopes.length > 0 && (
-          <div>
-            <h3 className="mb-xs text-metadata font-semibold">
-              Scope coverage ({coverage.total_scopes})
-            </h3>
-            {coverage.scopes.map((row) => (
-              <ScopeCoverageRowDisplay key={row.scope_id} row={row} />
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 };
 
@@ -552,10 +543,30 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
   );
 };
 
-const RunsSection: React.FC<{
-  userIdFilter: number | undefined;
-}> = ({ userIdFilter }) => {
+const RunsSection: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // The All/Mine scope toggle lives here, not in the page header: it only
+  // ever scoped the Runs list (it never touched the personal queue cards or
+  // the project-wide sections), so a page-top placement implied a broader
+  // effect than it had. Persisted to localStorage + the URL (?scope=) so the
+  // choice survives refresh and stays shareable.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [scopeView, setScopeView] = useState<ScopeView>(() => {
+    const urlScope = searchParams.get('scope');
+    if (urlScope === 'mine' || urlScope === 'all') return urlScope;
+    return loadStickyScope();
+  });
+  const userIdFilter = scopeView === 'mine' && user ? user.id : undefined;
+
+  const handleScopeChange = (next: ScopeView) => {
+    setScopeView(next);
+    persistScope(next);
+    const params = new URLSearchParams(searchParams);
+    params.set('scope', next);
+    setSearchParams(params, { replace: true });
+  };
+
   const [rows, setRows] = useState<AgentSessionRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   // Audit CRIT-7 + PRF·M1: separate `error` from "empty" so a backend
@@ -599,6 +610,36 @@ const RunsSection: React.FC<{
       <CardContent className="p-md">
         <div className="mb-xs flex flex-wrap items-center gap-xs">
           <h2 className="flex-1 text-subheading font-semibold">Runs</h2>
+          <div
+            className="inline-flex overflow-hidden rounded-control border border-border"
+            role="group"
+            aria-label="Scope of runs view"
+          >
+            <button
+              type="button"
+              aria-pressed={scopeView === 'all'}
+              onClick={() => handleScopeChange('all')}
+              className={cn(
+                'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                scopeView === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+              )}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              aria-pressed={scopeView === 'mine'}
+              onClick={() => handleScopeChange('mine')}
+              disabled={!user}
+              className={cn(
+                'border-l border-border px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                scopeView === 'mine' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+                !user && 'cursor-not-allowed opacity-50',
+              )}
+            >
+              Mine
+            </button>
+          </div>
           <Button size="sm" variant="ghost" onClick={() => navigate('/agent-activity')}>
             Open Agent Runs
             <SquareArrowOutUpRight className="size-3" aria-hidden />
@@ -668,22 +709,68 @@ const RunsSection: React.FC<{
 };
 
 // ---------------------------------------------------------------------------
+// Since your last visit — durable per-user/project diff (P2).
+// ---------------------------------------------------------------------------
+
+const SinceLastVisitBanner: React.FC<{
+  since: SinceLastVisit;
+  onDismiss: () => void;
+}> = ({ since, onDismiss }) => {
+  const navigate = useNavigate();
+
+  // First-ever visit would report "everything is new" — noise, not signal.
+  // Also nothing to show when the cursor caught up.
+  const hasUpdates =
+    since.new_scan_count > 0 ||
+    since.new_host_count > 0 ||
+    since.new_critical_findings > 0 ||
+    since.new_high_findings > 0;
+  if (since.is_first_visit || !hasUpdates) return null;
+
+  const chips: Array<{ key: string; label: string; tone: 'info' | 'secondary' | 'destructive' | 'warning' }> = [];
+  if (since.new_scan_count > 0)
+    chips.push({ key: 'scans', tone: 'info', label: `${since.new_scan_count} new scan${since.new_scan_count === 1 ? '' : 's'}` });
+  if (since.new_host_count > 0)
+    chips.push({ key: 'hosts', tone: 'secondary', label: `${since.new_host_count} new host${since.new_host_count === 1 ? '' : 's'}` });
+  if (since.new_critical_findings > 0)
+    chips.push({ key: 'crit', tone: 'destructive', label: `${since.new_critical_findings} new critical` });
+  if (since.new_high_findings > 0)
+    chips.push({ key: 'high', tone: 'warning', label: `${since.new_high_findings} new high` });
+
+  return (
+    <Card className="mb-md border-info/40 bg-info/5">
+      <CardContent className="flex flex-wrap items-center gap-sm p-md">
+        <div className="flex min-w-0 flex-1 items-center gap-xs">
+          <Sparkles className="size-4 shrink-0 text-info" aria-hidden />
+          <span className="text-metadata font-semibold text-foreground">Since your last visit</span>
+          <div className="flex flex-wrap items-center gap-xxs">
+            {chips.map((c) => (
+              <Badge key={c.key} variant={c.tone}>{c.label}</Badge>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-xs">
+          {since.new_scan_count > 0 && (
+            <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
+              View scans
+              <SquareArrowOutUpRight className="size-3" aria-hidden />
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" aria-label="Dismiss" onClick={onDismiss}>
+            <X className="size-4" aria-hidden />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 const Operations: React.FC = () => {
-  const { user } = useAuth();
   const navigate = useNavigate();
-  // FRX·M2: scopeView is persisted to both the URL (?scope=mine|all)
-  // and localStorage so a deep-link survives a hard refresh AND so
-  // the toggle stays sticky across navigations.  URL wins on mount;
-  // localStorage is the fallback.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [scopeView, setScopeView] = useState<ScopeView>(() => {
-    const urlScope = searchParams.get('scope');
-    if (urlScope === 'mine' || urlScope === 'all') return urlScope;
-    return loadStickyScope();
-  });
 
   const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(true);
@@ -693,52 +780,75 @@ const Operations: React.FC = () => {
   const [statsLoading, setStatsLoading] = useState(true);
   const [staleness, setStaleness] = useState<StalenessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const userIdFilter = useMemo(
-    () => (scopeView === 'mine' && user ? user.id : undefined),
-    [scopeView, user],
-  );
+  // P2 — Operations owns ONE /workbench fetch covering the three personal
+  // cards (My Queue / My Tasks / Team Review) + the since-last-visit diff,
+  // and prop-drives them. The page-level Refresh re-runs this in lockstep
+  // with the coverage/stats fetches, so everything refreshes together.
+  const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
+  const [workbenchLoading, setWorkbenchLoading] = useState(true);
+  const [workbenchError, setWorkbenchError] = useState<string | null>(null);
+  const [sinceDismissed, setSinceDismissed] = useState(false);
+  // Mark the cursor seen exactly once per mount (after the first successful
+  // workbench load), so the "since last visit" diff shown this visit is
+  // snapshotted before we advance the cursor for next time.
+  const seenMarkedRef = useRef(false);
 
   const reload = useCallback(async () => {
     setError(null);
     setCoverageLoading(true);
     setPendingLoading(true);
     setStatsLoading(true);
+    setWorkbenchLoading(true);
+    setWorkbenchError(null);
 
-    try {
-      const [coverageResp, pendingResp, statsResp, stalenessResp] = await Promise.all([
-        getProjectCoverage(),
-        getTestPlans({ status: 'proposed' }),
-        getDashboardStats(),
-        // Best-effort — staleness must not block the core Operations load.
-        getStaleness().catch(() => null),
-      ]);
-      setCoverage(coverageResp);
-      setPendingPlans(pendingResp);
-      setStats(statsResp);
-      setStaleness(stalenessResp);
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load Operations data.'));
-    } finally {
-      setCoverageLoading(false);
-      setPendingLoading(false);
-      setStatsLoading(false);
+    // Workbench is independent of the coverage/stats core load — fetch it
+    // alongside but isolate its failure so a workbench outage shows the
+    // cards' own error state (with Retry) instead of blanking the page.
+    getWorkbench()
+      .then((wb) => {
+        setWorkbench(wb);
+        if (!seenMarkedRef.current) {
+          seenMarkedRef.current = true;
+          // Fire-and-forget: advancing the cursor must not block render,
+          // and the banner already has its snapshot from `wb`.
+          markWorkbenchSeen().catch(() => undefined);
+        }
+      })
+      .catch((err) => {
+        setWorkbench(null);
+        setWorkbenchError(formatApiError(err, 'Could not load your workbench.'));
+      })
+      .finally(() => setWorkbenchLoading(false));
+
+    // RV-10b — settle the core fetches independently. Pre-fix a single
+    // Promise.all rejection (e.g. /dashboard/stats) blanked coverage AND
+    // pending-plans too. Only coverage is structural (it gates the whole
+    // page), so only its failure raises the page-level error; the other
+    // sections degrade to their own empty/absent state.
+    const [coverageR, pendingR, statsR, stalenessR] = await Promise.allSettled([
+      getProjectCoverage(),
+      getTestPlans({ status: 'proposed' }),
+      getDashboardStats(),
+      getStaleness(),
+    ]);
+
+    if (coverageR.status === 'fulfilled') {
+      setCoverage(coverageR.value);
+    } else {
+      setError(formatApiError(coverageR.reason, 'Failed to load Operations data.'));
     }
+    if (pendingR.status === 'fulfilled') setPendingPlans(pendingR.value);
+    if (statsR.status === 'fulfilled') setStats(statsR.value);
+    setStaleness(stalenessR.status === 'fulfilled' ? stalenessR.value : null);
+
+    setCoverageLoading(false);
+    setPendingLoading(false);
+    setStatsLoading(false);
   }, []);
 
   useEffect(() => {
     reload();
   }, [reload]);
-
-  const handleScopeChange = (next: ScopeView) => {
-    setScopeView(next);
-    persistScope(next);
-    // FRX·M2: mirror to the URL so the operator can share or bookmark
-    // a "mine"-filtered view.  Preserve any other params already set.
-    const params = new URLSearchParams(searchParams);
-    params.set('scope', next);
-    setSearchParams(params, { replace: true });
-  };
 
   // FRX·CRIT-2: brand-new projects (no scopes AND no hosts) should
   // see the welcome card alone — the scope toggle, Refresh chrome,
@@ -765,40 +875,6 @@ const Operations: React.FC = () => {
         </div>
         {!isBrandNewProject && (
           <>
-            <div
-              className="inline-flex overflow-hidden rounded-control border border-border"
-              role="group"
-              aria-label="Scope of runs view"
-            >
-              <button
-                type="button"
-                aria-pressed={scopeView === 'all'}
-                onClick={() => handleScopeChange('all')}
-                className={cn(
-                  'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  scopeView === 'all'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-accent',
-                )}
-              >
-                All
-              </button>
-              <button
-                type="button"
-                aria-pressed={scopeView === 'mine'}
-                onClick={() => handleScopeChange('mine')}
-                disabled={!user}
-                className={cn(
-                  'border-l border-border px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  scopeView === 'mine'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-accent',
-                  !user && 'cursor-not-allowed opacity-50',
-                )}
-              >
-                Mine
-              </button>
-            </div>
             <Button
               size="sm"
               variant="outline"
@@ -883,7 +959,21 @@ const Operations: React.FC = () => {
           {/* Security snapshot leads the page — the project-level "what
               do we have and how exposed is it?" headline numbers, above
               the personal queue widgets. */}
-          <SecuritySnapshot stats={stats} loading={statsLoading} />
+          {/* Since your last visit — what changed in this project while
+              the operator was away (durable per-user cursor, P2). Leads
+              the personal section: "what's new?" before "what's mine?". */}
+          {workbench && !sinceDismissed && (
+            <SinceLastVisitBanner
+              since={workbench.since_last_visit}
+              onDismiss={() => setSinceDismissed(true)}
+            />
+          )}
+          <ProjectStateCard
+            stats={stats}
+            statsLoading={statsLoading}
+            coverage={coverage}
+            coverageLoading={coverageLoading}
+          />
           <ScanFreshness data={staleness} />
           {/* My Queue + My Tasks are personal by definition — the hosts
               YOU marked In Review, the tasks assigned to YOU.  They
@@ -891,24 +981,52 @@ const Operations: React.FC = () => {
               the Runs section (a runs-view control), not your personal
               widgets.  Pre-fix they were gated behind `scope === mine`,
               so an operator viewing All runs lost sight of their own
-              review queue entirely. */}
-          <div className="mb-md grid grid-cols-1 gap-sm lg:grid-cols-12">
-            <div className="lg:col-span-7">
-              <MyQueueCard />
-            </div>
-            <div className="lg:col-span-5">
-              <MyTasksCard />
+              review queue entirely.  Prop-driven from the single
+              /workbench fetch (P2). */}
+          {/* RV-DESIGN — group the two personal surfaces under one "My
+              work" header with an explainer, so they read as one workspace
+              instead of two cards an analyst must reconcile.  Queue and
+              Tasks are different axes (hosts vs test-plan steps), so they
+              stay as two panels rather than one mixed list. */}
+          <div className="mb-md">
+            <h2 className="text-subheading font-semibold">My work</h2>
+            <p className="mb-sm text-caption text-muted-foreground">
+              <strong>Queue</strong> — hosts you're investigating (marked In Review).{' '}
+              <strong>Tasks</strong> — the specific test-plan steps you own: assigned to you,
+              on a host in your queue, or unassigned critical/high awaiting triage.
+            </p>
+            <div className="grid grid-cols-1 gap-sm lg:grid-cols-12">
+              <div className="lg:col-span-7">
+                <MyQueueCard
+                  data={workbench?.my_queue ?? null}
+                  loading={workbenchLoading}
+                  error={workbenchError}
+                  onRetry={reload}
+                />
+              </div>
+              <div className="lg:col-span-5">
+                <MyTasksCard
+                  data={workbench?.my_tasks ?? null}
+                  loading={workbenchLoading}
+                  error={workbenchError}
+                  onRetry={reload}
+                />
+              </div>
             </div>
           </div>
           {/* Team Review — the project-wide review roster (who has
               which hosts In Review), so operators can plan coverage
               and avoid two people working the same host. */}
           <div className="mb-md">
-            <TeamReviewCard />
+            <TeamReviewCard
+              data={workbench?.team_review ?? null}
+              loading={workbenchLoading}
+              error={workbenchError}
+              onRetry={reload}
+            />
           </div>
-          <CoverageSection coverage={coverage} loading={coverageLoading} />
           <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} />
-          <RunsSection userIdFilter={userIdFilter} />
+          <RunsSection />
         </>
       )}
     </div>

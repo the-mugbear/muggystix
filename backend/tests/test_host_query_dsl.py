@@ -57,14 +57,14 @@ def test_quoted_keyword_is_a_term():
 
 def test_precedence_or_binds_loosest():
     # a OR b AND c  ==  a OR (b AND c)
-    node = parse_query("a OR b AND c")
+    node = parse_query("aaa OR bbb AND ccc")
     assert isinstance(node, Or)
     assert isinstance(node.children[0], Term)
     assert isinstance(node.children[1], And)
 
 
 def test_parens_override_precedence():
-    node = parse_query("(a OR b) AND c")
+    node = parse_query("(aaa OR bbb) AND ccc")
     assert isinstance(node, And)
     assert isinstance(node.children[0], Or)
 
@@ -94,8 +94,8 @@ def test_not_negation():
 
 
 def test_case_insensitive_operators():
-    assert isinstance(parse_query("a or b"), Or)
-    assert isinstance(parse_query("a And b"), And)
+    assert isinstance(parse_query("aaa or bbb"), Or)
+    assert isinstance(parse_query("aaa And bbb"), And)
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +112,28 @@ def test_case_insensitive_operators():
     ("frob:x", "Unknown field"),
     ("", "Empty"),
     ("port:80,", "end"),  # trailing spaced/dangling comma → dangling OR
+    # RV-9 — sub-trigram lengths rejected (tech: now trgm; bare terms floored).
+    ("tech:a", "characters"),
+    ("ab", "characters"),
 ])
 def test_errors_raise_dslerror(bad, frag):
     with pytest.raises(DSLError) as ei:
         parse_query(bad)
+    assert frag.lower() in ei.value.message.lower()
+
+
+@pytest.mark.parametrize("bad,frag", [
+    ("ssh", "number"),       # RV-5 — non-numeric port
+    ("99999", "range"),      # RV-5 — out of 0..65535
+    ("-1", "number"),        # negative isn't isdigit()
+])
+def test_port_builder_rejects_invalid(bad, frag):
+    """RV-5 — port: validation lives in the build phase (like risk:/scan:),
+    surfaced as a 400 via evaluate(); the error path never touches ctx.db
+    so a None ctx is fine here."""
+    from app.services.host_query_dsl import _b_port
+    with pytest.raises(DSLError) as ei:
+        _b_port(None, [bad])
     assert frag.lower() in ei.value.message.lower()
 
 
@@ -167,7 +185,7 @@ def test_injection_chars_do_not_break_parser():
 # ---------------------------------------------------------------------------
 
 def test_count_leaves():
-    assert count_leaves(parse_query("a AND b OR c")) == 3
+    assert count_leaves(parse_query("aaa AND bbb OR ccc")) == 3
     assert count_leaves(parse_query("NOT (port:80 OR port:443)")) == 2
 
 

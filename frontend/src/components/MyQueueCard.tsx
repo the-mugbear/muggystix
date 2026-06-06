@@ -1,18 +1,17 @@
 /**
- * Personal attention queue card — extracted from Dashboard.tsx.
- * Self-contained: fetches its own data and renders empty state.
+ * Personal attention queue card. Controlled (prop-driven, v5.7.0 /
+ * refactor P2): Operations owns one /workbench fetch and passes this
+ * section's data in.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, RefreshCw } from 'lucide-react';
-import { getMyAttentionQueue } from '../services/api';
 import type { MyAttentionHost, MyAttentionResponse } from '../services/api';
 import { NavigableTableCell, NavigableTableRow } from './NavigableTableRow';
 import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
-import { formatApiError } from '../utils/apiErrors';
 import {
   Table,
   TableBody,
@@ -34,31 +33,15 @@ function fmtAgo(value?: string | null): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export const MyQueueCard: React.FC = () => {
+export interface MyQueueCardProps {
+  data: MyAttentionResponse | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}
+
+export const MyQueueCard: React.FC<MyQueueCardProps> = ({ data, loading, error, onRetry }) => {
   const navigate = useNavigate();
-  const [data, setData] = useState<MyAttentionResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  // Audit CRIT-6 — previously the failure path collapsed silently into
-  // the empty-queue Alert, so a backend outage looked like "nothing to
-  // review". Track error separately and surface a retry.
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchQueue = useCallback(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getMyAttentionQueue(10)
-      .then((resp) => { if (!cancelled) setData(resp); })
-      .catch((err) => {
-        if (cancelled) return;
-        setData(null);
-        setError(formatApiError(err, 'Could not load your attention queue.'));
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => fetchQueue(), [fetchQueue]);
 
   const items: MyAttentionHost[] = data?.items ?? [];
   const total = data?.in_review_count ?? 0;
@@ -92,7 +75,7 @@ export const MyQueueCard: React.FC = () => {
                 size="sm"
                 variant="outline"
                 className="mt-xs"
-                onClick={fetchQueue}
+                onClick={onRetry}
               >
                 <RefreshCw className="size-3.5" aria-hidden />
                 Retry

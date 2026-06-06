@@ -409,6 +409,11 @@ class DNSRecord(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    # RV-1 — provenance: which scan produced this DNS row, so a scan can
+    # report its dns_record_count instead of looking "empty" when it only
+    # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none,
+    # and a deleted scan leaves the record as orphaned-but-intact.
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True)
     domain = Column(String, nullable=False, index=True)
     record_type = Column(String, nullable=False)  # A, AAAA, CNAME, MX, TXT, etc.
     value = Column(String, nullable=False)
@@ -714,6 +719,54 @@ class HostQueryHistory(Base):
     )
 
 
+class OperationsCursor(Base):
+    """Per-user, per-project "I've seen Operations up to here" cursor.
+
+    Backs the Operations workbench "Since your last visit" section: the
+    GET /workbench diff compares new scans / findings / hosts against
+    ``last_viewed_at``; POST /workbench/seen advances it to now once the
+    operator has acknowledged them.  Exactly one row per (user, project).
+    """
+    __tablename__ = "operations_cursors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Null until the operator's first "mark seen" — treated as "never
+    # visited", so the first diff reports everything as new.
+    last_viewed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_operations_cursor_user_project"),
+    )
+
+
+class ActivityCursor(Base):
+    """Per-user, per-project "I've seen the Activity feed up to here" cursor.
+
+    RV-6 — previously the Activity page's unread-notes count used a single
+    ``User.last_activity_seen_at`` column, so viewing project A advanced the
+    cursor for every project and hid unread activity in project B.  This
+    scopes the cursor per (user, project), mirroring OperationsCursor.
+    """
+    __tablename__ = "activity_cursors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_activity_cursor_user_project"),
+    )
+
+
 class NoteStatus(str, enum.Enum):
     OPEN = "open"
     IN_PROGRESS = "in_progress"
@@ -733,9 +786,44 @@ class HostNote(Base):
     parent_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True)
     body = Column(Text, nullable=False)
     status = Column(SQLEnum(NoteStatus), nullable=False, default=NoteStatus.OPEN)
+    # Thread-level work fields (P3) — semantically belong to the ROOT note
+    # of a thread (parent_id IS NULL); replies leave them null.  They turn
+    # a note thread into a durable unit of work (owner, deadline, kind,
+    # resolution) rather than just a discussion.  Unlike body/status,
+    # these are editable by any project member, not only the author.
+    assignee_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    due_at = Column(DateTime(timezone=True), nullable=True)
+    # observation | finding | question | decision | action | handoff
+    note_type = Column(String(20), nullable=True)
+    resolution_summary = Column(Text, nullable=True)
+    pinned = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     host = relationship("Host", back_populates="notes")
-    author = relationship("User", back_populates="host_notes")
+    # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
+    author = relationship("User", foreign_keys=[user_id], back_populates="host_notes")
+    assignee = relationship("User", foreign_keys=[assignee_id])
     replies = relationship("HostNote", backref=backref("parent", remote_side="HostNote.id"), lazy="selectin")
+
+
+class HostNoteStatusHistory(Base):
+    """Audit trail of note-thread status transitions (P3).
+
+    One row per transition (open → in_progress → resolved, etc.), so the
+    thread's lifecycle is reconstructable and a resolution summary is
+    captured at the moment of resolving.  ``changed_by_id`` SET NULL on
+    user delete preserves the history with an anonymous actor.
+    """
+    __tablename__ = "host_note_status_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    note_id = Column(Integer, ForeignKey("host_notes.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_status = Column(String(20), nullable=True)
+    to_status = Column(String(20), nullable=False)
+    changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Resolution summary or transition note captured at the change.
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    changed_by = relationship("User", foreign_keys=[changed_by_id])

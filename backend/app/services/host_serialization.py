@@ -122,6 +122,39 @@ def serialize_host_base(host: models.Host, vuln_data: Optional[dict]) -> dict:
     }
 
 
+# RV-8 — the Hosts LIST renders a row summary, not the drill-down: it
+# shows up to 3 notes and 6 discoveries and never the NSE script bodies.
+# These helpers/caps let the list endpoint return ports WITHOUT script
+# output (the single largest payload contributor) and bounded discoveries,
+# so a page of hosts with long scan histories / verbose NSE no longer ships
+# drill-down-sized object graphs.  Detail keeps the full payload.
+LIST_DISCOVERY_CAP = 6
+
+
+def serialize_port_light(port: models.Port) -> dict:
+    """Port row for the LIST view — service/state columns only, NO scripts.
+
+    Built from already-loaded columns; never touches ``port.scripts`` so it
+    can't trigger a lazy-load N+1 once the list query drops that eager-load.
+    """
+    return {
+        "id": port.id,
+        "host_id": port.host_id,
+        "port_number": port.port_number,
+        "protocol": port.protocol,
+        "state": port.state,
+        "reason": port.reason,
+        "service_name": port.service_name,
+        "service_product": port.service_product,
+        "service_version": port.service_version,
+        "service_extrainfo": port.service_extrainfo,
+        "service_method": port.service_method,
+        "service_conf": port.service_conf,
+        "last_updated_scan_id": port.last_updated_scan_id,
+        "scripts": [],
+    }
+
+
 def serialize_host_detail(
     host: models.Host,
     vuln_data: Optional[dict],

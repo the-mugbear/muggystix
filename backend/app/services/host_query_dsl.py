@@ -380,6 +380,25 @@ def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return P.scan_predicate(ctx.db, ids)
 
 
+def _b_port(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    # RV-5 — validate here so a non-numeric value (``port:ssh``) is a 400,
+    # not a silent broadening.  Pre-fix the leaf dropped non-numeric values
+    # and an empty int list left the port subquery unfiltered → matched
+    # every host with any port.
+    ports = []
+    for v in values:
+        s = str(v).strip()
+        if not s.isdigit():
+            raise DSLError(f"port: expects a number, got '{v}' (try service: for a name)")
+        n = int(s)
+        if not (0 <= n <= 65535):
+            raise DSLError(f"port: out of range 0-65535, got '{v}'")
+        ports.append(n)
+    if not ports:
+        raise DSLError("port: requires at least one numeric value")
+    return P.port_predicate(ctx.db, ports)
+
+
 def _b_follow(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     preds = []
     for v in values:
@@ -417,13 +436,16 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("ip", lambda c, v: P.ip_predicate(v)),
     FieldSpec("hostname", lambda c, v: P.hostname_predicate(v), aliases=["host"]),
     FieldSpec("os", lambda c, v: P.os_predicate(v), value_source="os"),
-    FieldSpec("port", lambda c, v: P.port_predicate(c.db, v), value_source="port"),
+    FieldSpec("port", _b_port, value_source="port"),
     FieldSpec("service", lambda c, v: P.service_predicate(c.db, v), aliases=["svc"],
               value_source="service"),
     FieldSpec("portstate", lambda c, v: P.portstate_predicate(c.db, v), value_source="enum",
               enum_values=["open", "closed", "filtered"]),
     FieldSpec("subnet", _b_subnet, aliases=["cidr"], value_source="cidr"),
-    FieldSpec("tech", lambda c, v: P.tech_predicate(c.db, v), value_source="tech"),
+    # RV-9 — trgm=True gives tech: the same MIN_TRGM_LEN guard as the other
+    # ILIKE/trigram fields, so `tech:a` no longer forces a leading-wildcard
+    # scan below the 3-char index threshold.
+    FieldSpec("tech", lambda c, v: P.tech_predicate(c.db, v), value_source="tech", trgm=True),
     FieldSpec("tag", lambda c, v: P.tag_predicate_by_name(c.db, v, c.project_id),
               value_source="tag"),
     FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
@@ -478,6 +500,14 @@ def _validate(node: Node) -> None:
                         )
         elif isinstance(n, Term):
             leaves += 1
+            # RV-9 — a bare free-text term shorter than the trigram index
+            # threshold forces a leading-wildcard seq scan across many
+            # columns.  Require MIN_TRGM_LEN, matching the trgm fields.
+            if len(n.text.strip()) < MIN_TRGM_LEN:
+                raise DSLError(
+                    f"Search term '{n.text}' needs at least {MIN_TRGM_LEN} characters",
+                    position=n.pos,
+                )
         if leaves > MAX_LEAVES:
             raise DSLError(f"Query has too many terms (max {MAX_LEAVES})")
 

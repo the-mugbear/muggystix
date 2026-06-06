@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, case, and_, distinct
+from sqlalchemy import func, desc, case, and_, or_, distinct, false
 from app.db.session import get_db
 from app.db import models
 from app.db.models import FollowStatus, HostFollow
@@ -609,19 +609,25 @@ def get_team_review(
 
 
 # ---------------------------------------------------------------------------
-# Personal "My Tasks" — non-terminal test plan entries on hosts the
-# current user has marked In Review.
+# Personal "My Tasks" — the authoritative personal work queue (backend
+# 2.96.0, refactor P1).  Previously this was ONLY "non-terminal entries on hosts
+# I marked In Review", which ignored TestPlanEntry.assigned_to_id (real
+# ownership) and surfaced nothing for an analyst who was assigned work
+# but hadn't manually marked the host In Review.
 #
-# Rationale (option ii from the dashboard redesign discussion): use the
-# user's In Review hosts as the implicit task scope.  Avoids requiring
-# the agent or analyst to set `assigned_to_id` on every entry, which
-# nobody is currently doing.  The dashboard widget answers "what tests
-# do I still need to run on the hosts I'm working on?".
+# It is now the UNION of three buckets, each non-terminal entry on an
+# accepted plan in this project, tagged with WHY it's in your queue:
+#   - "assigned"  — TestPlanEntry.assigned_to_id == me (authoritative).
+#   - "in_review" — entry sits on a host I marked In Review (my implicit
+#                   investigation scope; the pre-P1 behaviour).
+#   - "triage"    — UNASSIGNED critical/high entry; a shared triage queue
+#                   so high-severity work nobody owns is still visible.
+# A single entry can carry multiple reasons (e.g. assigned AND in_review).
 # ---------------------------------------------------------------------------
 
 class MyTaskItem(BaseModel):
     """One row of the dashboard's personal task list — a single test
-    plan entry on a host the current user is reviewing."""
+    plan entry, tagged with the reason(s) it lands in the caller's queue."""
     entry_id: int
     plan_id: int
     plan_title: str
@@ -635,17 +641,30 @@ class MyTaskItem(BaseModel):
     proposed_test_count: int
     rationale: Optional[str] = None
     updated_at: Optional[datetime] = None
+    # Why this entry is in your queue: subset of {assigned, in_review, triage}.
+    reasons: List[str] = Field(default_factory=list)
+    assigned_to_id: Optional[int] = None
+
+
+class MyTasksReasonCounts(BaseModel):
+    """Per-bucket counts (independent of `limit`).  Buckets overlap — an
+    entry can be both assigned and in_review — so these do NOT sum to
+    `total_open` (which is the deduped union)."""
+    assigned: int = 0
+    in_review: int = 0
+    triage: int = 0
 
 
 class MyTasksResponse(BaseModel):
     items: List[MyTaskItem] = Field(default_factory=list)
     total_open: int = 0
+    reason_counts: MyTasksReasonCounts = Field(default_factory=MyTasksReasonCounts)
 
 
 @router.get(
     "/my-tasks",
     response_model=MyTasksResponse,
-    summary="My Tasks — non-terminal test plan entries on hosts in my queue",
+    summary="My Tasks — assigned + in-review + unassigned-triage test plan entries",
 )
 def get_my_tasks(
     db: Session = Depends(get_db),
@@ -653,38 +672,63 @@ def get_my_tasks(
     project: Project = Depends(get_current_project),
     limit: int = Query(15, ge=1, le=100),
 ):
-    """Return non-terminal test plan entries on hosts the user is reviewing.
+    """Return the caller's authoritative personal task queue.
 
-    Filters:
-      - Plan must be accepted (status in approved/in_progress/completed),
-        matching the same gate the host detail page uses.
-      - Entry must NOT be terminal — completed and rejected are excluded.
-      - Host must be in the user's In Review queue (HostFollow status
-        IN_REVIEW for the current user).
+    Every row is a non-terminal entry (status in proposed/approved/
+    in_progress) on an accepted plan (approved/in_progress/completed) in
+    this project, matching at least one of:
+      - assigned to the caller (`assigned_to_id`),
+      - on a host the caller marked In Review,
+      - unassigned and critical/high (shared triage).
 
-    The widget is per-user: rotating the In Review queue rotates the
-    task list.  Two analysts on the same project see different rows.
-
-    Order: priority (critical → low) then most recently updated.
+    Order: strongest reason (assigned → in_review → triage), then
+    priority (critical → info), then most recently updated.
     """
-    # Scalar sub-select: host_ids the current user is currently
-    # reviewing in this project.  Used as the host scope for the entry
-    # query below.  Must be a scalar_subquery() (not subquery()) so
-    # SQLAlchemy can use it directly inside `.in_(...)` without
-    # emitting a SAWarning about implicit coercion.
-    in_review_host_ids = (
-        db.query(HostFollow.host_id)
-        .join(models.Host, HostFollow.host_id == models.Host.id)
-        .filter(
-            HostFollow.user_id == current_user.id,
-            models.Host.project_id == project.id,
-            HostFollow.status == FollowStatus.IN_REVIEW,
+    # Materialize the caller's In Review host_ids once — used both in the
+    # SQL filter and for Python-side reason tagging.
+    in_review_host_ids = {
+        hid
+        for (hid,) in (
+            db.query(HostFollow.host_id)
+            .join(models.Host, HostFollow.host_id == models.Host.id)
+            .filter(
+                HostFollow.user_id == current_user.id,
+                models.Host.project_id == project.id,
+                HostFollow.status == FollowStatus.IN_REVIEW,
+            )
+            .all()
         )
-        .scalar_subquery()
+    }
+
+    assigned_cond = TestPlanEntry.assigned_to_id == current_user.id
+    in_review_cond = (
+        TestPlanEntry.host_id.in_(in_review_host_ids) if in_review_host_ids
+        else false()
+    )
+    triage_cond = and_(
+        TestPlanEntry.assigned_to_id.is_(None),
+        TestPlanEntry.priority.in_(("critical", "high")),
     )
 
-    # Priority sort order — criticals at the top.
-    PRIORITY_RANK = case(
+    base_filters = (
+        TestPlan.project_id == project.id,
+        TestPlan.status.in_(("approved", "in_progress", "completed")),
+        TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
+    )
+
+    # Rank in SQL so the LIMIT keeps the TRUE top rows.  Pre-fix this
+    # over-fetched `limit*4` rows with no ORDER BY and sorted in Python —
+    # an unordered LIMIT returns an arbitrary subset, so once >limit*4
+    # entries qualified, assigned work could be dropped before it was
+    # ever ranked.  CASE order matches the reason precedence
+    # (assigned → in_review → triage); `in_review_cond` is already a
+    # false() literal when the caller has no In Review hosts.
+    reason_rank_case = case(
+        (assigned_cond, 0),
+        (in_review_cond, 1),
+        else_=2,
+    )
+    priority_rank_case = case(
         (TestPlanEntry.priority == "critical", 0),
         (TestPlanEntry.priority == "high", 1),
         (TestPlanEntry.priority == "medium", 2),
@@ -693,38 +737,30 @@ def get_my_tasks(
         else_=5,
     )
 
-    rows = (
+    ordered = (
         db.query(TestPlanEntry, TestPlan, models.Host)
         .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
         .join(models.Host, TestPlanEntry.host_id == models.Host.id)
-        .filter(
-            TestPlan.project_id == project.id,
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
-            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
-            TestPlanEntry.host_id.in_(in_review_host_ids),
-        )
+        .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
         .order_by(
-            PRIORITY_RANK,
-            desc(TestPlanEntry.updated_at.is_(None)),
+            reason_rank_case,
+            priority_rank_case,
+            desc(TestPlanEntry.updated_at.is_(None)),  # NULLs last
             desc(TestPlanEntry.updated_at),
         )
         .limit(limit)
         .all()
     )
 
-    # Total open task count (independent of `limit`) so the widget can
-    # show "showing 15 of 28 open tasks".
-    total_open = (
-        db.query(func.count(TestPlanEntry.id))
-        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlan.project_id == project.id,
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
-            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
-            TestPlanEntry.host_id.in_(in_review_host_ids),
-        )
-        .scalar()
-    ) or 0
+    def reasons_for(entry) -> List[str]:
+        out: List[str] = []
+        if entry.assigned_to_id == current_user.id:
+            out.append("assigned")
+        if entry.host_id in in_review_host_ids:
+            out.append("in_review")
+        if entry.assigned_to_id is None and entry.priority in ("critical", "high"):
+            out.append("triage")
+        return out
 
     items = [
         MyTaskItem(
@@ -741,11 +777,31 @@ def get_my_tasks(
             proposed_test_count=len(entry.proposed_tests or []),
             rationale=entry.rationale,
             updated_at=entry.updated_at,
+            reasons=reasons_for(entry),
+            assigned_to_id=entry.assigned_to_id,
         )
-        for entry, plan, host in rows
+        for entry, plan, host in ordered
     ]
 
-    return MyTasksResponse(items=items, total_open=total_open)
+    # Deduped union total + per-bucket counts (independent of `limit`).
+    def _count(extra_cond) -> int:
+        return (
+            db.query(func.count(distinct(TestPlanEntry.id)))
+            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+            .filter(*base_filters, extra_cond)
+            .scalar()
+        ) or 0
+
+    total_open = _count(or_(assigned_cond, in_review_cond, triage_cond))
+    reason_counts = MyTasksReasonCounts(
+        assigned=_count(assigned_cond),
+        in_review=_count(in_review_cond) if in_review_host_ids else 0,
+        triage=_count(triage_cond),
+    )
+
+    return MyTasksResponse(
+        items=items, total_open=total_open, reason_counts=reason_counts,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -4,15 +4,14 @@
  * In-Review queue, this one is the whole team's, so operators can see
  * who is working what and plan coverage (v4.9.0).
  *
- * Self-contained: fetches its own data, renders its own states.
+ * Controlled (prop-driven, v5.7.0 / refactor P2): Operations owns one
+ * /workbench fetch and passes this section's data in.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, RefreshCw, Users } from 'lucide-react';
 
-import { getTeamReview } from '../services/api';
 import type { TeamReviewResponse, TeamReviewerGroup } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -51,28 +50,15 @@ const ReviewerRow: React.FC<{ group: TeamReviewerGroup }> = ({ group }) => {
   );
 };
 
-export const TeamReviewCard: React.FC = () => {
-  const [data, setData] = useState<TeamReviewResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export interface TeamReviewCardProps {
+  data: TeamReviewResponse | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}
+
+export const TeamReviewCard: React.FC<TeamReviewCardProps> = ({ data, loading, error, onRetry }) => {
   const [expanded, setExpanded] = useState(false);
-
-  const fetchRoster = useCallback(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getTeamReview()
-      .then((resp) => { if (!cancelled) setData(resp); })
-      .catch((err) => {
-        if (cancelled) return;
-        setData(null);
-        setError(formatApiError(err, 'Could not load the team review roster.'));
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => fetchRoster(), [fetchRoster]);
 
   const reviewers = data?.reviewers ?? [];
   const shown = expanded ? reviewers : reviewers.slice(0, REVIEWER_PREVIEW);
@@ -96,7 +82,7 @@ export const TeamReviewCard: React.FC = () => {
             </div>
           </div>
           {!loading && (
-            <Button size="sm" variant="ghost" onClick={fetchRoster} aria-label="Refresh">
+            <Button size="sm" variant="ghost" onClick={onRetry} aria-label="Refresh">
               <RefreshCw className="size-3.5" aria-hidden />
             </Button>
           )}
@@ -112,7 +98,7 @@ export const TeamReviewCard: React.FC = () => {
             <AlertTitle>Couldn't load the roster</AlertTitle>
             <AlertDescription>
               <p className="break-words">{error}</p>
-              <Button size="sm" variant="outline" className="mt-xs" onClick={fetchRoster}>
+              <Button size="sm" variant="outline" className="mt-xs" onClick={onRetry}>
                 <RefreshCw className="size-3.5" aria-hidden />
                 Retry
               </Button>

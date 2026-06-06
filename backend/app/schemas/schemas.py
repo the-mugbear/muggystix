@@ -95,6 +95,13 @@ class HostNote(HostNoteBase):
     author_id: Optional[int] = Field(None, validation_alias="user_id")
     author_name: Optional[str] = None
     parent_id: Optional[int] = None
+    # Thread-level work fields (P3) — populated on the root note.
+    assignee_id: Optional[int] = None
+    assignee_name: Optional[str] = None
+    due_at: Optional[datetime] = None
+    note_type: Optional[str] = None
+    resolution_summary: Optional[str] = None
+    pinned: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
     # Audit finding H3: optional warning populated by the
@@ -147,6 +154,25 @@ class HostNoteCreate(HostNoteBase):
 class HostNoteUpdate(BaseModel):
     body: Optional[str] = Field(None, max_length=16384)
     status: Optional[NoteStatus] = None
+    # Thread-level work fields (P3). The endpoint uses ``model_fields_set``
+    # to tell "omitted" from an explicit null (which clears the field).
+    assignee_id: Optional[int] = None
+    due_at: Optional[datetime] = None
+    note_type: Optional[str] = None
+    resolution_summary: Optional[str] = Field(None, max_length=16384)
+    pinned: Optional[bool] = None
+
+
+class HostNoteStatusHistoryEntry(BaseModel):
+    id: int
+    from_status: Optional[str] = None
+    to_status: str
+    changed_by_id: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    summary: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 class HostVulnerabilitySummary(BaseModel):
     total_vulnerabilities: int = 0

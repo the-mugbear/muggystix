@@ -143,6 +143,15 @@ def _stream_records(
     elif head_stripped.startswith(b"{"):
         prefix = _detect_array_prefix(head_stripped, array_keys)
         if prefix is None:
+            # RV-7 — a leading '{' is ambiguous: it's EITHER a single
+            # top-level object carrying a known array key, OR JSONL (one
+            # object per line, which is exactly what dnsx -json emits and
+            # ALWAYS starts with '{').  Pre-fix the latter raised here once
+            # the file passed the streaming threshold.  If the first line
+            # is itself a complete JSON object, treat the file as JSONL.
+            if _looks_like_jsonl(head):
+                yield from _stream_jsonl_file(file_path)
+                return
             raise ValueError(
                 f"{tool_label} exceeds streaming threshold but no recognised "
                 f"top-level array key was found in the first {_PEEK_BYTES} bytes "
@@ -162,6 +171,24 @@ def _stream_records(
             raise ValueError(
                 f"Invalid or truncated {tool_label} during streaming: {exc}"
             ) from exc
+
+
+def _looks_like_jsonl(head: bytes) -> bool:
+    """RV-7 — True when the first non-empty line of the peek window is a
+    complete JSON object, i.e. the file is JSONL (object-per-line) rather
+    than one pretty-printed top-level object (whose first line is just
+    ``{``).  Used to disambiguate a leading ``{`` that carries no known
+    top-level array key."""
+    text = head.decode("utf-8", errors="ignore")
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            return isinstance(json.loads(s), dict)
+        except json.JSONDecodeError:
+            return False
+    return False
 
 
 def _stream_jsonl_file(file_path: str) -> Iterator[dict]:

@@ -94,8 +94,11 @@ const NoteRow: React.FC<NoteRowProps> = ({
   return (
     <React.Fragment>
       <div
+        // Anchor target for #note-{id} deep-links (P3) — e.g.
+        // /hosts/42#note-17 jumps to a specific note/thread.
+        id={`note-${note.id}`}
         className={cn(
-          'min-w-0 py-sm',
+          'min-w-0 scroll-mt-24 py-sm',
           isReply && 'border-l-2 border-border pl-sm',
           isReply && (depth >= 4 ? 'ml-lg' : depth >= 2 ? 'ml-md' : 'ml-sm'),
         )}
@@ -103,6 +106,10 @@ const NoteRow: React.FC<NoteRowProps> = ({
         <div className="mb-xxs flex flex-wrap items-center justify-between gap-xs">
           <div className="flex flex-wrap items-center gap-xs">
             <Badge variant={statusMeta.badgeVariant}>{statusMeta.label}</Badge>
+            {!isReply && note.pinned && <Badge variant="warning">Pinned</Badge>}
+            {!isReply && note.note_type && (
+              <Badge variant="outline" className="capitalize">{note.note_type}</Badge>
+            )}
             <span className="text-metadata font-semibold">{authorLabel}</span>
             <span className="text-caption text-muted-foreground">
               {new Date(note.created_at).toLocaleString()}
@@ -169,6 +176,26 @@ const NoteRow: React.FC<NoteRowProps> = ({
           </div>
         </div>
         <p className="whitespace-pre-wrap text-body">{note.body}</p>
+        {/* Thread work-state (P3) — shown on the root note only. */}
+        {!isReply && (note.assignee_name || note.due_at || note.resolution_summary) && (
+          <div className="mt-xs flex flex-col gap-xxs text-caption text-muted-foreground">
+            {note.assignee_name && (
+              <span>
+                Assigned to{' '}
+                <span className="font-medium text-foreground">{note.assignee_name}</span>
+              </span>
+            )}
+            {note.due_at && (
+              <span>Due {new Date(note.due_at).toLocaleDateString()}</span>
+            )}
+            {note.resolution_summary && (
+              <div className="rounded-control border border-success/30 bg-success/5 p-xs text-foreground">
+                <span className="font-medium">Resolution: </span>
+                {note.resolution_summary}
+              </div>
+            )}
+          </div>
+        )}
         {replyTo?.id === note.id && (
           <div className="mt-sm border-l-2 border-primary pl-sm">
             <p className="text-caption text-muted-foreground">

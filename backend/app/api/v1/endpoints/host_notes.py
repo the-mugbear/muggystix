@@ -1,6 +1,7 @@
 """Host notes CRUD endpoints."""
 
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, desc
@@ -10,12 +11,14 @@ logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
 from app.db import models
-from app.db.models import HostNote as HostNoteModel, NoteStatus
+from app.db.models import HostNote as HostNoteModel, NoteStatus, ActivityCursor
 from app.db.models_auth import User
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project
-from app.schemas.schemas import HostNote, HostNoteCreate, HostNoteUpdate
+from app.db.models_project import Project, ProjectRole
+from app.schemas.schemas import (
+    HostNote, HostNoteCreate, HostNoteUpdate, HostNoteStatusHistoryEntry,
+)
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import safe_dispatch
 from app.services.host_follow_service import HostFollowService
@@ -27,6 +30,9 @@ def _serialize_note(note: HostNoteModel) -> HostNote:
     author_name = None
     if note.author:
         author_name = note.author.full_name or note.author.username
+    assignee_name = None
+    if note.assignee:
+        assignee_name = note.assignee.full_name or note.assignee.username
     return HostNote(
         id=note.id,
         body=note.body,
@@ -34,6 +40,12 @@ def _serialize_note(note: HostNoteModel) -> HostNote:
         author_id=note.user_id,
         author_name=author_name,
         parent_id=note.parent_id,
+        assignee_id=note.assignee_id,
+        assignee_name=assignee_name,
+        due_at=note.due_at,
+        note_type=note.note_type,
+        resolution_summary=note.resolution_summary,
+        pinned=bool(note.pinned),
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
@@ -48,20 +60,29 @@ def get_unread_activity_count(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Get count of notes created/updated since the user last viewed the activity page."""
-    last_seen = current_user.last_activity_seen_at
+    """Count notes by teammates since the caller last marked THIS project's
+    activity feed seen.  RV-6 — the cursor is per (user, project), so a
+    visit to one project no longer hides unread activity in another."""
+    cursor = (
+        db.query(ActivityCursor)
+        .filter(
+            ActivityCursor.user_id == current_user.id,
+            ActivityCursor.project_id == project.id,
+        )
+        .first()
+    )
+    last_seen = cursor.last_seen_at if cursor else None
     query = db.query(func.count(HostNoteModel.id)).join(
         models.Host, HostNoteModel.host_id == models.Host.id
-    ).filter(models.Host.project_id == project.id)
+    ).filter(
+        models.Host.project_id == project.id,
+        # Always exclude the caller's own notes from the unread count.
+        HostNoteModel.user_id != current_user.id,
+    )
     if last_seen:
         query = query.filter(
             func.coalesce(HostNoteModel.updated_at, HostNoteModel.created_at) > last_seen
         )
-        # Exclude the user's own notes from the unread count
-        query = query.filter(HostNoteModel.user_id != current_user.id)
-    else:
-        # Never seen activity — count all notes by other users
-        query = query.filter(HostNoteModel.user_id != current_user.id)
     count = query.scalar() or 0
     return {"unread_count": count}
 
@@ -69,15 +90,30 @@ def get_unread_activity_count(
 @router.post(
     "/notes/mark-seen",
     status_code=204,
-    summary="Mark all activity as seen (advances last_activity_seen_at)",
+    summary="Mark this project's activity feed seen (per-user/project cursor)",
 )
 def mark_activity_seen(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Mark all current activity as seen by updating the user's last_activity_seen_at."""
-    current_user.last_activity_seen_at = func.now()
+    """Advance the caller's Activity cursor for THIS project only (RV-6)."""
+    now = datetime.now(timezone.utc)
+    cursor = (
+        db.query(ActivityCursor)
+        .filter(
+            ActivityCursor.user_id == current_user.id,
+            ActivityCursor.project_id == project.id,
+        )
+        .first()
+    )
+    if cursor is None:
+        cursor = ActivityCursor(
+            user_id=current_user.id, project_id=project.id, last_seen_at=now,
+        )
+        db.add(cursor)
+    else:
+        cursor.last_seen_at = now
     db.commit()
     return Response(status_code=204)
 
@@ -204,6 +240,19 @@ def get_note_activity(
         if note.author:
             author_name = note.author.full_name or note.author.username
         thread_root_id = resolve_thread_root_id(note)
+        # Thread status is the ROOT note's status, not the latest reply's.
+        # Pre-fix the Activity feed showed `latest.status`, so replying to a
+        # resolved thread (replies are forced to status "open" client-side)
+        # silently reopened it.  The root note is always loaded into
+        # ancestor_note_map by the parent-walk above; fall back to this
+        # note's own status only if the root somehow isn't present.
+        root_note = ancestor_note_map.get(thread_root_id)
+        thread_status_source = root_note if root_note is not None else note
+        thread_root_status = (
+            thread_status_source.status.value
+            if hasattr(thread_status_source.status, "value")
+            else thread_status_source.status
+        )
         results.append({
             "note_id": note.id,
             "host_id": note.host_id,
@@ -215,6 +264,7 @@ def get_note_activity(
             "author_id": note.user_id,
             "parent_id": note.parent_id,
             "thread_root_id": thread_root_id,
+            "thread_root_status": thread_root_status,
             "thread_note_count": thread_note_counts.get((note.host_id, thread_root_id), 1),
             "created_at": note.created_at.isoformat() if note.created_at else None,
             "updated_at": note.updated_at.isoformat() if note.updated_at else None,
@@ -274,6 +324,8 @@ def list_host_notes(
     "/{host_id:int}/notes",
     response_model=HostNote,
     summary="Create a note on a host (parses @mentions to notify users)",
+    # RV-4 — note writes require ANALYST+; viewers/auditors are read-only.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def create_host_note(
     host_id: int,
@@ -353,7 +405,10 @@ def create_host_note(
 @router.patch(
     "/{host_id:int}/notes/{note_id:int}",
     response_model=HostNote,
-    summary="Edit a note (re-parses @mentions on body change)",
+    summary="Edit a note body (author-only) and/or thread work-state (any project member)",
+    # RV-4 — ANALYST+ to mutate; "any project member" in the docstring
+    # means any member who can write (ANALYST/ADMIN), not viewers/auditors.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def update_host_note(
     host_id: int,
@@ -363,48 +418,86 @@ def update_host_note(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
+    """P3 permission split:
+
+    * ``body`` is authored content — only its author may change it.
+    * thread work-state (``status``/``assignee_id``/``due_at``/
+      ``note_type``/``resolution_summary``/``pinned``) is collaborative —
+      any project member may change it, so a teammate can resolve or
+      reassign an abandoned thread.  Status changes are recorded in
+      ``host_note_status_history`` and resolving requires a summary.
+
+    ``model_fields_set`` distinguishes an omitted field from an explicit
+    null (which clears a nullable thread field).
+    """
     host = db.query(models.Host).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
+    provided = payload.model_fields_set
     follow_service = HostFollowService(db)
-    try:
-        note = follow_service.update_note(
-            note_id,
-            current_user.id,
-            body=payload.body,
-            status=payload.status,
-            host_id=host_id,
-        )
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Note not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Not authorized to modify this note")
+    note = None
+    body_changed = False
 
-    # Same partial-success contract as create_host_note — see audit
-    # finding H3.  Note update succeeds independently of notification
-    # delivery; a best-effort ``mention_warning`` on the response
-    # body tells clients about the degradation without blocking the
-    # core write.
+    # 1) Body edit — AUTHOR ONLY.
+    if "body" in provided and payload.body is not None:
+        try:
+            note = follow_service.update_note_body(
+                note_id, current_user.id, body=payload.body, host_id=host_id,
+            )
+            body_changed = True
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Note not found")
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Only the author can edit a note's body")
+
+    # 2) Thread work-state — ANY project member.
+    meta = {}
+    if "status" in provided and payload.status is not None:
+        meta["status"] = NoteStatus(payload.status.value)
+    for key in ("assignee_id", "due_at", "note_type", "resolution_summary", "pinned"):
+        if key in provided:
+            meta[key] = getattr(payload, key)
+    status_changed = "status" in meta
+    if meta:
+        try:
+            note = follow_service.update_thread_meta(
+                note_id, current_user.id, host_id=host_id, **meta,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if msg == "Note not found":
+                raise HTTPException(status_code=404, detail="Note not found")
+            # resolve-requires-summary / invalid note_type → 400.
+            raise HTTPException(status_code=400, detail=msg)
+
+    if note is None:
+        # Empty payload — return the current note unchanged.
+        note = (
+            db.query(HostNoteModel)
+            .filter(HostNoteModel.id == note_id, HostNoteModel.host_id == host_id)
+            .first()
+        )
+        if note is None:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+    # Best-effort notifications (audit finding H3 contract) — mentions
+    # only re-fire on a body change; the core write already committed in
+    # the service, so a notification failure never loses the edit.
     mention_warning: Optional[str] = None
     mention_notifs = []
-    status_changed = False
     try:
         notification_service = NotificationService(db)
-        if payload.body:
+        if body_changed and payload.body:
             mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
-        if payload.status:
-            old_status = "unknown"  # We don't track the previous value easily
-            notification_service.notify_status_change(note, old_status, payload.status, current_user, project)
-            status_changed = True
         db.commit()
-    except Exception as exc:
+    except Exception:
         logger.exception(
             "Note update notification processing failed",
             extra={
                 "note_id": note_id,
                 "host_id": host_id,
-                "author_id": current_user.id,
+                "actor_id": current_user.id,
                 "project_id": project.id,
             },
         )
@@ -426,13 +519,14 @@ def update_host_note(
                 context={"host_id": host_id, "note_id": note_id},
             )
         if status_changed:
+            new_status = meta["status"].value if hasattr(meta["status"], "value") else str(meta["status"])
             safe_dispatch(
                 db,
                 project_id=project.id,
                 event="note_status_change",
-                title=f"Note on {host_label} → {payload.status}",
-                body=(payload.body or "")[:280],
-                context={"host_id": host_id, "note_id": note_id, "status": payload.status},
+                title=f"Note thread on {host_label} → {new_status}",
+                body=(note.resolution_summary or "")[:280],
+                context={"host_id": host_id, "note_id": note.id, "status": new_status},
             )
 
     serialized = _serialize_note(note)
@@ -441,10 +535,53 @@ def update_host_note(
     return serialized
 
 
+@router.get(
+    "/{host_id:int}/notes/{note_id:int}/history",
+    response_model=List[HostNoteStatusHistoryEntry],
+    summary="Status-transition history for a note thread",
+)
+def get_host_note_history(
+    host_id: int,
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    host = db.query(models.Host).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    note = (
+        db.query(HostNoteModel)
+        .filter(HostNoteModel.id == note_id, HostNoteModel.host_id == host_id)
+        .first()
+    )
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    follow_service = HostFollowService(db)
+    rows = follow_service.get_status_history(note_id)
+    return [
+        HostNoteStatusHistoryEntry(
+            id=r.id,
+            from_status=r.from_status,
+            to_status=r.to_status,
+            changed_by_id=r.changed_by_id,
+            changed_by_name=(
+                (r.changed_by.full_name or r.changed_by.username) if r.changed_by else None
+            ),
+            summary=r.summary,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
 @router.delete(
     "/{host_id:int}/notes/{note_id:int}",
     status_code=204,
     summary="Delete a note",
+    # RV-4 — ANALYST+ (author-only enforcement stays in the service).
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def delete_host_note(
     host_id: int,

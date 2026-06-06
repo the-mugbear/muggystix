@@ -183,6 +183,9 @@ export interface HostFollowInfo {
   updated_at?: string | null;
 }
 
+/** Thread-level note kinds (P3) — set on the thread's root note. */
+export type NoteType = 'observation' | 'finding' | 'question' | 'decision' | 'action' | 'handoff';
+
 export interface HostNote {
   id: number;
   body: string;
@@ -190,8 +193,25 @@ export interface HostNote {
   author_id: number;
   author_name: string | null;
   parent_id?: number | null;
+  // Thread-level work fields (P3) — populated on the root note.
+  assignee_id?: number | null;
+  assignee_name?: string | null;
+  due_at?: string | null;
+  note_type?: NoteType | null;
+  resolution_summary?: string | null;
+  pinned?: boolean;
   created_at: string;
   updated_at?: string | null;
+}
+
+export interface HostNoteStatusHistoryEntry {
+  id: number;
+  from_status: string | null;
+  to_status: string;
+  changed_by_id: number | null;
+  changed_by_name: string | null;
+  summary: string | null;
+  created_at: string;
 }
 
 export interface HostDiscovery {
@@ -585,6 +605,9 @@ export const getTeamReview = async (): Promise<TeamReviewResponse> => {
 
 // --- My Tasks (test plan entries on hosts I'm reviewing) ---
 
+/** Why a task is in your queue. Overlapping — a task can carry several. */
+export type MyTaskReason = 'assigned' | 'in_review' | 'triage';
+
 export interface MyTaskItem {
   entry_id: number;
   plan_id: number;
@@ -599,15 +622,56 @@ export interface MyTaskItem {
   proposed_test_count: number;
   rationale: string | null;
   updated_at: string | null;
+  reasons: MyTaskReason[];
+  assigned_to_id: number | null;
+}
+
+/** Per-bucket counts. Buckets overlap, so these do NOT sum to total_open. */
+export interface MyTasksReasonCounts {
+  assigned: number;
+  in_review: number;
+  triage: number;
 }
 
 export interface MyTasksResponse {
   items: MyTaskItem[];
   total_open: number;
+  reason_counts: MyTasksReasonCounts;
 }
 
 export const getMyTasks = async (limit = 15): Promise<MyTasksResponse> => {
   const response = await api.get(`${p()}/dashboard/my-tasks`, { params: { limit } });
+  return response.data;
+};
+
+// --- Operations workbench (batched personal surface + since-last-visit) ---
+
+export interface SinceLastVisit {
+  last_viewed_at: string | null;
+  is_first_visit: boolean;
+  new_scan_count: number;
+  latest_scan_id: number | null;
+  latest_scan_filename: string | null;
+  latest_scan_created_at: string | null;
+  new_host_count: number;
+  new_critical_findings: number;
+  new_high_findings: number;
+}
+
+export interface WorkbenchResponse {
+  my_queue: MyAttentionResponse;
+  my_tasks: MyTasksResponse;
+  team_review: TeamReviewResponse;
+  since_last_visit: SinceLastVisit;
+}
+
+export const getWorkbench = async (): Promise<WorkbenchResponse> => {
+  const response = await api.get(`${p()}/workbench`);
+  return response.data;
+};
+
+export const markWorkbenchSeen = async (): Promise<{ last_viewed_at: string }> => {
+  const response = await api.post(`${p()}/workbench/seen`);
   return response.data;
 };
 
@@ -668,12 +732,32 @@ export const createHostNote = async (
   return response.data;
 };
 
+export interface HostNoteUpdatePayload {
+  body?: string;
+  status?: NoteStatus;
+  // Thread-level work fields (P3). Sending `null` clears a nullable field;
+  // omitting a field leaves it unchanged.
+  assignee_id?: number | null;
+  due_at?: string | null;
+  note_type?: NoteType | null;
+  resolution_summary?: string | null;
+  pinned?: boolean;
+}
+
 export const updateHostNote = async (
   hostId: number,
   noteId: number,
-  payload: { body?: string; status?: NoteStatus },
+  payload: HostNoteUpdatePayload,
 ): Promise<HostNote> => {
   const response = await api.patch(`${p()}/hosts/${hostId}/notes/${noteId}`, payload);
+  return response.data;
+};
+
+export const getHostNoteHistory = async (
+  hostId: number,
+  noteId: number,
+): Promise<HostNoteStatusHistoryEntry[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/notes/${noteId}/history`);
   return response.data;
 };
 
@@ -692,6 +776,9 @@ export interface NoteActivityItem {
   author_id: number;
   parent_id?: number | null;
   thread_root_id?: number | null;
+  // Status of the thread's ROOT note — use this for the thread-level badge,
+  // not `status` (which is the per-message status; a reply is always "open").
+  thread_root_status?: NoteStatus | null;
   thread_note_count?: number;
   created_at: string;
   updated_at: string | null;

@@ -21,6 +21,8 @@ from app.api.v1.endpoints import (
     agent_sessions,
     # v3 alpha.3 — project coverage summary (drives v3 Operations).
     coverage,
+    # Refactor P2 — batched Operations workbench + since-last-visit cursor.
+    workbench,
     # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
     recon_sessions,
     # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
@@ -118,6 +120,7 @@ project_router.include_router(host_filter_views.router, prefix="/hosts", tags=["
 project_router.include_router(host_queries.router, prefix="/hosts", tags=["host-queries"])
 project_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 project_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+project_router.include_router(workbench.router, prefix="/workbench", tags=["workbench"])
 # v2.86.0 — subnet labels share the /scopes prefix so URLs read as
 # /projects/{pid}/scopes/subnet-labels and
 # /projects/{pid}/scopes/subnets/{sid}/labels.  Separate file from

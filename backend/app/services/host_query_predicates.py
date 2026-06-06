@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional, Sequence
 
-from sqlalchemy import cast, func, or_
+from sqlalchemy import cast, func, or_, false
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import exists
 from sqlalchemy.sql.elements import ColumnElement
@@ -144,8 +144,16 @@ def port_match_subquery(
 
 
 def port_predicate(db: Session, values: Sequence) -> ColumnElement:
-    """Host has at least one port whose number is in ``values``."""
+    """Host has at least one port whose number is in ``values``.
+
+    RV-5 — an empty port list must NOT broaden to "any port" (the legacy
+    ``port_match_subquery`` skips an empty ``ports`` filter).  The DSL
+    builder validates and rejects non-numeric input upstream; this guard
+    is defense-in-depth for any other caller.
+    """
     port_ints = [int(v) for v in values if str(v).strip().isdigit()]
+    if not port_ints:
+        return false()
     return models.Host.id.in_(port_match_subquery(db, ports=port_ints))
 
 

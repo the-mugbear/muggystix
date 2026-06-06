@@ -1,0 +1,129 @@
+"""Tests for the Operations workbench (refactor P2).
+
+Covers the batched ``GET /workbench`` composition and the durable
+``POST /workbench/seen`` cursor that drives "since your last visit".
+
+The ``client`` fixture authenticates as ``test_user`` (id=1).
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from app.db import models
+from app.db.models_vulnerability import (
+    Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+)
+
+
+def _url(pid, suffix=""):
+    return f"/api/v1/projects/{pid}/workbench{suffix}"
+
+
+def _make_host(db_session, project_id, ip, first_seen=None):
+    h = models.Host(project_id=project_id, ip_address=ip, state="up")
+    if first_seen is not None:
+        h.first_seen = first_seen
+    db_session.add(h)
+    db_session.flush()
+    return h
+
+
+def _make_scan(db_session, project_id, filename, created_at=None):
+    s = models.Scan(project_id=project_id, filename=filename)
+    if created_at is not None:
+        s.created_at = created_at
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+def _make_vuln(db_session, host_id, scan_id, severity, created_at=None):
+    v = Vulnerability(
+        title="finding",
+        severity=severity,
+        source=VulnerabilitySource.MANUAL,
+        host_id=host_id,
+        scan_id=scan_id,
+    )
+    if created_at is not None:
+        v.created_at = created_at
+    db_session.add(v)
+    db_session.flush()
+    return v
+
+
+def test_workbench_returns_all_sections(client, test_project):
+    r = client.get(_url(test_project.id))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) >= {"my_queue", "my_tasks", "team_review", "since_last_visit"}
+    # Empty project — sections render their zero states.
+    assert body["my_queue"]["items"] == []
+    assert body["my_tasks"]["items"] == []
+    assert body["team_review"]["reviewers"] == []
+
+
+def test_first_visit_marks_everything_new(client, db_session, test_project):
+    scan = _make_scan(db_session, test_project.id, "first.xml")
+    host = _make_host(db_session, test_project.id, "10.9.0.1")
+    _make_vuln(db_session, host.id, scan.id, VulnerabilitySeverity.CRITICAL)
+
+    r = client.get(_url(test_project.id))
+    body = r.json()["since_last_visit"]
+    assert body["is_first_visit"] is True
+    assert body["last_viewed_at"] is None
+    assert body["new_scan_count"] == 1
+    assert body["latest_scan_filename"] == "first.xml"
+    assert body["new_host_count"] == 1
+    assert body["new_critical_findings"] == 1
+
+
+def test_seen_then_nothing_new(client, db_session, test_project):
+    scan = _make_scan(db_session, test_project.id, "seeded.xml")
+    host = _make_host(db_session, test_project.id, "10.9.1.1")
+    _make_vuln(db_session, host.id, scan.id, VulnerabilitySeverity.HIGH)
+
+    seen = client.post(_url(test_project.id, "/seen"))
+    assert seen.status_code == 200, seen.text
+    assert seen.json()["last_viewed_at"] is not None
+
+    body = client.get(_url(test_project.id)).json()["since_last_visit"]
+    assert body["is_first_visit"] is False
+    # All seeded data predates the cursor → nothing new.
+    assert body["new_scan_count"] == 0
+    assert body["new_host_count"] == 0
+    assert body["new_high_findings"] == 0
+
+
+def test_changes_after_seen_are_reported(client, db_session, test_project):
+    # Seed + mark seen.
+    client.post(_url(test_project.id, "/seen"))
+    body = client.get(_url(test_project.id)).json()["since_last_visit"]
+    cursor = datetime.fromisoformat(body["last_viewed_at"])
+    after = cursor + timedelta(hours=1)
+
+    scan = _make_scan(db_session, test_project.id, "fresh.xml", created_at=after)
+    host = _make_host(db_session, test_project.id, "10.9.2.1", first_seen=after)
+    # Vulnerability.created_at is naive — strip tzinfo for an apples-to-apples
+    # comparison against a naive column.
+    _make_vuln(db_session, host.id, scan.id, VulnerabilitySeverity.CRITICAL,
+               created_at=after.replace(tzinfo=None))
+
+    body = client.get(_url(test_project.id)).json()["since_last_visit"]
+    assert body["is_first_visit"] is False
+    assert body["new_scan_count"] == 1
+    assert body["latest_scan_filename"] == "fresh.xml"
+    assert body["new_host_count"] == 1
+    assert body["new_critical_findings"] == 1
+
+
+def test_seen_is_idempotent_one_row(client, db_session, test_project):
+    from app.db.models import OperationsCursor
+    client.post(_url(test_project.id, "/seen"))
+    client.post(_url(test_project.id, "/seen"))
+    rows = (
+        db_session.query(OperationsCursor)
+        .filter(OperationsCursor.project_id == test_project.id)
+        .all()
+    )
+    assert len(rows) == 1

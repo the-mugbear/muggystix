@@ -114,6 +114,13 @@ EXPECTED_PARSER_BY_FIXTURE: dict[str, tuple[str, str]] = {
         "default JSON output.  Could collide with httpx if 'tech'/'webserver' "
         "appeared; looks_like_naabu requires the inverse to fire.",
     ),
+    "dnsx_sample.json": (
+        "dnsx_json",
+        "JSONL with {host, a/aaaa/cname/mx/ptr/srv/caa, resolver, status_code} per "
+        "line — dnsx -json output (always starts with '{').  Distinguished from "
+        "naabu/httpx by its DNS record-type fields; A/AAAA answers also create host "
+        "observations so a resolve-only run isn't a host-less scan (RV-1).",
+    ),
     "nikto_sample.json": (
         "nikto_json",
         "Top-level array of {ip, host, port, vulnerabilities[]} — Nikto's --Format json export.",

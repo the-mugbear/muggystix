@@ -1,6 +1,7 @@
 import React, { ReactNode } from 'react';
 import { useNavigate, useLocation, useNavigationType, NavLink } from 'react-router-dom';
 import {
+  FolderOpen,
   MenuIcon,
   Repeat,
   ShieldCheck,
@@ -63,10 +64,12 @@ const DRAWER_WIDTH_PX = `${DRAWER_WIDTH}px`;
 // are preserved verbatim (bookmark stability is a non-negotiable from the
 // migration plan).
 //
-// Portfolio is intentionally NOT in the hub set — it's the cross-project
-// switcher, reached from the "Switch project" affordance in the topbar
-// chip.  Mixing a cross-project surface into a per-project sidebar
-// confuses the mental model.
+// Portfolio is intentionally NOT in the hub set — the hubs are all
+// project-scoped, and mixing a cross-project surface into that list
+// confuses the mental model.  It IS surfaced as a standalone "All
+// Projects" link rendered ABOVE the ProjectSelector (so it reads as the
+// parent context: All Projects → pick a project → its hubs), and from
+// the "Switch project" affordance in the topbar chip.
 // ---------------------------------------------------------------------------
 
 interface HubChild {
@@ -501,6 +504,39 @@ export default function Layout({ children }: LayoutProps) {
           BlueStick
         </h1>
       </div>
+
+      {/* All Projects — the cross-project control plane.  Rendered above
+          the ProjectSelector because it's the level ABOVE a single
+          project; the divider separates it from the project-scoped
+          context (selector + hubs) below. */}
+      {hasPermission('viewer') && (
+        <div className="px-xs pt-xs">
+          <NavLink
+            to="/portfolio"
+            className={({ isActive }) =>
+              cn(
+                'relative flex w-full items-center gap-sm rounded-control border-l-2 px-sm py-xs text-left text-metadata transition-colors no-underline',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                isActive
+                  ? 'border-l-primary bg-sidebar-accent font-semibold text-foreground'
+                  : 'border-l-transparent font-medium text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+                themeName === 'phosphor' && 'tracking-[0.04em]',
+              )
+            }
+          >
+            {({ isActive }) => (
+              <>
+                <FolderOpen
+                  className={cn('size-4 shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')}
+                />
+                <span className="truncate">All Projects</span>
+              </>
+            )}
+          </NavLink>
+        </div>
+      )}
+
+      <div className="mx-sm my-xs border-t border-border" aria-hidden />
 
       <div>
         <ProjectSelector />

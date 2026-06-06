@@ -55,9 +55,11 @@ from app.services.host_query import (
 )
 from app.services.host_serialization import (
     SEVERITY_ORDER,
+    LIST_DISCOVERY_CAP,
     build_vuln_summary as _build_vuln_summary,
     serialize_host_base as _serialize_host_base,
     serialize_host_detail as _serialize_host_detail,
+    serialize_port_light as _serialize_port_light,
     serialize_vulnerability as _serialize_vulnerability,
     vulnerability_sort_key as _vulnerability_sort_key,
 )
@@ -295,10 +297,14 @@ def get_hosts_v2(
         total = None
     query = _apply_host_sorting(query, sort_by, sort_order)
 
-    # Add eager loading for the listing response
+    # Add eager loading for the listing response.  RV-8 — the list view
+    # never renders NSE script bodies, so we deliberately DON'T eager-load
+    # Port.scripts or Host.host_scripts here; the list serializer emits
+    # script-free ports (serialize_port_light) and never touches those
+    # relationships, so dropping them avoids both the payload bloat AND a
+    # lazy-load N+1.  Detail still loads them.
     query = query.options(
-        selectinload(models.Host.ports).selectinload(models.Port.scripts),
-        selectinload(models.Host.host_scripts),
+        selectinload(models.Host.ports),
         selectinload(models.Host.notes).selectinload(models.HostNote.author),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
         # Eager-load tag + its definition so serialize_host_base reads
@@ -438,6 +444,12 @@ def get_hosts_v2(
         serialized = _serialize_host_base(host, vuln_map.get(host.id))
         follow = follow_map.get(host.id)
         serialized["follow"] = _serialize_follow(follow) if follow else None
+
+        # RV-8 — list-weight payload: script-free ports, no host_scripts,
+        # and discoveries capped to what the row renders.
+        serialized["ports"] = [_serialize_port_light(p) for p in host.ports]
+        serialized["host_scripts"] = []
+        serialized["discoveries"] = serialized["discoveries"][:LIST_DISCOVERY_CAP]
 
         host_notes = sorted(host.notes, key=lambda note: note.created_at or note.updated_at or datetime.min, reverse=True)
         serialized["note_count"] = len(host_notes)

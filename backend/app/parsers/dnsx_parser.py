@@ -70,6 +70,13 @@ _RECORD_TYPE_FIELDS = (
     ("ns", "NS"),
     ("txt", "TXT"),
     ("soa", "SOA"),
+    # RV-7 — additional record types dnsx emits with the matching flags
+    # (-srv, -caa, -any, and AXFR via -axfr).  Each is an array of plain
+    # strings except SOA, so _stringify_value handles them uniformly.
+    ("srv", "SRV"),
+    ("caa", "CAA"),
+    ("any", "ANY"),
+    ("axfr", "AXFR"),
     # ptr handled separately so we can also update Host.hostname.
 )
 
@@ -136,6 +143,7 @@ class DnsxParser:
 
         records_written = 0
         ptr_hosts_updated = 0
+        a_hosts_created = 0
         skipped_records = 0
         # Dedup tuple — (record_type, domain, value, resolver_name).
         # v2.89.0 (#44.1): the 4-tuple keeps the same answer from two
@@ -179,8 +187,17 @@ class DnsxParser:
                         continue
                     if self._persist_record(
                         seen, host, record_type, value_str, ttl, resolver,
+                        scan_id=scan.id,
                     ):
                         records_written += 1
+                    # RV-1 — a forward A/AAAA answer (domain -> IP) is a
+                    # discovered asset.  Create a host observation for the
+                    # resolved IP (hostname = the queried domain), mirroring
+                    # the PTR path, so a dnsx run that only resolves names
+                    # no longer produces a host-less "empty" scan.
+                    if record_type in ("A", "AAAA") and _is_valid_ip(value_str):
+                        if self._update_host_hostname(scan.id, value_str, host):
+                            a_hosts_created += 1
 
             ptr_values = row.get("ptr")
             if isinstance(ptr_values, list):
@@ -201,6 +218,7 @@ class DnsxParser:
                             continue
                         if self._persist_record(
                             seen, host, "PTR", value_str, ttl, resolver,
+                            scan_id=scan.id,
                         ):
                             records_written += 1
                 else:
@@ -210,6 +228,7 @@ class DnsxParser:
                             continue
                         if self._persist_record(
                             seen, hostname, "PTR", host, ttl, resolver,
+                            scan_id=scan.id,
                         ):
                             records_written += 1
                         if self._update_host_hostname(scan.id, host, hostname):
@@ -249,6 +268,8 @@ class DnsxParser:
             )
         if ptr_hosts_updated:
             warning_parts.append(f"PTR populated Host.hostname for {ptr_hosts_updated} host(s)")
+        if a_hosts_created:
+            warning_parts.append(f"A/AAAA discovered {a_hosts_created} host(s)")
         warnings = " | ".join(warning_parts) if warning_parts else None
 
         self.last_parse_stats = {
@@ -280,6 +301,7 @@ class DnsxParser:
         value: str,
         ttl: Optional[int],
         resolver_name: Optional[str],
+        scan_id: Optional[int] = None,
     ) -> bool:
         key = (record_type, domain, value, resolver_name)
         if key in seen:
@@ -288,6 +310,7 @@ class DnsxParser:
         self.db.add(
             models.DNSRecord(
                 project_id=self._project_id,
+                scan_id=scan_id,
                 domain=domain,
                 record_type=record_type,
                 value=value,

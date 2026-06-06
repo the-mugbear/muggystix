@@ -7,9 +7,21 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
-from app.db.models import HostFollow, FollowStatus, HostNote, NoteStatus
+from app.db.models import (
+    HostFollow, FollowStatus, HostNote, NoteStatus, HostNoteStatusHistory,
+)
 
 logger = logging.getLogger(__name__)
+
+# Sentinel so thread-meta updates can distinguish "field omitted" from
+# "field explicitly set to None" (e.g. clearing an assignee or due date).
+_UNSET = object()
+
+# Thread-level work fields that any project member may edit (vs body /
+# delete, which stay author-only).
+VALID_NOTE_TYPES = {
+    "observation", "finding", "question", "decision", "action", "handoff",
+}
 
 
 class HostFollowService:
@@ -147,14 +159,35 @@ class HostFollowService:
         self.db.refresh(note, attribute_names=["author"])
         return note
 
-    def update_note(
+    def _root_note(self, note: HostNote) -> HostNote:
+        """Walk parent_id to the thread root (cycle-guarded)."""
+        current = note
+        seen = {note.id}
+        while current.parent_id is not None:
+            parent = (
+                self.db.query(HostNote)
+                .filter(HostNote.id == current.parent_id)
+                .first()
+            )
+            if parent is None or parent.id in seen:
+                break
+            current = parent
+            seen.add(current.id)
+        return current
+
+    def update_note_body(
         self,
         note_id: int,
         user_id: int,
-        body: Optional[str] = None,
-        status: Optional[NoteStatus] = None,
+        body: str,
         host_id: Optional[int] = None,
     ) -> HostNote:
+        """Edit a note's body — AUTHOR ONLY (P3 permission split).
+
+        Body is authored content; only its writer may change it.  Thread
+        work-state (status/assignee/resolution/…) is a separate concern
+        handled by ``update_thread_meta`` and is open to any project member.
+        """
         note = self.db.query(HostNote).filter(HostNote.id == note_id).first()
         if not note:
             raise ValueError("Note not found")
@@ -162,14 +195,91 @@ class HostFollowService:
             raise PermissionError("Cannot modify another user's note")
         if host_id is not None and note.host_id != host_id:
             raise ValueError("Note not found")
-        if body is not None:
-            note.body = body
-        if status is not None:
-            note.status = status
+        note.body = body
         self.db.commit()
         self.db.refresh(note)
         self.db.refresh(note, attribute_names=["author"])
         return note
+
+    def update_thread_meta(
+        self,
+        note_id: int,
+        actor_id: int,
+        host_id: Optional[int] = None,
+        *,
+        status=_UNSET,
+        assignee_id=_UNSET,
+        due_at=_UNSET,
+        note_type=_UNSET,
+        resolution_summary=_UNSET,
+        pinned=_UNSET,
+    ) -> HostNote:
+        """Update a thread's work-state — ANY project member (P3).
+
+        Operates on the thread ROOT (so replying never reopens, and a
+        teammate can resolve/reassign an abandoned thread).  Records a
+        ``HostNoteStatusHistory`` row on every status transition and
+        enforces resolve-requires-summary.  Fields left as ``_UNSET`` are
+        untouched; passing ``None`` clears a nullable field.
+        """
+        target = self.db.query(HostNote).filter(HostNote.id == note_id).first()
+        if not target:
+            raise ValueError("Note not found")
+        if host_id is not None and target.host_id != host_id:
+            raise ValueError("Note not found")
+        note = self._root_note(target)
+
+        if note_type is not _UNSET and note_type is not None and note_type not in VALID_NOTE_TYPES:
+            raise ValueError(f"Invalid note_type; expected one of {sorted(VALID_NOTE_TYPES)}")
+
+        # Resolve-requires-summary: a thread can only be marked resolved
+        # when a summary exists — either supplied in this call or already
+        # recorded on the note.
+        if status is not _UNSET and status == NoteStatus.RESOLVED:
+            effective_summary = (
+                resolution_summary if resolution_summary is not _UNSET
+                else note.resolution_summary
+            )
+            if not (effective_summary and str(effective_summary).strip()):
+                raise ValueError("Resolving a thread requires a resolution summary")
+
+        if assignee_id is not _UNSET:
+            note.assignee_id = assignee_id
+        if due_at is not _UNSET:
+            note.due_at = due_at
+        if note_type is not _UNSET:
+            note.note_type = note_type
+        if resolution_summary is not _UNSET:
+            note.resolution_summary = resolution_summary
+        if pinned is not _UNSET:
+            note.pinned = bool(pinned)
+
+        if status is not _UNSET and status != note.status:
+            old_status = note.status
+            note.status = status
+            self.db.add(HostNoteStatusHistory(
+                note_id=note.id,
+                from_status=old_status.value if hasattr(old_status, "value") else str(old_status),
+                to_status=status.value if hasattr(status, "value") else str(status),
+                changed_by_id=actor_id,
+                summary=(
+                    note.resolution_summary if status == NoteStatus.RESOLVED else None
+                ),
+            ))
+
+        self.db.commit()
+        self.db.refresh(note)
+        self.db.refresh(note, attribute_names=["author", "assignee"])
+        return note
+
+    def get_status_history(self, note_id: int) -> List[HostNoteStatusHistory]:
+        return (
+            self.db.query(HostNoteStatusHistory)
+            .filter(HostNoteStatusHistory.note_id == note_id)
+            .options(selectinload(HostNoteStatusHistory.changed_by))
+            .order_by(HostNoteStatusHistory.created_at.asc())
+            .all()
+        )
 
     def delete_note(self, note_id: int, user_id: int, host_id: Optional[int] = None) -> None:
         note = self.db.query(HostNote).filter(HostNote.id == note_id).first()
