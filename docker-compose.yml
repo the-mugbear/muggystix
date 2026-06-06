@@ -1,0 +1,194 @@
+# NetworkMapper Docker Compose Configuration
+# Environment is configured via .env (copy from .env.example)
+# Run ./scripts/deploy.sh for guided setup with auto-detected IP
+
+services:
+  db:
+    image: postgres:16
+    # v2.45.3 — flipped no → unless-stopped after a worker exit-255
+    # went unnoticed for 24h (the worker silently stopped processing
+    # the ingestion queue; restart: no meant Docker never recovered
+    # it).  unless-stopped restarts a crashed container but still
+    # honors an explicit `docker compose stop` — so a deliberate
+    # dev shutdown isn't fought by the daemon.
+    restart: unless-stopped
+    # Stock postgres:16 ships max_connections=100 and shared_buffers=128MB.
+    # 100 is below this stack's worst-case connection draw (4 uvicorn
+    # workers + the ingestion worker, each with its own SQLAlchemy pool),
+    # so the default here is raised to 120.  Memory tunables are
+    # env-overridable and default conservatively (safe on a ~2-4GB host)
+    # — scale PG_SHARED_BUFFERS / PG_EFFECTIVE_CACHE_SIZE to host RAM in
+    # .env.  The entrypoint still runs initdb + the SSL init script; only
+    # the final `postgres` invocation is overridden.
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=${PG_MAX_CONNECTIONS:-120}"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS:-256MB}"
+      - "-c"
+      - "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-768MB}"
+      - "-c"
+      - "work_mem=${PG_WORK_MEM:-8MB}"
+      - "-c"
+      - "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-networkMapper}
+      POSTGRES_USER: ${POSTGRES_USER:-nmapuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nmappass}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nmapuser} -d ${POSTGRES_DB:-networkMapper}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Database port NOT exposed to host by default for security
+    # Only accessible via Docker network from backend
+    # Uncomment for local development database access:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./ssl/certs:/certs:ro
+      - ./scripts/postgres/init-ssl.sh:/docker-entrypoint-initdb.d/10-init-ssl.sh:ro
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        CACHE_BUST: ${CACHE_BUST:-}
+    # v2.45.3 — flipped no → unless-stopped after a worker exit-255
+    # went unnoticed for 24h (the worker silently stopped processing
+    # the ingestion queue; restart: no meant Docker never recovered
+    # it).  unless-stopped restarts a crashed container but still
+    # honors an explicit `docker compose stop` — so a deliberate
+    # dev shutdown isn't fought by the daemon.
+    restart: unless-stopped
+    # v2.63.0 — explicit memory cap.  Uploads stream chunk-by-chunk
+    # to disk so the body never sits fully in RAM; this cap covers
+    # the long tail (UVICORN_WORKERS × per-worker state).  Override
+    # via BACKEND_MEM_LIMIT in .env.
+    mem_limit: ${BACKEND_MEM_LIMIT:-2g}
+    # Backend is only accessible via the nginx reverse proxy on the Docker network.
+    # Uncomment the line below for direct backend access during debugging:
+    # ports:
+    #   - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
+      DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
+      SSL_ENABLED: ${SSL_MODE:-false}
+      APP_VERSION: ${APP_VERSION:-2.94.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.3.0}
+      PLATFORM_VERSION_FILE: /app/platform_version.json
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./backend/tests:/app/tests
+      - ./backend/pytest.ini:/app/pytest.ini
+      - ./scripts:/app/scripts
+      - ./platform_version.json:/app/platform_version.json:ro
+      - ./AGENTS.md:/app/AGENTS.md:ro
+      # SBOM endpoint reads the frontend's resolved lockfile.  Read-only
+      # mount keeps the source of truth in frontend/ — the SBOM endpoint
+      # in main.py reflects whatever the deployed build resolved to.
+      - ./frontend/package-lock.json:/app/frontend-package-lock.json:ro
+      # Manual test fixtures (v2.45.1) — read-only.  Used by the
+      # parametrized dispatcher test in test_artifacts_manual_dispatcher.py
+      # to verify the correct parser engages for every supported
+      # upload format.  Mounted at the same relative path that the
+      # test resolves via ``Path(__file__).resolve().parents[1] / "artifacts"
+      # / "manual"`` (one level above /app/tests = /app, then artifacts/).
+      - ./artifacts:/app/artifacts:ro
+    networks:
+      - app-network
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        CACHE_BUST: ${CACHE_BUST:-}
+    # v2.45.3 — flipped no → unless-stopped after a worker exit-255
+    # went unnoticed for 24h (the worker silently stopped processing
+    # the ingestion queue; restart: no meant Docker never recovered
+    # it).  unless-stopped restarts a crashed container but still
+    # honors an explicit `docker compose stop` — so a deliberate
+    # dev shutdown isn't fought by the daemon.
+    restart: unless-stopped
+    # v2.63.0 — explicit memory cap.  Sized for a 2 GB Nessus parse
+    # under NESSUS_COMMIT_BATCH_SIZE=50 (peak typically 500 MB-1 GB);
+    # 4 GB leaves headroom and prevents a runaway from OOM-ing the
+    # host.  Bump WORKER_MEM_LIMIT in .env if MAX_FILE_SIZE > 2 GB.
+    mem_limit: ${WORKER_MEM_LIMIT:-4g}
+    # Override the default Uvicorn CMD — run the ingestion worker instead.
+    command: ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue 2>/dev/null; python -m app.worker"]
+    # The worker doesn't run an HTTP server, so override the Dockerfile's
+    # curl-based healthcheck with a process-alive check via /proc.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q app.worker /proc/*/cmdline 2>/dev/null"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
+      DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
+      APP_VERSION: ${APP_VERSION:-2.94.0}
+      PLATFORM_VERSION_FILE: /app/platform_version.json
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./platform_version.json:/app/platform_version.json:ro
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        CACHE_BUST: ${CACHE_BUST:-}
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
+        # Keep this fallback in sync with the APP_VERSION defaults above
+        # (lines 49 + 87) and with platform_version.json's "backend".
+        BACKEND_VERSION: ${APP_VERSION:-2.94.0}
+    # v2.45.3 — flipped no → unless-stopped after a worker exit-255
+    # went unnoticed for 24h (the worker silently stopped processing
+    # the ingestion queue; restart: no meant Docker never recovered
+    # it).  unless-stopped restarts a crashed container but still
+    # honors an explicit `docker compose stop` — so a deliberate
+    # dev shutdown isn't fought by the daemon.
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:${FRONTEND_INTERNAL_PORT:-3000}"
+      - "${HTTPS_PORT:-443}:443"
+    env_file:
+      - .env
+    environment:
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
+    volumes:
+      - ${NGINX_CONFIG:-./ssl-nginx.conf}:/etc/nginx/conf.d/default.conf:ro
+      - ./ssl/certs/networkmapper.crt:/etc/ssl/certs/networkmapper.crt:ro
+      - ./ssl/certs/networkmapper.key:/etc/ssl/private/networkmapper.key:ro
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - app-network
+
+# let docker manage storage, typically at /var/lib/docker/volumes/
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

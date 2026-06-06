@@ -1,0 +1,258 @@
+# Local tooling markers (codex, etc) — not for the repo
+.codex
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache
+.cache
+.parcel-cache
+
+# React build files
+/frontend/build
+/frontend/dist
+/frontend/.env.local
+/frontend/.env.development.local
+/frontend/.env.test.local
+/frontend/.env.production.local
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+CLAUDE.md
+
+# Upload directories
+uploads/
+/backend/uploads/
+temp/
+tmp/
+.tmp/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE_BIN/
+
+# Environment variables
+.env
+.env.local
+.env.test
+.env.production
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Database backups produced by scripts/backup-db.sh — operator-local,
+# may contain real scan data, never committed.
+backups/
+
+# Agent session-scoped working directories — created by the agent at
+# its repo cwd when the operator runs `claude-code` / `codex` from the
+# project root.  Contain raw scanner output (nmap XML, masscan
+# results, eyewitness screenshots), live API key payloads in flight,
+# and operator-host environment probes — none of which belong in the
+# repo.  Matches `networkmapper-<project>-<workflow>-<id>/` and the
+# pre-1.23.0 `networkmapper-<workflow>-<id>/`.
+networkmapper-*-*/
+networkmapper-recon-*/
+networkmapper-execution-*/
+
+# Configuration files with sensitive data
+config/local.py
+config/production.py
+secrets.json
+.secrets
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.cert
+
+# Docker volumes and data
+postgres_data/
+
+# Docker override files
+docker-compose.override.yml
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+
+# Build artifacts
+*.tar.gz
+*.zip
+*.deb
+*.rpm
+
+# Generated documentation
+docs/_build/
+docs/site/
+
+# Network scan files (examples/tests only - real scans should be uploaded via UI)
+examples/*.xml
+examples/*.json
+examples/*.csv
+test_data/*.xml
+test_data/*.json
+test_data/*.csv
+
+# Windows
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.AppleDouble
+.LSOverride
+Icon
+
+# Other
+# artifacts/ is operator-local only — manual-test scan fixtures,
+# export drops, debug dumps.  Not committed: the fixtures can carry
+# environment-specific scan data and the operator owns them per host.
+# The parametrized dispatcher test (test_artifacts_manual_dispatcher.py)
+# skips itself when artifacts/manual/ is absent, so CI on a fresh
+# checkout stays green without the fixtures present.
+artifacts/
+CLAUDE.md
+notes.txt
+troubleshooting_*
+
+# Internal docs kept local-only — not published to the public repo.
+# CLAUDE.md (architecture/ops guidance) and CHANGELOG.md (detailed dev
+# history) reveal internals with no runtime purpose.  AGENTS.md is NOT
+# here: the backend serves it at /agents-guide, so it must stay tracked.
+CHANGELOG.md
+
+# Session scratch / shared debug bundles — operator-local, never committed.
+# Design-discussion notes, ad-hoc patches, and copied-over container log
+# dumps from the remote host.
+*.patch
+dashboard_changes.txt
+*_changes.txt
+all_container_logs.txt
+*_container_logs.txt
+
+# Backend startup resolves AGENTS.md / platform_version.json relative to
+# its CWD; running it with a CWD lacking the real (repo-root) copies — e.g.
+# the mounted test container — leaves 0-byte stand-ins here. Never real.
+/backend/AGENTS.md
+/backend/platform_version.json
+
+# Docker bind-mount placeholder — created at 0 bytes by the SBOM mount
+# in docker-compose.yml when test runs that also bind ./backend to /app.
+# Never the real file (real one lives at frontend/package-lock.json).
+/backend/frontend-package-lock.json

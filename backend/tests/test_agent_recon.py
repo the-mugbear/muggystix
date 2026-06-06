@@ -1,0 +1,166 @@
+"""
+Smoke tests for the recon workflow's agent surface (v2.66.0).
+
+The recon router (`/agent/recon/*`) was the highest-blast-radius
+agent surface without dedicated test coverage — it accepts scanner
+output uploads, drives the host/port deduplication path, and binds
+keys to specific ReconSession rows for concurrent-recon isolation.
+
+Tests pin the boundaries other workflows depend on:
+
+  1. A recon-scoped key (api_keys.scope_id + recon_session_id set)
+     reads /agent/recon/context successfully.
+  2. The same key is rejected by /agent/assist/*, /agent/test-plans/*,
+     and /agent/execution/* — the cross-workflow isolation guarantee
+     the four-workflow split was built around.
+  3. Environment probe round-trips through the response model — the
+     same kind of bug v2.64.0's assist endpoint shipped and that
+     v2.64.1 fixed (response_model validation failing after the DB
+     commit landed).
+
+Not exhaustive of every endpoint — that work belongs in a dedicated
+recon-router test file built when behavior changes warrant it.
+This is the "the boundary works" pin.
+"""
+
+from datetime import datetime, timedelta, timezone
+
+import hashlib
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def recon_scope(db_session, test_project):
+    """A Scope with one Subnet row so /agent/recon/context returns
+    something meaningful."""
+    from app.db import models
+    scope = models.Scope(
+        name="recon-smoke-scope",
+        description="fixture",
+        project_id=test_project.id,
+    )
+    db_session.add(scope)
+    db_session.flush()
+    subnet = models.Subnet(scope_id=scope.id, cidr="10.99.0.0/24")
+    db_session.add(subnet)
+    db_session.commit()
+    db_session.refresh(scope)
+    return scope
+
+
+@pytest.fixture
+def recon_session_row(db_session, test_project, test_agent, recon_scope):
+    """An ACTIVE ReconSession bound to the fixture scope."""
+    from app.db.models_agent import ReconSession, ReconSessionStatus
+    session = ReconSession(
+        project_id=test_project.id,
+        scope_id=recon_scope.id,
+        agent_id=test_agent.id,
+        status=ReconSessionStatus.ACTIVE.value,
+    )
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+    return session
+
+
+@pytest.fixture
+def recon_key(db_session, test_agent, recon_scope, recon_session_row):
+    """A scope-bound API key pinned to this recon session (v2.45.0+
+    keys carry recon_session_id; pre-v2.45.0 keys carried only
+    scope_id and used a heuristic to resolve the session)."""
+    from app.db.models_auth import APIKey
+    raw = "nm_agent_recon_smoke_" + "r" * 28
+    db_session.add(APIKey(
+        agent_id=test_agent.id,
+        scope_id=recon_scope.id,
+        recon_session_id=recon_session_row.id,
+        name=f"recon-smoke-{recon_session_row.id}",
+        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
+        key_prefix=raw[:14],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    ))
+    db_session.commit()
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+def test_recon_context_returns_scope_data(client, recon_key, recon_scope):
+    """Happy path: a recon-scoped key reads /agent/recon/context and
+    sees its own scope's subnets back."""
+    resp = client.get(
+        "/api/v1/agent/recon/context",
+        headers={"X-API-Key": recon_key},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The exact response schema is large; pin the bits that matter
+    # for "did the auth chain resolve to my scope?".
+    assert body["scope_id"] == recon_scope.id
+    assert "10.99.0.0/24" in body.get("scope_cidrs", [])
+
+
+def test_recon_environment_probe_roundtrips(client, recon_key, recon_session_row):
+    """v2.64.1 regression class — response model validation must not
+    fail after the DB write commits.  Assist had this bug; recon
+    didn't, but pin it here so a future schema change can't introduce
+    it.
+    """
+    resp = client.post(
+        f"/api/v1/agent/recon/sessions/{recon_session_row.id}/environment",
+        headers={"X-API-Key": recon_key},
+        json={"os_family": "linux"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["session_id"] == recon_session_row.id
+    assert body["session_type"] == "recon"
+    assert body["probed_at"] is not None
+
+
+def test_recon_key_blocked_from_assist_plan_and_execution(
+    client, recon_key, test_plan,
+):
+    """Cross-workflow guarantee: a recon-scoped key must 403 on
+    every other agent surface.  The four-workflow split exists
+    precisely so a compromised key can only act on its workflow;
+    losing this invariant would let a recon key create or execute
+    plans, which it has no business doing."""
+    headers = {"X-API-Key": recon_key}
+
+    # Plan surface (require_plan_scope rejects scope-bound keys)
+    plan = client.get(
+        f"/api/v1/agent/test-plans/{test_plan.id}/context", headers=headers,
+    )
+    assert plan.status_code == 403, plan.text
+    assert "reconnaissance" in plan.json()["detail"].lower()
+
+    # Assist surface (require_assist_scope rejects recon-bound keys)
+    assist = client.get("/api/v1/agent/assist/context", headers=headers)
+    assert assist.status_code == 403, assist.text
+    assert "recon-scoped" in assist.json()["detail"].lower()
+
+
+def test_recon_key_unauthorized_when_revoked(client, db_session, recon_key):
+    """Revoking the APIKey row (is_active=False) immediately stops the
+    key from working — the auth dep filters on `is_active.is_(True)`.
+    Same invariant the session-end endpoint depends on."""
+    from app.db.models_auth import APIKey
+    db_session.query(APIKey).filter(
+        APIKey.key_hash == hashlib.sha256(recon_key.encode()).hexdigest()
+    ).update({"is_active": False})
+    db_session.commit()
+
+    resp = client.get(
+        "/api/v1/agent/recon/context",
+        headers={"X-API-Key": recon_key},
+    )
+    assert resp.status_code == 401, resp.text

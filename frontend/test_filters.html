@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Filter Data</title>
+</head>
+<body>
+    <h1>NetworkMapper Filter Data Test</h1>
+    
+    <div id="results">Loading...</div>
+    
+    <script>
+        async function testFilters() {
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/hosts/filters/data');
+                const data = await response.json();
+                
+                let html = '<h2>Services</h2><ul>';
+                data.services.forEach(service => {
+                    html += `<li>${service.name} (${service.count} hosts)</li>`;
+                });
+                html += '</ul>';
+                
+                html += '<h2>Operating Systems</h2><ul>';
+                data.operating_systems.forEach(os => {
+                    html += `<li>${os.name} (${os.count} hosts)</li>`;
+                });
+                html += '</ul>';
+                
+                html += '<h2>Common Ports</h2><ul>';
+                data.common_ports.forEach(port => {
+                    html += `<li>Port ${port.port} (${port.service}) - ${port.state} (${port.count} instances)</li>`;
+                });
+                html += '</ul>';
+                
+                document.getElementById('results').innerHTML = html;
+            } catch (error) {
+                document.getElementById('results').innerHTML = 'Error: ' + error.message;
+            }
+        }
+        
+        testFilters();
+    </script>
+</body>
+</html>
