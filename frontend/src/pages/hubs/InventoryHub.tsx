@@ -12,28 +12,24 @@ const InventoryHub: React.FC = () => (
         label: 'Scans',
         path: '/scans',
         description: 'Upload scan files, track ingestion jobs, and inspect raw scanner output.',
-        requiredRole: 'viewer',
         Icon: ScanLinesIcon,
       },
       {
         label: 'Hosts',
         path: '/hosts',
         description: 'Deduplicated inventory of every host the scanners observed — with ports, vulnerabilities, notes, and follow status.',
-        requiredRole: 'viewer',
         Icon: ServerStackIcon,
       },
       {
         label: 'Scopes',
         path: '/scopes',
         description: 'Subnet boundaries that map raw hosts to engagement scopes.  Manage coverage and out-of-scope flags.',
-        requiredRole: 'analyst',
         Icon: ScopeIcon,
       },
       {
         label: 'Topology',
         path: '/network-topology',
         description: 'Visual map of scopes and subnets, sized by host count and flagged for critical findings.  Click through to filtered hosts.',
-        requiredRole: 'viewer',
         Icon: Network,
       },
     ]}

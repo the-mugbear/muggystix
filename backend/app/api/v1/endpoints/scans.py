@@ -919,7 +919,7 @@ def get_scan_eyewitness_results(
 
     return results
 
-@router.get("/{scan_id}/dns-records", response_model=List[DNSRecord])
+@router.get("/{scan_id}/dns-records", response_model=Paginated[DNSRecord])
 def get_scan_dns_records(
     scan_id: int,
     skip: int = Query(0, ge=0),
@@ -934,6 +934,10 @@ def get_scan_dns_records(
     rows — so CNAME/MX/NS/TXT/etc. records were stored yet had no surface.
     This lists every record for the scan so the operator can see the full
     answer set, not just the hosts it produced.
+
+    CR5-C3 — returns a ``Paginated`` envelope (``items`` + ``total`` +
+    ``has_more``) so the UI reports the TRUE record count, not just the size
+    of the first page; large dnsx scans routinely exceed one page.
     """
     scan = db.query(models.Scan).filter(
         models.Scan.id == scan_id,
@@ -942,10 +946,10 @@ def get_scan_dns_records(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    return (
-        db.query(models.DNSRecord)
-        .filter(models.DNSRecord.scan_id == scan_id)
-        .order_by(
+    base = db.query(models.DNSRecord).filter(models.DNSRecord.scan_id == scan_id)
+    total = base.count()
+    items = (
+        base.order_by(
             models.DNSRecord.record_type.asc(),
             models.DNSRecord.domain.asc(),
             models.DNSRecord.value.asc(),
@@ -955,6 +959,7 @@ def get_scan_dns_records(
         .limit(limit)
         .all()
     )
+    return Paginated.build(items=items, total=total, skip=skip, limit=limit)
 
 
 @router.get("/{scan_id}/out-of-scope", response_model=List[OutOfScopeHost])

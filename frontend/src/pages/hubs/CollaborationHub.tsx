@@ -12,14 +12,12 @@ const CollaborationHub: React.FC = () => (
         label: 'Activity',
         path: '/activity',
         description: 'Project-wide host-notes feed with threaded replies.  Mention teammates with @username to ping them.',
-        requiredRole: 'viewer',
         Icon: ActivityPulseIcon,
       },
       {
         label: 'Agent Feedback',
         path: '/feedback',
         description: 'Structured post-workflow feedback from agents — tool suggestions, API critiques, friction notes.  Admin-only.',
-        requiredRole: 'admin',
         Icon: MessageSquareHeart,
       },
     ]}

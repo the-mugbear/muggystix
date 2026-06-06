@@ -15,3 +15,18 @@ export type NoteStatus = 'open' | 'in_progress' | 'resolved';
 
 /** Thread-level note kinds (P3) — set on the thread's root note. */
 export type NoteType = 'observation' | 'finding' | 'question' | 'decision' | 'action' | 'handoff';
+
+/**
+ * Standard server pagination envelope — mirrors the backend's
+ * ``schemas.pagination.Paginated[T]``.  `total` is the unpaginated count, so
+ * a UI can report the true size and flag truncation rather than presenting a
+ * page length as the total.  Prefer this for new paginated endpoints instead
+ * of another bespoke `{items,total,...}` shape.
+ */
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  skip: number;
+  limit: number;
+  has_more: boolean;
+}

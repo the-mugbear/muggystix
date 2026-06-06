@@ -255,3 +255,20 @@ export const NAV_COMMANDS: NavCommand[] = NAV_PAGES
 export const NAV_ROLE_BY_PATH: Record<string, NavRole> = Object.fromEntries(
   NAV_PAGES.map((p) => [p.path, p.requiredRole]),
 );
+
+/**
+ * Required role for a navigable path, sourced from the manifest.  Use this
+ * wherever a nav surface declares a link (e.g. the hub landing pages) so the
+ * role gate has ONE source of truth and can't drift.  Throws on an unknown
+ * path — a dead link or a page missing from NAV_PAGES is a bug, surfaced
+ * loudly at module load rather than silently mis-gating navigation.
+ */
+export function roleForPath(path: string): NavRole {
+  const role = NAV_ROLE_BY_PATH[path];
+  if (!role) {
+    throw new Error(
+      `navigation: no NAV_PAGES entry for path "${path}" — add it to the manifest`,
+    );
+  }
+  return role;
+}

@@ -17,6 +17,7 @@ from app.db.models import Host
 from app.db.models_agent import (
     TestPlan, TestPlanEntry, TestPlanHistory,
     TestPlanStatus, TestEntryStatus, TestExecutionResult,
+    ExecutionSession,
 )
 
 logger = logging.getLogger(__name__)
@@ -407,6 +408,51 @@ class TestPlanService:
             self.db.refresh(e)
         return created
 
+    # Plan states past drafting — execution may start at any time, so the
+    # test_index positions must be stable from here on.
+    _PROPOSED_TESTS_LOCKED_PLAN_STATES = (
+        TestPlanStatus.APPROVED.value,
+        TestPlanStatus.IN_PROGRESS.value,
+        TestPlanStatus.COMPLETED.value,
+    )
+
+    def _proposed_tests_lock_reason(self, entry: TestPlanEntry) -> Optional[str]:
+        """Return a human-readable reason if ``entry.proposed_tests`` is frozen,
+        else ``None``.
+
+        proposed_tests defines the ``test_index`` positions that
+        ``TestExecutionResult`` rows reference.  Reordering/replacing the array
+        once the plan can be (or is being) executed re-attributes recorded or
+        in-flight evidence.  So it freezes as soon as the plan leaves drafting:
+        the plan is approved/in_progress/completed (execution may start at any
+        moment, and a snapshot — live context fetch or offline bundle — may
+        already be in an agent's hands), an execution session exists, or a
+        result has been recorded.  draft/proposed/rejected plans stay editable
+        so plan-gen can revise freely.
+        """
+        plan_status = (
+            self.db.query(TestPlan.status)
+            .filter(TestPlan.id == entry.test_plan_id)
+            .scalar()
+        )
+        if plan_status in self._PROPOSED_TESTS_LOCKED_PLAN_STATES:
+            return f"the plan is {plan_status}"
+        if (
+            self.db.query(ExecutionSession.id)
+            .filter(ExecutionSession.test_plan_id == entry.test_plan_id)
+            .first()
+            is not None
+        ):
+            return "an execution session exists for the plan"
+        if (
+            self.db.query(TestExecutionResult.id)
+            .filter(TestExecutionResult.entry_id == entry.id)
+            .first()
+            is not None
+        ):
+            return "execution results exist for this entry"
+        return None
+
     def update_entry(
         self,
         entry: TestPlanEntry,
@@ -430,29 +476,21 @@ class TestPlanService:
             if actual != expected:
                 raise ValueError("Conflict: entry was modified by another actor")
 
-        # CR4-1 — proposed_tests defines the test_index positions that
-        # TestExecutionResult rows reference.  Once any result exists for
-        # this entry, reordering or replacing the array silently
-        # re-attributes recorded evidence to a different test, corrupting
-        # the audit trail.  Freeze the array in that case (a 409 to the
-        # caller).  Pre-execution edits by plan-gen are unaffected — there
-        # are no results yet — so this only bites the genuinely unsafe path.
+        # CR4-1 / CR5-C1 — proposed_tests defines the test_index positions
+        # that TestExecutionResult rows reference.  Reordering or replacing
+        # the array after execution can begin silently re-attributes
+        # recorded (or in-flight) evidence to a different test.  Freeze it
+        # once the plan leaves drafting — see _proposed_tests_lock_reason.
         if (
             "proposed_tests" in updates
             and updates["proposed_tests"] != entry.proposed_tests
         ):
-            has_results = (
-                self.db.query(TestExecutionResult.id)
-                .filter(TestExecutionResult.entry_id == entry.id)
-                .first()
-                is not None
-            )
-            if has_results:
+            reason = self._proposed_tests_lock_reason(entry)
+            if reason:
                 raise ValueError(
-                    "Cannot modify proposed_tests once execution results "
-                    "exist for this entry — results reference tests by "
-                    "position (test_index), so changing the list would "
-                    "re-attribute recorded evidence. Clone the plan to "
+                    f"Cannot modify proposed_tests once {reason} — results "
+                    "reference tests by position (test_index), so changing "
+                    "the list would re-attribute evidence. Clone the plan to "
                     "revise the test list."
                 )
 

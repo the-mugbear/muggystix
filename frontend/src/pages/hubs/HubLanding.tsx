@@ -13,6 +13,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { roleForPath } from '../../config/navigation';
 import { cn } from '../../utils/cn';
 import { Card, CardContent } from '../../components/ui/card';
 
@@ -20,8 +21,9 @@ export interface HubLink {
   label: string;
   path: string;
   description: string;
-  requiredRole: string;
   Icon: React.FC<{ className?: string }>;
+  // No requiredRole here — the role gate is sourced from the navigation
+  // manifest via roleForPath(path) so it has one source of truth (CR5-R1).
 }
 
 export interface HubSection {
@@ -81,10 +83,10 @@ const HubLanding: React.FC<HubLandingProps> = ({ title, subtitle, links, section
 
   const visibleSections: HubSection[] = sections
     ? sections
-        .map((s) => ({ ...s, links: s.links.filter((l) => hasPermission(l.requiredRole)) }))
+        .map((s) => ({ ...s, links: s.links.filter((l) => hasPermission(roleForPath(l.path))) }))
         .filter((s) => s.links.length > 0)
     : [];
-  const visibleFlatLinks = (links ?? []).filter((l) => hasPermission(l.requiredRole));
+  const visibleFlatLinks = (links ?? []).filter((l) => hasPermission(roleForPath(l.path)));
 
   // FRX·M5 (auto-redirect to sole visible child) was REMOVED — the
   // useEffect was a navigation loop trap whose downstream symptom

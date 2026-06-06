@@ -46,8 +46,13 @@ COPY . .
 RUN mkdir -p uploads \
     && chmod 755 uploads
 
-# Create non-root user for security
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser \
+# Create non-root user for security.
+# CR5-C2 — pin UID/GID to 999 explicitly (was `-r`, which picks the next
+# free system id and only *happened* to land on 999).  Pinning makes the
+# host-side `chown 999:999 uploads/ingestion_queue` remediation in
+# scripts/deploy.sh + the ingestion_service error message correct and
+# stable across rebuilds/base-image changes.
+RUN groupadd -g 999 appgroup && useradd -u 999 -g appgroup -r appuser \
     && chown -R appuser:appgroup /app
 USER appuser
 

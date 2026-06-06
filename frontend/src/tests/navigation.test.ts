@@ -86,4 +86,42 @@ describe('navigation manifest', () => {
     }
     expect(mismatches).toEqual([]);
   });
+
+  it('every hub landing has a route gated at the hub role (HUB_DEFS coverage)', () => {
+    const appRoles = appRouteRoles();
+    for (const hub of HUB_DEFS) {
+      expect(appRoles[hub.path]).toBe(hub.requiredRole);
+    }
+  });
+
+  // CR5-R1 — reverse direction: a static, role-gated top-level route must be
+  // accounted for by the manifest (a nav page or a hub landing) OR explicitly
+  // listed as an intentional non-nav surface below.  This catches a new page
+  // wired into App.tsx but forgotten in the IA (so it'd be reachable only by
+  // deep link).  Param routes (detail/compare/sub-tabs) are excluded.
+  const INTENTIONAL_NON_NAV = new Set<string>([
+    '/recon/compare',
+    '/scans/compare',
+    '/test-plans/compare',
+    '/risk-assessment',
+    '/default-credentials',
+    '/tool-reference',
+    '/reference/user-guide',
+    '/reference/sbom',
+  ]);
+
+  it('no static top-level route is missing from the manifest', () => {
+    const appRoles = appRouteRoles();
+    const manifestPaths = new Set(NAV_PAGES.map((p) => p.path));
+    const hubPaths = new Set(HUB_DEFS.map((h) => h.path));
+    const orphans = Object.keys(appRoles).filter(
+      (path) =>
+        path.startsWith('/') &&
+        !path.includes(':') &&
+        !manifestPaths.has(path) &&
+        !hubPaths.has(path) &&
+        !INTENTIONAL_NON_NAV.has(path),
+    );
+    expect(orphans).toEqual([]);
+  });
 });

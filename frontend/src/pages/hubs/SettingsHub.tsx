@@ -35,7 +35,6 @@ const SettingsHub: React.FC = () => (
             label: 'Project',
             path: '/project-settings',
             description: 'Project members, roles, and the agent API key bound to this project.',
-            requiredRole: 'analyst',
             Icon: SettingsIcon,
           },
           {
@@ -43,7 +42,6 @@ const SettingsHub: React.FC = () => (
             path: '/integrations',
             description:
               'API keys for external scanners (Nessus, Shodan, etc.) that feed into the ingestion pipeline.',
-            requiredRole: 'analyst',
             Icon: KeyRound,
           },
           {
@@ -51,7 +49,6 @@ const SettingsHub: React.FC = () => (
             path: '/llm-settings',
             description:
               'Configure the LLM endpoints (OpenAI, Anthropic, local) that the in-app agent panel uses.',
-            requiredRole: 'viewer',
             Icon: Sparkles,
           },
           {
@@ -59,7 +56,6 @@ const SettingsHub: React.FC = () => (
             path: '/parse-errors',
             description:
               'Per-file parse-error log from the scan ingestion pipeline. Use to debug ingestion failures.',
-            requiredRole: 'analyst',
             Icon: FileWarning,
           },
         ],
@@ -72,7 +68,6 @@ const SettingsHub: React.FC = () => (
             label: 'Profile',
             path: '/profile',
             description: 'Your account: full name, password, and active sessions.',
-            requiredRole: 'viewer',
             Icon: UserCardIcon,
           },
         ],
@@ -86,7 +81,6 @@ const SettingsHub: React.FC = () => (
             path: '/system-settings',
             description:
               'User management, system-wide security settings, and audit configuration.',
-            requiredRole: 'admin',
             Icon: CogSixIcon,
           },
         ],
@@ -100,7 +94,6 @@ const SettingsHub: React.FC = () => (
             path: '/reference',
             description:
               'Built-in docs: User Guide, Tool Reference, SBOM, and other developer references.',
-            requiredRole: 'viewer',
             Icon: NetworkIcon,
           },
         ],

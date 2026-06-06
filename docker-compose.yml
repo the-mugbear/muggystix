@@ -81,8 +81,8 @@ services:
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       SSL_ENABLED: ${SSL_MODE:-false}
-      APP_VERSION: ${APP_VERSION:-2.107.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.21.0}
+      APP_VERSION: ${APP_VERSION:-2.108.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.22.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -140,7 +140,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.107.0}
+      APP_VERSION: ${APP_VERSION:-2.108.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -159,12 +159,12 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.107.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.108.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right VersionFooter.  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.21.0}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.22.0}
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered

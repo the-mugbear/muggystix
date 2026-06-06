@@ -20,6 +20,7 @@
  */
 import { api, p, setCurrentProjectId, getCurrentProjectId } from './api/client';
 import { asAxiosError } from '../utils/apiErrors';
+import type { Paginated } from './api/shared';  // local use; also re-exported via the barrel below
 
 // --- Core: axios instance + project scoping ---
 export { api, setCurrentProjectId, getCurrentProjectId };
@@ -77,14 +78,23 @@ export interface DNSRecord {
 }
 
 // DNS records produced by a scan (e.g. dnsx).  Only A/AAAA answers create
-// host rows, so CNAME/MX/NS/TXT records are otherwise invisible — this
-// lists the full answer set for a scan.  Returns [] on older deployments.
-export const getScanDnsRecords = async (scanId: number): Promise<DNSRecord[]> => {
+// host rows, so CNAME/MX/NS/TXT records are otherwise invisible — this lists
+// the full answer set for a scan.  Returns a Paginated envelope so the UI can
+// show the TRUE total (CR5-C3); we request up to the server max in one page
+// (the tab is opt-in and most dnsx scans are far smaller) and the envelope's
+// `total`/`has_more` let the UI flag the rare truncation.  Empty page on
+// older deployments without the endpoint.
+const DNS_RECORDS_PAGE = 2000;
+export const getScanDnsRecords = async (scanId: number): Promise<Paginated<DNSRecord>> => {
   try {
-    const response = await api.get(`${p()}/scans/${scanId}/dns-records`);
+    const response = await api.get(`${p()}/scans/${scanId}/dns-records`, {
+      params: { skip: 0, limit: DNS_RECORDS_PAGE },
+    });
     return response.data;
   } catch (error) {
-    if (asAxiosError(error)?.response?.status === 404) return [];
+    if (asAxiosError(error)?.response?.status === 404) {
+      return { items: [], total: 0, skip: 0, limit: DNS_RECORDS_PAGE, has_more: false };
+    }
     throw error;
   }
 };

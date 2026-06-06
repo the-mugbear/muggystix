@@ -139,6 +139,14 @@ class IngestionService:
         job_token = uuid4().hex
         job_dir = self._storage_root / job_token
         job_dir.mkdir(parents=True, exist_ok=True)
+        # CR5-C2 — uploaded scans contain sensitive target/host detail.  The
+        # storage root may be a shared/world-traversable mount (unprivileged
+        # deploys can't chown it), so confidentiality must come from the files
+        # themselves: lock the per-job dir to the app user only (0700) — the
+        # API writer and the worker reader run as the same UID, so this keeps
+        # other local accounts out without breaking ingestion.  mkdir's mode is
+        # masked by umask, hence the explicit chmod.
+        os.chmod(job_dir, 0o700)
 
         # Audit finding H5: the previous implementation used
         # ``upload.filename`` verbatim in the filesystem path.  The
@@ -152,6 +160,9 @@ class IngestionService:
         safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', raw_name)[:120] or "upload"
         destination = job_dir / safe_name
         file_size = await self._write_upload(upload, destination)
+        # CR5-C2 — owner-only on the scan file too (umask leaves it 0644 by
+        # default); belt-and-suspenders with the 0700 job dir above.
+        os.chmod(destination, 0o600)
 
         # Magic-byte sanity check.  The extension tells us which parser
         # will run; the content should actually look like that format.

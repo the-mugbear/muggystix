@@ -89,6 +89,7 @@ const ScanDetail: React.FC = () => {
   const [scan, setScan] = useState<any>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [dnsRecords, setDnsRecords] = useState<DNSRecord[]>([]);
+  const [dnsTotal, setDnsTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState('hosts');
@@ -111,7 +112,8 @@ const ScanDetail: React.FC = () => {
         if (!cancelled) {
           setScan(s);
           setHosts(h);
-          setDnsRecords(dns);
+          setDnsRecords(dns.items);
+          setDnsTotal(dns.total);
         }
       })
       .catch((err) => {
@@ -215,8 +217,8 @@ const ScanDetail: React.FC = () => {
                   before clicking through. */}
               <TabsTrigger value="hosts"><Computer className="size-4" aria-hidden /> Hosts ({totalHostCount})</TabsTrigger>
               <TabsTrigger value="ports"><Shield className="size-4" aria-hidden /> All Ports ({totalPortCount})</TabsTrigger>
-              {dnsRecords.length > 0 && (
-                <TabsTrigger value="dns"><Globe className="size-4" aria-hidden /> DNS Records ({dnsRecords.length})</TabsTrigger>
+              {dnsTotal > 0 && (
+                <TabsTrigger value="dns"><Globe className="size-4" aria-hidden /> DNS Records ({dnsTotal})</TabsTrigger>
               )}
               <TabsTrigger value="command"><Terminal className="size-4" aria-hidden /> Command</TabsTrigger>
             </TabsList>
@@ -499,12 +501,20 @@ const ScanDetail: React.FC = () => {
                 </>
               )}
             </TabsContent>
-            {dnsRecords.length > 0 && (
+            {dnsTotal > 0 && (
               <TabsContent value="dns">
                 {/* DNS-resolution scans (e.g. dnsx) persist every answer,
                     but only A/AAAA become hosts — so CNAME/MX/NS/TXT
                     records are listed here where they'd otherwise be
                     invisible. */}
+                {dnsRecords.length < dnsTotal && (
+                  <Alert className="mb-sm">
+                    <AlertDescription>
+                      Showing the first {dnsRecords.length.toLocaleString()} of{' '}
+                      {dnsTotal.toLocaleString()} DNS records. Export the scan for the full set.
+                    </AlertDescription>
+                  </Alert>
+                )}
                 <ul className="space-y-xs md:hidden">
                   {dnsRecords.map((r) => (
                     <li key={r.id} className="rounded-panel border border-border p-sm">
