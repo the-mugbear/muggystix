@@ -5,7 +5,7 @@ from app.api.v1.endpoints import (
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, dns, parse_errors, reports, auth, risk,
     audit, users, projects, notifications,
-    portfolio, agents, test_plans, feedback, llm_providers,
+    portfolio, agents, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
     # Per-workflow agent routers (split out of agent_api.py in v2.16.0).
     # Mounted individually below so each gets its own Swagger/Redoc tag —
@@ -139,6 +139,9 @@ project_router.include_router(reports.router, prefix="/reports", tags=["reports"
 project_router.include_router(risk.router, prefix="/risk", tags=["risk"])
 project_router.include_router(agents.router, prefix="/agents", tags=["agents"])
 project_router.include_router(test_plans.router, prefix="/test-plans", tags=["test-plans"])
+# Offline-bundle sub-surface carved out of test_plans.py — same prefix so the
+# export-bundle / import-results paths are unchanged.
+project_router.include_router(test_plan_bundles.router, prefix="/test-plans", tags=["test-plans"])
 project_router.include_router(agent_activity.router, tags=["agent-activity"])
 project_router.include_router(agent_sessions.router, tags=["agent-sessions"])
 project_router.include_router(coverage.router, prefix="/coverage", tags=["coverage"])
