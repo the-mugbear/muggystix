@@ -246,8 +246,10 @@ class HostDiscovery(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class HostReviewer(BaseModel):
-    """Another user (not the caller) who has this host In Review.
-    v4.9.1 — drives the Hosts-list "In review · <name>" indicator."""
+    """A user who has this host In Review.  Drives the Hosts-list
+    "In review · <name>" indicator.  v4.9.1 — added (teammates only);
+    later widened to include the caller's own in-review too, so every
+    in-review host shows a named badge regardless of who's viewing."""
     user_id: int
     name: str
 
@@ -287,9 +289,11 @@ class Host(HostBase):
     # from `test_plan_entry_count`, which only means "host is in a
     # plan" — i.e. planned, not necessarily executed).
     test_execution_count: int = 0
-    # v4.9.1 — other users who have this host In Review (caller
-    # excluded; the caller's own follow is on `follow`).  Empty for the
-    # host-detail endpoint, populated by the list endpoint's batch query.
+    # v4.9.1 — users who have this host In Review.  Now includes the caller's
+    # OWN in-review (originally teammates-only), so every in-review host shows
+    # a named badge regardless of who's viewing.  Field name kept for API
+    # stability despite the "other_" prefix.  Empty for the host-detail
+    # endpoint; populated by the list endpoint's batch query.
     other_reviewers: List[HostReviewer] = []
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to

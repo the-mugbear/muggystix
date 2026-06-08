@@ -1933,9 +1933,11 @@ export default function Hosts() {
                         updating={updatingHostId === host.id}
                         onChange={(status) => handleFollowChange(host.id, status)}
                       />
-                      {/* v4.9.1 — teammate-review indicator: a host
-                          another operator has marked In Review, so you
-                          see it's already covered before picking it up.
+                      {/* v4.9.1 — review indicator: any operator (a
+                          teammate OR you) has this host In Review, so the
+                          whole team sees coverage at a glance.  Backend now
+                          includes the caller's own in-review, so this also
+                          shows your name on hosts you reviewed.
                           v4.25.1 — `max-w-full overflow-hidden` +
                           `shrink-0` on the icon clamp the badge to the
                           card width so a long reviewer name truncates

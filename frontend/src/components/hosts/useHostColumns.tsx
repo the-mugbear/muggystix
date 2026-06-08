@@ -376,12 +376,12 @@ export function useHostColumns({
                 updating={updatingHostId === host.id}
                 onChange={(status) => onFollowChange(host.id, status)}
               />
-              {/* v4.25.0 — teammate-review indicator at table-row
-                  level.  Mobile card view (Hosts.tsx) already renders
-                  this; the table column was missing it, so on the
-                  desktop layout the operator had no signal that a
-                  host was already under review by someone else until
-                  they opened the inspector.  Ordered second so it
+              {/* v4.25.0 — review indicator at table-row level.  Mobile
+                  card view (Hosts.tsx) already renders this; the table
+                  column was missing it, so on the desktop layout the
+                  operator had no signal that a host was already under
+                  review (by a teammate or themselves) until they opened
+                  the inspector.  Ordered second so it
                   sits directly under the FollowMenu — high-salience
                   state belongs next to the action that would change
                   ownership.
