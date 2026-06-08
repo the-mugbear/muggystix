@@ -910,6 +910,59 @@ def test_api_activity_endpoints_enforce_project_membership(
     assert client.get(plan_url).status_code == 200
 
 
+def test_api_activity_owner_attribution_and_mine_filter(
+    client, test_plan, test_project, test_agent, db_session,
+):
+    """Each activity row carries owner/agent attribution (joined from
+    Agent.owner), and ?mine=true restricts to the current user's own
+    agents — so one operator's calls aren't lost in a project-wide
+    firehose.  The client fixture authenticates as test-admin, who owns
+    test_agent; a second agent owned by another user must be excluded
+    under mine=true but visible (attributed) in the default 'all' view."""
+    from datetime import datetime, timezone
+    from app.db.models_agent import Agent, AgentApiCall
+    from app.db.models_auth import User, UserRole
+
+    other = User(
+        id=7777, username="other-owner", email="other-owner@example.com",
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
+        is_verified=True, created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other)
+    db_session.flush()
+    other_agent = Agent(
+        name="other-agent", project_id=test_project.id,
+        owner_id=other.id, is_active=True,
+    )
+    db_session.add(other_agent)
+    db_session.flush()
+
+    for ag in (test_agent, other_agent):
+        db_session.add(AgentApiCall(
+            agent_id=ag.id, project_id=test_project.id,
+            test_plan_id=test_plan.id, method="GET", path="/x",
+            status_code=200, duration_ms=1,
+            created_at=datetime.now(timezone.utc),
+        ))
+    db_session.commit()
+
+    url = (
+        f"/api/v1/projects/{test_project.id}"
+        f"/test-plans/{test_plan.id}/api-activity"
+    )
+
+    # Default 'all' view: both rows, each attributed to its owner + agent.
+    allr = client.get(url).json()
+    assert allr["total"] == 2
+    assert {i["owner_username"] for i in allr["items"]} == {"test-admin", "other-owner"}
+    assert all(i["agent_name"] for i in allr["items"])
+
+    # mine=true (caller is test-admin): only test_agent's row.
+    mine = client.get(url, params={"mine": "true"}).json()
+    assert mine["total"] == 1
+    assert mine["items"][0]["owner_username"] == "test-admin"
+
+
 def test_middleware_skips_unauthenticated_agent_requests(
     client, test_plan, db_session,
 ):

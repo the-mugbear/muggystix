@@ -421,6 +421,10 @@ export interface AgentApiCallRow {
   id: number;
   created_at: string;
   agent_id: number;
+  /** Who engaged this agent — joined from Agent.owner; null if deleted. */
+  agent_name?: string | null;
+  owner_id?: number | null;
+  owner_username?: string | null;
   api_key_prefix?: string | null;
   source_ip?: string | null;
   method: string;
@@ -452,6 +456,8 @@ export interface AgentActivityFilters {
   status_max?: number;
   host_id?: number;
   target_ip?: string;
+  /** Only calls made by agents the current user owns. */
+  mine?: boolean;
   limit?: number;
   offset?: number;
 }

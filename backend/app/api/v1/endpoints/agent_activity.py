@@ -17,12 +17,13 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, func
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_project
+from app.api.deps import get_current_project, get_current_user
 from app.db.session import get_db
-from app.db.models_agent import AgentApiCall
+from app.db.models_agent import AgentApiCall, Agent
+from app.db.models_auth import User
 from app.db.models_project import Project
 
 router = APIRouter()
@@ -35,6 +36,13 @@ class AgentApiCallRow(BaseModel):
     id: int
     created_at: datetime
     agent_id: int
+    # Owner attribution — who engaged this agent.  Lets the UI label each
+    # row and filter to "my agents", so one operator's calls aren't lost in
+    # a project-wide firehose.  Joined from Agent.owner; null when the
+    # agent or owner row was deleted.
+    agent_name: Optional[str] = None
+    owner_id: Optional[int] = None
+    owner_username: Optional[str] = None
     api_key_prefix: Optional[str] = None
     source_ip: Optional[str] = None
 
@@ -75,8 +83,15 @@ def _base_query(
     target_ip: Optional[str],
     since: Optional[datetime],
     until: Optional[datetime],
+    mine_owner_id: Optional[int] = None,
 ):
     q = db.query(AgentApiCall).filter(AgentApiCall.project_id == project_id)
+    if mine_owner_id is not None:
+        # "My agents only" — restrict to calls made by agents this user owns.
+        owned = select(Agent.id).where(
+            Agent.project_id == project_id, Agent.owner_id == mine_owner_id
+        )
+        q = q.filter(AgentApiCall.agent_id.in_(owned))
     if test_plan_id is not None:
         q = q.filter(AgentApiCall.test_plan_id == test_plan_id)
     if recon_session_id is not None:
@@ -106,6 +121,29 @@ def _base_query(
     return q
 
 
+def _serialize_rows(db: Session, rows: List[AgentApiCall]) -> List[AgentApiCallRow]:
+    """Attach owner/agent attribution to each row in one batched lookup
+    (one query for the page's distinct agent_ids, not one per row)."""
+    agent_ids = {r.agent_id for r in rows if r.agent_id is not None}
+    owners: dict = {}
+    if agent_ids:
+        for aid, aname, oid, ouname in (
+            db.query(Agent.id, Agent.name, User.id, User.username)
+            .outerjoin(User, User.id == Agent.owner_id)
+            .filter(Agent.id.in_(agent_ids))
+        ):
+            owners[aid] = (aname, oid, ouname)
+    items = []
+    for r in rows:
+        aname, oid, ouname = owners.get(r.agent_id, (None, None, None))
+        items.append(
+            AgentApiCallRow.model_validate(r).model_copy(
+                update={"agent_name": aname, "owner_id": oid, "owner_username": ouname}
+            )
+        )
+    return items
+
+
 @router.get(
     "/test-plans/{plan_id}/api-activity",
     response_model=AgentApiCallListResponse,
@@ -121,9 +159,11 @@ def list_plan_activity(
     status_max: Optional[int] = Query(None, ge=100, le=599),
     host_id: Optional[int] = Query(None, description="Only rows that referenced this host."),
     target_ip: Optional[str] = Query(None, description="Only rows that referenced this IP."),
+    mine: bool = Query(False, description="Only calls made by agents the current user owns."),
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     # get_current_project enforces ProjectMembership for the path project_id
@@ -133,16 +173,14 @@ def list_plan_activity(
         db, project_id=project.id, test_plan_id=plan_id, recon_session_id=None,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
+        mine_owner_id=current_user.id if mine else None,
     )
     total = q.count()
     rows = (
         q.order_by(AgentApiCall.created_at.desc())
         .offset(offset).limit(limit).all()
     )
-    return AgentApiCallListResponse(
-        total=total,
-        items=[AgentApiCallRow.model_validate(r) for r in rows],
-    )
+    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))
 
 
 # ---------------------------------------------------------------------------
@@ -353,9 +391,11 @@ def list_recon_session_activity(
     status_max: Optional[int] = Query(None, ge=100, le=599),
     host_id: Optional[int] = Query(None),
     target_ip: Optional[str] = Query(None),
+    mine: bool = Query(False, description="Only calls made by agents the current user owns."),
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     # get_current_project enforces ProjectMembership for the path project_id
@@ -364,13 +404,11 @@ def list_recon_session_activity(
         db, project_id=project.id, test_plan_id=None, recon_session_id=recon_session_id,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
+        mine_owner_id=current_user.id if mine else None,
     )
     total = q.count()
     rows = (
         q.order_by(AgentApiCall.created_at.desc())
         .offset(offset).limit(limit).all()
     )
-    return AgentApiCallListResponse(
-        total=total,
-        items=[AgentApiCallRow.model_validate(r) for r in rows],
-    )
+    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))
