@@ -422,6 +422,116 @@ class SanityCheckMethod(str, enum.Enum):
     NETWORK_CONTEXT = "network_context"
 
 
+class AgentSessionWorkflow(str, enum.Enum):
+    """The four agent workflows a key can be scoped to.  Replaces the four
+    mutually-exclusive scope FKs that used to live on ``api_keys``."""
+    PLAN_GENERATION = "plan_generation"
+    EXECUTION = "execution"
+    RECON = "recon"
+    ASSIST = "assist"
+
+
+class AgentSession(Base):
+    """Unified base row for every agent-workflow session (v2.116.0).
+
+    One row per plan-generation / execution / recon / assist session.  An
+    agent API key points at exactly one ``AgentSession``
+    (``api_keys.agent_session_id``), and the ``workflow`` discriminator
+    replaces the four mutually-exclusive scope FKs + the per-workflow
+    deny-matrix that used to live on ``api_keys`` / ``deps.py``.
+
+    Shared lifecycle state (status, timestamps, environment probe, agent/
+    model attribution, notes, owner attribution) lives here.  Workflow-
+    specific state stays in the detail tables (:class:`ExecutionSession`,
+    :class:`ReconSession`, :class:`AssistSession`), each 1:1 with its base
+    row via ``agent_session_id`` — composition, not inheritance, so the
+    detail PKs (referenced by child rows like TestExecutionResult) stay
+    stable.  The detail classes proxy the moved columns through to this
+    base for attribute access; query filters reference the base directly.
+
+    ``plan_id`` / ``scope_id`` are kept as real typed FKs (CASCADE) rather
+    than one polymorphic ``target_id`` so DB-level referential integrity
+    survives the collapse.
+    """
+    __tablename__ = "agent_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow = Column(String(20), nullable=False, index=True)  # AgentSessionWorkflow
+
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(
+        Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True,
+    )
+    started_by_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+
+    # Typed targets — plan_id for plan_generation + execution; scope_id for
+    # recon; both null for assist (project-scoped only).
+    #
+    # use_alter on plan_id: test_plans already FKs back to recon_sessions
+    # (plan provenance), and recon_sessions now FKs to agent_sessions, so a
+    # plain agent_sessions→test_plans FK closes a cycle that create_all/
+    # drop_all can't order.  use_alter emits this one FK as a separate ALTER
+    # so metadata DDL (the test suite's create_all) can sort the rest.
+    plan_id = Column(
+        Integer,
+        ForeignKey(
+            "test_plans.id", ondelete="CASCADE",
+            use_alter=True, name="fk_agent_sessions_plan_id",
+        ),
+        nullable=True,
+        index=True,
+    )
+    scope_id = Column(
+        Integer,
+        ForeignKey("scopes.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    status = Column(String(20), nullable=False, default="active")
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Unified completion timestamp (Assist's "ended_at" maps here).
+    completed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Environment probe (shared) — see AGENTS.md § Environment probe.
+    environment = Column(JSON, nullable=True)
+    environment_probed_at = Column(DateTime(timezone=True), nullable=True)
+    environment_probed_by_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    environment_probed_from_ip = Column(String(45), nullable=True)
+
+    # Executing-agent attribution (shared).
+    generated_by_model = Column(String(100), nullable=True)
+    generated_by_tool = Column(String(100), nullable=True)
+    prompt_version = Column(String(20), nullable=True)
+
+    notes = Column(Text, nullable=True)
+
+    # Relationships
+    project = relationship("Project")
+    agent = relationship("Agent")
+    started_by = relationship("User", foreign_keys=[started_by_id])
+    environment_probed_by = relationship(
+        "User", foreign_keys=[environment_probed_by_user_id]
+    )
+    plan = relationship("TestPlan")
+    scope = relationship("Scope")
+
+    __table_args__ = (
+        Index("idx_agent_session_project", "project_id"),
+        Index("idx_agent_session_workflow_status", "workflow", "status"),
+    )
+
+
 class ExecutionSession(Base):
     """One run of test execution against an approved plan.
 
@@ -459,6 +569,16 @@ class ExecutionSession(Base):
         default=ExecutionSessionMode.IN_SESSION.value,
     )
     bundle_id = Column(String(64), nullable=True, index=True)
+    # v2.116.0 — 1:1 link to the unified AgentSession base.  Nullable during
+    # the expand phase (backfilled by the migration); becomes the
+    # authoritative home for the shared lifecycle columns in the contract
+    # phase.
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -502,6 +622,7 @@ class ExecutionSession(Base):
     environment_probed_by = relationship(
         "User", foreign_keys=[environment_probed_by_user_id]
     )
+    agent_session = relationship("AgentSession")
     test_results = relationship(
         "TestExecutionResult",
         back_populates="execution_session",
@@ -875,6 +996,15 @@ class ReconSession(Base):
         default=ReconSessionStatus.ACTIVE.value,
     )
 
+    # v2.116.0 — 1:1 link to the unified AgentSession base (see
+    # ExecutionSession.agent_session_id).  Nullable during the expand phase.
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # Counters updated as uploads succeed.  Not authoritative — the
     # authoritative source is the scan_history rows tagged with this
     # session.  These exist for cheap summary queries.
@@ -927,6 +1057,7 @@ class ReconSession(Base):
     environment_probed_by = relationship(
         "User", foreign_keys=[environment_probed_by_user_id]
     )
+    agent_session = relationship("AgentSession")
 
     __table_args__ = (
         Index("idx_recon_session_scope", "scope_id"),
@@ -995,6 +1126,15 @@ class AssistSession(Base):
         default=AssistSessionStatus.ACTIVE.value,
     )
 
+    # v2.116.0 — 1:1 link to the unified AgentSession base (see
+    # ExecutionSession.agent_session_id).  Nullable during the expand phase.
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # Free-form description from the human at start time — "looking
     # for FTP exposure", "writing up critical findings", etc.  Useful
     # for the audit log so a reviewer can see why each assist session
@@ -1035,6 +1175,7 @@ class AssistSession(Base):
     environment_probed_by = relationship(
         "User", foreign_keys=[environment_probed_by_user_id]
     )
+    agent_session = relationship("AgentSession")
 
     __table_args__ = (
         Index("idx_assist_session_project", "project_id"),
