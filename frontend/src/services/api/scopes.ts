@@ -152,8 +152,21 @@ export const getScopes = async (): Promise<ScopeSummary[]> => {
   return response.data;
 };
 
-export const getScope = async (scopeId: number, withFindingsOnly: boolean = false): Promise<Scope> => {
-  const response = await api.get(`${p()}/scopes/${scopeId}?with_findings_only=${withFindingsOnly}`);
+export const getScope = async (
+  scopeId: number,
+  opts: { withFindingsOnly?: boolean; subnetsSkip?: number; subnetsLimit?: number; subnetsSearch?: string } = {},
+): Promise<Scope> => {
+  // Kept in sync with the backend GET /scopes/{id} contract (which mirrors
+  // /scopes/default's pagination + subnets_search params).  Currently unused
+  // by the single-default-scope UI, which calls getDefaultScope.
+  const params = new URLSearchParams();
+  params.set('with_findings_only', String(opts.withFindingsOnly ?? false));
+  if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
+  if (opts.subnetsLimit !== undefined) params.set('subnets_limit', String(opts.subnetsLimit));
+  if (opts.subnetsSearch && opts.subnetsSearch.trim()) {
+    params.set('subnets_search', opts.subnetsSearch.trim());
+  }
+  const response = await api.get(`${p()}/scopes/${scopeId}?${params.toString()}`);
   return response.data;
 };
 

@@ -82,7 +82,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       SSL_ENABLED: ${SSL_MODE:-false}
       APP_VERSION: ${APP_VERSION:-2.118.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.26.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.26.1}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -164,7 +164,7 @@ services:
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right VersionFooter.  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.26.0}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.26.1}
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered

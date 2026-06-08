@@ -162,15 +162,22 @@ const Scopes: React.FC = () => {
   const currentSubnetWindow = () =>
     Math.max(scope?.subnets.length ?? 0, SUBNET_PAGE_SIZE);
 
+  // Single place that shapes the paginated scope fetch and injects the active
+  // search term.  The four callers below (initial load, refresh, search,
+  // load-more) all route through here so a new param (e.g. withFindingsOnly)
+  // only has to be threaded in once instead of four times.
+  const fetchScopePage = (skip: number, limit: number) =>
+    getDefaultScope({
+      subnetsSkip: skip,
+      subnetsLimit: limit,
+      subnetsSearch: debouncedSubnetSearch,
+    });
+
   const loadData = async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
     try {
       const [scopeData, coverageData] = await Promise.all([
-        getDefaultScope({
-          subnetsSkip: 0,
-          subnetsLimit: currentSubnetWindow(),
-          subnetsSearch: debouncedSubnetSearch,
-        }),
+        fetchScopePage(0, currentSubnetWindow()),
         getScopeCoverage(),
       ]);
       setScope(scopeData);
@@ -187,11 +194,7 @@ const Scopes: React.FC = () => {
   const refreshScope = async () => {
     try {
       const [scopeData, coverageData] = await Promise.all([
-        getDefaultScope({
-          subnetsSkip: 0,
-          subnetsLimit: currentSubnetWindow(),
-          subnetsSearch: debouncedSubnetSearch,
-        }),
+        fetchScopePage(0, currentSubnetWindow()),
         getScopeCoverage(),
       ]);
       setScope(scopeData);
@@ -213,11 +216,7 @@ const Scopes: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const scopeData = await getDefaultScope({
-          subnetsSkip: 0,
-          subnetsLimit: SUBNET_PAGE_SIZE,
-          subnetsSearch: debouncedSubnetSearch,
-        });
+        const scopeData = await fetchScopePage(0, SUBNET_PAGE_SIZE);
         if (!cancelled) setScope(scopeData);
       } catch (err) {
         console.error('Error searching subnets:', err);
@@ -234,11 +233,7 @@ const Scopes: React.FC = () => {
     if (!scope || loadingMore) return;
     setLoadingMore(true);
     try {
-      const next = await getDefaultScope({
-        subnetsSkip: scope.subnets.length,
-        subnetsLimit: SUBNET_PAGE_SIZE,
-        subnetsSearch: debouncedSubnetSearch,
-      });
+      const next = await fetchScopePage(scope.subnets.length, SUBNET_PAGE_SIZE);
       setScope((prev) =>
         prev
           ? {
