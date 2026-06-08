@@ -47,9 +47,10 @@ vi.mock('../../services/api', () => ({
   }),
   getStaleness: vi.fn().mockResolvedValue(null),
   // P2 — Operations now owns ONE /workbench fetch and prop-drives the
-  // three personal cards (My Queue / My Tasks / Team Review) + the
-  // since-last-visit diff. Mocked empty so the cards render their
-  // empty-state and the banner suppresses (first visit).
+  // personal cards (My Queue / My Tasks) + the since-last-visit diff.
+  // Mocked empty so the cards render their empty-state and the banner
+  // suppresses (first visit).  (team_review is still in the mock payload
+  // but no longer rendered — the Team Review card was removed.)
   getWorkbench: vi.fn().mockResolvedValue({
     my_queue: { items: [], in_review_count: 0, watching_count: 0 },
     my_tasks: { items: [], total_open: 0, reason_counts: { assigned: 0, in_review: 0, triage: 0 } },

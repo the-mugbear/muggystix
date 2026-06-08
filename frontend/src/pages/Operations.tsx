@@ -22,7 +22,6 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import MyWorkCard from '../components/MyWorkCard';
-import TeamReviewCard from '../components/TeamReviewCard';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -779,10 +778,12 @@ const Operations: React.FC = () => {
   const [statsLoading, setStatsLoading] = useState(true);
   const [staleness, setStaleness] = useState<StalenessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // P2 — Operations owns ONE /workbench fetch covering the three personal
-  // cards (My Queue / My Tasks / Team Review) + the since-last-visit diff,
-  // and prop-drives them. The page-level Refresh re-runs this in lockstep
-  // with the coverage/stats fetches, so everything refreshes together.
+  // P2 — Operations owns ONE /workbench fetch covering the personal cards
+  // (My Queue / My Tasks) + the since-last-visit diff, and prop-drives them.
+  // The page-level Refresh re-runs this in lockstep with the coverage/stats
+  // fetches, so everything refreshes together.  (The Team Review card that
+  // also consumed this payload's team_review field was removed; the field
+  // is left on the response for now.)
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [workbenchLoading, setWorkbenchLoading] = useState(true);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
@@ -991,17 +992,6 @@ const Operations: React.FC = () => {
             <MyWorkCard
               queue={workbench?.my_queue ?? null}
               tasks={workbench?.my_tasks ?? null}
-              loading={workbenchLoading}
-              error={workbenchError}
-              onRetry={reload}
-            />
-          </div>
-          {/* Team Review — the project-wide review roster (who has
-              which hosts In Review), so operators can plan coverage
-              and avoid two people working the same host. */}
-          <div className="mb-md">
-            <TeamReviewCard
-              data={workbench?.team_review ?? null}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}
