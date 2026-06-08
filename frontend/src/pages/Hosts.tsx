@@ -65,6 +65,7 @@ import { PORTS_OF_INTEREST_SET, PORTS_OF_INTEREST } from '../utils/portsOfIntere
 import { getHostWebLinks } from '../utils/webLinks';
 import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
+import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { useConfirm } from '../hooks/useConfirm';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -1003,7 +1004,6 @@ export default function Hosts() {
   // The command bar passes its current draft so a just-typed query is
   // reflected immediately (its commit to filters.query is also debounced).
   const handleCopyLink = useCallback((draftQuery?: string) => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     const ctx = buildHostQueryContext();
     if (draftQuery !== undefined) {
       const trimmed = draftQuery.trim();
@@ -1017,9 +1017,11 @@ export default function Hosts() {
     });
     const query = sp.toString();
     const url = `${window.location.origin}${window.location.pathname}${query ? `?${query}` : ''}`;
-    navigator.clipboard.writeText(url)
-      .then(() => toast.info('Link copied to clipboard', { autoHideMs: 2000 }))
-      .catch(() => toast.error('Could not copy link'));
+    void copyToClipboard(url).then((ok) =>
+      ok
+        ? toast.info('Link copied to clipboard', { autoHideMs: 2000 })
+        : toast.error('Could not copy link'),
+    );
   }, [buildHostQueryContext, toast]);
 
   // Pin the current query as a saved view.  Commit the passed draft into
@@ -1421,6 +1423,15 @@ export default function Hosts() {
     [rowSelection],
   );
 
+  // IPs for the explicitly-checked rows (resolved against the loaded page),
+  // for the bulk "Copy IPs" target-list action.  Page-scoped on purpose:
+  // "select all matching" spans rows we haven't fetched, so the bulk bar
+  // disables Copy IPs in that mode and points to the Tool-Ready export.
+  const selectedIps = useMemo(() => {
+    const idSet = new Set(selectedIds);
+    return hosts.filter((h) => idSet.has(h.id)).map((h) => h.ip_address);
+  }, [selectedIds, hosts]);
+
   const table = useDataTable<Host>({
     data: hosts,
     columns,
@@ -1819,6 +1830,7 @@ export default function Hosts() {
           {selectedIds.length > 0 && (
             <HostBulkBar
               selectedIds={selectedIds}
+              selectedIps={selectedIps}
               totalMatching={totalHosts}
               queryContext={exportQueryContext}
               onClear={() => setRowSelection({})}

@@ -3,14 +3,17 @@ import { ColumnDef } from '@tanstack/react-table';
 import {
   Bookmark,
   BookmarkPlus,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Copy,
   Eye,
   Users,
 } from 'lucide-react';
 
 import type { Host, FollowStatus, HostDiscovery, Port } from '../../services/api';
+import { copyToClipboard } from '../../utils/clipboard';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import {
@@ -40,6 +43,35 @@ const TAG_DOT_CLASS: Record<string, string> = {
 };
 const tagDotClass = (color?: string | null): string =>
   (color && TAG_DOT_CLASS[color.toLowerCase()]) || 'bg-muted-foreground/50';
+
+/**
+ * Per-row copy-IP control.  Feeding IPs to external tools is the core loop,
+ * so it gets a one-click affordance instead of select-text-and-copy.  Stops
+ * propagation so it never opens the row inspector; flips to a check for a
+ * beat on success.  Co-located with the other host-table cell helpers.
+ */
+const CopyIpButton: React.FC<{ ip: string }> = ({ ip }) => {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+      aria-label={`Copy IP ${ip}`}
+      title={`Copy ${ip}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        void copyToClipboard(ip).then((ok) => {
+          if (!ok) return;
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+    >
+      {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+    </Button>
+  );
+};
 
 /**
  * Hosts-table column definitions extracted from Hosts.tsx
@@ -218,66 +250,60 @@ export function useHostColumns({
         cell: ({ row }) => {
           const host = row.original;
           const latestDiscovery = getLatestDiscovery(host.discoveries);
-          // v2.44.1 (UX review #2): the IP cell is the keyboard-
-          // activation target for the row-level "open host inspector"
-          // action.  Real <button>, full-cell click target, real
-          // focus ring.  If onOpen wasn't passed (other future callers
-          // of useHostColumns), fall back to a non-interactive div.
-          const body = (
-            <div className="flex min-w-0 items-start justify-between gap-xs text-left">
-              <div className="min-w-0">
-                <div className="break-words font-medium text-foreground">{host.ip_address}</div>
-                {host.hostname ? (
-                  <div className="line-clamp-2 text-caption text-foreground/80">
-                    {host.hostname}
-                  </div>
-                ) : (
-                  <div className="text-caption text-muted-foreground">No hostname</div>
-                )}
-                {host.os_name && (
-                  <div className="line-clamp-1 text-caption text-muted-foreground">
-                    {host.os_name}
-                  </div>
-                )}
-                {latestDiscovery && (
-                  <div className="line-clamp-1 text-caption text-muted-foreground">
-                    Last seen in {getScanLabel(latestDiscovery)}
-                  </div>
-                )}
-                {host.tags && host.tags.length > 0 && (
-                  <div className="mt-xxs flex flex-wrap gap-xxs">
-                    {host.tags.slice(0, 4).map((tag) => (
+          const info = (
+            <div className="min-w-0">
+              <div className="break-words font-medium text-foreground">{host.ip_address}</div>
+              {host.hostname ? (
+                <div className="line-clamp-2 text-caption text-foreground/80">
+                  {host.hostname}
+                </div>
+              ) : (
+                <div className="text-caption text-muted-foreground">No hostname</div>
+              )}
+              {host.os_name && (
+                <div className="line-clamp-1 text-caption text-muted-foreground">
+                  {host.os_name}
+                </div>
+              )}
+              {latestDiscovery && (
+                <div className="line-clamp-1 text-caption text-muted-foreground">
+                  Last seen in {getScanLabel(latestDiscovery)}
+                </div>
+              )}
+              {host.tags && host.tags.length > 0 && (
+                <div className="mt-xxs flex flex-wrap gap-xxs">
+                  {host.tags.slice(0, 4).map((tag) => (
+                    <span
+                      key={tag.id}
+                      className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-muted/40 px-xs py-px text-caption"
+                      title={tag.name}
+                    >
                       <span
-                        key={tag.id}
-                        className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-muted/40 px-xs py-px text-caption"
-                        title={tag.name}
-                      >
-                        <span
-                          className={cn('inline-block size-1.5 shrink-0 rounded-full', tagDotClass(tag.color))}
-                          aria-hidden
-                        />
-                        <span className="truncate">{tag.name}</span>
-                      </span>
-                    ))}
-                    {host.tags.length > 4 && (
-                      <span className="text-caption text-muted-foreground">+{host.tags.length - 4}</span>
-                    )}
-                  </div>
-                )}
-                {host.assignees && host.assignees.length > 0 && (
-                  <div className="line-clamp-1 text-caption text-muted-foreground">
-                    Assigned: {host.assignees.map((a) => a.name).join(', ')}
-                  </div>
-                )}
-              </div>
-              <ChevronRight
-                className="mt-px size-4 shrink-0 text-muted-foreground"
-                aria-hidden
-              />
+                        className={cn('inline-block size-1.5 shrink-0 rounded-full', tagDotClass(tag.color))}
+                        aria-hidden
+                      />
+                      <span className="truncate">{tag.name}</span>
+                    </span>
+                  ))}
+                  {host.tags.length > 4 && (
+                    <span className="text-caption text-muted-foreground">+{host.tags.length - 4}</span>
+                  )}
+                </div>
+              )}
+              {host.assignees && host.assignees.length > 0 && (
+                <div className="line-clamp-1 text-caption text-muted-foreground">
+                  Assigned: {host.assignees.map((a) => a.name).join(', ')}
+                </div>
+              )}
             </div>
           );
-          if (!onOpen) return body;
-          return (
+          // v2.44.1 (UX review #2): the IP cell is the keyboard-activation
+          // target for the row-level "open host inspector" action — a real
+          // <button> with a focus ring.  The copy-IP control is a SIBLING of
+          // that button (nesting would be invalid button-in-button HTML) and
+          // stops propagation so it never opens the inspector.  If onOpen
+          // wasn't passed, the text falls back to a non-interactive div.
+          const opener = onOpen ? (
             <button
               type="button"
               onClick={(e) => {
@@ -287,10 +313,21 @@ export function useHostColumns({
                 onOpen(host.id);
               }}
               aria-label={`Open host inspector for ${host.ip_address}${host.hostname ? ` (${host.hostname})` : ''}`}
-              className="block w-full rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="block min-w-0 flex-1 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {body}
+              {info}
             </button>
+          ) : (
+            <div className="min-w-0 flex-1">{info}</div>
+          );
+          return (
+            <div className="flex min-w-0 items-start gap-xs">
+              {opener}
+              <div className="flex shrink-0 items-center gap-xxs pt-px">
+                <CopyIpButton ip={host.ip_address} />
+                <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
+              </div>
+            </div>
           );
         },
       },
