@@ -3,12 +3,13 @@ import os
 import tempfile
 from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query, Request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel, Field
 from app.db import models
 from app.db.session import get_db
 from app.db.models import Scope, Subnet, HostSubnetMapping
+from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_project, require_project_role
@@ -199,16 +200,33 @@ def _serialize_scope_with_subnets(
     with_findings_only: bool,
     subnets_skip: int,
     subnets_limit: Optional[int],
+    subnets_search: Optional[str] = None,
 ) -> dict:
     """Build the ScopeSchema payload with a server-paginated subnets array.
 
     Shared by ``GET /scopes/default`` and ``GET /scopes/{scope_id}``.
     ``with_findings_only`` restricts to subnets with at least one correlated
     host; ``subnets_limit`` (when set) caps the page so a 6000+ subnet project
-    doesn't ship a multi-MB body.  ``subnets_total`` always carries the
-    unpaginated count so the frontend can drive a 'load more' affordance.
+    doesn't ship a multi-MB body.  ``subnets_search`` (case-insensitive
+    substring over cidr + description) lets the UI jump straight to an entry
+    instead of paging to find it.  ``subnets_total`` always carries the count
+    of the *filtered* set so the frontend's "Showing N of T" + 'load more'
+    affordance stay correct under search.
     """
+    # Build the search predicate once so it's applied identically to the page
+    # query AND the count query — otherwise subnets_total would describe the
+    # full set while subnets shows the filtered page.
+    search_filter = None
+    if subnets_search and subnets_search.strip():
+        like = f"%{escape_like(subnets_search.strip())}%"
+        search_filter = or_(
+            Subnet.cidr.ilike(like, escape="\\"),
+            Subnet.description.ilike(like, escape="\\"),
+        )
+
     subnet_q = db.query(Subnet).filter(Subnet.scope_id == scope.id)
+    if search_filter is not None:
+        subnet_q = subnet_q.filter(search_filter)
     if with_findings_only:
         subnet_q = (
             subnet_q
@@ -216,22 +234,22 @@ def _serialize_scope_with_subnets(
             .group_by(Subnet.id)
             .having(func.count(HostSubnetMapping.id) > 0)
         )
-        subnets_total_count = (
+        total_q = (
             db.query(func.count(func.distinct(Subnet.id)))
             .select_from(Subnet)
             .outerjoin(HostSubnetMapping)
             .filter(Subnet.scope_id == scope.id)
             .group_by(Subnet.id)
             .having(func.count(HostSubnetMapping.id) > 0)
-            .count()
         )
+        if search_filter is not None:
+            total_q = total_q.filter(search_filter)
+        subnets_total_count = total_q.count()
     else:
-        subnets_total_count = (
-            db.query(func.count(Subnet.id))
-            .filter(Subnet.scope_id == scope.id)
-            .scalar()
-            or 0
-        )
+        total_q = db.query(func.count(Subnet.id)).filter(Subnet.scope_id == scope.id)
+        if search_filter is not None:
+            total_q = total_q.filter(search_filter)
+        subnets_total_count = total_q.scalar() or 0
 
     subnet_q = subnet_q.order_by(Subnet.id.asc()).offset(subnets_skip)
     if subnets_limit is not None:
@@ -275,6 +293,13 @@ def get_default_scope(
             "subnets_total to drive a 'load more' affordance."
         ),
     ),
+    subnets_search: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring filter over subnet cidr + description. "
+            "Applied before pagination, and reflected in subnets_total."
+        ),
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
@@ -290,7 +315,7 @@ def get_default_scope(
     """
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
     return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit
+        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
     )
 
 
@@ -446,6 +471,13 @@ def get_scope(
             "subnets_total to drive a 'load more' affordance."
         ),
     ),
+    subnets_search: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring filter over subnet cidr + description. "
+            "Applied before pagination, and reflected in subnets_total."
+        ),
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -461,7 +493,7 @@ def get_scope(
         raise HTTPException(status_code=404, detail="Scope not found")
 
     return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit
+        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
     )
 
 @router.post(

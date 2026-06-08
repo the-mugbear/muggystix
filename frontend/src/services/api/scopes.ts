@@ -164,12 +164,20 @@ export const getScope = async (scopeId: number, withFindingsOnly: boolean = fals
  * guaranteed target to append entries to.
  */
 export const getDefaultScope = async (
-  opts: { subnetsSkip?: number; subnetsLimit?: number; withFindingsOnly?: boolean } = {},
+  opts: {
+    subnetsSkip?: number;
+    subnetsLimit?: number;
+    withFindingsOnly?: boolean;
+    subnetsSearch?: string;
+  } = {},
 ): Promise<Scope> => {
   const params = new URLSearchParams();
   if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
   if (opts.subnetsLimit !== undefined) params.set('subnets_limit', String(opts.subnetsLimit));
   if (opts.withFindingsOnly !== undefined) params.set('with_findings_only', String(opts.withFindingsOnly));
+  if (opts.subnetsSearch && opts.subnetsSearch.trim()) {
+    params.set('subnets_search', opts.subnetsSearch.trim());
+  }
   const qs = params.toString();
   const response = await api.get<Scope>(`${p()}/scopes/default${qs ? `?${qs}` : ''}`);
   return response.data;

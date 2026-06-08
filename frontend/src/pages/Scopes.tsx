@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Rocket,
   Save,
+  Search,
   Tags as TagsIcon,
   Trash2,
   Upload,
@@ -39,6 +40,7 @@ import OutOfScopeExport from '../components/OutOfScopeExport';
 import StartReconDialog from '../components/StartReconDialog';
 import { useConfirm } from '../hooks/useConfirm';
 import { useReconPlan } from '../hooks/useReconPlan';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -123,6 +125,13 @@ const Scopes: React.FC = () => {
   // re-fetch as many subnets as are currently shown so the view is stable.
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Subnet search — a case-insensitive substring filter over cidr +
+  // description, applied server-side (before pagination) so users can jump
+  // straight to an entry instead of paging.  Debounced so we don't fire a
+  // request per keystroke; the result resets the list to page 0.
+  const [subnetSearch, setSubnetSearch] = useState('');
+  const debouncedSubnetSearch = useDebouncedValue(subnetSearch, 300);
+
   // v2.86.0 — subnet-label state.  The project-wide label catalogue
   // is fetched on mount and refreshed whenever the manager dialog
   // mutates it; selectedSubnetIds drives the bulk-apply affordance
@@ -157,7 +166,11 @@ const Scopes: React.FC = () => {
     if (showSpinner) setLoading(true);
     try {
       const [scopeData, coverageData] = await Promise.all([
-        getDefaultScope({ subnetsSkip: 0, subnetsLimit: currentSubnetWindow() }),
+        getDefaultScope({
+          subnetsSkip: 0,
+          subnetsLimit: currentSubnetWindow(),
+          subnetsSearch: debouncedSubnetSearch,
+        }),
         getScopeCoverage(),
       ]);
       setScope(scopeData);
@@ -174,7 +187,11 @@ const Scopes: React.FC = () => {
   const refreshScope = async () => {
     try {
       const [scopeData, coverageData] = await Promise.all([
-        getDefaultScope({ subnetsSkip: 0, subnetsLimit: currentSubnetWindow() }),
+        getDefaultScope({
+          subnetsSkip: 0,
+          subnetsLimit: currentSubnetWindow(),
+          subnetsSearch: debouncedSubnetSearch,
+        }),
         getScopeCoverage(),
       ]);
       setScope(scopeData);
@@ -184,6 +201,35 @@ const Scopes: React.FC = () => {
     }
   };
 
+  // Re-fetch the first page whenever the (debounced) search term changes.
+  // Skip the initial mount — the [] effect's loadData() already covers it,
+  // so this only fires on real search edits.
+  const searchInitialized = useRef(false);
+  useEffect(() => {
+    if (!searchInitialized.current) {
+      searchInitialized.current = true;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const scopeData = await getDefaultScope({
+          subnetsSkip: 0,
+          subnetsLimit: SUBNET_PAGE_SIZE,
+          subnetsSearch: debouncedSubnetSearch,
+        });
+        if (!cancelled) setScope(scopeData);
+      } catch (err) {
+        console.error('Error searching subnets:', err);
+        toast.error('Failed to search subnets.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSubnetSearch]);
+
   const loadMoreSubnets = async () => {
     if (!scope || loadingMore) return;
     setLoadingMore(true);
@@ -191,6 +237,7 @@ const Scopes: React.FC = () => {
       const next = await getDefaultScope({
         subnetsSkip: scope.subnets.length,
         subnetsLimit: SUBNET_PAGE_SIZE,
+        subnetsSearch: debouncedSubnetSearch,
       });
       setScope((prev) =>
         prev
@@ -609,6 +656,7 @@ const Scopes: React.FC = () => {
               <span className="flex-1 text-metadata text-muted-foreground">
                 {(scope.subnets_total ?? scope.subnets.length).toLocaleString()} entr
                 {(scope.subnets_total ?? scope.subnets.length) === 1 ? 'y' : 'ies'}
+                {debouncedSubnetSearch.trim() ? ' matching' : ''}
               </span>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -688,6 +736,37 @@ const Scopes: React.FC = () => {
               </Button>
             </div>
 
+            {/* Subnet search — filters the server-paginated list so users
+                can jump to an entry instead of paging.  Debounced; resets
+                to page 0 and drives subnets_total so "Showing N of T" and
+                "Load more" stay correct under the filter. */}
+            <div className="flex items-center gap-xs border-b border-border px-sm py-xs">
+              <div className="relative min-w-0 flex-1">
+                <Search
+                  className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden
+                />
+                <Input
+                  value={subnetSearch}
+                  onChange={(e) => setSubnetSearch(e.target.value)}
+                  placeholder="Search subnets by CIDR or description…"
+                  className="pl-8"
+                  aria-label="Search subnets by CIDR or description"
+                />
+              </div>
+              {subnetSearch && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSubnetSearch('')}
+                  aria-label="Clear subnet search"
+                >
+                  <CloseIcon className="size-4" aria-hidden />
+                  Clear
+                </Button>
+              )}
+            </div>
+
             {/* v2.86.0 — bulk-action bar: hidden until at least one
                 subnet is checked.  Mirrors the ScopeDetail surface so
                 the affordance is in the same place on both pages. */}
@@ -753,7 +832,9 @@ const Scopes: React.FC = () => {
                   {scope.subnets.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
-                        No entries in this project's scope yet. Add one above or upload a file.
+                        {debouncedSubnetSearch.trim()
+                          ? `No subnets match "${debouncedSubnetSearch.trim()}". Try a different search or clear it.`
+                          : "No entries in this project's scope yet. Add one above or upload a file."}
                       </TableCell>
                     </TableRow>
                   ) : (
