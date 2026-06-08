@@ -155,6 +155,15 @@ def upgrade() -> None:
         """
     ))
 
+    # Index the temp correlation columns so the per-detail-row link UPDATEs
+    # below don't degrade to a sequential scan of agent_sessions per row on a
+    # large install (thousands of sessions).  Dropped with the columns at the
+    # end of the migration.
+    op.create_index(
+        "ix_agent_sessions_backfill_src",
+        "agent_sessions", ["_backfill_src", "_backfill_src_id"],
+    )
+
     # Link each detail row to its freshly-created base row.
     bind.execute(sa.text(
         "UPDATE execution_sessions SET agent_session_id = "
@@ -216,7 +225,8 @@ def upgrade() -> None:
         "WHERE test_plan_id IS NOT NULL AND agent_session_id IS NULL"
     ))
 
-    # Drop the temporary correlation columns.
+    # Drop the temporary correlation index + columns.
+    op.drop_index("ix_agent_sessions_backfill_src", table_name="agent_sessions")
     op.drop_column("agent_sessions", "_backfill_src_id")
     op.drop_column("agent_sessions", "_backfill_src")
 
