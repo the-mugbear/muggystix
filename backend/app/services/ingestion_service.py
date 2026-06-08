@@ -556,6 +556,27 @@ class IngestionService:
                     if scan and not scan.uploaded_by_id:
                         scan.uploaded_by_id = job.submitted_by_id
                 db.commit()
+                # Observability — one structured line per completed job so an
+                # ingestion backlog is debuggable from `docker logs` without
+                # new infra: how long the job waited for a worker (queue age)
+                # and how long the parse took.  The per-job timestamps already
+                # exist on the row; nothing aggregated them before.
+                queue_age_s = (
+                    (job.started_at - job.created_at).total_seconds()
+                    if job.started_at and job.created_at else None
+                )
+                parse_s = (
+                    (job.completed_at - job.started_at).total_seconds()
+                    if job.completed_at and job.started_at else None
+                )
+                logger.info(
+                    "ingestion job=%s tool=%s scan=%s queue_age_s=%s "
+                    "parse_s=%s skipped=%s",
+                    job_id, job.tool_name, job.scan_id,
+                    f"{queue_age_s:.1f}" if queue_age_s is not None else "n/a",
+                    f"{parse_s:.1f}" if parse_s is not None else "n/a",
+                    job.skipped_count,
+                )
         except ParseFailure as exc:
             db.rollback()
             job = db.get(IngestionJob, job_id)

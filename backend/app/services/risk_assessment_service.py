@@ -523,6 +523,11 @@ class RiskAssessmentService:
         assessment.dangerous_ports = dangerous_count
 
         # High port count increases exposure
+        # FIXME: the >20 branch is unreachable — >10 already matched, so a
+        # host with 25 open ports scores +10, not +20.  Reorder descending
+        # (>20 first) if this is revived.  Left as-is for now: this whole
+        # risk-scoring subsystem is intentionally hidden/disabled, so a
+        # behavioural change here would be dead-code churn.
         if len(open_ports) > 10:
             exposure_score += 10
         elif len(open_ports) > 20:

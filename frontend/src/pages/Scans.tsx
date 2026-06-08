@@ -658,10 +658,12 @@ export default function Scans() {
     [groupedScans],
   );
 
-  const sortedScans = useMemo(
-    () => [...scans].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
-    [scans],
-  );
+  // Render in the order the server returned (getScans is called with
+  // sortBy/sortOrder, and each appended page preserves that order).  A
+  // client-side re-sort here previously discarded the server order, so the
+  // filename / host-count headers and created_at-ascending appeared dead —
+  // the arrow flipped but the rows never moved.
+  const sortedScans = scans;
 
   // v4.18.0 — completed jobs are excluded from the Ingestion Queue
   // display.  Successful ingests already appear in Your Scans below as

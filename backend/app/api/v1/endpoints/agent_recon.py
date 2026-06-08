@@ -592,6 +592,26 @@ def complete_recon_session(
     """
     session = _load_recon_session(db, request)
 
+    # Reject a second /recon/complete on an already-terminal session.  For a
+    # session-bound key _load_recon_session resolves by recon_session_id
+    # without a status filter, so without this guard a double-complete would
+    # silently overwrite completed_at and re-freeze the counters.  Mirrors
+    # the execution-side guard in complete_execution_session.
+    terminal_states = {
+        ReconSessionStatus.COMPLETED.value,
+        ReconSessionStatus.FAILED.value,
+        ReconSessionStatus.ABANDONED.value,
+    }
+    if session.status in terminal_states:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Recon session #{session.id} is already in terminal state "
+                f"'{session.status}'; cannot complete twice. Start a fresh "
+                f"recon session from the Scopes UI for another pass."
+            ),
+        )
+
     if body.notes:
         combined = (session.notes + "\n\n" + body.notes) if session.notes else body.notes
         session.notes = combined[:8192]  # cap — notes is free-form

@@ -238,6 +238,11 @@ def check_agent_rate_limit(
         if effective_prior >= agent.rate_limit_rpm:
             # Don't record the rejected call — a client hammering past the
             # limit must not extend its own lockout indefinitely.
+            if not dq:
+                # Window fully expired but the DB count tripped the limit;
+                # don't leave an empty deque lingering in the dict (it would
+                # otherwise accumulate one entry per agent ever seen).
+                _AGENT_RECENT_CALLS.pop(agent.id, None)
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
         dq.append(now_m)
     return agent

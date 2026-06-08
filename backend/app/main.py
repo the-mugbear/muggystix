@@ -396,9 +396,12 @@ async def _handle_dsl_error(request: Request, exc: DSLError):
 @app.exception_handler(Exception)
 async def _log_and_sanitize_unhandled_exception(request: Request, exc: Exception):
     # Stash the exception class on request.state so the agent-API
-    # logging middleware can surface it in its structured WARNING for
-    # 5xx-without-auth (which can't be written to agent_api_calls
-    # because that table requires a populated agent_id/project_id).
+    # logging middleware can surface it in its structured WARNING for a
+    # 5xx that happened before/without auth.  (The agent_api_calls identity
+    # columns — agent_id/project_id — are now nullable, so such a row CAN
+    # be written; the remaining blind spot is an exception raised inside
+    # the middleware body itself, e.g. a client disconnect during
+    # request.body(), which re-raises before any row is written.)
     try:
         request.state.unhandled_exception_class = exc.__class__.__name__
     except Exception:  # pragma: no cover — request.state should always be mutable

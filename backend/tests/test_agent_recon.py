@@ -164,3 +164,47 @@ def test_recon_key_unauthorized_when_revoked(client, db_session, recon_key):
         headers={"X-API-Key": recon_key},
     )
     assert resp.status_code == 401, resp.text
+
+
+def test_expired_agent_key_rejected(
+    client, db_session, test_agent, recon_scope, recon_session_row,
+):
+    """A key past its expires_at must 401.  Covers both the tz-aware and
+    the tz-naive comparison branches in get_current_agent — the naive
+    branch exists because some drivers/SQLite return a naive datetime for a
+    DateTime(timezone=True) column, and comparing that to an aware now()
+    once raised TypeError and 500'd every agent request.  resolve_ttl_hours
+    is unit-tested elsewhere; this pins the *enforcement* end-to-end."""
+    from app.db.models_auth import APIKey
+
+    def _mint(raw, expires_at):
+        db_session.add(APIKey(
+            agent_id=test_agent.id,
+            scope_id=recon_scope.id,
+            recon_session_id=recon_session_row.id,
+            name="expired-key",
+            key_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            key_prefix=raw[:14],
+            expires_at=expires_at,
+        ))
+        db_session.commit()
+
+    # tz-aware, in the past.
+    aware_raw = "nm_agent_expired_aware_" + "e" * 24
+    _mint(aware_raw, datetime.now(timezone.utc) - timedelta(hours=1))
+    r = client.get(
+        "/api/v1/agent/recon/context", headers={"X-API-Key": aware_raw},
+    )
+    assert r.status_code == 401, r.text
+    assert "expired" in r.json()["detail"].lower()
+
+    # tz-naive, in the past — must also 401 (not 500).
+    naive_raw = "nm_agent_expired_naive_" + "n" * 24
+    _mint(
+        naive_raw,
+        (datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None),
+    )
+    r2 = client.get(
+        "/api/v1/agent/recon/context", headers={"X-API-Key": naive_raw},
+    )
+    assert r2.status_code == 401, r2.text

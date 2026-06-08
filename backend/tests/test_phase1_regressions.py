@@ -855,6 +855,61 @@ def test_middleware_captures_mutation_body_and_references_hosts(
     )
 
 
+def test_api_activity_endpoints_enforce_project_membership(
+    client, test_plan, test_project, db_session,
+):
+    """Cross-tenant IDOR regression: the per-plan and per-recon-session
+    api-activity list endpoints must authorise via project membership
+    (get_current_project), not merely authenticate.  A non-admin user who
+    is not a member of the project must get 403; previously they could read
+    another tenant's agent audit log (target IPs, request bodies) using the
+    path project_id alone.  A member of the same project still gets 200.
+    """
+    from datetime import datetime, timezone
+    from app.main import app
+    from app.api.v1.endpoints.auth import get_current_user
+    from app.db.models_auth import User, UserRole
+    from app.db.models_project import ProjectMembership
+
+    outsider = User(
+        # Explicit high id: test_user hardcodes id=1 without advancing the
+        # Postgres sequence, so an id-less insert would collide on users_pkey.
+        id=4242,
+        username="idor-outsider",
+        email="idor-outsider@example.com",
+        full_name="Outsider",
+        hashed_password="x",
+        role=UserRole.MEMBER,  # not admin → no membership bypass
+        is_active=True,
+        is_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(outsider)
+    db_session.commit()
+    db_session.refresh(outsider)
+
+    app.dependency_overrides[get_current_user] = lambda: outsider
+
+    plan_url = (
+        f"/api/v1/projects/{test_project.id}"
+        f"/test-plans/{test_plan.id}/api-activity"
+    )
+    recon_url = (
+        f"/api/v1/projects/{test_project.id}/recon-sessions/1/api-activity"
+    )
+
+    # Non-member → 403 on both endpoints.
+    assert client.get(plan_url).status_code == 403
+    assert client.get(recon_url).status_code == 403
+
+    # Grant membership → the same user now passes the authz gate (200).
+    db_session.add(ProjectMembership(
+        project_id=test_project.id, user_id=outsider.id, role="viewer",
+    ))
+    db_session.commit()
+    assert client.get(plan_url).status_code == 200
+
+
 def test_middleware_skips_unauthenticated_agent_requests(
     client, test_plan, db_session,
 ):
@@ -1297,6 +1352,59 @@ def test_rate_limit_ignores_rows_outside_window(
         headers={"X-API-Key": key},
     )
     assert resp.status_code == 200, resp.text
+
+
+def test_rate_limit_inprocess_counter_without_db_rows(test_agent, db_session):
+    """The in-process sliding-window counter must enforce the limit even
+    when the agent_api_calls DB count is 0.  The audit rows the DB count
+    reads are written by a *post-response* BackgroundTask, so under a burst
+    on one worker the DB count lags (or reads 0 if the writer is failing)
+    and the limiter would fail open exactly under load.  check_agent_rate_limit
+    takes max(db_count, in-process count); this drives the in-process branch
+    directly with an empty audit table.  (The autouse _reset_agent_rate_limit_state
+    fixture clears the module deque between tests.)"""
+    from fastapi import HTTPException
+    from app.api.deps import check_agent_rate_limit
+
+    test_agent.rate_limit_rpm = 3
+    db_session.commit()
+
+    # No AgentApiCall rows exist → db_count stays 0; only the synchronous
+    # in-process deque accumulates.  First 3 pass, 4th trips 429.
+    for _ in range(3):
+        assert check_agent_rate_limit(agent=test_agent, db=db_session) is test_agent
+    with pytest.raises(HTTPException) as exc:
+        check_agent_rate_limit(agent=test_agent, db=db_session)
+    assert exc.value.status_code == 429
+
+
+def test_audit_log_redacts_value_shaped_secrets():
+    """The by-value redaction path (_redact_secret_values) scrubs secrets
+    that hide under a non-sensitive key — an agent key pasted into a recon
+    command, a JWT, or a Bearer token in a free-text body.  The by-key
+    stripper (_strip_sensitive_fields) cannot catch these, and the
+    agent_api_calls table is surfaced to every project viewer, so a
+    regression here would leak credentials to lower-privileged users."""
+    from app.services.agent_api_log_service import (
+        _redact_secret_values, _strip_sensitive_fields,
+    )
+
+    cmd = "curl -H 'X-API-Key: nm_agent_REALSECRETtoken123' https://h/x"
+    assert "nm_agent_REALSECRETtoken123" not in _redact_secret_values(cmd)
+    assert "***" in _redact_secret_values(cmd)
+
+    jwt = "eyJhbGc.eyJzdWIiOiIxIn0.sigPART_abc-123"
+    assert jwt not in _redact_secret_values(f"token={jwt}")
+
+    assert "abc.def-TOKEN" not in _redact_secret_values(
+        "Authorization: Bearer abc.def-TOKEN"
+    )
+
+    # And via the nested body walker: a secret under a benign key name
+    # ("command") is still scrubbed because the walker redacts string values.
+    cleaned = _strip_sensitive_fields({"command": cmd, "host_id": 5})
+    assert "nm_agent_REALSECRETtoken123" not in cleaned["command"]
+    assert cleaned["host_id"] == 5
 
 
 def test_activity_stamp_debounced(

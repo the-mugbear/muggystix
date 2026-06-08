@@ -20,10 +20,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_current_project
+from app.api.deps import get_current_project
 from app.db.session import get_db
 from app.db.models_agent import AgentApiCall
-from app.db.models_auth import User
 from app.db.models_project import Project
 
 router = APIRouter()
@@ -124,11 +123,14 @@ def list_plan_activity(
     target_ip: Optional[str] = Query(None, description="Only rows that referenced this IP."),
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
-    user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
     db: Session = Depends(get_db),
 ):
+    # get_current_project enforces ProjectMembership for the path project_id
+    # (a non-member gets 403).  Without it any authenticated user could read
+    # another tenant's agent audit log via the path param alone.
     q = _base_query(
-        db, project_id=project_id, test_plan_id=plan_id, recon_session_id=None,
+        db, project_id=project.id, test_plan_id=plan_id, recon_session_id=None,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
     )
@@ -353,11 +355,13 @@ def list_recon_session_activity(
     target_ip: Optional[str] = Query(None),
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
-    user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
     db: Session = Depends(get_db),
 ):
+    # get_current_project enforces ProjectMembership for the path project_id
+    # (see list_plan_activity) — guards the same cross-tenant read.
     q = _base_query(
-        db, project_id=project_id, test_plan_id=None, recon_session_id=recon_session_id,
+        db, project_id=project.id, test_plan_id=None, recon_session_id=recon_session_id,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
     )
