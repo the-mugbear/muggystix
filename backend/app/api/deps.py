@@ -13,7 +13,7 @@ from typing import Deque, Dict, List
 from fastapi import Depends, Header, HTTPException, Path, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.db.models_project import Project, ProjectMembership, ProjectRole
@@ -96,6 +96,11 @@ def get_current_agent(
 
     api_key_obj = (
         db.query(APIKey)
+        # Eager-load the bound AgentSession — the workflow discriminator
+        # below reads it on every authenticated /agent/* request (the
+        # chattiest authenticated path), so a lazy load here would add a
+        # round-trip per call once keys carry an agent_session_id.
+        .options(joinedload(APIKey.agent_session))
         .filter(
             APIKey.key_hash == key_hash,
             APIKey.is_active.is_(True),
@@ -167,8 +172,20 @@ def get_current_agent(
             request.state.key_workflow = "assist"
             request.state.key_plan_id = None
         else:
-            request.state.key_workflow = None
-            request.state.key_plan_id = None
+            # Fail CLOSED: the key is bound to a session whose workflow this
+            # code can't classify (data corruption, or a new workflow added
+            # to the enum without teaching the guards about it).  Falling
+            # through to key_workflow=None would treat it as an unscoped
+            # global key — the most-privileged outcome — so deny outright.
+            logger.warning(
+                "agent key %s bound to agent_session %s with unrecognized "
+                "workflow %r — denying",
+                api_key_obj.key_prefix, agent_session.id, _wf,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="API key is bound to an unrecognized workflow; regenerate it.",
+            )
     elif api_key_obj.test_plan_id is not None:
         request.state.key_workflow = "plan"
         request.state.key_plan_id = api_key_obj.test_plan_id
@@ -277,9 +294,13 @@ def check_agent_rate_limit(
             # Don't record the rejected call — a client hammering past the
             # limit must not extend its own lockout indefinitely.
             if not dq:
-                # Window fully expired but the DB count tripped the limit;
-                # don't leave an empty deque lingering in the dict (it would
-                # otherwise accumulate one entry per agent ever seen).
+                # Reject path only: we're not about to append, so an empty
+                # deque here is pure dead weight — drop it.  (We can't pop on
+                # the accept path: `dq` is a live reference we're about to
+                # append to; popping would detach it and lose the count.)
+                # Steady-state growth is therefore bounded by distinct agents
+                # seen since restart — a non-empty deque lingers until that
+                # agent's next call prunes it — not strictly to active agents.
                 _AGENT_RECENT_CALLS.pop(agent.id, None)
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
         dq.append(now_m)

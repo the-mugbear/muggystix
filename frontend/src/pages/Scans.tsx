@@ -658,12 +658,12 @@ export default function Scans() {
     [groupedScans],
   );
 
-  // Render in the order the server returned (getScans is called with
-  // sortBy/sortOrder, and each appended page preserves that order).  A
+  // Rows render in the order the server returned them (`scans` is used
+  // directly below — no client-side re-sort).  getScans is called with
+  // sortBy/sortOrder and each appended page preserves that order; a
   // client-side re-sort here previously discarded the server order, so the
   // filename / host-count headers and created_at-ascending appeared dead —
   // the arrow flipped but the rows never moved.
-  const sortedScans = scans;
 
   // v4.18.0 — completed jobs are excluded from the Ingestion Queue
   // display.  Successful ingests already appear in Your Scans below as
@@ -878,7 +878,7 @@ export default function Scans() {
 
       <div className="mb-md grid grid-cols-1 gap-sm sm:grid-cols-2 md:grid-cols-4">
         {[
-          { label: 'Scans', value: sortedScans.length.toLocaleString() },
+          { label: 'Scans', value: scans.length.toLocaleString() },
           {
             label: 'Hosts up',
             value: `${scanSummary.upHosts.toLocaleString()} / ${scanSummary.totalHosts.toLocaleString()}`,
@@ -1207,7 +1207,7 @@ export default function Scans() {
           sessions to the same axis.  Per-project scan inventory still
           lives here in tabular form below. */}
 
-      {!hasActiveFilters && sortedScans.length === 0 ? (
+      {!hasActiveFilters && scans.length === 0 ? (
         <div className="py-xl text-center">
           <Upload className="mx-auto mb-sm size-16 text-muted-foreground" aria-hidden />
           <p className="text-subheading text-muted-foreground">No scans uploaded yet</p>
@@ -1271,7 +1271,7 @@ export default function Scans() {
                   className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <Badge variant={toolFilter === '' ? 'default' : 'outline'}>
-                    All: {sortedScans.length}
+                    All: {scans.length}
                   </Badge>
                 </button>
                 {orderedToolGroups.map((group) => {
@@ -1316,7 +1316,7 @@ export default function Scans() {
             </div>
           </div>
 
-          {sortedScans.length === 0 ? (
+          {scans.length === 0 ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
             // navigating away.
@@ -1345,7 +1345,7 @@ export default function Scans() {
           <>
           {/* Mobile cards */}
           <div className="flex flex-col gap-sm md:hidden">
-            {sortedScans.map((scan) => {
+            {scans.map((scan) => {
               const windowInfo = getScanWindow(scan);
               const isExpanded = expandedScanIds.includes(scan.id);
               const hasCommand = !!(scan.command_line && scan.command_line.trim());
@@ -1438,7 +1438,7 @@ export default function Scans() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sortedScans.map((scan) => {
+                    {scans.map((scan) => {
                       const windowInfo = getScanWindow(scan);
                       const isExpanded = expandedScanIds.includes(scan.id);
                       const hasCommand = !!(scan.command_line && scan.command_line.trim());

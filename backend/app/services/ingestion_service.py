@@ -555,27 +555,36 @@ class IngestionService:
                     scan = db.get(Scan, job.scan_id)
                     if scan and not scan.uploaded_by_id:
                         scan.uploaded_by_id = job.submitted_by_id
-                db.commit()
                 # Observability — one structured line per completed job so an
                 # ingestion backlog is debuggable from `docker logs` without
                 # new infra: how long the job waited for a worker (queue age)
                 # and how long the parse took.  The per-job timestamps already
-                # exist on the row; nothing aggregated them before.
+                # exist on the row; nothing aggregated them before.  Snapshot
+                # the fields we log BEFORE commit: SessionLocal uses the
+                # default expire_on_commit=True, so any attribute access after
+                # the commit would trigger a row-reload SELECT.
+                _started_at = job.started_at
+                _created_at = job.created_at
+                _completed_at = job.completed_at
+                _tool_name = job.tool_name
+                _scan_id = job.scan_id
+                _skipped_count = job.skipped_count
+                db.commit()
                 queue_age_s = (
-                    (job.started_at - job.created_at).total_seconds()
-                    if job.started_at and job.created_at else None
+                    (_started_at - _created_at).total_seconds()
+                    if _started_at and _created_at else None
                 )
                 parse_s = (
-                    (job.completed_at - job.started_at).total_seconds()
-                    if job.completed_at and job.started_at else None
+                    (_completed_at - _started_at).total_seconds()
+                    if _completed_at and _started_at else None
                 )
                 logger.info(
                     "ingestion job=%s tool=%s scan=%s queue_age_s=%s "
                     "parse_s=%s skipped=%s",
-                    job_id, job.tool_name, job.scan_id,
+                    job_id, _tool_name, _scan_id,
                     f"{queue_age_s:.1f}" if queue_age_s is not None else "n/a",
                     f"{parse_s:.1f}" if parse_s is not None else "n/a",
-                    job.skipped_count,
+                    _skipped_count,
                 )
         except ParseFailure as exc:
             db.rollback()
