@@ -198,6 +198,12 @@ export const FollowMenu: React.FC<FollowMenuProps> = ({ host, updating, onChange
 
 // --- The hook ------------------------------------------------------------
 
+/** A pivotable cell value — clicking it narrows the list to hosts sharing it. */
+export type HostFilterPivot =
+  | { kind: 'tag'; value: string }
+  | { kind: 'service'; value: string }
+  | { kind: 'os'; value: string };
+
 export interface UseHostColumnsOptions {
   /** Host id currently mid-flight on a follow toggle (disables that menu). */
   updatingHostId: number | null;
@@ -211,12 +217,50 @@ export interface UseHostColumnsOptions {
    * is no longer focusable — keyboard users tab to this button.
    */
   onOpen?: (hostId: number) => void;
+  /**
+   * Fires when the user clicks a pivotable cell value (tag / service / OS)
+   * to narrow the list to hosts sharing it.  When omitted, those values
+   * render as plain non-interactive text.
+   */
+  onAddFilter?: (pivot: HostFilterPivot) => void;
 }
+
+/**
+ * A cell value that pivots the list to hosts sharing it.  Degrades to a
+ * plain span when no `onPivot` is wired, so callers without a filter setter
+ * (or future non-Hosts callers of this hook) render unchanged.  Stops
+ * propagation so a pivot click never also opens the row inspector.
+ */
+const PivotValue: React.FC<{
+  onPivot?: () => void;
+  title: string;
+  className?: string;
+  children: React.ReactNode;
+}> = ({ onPivot, title, className, children }) => {
+  if (!onPivot) return <span className={className}>{children}</span>;
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPivot();
+      }}
+      className={cn(
+        'rounded-control text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        className,
+      )}
+    >
+      {children}
+    </button>
+  );
+};
 
 export function useHostColumns({
   updatingHostId,
   onFollowChange,
   onOpen,
+  onAddFilter,
 }: UseHostColumnsOptions): ColumnDef<Host>[] {
   return useMemo<ColumnDef<Host>[]>(
     () => [
@@ -250,7 +294,15 @@ export function useHostColumns({
         cell: ({ row }) => {
           const host = row.original;
           const latestDiscovery = getLatestDiscovery(host.discoveries);
-          const info = (
+          // v2.44.1 (UX review #2): the IP/hostname is the keyboard-activation
+          // target for the row-level "open host inspector" action — a real
+          // <button> with a focus ring.  Only IP + hostname live inside it;
+          // the metadata below (OS / tags) are pivot <button>s (click to
+          // filter), which is why they're SIBLINGS of the opener, not nested
+          // (button-in-button is invalid HTML).  The copy-IP control is a
+          // sibling too.  All inner controls stopPropagation so they never
+          // also fire the row's open-inspector onClick.
+          const identity = (
             <div className="min-w-0">
               <div className="break-words font-medium text-foreground">{host.ip_address}</div>
               {host.hostname ? (
@@ -260,10 +312,40 @@ export function useHostColumns({
               ) : (
                 <div className="text-caption text-muted-foreground">No hostname</div>
               )}
-              {host.os_name && (
-                <div className="line-clamp-1 text-caption text-muted-foreground">
-                  {host.os_name}
+            </div>
+          );
+          const opener = onOpen ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpen(host.id);
+              }}
+              aria-label={`Open host inspector for ${host.ip_address}${host.hostname ? ` (${host.hostname})` : ''}`}
+              className="block min-w-0 flex-1 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {identity}
+            </button>
+          ) : (
+            <div className="min-w-0 flex-1">{identity}</div>
+          );
+          return (
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-start gap-xs">
+                {opener}
+                <div className="flex shrink-0 items-center gap-xxs pt-px">
+                  <CopyIpButton ip={host.ip_address} />
+                  <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
                 </div>
+              </div>
+              {host.os_name && (
+                <PivotValue
+                  onPivot={onAddFilter ? () => onAddFilter({ kind: 'os', value: host.os_name! }) : undefined}
+                  title={`Filter to hosts running ${host.os_name}`}
+                  className="mt-xxs block max-w-full truncate text-caption text-muted-foreground"
+                >
+                  {host.os_name}
+                </PivotValue>
               )}
               {latestDiscovery && (
                 <div className="line-clamp-1 text-caption text-muted-foreground">
@@ -273,17 +355,18 @@ export function useHostColumns({
               {host.tags && host.tags.length > 0 && (
                 <div className="mt-xxs flex flex-wrap gap-xxs">
                   {host.tags.slice(0, 4).map((tag) => (
-                    <span
+                    <PivotValue
                       key={tag.id}
-                      className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-muted/40 px-xs py-px text-caption"
-                      title={tag.name}
+                      onPivot={onAddFilter ? () => onAddFilter({ kind: 'tag', value: tag.name }) : undefined}
+                      title={`Filter to hosts tagged "${tag.name}"`}
+                      className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-muted/40 px-xs py-px text-caption hover:bg-muted/70 hover:no-underline"
                     >
                       <span
                         className={cn('inline-block size-1.5 shrink-0 rounded-full', tagDotClass(tag.color))}
                         aria-hidden
                       />
                       <span className="truncate">{tag.name}</span>
-                    </span>
+                    </PivotValue>
                   ))}
                   {host.tags.length > 4 && (
                     <span className="text-caption text-muted-foreground">+{host.tags.length - 4}</span>
@@ -295,38 +378,6 @@ export function useHostColumns({
                   Assigned: {host.assignees.map((a) => a.name).join(', ')}
                 </div>
               )}
-            </div>
-          );
-          // v2.44.1 (UX review #2): the IP cell is the keyboard-activation
-          // target for the row-level "open host inspector" action — a real
-          // <button> with a focus ring.  The copy-IP control is a SIBLING of
-          // that button (nesting would be invalid button-in-button HTML) and
-          // stops propagation so it never opens the inspector.  If onOpen
-          // wasn't passed, the text falls back to a non-interactive div.
-          const opener = onOpen ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                // The row's onClick will also fire; stop propagation so
-                // openInspector isn't called twice.
-                e.stopPropagation();
-                onOpen(host.id);
-              }}
-              aria-label={`Open host inspector for ${host.ip_address}${host.hostname ? ` (${host.hostname})` : ''}`}
-              className="block min-w-0 flex-1 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {info}
-            </button>
-          ) : (
-            <div className="min-w-0 flex-1">{info}</div>
-          );
-          return (
-            <div className="flex min-w-0 items-start gap-xs">
-              {opener}
-              <div className="flex shrink-0 items-center gap-xxs pt-px">
-                <CopyIpButton ip={host.ip_address} />
-                <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
-              </div>
             </div>
           );
         },
@@ -355,15 +406,28 @@ export function useHostColumns({
           // Service names are identifiers, not state — chips here added
           // visual weight without aiding scanning.  Comma-joined text
           // with a two-line clamp keeps the same content at a fraction
-          // of the row's chromatic load.
+          // of the row's chromatic load.  Each name is an inline pivot
+          // (click to filter to hosts running it) but stays text, not a
+          // chip, to preserve that low-chroma density.
           const services = getTopServices(row.original.ports || []);
           if (services.length === 0) {
             return <span className="text-caption text-muted-foreground">No named services</span>;
           }
           return (
-            <span className="line-clamp-2 text-caption text-foreground break-words">
-              {services.join(', ')}
-            </span>
+            <div className="line-clamp-2 text-caption text-foreground break-words">
+              {services.map((svc, i) => (
+                <React.Fragment key={svc}>
+                  {i > 0 && ', '}
+                  <PivotValue
+                    onPivot={onAddFilter ? () => onAddFilter({ kind: 'service', value: svc }) : undefined}
+                    title={`Filter to hosts running ${svc}`}
+                    className="inline text-foreground"
+                  >
+                    {svc}
+                  </PivotValue>
+                </React.Fragment>
+              ))}
+            </div>
           );
         },
       },
@@ -475,6 +539,6 @@ export function useHostColumns({
     // return to the inspector with stale list context that didn't
     // match the current filter set, while mouse row-click (which
     // uses the live callback) worked correctly.
-    [updatingHostId, onFollowChange, onOpen],
+    [updatingHostId, onFollowChange, onOpen, onAddFilter],
   );
 }

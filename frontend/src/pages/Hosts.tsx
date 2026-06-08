@@ -56,6 +56,7 @@ import {
   getScanLabel,
   getTopServices,
   useHostColumns,
+  type HostFilterPivot,
 } from '../components/hosts/useHostColumns';
 import ReportsDialog from '../components/ReportsDialog';
 import ToolReadyOutput from '../components/ToolReadyOutput';
@@ -1401,6 +1402,27 @@ export default function Hosts() {
   // DataTable columns — extracted to useHostColumns hook (v2.43.0 — MONO-1).
   // -------------------------------------------------------------------------
 
+  // Pivot-from-cell: clicking a tag / service / OS value in a row narrows
+  // the list to hosts sharing it, by merging into the structured filters the
+  // HostFilters panel already drives (so the new filter shows up there too).
+  const handleAddFilter = useCallback((pivot: HostFilterPivot) => {
+    setFilters((prev) => {
+      if (pivot.kind === 'tag') {
+        if (prev.tags?.includes(pivot.value)) return prev;
+        return { ...prev, tags: [...(prev.tags ?? []), pivot.value] };
+      }
+      if (pivot.kind === 'service') {
+        if (prev.services?.includes(pivot.value)) return prev;
+        return { ...prev, services: [...(prev.services ?? []), pivot.value] };
+      }
+      // OS is a single-value filter — replace.
+      if (prev.osFilter === pivot.value) return prev;
+      return { ...prev, osFilter: pivot.value };
+    });
+    setPage(0);
+    toast.info(`Filtered to ${pivot.kind === 'os' ? 'OS' : pivot.kind} "${pivot.value}"`, { autoHideMs: 2000 });
+  }, [setFilters, setPage, toast]);
+
   const baseColumns = useHostColumns({
     updatingHostId,
     onFollowChange: handleFollowChange,
@@ -1410,6 +1432,7 @@ export default function Hosts() {
     // (DataTableShell convenience), but the row itself is no longer
     // focusable — semantically wrong as a link.
     onOpen: openInspector,
+    onAddFilter: handleAddFilter,
   });
 
   // v2.71.0 — prepend a checkbox column to drive the bulk-action bar.
