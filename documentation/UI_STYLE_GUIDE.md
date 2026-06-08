@@ -1,7 +1,7 @@
 # UI Style Guide
 
 > **Stack:** Tailwind v4 + Radix UI (shadcn-style primitives) + lucide-react + Sonner
-> **Last verified against:** frontend 4.0.0-alpha.22 (2026-05-16) — MUI fully removed
+> **Last verified against:** frontend 5.25.1 (2026-06-07) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
 
 ## Purpose
 This guide defines UI rules for BlueStick so feature work, bug fixes, and LLM-assisted changes preserve layout integrity, readability, and predictable behavior under real application data.

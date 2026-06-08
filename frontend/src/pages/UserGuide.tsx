@@ -370,7 +370,7 @@ const UserGuide: React.FC = () => {
             </Para>
             <Subhead>Security Features</Subhead>
             <UnorderedList>
-              <li><strong>JWT Authentication</strong> — 8-hour token expiry, max 3 concurrent sessions.</li>
+              <li><strong>JWT Authentication</strong> — 8-hour token expiry; sessions are tracked server-side and can be revoked individually.</li>
               <li><strong>Account Lockout</strong> — 5 failed login attempts triggers a 30-minute lockout.</li>
               <li><strong>Session Management</strong> — View and revoke active sessions from your profile.</li>
               <li><strong>Audit Trail</strong> — All actions logged with timestamps, IP addresses, and user agents.</li>
