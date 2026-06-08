@@ -147,6 +147,44 @@ def get_current_agent(
     # request.state to validate /agent/assist/* calls; the audit
     # middleware reads it to attribute the call row to the session.
     request.state.scoped_assist_session_id = api_key_obj.assist_session_id
+
+    # v2.116.0 (WS2c) — the workflow discriminator that replaces the
+    # four-way deny-matrix.  Derived from the bound AgentSession (the new
+    # single scope binding); falls back to the legacy columns for any key
+    # not yet backfilled.  Normalized to "plan" (covers plan_generation +
+    # execution, which the deny-matrix treats identically), "recon",
+    # "assist", or None (unscoped global key).
+    agent_session = api_key_obj.agent_session
+    if agent_session is not None:
+        _wf = agent_session.workflow
+        if _wf in ("plan_generation", "execution"):
+            request.state.key_workflow = "plan"
+            request.state.key_plan_id = agent_session.plan_id
+        elif _wf == "recon":
+            request.state.key_workflow = "recon"
+            request.state.key_plan_id = None
+        elif _wf == "assist":
+            request.state.key_workflow = "assist"
+            request.state.key_plan_id = None
+        else:
+            request.state.key_workflow = None
+            request.state.key_plan_id = None
+    elif api_key_obj.test_plan_id is not None:
+        request.state.key_workflow = "plan"
+        request.state.key_plan_id = api_key_obj.test_plan_id
+    elif api_key_obj.scope_id is not None:
+        request.state.key_workflow = "recon"
+        request.state.key_plan_id = None
+    elif api_key_obj.assist_session_id is not None:
+        request.state.key_workflow = "assist"
+        request.state.key_plan_id = None
+    else:
+        request.state.key_workflow = None
+        request.state.key_plan_id = None
+    request.state.agent_session_id = (
+        agent_session.id if agent_session is not None else None
+    )
+
     # v2.24.0 — agent_api_call middleware reads these after the response
     # is returned (when request.state survives via Starlette's request
     # lifecycle) to write the call-log row.  Capturing the prefix only,
@@ -268,10 +306,10 @@ def require_plan_scope(
     on recon endpoints instead.  Same for assist keys — they're
     read-only and have no business creating or touching plans.
     """
-    scoped_plan = getattr(request.state, "scoped_plan_id", None)
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
-    if scoped_scope is not None:
+    # WS2c — single workflow check (was a three-way deny-matrix over the
+    # legacy scoped_plan/scope/assist columns).
+    workflow = getattr(request.state, "key_workflow", None)
+    if workflow == "recon":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -281,7 +319,7 @@ def require_plan_scope(
                 "Use /agent/recon/* or generate a plan-generation key."
             ),
         )
-    if scoped_assist is not None:
+    if workflow == "assist":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -291,15 +329,17 @@ def require_plan_scope(
                 "Test Plans UI for plan work."
             ),
         )
-    if scoped_plan is not None and scoped_plan != plan_id:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a different test plan. "
-                "Per-plan keys cannot access endpoints for other plans — "
-                "generate a new key for the plan you're working on."
-            ),
-        )
+    if workflow == "plan":
+        key_plan_id = getattr(request.state, "key_plan_id", None)
+        if key_plan_id is not None and key_plan_id != plan_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This API key is scoped to a different test plan. "
+                    "Per-plan keys cannot access endpoints for other plans — "
+                    "generate a new key for the plan you're working on."
+                ),
+            )
     return agent
 
 
@@ -319,9 +359,8 @@ def require_recon_scope(
     strictly an ingestion pipeline; the agent discovers hosts, not
     plans them.
     """
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
-    if scoped_assist is not None:
+    workflow = getattr(request.state, "key_workflow", None)
+    if workflow == "assist":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -331,7 +370,7 @@ def require_recon_scope(
                 "session via /projects/{id}/scopes/{scope_id}/recon/start."
             ),
         )
-    if scoped_scope is None:
+    if workflow != "recon":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -362,10 +401,8 @@ def require_assist_scope(
     decision keeps things simple: only GETs are exposed under
     /agent/assist/, plus a single POST for the environment probe.
     """
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
-    scoped_plan = getattr(request.state, "scoped_plan_id", None)
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_plan is not None:
+    workflow = getattr(request.state, "key_workflow", None)
+    if workflow == "plan":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -374,7 +411,7 @@ def require_assist_scope(
                 "/projects/{id}/assist/start to mint an assist key."
             ),
         )
-    if scoped_scope is not None:
+    if workflow == "recon":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -383,7 +420,7 @@ def require_assist_scope(
                 "/projects/{id}/assist/start to mint an assist key."
             ),
         )
-    if scoped_assist is None:
+    if workflow != "assist":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -409,10 +446,8 @@ async def deny_scoped_keys(
     has no business creating plans at all).  Unscoped keys pass
     through.
     """
-    scoped_plan = getattr(request.state, "scoped_plan_id", None)
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
-    if scoped_plan is not None or scoped_scope is not None or scoped_assist is not None:
+    workflow = getattr(request.state, "key_workflow", None)
+    if workflow is not None:
         raise HTTPException(
             status_code=403,
             detail=(
