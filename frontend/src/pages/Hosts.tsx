@@ -1075,6 +1075,12 @@ export default function Hosts() {
   // bookmark / deep link.
   const [inspectedHostId, setInspectedHostId] = useState<number | null>(null);
 
+  // Keyboard row cursor for the list (1c).  -1 = no cursor yet.  j/k (and
+  // arrows) move it and Enter opens the host; when the inspector is already
+  // open, j/k advance IT instead (reusing stepInspector), so an operator can
+  // fly through hosts reviewing each in the side-sheet without the mouse.
+  const [cursorIndex, setCursorIndex] = useState(-1);
+
   const openInspector = (hostId: number) => {
     if (typeof window !== 'undefined') {
       const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filters;
@@ -1156,6 +1162,64 @@ export default function Hosts() {
     const target = hosts[inspectedIndex + delta];
     if (target) setInspectedHostId(target.id);
   };
+
+  // A fresh result set (page turn) invalidates the row cursor.
+  useEffect(() => {
+    setCursorIndex(-1);
+  }, [page]);
+
+  // Keep the cursor row in view as it moves below/above the fold.  The
+  // cursor row carries a `host-cursor-row` marker class (see getRowClassName)
+  // so we can find it without threading a ref through DataTableShell.
+  useEffect(() => {
+    if (cursorIndex < 0 || typeof document === 'undefined') return;
+    document.querySelector('.host-cursor-row')?.scrollIntoView({ block: 'nearest' });
+  }, [cursorIndex]);
+
+  // List keyboard navigation (1c).  Global listener with an input guard so
+  // it never hijacks typing in the search / command bar / note composer, and
+  // an Enter guard so it doesn't double-fire on a focused button/link.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+      if ((tag === 'BUTTON' || tag === 'A') && (e.key === 'Enter' || e.key === ' ')) return;
+      if (loading || hosts.length === 0) return;
+
+      // Inspector open → j/k advance the side-sheet; arrows stay free to
+      // scroll its content.
+      if (inspectedHostId !== null) {
+        if (e.key === 'j') {
+          e.preventDefault();
+          stepInspector(1);
+        } else if (e.key === 'k') {
+          e.preventDefault();
+          stepInspector(-1);
+        }
+        return;
+      }
+
+      // List cursor.
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCursorIndex((c) => Math.min((c < 0 ? -1 : c) + 1, hosts.length - 1));
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCursorIndex((c) => (c <= 0 ? 0 : c - 1));
+      } else if (e.key === 'Enter' && cursorIndex >= 0 && cursorIndex < hosts.length) {
+        e.preventDefault();
+        openInspector(hosts[cursorIndex].id);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // openInspector/stepInspector are recreated each render but close over the
+    // same `hosts`/inspectedHostId we depend on, so re-attaching on those is
+    // enough to keep them fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosts, inspectedHostId, loading, cursorIndex]);
 
   const applyFollowUpdate = (hostId: number, followInfo: HostFollowInfo | null) => {
     setHosts((previous) =>
@@ -2039,11 +2103,15 @@ export default function Hosts() {
               // v4.45.0 — left-border accent on rows that have had at
               // least one agentic test executed against them
               // (test_execution_count > 0). Hover surfaces the count
-              // as a native title tooltip.
+              // as a native title tooltip.  The keyboard cursor row (1c)
+              // also gets a highlight + a `host-cursor-row` marker class
+              // the scroll-into-view effect keys off.
               getRowClassName={(row) =>
-                (row.original.test_execution_count ?? 0) > 0
-                  ? 'border-l-4 border-l-info'
-                  : undefined
+                cn(
+                  (row.original.test_execution_count ?? 0) > 0 && 'border-l-4 border-l-info',
+                  row.index === cursorIndex &&
+                    'host-cursor-row bg-accent ring-1 ring-inset ring-ring',
+                ) || undefined
               }
               getRowTitle={(row) => {
                 const n = row.original.test_execution_count ?? 0;
