@@ -46,6 +46,15 @@ class Settings:
     # 4*(5+10) + (5+10) = 75, comfortably under PG max_connections=120.
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "5"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    # pool_timeout: how long a checkout blocks before raising when the pool
+    # is exhausted.  Explicit + tunable so operators can fail fast under
+    # burst instead of piling requests behind the post-response audit
+    # writer (which briefly holds a 2nd connection per agent request).
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    # pool_recycle: proactively retire connections older than this (seconds)
+    # so a proxy / Postgres idle timeout can't hand back a dead socket.
+    # pool_pre_ping already revalidates on checkout; this avoids the churn.
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
 
     # Security settings
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")

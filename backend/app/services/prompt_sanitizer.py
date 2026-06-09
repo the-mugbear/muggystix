@@ -67,6 +67,25 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
         re.compile(r"nm_agent_[A-Za-z0-9_-]{20,}"),
         _REDACTED,
     ),
+    # 4. Well-known third-party secret formats.  These prompts are
+    #    forwarded to whatever LLM provider the operator configured, so
+    #    a pasted cloud / API credential (not just a BlueStick agent key)
+    #    would land in that provider's request log.  Same cheap-redaction
+    #    posture: err on the side of over-stripping.  Keep in sync with
+    #    frontend/src/utils/promptSanitizer.ts.
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), _REDACTED),            # AWS access key id
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), _REDACTED),       # OpenAI-style secret key
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), _REDACTED),  # GitHub tokens
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), _REDACTED),  # Slack tokens
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), _REDACTED),       # Google API key
+    (  # JSON Web Token (three base64url segments)
+        re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+        _REDACTED,
+    ),
+    (  # Bearer auth tokens — keep the scheme, redact the credential
+        re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{20,}"),
+        f"Bearer {_REDACTED}",
+    ),
 ]
 
 

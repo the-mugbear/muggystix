@@ -90,5 +90,23 @@ export function sanitizePromptForLlm(prompt: string): string {
   //    word boundary is distinctive enough to avoid false positives.
   out = out.replace(/nm_agent_[A-Za-z0-9_-]+/g, REDACTED);
 
+  // 4. Well-known third-party secret formats.  These prompts are
+  //    forwarded to the configured LLM provider, so a pasted cloud / API
+  //    credential (not just a BlueStick agent key) would land in that
+  //    provider's request log.  Keep in sync with the backend
+  //    app/services/prompt_sanitizer.py pattern list.
+  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, REDACTED); // AWS access key id
+  out = out.replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, REDACTED); // OpenAI-style secret key
+  out = out.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, REDACTED); // GitHub tokens
+  out = out.replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, REDACTED); // Slack tokens
+  out = out.replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, REDACTED); // Google API key
+  // JSON Web Token (three base64url segments)
+  out = out.replace(
+    /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+    REDACTED,
+  );
+  // Bearer auth tokens — keep the scheme, redact the credential
+  out = out.replace(/Bearer\s+[A-Za-z0-9._-]{20,}/gi, `Bearer ${REDACTED}`);
+
   return out;
 }

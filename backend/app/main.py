@@ -327,7 +327,7 @@ app = FastAPI(
     lifespan=_app_lifespan,
 )
 
-cors_origins = [origin for origin in settings.CORS_ORIGINS if origin != "*"]
+cors_origins = [origin for origin in settings.CORS_ORIGINS if origin and origin != "*"]
 if not cors_origins:
     logger.warning(
         "CORS_ORIGINS is empty or contained only wildcards; defaulting to localhost origins"
@@ -350,7 +350,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    # Explicit allowlist instead of "*": with allow_credentials=True a
+    # wildcard expose is over-broad, and only these response headers are
+    # actually read by the frontend (download filename + bundle export
+    # correlation ids — see services/api/test-plans.ts and services/api.ts).
+    expose_headers=["Content-Disposition", "X-Bundle-Id", "X-Execution-Session-Id"],
 )
 
 # v2.24.0 — audit every /api/v1/agent/* request that authenticates as

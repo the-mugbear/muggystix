@@ -28,11 +28,26 @@ _DUMMY_PASSWORD_HASH = pwd_context.hash("dummy-password-for-timing-equalization"
 # JWT settings — use JWT_SECRET_KEY consistently for token signing
 _configured_secret = getattr(settings, 'JWT_SECRET_KEY', None)
 if not _configured_secret:
+    # Fail closed in any real deployment.  An unset secret previously
+    # auto-generated a DIFFERENT ephemeral key in every uvicorn worker,
+    # so tokens signed by one worker failed verification on another
+    # (intermittent 401s across the fleet) and every restart silently
+    # dropped all sessions.  The only context where an ephemeral secret
+    # is acceptable is local dev / the test suite, which run against a
+    # sqlite DATABASE_URL — reuse config.py's own dev/test signal.
+    _is_dev_or_test = str(getattr(settings, 'DATABASE_URL', '')).startswith("sqlite")
+    if not _is_dev_or_test:
+        raise RuntimeError(
+            "JWT_SECRET_KEY (or SECRET_KEY) is not configured. Set it in your "
+            "environment or .env file. Refusing to start with an ephemeral "
+            "per-worker secret: it breaks multi-worker auth and drops every "
+            "session on restart."
+        )
     import logging as _logging
-    _logging.getLogger(__name__).critical(
-        "JWT_SECRET_KEY is not configured. Generating a random ephemeral secret. "
-        "All tokens will be invalidated on restart. Set JWT_SECRET_KEY in your "
-        "environment or .env file for production deployments."
+    _logging.getLogger(__name__).warning(
+        "JWT_SECRET_KEY is not configured; generating an ephemeral secret for "
+        "this dev/test process (sqlite DATABASE_URL detected). Do NOT rely on "
+        "this in a multi-worker or production deployment."
     )
     _configured_secret = secrets.token_urlsafe(32)
 JWT_SECRET_KEY = _configured_secret

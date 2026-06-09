@@ -512,9 +512,12 @@ def admin_reset_password(
             detail=f"Password validation failed: {', '.join(password_validation['errors'])}"
         )
 
-    # Update password
+    # Update password.  Force the target user to set their own password on
+    # next login — an admin-chosen password is a transit credential, never a
+    # standing one (mirrors the first-boot admin's forced-change behavior).
     user.hashed_password = get_password_hash(password_data.new_password)
     user.password_changed_at = datetime.now(timezone.utc)
+    user.must_change_password = True
 
     db.commit()
 
