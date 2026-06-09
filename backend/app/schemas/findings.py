@@ -40,6 +40,16 @@ class FindingListResponse(BaseModel):
     total: int
 
 
+class FindingStatusHistoryEntry(BaseModel):
+    id: int
+    from_status: Optional[str] = None
+    to_status: str
+    changed_by_id: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    summary: Optional[str] = None
+    created_at: datetime
+
+
 class PromoteAnnotationRequest(BaseModel):
     # Severity is required — promotion is the deliberate structuring step.
     severity: str

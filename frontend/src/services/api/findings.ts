@@ -124,3 +124,20 @@ export const removeFindingHost = async (findingId: number, hostId: number): Prom
   const response = await api.delete<Finding>(`${p()}/findings/${findingId}/hosts/${hostId}`);
   return response.data;
 };
+
+export interface FindingStatusHistoryEntry {
+  id: number;
+  from_status: string | null;
+  to_status: string;
+  changed_by_id: number | null;
+  changed_by_name: string | null;
+  summary: string | null;
+  created_at: string;
+}
+
+export const getFindingHistory = async (
+  findingId: number,
+): Promise<FindingStatusHistoryEntry[]> => {
+  const response = await api.get<FindingStatusHistoryEntry[]>(`${p()}/findings/${findingId}/history`);
+  return response.data;
+};

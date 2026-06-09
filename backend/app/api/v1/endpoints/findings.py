@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.db.models import Annotation
-from app.db.models_findings import Finding, FindingHost, FindingStatus
+from app.db.models_findings import Finding, FindingHost, FindingStatus, FindingStatusHistory
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
@@ -21,7 +21,7 @@ from app.services.finding_service import FindingService, validate_severity
 from app.schemas.findings import (
     FindingResponse, FindingHostInfo, FindingListResponse,
     PromoteAnnotationRequest, FindingCreateRequest, FindingUpdateRequest,
-    FindingStatusUpdateRequest, FindingHostsRequest,
+    FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,37 @@ def set_finding_status(
     )
     db.commit()
     return _serialize(_load(db, project, finding_id))
+
+
+@router.get(
+    "/findings/{finding_id}/history",
+    response_model=List[FindingStatusHistoryEntry],
+)
+def get_finding_history(
+    finding_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The finding's disposition trail (open → confirmed → remediated, …),
+    newest first.  The rows were always written on each transition but had no
+    read path — this surfaces who changed status, when, and why."""
+    _load(db, project, finding_id)  # 404s + enforces project scope
+    rows = (
+        db.query(FindingStatusHistory)
+        .options(selectinload(FindingStatusHistory.changed_by))
+        .filter(FindingStatusHistory.finding_id == finding_id)
+        .order_by(FindingStatusHistory.created_at.desc(), FindingStatusHistory.id.desc())
+        .all()
+    )
+    return [
+        FindingStatusHistoryEntry(
+            id=r.id, from_status=r.from_status, to_status=r.to_status,
+            changed_by_id=r.changed_by_id,
+            changed_by_name=(r.changed_by.full_name or r.changed_by.username) if r.changed_by else None,
+            summary=r.summary, created_at=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 @router.post("/findings/{finding_id}/hosts", response_model=FindingResponse)
