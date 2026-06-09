@@ -48,6 +48,7 @@ export * from './api/references';
 export * from './api/scans';
 export * from './api/scopes';
 export * from './api/shared';
+export * from './api/sites';
 export * from './api/test-plans';
 export * from './api/uploads';
 

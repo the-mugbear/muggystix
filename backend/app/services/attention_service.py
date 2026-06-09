@@ -32,7 +32,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import FollowStatus, HostFollow, HostSubnetMapping, Scan, Scope, Subnet
+from app.db.models import FollowStatus, HostFollow, HostSubnetMapping, Scan, Scope, Site, Subnet
 from app.db.models_findings import Finding, FindingHost
 
 _UNASSIGNED = "__unassigned__"
@@ -41,6 +41,10 @@ _UNASSIGNED = "__unassigned__"
 _ACTIVE_FINDING_STATUSES = ("open", "confirmed", "retest")
 # Severity weights for the exposure raw score — transparent, not hidden.
 _SEVERITY_WEIGHT = {"critical": 10, "high": 5, "medium": 2, "low": 1, "info": 0}
+# Site criticality (tier 1 = most critical … 4) scales exposure so a tier-1
+# site's findings outrank a tier-4 site's equal findings.  tier-3 (×1.0) is
+# the neutral default for unrated/auto-created sites.
+_TIER_WEIGHT = {1: 2.0, 2: 1.5, 3: 1.0, 4: 0.5}
 # Days since the last scan before a scope reads as "stale".
 _STALE_DAYS = 14
 
@@ -228,6 +232,10 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
             if owner is None:
                 site_unowned[site] += 1
 
+    # Site metadata (tier / expected host count / owner) keyed by name — the
+    # Site entity holds it; the name is the subnet.site string they group by.
+    sites_by_name = {s.name: s for s in db.query(Site).filter(Site.project_id == project_id).all()}
+
     out: List[Dict[str, Any]] = []
     for site, host_ids in site_host_ids.items():
         by_sev = dict(site_sev.get(site, {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}))
@@ -236,31 +244,52 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
         unreviewed = sum(1 for hid in host_ids if hid not in reviewed)
         is_unassigned = site == _UNASSIGNED
 
+        site_obj = None if is_unassigned else sites_by_name.get(site)
+        tier = site_obj.criticality_tier if site_obj else 3
+        expected = site_obj.expected_host_count if site_obj else None
+        # Coverage gap = expected − discovered (only when expected is set) —
+        # a neglect signal: a site with far fewer hosts than expected is
+        # under-scanned, not "clean".
+        coverage_gap = max(0, expected - len(host_ids)) if expected is not None else None
+
+        exposure_raw = sum(_SEVERITY_WEIGHT.get(s, 0) * c for s, c in by_sev.items())
+        weighted = round(exposure_raw * _TIER_WEIGHT.get(tier, 1.0), 1)
+
         if is_unassigned:
             action = {"kind": "assign", "text": f"{len(host_ids)} host{'' if len(host_ids) == 1 else 's'} not assigned to a site."}
         elif unowned > 0:
             action = {"kind": "triage", "text": f"{unowned} active finding{'' if unowned == 1 else 's'} unowned."}
         elif by_sev["critical"] > 0:
             action = {"kind": "remediate", "text": f"{by_sev['critical']} critical open."}
+        elif coverage_gap:
+            action = {"kind": "scan", "text": f"Coverage gap — {coverage_gap} of {expected} expected hosts not yet found."}
         elif unreviewed > 0:
             action = {"kind": "review", "text": f"{unreviewed} host{'' if unreviewed == 1 else 's'} not reviewed."}
         else:
             action = {"kind": "ok", "text": "No outstanding attention items."}
 
-        exposure_raw = sum(_SEVERITY_WEIGHT.get(s, 0) * c for s, c in by_sev.items())
         out.append({
             "site": None if is_unassigned else site,
+            "site_id": site_obj.id if site_obj else None,
             "unassigned": is_unassigned,
+            "criticality_tier": None if is_unassigned else tier,
             "host_count": len(host_ids),
-            "exposure": {"raw_score": exposure_raw, "active_findings": active, "by_severity": by_sev},
+            "expected_host_count": expected,
+            "coverage_gap": coverage_gap,
+            "exposure": {
+                "raw_score": exposure_raw,
+                "weighted_score": weighted,
+                "active_findings": active,
+                "by_severity": by_sev,
+            },
             "neglect": {"unowned_active_findings": unowned, "unreviewed_hosts": unreviewed},
             "recommended_action": action,
         })
 
-    # Worst-first: exposure desc, then neglect (unowned + unreviewed) desc;
-    # the Unassigned bucket sinks unless it has its own exposure.
+    # Worst-first: tier-weighted exposure desc, then neglect (unowned +
+    # unreviewed + coverage gap) desc; Unassigned sinks unless it has exposure.
     out.sort(key=lambda s: (
-        -s["exposure"]["raw_score"],
-        -(s["neglect"]["unowned_active_findings"] + s["neglect"]["unreviewed_hosts"]),
+        -s["exposure"]["weighted_score"],
+        -(s["neglect"]["unowned_active_findings"] + s["neglect"]["unreviewed_hosts"] + (s["coverage_gap"] or 0)),
     ))
     return {"adopted": True, "sites": out}

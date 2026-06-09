@@ -3,6 +3,7 @@ import { useDropzone } from 'react-dropzone';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowDownToLine,
+  Building2,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -73,6 +74,7 @@ import {
   SubnetLabelEditorPopover,
   SubnetLabelChip,
 } from '../components/SubnetLabelManager';
+import SiteManagerDialog from '../components/SiteManagerDialog';
 
 type CoverageTone = 'success' | 'warning' | 'destructive' | 'muted';
 
@@ -139,6 +141,7 @@ const Scopes: React.FC = () => {
   // that appears in the toolbar once any subnet is checked.
   const [labelCatalogue, setLabelCatalogue] = useState<SubnetLabelWithCounts[]>([]);
   const [labelManagerOpen, setLabelManagerOpen] = useState(false);
+  const [siteManagerOpen, setSiteManagerOpen] = useState(false);
   const [selectedSubnetIds, setSelectedSubnetIds] = useState<Set<number>>(new Set());
   const [bulkApplying, setBulkApplying] = useState(false);
 
@@ -735,6 +738,15 @@ const Scopes: React.FC = () => {
                 <TagsIcon className="size-4" aria-hidden />
                 Manage labels
               </Button>
+              <Button
+                variant="outline"
+                onClick={() => setSiteManagerOpen(true)}
+                className="shrink-0 whitespace-nowrap"
+                aria-label="Manage site criticality and coverage"
+              >
+                <Building2 className="size-4" aria-hidden />
+                Manage sites
+              </Button>
             </div>
 
             {/* Subnet search — filters the server-paginated list so users
@@ -1131,6 +1143,8 @@ const Scopes: React.FC = () => {
           refreshScope();
         }}
       />
+
+      <SiteManagerDialog open={siteManagerOpen} onOpenChange={setSiteManagerOpen} />
 
       {confirmEl}
     </div>

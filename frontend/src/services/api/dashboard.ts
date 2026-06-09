@@ -272,10 +272,15 @@ export const getProjectAttention = async (): Promise<ProjectAttention> => {
 
 export interface SiteAttentionEntry {
   site: string | null;
+  site_id: number | null;
   unassigned: boolean;
+  criticality_tier: number | null;
   host_count: number;
+  expected_host_count: number | null;
+  coverage_gap: number | null;
   exposure: {
     raw_score: number;
+    weighted_score: number;
     active_findings: number;
     by_severity: { critical: number; high: number; medium: number; low: number; info: number };
   };

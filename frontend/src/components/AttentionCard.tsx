@@ -139,10 +139,20 @@ export const AttentionCard: React.FC = () => {
                       key={s.site ?? '__unassigned__'}
                       className="flex flex-wrap items-center gap-xs border-b border-border pb-xxs last:border-0"
                     >
+                      {!s.unassigned && s.criticality_tier != null && (
+                        <Badge
+                          variant={s.criticality_tier <= 1 ? 'destructive' : s.criticality_tier === 2 ? 'warning' : 'muted'}
+                          title={`Criticality tier ${s.criticality_tier} (1 = most critical)`}
+                        >
+                          T{s.criticality_tier}
+                        </Badge>
+                      )}
                       <span className="min-w-0 flex-1 truncate text-metadata font-medium text-foreground">
                         {s.unassigned ? <span className="italic text-muted-foreground">Unassigned</span> : s.site}
                       </span>
-                      <span className="text-caption text-muted-foreground">{s.host_count}h</span>
+                      <span className="text-caption text-muted-foreground">
+                        {s.host_count}h{s.coverage_gap ? ` (−${s.coverage_gap})` : ''}
+                      </span>
                       {(['critical', 'high'] as const)
                         .filter((sev) => s.exposure.by_severity[sev] > 0)
                         .map((sev) => (
