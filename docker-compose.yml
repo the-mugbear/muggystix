@@ -81,7 +81,7 @@ services:
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       SSL_ENABLED: ${SSL_MODE:-false}
-      APP_VERSION: ${APP_VERSION:-2.138.0}
+      APP_VERSION: ${APP_VERSION:-2.138.1}
       FRONTEND_VERSION: ${FRONTEND_VERSION:-5.51.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
@@ -140,7 +140,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.138.0}
+      APP_VERSION: ${APP_VERSION:-2.138.1}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -159,7 +159,7 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.138.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.138.1}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right VersionFooter.  Keep in

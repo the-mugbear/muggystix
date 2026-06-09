@@ -19,7 +19,7 @@ from typing import List, Optional
 
 from app.db import models
 from app.db.models import HostFollow, Annotation as AnnotationModel
-from app.db.models_vulnerability import Vulnerability
+from app.db.models_vulnerability import Vulnerability, enum_value
 from app.schemas.schemas import HostVulnerabilitySummary, Annotation, HostFollowInfo
 
 
@@ -239,21 +239,11 @@ def serialize_vulnerability(vuln: Vulnerability) -> dict:
 
     Handles both the enum and string representations of ``severity``
     and ``source`` because the columns are SQL enums but the
-    deserialized values vary between Postgres and SQLite paths.
+    deserialized values vary between Postgres and SQLite paths —
+    :func:`enum_value` collapses both to the canonical lowercase string.
     """
-    severity = None
-    if vuln.severity:
-        try:
-            severity = vuln.severity.value  # type: ignore[assignment]
-        except AttributeError:
-            severity = str(vuln.severity).lower()
-
-    source = None
-    if getattr(vuln, "source", None):
-        try:
-            source = vuln.source.value  # type: ignore[attr-defined]
-        except AttributeError:
-            source = str(vuln.source).lower()
+    severity = enum_value(vuln.severity) if vuln.severity else None
+    source = enum_value(getattr(vuln, "source", None)) or None
 
     # v2.45.6 — `references` is stored as a Text column holding a JSON
     # array of URLs/identifiers.  Parse it to a real list for the API.
