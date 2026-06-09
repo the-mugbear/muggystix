@@ -19,7 +19,7 @@ from typing import List, Optional
 
 from app.db import models
 from app.db.models import HostFollow, Annotation as AnnotationModel
-from app.db.models_vulnerability import Vulnerability, enum_value
+from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.schemas.schemas import HostVulnerabilitySummary, Annotation, HostFollowInfo
 
 
@@ -66,15 +66,9 @@ def _serialize_note(note: AnnotationModel) -> Annotation:
 
 
 # Ranking used when ordering vulnerabilities within a host's payload.
-# Lower number = higher priority on display.
-SEVERITY_ORDER = {
-    'critical': 0,
-    'high': 1,
-    'medium': 2,
-    'low': 3,
-    'info': 4,
-    'unknown': 5,
-}
+# Lower number = higher priority on display.  Derived from the canonical
+# SEVERITY_KEYS so the bucket ordering has one source (critical=0 … unknown=5).
+SEVERITY_ORDER = {sev: i for i, sev in enumerate(SEVERITY_KEYS)}
 
 
 def build_vuln_summary(data: Optional[dict]) -> Optional[HostVulnerabilitySummary]:

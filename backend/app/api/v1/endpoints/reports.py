@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import or_, and_, distinct, func
 from app.db.session import get_db
 from app.db import models
-from app.db.models_vulnerability import Vulnerability
+from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.schemas.schemas import Host
 from app.core.config import settings
 from app.services.report_templates import ReportTemplates
@@ -48,14 +48,9 @@ def _id_chunks(ids, size: int = 1000):
 
 class ReportGenerator:
     SCHEMA_VERSION = "1.0"
-    SEVERITY_ORDER = {
-        "critical": 0,
-        "high": 1,
-        "medium": 2,
-        "low": 3,
-        "info": 4,
-        "unknown": 5,
-    }
+    # Derived from the canonical SEVERITY_KEYS (critical=0 … unknown=5) so the
+    # sort ordering has one source shared with the host serializer.
+    SEVERITY_ORDER = {sev: i for i, sev in enumerate(SEVERITY_KEYS)}
 
     def __init__(self, db: Session, current_user, project_id: int = None):
         self.db = db
@@ -991,13 +986,13 @@ class ReportGenerator:
         references = self._parse_json_list(vuln.references)
         return {
             "id": vuln.id,
-            "source": self._enum_value(vuln.source),
+            "source": enum_value(vuln.source),
             "scan_id": vuln.scan_id,
             "plugin_id": vuln.plugin_id,
             "source_plugin_name": vuln.source_plugin_name,
             "title": vuln.title,
             "description": vuln.description,
-            "severity": self._enum_value(vuln.severity),
+            "severity": enum_value(vuln.severity),
             "cvss_score": vuln.cvss_score,
             "cvss_vector": vuln.cvss_vector,
             "cve_id": vuln.cve_id,
@@ -1062,7 +1057,7 @@ class ReportGenerator:
         return summary
 
     def _vulnerability_sort_key(self, vuln: Vulnerability) -> Tuple[int, float, int]:
-        severity = self._enum_value(vuln.severity) or "unknown"
+        severity = enum_value(vuln.severity) or "unknown"
         severity_rank = self.SEVERITY_ORDER.get(severity, self.SEVERITY_ORDER["unknown"])
         last_seen_dt = vuln.last_seen or vuln.first_seen or datetime.utcfromtimestamp(0)
         return (severity_rank, -last_seen_dt.timestamp(), vuln.id)
@@ -1287,10 +1282,6 @@ class ReportGenerator:
         if not suggestions:
             suggestions.append("Service enumeration and banner validation")
         return suggestions
-
-    @staticmethod
-    def _enum_value(value: Any) -> Any:
-        return getattr(value, "value", value)
 
     @staticmethod
     def _iso(value: Optional[datetime]) -> Optional[str]:
