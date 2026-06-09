@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -10,6 +11,8 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
+
+logger = logging.getLogger(__name__)
 from app.db.models_vulnerability import (
     Vulnerability,
     VulnerabilitySeverity,
@@ -84,6 +87,46 @@ def parse_host_port_token(token: str) -> Tuple[Optional[str], Optional[int], Opt
 
 
 def persist_host_observation(
+    *,
+    dedup_service: HostDeduplicationService,
+    scan_id: int,
+    ip_address: str,
+    hostname: Optional[str] = None,
+    state: str = "up",
+    ports: Optional[Iterable[Dict[str, Any]]] = None,
+    host_data: Optional[Dict[str, Any]] = None,
+    project_id: Optional[int] = None,
+    isolate: bool = False,
+) -> Optional[Tuple[models.Host, Dict[Tuple[int, str], models.Port]]]:
+    """Persist one host observation (+ its ports).
+
+    ``isolate=True`` wraps the write in a SAVEPOINT and skips (rollback +
+    return None) on any error, so one malformed observation can't roll back
+    the whole upload — the per-record isolation the lower-volume parsers
+    (naabu/amass/dirbuster) want.  Callers that pass it ignore the return.
+    """
+    if isolate:
+        sp = dedup_service.db.begin_nested()
+        try:
+            result = _persist_host_observation_inner(
+                dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
+                hostname=hostname, state=state, ports=ports, host_data=host_data,
+                project_id=project_id,
+            )
+            sp.commit()
+            return result
+        except Exception as exc:  # noqa: BLE001 — isolate one bad observation
+            sp.rollback()
+            logger.warning("Skipping host observation %s: %s", ip_address, exc)
+            return None
+    return _persist_host_observation_inner(
+        dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
+        hostname=hostname, state=state, ports=ports, host_data=host_data,
+        project_id=project_id,
+    )
+
+
+def _persist_host_observation_inner(
     *,
     dedup_service: HostDeduplicationService,
     scan_id: int,

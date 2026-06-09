@@ -89,6 +89,7 @@ class NaabuParser:
                 ip_address=ip_address,
                 ports=ports,
                 project_id=project_id,
+                isolate=True,
             )
 
         correlate_scan(self.db, scan.id)

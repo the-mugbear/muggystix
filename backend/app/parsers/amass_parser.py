@@ -99,5 +99,6 @@ class AmassParser:
             hostname=hostname,
             ports=[],
             project_id=self._project_id,
+            isolate=True,
         )
         records_added.add(key)
