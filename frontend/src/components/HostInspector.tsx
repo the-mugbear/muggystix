@@ -52,6 +52,7 @@ import {
   getHostTestPlanEntries,
   updateTestPlanEntry,
   getHostFollowers,
+  listProjectMembers,
 } from '../services/api';
 import type {
   Host,
@@ -60,10 +61,12 @@ import type {
   FollowStatus,
   Annotation,
   NoteStatus,
+  NoteType,
   HostTestPlanEntry,
   ProposedTestObject,
   HostFollowerEntry,
   FindingSeverity,
+  ProjectMember,
 } from '../services/api';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
@@ -92,6 +95,7 @@ import {
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import {
@@ -289,6 +293,51 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [promoting, setPromoting] = useState(false);
   // Bumped after a promote so the inline HostFindingsCard refetches.
   const [findingsRefresh, setFindingsRefresh] = useState(0);
+  // Note-details editor (type/assignee/due/pin) — the write path for the
+  // thread work fields the My Work queue groups by.
+  const [detailsNote, setDetailsNote] = useState<Annotation | null>(null);
+  const [detailsType, setDetailsType] = useState<string>('none');
+  const [detailsAssignee, setDetailsAssignee] = useState<string>('none');
+  const [detailsDue, setDetailsDue] = useState<string>('');
+  const [detailsPinned, setDetailsPinned] = useState(false);
+  const [detailsSaving, setDetailsSaving] = useState(false);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+
+  // Lazy-load the project roster the first time the details editor opens
+  // (drives the assignee picker); cheap and avoids a fetch on every host open.
+  const openNoteDetails = (note: Annotation) => {
+    setDetailsNote(note);
+    setDetailsType(note.note_type || 'none');
+    setDetailsAssignee(note.assignee_id != null ? String(note.assignee_id) : 'none');
+    setDetailsDue(note.due_at ? note.due_at.slice(0, 10) : '');
+    setDetailsPinned(!!note.pinned);
+    if (members.length === 0) {
+      listProjectMembers()
+        .then(setMembers)
+        .catch(() => { /* assignee picker just stays empty */ });
+    }
+  };
+
+  const handleSaveNoteDetails = async () => {
+    if (!detailsNote) return;
+    setDetailsSaving(true);
+    try {
+      const updated = await updateAnnotation(hostId, detailsNote.id, {
+        note_type: detailsType === 'none' ? null : (detailsType as NoteType),
+        assignee_id: detailsAssignee === 'none' ? null : Number(detailsAssignee),
+        // Date input is YYYY-MM-DD; send an ISO timestamp (or null to clear).
+        due_at: detailsDue ? new Date(detailsDue).toISOString() : null,
+        pinned: detailsPinned,
+      });
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      toast.success('Note details updated.');
+      setDetailsNote(null);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update note details.'));
+    } finally {
+      setDetailsSaving(false);
+    }
+  };
 
   const handlePromoteNote = async () => {
     if (promoteNoteId === null) return;
@@ -1309,6 +1358,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 setPromoteNoteId(noteId);
                 setPromoteSeverity('medium');
               }}
+              onEditDetails={openNoteDetails}
             />
           )}
         </CardContent>
@@ -1349,6 +1399,74 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             </Button>
             <Button onClick={handlePromoteNote} disabled={promoting}>
               {promoting ? 'Promoting…' : 'Promote'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Note-details editor — the write path for the thread work fields
+          (type/assignee/due/pin) that the My Work queue groups by. */}
+      <Dialog open={detailsNote !== null} onOpenChange={(v) => { if (!v) setDetailsNote(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Note details</DialogTitle>
+            <DialogDescription>
+              Set the note's type, owner, and due date so it surfaces in the assignee's
+              My Work queue (handoffs, assigned, and overdue groups).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-sm">
+            <div className="space-y-xxs">
+              <Label htmlFor="note-type">Type</Label>
+              <Select value={detailsType} onValueChange={setDetailsType}>
+                <SelectTrigger id="note-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— none —</SelectItem>
+                  {(['observation', 'finding', 'question', 'decision', 'action', 'handoff'] as const).map((t) => (
+                    <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="note-assignee">Assignee</Label>
+              <Select value={detailsAssignee} onValueChange={setDetailsAssignee}>
+                <SelectTrigger id="note-assignee"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Unassigned</SelectItem>
+                  {members.map((m) => (
+                    <SelectItem key={m.user_id} value={String(m.user_id)}>
+                      {m.full_name || m.username || `User ${m.user_id}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="note-due">Due date</Label>
+              <Input
+                id="note-due"
+                type="date"
+                value={detailsDue}
+                onChange={(e) => setDetailsDue(e.target.value)}
+              />
+            </div>
+            <Button
+              type="button"
+              variant={detailsPinned ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDetailsPinned((v) => !v)}
+              aria-pressed={detailsPinned}
+            >
+              {detailsPinned ? 'Pinned' : 'Pin to top'}
+            </Button>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailsNote(null)} disabled={detailsSaving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveNoteDetails} disabled={detailsSaving}>
+              {detailsSaving ? 'Saving…' : 'Save'}
             </Button>
           </DialogFooter>
         </DialogContent>

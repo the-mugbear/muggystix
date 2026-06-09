@@ -1,5 +1,5 @@
 import React from 'react';
-import { Flag, Reply, Trash2 } from 'lucide-react';
+import { Flag, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
 import { Badge } from '../ui/badge';
@@ -67,6 +67,8 @@ export interface NoteThreadProps {
   onDeleteNote: (noteId: number) => void;
   /** Promote a root note into a finding (omit to hide the affordance). */
   onPromoteNote?: (noteId: number) => void;
+  /** Edit a root note's work fields (type/assignee/due/pin). Omit to hide. */
+  onEditDetails?: (note: Annotation) => void;
 }
 
 interface NoteRowProps extends Omit<NoteThreadProps, 'topLevel'> {
@@ -89,6 +91,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
   onUpdateNoteStatus,
   onDeleteNote,
   onPromoteNote,
+  onEditDetails,
 }) => {
   const isReply = depth > 0;
   const statusMeta = noteStatusMeta[note.status];
@@ -162,6 +165,21 @@ const NoteRow: React.FC<NoteRowProps> = ({
               </TooltipTrigger>
               <TooltipContent>Reply</TooltipContent>
             </Tooltip>
+            {!isReply && onEditDetails && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onEditDetails(note)}
+                    aria-label="Edit note details (type, assignee, due date, pin)"
+                  >
+                    <SlidersHorizontal className="size-4" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Type · assignee · due · pin</TooltipContent>
+              </Tooltip>
+            )}
             {!isReply && onPromoteNote && (
               <Tooltip>
                 <TooltipTrigger asChild>
