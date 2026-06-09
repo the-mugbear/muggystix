@@ -80,6 +80,14 @@ export interface HubDef {
   path: string;
   requiredRole: NavRole;
   Icon: IconComponent;
+  /**
+   * Child the hub path redirects to (the hub no longer renders an interim
+   * landing — it sends you straight to a child, since the secondary-nav tab
+   * strip already lists the siblings).  Omit to use the first role-visible
+   * child in manifest order; set it when that first child is a poor default
+   * (e.g. Inventory lists Scans first but Hosts is the natural landing).
+   */
+  defaultChildPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +101,7 @@ export interface HubDef {
  */
 export const HUB_DEFS: HubDef[] = [
   { id: 'operations', label: 'Operations', path: '/operations', requiredRole: 'viewer', Icon: Sparkles },
-  { id: 'inventory', label: 'Inventory', path: '/inventory', requiredRole: 'viewer', Icon: ServerStackIcon },
+  { id: 'inventory', label: 'Inventory', path: '/inventory', requiredRole: 'viewer', Icon: ServerStackIcon, defaultChildPath: '/hosts' },
   { id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
   { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon },
@@ -219,6 +227,8 @@ export interface Hub {
   requiredRole: string;
   /** Empty when the hub destination IS its own page (Operations). */
   children: HubChild[];
+  /** Designated redirect target (see HubDef.defaultChildPath). */
+  defaultChildPath?: string;
 }
 
 export interface NavCommand {
@@ -241,6 +251,7 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
     path: p.path,
     requiredRole: p.requiredRole,
   })),
+  defaultChildPath: hub.defaultChildPath,
 }));
 
 /** Command-palette "Pages" entries, in their curated display order. */

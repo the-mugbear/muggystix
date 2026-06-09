@@ -7,6 +7,7 @@ import { ProjectProvider } from './contexts/ProjectContext';
 import { ToastProvider } from './contexts/ToastContext';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
+import HubRedirect from './components/HubRedirect';
 import { ListPageSkeleton, DetailSkeleton, CardListSkeleton } from './components/PageSkeleton';
 import Login from './pages/Login';
 
@@ -130,10 +131,6 @@ const ReconCompare = lazy(() => import('./pages/ReconCompare'));
 const ExecutionDetail = lazy(() => import('./pages/ExecutionDetail'));
 const ExecutionsList = lazy(() => import('./pages/ExecutionsList'));
 const PlanCompare = lazy(() => import('./pages/PlanCompare'));
-const InventoryHub = lazy(() => import('./pages/hubs/InventoryHub'));
-const WorkflowsHub = lazy(() => import('./pages/hubs/WorkflowsHub'));
-const CollaborationHub = lazy(() => import('./pages/hubs/CollaborationHub'));
-const SettingsHub = lazy(() => import('./pages/hubs/SettingsHub'));
 
 function App() {
   return (
@@ -206,16 +203,19 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* beta.2 hub landings — each hub destination
-                          renders a quick-link card grid for its sub-
-                          pages.  Sidebar reduced to 5 entries
-                          (Operations + these four); sub-page URLs
-                          unchanged for bookmark stability. */}
+                      {/* Hub paths redirect straight to a child page — the
+                          interim card-grid landing was redundant with the
+                          secondary-nav tab strip that lists the same children
+                          on every child page.  ProtectedRoute (gated at the
+                          hub role) is kept so the route/role manifest cross-
+                          check still holds; HubRedirect picks the first
+                          role-visible child (or the designated default).
+                          Sub-page URLs unchanged for bookmark stability. */}
                       <Route
                         path="/inventory"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <InventoryHub />
+                            <HubRedirect hubId="inventory" />
                           </ProtectedRoute>
                         }
                       />
@@ -223,7 +223,7 @@ function App() {
                         path="/workflows"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <WorkflowsHub />
+                            <HubRedirect hubId="workflows" />
                           </ProtectedRoute>
                         }
                       />
@@ -231,7 +231,7 @@ function App() {
                         path="/collaboration"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <CollaborationHub />
+                            <HubRedirect hubId="collaboration" />
                           </ProtectedRoute>
                         }
                       />
@@ -239,7 +239,7 @@ function App() {
                         path="/settings"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <SettingsHub />
+                            <HubRedirect hubId="settings" />
                           </ProtectedRoute>
                         }
                       />
