@@ -151,17 +151,20 @@ def get_dashboard_stats(
 
     recent_scans = []
     for result in recent_results:
-        total_hosts, up_hosts = host_stats_by_scan.get(result.id, (0, 0))
-        total_ports, open_ports = port_stats_by_scan.get(result.id, (0, 0))
+        # Per-scan counts — distinct local names so they do NOT clobber the
+        # project-wide total_hosts/up_hosts/total_ports/open_ports computed
+        # above and returned in DashboardStats below.
+        scan_total_hosts, scan_up_hosts = host_stats_by_scan.get(result.id, (0, 0))
+        scan_total_ports, scan_open_ports = port_stats_by_scan.get(result.id, (0, 0))
         recent_scans.append(ScanSummary(
             id=result.id,
             filename=result.filename,
             scan_type=result.scan_type,
             created_at=result.created_at,
-            total_hosts=total_hosts,
-            up_hosts=up_hosts,
-            total_ports=total_ports,
-            open_ports=open_ports,
+            total_hosts=scan_total_hosts,
+            up_hosts=scan_up_hosts,
+            total_ports=scan_total_ports,
+            open_ports=scan_open_ports,
         ))
 
 
