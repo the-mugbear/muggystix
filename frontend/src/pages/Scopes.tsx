@@ -1025,17 +1025,18 @@ const Scopes: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Upload Subnet File</DialogTitle>
             <DialogDescription>
-              Upload a list of subnets to create a new scope.  Accepts
-              <code className="font-mono"> .txt </code>or
-              <code className="font-mono"> .csv </code>files with one
-              CIDR per line; the file name becomes the new scope's name.
+              Append subnets to this project's scope.  Accepts
+              <code className="font-mono"> .txt </code>(one CIDR/IP per line) or
+              <code className="font-mono"> .csv </code>(one entry per row:
+              subnet in column 1, optional space-delimited labels in column 2).
             </DialogDescription>
           </DialogHeader>
           <p className="text-metadata text-muted-foreground">
-            Supported formats: <code className="font-mono">.txt</code>,{' '}
-            <code className="font-mono">.csv</code> — one subnet per line (e.g.{' '}
-            <code className="font-mono">192.168.1.0/24</code>). A new scope will be created
-            automatically from the filename.
+            <code className="font-mono">.txt</code> — one subnet per line. {' '}
+            <code className="font-mono">.csv</code> — per row{' '}
+            <code className="font-mono">192.168.1.0/24,prod internet-facing</code>{' '}
+            (column 2 labels are optional, space-delimited). Re-uploading is safe:
+            duplicate subnets are skipped and labels are <em>added</em>, never replaced.
           </p>
           <div
             {...getRootProps()}

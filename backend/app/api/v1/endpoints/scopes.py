@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel, Field
 from app.db import models
 from app.db.session import get_db
-from app.db.models import Scope, Subnet, HostSubnetMapping
+from app.db.models import Scope, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment
 from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
@@ -139,37 +139,91 @@ async def upload_subnet_file(
             detail="File must be UTF-8 encoded text"
         )
 
+    # .csv → row-per-subnet with optional space-delimited labels in column 2;
+    # .txt → flat CIDR list (no labels).  Both normalize identically.
+    is_csv = file.filename.lower().endswith('.csv')
     try:
         parser = SubnetParser(db)
-        cidrs = parser.parse_cidr_list(file_content)
+        if is_csv:
+            entries = parser.parse_subnet_label_csv(file_content)
+        else:
+            entries = [(c, []) for c in parser.parse_cidr_list(file_content)]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if len(cidrs) > MAX_SUBNETS_PER_UPLOAD:
+    if len(entries) > MAX_SUBNETS_PER_UPLOAD:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"File contains {len(cidrs):,} CIDR entries; "
+                f"File contains {len(entries):,} subnet entries; "
                 f"maximum per upload is {MAX_SUBNETS_PER_UPLOAD:,}. "
                 f"Split the file into smaller uploads or use the manual "
                 f"Add Subnet flow for individual entries."
             ),
         )
 
-    # Resolve (or create) the project's single scope and append the
-    # parsed entries to it.  Duplicates are skipped silently.
+    # Resolve (or create) the project's single scope.  Subnets dedup by cidr
+    # (never a duplicate row); labels merge (add, never replace) so repeated
+    # uploads accumulate labels onto the same subnet.
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
-    existing_cidrs = {
-        row.cidr
-        for row in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
+    existing_subnets = {
+        s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
     }
     added = 0
-    for cidr in cidrs:
-        if cidr in existing_cidrs:
+    for cidr, _labels in entries:
+        if cidr not in existing_subnets:
+            sub = Subnet(cidr=cidr, scope_id=scope.id)
+            db.add(sub)
+            db.flush()  # need sub.id for label assignments
+            existing_subnets[cidr] = sub
+            added += 1
+
+    # Labels: get-or-create the project label, then add only assignments that
+    # don't already exist (the uq_subnet_label_assignment dedup, applied in
+    # code) — existing labels on a subnet are left intact.
+    label_cache: dict = {}
+
+    def _get_label(name: str) -> SubnetLabel:
+        lbl = label_cache.get(name)
+        if lbl is None:
+            lbl = (
+                db.query(SubnetLabel)
+                .filter(SubnetLabel.project_id == project.id, SubnetLabel.name == name)
+                .first()
+            )
+            if lbl is None:
+                lbl = SubnetLabel(project_id=project.id, name=name, created_by_id=current_user.id)
+                db.add(lbl)
+                db.flush()
+            label_cache[name] = lbl
+        return lbl
+
+    affected_ids = [existing_subnets[c].id for c, _ in entries]
+    existing_assignments = set()
+    if affected_ids:
+        for sid, lid in (
+            db.query(SubnetLabelAssignment.subnet_id, SubnetLabelAssignment.label_id)
+            .filter(SubnetLabelAssignment.subnet_id.in_(affected_ids))
+            .all()
+        ):
+            existing_assignments.add((sid, lid))
+
+    labels_applied = 0
+    for cidr, label_names in entries:
+        if not label_names:
             continue
-        db.add(Subnet(cidr=cidr, scope_id=scope.id))
-        existing_cidrs.add(cidr)
-        added += 1
+        sub = existing_subnets[cidr]
+        for name in label_names:
+            lbl = _get_label(name)
+            key = (sub.id, lbl.id)
+            if key in existing_assignments:
+                continue
+            db.add(SubnetLabelAssignment(
+                subnet_id=sub.id, label_id=lbl.id, created_by_id=current_user.id,
+            ))
+            existing_assignments.add(key)
+            labels_applied += 1
+
     db.commit()
 
     correlation_service = SubnetCorrelationService(db)
@@ -180,10 +234,12 @@ async def upload_subnet_file(
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("Subnet correlation after upload failed: %s", exc)
 
-    skipped = len(cidrs) - added
+    skipped = len(entries) - added
     message = f"Added {added} subnet(s) to the project scope"
     if skipped > 0:
         message += f" ({skipped} duplicate{'s' if skipped != 1 else ''} skipped)"
+    if labels_applied > 0:
+        message += f"; applied {labels_applied} label assignment{'s' if labels_applied != 1 else ''}"
     if correlated_hosts is not None:
         message += f"; correlated {correlated_hosts} host-subnet relationships"
 

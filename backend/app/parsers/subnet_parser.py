@@ -1,5 +1,7 @@
+import csv
+import io
 import ipaddress
-from typing import List
+from typing import List, Tuple
 from sqlalchemy.orm import Session
 from app.db.models import Subnet
 from app.services.ip_trie import IPTrie
@@ -8,6 +10,49 @@ class SubnetParser:
     def __init__(self, db: Session):
         self.db = db
         self._trie = None  # Lazy-loaded IP trie
+
+    def parse_subnet_label_csv(self, file_content: str) -> List[Tuple[str, List[str]]]:
+        """Parse a subnet CSV where each row is one entry:
+
+            <subnet>[, <label1> <label2> ...]
+
+        Column 1 is the subnet (CIDR or single IP, normalized via
+        ``ip_network(strict=False)`` so ``10.0.0.5`` → ``10.0.0.5/32``);
+        column 2 (optional) is one or more whitespace-delimited label names.
+        Returns ``[(cidr, [labels]), ...]`` with per-row labels deduped.
+
+        Blank rows and ``#`` comments are skipped.  A first-row header whose
+        first cell isn't a valid subnet (e.g. ``subnet,labels``) is skipped;
+        an invalid subnet on any later row raises so typos aren't dropped.
+        """
+        out: List[Tuple[str, List[str]]] = []
+        reader = csv.reader(io.StringIO(file_content))
+        for row_num, row in enumerate(reader, 1):
+            if not row:
+                continue
+            cidr_raw = row[0].strip()
+            if not cidr_raw or cidr_raw.startswith('#'):
+                continue
+            try:
+                network = ipaddress.ip_network(cidr_raw, strict=False)
+            except ValueError as e:
+                if row_num == 1:
+                    continue  # tolerate a header row
+                raise ValueError(f"Invalid subnet on row {row_num}: '{cidr_raw}' - {e}")
+            labels: List[str] = []
+            if len(row) > 1 and row[1].strip():
+                # whitespace-delimited; dedup preserving order; cap to the
+                # SubnetLabel.name length (60).
+                seen = set()
+                for raw in row[1].split():
+                    name = raw.strip()[:60]
+                    if name and name not in seen:
+                        seen.add(name)
+                        labels.append(name)
+            out.append((str(network), labels))
+        if not out:
+            raise ValueError("No valid subnets found in file")
+        return out
 
     def parse_cidr_list(self, file_content: str) -> List[str]:
         """Parse the file content into a validated list of CIDR strings.
