@@ -261,13 +261,17 @@ class Subnet(Base):
     cidr = Column(String, nullable=False, index=True)
     description = Column(Text)
     # Physical/logical site this subnet belongs to (e.g. "London DC", "AWS
-    # us-east-1").  Free-text scalar — one site per subnet; populated from
-    # column 4 of the scope-upload CSV or edited inline.
+    # us-east-1").  This string is the human-entered NAME (set from CSV col 4
+    # or inline edit); ``site_id`` links it to the Site entity that carries
+    # the metadata (criticality tier / owner / expected host count), kept in
+    # sync on every write via the get-or-create-site helper.
     site = Column(String(255), nullable=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     scope = relationship("Scope", back_populates="subnets")
+    site_ref = relationship("Site", foreign_keys=[site_id])
     host_mappings = relationship("HostSubnetMapping", back_populates="subnet", cascade="all, delete-orphan")
     # v2.86.0 — project-scoped subnet labels (parallel to HostTag).  Eager-
     # loaded so the labels list rides along on Subnet responses without a
@@ -294,6 +298,38 @@ class Subnet(Base):
             if a.label is not None:
                 out.append(a.label)
         return sorted(out, key=lambda lbl: (lbl.name or "").lower())
+
+
+class Site(Base):
+    """A physical/logical site within a project (e.g. "London DC").
+
+    Project-scoped metadata keyed by name — criticality tier (1 = most
+    critical … 4), owner (who to nudge), and expected_host_count (the
+    coverage-gap denominator).  The site's NAME lives on Subnet.site (the
+    human-entered string); this entity holds the metadata the attention model
+    weights by.  NOT cross-project (UNIQUE per project).
+    """
+    __tablename__ = "sites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    # 1 = most critical … 4 = least.  Auto-created/backfilled sites default to
+    # 3 (neutral, weight ×1.0) until an operator rates them.
+    criticality_tier = Column(Integer, nullable=False, default=3)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Expected number of hosts at this site — the coverage-gap denominator
+    # (discovered vs expected).  Null = unknown (no coverage signal).
+    expected_host_count = Column(Integer, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    owner = relationship("User", foreign_keys=[owner_id])
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_site_project_name"),
+    )
 
 
 class HostSubnetMapping(Base):
