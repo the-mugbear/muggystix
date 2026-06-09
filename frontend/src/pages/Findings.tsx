@@ -151,7 +151,7 @@ const Findings: React.FC = () => {
                 <TableHead>Title</TableHead>
                 <TableHead className="w-32">Status</TableHead>
                 <TableHead className="w-24">Source</TableHead>
-                <TableHead className="w-20 text-right">Hosts</TableHead>
+                <TableHead className="w-48">Hosts</TableHead>
                 <TableHead className="w-40">Owner</TableHead>
               </TableRow>
             </TableHeader>
@@ -193,7 +193,23 @@ const Findings: React.FC = () => {
                     <Badge variant={STATUS_VARIANT[f.status] as never}>{STATUS_LABEL[f.status]}</Badge>
                   </TableCell>
                   <TableCell className="text-caption text-muted-foreground">{f.source}</TableCell>
-                  <TableCell className="text-right">{f.host_count}</TableCell>
+                  <TableCell>
+                    {f.hosts.length === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <span
+                        className="block truncate font-mono text-caption"
+                        title={f.hosts
+                          .map((h) => h.ip_address + (h.hostname ? ` (${h.hostname})` : ''))
+                          .join(', ')}
+                      >
+                        {f.hosts[0].ip_address}
+                        {f.host_count > 1 && (
+                          <span className="font-sans text-muted-foreground"> +{f.host_count - 1}</span>
+                        )}
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <span className="block truncate">{safeFallback(f.owner_name, 'Unassigned')}</span>
                   </TableCell>
