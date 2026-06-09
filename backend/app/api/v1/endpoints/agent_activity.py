@@ -107,16 +107,30 @@ def _base_query(
     if until is not None:
         q = q.filter(AgentApiCall.created_at <= until)
 
-    # Filter "did the agent touch host X?".  referenced_host_ids is a
-    # JSON column; the contains() pattern below works on Postgres'
-    # JSONB and on SQLite's JSON1 (the test suite uses Postgres but
-    # we keep the SQLite path working for the SQLite-only test path).
+    # Filter "did the agent touch host X?".  referenced_host_ids/target_ips
+    # are JSON arrays (host_ids: ints, target_ips: strings).  On Postgres use
+    # a real jsonb containment (@>) so host 5 matches [5] and NOT [15, 25,
+    # 512] — the previous cast-to-text LIKE '%5%' produced exactly those
+    # false positives AND seq-scanned this high-write table.  The @> form is
+    # backed by the functional GIN index on (col::jsonb).  Fall back to the
+    # text-contains match only on non-Postgres (SQLite) backends.
+    is_postgres = db.get_bind().dialect.name == "postgresql"
     if host_id is not None:
-        from sqlalchemy import cast, String as SAString
-        q = q.filter(cast(AgentApiCall.referenced_host_ids, SAString).contains(str(host_id)))
+        if is_postgres:
+            from sqlalchemy import cast
+            from sqlalchemy.dialects.postgresql import JSONB
+            q = q.filter(cast(AgentApiCall.referenced_host_ids, JSONB).contains([host_id]))
+        else:
+            from sqlalchemy import cast, String as SAString
+            q = q.filter(cast(AgentApiCall.referenced_host_ids, SAString).contains(str(host_id)))
     if target_ip:
-        from sqlalchemy import cast, String as SAString
-        q = q.filter(cast(AgentApiCall.referenced_target_ips, SAString).contains(target_ip))
+        if is_postgres:
+            from sqlalchemy import cast
+            from sqlalchemy.dialects.postgresql import JSONB
+            q = q.filter(cast(AgentApiCall.referenced_target_ips, JSONB).contains([target_ip]))
+        else:
+            from sqlalchemy import cast, String as SAString
+            q = q.filter(cast(AgentApiCall.referenced_target_ips, SAString).contains(target_ip))
 
     return q
 

@@ -42,7 +42,7 @@ _HOST_LIST_RESPONSES = {
     responses=_HOST_LIST_RESPONSES,
     summary="Export scope hosts",
 )
-async def export_scope_hosts(
+def export_scope_hosts(
     scope_id: int,
     format_type: str = Query(
         default="txt",
@@ -118,7 +118,7 @@ async def export_scope_hosts(
     responses=_HOST_LIST_RESPONSES,
     summary="Export scan hosts",
 )
-async def export_scan_hosts(
+def export_scan_hosts(
     scan_id: int,
     format_type: str = Query(
         default="txt",
@@ -187,7 +187,7 @@ async def export_scan_hosts(
     responses=_HOST_LIST_RESPONSES,
     summary="Export out-of-scope hosts",
 )
-async def export_out_of_scope_hosts(
+def export_out_of_scope_hosts(
     format_type: str = Query(
         default="txt",
         pattern="^(txt|csv|json)$",
