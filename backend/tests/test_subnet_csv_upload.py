@@ -36,10 +36,10 @@ def test_csv_upload_labels_description_and_merge(client, db_session, test_projec
     # in-file with different labels → must merge onto a single subnet row.
     r1 = _upload(
         client, test_project.id,
-        "subnet,labels,description\n"
-        "10.50.0.0/24,prod dmz,UK DMZ\n"
-        "10.50.1.0/24,lab,\n"
-        "10.50.0.0/24,internet-facing,\n",  # dup cidr, extra label
+        "subnet,labels,description,site\n"
+        "10.50.0.0/24,prod dmz,UK DMZ,London DC\n"
+        "10.50.1.0/24,lab,,\n"
+        "10.50.0.0/24,internet-facing,,\n",  # dup cidr, extra label
     )
     assert r1.status_code == 200, r1.text
     scope_id = r1.json()["scope_id"]
@@ -50,14 +50,16 @@ def test_csv_upload_labels_description_and_merge(client, db_session, test_projec
     ).count() == 1
     # The repeated cidr's labels merged onto the one subnet.
     assert _labels_for(db_session, scope_id, "10.50.0.0/24") == {"prod", "dmz", "internet-facing"}
-    # Description from column 3.
+    # Description (col 3) + site (col 4).
     sub = db_session.query(Subnet).filter(Subnet.scope_id == scope_id, Subnet.cidr == "10.50.0.0/24").one()
     assert sub.description == "UK DMZ"
+    assert sub.site == "London DC"
 
-    # Re-upload: same subnet, a NEW label + an existing one + a new description.
+    # Re-upload: same subnet, a NEW label + an existing one + a new
+    # description + a new site.
     r2 = _upload(
         client, test_project.id,
-        "10.50.0.0/24,prod owned,Updated DMZ\n",
+        "10.50.0.0/24,prod owned,Updated DMZ,Manchester DC\n",
     )
     assert r2.status_code == 200, r2.text
 
@@ -71,3 +73,4 @@ def test_csv_upload_labels_description_and_merge(client, db_session, test_projec
     db_session.expire_all()
     sub = db_session.query(Subnet).filter(Subnet.scope_id == scope_id, Subnet.cidr == "10.50.0.0/24").one()
     assert sub.description == "Updated DMZ"  # description updates when provided
+    assert sub.site == "Manchester DC"  # site updates (last-wins) when provided

@@ -35,6 +35,8 @@ export interface Subnet {
   scope_id: number;
   cidr: string;
   description: string | null;
+  // Physical/logical site this subnet belongs to (e.g. "London DC").
+  site?: string | null;
   created_at: string;
   // v2.86.0 — subnet labels attached to this row.  Optional in the
   // type because older API responses (pre-2.86.0) don't include the
@@ -225,7 +227,7 @@ export const addScopeSubnets = async (
 export const updateSubnet = async (
   scopeId: number,
   subnetId: number,
-  body: { cidr?: string; description?: string },
+  body: { cidr?: string; description?: string; site?: string },
 ): Promise<SubnetEntry> => {
   const response = await api.patch<SubnetEntry>(`${p()}/scopes/${scopeId}/subnets/${subnetId}`, body);
   return response.data;

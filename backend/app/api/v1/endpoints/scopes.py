@@ -147,7 +147,7 @@ async def upload_subnet_file(
         if is_csv:
             entries = parser.parse_subnet_csv(file_content)
         else:
-            entries = [(c, [], "") for c in parser.parse_cidr_list(file_content)]
+            entries = [(c, [], "", "") for c in parser.parse_cidr_list(file_content)]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -171,20 +171,30 @@ async def upload_subnet_file(
     }
     added = 0
     descriptions_set = 0
-    for cidr, _labels, description in entries:
+    sites_set = 0
+    for cidr, _labels, description, site in entries:
         sub = existing_subnets.get(cidr)
         if sub is None:
-            sub = Subnet(cidr=cidr, scope_id=scope.id, description=(description or None))
+            sub = Subnet(
+                cidr=cidr, scope_id=scope.id,
+                description=(description or None), site=(site or None),
+            )
             db.add(sub)
             existing_subnets[cidr] = sub
             added += 1
             if description:
                 descriptions_set += 1
-        elif description:
-            # Update the description on an existing subnet when the CSV
-            # provides one (empty col 3 leaves any existing description intact).
-            sub.description = description
-            descriptions_set += 1
+            if site:
+                sites_set += 1
+        else:
+            # Update description/site on an existing subnet when the CSV
+            # provides them (empty cols leave the existing values intact).
+            if description:
+                sub.description = description
+                descriptions_set += 1
+            if site:
+                sub.site = site
+                sites_set += 1
     # One flush for the whole batch — populates .id on every pending Subnet
     # (the existing_subnets map holds live object refs) for the label
     # assignments below.  Avoids a per-row round-trip (and a regression on the
@@ -211,7 +221,7 @@ async def upload_subnet_file(
             label_cache[name] = lbl
         return lbl
 
-    affected_ids = [existing_subnets[c].id for c, _, _ in entries]
+    affected_ids = [existing_subnets[c].id for c, _, _, _ in entries]
     existing_assignments = set()
     if affected_ids:
         for sid, lid in (
@@ -222,7 +232,7 @@ async def upload_subnet_file(
             existing_assignments.add((sid, lid))
 
     labels_applied = 0
-    for cidr, label_names, _description in entries:
+    for cidr, label_names, _description, _site in entries:
         if not label_names:
             continue
         sub = existing_subnets[cidr]
@@ -255,6 +265,8 @@ async def upload_subnet_file(
         message += f"; applied {labels_applied} label assignment{'s' if labels_applied != 1 else ''}"
     if descriptions_set > 0:
         message += f"; set {descriptions_set} description{'s' if descriptions_set != 1 else ''}"
+    if sites_set > 0:
+        message += f"; set {sites_set} site{'s' if sites_set != 1 else ''}"
     if correlated_hosts is not None:
         message += f"; correlated {correlated_hosts} host-subnet relationships"
 
@@ -786,7 +798,7 @@ def add_subnets(
     normalized: List[tuple] = []
     for item in body.subnets:
         cidr = _validate_cidr(item.cidr)
-        normalized.append((cidr, item.description))
+        normalized.append((cidr, item.description, item.site))
 
     # Duplicate check inside the payload and against existing DB rows.
     seen: set = set()
@@ -794,7 +806,7 @@ def add_subnets(
         row.cidr
         for row in db.query(Subnet).filter(Subnet.scope_id == scope_id).all()
     }
-    for cidr, _ in normalized:
+    for cidr, _, _ in normalized:
         if cidr in seen:
             raise HTTPException(status_code=400, detail=f"Duplicate CIDR in request: {cidr}")
         if cidr in existing_cidrs:
@@ -805,8 +817,8 @@ def add_subnets(
         seen.add(cidr)
 
     created: List[Subnet] = []
-    for cidr, description in normalized:
-        row = Subnet(cidr=cidr, description=description, scope_id=scope_id)
+    for cidr, description, site in normalized:
+        row = Subnet(cidr=cidr, description=description, site=(site or None), scope_id=scope_id)
         db.add(row)
         created.append(row)
     db.commit()
@@ -871,6 +883,9 @@ def update_subnet(
         cidr_changed = True
     if body.description is not None:
         subnet.description = body.description
+    if body.site is not None:
+        # Empty string clears the site; a value sets it.
+        subnet.site = body.site or None
 
     db.commit()
     db.refresh(subnet)

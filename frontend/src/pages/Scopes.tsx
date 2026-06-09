@@ -117,6 +117,7 @@ const Scopes: React.FC = () => {
   const [editingSubnetId, setEditingSubnetId] = useState<number | null>(null);
   const [editCidrDraft, setEditCidrDraft] = useState('');
   const [editDescDraft, setEditDescDraft] = useState('');
+  const [editSiteDraft, setEditSiteDraft] = useState('');
   const [savingSubnet, setSavingSubnet] = useState(false);
 
   // v2.94.0 — the subnet list is server-paginated so a 6000-subnet project
@@ -269,15 +270,19 @@ const Scopes: React.FC = () => {
     }
   };
 
-  const startEditSubnet = (id: number, cidr: string, description: string | null) => {
+  const startEditSubnet = (
+    id: number, cidr: string, description: string | null, site: string | null,
+  ) => {
     setEditingSubnetId(id);
     setEditCidrDraft(cidr);
     setEditDescDraft(description || '');
+    setEditSiteDraft(site || '');
   };
   const cancelEditSubnet = () => {
     setEditingSubnetId(null);
     setEditCidrDraft('');
     setEditDescDraft('');
+    setEditSiteDraft('');
   };
 
   const handleSaveSubnet = async (subnetId: number) => {
@@ -287,6 +292,7 @@ const Scopes: React.FC = () => {
       await updateSubnet(scope.id, subnetId, {
         cidr: editCidrDraft.trim(),
         description: editDescDraft.trim(),
+        site: editSiteDraft.trim(),
       });
       toast.success('Entry updated.');
       cancelEditSubnet();
@@ -818,6 +824,7 @@ const Scopes: React.FC = () => {
                     </TableHead>
                     <TableHead className="w-1/5">Subnet / IP</TableHead>
                     <TableHead>Description</TableHead>
+                    <TableHead className="w-40">Site</TableHead>
                     <TableHead className="min-w-[180px]">Labels</TableHead>
                     <TableHead className="w-32">Added</TableHead>
                     <TableHead className="w-32 text-right">Actions</TableHead>
@@ -826,7 +833,7 @@ const Scopes: React.FC = () => {
                 <TableBody>
                   {scope.subnets.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
+                      <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                         {debouncedSubnetSearch.trim()
                           ? `No subnets match "${debouncedSubnetSearch.trim()}". Try a different search or clear it.`
                           : "No entries in this project's scope yet. Add one above or upload a file."}
@@ -868,10 +875,29 @@ const Scopes: React.FC = () => {
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description)}
+                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
                                 className="text-metadata italic text-muted-foreground hover:text-foreground focus:outline-none focus-visible:underline"
                               >
                                 Click to add description
+                              </button>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {isEditing ? (
+                              <Input
+                                value={editSiteDraft}
+                                onChange={(e) => setEditSiteDraft(e.target.value)}
+                                placeholder="Site / location…"
+                              />
+                            ) : subnet.site ? (
+                              <span className="break-words text-metadata">{subnet.site}</span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
+                                className="text-metadata italic text-muted-foreground hover:text-foreground focus:outline-none focus-visible:underline"
+                              >
+                                Click to add site
                               </button>
                             )}
                           </TableCell>
@@ -946,7 +972,7 @@ const Scopes: React.FC = () => {
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description)}
+                                      onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
                                       aria-label={`Edit subnet ${subnet.cidr}`}
                                     >
                                       <Pencil className="size-4" aria-hidden />
@@ -1029,14 +1055,14 @@ const Scopes: React.FC = () => {
               <code className="font-mono"> .txt </code>(one CIDR/IP per line) or
               <code className="font-mono"> .csv </code>(one entry per row: subnet in
               column 1, optional space-delimited labels in column 2, optional
-              description in column 3).
+              description in column 3, optional site in column 4).
             </DialogDescription>
           </DialogHeader>
           <p className="text-metadata text-muted-foreground">
             <code className="font-mono">.txt</code> — one subnet per line. {' '}
             <code className="font-mono">.csv</code> — per row{' '}
-            <code className="font-mono">192.168.1.0/24,prod internet-facing,UK DMZ</code>{' '}
-            (label + description columns optional). Re-uploading is safe: duplicate
+            <code className="font-mono">192.168.1.0/24,prod internet-facing,UK DMZ,London DC</code>{' '}
+            (label, description + site columns optional). Re-uploading is safe: duplicate
             subnets are skipped, labels are <em>added</em> (never replaced), and a
             description updates only when provided.
           </p>

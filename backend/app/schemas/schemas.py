@@ -541,6 +541,8 @@ class SubnetLabelInfo(BaseModel):
 class SubnetBase(BaseModel):
     cidr: str = Field(..., max_length=64)
     description: Optional[str] = Field(None, max_length=1024)
+    # Physical/logical site this subnet belongs to (e.g. "London DC").
+    site: Optional[str] = Field(None, max_length=255)
 
 class Subnet(SubnetBase):
     id: int
@@ -617,6 +619,7 @@ class SubnetCreate(SubnetBase):
 class SubnetUpdate(BaseModel):
     cidr: Optional[str] = Field(None, max_length=64)
     description: Optional[str] = Field(None, max_length=1024)
+    site: Optional[str] = Field(None, max_length=255)
 
 
 class SubnetBatchCreate(BaseModel):

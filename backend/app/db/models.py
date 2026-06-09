@@ -260,6 +260,10 @@ class Subnet(Base):
     scope_id = Column(Integer, ForeignKey("scopes.id"), nullable=False)
     cidr = Column(String, nullable=False, index=True)
     description = Column(Text)
+    # Physical/logical site this subnet belongs to (e.g. "London DC", "AWS
+    # us-east-1").  Free-text scalar — one site per subnet; populated from
+    # column 4 of the scope-upload CSV or edited inline.
+    site = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships
