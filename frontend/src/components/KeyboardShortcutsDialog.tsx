@@ -33,6 +33,11 @@ const buildShortcuts = (): ShortcutRow[] => [
   { keys: ['g', 's'], label: 'Go to Scans' },
   { keys: ['g', 'i'], label: 'Go to Inventory hub' },
   { keys: ['g', 'o'], label: 'Go to Operations hub' },
+  {
+    keys: ['j', 'k'],
+    label: 'Hosts: move the row cursor (↑/↓ too); steps prev/next host when the inspector is open',
+  },
+  { keys: ['Enter'], label: 'Hosts: open the cursor row in the inspector' },
 ];
 
 export interface KeyboardShortcutsDialogProps {

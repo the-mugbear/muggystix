@@ -128,6 +128,10 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: ServerStackIcon, order: 3 },
   },
   {
+    id: 'findings', path: '/findings', label: 'Findings', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: AlertHexIcon, keywords: ['finding', 'vuln', 'triage', 'result'], order: 4 },
+  },
+  {
     id: 'scopes', path: '/scopes', label: 'Scopes', requiredRole: 'analyst', hub: 'inventory',
     palette: { Icon: ScopeIcon, order: 6 },
   },

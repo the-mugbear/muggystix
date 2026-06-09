@@ -103,7 +103,6 @@ describe('navigation manifest', () => {
     '/recon/compare',
     '/scans/compare',
     '/test-plans/compare',
-    '/risk-assessment',
     '/default-credentials',
     '/tool-reference',
     '/reference/user-guide',

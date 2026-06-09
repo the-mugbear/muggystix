@@ -34,6 +34,14 @@ from app.services.agent_policy import render_safety_rules
 logger = logging.getLogger(__name__)
 
 
+# The system identity UUID is immutable after first boot, so cache the first
+# successful lookup process-wide instead of opening a fresh SessionLocal() +
+# round-trip on every prompt/context render.  Only a non-None result is
+# cached — a None means the row isn't seeded yet (first-boot race), and we
+# want to keep retrying until it appears.
+_INSTANCE_ID_CACHE: Optional[str] = None
+
+
 def _load_instance_id() -> Optional[str]:
     """Look up the system identity UUID for the provenance block.
 
@@ -46,13 +54,17 @@ def _load_instance_id() -> Optional[str]:
     silently masked by the same "(pending)" placeholder that a fresh
     install legitimately produces (review C-PR-5).
     """
+    global _INSTANCE_ID_CACHE
+    if _INSTANCE_ID_CACHE is not None:
+        return _INSTANCE_ID_CACHE
     from sqlalchemy.exc import OperationalError, ProgrammingError
     try:
         from app.db.session import SessionLocal
         from app.db.models_auth import SystemIdentity
         with SessionLocal() as db:
             row = db.query(SystemIdentity).first()
-            return row.instance_id if row else None
+            _INSTANCE_ID_CACHE = row.instance_id if row else None
+            return _INSTANCE_ID_CACHE
     except (OperationalError, ProgrammingError) as exc:
         # Expected during boot before migrations land or if Postgres is
         # briefly unavailable. Log at warning so an operator notices a
@@ -230,7 +242,6 @@ def _render_filter_criteria(fc: Dict[str, Any]) -> str:
         "min_severity": "Minimum vulnerability severity",
         "has_critical_vulns": "Only hosts with critical vulnerabilities",
         "has_high_vulns": "Only hosts with high vulnerabilities",
-        "min_risk_score": "Minimum risk score",
         "search": "Search term",
     }
     lines = []
@@ -789,7 +800,7 @@ def build_assist_instructions(
         f"3. **Answer the operator's question.**  Use:\n"
         f"   - `GET /agent/assist/hosts?…` (filter shape mirrors the "
         f"`/hosts` page: `state`, `ports`, `services`, `subnets`, "
-        f"`has_critical_vulns`, `has_high_vulns`, `min_risk_score`, "
+        f"`has_critical_vulns`, `has_high_vulns`, "
         f"`search`).  **Paginated and capped**: it returns a bare array of at "
         f"most `limit` hosts (default 500, max 5000) with NO `total`/`has_more` "
         f"signal.  To answer any count/coverage question you MUST page — start "

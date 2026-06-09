@@ -51,7 +51,7 @@ class Host(Base):
     vulnerabilities = relationship("Vulnerability", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     attributes = relationship("HostAttribute", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     follows = relationship("HostFollow", back_populates="host", cascade="all, delete-orphan")
-    notes = relationship("HostNote", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
+    notes = relationship("Annotation", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     tag_assignments = relationship("HostTagAssignment", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (
@@ -260,10 +260,18 @@ class Subnet(Base):
     scope_id = Column(Integer, ForeignKey("scopes.id"), nullable=False)
     cidr = Column(String, nullable=False, index=True)
     description = Column(Text)
+    # Physical/logical site this subnet belongs to (e.g. "London DC", "AWS
+    # us-east-1").  This string is the human-entered NAME (set from CSV col 4
+    # or inline edit); ``site_id`` links it to the Site entity that carries
+    # the metadata (criticality tier / owner / expected host count), kept in
+    # sync on every write via the get-or-create-site helper.
+    site = Column(String(255), nullable=True)
+    site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     scope = relationship("Scope", back_populates="subnets")
+    site_ref = relationship("Site", foreign_keys=[site_id])
     host_mappings = relationship("HostSubnetMapping", back_populates="subnet", cascade="all, delete-orphan")
     # v2.86.0 — project-scoped subnet labels (parallel to HostTag).  Eager-
     # loaded so the labels list rides along on Subnet responses without a
@@ -290,6 +298,38 @@ class Subnet(Base):
             if a.label is not None:
                 out.append(a.label)
         return sorted(out, key=lambda lbl: (lbl.name or "").lower())
+
+
+class Site(Base):
+    """A physical/logical site within a project (e.g. "London DC").
+
+    Project-scoped metadata keyed by name — criticality tier (1 = most
+    critical … 4), owner (who to nudge), and expected_host_count (the
+    coverage-gap denominator).  The site's NAME lives on Subnet.site (the
+    human-entered string); this entity holds the metadata the attention model
+    weights by.  NOT cross-project (UNIQUE per project).
+    """
+    __tablename__ = "sites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    # 1 = most critical … 4 = least.  Auto-created/backfilled sites default to
+    # 3 (neutral, weight ×1.0) until an operator rates them.
+    criticality_tier = Column(Integer, nullable=False, default=3)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Expected number of hosts at this site — the coverage-gap denominator
+    # (discovered vs expected).  Null = unknown (no coverage signal).
+    expected_host_count = Column(Integer, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    owner = relationship("User", foreign_keys=[owner_id])
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_site_project_name"),
+    )
 
 
 class HostSubnetMapping(Base):
@@ -773,22 +813,35 @@ class NoteStatus(str, enum.Enum):
     RESOLVED = "resolved"
 
 
-class HostNote(Base):
-    __tablename__ = "host_notes"
+class Annotation(Base):
+    __tablename__ = "annotations"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    # Foundation phase 2 — Annotation generalized beyond hosts.  An
+    # annotation targets exactly ONE entity (host / port / scan / scope /
+    # plan / project); the other target columns are null.  host_id is now
+    # nullable (was NOT NULL) so non-host annotations are possible.
+    # "Exactly one target" is enforced by a DB CHECK (num_nonnulls = 1)
+    # added in the migration — kept OUT of __table_args__ so the SQLite
+    # test create_all stays portable (num_nonnulls is Postgres-only); the
+    # write paths also validate it in code.
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True, index=True)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
+    scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=True, index=True)
+    plan_id = Column(Integer, ForeignKey("test_plans.id", ondelete="CASCADE"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     # v2.86.2 — was nullable=False, no ondelete.  Flipped to nullable +
     # SET NULL so a deleted author leaves the note body behind as "by
     # deleted user" instead of either blocking the delete (NOT NULL
     # before the fix) or wiping shared annotations (CASCADE).
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    parent_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True)
+    parent_id = Column(Integer, ForeignKey("annotations.id"), nullable=True)
     # Persisted thread root (review #5): id of the thread's root note
     # (== self for a root note).  Lets activity status filters/counts query
     # by the THREAD's status (the root's) instead of a reply's, and resolves
     # history by root — without an ancestor walk per request.
-    thread_root_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True, index=True)
+    thread_root_id = Column(Integer, ForeignKey("annotations.id"), nullable=True, index=True)
     body = Column(Text, nullable=False)
     status = Column(SQLEnum(NoteStatus), nullable=False, default=NoteStatus.OPEN)
     # Thread-level work fields (P3) — semantically belong to the ROOT note
@@ -806,21 +859,35 @@ class HostNote(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     host = relationship("Host", back_populates="notes")
+    # Generalized targets (foundation 2) — each unambiguous (distinct table).
+    port = relationship("Port")
+    scan = relationship("Scan")
+    scope = relationship("Scope")
+    plan = relationship("TestPlan")
+    project = relationship("Project")
+    # Findings promoted from this annotation thread — Finding.evidence_annotation_id
+    # points at the thread ROOT. viewonly: the FK is owned on the Finding side;
+    # this is just a read-back so the note UI can show a "promoted" badge +
+    # link and block a duplicate promote. Eager-load it where notes are
+    # serialized (host detail/list) to avoid an N+1.
+    promoted_findings = relationship(
+        "Finding", foreign_keys="Finding.evidence_annotation_id", viewonly=True,
+    )
     # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
-    author = relationship("User", foreign_keys=[user_id], back_populates="host_notes")
+    author = relationship("User", foreign_keys=[user_id], back_populates="annotations")
     assignee = relationship("User", foreign_keys=[assignee_id])
     # foreign_keys pinned to parent_id — there are two self-FKs now
     # (parent_id + thread_root_id), so the parent/replies join must be
     # explicit or SQLAlchemy can't pick one.
     replies = relationship(
-        "HostNote",
-        backref=backref("parent", remote_side="HostNote.id"),
-        foreign_keys="HostNote.parent_id",
+        "Annotation",
+        backref=backref("parent", remote_side="Annotation.id"),
+        foreign_keys="Annotation.parent_id",
         lazy="selectin",
     )
 
 
-class HostNoteStatusHistory(Base):
+class AnnotationStatusHistory(Base):
     """Audit trail of note-thread status transitions (P3).
 
     One row per transition (open → in_progress → resolved, etc.), so the
@@ -828,10 +895,10 @@ class HostNoteStatusHistory(Base):
     captured at the moment of resolving.  ``changed_by_id`` SET NULL on
     user delete preserves the history with an anonymous actor.
     """
-    __tablename__ = "host_note_status_history"
+    __tablename__ = "annotation_status_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    note_id = Column(Integer, ForeignKey("host_notes.id", ondelete="CASCADE"), nullable=False, index=True)
+    note_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False, index=True)
     from_status = Column(String(20), nullable=True)
     to_status = Column(String(20), nullable=False)
     changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

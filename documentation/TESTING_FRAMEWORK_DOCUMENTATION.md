@@ -1,15 +1,15 @@
 # BlueStick Testing Guide
 
-> **Last verified against:** backend 2.24.0 / frontend 2.19.0 (2026-05-15)
+> **Last verified against:** backend 2.115.0 / frontend 5.25.1 (2026-06-07)
 
 ## Current Test Stack
 
-- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/BlueStick/backend/pytest.ini). The suite currently runs **251 tests**.
-- Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/BlueStick/frontend/src/tests).
+- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite currently runs **~640 tests** across ~70 files.
+- Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
 ## Backend Tests
 
-Location: [`backend/tests`](/home/charles/Projects/Tools/BlueStick/backend/tests)
+Location: [`backend/tests`](/home/charles/Projects/Tools/NetworkMapper/backend/tests)
 
 Key behavior of the current backend harness:
 
@@ -43,12 +43,9 @@ Coverage is enforced at `70%` and configured to emit terminal and HTML reports.
 
 ## Frontend Tests
 
-Location: [`frontend/src/tests`](/home/charles/Projects/Tools/BlueStick/frontend/src/tests)
+Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Current coverage is focused on:
-
-- `Dashboard` loading, rendering, and error handling
-- `VersionFooter` version/build metadata rendering
+Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `ExecutionDetail`, `ExecutionsList`, `ReconRunDetail`, `ReconRunsList`, the compare views), shared components (`HostFilters`, `HostCommandBar`, `HostLineagePanel`, `ExecutionSession`, `VersionFooter`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 
@@ -69,7 +66,7 @@ Strict-mode TypeScript is enforced; every PR should typecheck clean before merge
 
 ## Regression-pin file
 
-`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds 23 tests covering: recon-session FK race, sanity-check uniqueness widening, cross-project plan visibility, brief-mode policy parity, multibyte byte-cap truncation, SBOM cache invalidation on app-version change, sanity-check enforcement on `/complete` (with override-reason audit), environment probe round-trip (recon + execution), cross-user environment isolation, and the v2.24.0 agent API call log helpers + middleware + retention. Add to this file when fixing a regression so it can't silently come back.
+`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~86 tests covering: recon-session FK race, sanity-check uniqueness widening, cross-project plan visibility, brief-mode policy parity, multibyte byte-cap truncation, SBOM cache invalidation on app-version change, sanity-check enforcement on `/complete` (with override-reason audit), environment probe round-trip (recon + execution), cross-user environment isolation, and the v2.24.0 agent API call log helpers + middleware + retention. Add to this file when fixing a regression so it can't silently come back.
 
 ## Practical Guidance
 

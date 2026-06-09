@@ -50,6 +50,9 @@ export interface HostVulnerability {
   protocol: string | null;
   service_name: string | null;
   exploitable: boolean | null;
+  // Set when this vuln has been promoted to a finding — drives the "Promoted"
+  // badge/link and guards a duplicate promote.
+  finding_id?: number | null;
   first_seen: string | null;
   last_seen: string | null;
   solution: string | null;
@@ -64,12 +67,21 @@ export interface Host {
   ip_address: string;
   hostname: string | null;
   state: string | null;
+  state_reason?: string | null;
   os_name: string | null;
+  // OS-detail fields the serializer returns but the UI previously dropped —
+  // os_accuracy (nmap match confidence %) + os_vendor are what an analyst
+  // needs to judge "Windows Server 2019" as a 95% match vs a 60% guess.
+  os_family?: string | null;
+  os_generation?: string | null;
+  os_type?: string | null;
+  os_vendor?: string | null;
+  os_accuracy?: number | string | null;
   ports: Port[];
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];
   follow?: HostFollowInfo | null;
-  notes?: HostNote[];
+  notes?: Annotation[];
   note_count?: number;
   test_plan_entry_count?: number;
   test_execution_count?: number;
@@ -80,8 +92,16 @@ export interface Host {
   // Count of NetExec credentialed-enumeration rows — gates the
   // HostInspector NetExec card.
   netexec_result_count?: number;
-  // Other users (not the caller) who have this host In Review —
-  // drives the Hosts-list "In review · <name>" indicator (v4.9.1).
+  // Foundation 6d — count of ACTIVE findings (open/confirmed/retest)
+  // affecting this host; drives the Hosts-list finding badge.
+  finding_count?: number;
+  // True when the host's most-recent scan flipped its state or added a port
+  // vs the prior scan — drives the "Changed" triage badge.
+  changed_recently?: boolean;
+  // OTHER users (not the caller) who have this host In Review — drives the
+  // Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only: the
+  // caller's own status is on the Follow control, so including the caller
+  // duplicated the badge.
   other_reviewers?: { user_id: number; name: string }[];
   // v2.71.0 — project tags on this host, and users it's assigned to.
   tags?: HostTagInfo[];
@@ -122,7 +142,7 @@ export interface HostFollowInfo {
   updated_at?: string | null;
 }
 
-export interface HostNote {
+export interface Annotation {
   id: number;
   body: string;
   status: NoteStatus;
@@ -136,11 +156,14 @@ export interface HostNote {
   note_type?: NoteType | null;
   resolution_summary?: string | null;
   pinned?: boolean;
+  // Set when this thread root has been promoted to a finding — drives the
+  // "Promoted" badge/link and guards a duplicate promote.
+  finding_id?: number | null;
   created_at: string;
   updated_at?: string | null;
 }
 
-export interface HostNoteStatusHistoryEntry {
+export interface AnnotationStatusHistoryEntry {
   id: number;
   from_status: string | null;
   to_status: string;
@@ -184,6 +207,13 @@ export interface Port {
   service_name: string | null;
   service_product: string | null;
   service_version: string | null;
+  // Returned by the serializer but previously dropped here: service_extrainfo
+  // often carries the most useful banner detail ("Ubuntu; protocol 2.0");
+  // service_conf/reason/method indicate detection confidence + how.
+  service_extrainfo?: string | null;
+  service_conf?: string | null;
+  service_method?: string | null;
+  reason?: string | null;
   scripts?: NseScript[];
 }
 
@@ -280,15 +310,15 @@ export const recordHostView = async (hostId: number): Promise<void> => {
   await api.post(`${p()}/hosts/${hostId}/view`);
 };
 
-export const createHostNote = async (
+export const createAnnotation = async (
   hostId: number,
   payload: { body: string; status?: NoteStatus; parent_id?: number },
-): Promise<HostNote> => {
+): Promise<Annotation> => {
   const response = await api.post(`${p()}/hosts/${hostId}/notes`, payload);
   return response.data;
 };
 
-export interface HostNoteUpdatePayload {
+export interface AnnotationUpdatePayload {
   body?: string;
   status?: NoteStatus;
   // Thread-level work fields (P3). Sending `null` clears a nullable field;
@@ -300,24 +330,24 @@ export interface HostNoteUpdatePayload {
   pinned?: boolean;
 }
 
-export const updateHostNote = async (
+export const updateAnnotation = async (
   hostId: number,
   noteId: number,
-  payload: HostNoteUpdatePayload,
-): Promise<HostNote> => {
+  payload: AnnotationUpdatePayload,
+): Promise<Annotation> => {
   const response = await api.patch(`${p()}/hosts/${hostId}/notes/${noteId}`, payload);
   return response.data;
 };
 
-export const getHostNoteHistory = async (
+export const getAnnotationHistory = async (
   hostId: number,
   noteId: number,
-): Promise<HostNoteStatusHistoryEntry[]> => {
+): Promise<AnnotationStatusHistoryEntry[]> => {
   const response = await api.get(`${p()}/hosts/${hostId}/notes/${noteId}/history`);
   return response.data;
 };
 
-export const deleteHostNote = async (hostId: number, noteId: number): Promise<void> => {
+export const deleteAnnotation = async (hostId: number, noteId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/${hostId}/notes/${noteId}`);
 };
 
@@ -392,7 +422,6 @@ export const getHosts = async (params: {
   has_low_vulns?: boolean;
   has_exploit_available?: boolean;
   has_test_execution?: boolean;
-  min_risk_score?: number;
   out_of_scope_only?: boolean;
   follow_status?: string;
   scan_ids?: string;

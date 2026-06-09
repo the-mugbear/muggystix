@@ -4,7 +4,7 @@ Turns a power-search string such as::
 
     port:80 port:443 AND NOT tag:test
     cve:CVE-2021-44228 OR vuln:"log4j"
-    (has:critical OR risk:80) AND has:web
+    (has:critical OR has:exploit) AND has:web
 
 into a single SQLAlchemy ``ColumnElement`` that is appended to the
 existing filtered-host query as one ``.filter()``.
@@ -362,15 +362,6 @@ def _b_subnet(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return pred if pred is not None else false()
 
 
-def _b_risk(ctx: BuildCtx, values: List[str]) -> ColumnElement:
-    scores = []
-    for v in values:
-        if not v.lstrip("-").isdigit():
-            raise DSLError(f"risk: expects a number, got '{v}'")
-        scores.append(int(v))
-    return or_(*[P.risk_predicate(ctx.db, s) for s in scores])
-
-
 def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     ids = []
     for v in values:
@@ -450,12 +441,6 @@ _FIELD_SPECS: List[FieldSpec] = [
               value_source="tag"),
     FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
               value_source="label"),
-    # TODO(risk-scoring): `risk:` is hidden while risk scoring is broken
-    # (HostRiskAssessment is unpopulated, so risk:N matches nothing).
-    # Re-enable this FieldSpec when risk scoring is reworked (admin-tunable
-    # weights); _b_risk / P.risk_predicate are left intact.  See TODO.md and
-    # frontend featureFlags.RISK_SCORING_ENABLED.
-    # FieldSpec("risk", _b_risk),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES)),
     FieldSpec("assigned", _b_assigned),
     FieldSpec("scan", _b_scan, value_source="scan"),

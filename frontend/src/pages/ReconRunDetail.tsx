@@ -28,6 +28,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { WorkflowDetailHeader } from '../components/workflow/WorkflowDetailHeader';
+import AgentActivityLog from '../components/AgentActivityLog';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import {
   Table,
@@ -1026,6 +1027,17 @@ const ReconRunDetail: React.FC = () => {
             detail={detail}
             onLoadMore={loadMorePlans}
             loadingMore={loadingMorePlans}
+          />
+          {/* Per-call agent API audit for THIS recon session.  The backend
+              endpoint + client already existed; this surfaces it in the UI
+              (previously only the test-plan workflow had a drill-down).
+              defaultMineOnly={false}: a recon session is bound to a single
+              agent/key, so the "my agents" filter only risks hiding the very
+              calls you opened this page to see (e.g. a teammate's run). */}
+          <AgentActivityLog
+            source={{ kind: 'recon', reconSessionId: detail.summary.id }}
+            subtitle={`Every agent → BlueStick request made under recon run #${detail.summary.id}.`}
+            defaultMineOnly={false}
           />
           <CompareSection
             currentId={detail.summary.id}

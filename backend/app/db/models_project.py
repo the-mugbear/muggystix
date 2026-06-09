@@ -111,12 +111,12 @@ class NoteMention(Base):
     __tablename__ = "note_mentions"
 
     id = Column(Integer, primary_key=True, index=True)
-    note_id = Column(Integer, ForeignKey("host_notes.id", ondelete="CASCADE"), nullable=False)
+    note_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    note = relationship("HostNote")
+    note = relationship("Annotation")
     user = relationship("User")
 
     __table_args__ = (

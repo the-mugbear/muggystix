@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, case, and_, or_, distinct, false
 from app.db.session import get_db
 from app.db import models
@@ -173,6 +173,11 @@ def get_dashboard_stats(
         subnets = (
             db.query(models.Subnet)
             .join(models.Scope)
+            # Eager-load scope so `subnet.scope.name` in the loop below
+            # doesn't fire one lazy SELECT per subnet (the host-count
+            # lookup right below was de-N+1'd in v2.85.0; this access was
+            # missed).
+            .options(joinedload(models.Subnet.scope))
             .filter(models.Scope.project_id == project.id)
             .limit(20)
             .all()

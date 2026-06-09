@@ -245,7 +245,6 @@ def get_planning_context(
         subnets=filters.get("subnets"),
         has_critical_vulns=filters.get("has_critical_vulns"),
         has_high_vulns=filters.get("has_high_vulns"),
-        min_risk_score=filters.get("min_risk_score"),
         search=filters.get("search"),
         not_in_plan_id=plan_id,
     )

@@ -1,0 +1,222 @@
+/**
+ * /findings/:id — the canonical finding workspace.
+ *
+ * Closes the multi-host dead-end the list view had (host #1 + "+N" in a
+ * tooltip): here every affected host is listed with its own disposition and
+ * a link, the evidence thread is one click away, the disposition history is
+ * inline, and status/owner are editable in place. The place My Work,
+ * reports, and notifications link a finding to.
+ */
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useParams, useNavigate } from 'react-router-dom';
+import { ArrowLeft, ExternalLink, Loader2, Trash2 } from 'lucide-react';
+
+import {
+  Finding,
+  FindingSeverity,
+  FindingStatus,
+  FindingStatusHistoryEntry,
+  getFinding,
+  getFindingHistory,
+  setFindingStatus,
+  removeFindingHost,
+} from '../services/api';
+import { useToast } from '../contexts/ToastContext';
+import { formatApiError } from '../utils/apiErrors';
+import { DetailSkeleton } from '../components/PageSkeleton';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '../components/ui/select';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '../components/ui/table';
+import { safeFallback } from '../utils/uiStyles';
+
+const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
+  critical: 'severity-critical', high: 'severity-high', medium: 'severity-medium',
+  low: 'severity-low', info: 'muted',
+};
+const STATUS_LABEL: Record<FindingStatus, string> = {
+  open: 'Open', confirmed: 'Confirmed', false_positive: 'False positive',
+  accepted_risk: 'Accepted risk', remediated: 'Remediated', retest: 'Retest',
+};
+const histLabel = (s: string | null) => (s ? STATUS_LABEL[s as FindingStatus] ?? s : '—');
+
+const FindingDetail: React.FC = () => {
+  const { findingId } = useParams<{ findingId: string }>();
+  const id = Number(findingId);
+  const toast = useToast();
+  const navigate = useNavigate();
+
+  const [finding, setFinding] = useState<Finding | null>(null);
+  const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [f, h] = await Promise.all([getFinding(id), getFindingHistory(id)]);
+      setFinding(f);
+      setHistory(h);
+      setError(null);
+    } catch (err) {
+      setError(formatApiError(err, 'Failed to load finding.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const evidenceHref = useMemo(() => {
+    if (!finding || finding.source !== 'note' || !finding.evidence_annotation_id) return null;
+    const host = finding.hosts[0];
+    return host ? `/hosts/${host.host_id}#note-${finding.evidence_annotation_id}` : null;
+  }, [finding]);
+
+  const handleStatus = async (status: FindingStatus) => {
+    if (!finding) return;
+    try {
+      await setFindingStatus(finding.id, status);
+      await load(); // refresh status + history trail together
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update status.'));
+    }
+  };
+
+  const handleRemoveHost = async (hostId: number) => {
+    if (!finding) return;
+    try {
+      const updated = await removeFindingHost(finding.id, hostId);
+      setFinding(updated);
+      toast.success('Host detached from finding.');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to remove host.'));
+    }
+  };
+
+  if (loading) return <DetailSkeleton />;
+  if (error || !finding) {
+    return (
+      <div className="p-md md:p-lg">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/findings')}>
+          <ArrowLeft className="size-4" aria-hidden /> Findings
+        </Button>
+        <p className="mt-md text-destructive">{error || 'Finding not found.'}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-md md:p-lg">
+      <Button variant="ghost" size="sm" onClick={() => navigate('/findings')} className="mb-sm">
+        <ArrowLeft className="size-4" aria-hidden /> Findings
+      </Button>
+
+      <div className="mb-md flex flex-wrap items-start gap-sm">
+        <Badge variant={SEVERITY_VARIANT[finding.severity] as never}>
+          {finding.severity[0].toUpperCase() + finding.severity.slice(1)}
+        </Badge>
+        <h1 className="min-w-0 flex-1 break-words text-page-title font-semibold">{finding.title}</h1>
+      </div>
+
+      <div className="mb-md flex flex-wrap items-center gap-md text-metadata">
+        <div className="flex items-center gap-xs">
+          <span className="text-muted-foreground">Status</span>
+          <Select value={finding.status} onValueChange={(v) => handleStatus(v as FindingStatus)}>
+            <SelectTrigger className="h-7 w-[10rem] text-caption" aria-label="Finding status">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <span><span className="text-muted-foreground">Owner</span> {safeFallback(finding.owner_name, 'Unassigned')}</span>
+        <span><span className="text-muted-foreground">Source</span> {finding.source}</span>
+        {evidenceHref && (
+          <Link to={evidenceHref} className="inline-flex items-center gap-xxs text-info hover:underline">
+            Evidence thread <ExternalLink className="size-3" aria-hidden />
+          </Link>
+        )}
+      </div>
+
+      <Card className="mb-md">
+        <CardHeader><CardTitle>Affected hosts ({finding.host_count})</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table className="table-fixed">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Host</TableHead>
+                  <TableHead className="w-16" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {finding.hosts.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={2} className="py-lg text-center text-muted-foreground">
+                      No hosts attached.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  finding.hosts.map((h) => (
+                    <TableRow key={h.host_id}>
+                      <TableCell className="truncate">
+                        <Link to={`/hosts/${h.host_id}`} className="font-mono text-info hover:underline">
+                          {h.ip_address || `Host ${h.host_id}`}
+                        </Link>
+                        {h.hostname && <span className="ml-xs text-caption text-muted-foreground">{h.hostname}</span>}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost" size="icon"
+                          onClick={() => handleRemoveHost(h.host_id)}
+                          aria-label={`Detach ${h.ip_address || h.host_id} from finding`}
+                        >
+                          <Trash2 className="size-4" aria-hidden />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Disposition history</CardTitle></CardHeader>
+        <CardContent>
+          {history.length === 0 ? (
+            <p className="text-caption text-muted-foreground">No status changes recorded yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-sm">
+              {history.map((r) => (
+                <li key={r.id} className="border-l-2 border-border pl-sm">
+                  <div className="text-metadata">
+                    <span className="text-muted-foreground">{histLabel(r.from_status)}</span>
+                    {' → '}<span className="font-medium">{histLabel(r.to_status)}</span>
+                  </div>
+                  <div className="text-caption text-muted-foreground">
+                    {safeFallback(r.changed_by_name, 'Unknown')} · {new Date(r.created_at).toLocaleString()}
+                  </div>
+                  {r.summary && <p className="mt-xxs whitespace-pre-wrap text-caption">{r.summary}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+export default FindingDetail;

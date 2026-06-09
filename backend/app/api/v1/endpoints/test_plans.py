@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.session import get_db
 from app.db.models import Host
-from app.db.models_auth import User, APIKey
-from app.db.models_project import Project
+from app.db.models_auth import User, UserRole, APIKey
+from app.db.models_project import Project, ProjectMembership
 from app.db.models_agent import (
     Agent, TestPlan, TestPlanEntry, TestPlanHistory, TestPlanStatus,
     TestEntryPriority, TestPhase, TestEntryStatus,
@@ -192,7 +192,6 @@ class FilterCriteria(BaseModel):
     min_severity: Optional[Literal["critical", "high", "medium", "low"]] = None
     has_critical_vulns: Optional[bool] = None
     has_high_vulns: Optional[bool] = None
-    min_risk_score: Optional[int] = Field(None, ge=0, le=100)
     search: Optional[str] = None
 
 
@@ -515,15 +514,31 @@ def get_test_plan(
         # plan is permanently scoped to the project it was generated under;
         # viewing from a different project context would otherwise hide it
         # behind a generic 404 with no way for the user to find it.
+        #
+        # But only reveal the owning project to a caller who can actually
+        # reach it (global admin or a member of that project).  Otherwise
+        # the hint leaks cross-tenant existence + the owning project id to
+        # anyone enumerating plan ids, so fall through to a generic 404.
         other = db.query(TestPlan.project_id).filter(TestPlan.id == plan_id).first()
         if other:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Test plan #{plan_id} belongs to a different project "
-                    f"(project #{other[0]}). Switch to that project to view it."
-                ),
+            other_pid = other[0]
+            caller_can_see = _user.role == UserRole.ADMIN or (
+                db.query(ProjectMembership.id)
+                .filter(
+                    ProjectMembership.project_id == other_pid,
+                    ProjectMembership.user_id == _user.id,
+                )
+                .first()
+                is not None
             )
+            if caller_can_see:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Test plan #{plan_id} belongs to a different project "
+                        f"(project #{other_pid}). Switch to that project to view it."
+                    ),
+                )
         raise HTTPException(status_code=404, detail="Test plan not found")
 
     progress = svc.get_progress(plan.id)
@@ -847,30 +862,21 @@ def rotate_test_plan_key(
             detail="This plan has no associated agent; rotating a key would create an unbound credential.",
         )
 
-    # Revoke every currently-active key for this plan.  A failed rotation
-    # leaves the old key intact (transaction rolls back); a successful one
-    # leaves exactly one active key (the new one).
-    db.query(APIKey).filter(
-        APIKey.test_plan_id == plan.id,
-        APIKey.is_active.is_(True),
-    ).update({"is_active": False}, synchronize_session=False)
-
-    raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    new_key = APIKey(
-        agent_id=plan.agent_id,
-        test_plan_id=plan.id,
-        name=f"plan-{plan.id}",
-        key_hash=key_hash,
-        key_prefix=raw_key[:14],
-        # /rotate-key uses the deployment default; for a non-default
-        # TTL on rotation, callers should use /renew-key on the
-        # active key instead — that endpoint accepts ttl_hours
-        # explicitly.  Keeping the rotate path body-less preserves
-        # backward compatibility with existing UI buttons.
-        expires_at=resolve_expires_at(None),
+    # Revoke-then-mint through the shared helper so a concurrent rotate (or
+    # rotate racing /execute) translates the uq_api_key_plan_active conflict
+    # to 409 instead of a bare 500.  A failed rotation leaves the old key
+    # intact (transaction rolls back); a successful one leaves exactly one
+    # active key (the new one).  /rotate-key uses the deployment-default TTL;
+    # for a non-default TTL, callers should use /renew-key instead.
+    raw_key = _mint_plan_agent_key(
+        db, agent=plan.agent, plan=plan, name=f"plan-{plan.id}",
     )
-    db.add(new_key)
+    new_key = (
+        db.query(APIKey)
+        .filter(APIKey.test_plan_id == plan.id, APIKey.is_active.is_(True))
+        .order_by(APIKey.id.desc())
+        .first()
+    )
     db.commit()
     db.refresh(new_key)
 
@@ -1664,6 +1670,7 @@ def _mint_plan_agent_key(
     agent: Agent,
     plan: TestPlan,
     name_suffix: str = "",
+    name: Optional[str] = None,
 ) -> str:
     """Mint a fresh per-plan agent API key; return the plaintext key.
 
@@ -1674,6 +1681,13 @@ def _mint_plan_agent_key(
     ``/resume`` left the previous key usable, two live keys would let
     two agents write into the same execution session.  Mirrors the
     revoke-then-mint pattern of the key-regenerate endpoint.
+
+    Flushes the revoke + insert here and translates a partial-unique-index
+    violation (``uq_api_key_plan_active``) into 409 so every caller —
+    /execute, /resume, /rotate-key, /resume-generation — gets the same
+    concurrency semantics instead of a bare 500 when two key-minting
+    requests race on a backend where the plan row lock is a no-op (SQLite)
+    or where no lock is taken (rotate).
     """
     db.query(APIKey).filter(
         APIKey.test_plan_id == plan.id,
@@ -1685,12 +1699,23 @@ def _mint_plan_agent_key(
         APIKey(
             agent_id=agent.id,
             test_plan_id=plan.id,
-            name=f"exec-plan-{plan.id}{name_suffix}",
+            name=name or f"exec-plan-{plan.id}{name_suffix}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
             expires_at=resolve_expires_at(None),
         )
     )
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Another agent key became active for this plan "
+                "concurrently. Refresh and retry."
+            ),
+        ) from exc
     return raw_key
 
 

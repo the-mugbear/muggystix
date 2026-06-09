@@ -47,6 +47,10 @@ interface AgentActivityLogProps {
   /** Initial index into the status preset list.  0 = All, 1 = 2xx,
    *  2 = 4xx, 3 = 5xx (see STATUS_PRESETS). */
   defaultStatusPreset?: number;
+  /** Whether the feed starts scoped to the current user's own agents.
+   *  Defaults to true so one operator's calls aren't lost in a
+   *  project-wide firehose; the in-tab toggle flips to "All". */
+  defaultMineOnly?: boolean;
 }
 
 const STATUS_PRESETS: Array<{ label: string; min?: number; max?: number }> = [
@@ -177,10 +181,26 @@ const ExpandableRow: React.FC<{ row: AgentApiCallRow }> = ({ row }) => {
             </span>
           ) : null}
         </TableCell>
+        <TableCell className="w-32 min-w-0">
+          {/* Owner attribution — who engaged this agent.  Truncated; the
+              agent name rides along in the tooltip. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="truncate block max-w-full text-caption">
+                {row.owner_username ?? '—'}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {row.agent_name
+                ? `${row.owner_username ?? 'unknown owner'} · ${row.agent_name}`
+                : (row.owner_username ?? 'unknown owner')}
+            </TooltipContent>
+          </Tooltip>
+        </TableCell>
       </TableRow>
       {open && (
         <TableRow>
-          <TableCell colSpan={7} className="bg-accent p-md">
+          <TableCell colSpan={8} className="bg-accent p-md">
             <div className="flex flex-col gap-xs">
               <DetailLine label="Full path" value={row.path} mono />
               <DetailLine
@@ -231,6 +251,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   subtitle,
   defaultMethodFilter = '',
   defaultStatusPreset = 0,
+  defaultMineOnly = true,
 }) => {
   const [rows, setRows] = useState<AgentApiCallRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -239,6 +260,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   const [statusPreset, setStatusPreset] = useState(defaultStatusPreset);
   const [methodFilter, setMethodFilter] = useState(defaultMethodFilter);
   const [targetIpFilter, setTargetIpFilter] = useState('');
+  const [mineOnly, setMineOnly] = useState(defaultMineOnly);
   const [limit] = useState(100);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
@@ -252,11 +274,12 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
     const f: AgentActivityFilters = { limit };
     if (methodFilter) f.method = methodFilter;
     if (debouncedTargetIp.trim()) f.target_ip = debouncedTargetIp.trim();
+    if (mineOnly) f.mine = true;
     const preset = STATUS_PRESETS[statusPreset];
     if (preset.min != null) f.status_min = preset.min;
     if (preset.max != null) f.status_max = preset.max;
     return f;
-  }, [methodFilter, debouncedTargetIp, statusPreset, limit]);
+  }, [methodFilter, debouncedTargetIp, mineOnly, statusPreset, limit]);
 
   const fetchActivity = useCallback(async () => {
     setLoading(true);
@@ -335,6 +358,21 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
             </Select>
           </div>
           <div className="min-w-28">
+            <Label htmlFor="agent-activity-owner">Agents</Label>
+            <Select
+              value={mineOnly ? 'mine' : 'all'}
+              onValueChange={(v) => setMineOnly(v === 'mine')}
+            >
+              <SelectTrigger id="agent-activity-owner">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="mine">My agents</SelectItem>
+                <SelectItem value="all">All agents</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-28">
             <Label htmlFor="agent-activity-method">Method</Label>
             <Select value={methodFilter || 'any'} onValueChange={(v) => setMethodFilter(v === 'any' ? '' : v)}>
               <SelectTrigger id="agent-activity-method">
@@ -384,6 +422,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
                 <TableHead className="w-20">Status</TableHead>
                 <TableHead className="w-24">Duration</TableHead>
                 <TableHead>Hosts / IPs</TableHead>
+                <TableHead className="w-32">Owner</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -392,10 +431,17 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
               ))}
               {!loading && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-md text-metadata text-muted-foreground">
+                  <TableCell colSpan={8} className="py-md text-metadata text-muted-foreground">
                     No matching API calls. The agent may not have started this{' '}
                     {source.kind === 'plan' ? 'plan' : 'recon session'} yet, or your filters
                     excluded every call.
+                    {mineOnly && (
+                      <>
+                        {' '}You're viewing only your own agents — switch{' '}
+                        <span className="font-medium">Agents → All agents</span> to see
+                        everyone's.
+                      </>
+                    )}
                   </TableCell>
                 </TableRow>
               )}

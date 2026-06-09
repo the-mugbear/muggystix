@@ -9,23 +9,8 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import text
 
 from app.db.models import Host, Scope, Subnet, HostSubnetMapping, HostScanHistory
-from app.parsers.subnet_parser import SubnetParser
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Module-level trie cache — shared across all service instances so we only
-# rebuild after subnets actually change.
-# ---------------------------------------------------------------------------
-_trie_cache: "SubnetParser | None" = None
-_trie_cache_version: int = 0
-
-
-def _invalidate_global_trie():
-    global _trie_cache, _trie_cache_version
-    _trie_cache = None
-    _trie_cache_version += 1
 
 
 class SubnetCorrelationService:
@@ -35,24 +20,6 @@ class SubnetCorrelationService:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def correlate_host_to_subnets(self, host: Host) -> List[HostSubnetMapping]:
-        """Correlate a single host to all matching subnets."""
-        self.db.query(HostSubnetMapping).filter(
-            HostSubnetMapping.host_id == host.id
-        ).delete()
-
-        parser = self._get_parser()
-        matching = parser.find_matching_subnets(host.ip_address)
-
-        mappings = []
-        for subnet in matching:
-            mapping = HostSubnetMapping(host_id=host.id, subnet_id=subnet.id)
-            self.db.add(mapping)
-            mappings.append(mapping)
-
-        self.db.commit()
-        return mappings
 
     def correlate_all_hosts_to_subnets(self, project_id: int = None) -> int:
         """Correlate every host in the database.  Uses the fast batch path."""
@@ -85,15 +52,14 @@ class SubnetCorrelationService:
         return [m.host for m in mappings]
 
     def invalidate_subnet_cache(self):
-        _invalidate_global_trie()
-
-    def get_performance_stats(self) -> dict:
-        parser = self._get_parser()
-        return {
-            "total_subnets": self.db.query(Subnet).count(),
-            "total_mappings": self.db.query(HostSubnetMapping).count(),
-            "trie_stats": parser.get_trie_stats(),
-        }
+        # No-op: the batch correlation path (_batch_correlate_hosts)
+        # re-queries project-scoped subnets on every call, so there is no
+        # cross-request cache to invalidate.  Retained as a stable no-op
+        # because scopes.py calls it after subnet mutations — kept rather
+        # than churning that caller.  (The former global, cross-project
+        # SubnetParser trie + its single-host correlate path were removed:
+        # the trie ignored project boundaries, and nothing called it.)
+        return None
 
     # ------------------------------------------------------------------
     # Fast batch correlation
@@ -201,19 +167,6 @@ class SubnetCorrelationService:
             len(mapping_set),
         )
         return len(mapping_set)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _get_parser(self) -> SubnetParser:
-        """Return a SubnetParser with a trie backed by the global cache."""
-        global _trie_cache
-        if _trie_cache is None:
-            _trie_cache = SubnetParser(self.db)
-            # Force trie build now so it's cached
-            _trie_cache._get_trie()
-        return _trie_cache
 
 
 def _ip_to_int(ip_str: str) -> int | None:

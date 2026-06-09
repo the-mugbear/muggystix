@@ -114,8 +114,6 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({
     if (filters.subnets) activeFilters.push(`Subnets: ${filters.subnets}`);
     if (filters.has_critical_vulns) activeFilters.push('Critical vulnerabilities');
     if (filters.has_high_vulns) activeFilters.push('High vulnerabilities');
-    if (filters.min_risk_score !== undefined)
-      activeFilters.push(`Min risk score: ${filters.min_risk_score}`);
     if (filters.follow_status) activeFilters.push(`Follow: ${filters.follow_status}`);
     if (filters.out_of_scope_only) activeFilters.push('Out of scope');
     if (filters.scan_ids) activeFilters.push(`Scan IDs: ${filters.scan_ids}`);

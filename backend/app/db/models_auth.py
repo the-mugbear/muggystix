@@ -87,10 +87,10 @@ class User(Base):
     # project annotations; preserving them as "by deleted user" matches
     # the policy of every other audit-shape column in v2.86.2.  DB FK
     # is SET NULL + nullable=True (see host_notes.user_id).
-    # foreign_keys pins this to HostNote.user_id — HostNote also has
+    # foreign_keys pins this to Annotation.user_id — Annotation also has
     # assignee_id (a second FK to users), so the path must be explicit.
-    host_notes = relationship(
-        "HostNote", back_populates="author", foreign_keys="HostNote.user_id",
+    annotations = relationship(
+        "Annotation", back_populates="author", foreign_keys="Annotation.user_id",
     )
 
 
@@ -207,6 +207,19 @@ class APIKey(Base):
         index=True,
     )
 
+    # v2.116.0 — the unified scope binding that replaces the four
+    # workflow-specific FKs above.  A key points at exactly one
+    # AgentSession; its ``workflow`` discriminator + ``plan_id``/``scope_id``
+    # carry what the four columns used to.  Nullable during the expand
+    # phase (backfilled by the migration); the four legacy columns are
+    # dropped in the contract phase once deps + minting read this instead.
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # Key details
     name = Column(String(100), nullable=False)  # Human-readable name
     key_hash = Column(String(255), nullable=False, unique=True)
@@ -225,6 +238,7 @@ class APIKey(Base):
     # Relationships
     user = relationship("User")
     agent = relationship("Agent", foreign_keys=[agent_id])
+    agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
 
 
 class SecurityPolicy(Base):

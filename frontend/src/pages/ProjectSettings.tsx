@@ -279,6 +279,34 @@ const ProjectSettings: React.FC = () => {
     }
   };
 
+  // Project admins (and global admins) can stop another member's agent —
+  // the backend DELETE /agents/{id} already authorises owner-or-project-admin;
+  // this surfaces that kill-switch in the UI so a runaway agent can be
+  // stopped without a DB poke.
+  const isProjectAdmin =
+    user?.role === 'admin' ||
+    members.some((m) => m.user_id === user?.id && m.role === 'admin');
+
+  const handleDeactivateTeamAgent = async (a: AgentResponse) => {
+    const ok = await confirm({
+      title: 'Deactivate agent',
+      body: "This revokes the agent's API key immediately. Any test plans or recon runs still using it will stop working. As a project admin you can stop another member's agent.",
+      resourceName: a.name,
+      severity: 'danger',
+      confirmLabel: 'Deactivate',
+    });
+    if (!ok) return;
+    try {
+      await deactivateAgent(a.id);
+      setAllAgents((prev) =>
+        prev.map((x) => (x.id === a.id ? { ...x, is_active: false } : x)),
+      );
+      toast.success(`Agent "${a.name}" deactivated.`);
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Failed to deactivate agent.'));
+    }
+  };
+
   const handleRotateKey = async () => {
     if (!agent) return;
     const ok = await confirm({
@@ -790,7 +818,7 @@ const ProjectSettings: React.FC = () => {
                     .filter((a) => a.owner_id !== user?.id)
                     .map((a) => (
                       <div key={a.id} className="flex items-center gap-sm text-metadata">
-                        <span>{a.name}</span>
+                        <span className="min-w-0 truncate">{a.name}</span>
                         <Badge variant={a.is_active ? 'success' : 'muted'}>
                           {a.is_active ? 'Active' : 'Inactive'}
                         </Badge>
@@ -800,6 +828,16 @@ const ProjectSettings: React.FC = () => {
                             ? new Date(a.last_activity_at).toLocaleDateString()
                             : 'Never'}
                         </span>
+                        {isProjectAdmin && a.is_active && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="ml-auto text-destructive"
+                            onClick={() => handleDeactivateTeamAgent(a)}
+                          >
+                            Deactivate
+                          </Button>
+                        )}
                       </div>
                     ))}
                 </div>

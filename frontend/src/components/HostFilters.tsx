@@ -16,7 +16,6 @@ import {
   X,
 } from 'lucide-react';
 import type { FollowStatus, HostFilterData } from '../services/api';
-import { RISK_SCORING_ENABLED } from '../config/featureFlags';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
@@ -50,7 +49,6 @@ export interface HostFilterOptions {
   hasHighVulns?: boolean;
   hasExploitAvailable?: boolean;
   hasTestExecution?: boolean;
-  minRiskScore?: number;
   outOfScopeOnly?: boolean;
   scanIds?: string[];
   firstSeenInSelectedScans?: boolean;
@@ -344,7 +342,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       filters.hasHighVulns !== undefined,
       filters.hasExploitAvailable !== undefined,
       filters.hasTestExecution !== undefined,
-      filters.minRiskScore !== undefined,
       (filters.subnets?.length ?? 0) > 0,
       (filters.scanIds?.length ?? 0) > 0,
       filters.firstSeenInSelectedScans === true,
@@ -369,7 +366,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
   // always-visible grid, so they no longer count toward the advanced badge.
   const advancedFiltersActive = useMemo(() => {
     return [
-      filters.minRiskScore !== undefined,
       (filters.portStates?.length ?? 0) > 0,
       filters.hasWebInterface !== undefined,
       (filters.tech?.length ?? 0) > 0,
@@ -524,10 +520,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
     : filters.hasWebInterface === false
       ? 'No web interface'
       : 'Web interface: any';
-
-  const minRiskScoreInvalid =
-    filters.minRiskScore !== undefined &&
-    (filters.minRiskScore < 0 || filters.minRiskScore > 100);
 
   return (
     <Card className="mb-md">
@@ -882,46 +874,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
 
         {advancedOpen && (
           <div id="host-filters-advanced" className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
-            {/* Min risk score — hidden while risk scoring is broken
-                (HostRiskAssessment unpopulated).  Gated on
-                featureFlags.RISK_SCORING_ENABLED; re-enable there when risk
-                scoring is reworked.  See TODO.md.  Plumbing (state, URL
-                param, API param) is left intact and dormant. */}
-            {RISK_SCORING_ENABLED && (
-              <div className="space-y-xxs">
-                <Label htmlFor="hosts-filter-min-risk">Min risk score</Label>
-                <Input
-                  id="hosts-filter-min-risk"
-                  type="number"
-                  min={0}
-                  max={100}
-                  placeholder="0–100"
-                  value={filters.minRiskScore ?? ''}
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    if (raw === '') {
-                      handleFilterChange('minRiskScore', undefined);
-                      return;
-                    }
-                    const parsed = parseInt(raw, 10);
-                    if (Number.isNaN(parsed)) return;
-                    const clamped = Math.max(0, Math.min(100, parsed));
-                    handleFilterChange('minRiskScore', clamped);
-                  }}
-                  aria-invalid={minRiskScoreInvalid || undefined}
-                  aria-label="Minimum risk score filter (0-100)"
-                />
-                <p
-                  className={cn(
-                    'text-caption',
-                    minRiskScoreInvalid ? 'text-destructive' : 'text-muted-foreground',
-                  )}
-                >
-                  {minRiskScoreInvalid ? 'Must be between 0 and 100' : 'Risk score 0-100'}
-                </p>
-              </div>
-            )}
-
             {/* Port states */}
             <div className="space-y-xxs">
               <Label htmlFor="hosts-filter-port-states" id="hosts-filter-port-states-label">Port states</Label>

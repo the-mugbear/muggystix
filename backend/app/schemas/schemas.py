@@ -82,7 +82,7 @@ class HostFollowInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class HostNoteBase(BaseModel):
+class AnnotationBase(BaseModel):
     # Cap free-form text at 16 KB.  A realistic triage note is under
     # 1 KB; the ceiling exists so a copy-pasted pentest report or a
     # stuck client loop can't insert multi-megabyte rows into the DB.
@@ -90,7 +90,7 @@ class HostNoteBase(BaseModel):
     status: NoteStatus = NoteStatus.open
 
 
-class HostNote(HostNoteBase):
+class Annotation(AnnotationBase):
     id: int
     author_id: Optional[int] = Field(None, validation_alias="user_id")
     author_name: Optional[str] = None
@@ -102,6 +102,9 @@ class HostNote(HostNoteBase):
     note_type: Optional[str] = None
     resolution_summary: Optional[str] = None
     pinned: bool = False
+    # Set when this thread root has been promoted to a finding — drives the
+    # note's "promoted" badge + link and guards a duplicate promote.
+    finding_id: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     # Audit finding H3: optional warning populated by the
@@ -146,12 +149,12 @@ class HostFollowUpdate(BaseModel):
     status: FollowStatus
 
 
-class HostNoteCreate(HostNoteBase):
+class AnnotationCreate(AnnotationBase):
     status: NoteStatus = NoteStatus.open
     parent_id: Optional[int] = None
 
 
-class HostNoteUpdate(BaseModel):
+class AnnotationUpdate(BaseModel):
     body: Optional[str] = Field(None, max_length=16384)
     status: Optional[NoteStatus] = None
     # Thread-level work fields (P3). The endpoint uses ``model_fields_set``
@@ -163,7 +166,7 @@ class HostNoteUpdate(BaseModel):
     pinned: Optional[bool] = None
 
 
-class HostNoteStatusHistoryEntry(BaseModel):
+class AnnotationStatusHistoryEntry(BaseModel):
     id: int
     from_status: Optional[str] = None
     to_status: str
@@ -246,8 +249,10 @@ class HostDiscovery(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class HostReviewer(BaseModel):
-    """Another user (not the caller) who has this host In Review.
-    v4.9.1 — drives the Hosts-list "In review · <name>" indicator."""
+    """Another user (not the caller) who has this host In Review.  Drives the
+    Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only by
+    design — the caller's own status is shown by the row's Follow control, so
+    including the caller produced a duplicate badge."""
     user_id: int
     name: str
 
@@ -277,7 +282,7 @@ class Host(HostBase):
     vulnerability_summary: Optional[HostVulnerabilitySummary] = None
     vulnerabilities: List[HostVulnerability] = []
     follow: Optional[HostFollowInfo] = None
-    notes: List[HostNote] = []
+    notes: List[Annotation] = []
     note_count: int = 0
     test_plan_entry_count: int = 0
     # v2.81.0 — count of TestExecutionResult rows recorded against this
@@ -287,9 +292,10 @@ class Host(HostBase):
     # from `test_plan_entry_count`, which only means "host is in a
     # plan" — i.e. planned, not necessarily executed).
     test_execution_count: int = 0
-    # v4.9.1 — other users who have this host In Review (caller
-    # excluded; the caller's own follow is on `follow`).  Empty for the
-    # host-detail endpoint, populated by the list endpoint's batch query.
+    # v4.9.1 — OTHER users (not the caller) who have this host In Review.
+    # Teammates-only by design: the caller's own status is on the Follow
+    # control, so including the caller duplicated the badge.  Empty for the
+    # host-detail endpoint; populated by the list endpoint's batch query.
     other_reviewers: List[HostReviewer] = []
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to
@@ -297,6 +303,10 @@ class Host(HostBase):
     # 2) to render a "Web" badge.  Populated by the host-detail
     # endpoint; the list endpoint can populate via a batch query.
     web_interface_count: int = 0
+    # Foundation 6d — count of ACTIVE findings affecting this host (open /
+    # confirmed / retest); drives the Hosts-list finding badge.  Populated by
+    # the list endpoint's batch query.
+    finding_count: int = 0
     # v2.45.7: count of NetExec credentialed-enumeration rows observed
     # on this host.  Gates the HostInspector NetExec card.
     netexec_result_count: int = 0
@@ -534,6 +544,8 @@ class SubnetLabelInfo(BaseModel):
 class SubnetBase(BaseModel):
     cidr: str = Field(..., max_length=64)
     description: Optional[str] = Field(None, max_length=1024)
+    # Physical/logical site this subnet belongs to (e.g. "London DC").
+    site: Optional[str] = Field(None, max_length=255)
 
 class Subnet(SubnetBase):
     id: int
@@ -610,6 +622,7 @@ class SubnetCreate(SubnetBase):
 class SubnetUpdate(BaseModel):
     cidr: Optional[str] = Field(None, max_length=64)
     description: Optional[str] = Field(None, max_length=1024)
+    site: Optional[str] = Field(None, max_length=255)
 
 
 class SubnetBatchCreate(BaseModel):

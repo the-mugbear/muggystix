@@ -32,10 +32,10 @@ TEST_USER_PW_HASH = get_password_hash(TEST_USER_PASSWORD)
 from app.db import (  # noqa: F401  (side-effect imports)
     models_agent,
     models_auth,
+    models_findings,
     models_integrations,
     models_llm,
     models_project,
-    models_risk,
     models_vulnerability,
 )
 

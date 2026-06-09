@@ -1,7 +1,8 @@
 import React from 'react';
-import { Reply, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Flag, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
-import type { HostNote, NoteStatus } from '../../services/api';
+import type { Annotation, NoteStatus } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import {
@@ -49,9 +50,9 @@ export interface NoteStatusMeta {
 
 export interface NoteThreadProps {
   /** Top-level notes (depth=0).  Each one starts its own thread. */
-  topLevel: HostNote[];
+  topLevel: Annotation[];
   /** Map of parent_id → reply array, sorted oldest-first by the parent. */
-  repliesByParent: Record<number, HostNote[]>;
+  repliesByParent: Record<number, Annotation[]>;
   /** Display metadata per note status — owned by HostInspector. */
   noteStatusMeta: Record<NoteStatus, NoteStatusMeta>;
   /** Active reply target (which note is being replied to) + composed body. */
@@ -65,10 +66,14 @@ export interface NoteThreadProps {
   noteActionId: number | null;
   onUpdateNoteStatus: (noteId: number, status: NoteStatus) => void;
   onDeleteNote: (noteId: number) => void;
+  /** Promote a root note into a finding (omit to hide the affordance). */
+  onPromoteNote?: (noteId: number) => void;
+  /** Edit a root note's work fields (type/assignee/due/pin). Omit to hide. */
+  onEditDetails?: (note: Annotation) => void;
 }
 
 interface NoteRowProps extends Omit<NoteThreadProps, 'topLevel'> {
-  note: HostNote;
+  note: Annotation;
   depth: number;
 }
 
@@ -86,6 +91,8 @@ const NoteRow: React.FC<NoteRowProps> = ({
   noteActionId,
   onUpdateNoteStatus,
   onDeleteNote,
+  onPromoteNote,
+  onEditDetails,
 }) => {
   const isReply = depth > 0;
   const statusMeta = noteStatusMeta[note.status];
@@ -109,6 +116,11 @@ const NoteRow: React.FC<NoteRowProps> = ({
             {!isReply && note.pinned && <Badge variant="warning">Pinned</Badge>}
             {!isReply && note.note_type && (
               <Badge variant="outline" className="capitalize">{note.note_type}</Badge>
+            )}
+            {!isReply && note.finding_id && (
+              <Link to={`/findings/${note.finding_id}`} aria-label="View the finding promoted from this note">
+                <Badge variant="info" className="hover:underline">Promoted → finding</Badge>
+              </Link>
             )}
             <span className="text-metadata font-semibold">{authorLabel}</span>
             <span className="text-caption text-muted-foreground">
@@ -159,6 +171,36 @@ const NoteRow: React.FC<NoteRowProps> = ({
               </TooltipTrigger>
               <TooltipContent>Reply</TooltipContent>
             </Tooltip>
+            {!isReply && onEditDetails && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onEditDetails(note)}
+                    aria-label="Edit note details (type, assignee, due date, pin)"
+                  >
+                    <SlidersHorizontal className="size-4" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Type · assignee · due · pin</TooltipContent>
+              </Tooltip>
+            )}
+            {!isReply && onPromoteNote && !note.finding_id && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onPromoteNote(note.id)}
+                    aria-label="Promote note to finding"
+                  >
+                    <Flag className="size-4" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Promote to finding</TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

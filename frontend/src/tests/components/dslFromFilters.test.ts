@@ -8,15 +8,13 @@ describe('dslFromFilters', () => {
       osFilter: 'linux',
       hasCriticalVulns: true,
       hasOpenPorts: true,
-      minRiskScore: 80,
     });
     expect(dsl).toContain('port:80,443');
     expect(dsl).toContain('os:linux');
     expect(dsl).toContain('has:critical');
     expect(dsl).toContain('has:open_ports');
-    expect(dsl).toContain('risk:80');
     expect(consumedKeys).toEqual(
-      expect.arrayContaining(['ports', 'osFilter', 'hasCriticalVulns', 'hasOpenPorts', 'minRiskScore']),
+      expect.arrayContaining(['ports', 'osFilter', 'hasCriticalVulns', 'hasOpenPorts']),
     );
   });
 

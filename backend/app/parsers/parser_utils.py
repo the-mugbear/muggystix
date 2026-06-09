@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -10,6 +11,8 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
+
+logger = logging.getLogger(__name__)
 from app.db.models_vulnerability import (
     Vulnerability,
     VulnerabilitySeverity,
@@ -84,6 +87,46 @@ def parse_host_port_token(token: str) -> Tuple[Optional[str], Optional[int], Opt
 
 
 def persist_host_observation(
+    *,
+    dedup_service: HostDeduplicationService,
+    scan_id: int,
+    ip_address: str,
+    hostname: Optional[str] = None,
+    state: str = "up",
+    ports: Optional[Iterable[Dict[str, Any]]] = None,
+    host_data: Optional[Dict[str, Any]] = None,
+    project_id: Optional[int] = None,
+    isolate: bool = False,
+) -> Optional[Tuple[models.Host, Dict[Tuple[int, str], models.Port]]]:
+    """Persist one host observation (+ its ports).
+
+    ``isolate=True`` wraps the write in a SAVEPOINT and skips (rollback +
+    return None) on any error, so one malformed observation can't roll back
+    the whole upload — the per-record isolation the lower-volume parsers
+    (naabu/amass/dirbuster) want.  Callers that pass it ignore the return.
+    """
+    if isolate:
+        sp = dedup_service.db.begin_nested()
+        try:
+            result = _persist_host_observation_inner(
+                dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
+                hostname=hostname, state=state, ports=ports, host_data=host_data,
+                project_id=project_id,
+            )
+            sp.commit()
+            return result
+        except Exception as exc:  # noqa: BLE001 — isolate one bad observation
+            sp.rollback()
+            logger.warning("Skipping host observation %s: %s", ip_address, exc)
+            return None
+    return _persist_host_observation_inner(
+        dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
+        hostname=hostname, state=state, ports=ports, host_data=host_data,
+        project_id=project_id,
+    )
+
+
+def _persist_host_observation_inner(
     *,
     dedup_service: HostDeduplicationService,
     scan_id: int,
@@ -213,10 +256,17 @@ def upsert_vulnerability(
     query = db.query(Vulnerability).filter(
         Vulnerability.host_id == host_id,
         Vulnerability.source == source,
-        Vulnerability.title == title,
     )
     if plugin_id:
+        # A plugin/NVT id is a stable identifier — dedup on it and treat the
+        # title as an UPDATABLE attribute.  Keying on title too (the old
+        # behaviour) wrote a duplicate when the same NVT reported a slightly
+        # different name across rows (e.g. OpenVAS name vs the "OpenVAS
+        # finding" fallback).  Matches the Nessus path, which keys on plugin_id.
         query = query.filter(Vulnerability.plugin_id == plugin_id)
+    else:
+        # No stable id — fall back to the title as the discriminator.
+        query = query.filter(Vulnerability.title == title)
     if port_id is None:
         query = query.filter(Vulnerability.port_id.is_(None))
     else:
@@ -227,6 +277,9 @@ def upsert_vulnerability(
         existing.last_seen = datetime.utcnow()
         existing.scan_id = scan_id
         existing.severity = severity
+        # Title can change across scans for the same plugin_id — keep latest.
+        if title:
+            existing.title = title
         existing.cvss_score = cvss_score
         existing.description = description or existing.description
         existing.cve_id = cve_id or existing.cve_id

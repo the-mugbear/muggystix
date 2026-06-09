@@ -171,39 +171,8 @@ class TestRoleBasedAccess:
         assert response.status_code == 403
 
 
-# ================================================================== #
-#  4. Risk endpoint contracts                                         #
-# ================================================================== #
-
-class TestRiskEndpoints:
-
-    def test_risk_summary_structure(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/risk/hosts/risk-summary")
-        assert response.status_code == 200
-        data = response.json()
-        assert "has_data" in data
-        assert "empty_state" in data
-
-    def test_high_risk_hosts_structure(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/risk/hosts/high-risk")
-        assert response.status_code == 200
-        data = response.json()
-        assert "hosts" in data
-        assert "has_data" in data
-        assert "total_high_risk" in data
-        assert "empty_state" in data
-
-    def test_vulnerability_stats_structure(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/risk/vulnerability-stats")
-        assert response.status_code == 200
-        data = response.json()
-        assert "vulnerability_distribution" in data
-        assert "hosts_with_vulnerabilities" in data
-        assert "top_cves" in data
-
-    def test_assess_risk_nonexistent_host_returns_404(self, client, test_project):
-        response = client.post(f"/api/v1/projects/{test_project.id}/risk/hosts/999/assess-risk")
-        assert response.status_code == 404
+# (The risk-endpoint contract tests were removed with the dead
+#  risk-scoring subsystem.)
 
 
 # ================================================================== #

@@ -25,7 +25,6 @@ import {
   X,
 } from 'lucide-react';
 import { ColumnDef, ExpandedState, Row, RowSelectionState } from '@tanstack/react-table';
-import { RISK_SCORING_ENABLED } from '../config/featureFlags';
 import {
   getHosts,
   getHostFilterData,
@@ -56,6 +55,7 @@ import {
   getScanLabel,
   getTopServices,
   useHostColumns,
+  type HostFilterPivot,
 } from '../components/hosts/useHostColumns';
 import ReportsDialog from '../components/ReportsDialog';
 import ToolReadyOutput from '../components/ToolReadyOutput';
@@ -65,6 +65,7 @@ import { PORTS_OF_INTEREST_SET, PORTS_OF_INTEREST } from '../utils/portsOfIntere
 import { getHostWebLinks } from '../utils/webLinks';
 import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
+import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { useConfirm } from '../hooks/useConfirm';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -148,7 +149,6 @@ type HostQueryContext = {
   has_high_vulns?: boolean;
   has_exploit_available?: boolean;
   has_test_execution?: boolean;
-  min_risk_score?: number;
   out_of_scope_only?: boolean;
   follow_status?: string;
   scan_ids?: string;
@@ -487,7 +487,6 @@ export default function Hosts() {
     if (filters.hasHighVulns !== undefined) params.has_high_vulns = filters.hasHighVulns;
     if (filters.hasExploitAvailable !== undefined) params.has_exploit_available = filters.hasExploitAvailable;
     if (filters.hasTestExecution !== undefined) params.has_test_execution = filters.hasTestExecution;
-    if (filters.minRiskScore !== undefined) params.min_risk_score = filters.minRiskScore;
     if (filters.outOfScopeOnly) params.out_of_scope_only = filters.outOfScopeOnly;
     if (followFilter !== 'all') params.follow_status = followFilter;
     if (filters.scanIds?.length) params.scan_ids = filters.scanIds.join(',');
@@ -659,7 +658,7 @@ export default function Hosts() {
       'port_states', 'scan_ids', 'tags', 'subnet_labels', 'out_of_scope_only',
       'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'has_critical_vulns',
       'has_high_vulns', 'has_exploit_available', 'has_test_execution',
-      'min_risk_score', 'has_web_interface', 'tech', 'follow_status', 'follow',
+      'has_web_interface', 'tech', 'follow_status', 'follow',
       'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
     ];
     const urlIsAuthoritative = HOST_URL_PARAMS.some((p) => urlParams.has(p));
@@ -759,13 +758,6 @@ export default function Hosts() {
       initialFilters.hasTestExecution = urlParams.get('has_test_execution') === 'true';
     } else if (savedState?.filters?.hasTestExecution !== undefined) {
       initialFilters.hasTestExecution = savedState.filters.hasTestExecution;
-    }
-
-    if (urlParams.has('min_risk_score')) {
-      const score = Number(urlParams.get('min_risk_score'));
-      if (!Number.isNaN(score)) initialFilters.minRiskScore = score;
-    } else if (savedState?.filters?.minRiskScore !== undefined) {
-      initialFilters.minRiskScore = savedState.filters.minRiskScore;
     }
 
     if (urlParams.has('has_web_interface')) {
@@ -1003,7 +995,6 @@ export default function Hosts() {
   // The command bar passes its current draft so a just-typed query is
   // reflected immediately (its commit to filters.query is also debounced).
   const handleCopyLink = useCallback((draftQuery?: string) => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     const ctx = buildHostQueryContext();
     if (draftQuery !== undefined) {
       const trimmed = draftQuery.trim();
@@ -1017,9 +1008,11 @@ export default function Hosts() {
     });
     const query = sp.toString();
     const url = `${window.location.origin}${window.location.pathname}${query ? `?${query}` : ''}`;
-    navigator.clipboard.writeText(url)
-      .then(() => toast.info('Link copied to clipboard', { autoHideMs: 2000 }))
-      .catch(() => toast.error('Could not copy link'));
+    void copyToClipboard(url).then((ok) =>
+      ok
+        ? toast.info('Link copied to clipboard', { autoHideMs: 2000 })
+        : toast.error('Could not copy link'),
+    );
   }, [buildHostQueryContext, toast]);
 
   // Pin the current query as a saved view.  Commit the passed draft into
@@ -1071,6 +1064,12 @@ export default function Hosts() {
   // reachable via the "Open standalone" link inside the sheet, or by
   // bookmark / deep link.
   const [inspectedHostId, setInspectedHostId] = useState<number | null>(null);
+
+  // Keyboard row cursor for the list (1c).  -1 = no cursor yet.  j/k (and
+  // arrows) move it and Enter opens the host; when the inspector is already
+  // open, j/k advance IT instead (reusing stepInspector), so an operator can
+  // fly through hosts reviewing each in the side-sheet without the mouse.
+  const [cursorIndex, setCursorIndex] = useState(-1);
 
   const openInspector = (hostId: number) => {
     if (typeof window !== 'undefined') {
@@ -1153,6 +1152,64 @@ export default function Hosts() {
     const target = hosts[inspectedIndex + delta];
     if (target) setInspectedHostId(target.id);
   };
+
+  // A fresh result set (page turn) invalidates the row cursor.
+  useEffect(() => {
+    setCursorIndex(-1);
+  }, [page]);
+
+  // Keep the cursor row in view as it moves below/above the fold.  The
+  // cursor row carries a `host-cursor-row` marker class (see getRowClassName)
+  // so we can find it without threading a ref through DataTableShell.
+  useEffect(() => {
+    if (cursorIndex < 0 || typeof document === 'undefined') return;
+    document.querySelector('.host-cursor-row')?.scrollIntoView({ block: 'nearest' });
+  }, [cursorIndex]);
+
+  // List keyboard navigation (1c).  Global listener with an input guard so
+  // it never hijacks typing in the search / command bar / note composer, and
+  // an Enter guard so it doesn't double-fire on a focused button/link.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+      if ((tag === 'BUTTON' || tag === 'A') && (e.key === 'Enter' || e.key === ' ')) return;
+      if (loading || hosts.length === 0) return;
+
+      // Inspector open → j/k advance the side-sheet; arrows stay free to
+      // scroll its content.
+      if (inspectedHostId !== null) {
+        if (e.key === 'j') {
+          e.preventDefault();
+          stepInspector(1);
+        } else if (e.key === 'k') {
+          e.preventDefault();
+          stepInspector(-1);
+        }
+        return;
+      }
+
+      // List cursor.
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCursorIndex((c) => Math.min((c < 0 ? -1 : c) + 1, hosts.length - 1));
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCursorIndex((c) => (c <= 0 ? 0 : c - 1));
+      } else if (e.key === 'Enter' && cursorIndex >= 0 && cursorIndex < hosts.length) {
+        e.preventDefault();
+        openInspector(hosts[cursorIndex].id);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // openInspector/stepInspector are recreated each render but close over the
+    // same `hosts`/inspectedHostId we depend on, so re-attaching on those is
+    // enough to keep them fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosts, inspectedHostId, loading, cursorIndex]);
 
   const applyFollowUpdate = (hostId: number, followInfo: HostFollowInfo | null) => {
     setHosts((previous) =>
@@ -1330,15 +1387,6 @@ export default function Hosts() {
         label: 'Has been tested',
         onDelete: () => clearFilterKey('hasTestExecution'),
       });
-    // Risk-score filter hidden while risk scoring is broken (see
-    // featureFlags.RISK_SCORING_ENABLED / TODO.md) — don't surface its chip
-    // even if a min_risk_score lingers in the URL.
-    if (RISK_SCORING_ENABLED && filters.minRiskScore !== undefined)
-      chips.push({
-        key: 'minRiskScore',
-        label: `Min risk score ≥ ${filters.minRiskScore}`,
-        onDelete: () => clearFilterKey('minRiskScore'),
-      });
     if (filters.outOfScopeOnly)
       chips.push({
         key: 'outOfScopeOnly',
@@ -1399,6 +1447,27 @@ export default function Hosts() {
   // DataTable columns — extracted to useHostColumns hook (v2.43.0 — MONO-1).
   // -------------------------------------------------------------------------
 
+  // Pivot-from-cell: clicking a tag / service / OS value in a row narrows
+  // the list to hosts sharing it, by merging into the structured filters the
+  // HostFilters panel already drives (so the new filter shows up there too).
+  const handleAddFilter = useCallback((pivot: HostFilterPivot) => {
+    setFilters((prev) => {
+      if (pivot.kind === 'tag') {
+        if (prev.tags?.includes(pivot.value)) return prev;
+        return { ...prev, tags: [...(prev.tags ?? []), pivot.value] };
+      }
+      if (pivot.kind === 'service') {
+        if (prev.services?.includes(pivot.value)) return prev;
+        return { ...prev, services: [...(prev.services ?? []), pivot.value] };
+      }
+      // OS is a single-value filter — replace.
+      if (prev.osFilter === pivot.value) return prev;
+      return { ...prev, osFilter: pivot.value };
+    });
+    setPage(0);
+    toast.info(`Filtered to ${pivot.kind === 'os' ? 'OS' : pivot.kind} "${pivot.value}"`, { autoHideMs: 2000 });
+  }, [setFilters, setPage, toast]);
+
   const baseColumns = useHostColumns({
     updatingHostId,
     onFollowChange: handleFollowChange,
@@ -1408,6 +1477,7 @@ export default function Hosts() {
     // (DataTableShell convenience), but the row itself is no longer
     // focusable — semantically wrong as a link.
     onOpen: openInspector,
+    onAddFilter: handleAddFilter,
   });
 
   // v2.71.0 — prepend a checkbox column to drive the bulk-action bar.
@@ -1420,6 +1490,15 @@ export default function Hosts() {
     () => Object.keys(rowSelection).filter((id) => rowSelection[id]).map(Number),
     [rowSelection],
   );
+
+  // IPs for the explicitly-checked rows (resolved against the loaded page),
+  // for the bulk "Copy IPs" target-list action.  Page-scoped on purpose:
+  // "select all matching" spans rows we haven't fetched, so the bulk bar
+  // disables Copy IPs in that mode and points to the Tool-Ready export.
+  const selectedIps = useMemo(() => {
+    const idSet = new Set(selectedIds);
+    return hosts.filter((h) => idSet.has(h.id)).map((h) => h.ip_address);
+  }, [selectedIds, hosts]);
 
   const table = useDataTable<Host>({
     data: hosts,
@@ -1450,7 +1529,7 @@ export default function Hosts() {
   // Render
   // ---------------------------------------------------------------------------
 
-  const renderFollowChip = (label: string, value: 'all' | FollowStatus, badgeClass?: string) => {
+  const renderFollowChip = (label: string, value: 'all' | 'none' | FollowStatus, badgeClass?: string) => {
     const active = followFilter === value;
     return (
       <button
@@ -1666,6 +1745,9 @@ export default function Hosts() {
           >
             <span className="text-caption text-muted-foreground">Follow status:</span>
             {renderFollowChip('All', 'all')}
+            {/* "Not reviewed" = no follow record for you (follow:none) — the
+                hosts you haven't touched. Was only in the filters card. */}
+            {renderFollowChip('Not reviewed', 'none')}
             {FOLLOW_STATUS_OPTIONS.map((option) =>
               renderFollowChip(option.label, option.value, option.badgeClass),
             )}
@@ -1819,6 +1901,7 @@ export default function Hosts() {
           {selectedIds.length > 0 && (
             <HostBulkBar
               selectedIds={selectedIds}
+              selectedIps={selectedIps}
               totalMatching={totalHosts}
               queryContext={exportQueryContext}
               onClear={() => setRowSelection({})}
@@ -1933,9 +2016,11 @@ export default function Hosts() {
                         updating={updatingHostId === host.id}
                         onChange={(status) => handleFollowChange(host.id, status)}
                       />
-                      {/* v4.9.1 — teammate-review indicator: a host
-                          another operator has marked In Review, so you
-                          see it's already covered before picking it up.
+                      {/* v4.9.1 — review indicator: any operator (a
+                          teammate OR you) has this host In Review, so the
+                          whole team sees coverage at a glance.  Backend now
+                          includes the caller's own in-review, so this also
+                          shows your name on hosts you reviewed.
                           v4.25.1 — `max-w-full overflow-hidden` +
                           `shrink-0` on the icon clamp the badge to the
                           card width so a long reviewer name truncates
@@ -2002,11 +2087,15 @@ export default function Hosts() {
               // v4.45.0 — left-border accent on rows that have had at
               // least one agentic test executed against them
               // (test_execution_count > 0). Hover surfaces the count
-              // as a native title tooltip.
+              // as a native title tooltip.  The keyboard cursor row (1c)
+              // also gets a highlight + a `host-cursor-row` marker class
+              // the scroll-into-view effect keys off.
               getRowClassName={(row) =>
-                (row.original.test_execution_count ?? 0) > 0
-                  ? 'border-l-4 border-l-info'
-                  : undefined
+                cn(
+                  (row.original.test_execution_count ?? 0) > 0 && 'border-l-4 border-l-info',
+                  row.index === cursorIndex &&
+                    'host-cursor-row bg-accent ring-1 ring-inset ring-ring',
+                ) || undefined
               }
               getRowTitle={(row) => {
                 const n = row.original.test_execution_count ?? 0;

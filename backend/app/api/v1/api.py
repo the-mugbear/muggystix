@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends
 from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
-    host_queries,
+    host_queries, findings,
     webhooks, dashboard, upload,
-    scopes, subnet_labels, export, dns, parse_errors, reports, auth, risk,
+    scopes, subnet_labels, export, dns, parse_errors, reports, auth,
     audit, users, projects, notifications,
     portfolio, agents, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
@@ -23,6 +23,10 @@ from app.api.v1.endpoints import (
     coverage,
     # Refactor P2 — batched Operations workbench + since-last-visit cursor.
     workbench,
+    # Site-metrics arc P1 — project "needs help" attention model.
+    attention,
+    # Site-metrics arc P1.5 — Site entity management (tier / owner / coverage).
+    sites,
     # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
     recon_sessions,
     # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
@@ -114,6 +118,7 @@ project_router.include_router(scans.router, prefix="/scans", tags=["scans"])
 project_router.include_router(hosts.router, prefix="/hosts", tags=["hosts"])
 project_router.include_router(host_follow.router, prefix="/hosts", tags=["host-follow"])
 project_router.include_router(host_notes.router, prefix="/hosts", tags=["host-notes"])
+project_router.include_router(findings.router, prefix="", tags=["findings"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])
 project_router.include_router(host_bulk.router, prefix="/hosts", tags=["host-bulk"])
 project_router.include_router(host_filter_views.router, prefix="/hosts", tags=["host-filter-views"])
@@ -121,6 +126,8 @@ project_router.include_router(host_queries.router, prefix="/hosts", tags=["host-
 project_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 project_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 project_router.include_router(workbench.router, prefix="/workbench", tags=["workbench"])
+project_router.include_router(attention.router, prefix="/attention", tags=["attention"])
+project_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 # v2.86.0 — subnet labels share the /scopes prefix so URLs read as
 # /projects/{pid}/scopes/subnet-labels and
 # /projects/{pid}/scopes/subnets/{sid}/labels.  Separate file from
@@ -136,7 +143,6 @@ project_router.include_router(export.router, prefix="/export", tags=["export"])
 project_router.include_router(dns.router, prefix="/dns", tags=["dns"])
 project_router.include_router(parse_errors.router, prefix="/parse-errors", tags=["parse-errors"])
 project_router.include_router(reports.router, prefix="/reports", tags=["reports"])
-project_router.include_router(risk.router, prefix="/risk", tags=["risk"])
 project_router.include_router(agents.router, prefix="/agents", tags=["agents"])
 project_router.include_router(test_plans.router, prefix="/test-plans", tags=["test-plans"])
 # Offline-bundle sub-surface carved out of test_plans.py — same prefix so the

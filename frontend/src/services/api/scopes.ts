@@ -35,6 +35,8 @@ export interface Subnet {
   scope_id: number;
   cidr: string;
   description: string | null;
+  // Physical/logical site this subnet belongs to (e.g. "London DC").
+  site?: string | null;
   created_at: string;
   // v2.86.0 — subnet labels attached to this row.  Optional in the
   // type because older API responses (pre-2.86.0) don't include the
@@ -152,8 +154,21 @@ export const getScopes = async (): Promise<ScopeSummary[]> => {
   return response.data;
 };
 
-export const getScope = async (scopeId: number, withFindingsOnly: boolean = false): Promise<Scope> => {
-  const response = await api.get(`${p()}/scopes/${scopeId}?with_findings_only=${withFindingsOnly}`);
+export const getScope = async (
+  scopeId: number,
+  opts: { withFindingsOnly?: boolean; subnetsSkip?: number; subnetsLimit?: number; subnetsSearch?: string } = {},
+): Promise<Scope> => {
+  // Kept in sync with the backend GET /scopes/{id} contract (which mirrors
+  // /scopes/default's pagination + subnets_search params).  Currently unused
+  // by the single-default-scope UI, which calls getDefaultScope.
+  const params = new URLSearchParams();
+  params.set('with_findings_only', String(opts.withFindingsOnly ?? false));
+  if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
+  if (opts.subnetsLimit !== undefined) params.set('subnets_limit', String(opts.subnetsLimit));
+  if (opts.subnetsSearch && opts.subnetsSearch.trim()) {
+    params.set('subnets_search', opts.subnetsSearch.trim());
+  }
+  const response = await api.get(`${p()}/scopes/${scopeId}?${params.toString()}`);
   return response.data;
 };
 
@@ -164,12 +179,20 @@ export const getScope = async (scopeId: number, withFindingsOnly: boolean = fals
  * guaranteed target to append entries to.
  */
 export const getDefaultScope = async (
-  opts: { subnetsSkip?: number; subnetsLimit?: number; withFindingsOnly?: boolean } = {},
+  opts: {
+    subnetsSkip?: number;
+    subnetsLimit?: number;
+    withFindingsOnly?: boolean;
+    subnetsSearch?: string;
+  } = {},
 ): Promise<Scope> => {
   const params = new URLSearchParams();
   if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
   if (opts.subnetsLimit !== undefined) params.set('subnets_limit', String(opts.subnetsLimit));
   if (opts.withFindingsOnly !== undefined) params.set('with_findings_only', String(opts.withFindingsOnly));
+  if (opts.subnetsSearch && opts.subnetsSearch.trim()) {
+    params.set('subnets_search', opts.subnetsSearch.trim());
+  }
   const qs = params.toString();
   const response = await api.get<Scope>(`${p()}/scopes/default${qs ? `?${qs}` : ''}`);
   return response.data;
@@ -204,7 +227,7 @@ export const addScopeSubnets = async (
 export const updateSubnet = async (
   scopeId: number,
   subnetId: number,
-  body: { cidr?: string; description?: string },
+  body: { cidr?: string; description?: string; site?: string },
 ): Promise<SubnetEntry> => {
   const response = await api.patch<SubnetEntry>(`${p()}/scopes/${scopeId}/subnets/${subnetId}`, body);
   return response.data;

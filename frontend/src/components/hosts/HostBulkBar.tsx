@@ -8,7 +8,7 @@
  * up from the client).
  */
 import React, { useEffect, useState } from 'react';
-import { Loader2, Tag as TagIcon, UserPlus, Eye, X } from 'lucide-react';
+import { Loader2, Tag as TagIcon, UserPlus, Eye, X, Copy, Check } from 'lucide-react';
 import {
   HostTagWithCount,
   ProjectMember,
@@ -23,6 +23,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
+import { copyToClipboard } from '../../utils/clipboard';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -47,6 +48,8 @@ import {
 interface HostBulkBarProps {
   /** Host ids selected on the current page. */
   selectedIds: number[];
+  /** IPs of the explicitly-checked rows (page-scoped) for "Copy IPs". */
+  selectedIps: string[];
   /** Total hosts matching the active filters (for "select all"). */
   totalMatching: number;
   /** Filter params for the current view — feeds GET /hosts/ids. */
@@ -74,6 +77,7 @@ interface PendingAction {
 
 const HostBulkBar: React.FC<HostBulkBarProps> = ({
   selectedIds,
+  selectedIps,
   totalMatching,
   queryContext,
   onClear,
@@ -84,6 +88,22 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const [allMatching, setAllMatching] = useState(false);
   const [working, setWorking] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  const [copiedIps, setCopiedIps] = useState(false);
+
+  // Copy the explicitly-checked rows' IPs as a newline-delimited target
+  // list — the core "feed these to an external tool" loop.  Page-scoped:
+  // in select-all-matching mode the IPs of unfetched rows aren't on the
+  // client, so this is disabled there in favour of the Tool-Ready export.
+  const copyIps = async () => {
+    const ok = await copyToClipboard(selectedIps.join('\n'));
+    if (ok) {
+      setCopiedIps(true);
+      window.setTimeout(() => setCopiedIps(false), 1500);
+      toast.success(`Copied ${selectedIps.length} IP${selectedIps.length === 1 ? '' : 's'}`, { autoHideMs: 2000 });
+    } else {
+      toast.error('Could not copy to clipboard.');
+    }
+  };
 
   const [tags, setTags] = useState<HostTagWithCount[]>([]);
   const [members, setMembers] = useState<ProjectMember[]>([]);
@@ -201,6 +221,22 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
 
       <div className="ml-auto flex flex-wrap items-center gap-xs">
         {working && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+
+        {/* Copy IPs — quick target-list to clipboard for external tools. */}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={copyIps}
+          disabled={working || allMatching || selectedIps.length === 0}
+          title={
+            allMatching
+              ? 'Copy works on the explicitly checked rows — use Export → Tool-Ready for all matching hosts.'
+              : 'Copy the selected IPs as a newline-separated list'
+          }
+        >
+          {copiedIps ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+          Copy IPs
+        </Button>
 
         {/* Tags */}
         <Popover>

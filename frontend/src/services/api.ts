@@ -35,6 +35,7 @@ export * from './api/coverage';
 export * from './api/dashboard';
 export * from './api/execution-sessions';
 export * from './api/feedback';
+export * from './api/findings';
 export * from './api/hosts';
 export * from './api/integrations';
 export * from './api/llm-providers';
@@ -47,6 +48,7 @@ export * from './api/references';
 export * from './api/scans';
 export * from './api/scopes';
 export * from './api/shared';
+export * from './api/sites';
 export * from './api/test-plans';
 export * from './api/uploads';
 
@@ -389,7 +391,6 @@ export const generateHostsReport = async (
     subnets?: string;
     has_critical_vulns?: boolean;
     has_high_vulns?: boolean;
-    min_risk_score?: number;
     follow_status?: string;
     out_of_scope_only?: boolean;
     scan_ids?: string;
@@ -448,7 +449,6 @@ export const getToolReadyOutput = async (
     has_high_vulns?: boolean;
     has_exploit_available?: boolean;
     has_test_execution?: boolean;
-    min_risk_score?: number;
     follow_status?: string;
     out_of_scope_only?: boolean;
     scan_ids?: string;

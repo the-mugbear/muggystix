@@ -92,6 +92,12 @@ def _load_assist_session(db: Session, request: Request) -> AssistSession:
                 f"session via the BlueStick UI to continue."
             ),
         )
+    # Defence-in-depth: the session must belong to the same project as the
+    # authenticating key's agent (guards a corrupted/hand-edited api_keys row
+    # that paired an agent with another project's session).
+    scoped_project = getattr(request.state, "scoped_agent_project_id", None)
+    if scoped_project is not None and session.project_id != scoped_project:
+        raise HTTPException(status_code=403, detail="Assist session does not belong to this project")
     return session
 
 
@@ -312,7 +318,6 @@ def list_assist_hosts(
     subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),
-    min_risk_score: Optional[int] = Query(None, ge=0, le=100),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
@@ -341,7 +346,6 @@ def list_assist_hosts(
         subnets=subnets,
         has_critical_vulns=has_critical_vulns,
         has_high_vulns=has_high_vulns,
-        min_risk_score=min_risk_score,
         search=search,
     )
     hosts = q.order_by(models.Host.ip_address).offset(offset).limit(limit).all()

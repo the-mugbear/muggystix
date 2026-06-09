@@ -177,6 +177,44 @@ export const getMyTasks = async (limit = 15): Promise<MyTasksResponse> => {
   return response.data;
 };
 
+// --- My Notes / My Findings (P0 — My Work resume pass) ---
+
+export interface MyNoteItem {
+  note_id: number;
+  host_id: number | null;
+  host_ip: string | null;
+  host_hostname: string | null;
+  body_preview: string;
+  note_type: string | null; // observation|finding|question|decision|action|handoff
+  status: string;
+  due_at: string | null;
+  is_overdue: boolean;
+  updated_at: string | null;
+}
+
+export interface MyNotesResponse {
+  items: MyNoteItem[];
+  total_open: number;
+  handoff_count: number;
+  overdue_count: number;
+}
+
+export interface MyFindingItem {
+  finding_id: number;
+  title: string;
+  severity: string;
+  status: string;
+  host_id: number | null;
+  host_count: number;
+  evidence_annotation_id: number | null;
+  updated_at: string | null;
+}
+
+export interface MyFindingsResponse {
+  items: MyFindingItem[];
+  total_open: number;
+}
+
 // --- Operations workbench (batched personal surface + since-last-visit) ---
 
 export interface SinceLastVisit {
@@ -194,12 +232,69 @@ export interface SinceLastVisit {
 export interface WorkbenchResponse {
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
+  my_notes: MyNotesResponse;
+  my_findings: MyFindingsResponse;
   team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;
 }
 
 export const getWorkbench = async (): Promise<WorkbenchResponse> => {
   const response = await api.get(`${p()}/workbench`);
+  return response.data;
+};
+
+// --- Project attention ("needs help") model — site-metrics arc P1 ---
+
+export interface ProjectAttention {
+  project_id: number;
+  exposure: {
+    raw_score: number;
+    active_findings: number;
+    by_severity: { critical: number; high: number; medium: number; low: number; info: number };
+  };
+  neglect: {
+    scan_count: number;
+    scan_staleness_days: number | null;
+    unowned_active_findings: number;
+    unreviewed_hosts: number;
+    total_hosts: number;
+  };
+  recommended_action: {
+    kind: 'onboard' | 'scan' | 'triage' | 'remediate' | 'review' | 'ok';
+    text: string;
+  };
+}
+
+export const getProjectAttention = async (): Promise<ProjectAttention> => {
+  const response = await api.get(`${p()}/attention`);
+  return response.data;
+};
+
+export interface SiteAttentionEntry {
+  site: string | null;
+  site_id: number | null;
+  unassigned: boolean;
+  criticality_tier: number | null;
+  host_count: number;
+  expected_host_count: number | null;
+  coverage_gap: number | null;
+  exposure: {
+    raw_score: number;
+    weighted_score: number;
+    active_findings: number;
+    by_severity: { critical: number; high: number; medium: number; low: number; info: number };
+  };
+  neglect: { unowned_active_findings: number; unreviewed_hosts: number };
+  recommended_action: { kind: string; text: string };
+}
+
+export interface SiteAttention {
+  adopted: boolean;
+  sites: SiteAttentionEntry[];
+}
+
+export const getSiteAttention = async (): Promise<SiteAttention> => {
+  const response = await api.get(`${p()}/attention/sites`);
   return response.data;
 };
 

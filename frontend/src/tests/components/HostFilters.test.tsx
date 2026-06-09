@@ -39,8 +39,8 @@ describe('HostFilters layout', () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     // Genuinely-advanced filters stay behind the disclosure.
-    // (The "Min risk score" filter is currently hidden entirely via
-    // featureFlags.RISK_SCORING_ENABLED — risk scoring is broken; see TODO.md.)
+    // (The "Min risk score" filter was removed with the dead risk-scoring
+    // subsystem.)
     expect(screen.queryByText('Port states')).not.toBeInTheDocument();
   });
 

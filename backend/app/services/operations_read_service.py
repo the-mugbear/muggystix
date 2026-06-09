@@ -20,7 +20,7 @@ cycle and the aggregations are unit-testable without a request.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -28,11 +28,17 @@ from sqlalchemy import and_, case, desc, distinct, false, func, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import FollowStatus, HostFollow
+from app.db.models import Annotation, FollowStatus, HostFollow, NoteStatus
 from app.db.models_agent import TestPlan, TestPlanEntry
 from app.db.models_auth import User
+from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
 from app.services.vulnerability_service import VulnerabilityService
+
+# Findings still demanding work — excludes the terminal dispositions
+# (false_positive / accepted_risk / remediated).  Mirrors the host
+# finding_count badge so the two surfaces agree on "active".
+ACTIVE_FINDING_STATUSES = ("open", "confirmed", "retest")
 
 logger = logging.getLogger(__name__)
 
@@ -439,3 +445,198 @@ def compute_my_tasks(
     return MyTasksResponse(
         items=items, total_open=total_open, reason_counts=reason_counts,
     )
+
+
+# ---------------------------------------------------------------------------
+# My Notes — annotation threads assigned to the caller
+# ---------------------------------------------------------------------------
+
+class MyNoteItem(BaseModel):
+    """One assigned note thread — a durable unit of work the caller owns.
+
+    ``host_id`` is the thread's target host (notes are host-scoped in the
+    UI); the client deep-links to ``/hosts/{host_id}#note-{note_id}`` so the
+    analyst lands back in the exact discussion."""
+    note_id: int
+    host_id: Optional[int] = None
+    host_ip: Optional[str] = None
+    host_hostname: Optional[str] = None
+    body_preview: str
+    note_type: Optional[str] = None  # observation|finding|question|decision|action|handoff
+    status: str
+    due_at: Optional[datetime] = None
+    is_overdue: bool = False
+    updated_at: Optional[datetime] = None
+
+
+class MyNotesResponse(BaseModel):
+    items: List[MyNoteItem] = Field(default_factory=list)
+    total_open: int = 0
+    handoff_count: int = 0
+    overdue_count: int = 0
+
+
+def compute_my_assigned_notes(
+    db: Session, current_user: User, project: Project, limit: int = 15,
+) -> MyNotesResponse:
+    """Return the caller's assigned, unresolved note threads in this project.
+
+    Scoped to host-targeted thread roots (``parent_id IS NULL`` — the work
+    fields assignee/due/type live on the root): notes are assigned via the
+    host inspector, so host-scoping covers the real workflow.  Ordered
+    overdue-first, then by soonest due date (nulls last), then most recently
+    updated — the resume signal an analyst actually triages on.
+    """
+    now = datetime.now(timezone.utc)
+    base = (
+        db.query(Annotation, models.Host)
+        .join(models.Host, Annotation.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id == project.id,
+            Annotation.parent_id.is_(None),
+            Annotation.assignee_id == current_user.id,
+            Annotation.status != NoteStatus.RESOLVED,
+        )
+    )
+
+    overdue_cond = and_(Annotation.due_at.isnot(None), Annotation.due_at < now)
+    # Compute is_overdue in the DB (not Python) so it's dialect-correct and
+    # consistent with the ordering/counts — and so a tz-naive value stored by
+    # SQLite doesn't blow up a naive-vs-aware Python comparison.
+    rows = (
+        base.add_columns(overdue_cond.label("is_overdue"))
+        .order_by(
+            desc(overdue_cond),                         # overdue first
+            Annotation.due_at.is_(None),                # then dated before undated
+            Annotation.due_at.asc(),                    # soonest due first
+            desc(Annotation.updated_at),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    items = [
+        MyNoteItem(
+            note_id=note.id,
+            host_id=host.id,
+            host_ip=host.ip_address,
+            host_hostname=host.hostname,
+            body_preview=(note.body or "").strip().splitlines()[0][:120] if (note.body or "").strip() else "",
+            note_type=note.note_type,
+            status=getattr(note.status, "value", note.status),
+            due_at=note.due_at,
+            is_overdue=bool(is_overdue),
+            updated_at=note.updated_at,
+        )
+        for note, host, is_overdue in rows
+    ]
+
+    # Totals (independent of limit) in one grouped pass.
+    counts = (
+        db.query(
+            func.count(Annotation.id).label("total"),
+            func.count(case((Annotation.note_type == "handoff", Annotation.id))).label("handoff"),
+            func.count(case((overdue_cond, Annotation.id))).label("overdue"),
+        )
+        .join(models.Host, Annotation.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id == project.id,
+            Annotation.parent_id.is_(None),
+            Annotation.assignee_id == current_user.id,
+            Annotation.status != NoteStatus.RESOLVED,
+        )
+        .one()
+    )
+    return MyNotesResponse(
+        items=items,
+        total_open=counts.total or 0,
+        handoff_count=counts.handoff or 0,
+        overdue_count=counts.overdue or 0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# My Findings — active findings the caller owns
+# ---------------------------------------------------------------------------
+
+class MyFindingItem(BaseModel):
+    """One active finding the caller owns.  ``host_id`` is a representative
+    affected host (for a host-context link); ``evidence_annotation_id`` lets
+    the client deep-link to the originating note thread when present."""
+    finding_id: int
+    title: str
+    severity: str
+    status: str
+    host_id: Optional[int] = None
+    host_count: int = 0
+    evidence_annotation_id: Optional[int] = None
+    updated_at: Optional[datetime] = None
+
+
+class MyFindingsResponse(BaseModel):
+    items: List[MyFindingItem] = Field(default_factory=list)
+    total_open: int = 0
+
+
+def compute_my_findings(
+    db: Session, current_user: User, project: Project, limit: int = 15,
+) -> MyFindingsResponse:
+    """Return the caller's owned, active findings in this project, severity-
+    ranked.  One representative affected host + host_count are resolved in a
+    single grouped query (no per-finding N+1)."""
+    severity_rank = case(
+        (Finding.severity == "critical", 0),
+        (Finding.severity == "high", 1),
+        (Finding.severity == "medium", 2),
+        (Finding.severity == "low", 3),
+        (Finding.severity == "info", 4),
+        else_=5,
+    )
+    base_filters = (
+        Finding.project_id == project.id,
+        Finding.owner_id == current_user.id,
+        Finding.status.in_(ACTIVE_FINDING_STATUSES),
+    )
+    findings = (
+        db.query(Finding)
+        .filter(*base_filters)
+        .order_by(severity_rank, desc(Finding.updated_at))
+        .limit(limit)
+        .all()
+    )
+    finding_ids = [f.id for f in findings]
+
+    # host_count per finding + one representative host_id, in one query.
+    host_count: dict = {}
+    rep_host: dict = {}
+    if finding_ids:
+        for fid, cnt, min_host in (
+            db.query(
+                FindingHost.finding_id,
+                func.count(FindingHost.host_id),
+                func.min(FindingHost.host_id),
+            )
+            .filter(FindingHost.finding_id.in_(finding_ids))
+            .group_by(FindingHost.finding_id)
+            .all()
+        ):
+            host_count[fid] = int(cnt)
+            rep_host[fid] = min_host
+
+    items = [
+        MyFindingItem(
+            finding_id=f.id,
+            title=f.title,
+            severity=f.severity,
+            status=f.status,
+            host_id=rep_host.get(f.id),
+            host_count=host_count.get(f.id, 0),
+            evidence_annotation_id=f.evidence_annotation_id,
+            updated_at=f.updated_at,
+        )
+        for f in findings
+    ]
+    total_open = (
+        db.query(func.count(Finding.id)).filter(*base_filters).scalar() or 0
+    )
+    return MyFindingsResponse(items=items, total_open=total_open)

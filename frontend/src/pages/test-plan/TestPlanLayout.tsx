@@ -968,11 +968,6 @@ const TestPlanLayout: React.FC = () => {
                   {plan.filter_criteria.has_high_vulns && (
                     <Badge variant="warning">Only high vulnerabilities</Badge>
                   )}
-                  {plan.filter_criteria.min_risk_score != null && (
-                    <Badge variant="outline">
-                      Min risk score ≥ {plan.filter_criteria.min_risk_score}
-                    </Badge>
-                  )}
                   {plan.filter_criteria.search && (
                     <Badge variant="outline">Search: {plan.filter_criteria.search}</Badge>
                   )}

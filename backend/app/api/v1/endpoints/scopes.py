@@ -3,12 +3,13 @@ import os
 import tempfile
 from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query, Request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel, Field
 from app.db import models
 from app.db.session import get_db
-from app.db.models import Scope, Subnet, HostSubnetMapping
+from app.db.models import Scope, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment, Site
+from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_project, require_project_role
@@ -89,6 +90,29 @@ def get_or_create_default_scope(db: Session, project_id: int, user_id: Optional[
     db.refresh(scope)
     return scope
 
+
+def _get_or_create_site(db: Session, project_id: int, name: Optional[str], user_id: Optional[int], cache: Optional[dict] = None) -> Optional[Site]:
+    """Get-or-create the project's Site for ``name`` (blank → None).
+
+    Keyed by (project_id, name) so the Site metadata (criticality tier / owner
+    / expected host count) attaches to the human-entered site name set from
+    CSV col 4 or inline edit — keeping subnet.site_id in sync with the string.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    if cache is not None and name in cache:
+        return cache[name]
+    site = db.query(Site).filter(Site.project_id == project_id, Site.name == name).first()
+    if site is None:
+        site = Site(project_id=project_id, name=name, created_by_id=user_id)
+        db.add(site)
+        db.flush()
+    if cache is not None:
+        cache[name] = site
+    return site
+
+
 @router.post("/upload-subnets", response_model=SubnetFileUploadResponse, dependencies=[Depends(require_project_role(ProjectRole.ANALYST))])
 async def upload_subnet_file(
     file: UploadFile = File(...),
@@ -138,37 +162,118 @@ async def upload_subnet_file(
             detail="File must be UTF-8 encoded text"
         )
 
+    # .csv → row-per-subnet with optional space-delimited labels in column 2;
+    # .txt → flat CIDR list (no labels).  Both normalize identically.
+    is_csv = file.filename.lower().endswith('.csv')
     try:
         parser = SubnetParser(db)
-        cidrs = parser.parse_cidr_list(file_content)
+        if is_csv:
+            entries = parser.parse_subnet_csv(file_content)
+        else:
+            entries = [(c, [], "", "") for c in parser.parse_cidr_list(file_content)]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if len(cidrs) > MAX_SUBNETS_PER_UPLOAD:
+    if len(entries) > MAX_SUBNETS_PER_UPLOAD:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"File contains {len(cidrs):,} CIDR entries; "
+                f"File contains {len(entries):,} subnet entries; "
                 f"maximum per upload is {MAX_SUBNETS_PER_UPLOAD:,}. "
                 f"Split the file into smaller uploads or use the manual "
                 f"Add Subnet flow for individual entries."
             ),
         )
 
-    # Resolve (or create) the project's single scope and append the
-    # parsed entries to it.  Duplicates are skipped silently.
+    # Resolve (or create) the project's single scope.  Subnets dedup by cidr
+    # (never a duplicate row); labels merge (add, never replace) so repeated
+    # uploads accumulate labels onto the same subnet.
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
-    existing_cidrs = {
-        row.cidr
-        for row in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
+    existing_subnets = {
+        s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
     }
     added = 0
-    for cidr in cidrs:
-        if cidr in existing_cidrs:
+    descriptions_set = 0
+    sites_set = 0
+    site_cache: dict = {}  # name -> Site, get-or-created once per upload
+    for cidr, _labels, description, site in entries:
+        site_obj = _get_or_create_site(db, project.id, site, current_user.id, site_cache) if site else None
+        sub = existing_subnets.get(cidr)
+        if sub is None:
+            sub = Subnet(
+                cidr=cidr, scope_id=scope.id,
+                description=(description or None),
+                site=(site or None), site_id=(site_obj.id if site_obj else None),
+            )
+            db.add(sub)
+            existing_subnets[cidr] = sub
+            added += 1
+            if description:
+                descriptions_set += 1
+            if site:
+                sites_set += 1
+        else:
+            # Update description/site on an existing subnet when the CSV
+            # provides them (empty cols leave the existing values intact).
+            if description:
+                sub.description = description
+                descriptions_set += 1
+            if site:
+                sub.site = site
+                sub.site_id = site_obj.id if site_obj else None
+                sites_set += 1
+    # One flush for the whole batch — populates .id on every pending Subnet
+    # (the existing_subnets map holds live object refs) for the label
+    # assignments below.  Avoids a per-row round-trip (and a regression on the
+    # label-less .txt path, which never flushed in the loop before).
+    db.flush()
+
+    # Labels: get-or-create the project label, then add only assignments that
+    # don't already exist (the uq_subnet_label_assignment dedup, applied in
+    # code) — existing labels on a subnet are left intact.
+    label_cache: dict = {}
+
+    def _get_label(name: str) -> SubnetLabel:
+        lbl = label_cache.get(name)
+        if lbl is None:
+            lbl = (
+                db.query(SubnetLabel)
+                .filter(SubnetLabel.project_id == project.id, SubnetLabel.name == name)
+                .first()
+            )
+            if lbl is None:
+                lbl = SubnetLabel(project_id=project.id, name=name, created_by_id=current_user.id)
+                db.add(lbl)
+                db.flush()
+            label_cache[name] = lbl
+        return lbl
+
+    affected_ids = [existing_subnets[c].id for c, _, _, _ in entries]
+    existing_assignments = set()
+    if affected_ids:
+        for sid, lid in (
+            db.query(SubnetLabelAssignment.subnet_id, SubnetLabelAssignment.label_id)
+            .filter(SubnetLabelAssignment.subnet_id.in_(affected_ids))
+            .all()
+        ):
+            existing_assignments.add((sid, lid))
+
+    labels_applied = 0
+    for cidr, label_names, _description, _site in entries:
+        if not label_names:
             continue
-        db.add(Subnet(cidr=cidr, scope_id=scope.id))
-        existing_cidrs.add(cidr)
-        added += 1
+        sub = existing_subnets[cidr]
+        for name in label_names:
+            lbl = _get_label(name)
+            key = (sub.id, lbl.id)
+            if key in existing_assignments:
+                continue
+            db.add(SubnetLabelAssignment(
+                subnet_id=sub.id, label_id=lbl.id, created_by_id=current_user.id,
+            ))
+            existing_assignments.add(key)
+            labels_applied += 1
+
     db.commit()
 
     correlation_service = SubnetCorrelationService(db)
@@ -179,10 +284,16 @@ async def upload_subnet_file(
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("Subnet correlation after upload failed: %s", exc)
 
-    skipped = len(cidrs) - added
+    skipped = len(entries) - added
     message = f"Added {added} subnet(s) to the project scope"
     if skipped > 0:
         message += f" ({skipped} duplicate{'s' if skipped != 1 else ''} skipped)"
+    if labels_applied > 0:
+        message += f"; applied {labels_applied} label assignment{'s' if labels_applied != 1 else ''}"
+    if descriptions_set > 0:
+        message += f"; set {descriptions_set} description{'s' if descriptions_set != 1 else ''}"
+    if sites_set > 0:
+        message += f"; set {sites_set} site{'s' if sites_set != 1 else ''}"
     if correlated_hosts is not None:
         message += f"; correlated {correlated_hosts} host-subnet relationships"
 
@@ -199,16 +310,33 @@ def _serialize_scope_with_subnets(
     with_findings_only: bool,
     subnets_skip: int,
     subnets_limit: Optional[int],
+    subnets_search: Optional[str] = None,
 ) -> dict:
     """Build the ScopeSchema payload with a server-paginated subnets array.
 
     Shared by ``GET /scopes/default`` and ``GET /scopes/{scope_id}``.
     ``with_findings_only`` restricts to subnets with at least one correlated
     host; ``subnets_limit`` (when set) caps the page so a 6000+ subnet project
-    doesn't ship a multi-MB body.  ``subnets_total`` always carries the
-    unpaginated count so the frontend can drive a 'load more' affordance.
+    doesn't ship a multi-MB body.  ``subnets_search`` (case-insensitive
+    substring over cidr + description) lets the UI jump straight to an entry
+    instead of paging to find it.  ``subnets_total`` always carries the count
+    of the *filtered* set so the frontend's "Showing N of T" + 'load more'
+    affordance stay correct under search.
     """
+    # Build the search predicate once so it's applied identically to the page
+    # query AND the count query — otherwise subnets_total would describe the
+    # full set while subnets shows the filtered page.
+    search_filter = None
+    if subnets_search and subnets_search.strip():
+        like = f"%{escape_like(subnets_search.strip())}%"
+        search_filter = or_(
+            Subnet.cidr.ilike(like, escape="\\"),
+            Subnet.description.ilike(like, escape="\\"),
+        )
+
     subnet_q = db.query(Subnet).filter(Subnet.scope_id == scope.id)
+    if search_filter is not None:
+        subnet_q = subnet_q.filter(search_filter)
     if with_findings_only:
         subnet_q = (
             subnet_q
@@ -216,22 +344,22 @@ def _serialize_scope_with_subnets(
             .group_by(Subnet.id)
             .having(func.count(HostSubnetMapping.id) > 0)
         )
-        subnets_total_count = (
+        total_q = (
             db.query(func.count(func.distinct(Subnet.id)))
             .select_from(Subnet)
             .outerjoin(HostSubnetMapping)
             .filter(Subnet.scope_id == scope.id)
             .group_by(Subnet.id)
             .having(func.count(HostSubnetMapping.id) > 0)
-            .count()
         )
+        if search_filter is not None:
+            total_q = total_q.filter(search_filter)
+        subnets_total_count = total_q.count()
     else:
-        subnets_total_count = (
-            db.query(func.count(Subnet.id))
-            .filter(Subnet.scope_id == scope.id)
-            .scalar()
-            or 0
-        )
+        total_q = db.query(func.count(Subnet.id)).filter(Subnet.scope_id == scope.id)
+        if search_filter is not None:
+            total_q = total_q.filter(search_filter)
+        subnets_total_count = total_q.scalar() or 0
 
     subnet_q = subnet_q.order_by(Subnet.id.asc()).offset(subnets_skip)
     if subnets_limit is not None:
@@ -275,6 +403,13 @@ def get_default_scope(
             "subnets_total to drive a 'load more' affordance."
         ),
     ),
+    subnets_search: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring filter over subnet cidr + description. "
+            "Applied before pagination, and reflected in subnets_total."
+        ),
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
@@ -290,7 +425,7 @@ def get_default_scope(
     """
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
     return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit
+        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
     )
 
 
@@ -446,6 +581,13 @@ def get_scope(
             "subnets_total to drive a 'load more' affordance."
         ),
     ),
+    subnets_search: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring filter over subnet cidr + description. "
+            "Applied before pagination, and reflected in subnets_total."
+        ),
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -461,7 +603,7 @@ def get_scope(
         raise HTTPException(status_code=404, detail="Scope not found")
 
     return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit
+        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
     )
 
 @router.post(
@@ -683,7 +825,7 @@ def add_subnets(
     normalized: List[tuple] = []
     for item in body.subnets:
         cidr = _validate_cidr(item.cidr)
-        normalized.append((cidr, item.description))
+        normalized.append((cidr, item.description, item.site))
 
     # Duplicate check inside the payload and against existing DB rows.
     seen: set = set()
@@ -691,7 +833,7 @@ def add_subnets(
         row.cidr
         for row in db.query(Subnet).filter(Subnet.scope_id == scope_id).all()
     }
-    for cidr, _ in normalized:
+    for cidr, _, _ in normalized:
         if cidr in seen:
             raise HTTPException(status_code=400, detail=f"Duplicate CIDR in request: {cidr}")
         if cidr in existing_cidrs:
@@ -702,8 +844,13 @@ def add_subnets(
         seen.add(cidr)
 
     created: List[Subnet] = []
-    for cidr, description in normalized:
-        row = Subnet(cidr=cidr, description=description, scope_id=scope_id)
+    site_cache: dict = {}
+    for cidr, description, site in normalized:
+        site_obj = _get_or_create_site(db, project.id, site, None, site_cache) if site else None
+        row = Subnet(
+            cidr=cidr, description=description, site=(site or None),
+            site_id=(site_obj.id if site_obj else None), scope_id=scope_id,
+        )
         db.add(row)
         created.append(row)
     db.commit()
@@ -768,6 +915,11 @@ def update_subnet(
         cidr_changed = True
     if body.description is not None:
         subnet.description = body.description
+    if body.site is not None:
+        # Empty string clears the site; a value sets it (keeping site_id synced).
+        subnet.site = body.site or None
+        site_obj = _get_or_create_site(db, project.id, body.site, None) if body.site else None
+        subnet.site_id = site_obj.id if site_obj else None
 
     db.commit()
     db.refresh(subnet)

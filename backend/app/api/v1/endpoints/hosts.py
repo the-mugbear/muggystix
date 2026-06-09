@@ -10,7 +10,7 @@ envelope assembly.
 import logging
 from pathlib import Path
 from typing import Any, List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import ipaddress
 import json
 
@@ -30,15 +30,14 @@ from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHis
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
 from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
-from app.db.models_risk import HostRiskAssessment
 from app.schemas.schemas import (
     Host as HostSchema,
     HostListResponse,
     HostVulnerabilitySummary,
     HostFollowInfo,
-    HostNote,
-    HostNoteCreate,
-    HostNoteUpdate,
+    Annotation,
+    AnnotationCreate,
+    AnnotationUpdate,
     HostFollowUpdate,
 )
 from pydantic import BaseModel, ConfigDict, Field
@@ -63,7 +62,7 @@ from app.services.host_serialization import (
     serialize_vulnerability as _serialize_vulnerability,
     vulnerability_sort_key as _vulnerability_sort_key,
 )
-from app.db.models import HostFollow, FollowStatus, HostNote as HostNoteModel, NoteStatus
+from app.db.models import HostFollow, FollowStatus, Annotation as AnnotationModel, NoteStatus
 
 
 # --- Response schemas for previously untyped endpoints ---
@@ -217,7 +216,6 @@ class HostFilterParams:
         has_low_vulns: Optional[bool] = Query(None, description="If true, only hosts with low-severity vulnerabilities"),
         has_exploit_available: Optional[bool] = Query(None, description="If true, only hosts with at least one vulnerability flagged as exploitable by Nessus (exploit_available / metasploit_name / canvas_package / core_impact_name / exploit_code_maturity in {functional, high, proof-of-concept})"),
         has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have had at least one agentic test executed against them (i.e. at least one TestExecutionResult row recorded via any TestPlanEntry for the host). Drives the 'tested' badge on the Hosts list."),
-        min_risk_score: Optional[int] = Query(None, ge=0, le=100, description="Minimum risk score threshold (0-100)", examples=[70]),
         follow_status: Optional[str] = Query(None, description="Filter by review status: watching, in_review, reviewed, or none", examples=["watching"]),
         out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
         scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),
@@ -244,7 +242,6 @@ class HostFilterParams:
         self.has_low_vulns = has_low_vulns
         self.has_exploit_available = has_exploit_available
         self.has_test_execution = has_test_execution
-        self.min_risk_score = min_risk_score
         self.follow_status = follow_status
         self.out_of_scope_only = out_of_scope_only
         self.scan_ids = scan_ids
@@ -266,6 +263,60 @@ class HostFilterParams:
         """True if any filter (including ``q``) is set — used by the
         filter-data endpoint to decide whether to scope the cascade."""
         return any(v is not None for v in self.__dict__.values())
+
+
+def _hosts_changed_since_prior_scan(db: Session, host_ids: List[int]) -> set:
+    """Host ids that CHANGED at their most-recent scan vs the prior one — a
+    host-state flip (HostScanHistory.state_at_scan) or a port first observed
+    after the prior scan.  Hosts with <2 scans are never "changed" (the first
+    scan is all-new, not a change).  Batched via a window function — no N+1.
+    Removed-port detection is intentionally omitted: the dedup keeps ports and
+    doesn't track per-scan presence, so "removed" isn't reliably derivable.
+    """
+    if not host_ids:
+        return set()
+    rn = func.row_number().over(
+        partition_by=models.HostScanHistory.host_id,
+        order_by=models.HostScanHistory.discovered_at.desc(),
+    ).label("rn")
+    sub = (
+        db.query(
+            models.HostScanHistory.host_id.label("hid"),
+            models.HostScanHistory.discovered_at.label("disc"),
+            models.HostScanHistory.state_at_scan.label("state"),
+            rn,
+        )
+        .filter(models.HostScanHistory.host_id.in_(host_ids))
+        .subquery()
+    )
+    latest: Dict[int, tuple] = {}
+    prior: Dict[int, tuple] = {}
+    for hid, disc, state, rn_ in db.query(sub.c.hid, sub.c.disc, sub.c.state, sub.c.rn).filter(sub.c.rn <= 2).all():
+        (latest if rn_ == 1 else prior)[hid] = (disc, state)
+
+    changed: set = set()
+    # State flip between the two most recent scans.
+    for hid, (_pdisc, pstate) in prior.items():
+        if hid in latest and latest[hid][1] != pstate:
+            changed.add(hid)
+    # A port first observed AFTER the prior scan = added in the latest sweep.
+    prior_time = {hid: prior[hid][0] for hid in prior}
+    if prior_time:
+        maxfs = dict(
+            db.query(models.Port.host_id, func.max(models.Port.first_seen))
+            .filter(models.Port.host_id.in_(list(prior_time)))
+            .group_by(models.Port.host_id)
+            .all()
+        )
+        for hid, ptime in prior_time.items():
+            mfs = maxfs.get(hid)
+            if mfs is None or ptime is None:
+                continue
+            mfs = mfs if mfs.tzinfo else mfs.replace(tzinfo=timezone.utc)
+            pt = ptime if ptime.tzinfo else ptime.replace(tzinfo=timezone.utc)
+            if mfs > pt:
+                changed.add(hid)
+    return changed
 
 
 @router.get("/", response_model=HostListResponse)
@@ -324,18 +375,18 @@ def get_hosts_v2(
     discoveries_by_host: Dict[int, list] = {}
     if host_ids:
         note_count_map = dict(
-            db.query(models.HostNote.host_id, func.count(models.HostNote.id))
-            .filter(models.HostNote.host_id.in_(host_ids))
-            .group_by(models.HostNote.host_id)
+            db.query(models.Annotation.host_id, func.count(models.Annotation.id))
+            .filter(models.Annotation.host_id.in_(host_ids))
+            .group_by(models.Annotation.host_id)
             .all()
         )
         note_rn = func.row_number().over(
-            partition_by=models.HostNote.host_id,
-            order_by=(models.HostNote.created_at.desc(), models.HostNote.id.desc()),
+            partition_by=models.Annotation.host_id,
+            order_by=(models.Annotation.created_at.desc(), models.Annotation.id.desc()),
         ).label("rn")
         ranked_notes = (
-            db.query(models.HostNote.id.label("nid"), note_rn)
-            .filter(models.HostNote.host_id.in_(host_ids))
+            db.query(models.Annotation.id.label("nid"), note_rn)
+            .filter(models.Annotation.host_id.in_(host_ids))
             .subquery()
         )
         top_note_ids = [
@@ -343,11 +394,12 @@ def get_hosts_v2(
         ]
         if top_note_ids:
             for n in (
-                db.query(models.HostNote)
-                .filter(models.HostNote.id.in_(top_note_ids))
+                db.query(models.Annotation)
+                .filter(models.Annotation.id.in_(top_note_ids))
                 .options(
-                    selectinload(models.HostNote.author),
-                    selectinload(models.HostNote.assignee),
+                    selectinload(models.Annotation.author),
+                    selectinload(models.Annotation.assignee),
+                    selectinload(models.Annotation.promoted_findings),
                 )
                 .all()
             ):
@@ -458,11 +510,19 @@ def get_hosts_v2(
         )
         wi_count_map = {row[0]: row[1] for row in wi_rows}
 
-    # Batch lookup: OTHER users' In-Review follows per host (v4.9.1).
-    # Drives the "In review · <name>" indicator on the Hosts list so
-    # an operator sees a teammate is already on a host before picking
-    # it up.  One query for the whole page — not N+1.  Excludes the
-    # caller (their own follow is already on `serialized["follow"]`).
+    # Batch lookup: OTHER users' In-Review follows per host (v4.9.1).  Drives
+    # the "In review · <name>" indicator on the Hosts list so an operator sees
+    # a teammate is already on a host before picking it up.  One query for the
+    # whole page — not N+1.
+    #
+    # EXCLUDES the caller (`user_id != current_user.id`) ON PURPOSE: the
+    # caller's own in-review status is already shown by the row's interactive
+    # Follow control ("In Review").  Including the caller here produced a
+    # DUPLICATE — the Follow control's "In Review" AND a second "In review ·
+    # <you>" badge.  No self-inclusion avoids that dup, so the named badge is
+    # teammates-only; your own status lives on the Follow control.  (Briefly
+    # included self in a prior pass; reverted — do NOT re-add without first
+    # removing the Follow-control status display.)
     other_review_map: Dict[int, list] = {}
     if host_ids:
         review_rows = (
@@ -510,6 +570,29 @@ def get_hosts_v2(
                 "assigned_by_id": assigned_by_id,
             })
 
+    # Batch lookup: count of ACTIVE findings per host (foundation 6d).  Drives
+    # the Hosts-list finding badge so triage state is visible without opening
+    # each host.  "Active" = not yet closed (excludes false_positive /
+    # accepted_risk / remediated).  One grouped query for the page — not N+1.
+    finding_count_map: Dict[int, int] = {}
+    if host_ids:
+        from app.db.models_findings import Finding, FindingHost, FindingStatus
+        _active = [
+            FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value, FindingStatus.RETEST.value,
+        ]
+        for hid, cnt in (
+            db.query(FindingHost.host_id, func.count(func.distinct(Finding.id)))
+            .join(Finding, Finding.id == FindingHost.finding_id)
+            .filter(FindingHost.host_id.in_(host_ids), Finding.status.in_(_active))
+            .group_by(FindingHost.host_id)
+            .all()
+        ):
+            finding_count_map[hid] = cnt
+
+    # "Changed since last scan" — host ids whose most-recent scan flipped state
+    # or added a port vs the prior scan. Batched window-function query.
+    changed_map = _hosts_changed_since_prior_scan(db, host_ids)
+
     serialized_hosts = []
     for host in hosts:
         # Review #5 — pass the windowed discoveries + aggregate note_count so
@@ -530,6 +613,8 @@ def get_hosts_v2(
         serialized["test_plan_entry_count"] = tp_count_map.get(host.id, 0)
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
+        serialized["finding_count"] = finding_count_map.get(host.id, 0)
+        serialized["changed_recently"] = host.id in changed_map
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
         serialized["assignees"] = assignee_map.get(host.id, [])
         serialized["notes"] = [
@@ -884,10 +969,12 @@ def get_hosts_by_scan_v2(
     query = db.query(models.Host).options(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
-        selectinload(models.Host.notes).selectinload(models.HostNote.author),
+        selectinload(models.Host.notes).selectinload(models.Annotation.author),
         # review #8a — _serialize_note reads note.assignee; eager-load it so
         # the notes slice doesn't trigger an N+1 over assignees.
-        selectinload(models.Host.notes).selectinload(models.HostNote.assignee),
+        selectinload(models.Host.notes).selectinload(models.Annotation.assignee),
+        # _serialize_note reads note.promoted_findings for the "promoted" badge.
+        selectinload(models.Host.notes).selectinload(models.Annotation.promoted_findings),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
     ).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id
@@ -948,6 +1035,8 @@ def get_host_v2(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
         selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
+        # serialize_vulnerability reads vuln.promoted_findings for the "Promoted" badge.
+        selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.promoted_findings),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan)
     ).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
 

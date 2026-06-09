@@ -30,7 +30,7 @@ from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import FollowStatus, HostNote as HostNoteModel
+from app.db.models import FollowStatus, Annotation as AnnotationModel
 from app.db.models_auth import User
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 
@@ -130,7 +130,6 @@ def build_filtered_host_query(
     has_low_vulns: Optional[bool] = None,
     has_exploit_available: Optional[bool] = None,
     has_test_execution: Optional[bool] = None,
-    min_risk_score: Optional[int] = None,
     follow_status: Optional[str] = None,
     out_of_scope_only: Optional[bool] = None,
     scan_ids: Optional[str] = None,
@@ -227,9 +226,6 @@ def build_filtered_host_query(
     if has_test_execution:
         query = query.filter(P.has_test_execution_predicate(db))
 
-    if min_risk_score is not None:
-        query = query.filter(P.risk_predicate(db, min_risk_score))
-
     if scan_ids:
         try:
             scan_id_list = [int(s.strip()) for s in scan_ids.split(',') if s.strip()]
@@ -311,7 +307,7 @@ def apply_host_sorting(query, sort_by: str, sort_order: str):
     def _note_count():
         if "note_count" not in _subquery_cache:
             _subquery_cache["note_count"] = make_correlated_subquery([
-                HostNoteModel.host_id == models.Host.id,
+                AnnotationModel.host_id == models.Host.id,
             ])
         return _subquery_cache["note_count"]
 

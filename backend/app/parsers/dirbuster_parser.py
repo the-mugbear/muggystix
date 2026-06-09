@@ -307,6 +307,7 @@ class DirBusterParser:
                     "service_name": service,
                     "service_extrainfo": extrainfo,
                 }],
+                isolate=True,
             )
 
     @staticmethod

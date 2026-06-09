@@ -13,6 +13,7 @@ from __future__ import annotations
 # / ``huge_tree=False``) live in ``xml_stream_helpers.iterparse_safe``
 # so any tampering shows up in one place — see the audit-finding C1
 # comment block in that module.
+import logging
 import xml.etree.ElementTree as ET
 from typing import Optional
 
@@ -32,6 +33,8 @@ from app.parsers.parser_utils import (
 )
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
+
+logger = logging.getLogger(__name__)
 
 
 # Flush the SQLAlchemy session every N processed results so a large
@@ -62,12 +65,22 @@ class OpenVASParser:
             for _event, elem in context:
                 if strip_namespace(elem.tag) != "result":
                     continue
-                self._process_result(elem, scan.id, project_id)
-                processed += 1
-                # Free memory and prune predecessors so the document
-                # doesn't accumulate even after the per-result clear.
-                clear_element(elem)
-                if processed % _FLUSH_BATCH_SIZE == 0:
+                # Per-result savepoint so one malformed <result> (a dedup
+                # flush failure, over-long field, etc.) is skipped rather than
+                # rolling back the entire upload.  Mirrors nmap/gnmap/nessus.
+                sp = self.db.begin_nested()
+                try:
+                    self._process_result(elem, scan.id, project_id)
+                    sp.commit()
+                    processed += 1
+                except Exception as exc:  # noqa: BLE001 — isolate one bad row
+                    sp.rollback()
+                    logger.warning("Skipping malformed OpenVAS result: %s", exc)
+                finally:
+                    # Free memory and prune predecessors so the document
+                    # doesn't accumulate even after the per-result clear.
+                    clear_element(elem)
+                if processed and processed % _FLUSH_BATCH_SIZE == 0:
                     self.db.flush()
         except (ET.ParseError, XMLSyntaxError) as exc:
             raise ValueError(f"Invalid or truncated OpenVAS XML: {exc}") from exc

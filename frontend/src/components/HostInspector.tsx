@@ -19,15 +19,17 @@
  * sheet header therefore stay minimal.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   Bookmark,
   BookmarkPlus,
+  Ban,
   ClipboardList,
   Computer,
   Copy,
   ExternalLink,
+  Flag,
   Loader2,
   MessageSquare,
   Network,
@@ -44,24 +46,30 @@ import {
   getHostConflicts,
   followHost,
   unfollowHost,
-  createHostNote,
-  updateHostNote,
-  deleteHostNote,
+  createAnnotation,
+  updateAnnotation,
+  deleteAnnotation,
+  promoteAnnotation,
+  promoteVulnerability,
   recordHostView,
   getHostTestPlanEntries,
   updateTestPlanEntry,
   getHostFollowers,
+  listProjectMembers,
 } from '../services/api';
 import type {
   Host,
   HostConflict,
   ConflictHistoryEntry,
   FollowStatus,
-  HostNote,
+  Annotation,
   NoteStatus,
+  NoteType,
   HostTestPlanEntry,
   ProposedTestObject,
   HostFollowerEntry,
+  FindingSeverity,
+  ProjectMember,
 } from '../services/api';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
@@ -70,6 +78,7 @@ import EntryResultsPanel from './EntryResultsPanel';
 import WebInterfacesCard from './WebInterfacesCard';
 import NseScriptsCard from './NseScriptsCard';
 import NetExecCard from './NetExecCard';
+import HostFindingsCard from './HostFindingsCard';
 import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
@@ -89,8 +98,17 @@ import {
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
 import {
   Select,
   SelectContent,
@@ -230,7 +248,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [loading, setLoading] = useState(true);
   const [followStatus, setFollowStatus] = useState<FollowStatus | ''>('');
   const [followLoading, setFollowLoading] = useState(false);
-  const [notes, setNotes] = useState<HostNote[]>([]);
+  const [notes, setNotes] = useState<Annotation[]>([]);
   // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
   // the conditional early returns (loading / !host) so the hook count is
   // stable across the first-paint-with-skeleton → data-loaded transition.
@@ -239,7 +257,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // moment the loading skeleton flipped to real content.
   const noteThreadGroups = React.useMemo(() => {
     const topLevel = notes.filter((n) => !n.parent_id);
-    const repliesByParent: Record<number, HostNote[]> = {};
+    const repliesByParent: Record<number, Annotation[]> = {};
     notes.filter((n) => n.parent_id).forEach((n) => {
       const pid = n.parent_id!;
       if (!repliesByParent[pid]) repliesByParent[pid] = [];
@@ -272,6 +290,103 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [noteError, setNoteError] = useState<string | null>(null);
+  // Promote-note-to-finding dialog state (foundation 6b).
+  const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
+  const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
+  const [promoting, setPromoting] = useState(false);
+  // Bumped after a promote so the inline HostFindingsCard refetches.
+  const [findingsRefresh, setFindingsRefresh] = useState(0);
+  // Note-details editor (type/assignee/due/pin) — the write path for the
+  // thread work fields the My Work queue groups by.
+  const [detailsNote, setDetailsNote] = useState<Annotation | null>(null);
+  const [detailsType, setDetailsType] = useState<string>('none');
+  const [detailsAssignee, setDetailsAssignee] = useState<string>('none');
+  const [detailsDue, setDetailsDue] = useState<string>('');
+  const [detailsPinned, setDetailsPinned] = useState(false);
+  const [detailsSaving, setDetailsSaving] = useState(false);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+
+  // Lazy-load the project roster the first time the details editor opens
+  // (drives the assignee picker); cheap and avoids a fetch on every host open.
+  const openNoteDetails = (note: Annotation) => {
+    setDetailsNote(note);
+    setDetailsType(note.note_type || 'none');
+    setDetailsAssignee(note.assignee_id != null ? String(note.assignee_id) : 'none');
+    setDetailsDue(note.due_at ? note.due_at.slice(0, 10) : '');
+    setDetailsPinned(!!note.pinned);
+    if (members.length === 0) {
+      listProjectMembers()
+        .then(setMembers)
+        .catch(() => { /* assignee picker just stays empty */ });
+    }
+  };
+
+  const handleSaveNoteDetails = async () => {
+    if (!detailsNote) return;
+    setDetailsSaving(true);
+    try {
+      const updated = await updateAnnotation(hostId, detailsNote.id, {
+        note_type: detailsType === 'none' ? null : (detailsType as NoteType),
+        assignee_id: detailsAssignee === 'none' ? null : Number(detailsAssignee),
+        // Date input is YYYY-MM-DD; send an ISO timestamp (or null to clear).
+        due_at: detailsDue ? new Date(detailsDue).toISOString() : null,
+        pinned: detailsPinned,
+      });
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      toast.success('Note details updated.');
+      setDetailsNote(null);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update note details.'));
+    } finally {
+      setDetailsSaving(false);
+    }
+  };
+
+  // Promote / dismiss a scanner vulnerability as a finding (status 'confirmed'
+  // promotes; a terminal status dismisses). Idempotent server-side.
+  const [vulnActionId, setVulnActionId] = useState<number | null>(null);
+  // vulnId → finding id, optimistically set after a promote/dismiss so the
+  // row shows "Promoted" immediately (the host's vuln rows only carry the
+  // authoritative finding_id on the next host load).
+  const [promotedVulns, setPromotedVulns] = useState<Record<number, number>>({});
+  const handlePromoteVuln = async (vulnId: number, status: 'confirmed' | 'false_positive') => {
+    setVulnActionId(vulnId);
+    try {
+      const finding = await promoteVulnerability(vulnId, { status });
+      // Scanner findings span every host with the same plugin — report it.
+      const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
+      toast.success(
+        status === 'confirmed'
+          ? `Promoted to finding${span}: ${finding.title}`
+          : `Dismissed as false positive${span}: ${finding.title}`,
+        { autoHideMs: 3000 },
+      );
+      setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
+      setFindingsRefresh((n) => n + 1);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update vulnerability.'));
+    } finally {
+      setVulnActionId(null);
+    }
+  };
+
+  const handlePromoteNote = async () => {
+    if (promoteNoteId === null) return;
+    setPromoting(true);
+    try {
+      const finding = await promoteAnnotation(promoteNoteId, { severity: promoteSeverity });
+      toast.success(`Promoted to finding: ${finding.title}`, { autoHideMs: 3000 });
+      // Optimistically mark the note promoted so its badge appears + the
+      // promote affordance hides without waiting for a host reload.
+      setNotes((prev) => prev.map((n) => (n.id === promoteNoteId ? { ...n, finding_id: finding.id } : n)));
+      setPromoteNoteId(null);
+      setFindingsRefresh((n) => n + 1);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to promote note to finding.'));
+    } finally {
+      setPromoting(false);
+    }
+  };
   const [noteActionId, setNoteActionId] = useState<number | null>(null);
   const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
   // Per-vuln expand state for the (often long) description writeup.
@@ -484,7 +599,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     }
     setNoteSubmitting(true);
     try {
-      const response = await createHostNote(hostId, {
+      const response = await createAnnotation(hostId, {
         body: noteBody.trim(),
         status: noteStatus,
       });
@@ -515,7 +630,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!ok) return;
     setNoteActionId(noteId);
     try {
-      await deleteHostNote(hostId, noteId);
+      await deleteAnnotation(hostId, noteId);
       setNotes((previous) => previous.filter((note) => note.id !== noteId));
       setHost((previous) =>
         previous
@@ -537,7 +652,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!replyTo || !replyBody.trim()) return;
     setNoteSubmitting(true);
     try {
-      const newNote = await createHostNote(hostId, {
+      const newNote = await createAnnotation(hostId, {
         body: replyBody.trim(),
         status: 'open',
         parent_id: replyTo.id,
@@ -570,7 +685,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     }
     setNoteActionId(noteId);
     try {
-      const response = await updateHostNote(hostId, noteId, {
+      const response = await updateAnnotation(hostId, noteId, {
         status,
         ...(resolutionSummary ? { resolution_summary: resolutionSummary } : {}),
       });
@@ -903,7 +1018,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               {host.os_name && (
                 <Badge variant="outline" className="max-w-[18rem] overflow-hidden">
                   <Computer className="size-3" aria-hidden />
-                  <span className="truncate">{host.os_name}</span>
+                  <span className="truncate">
+                    {host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
+                      ? `${host.os_vendor} ${host.os_name}`
+                      : host.os_name}
+                  </span>
+                  {host.os_accuracy != null && host.os_accuracy !== '' && (
+                    <span className="ml-xxs text-caption opacity-70">
+                      {Number(host.os_accuracy)}%
+                    </span>
+                  )}
                 </Badge>
               )}
             </div>
@@ -1057,9 +1181,21 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <h3 className="mb-xs text-subheading">
                   Discovered in {discoveryTimeline.length} scan
                   {discoveryTimeline.length === 1 ? '' : 's'}
+                  {discoveryTimeline.length > 3 && (
+                    <span className="ml-xs text-caption font-normal text-muted-foreground">
+                      (most recent 3)
+                    </span>
+                  )}
                 </h3>
                 <div className="space-y-xs">
-                  {discoveryTimeline.slice(0, 5).map((entry) => {
+                  {[...discoveryTimeline]
+                    .sort((a, b) => {
+                      const t = (e: typeof a) =>
+                        new Date(e.scan_end || e.scan_start || e.discovered_at || 0).getTime();
+                      return t(b) - t(a);
+                    })
+                    .slice(0, 3)
+                    .map((entry) => {
                     // SOC alert correlation needs the scan window (when the
                     // tool was probing the network), not the ingest time.
                     // Fall back to discovered_at only when the parser
@@ -1252,10 +1388,126 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               noteActionId={noteActionId}
               onUpdateNoteStatus={handleUpdateNoteStatus}
               onDeleteNote={handleDeleteNote}
+              onPromoteNote={(noteId) => {
+                setPromoteNoteId(noteId);
+                setPromoteSeverity('medium');
+              }}
+              onEditDetails={openNoteDetails}
             />
           )}
         </CardContent>
       </Card>
+
+      {/* Promote-to-finding dialog (foundation 6b) — the bridge from a note
+          thread (which stays as the finding's evidence) to a durable,
+          roll-up-able record.  Severity is the one required input. */}
+      <Dialog open={promoteNoteId !== null} onOpenChange={(v) => { if (!v) setPromoteNoteId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Promote to finding</DialogTitle>
+            <DialogDescription>
+              Creates a finding from this note thread. The thread stays attached as the
+              finding's evidence; the finding rolls up on the Findings page and can span
+              multiple hosts.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-xs">
+            <Label htmlFor="promote-severity">Severity</Label>
+            <Select
+              value={promoteSeverity}
+              onValueChange={(v) => setPromoteSeverity(v as FindingSeverity)}
+            >
+              <SelectTrigger id="promote-severity">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
+                  <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPromoteNoteId(null)} disabled={promoting}>
+              Cancel
+            </Button>
+            <Button onClick={handlePromoteNote} disabled={promoting}>
+              {promoting ? 'Promoting…' : 'Promote'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Note-details editor — the write path for the thread work fields
+          (type/assignee/due/pin) that the My Work queue groups by. */}
+      <Dialog open={detailsNote !== null} onOpenChange={(v) => { if (!v) setDetailsNote(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Note details</DialogTitle>
+            <DialogDescription>
+              Set the note's type, owner, and due date so it surfaces in the assignee's
+              My Work queue (handoffs, assigned, and overdue groups).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-sm">
+            <div className="space-y-xxs">
+              <Label htmlFor="note-type">Type</Label>
+              <Select value={detailsType} onValueChange={setDetailsType}>
+                <SelectTrigger id="note-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— none —</SelectItem>
+                  {(['observation', 'finding', 'question', 'decision', 'action', 'handoff'] as const).map((t) => (
+                    <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="note-assignee">Assignee</Label>
+              <Select value={detailsAssignee} onValueChange={setDetailsAssignee}>
+                <SelectTrigger id="note-assignee"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Unassigned</SelectItem>
+                  {members.map((m) => (
+                    <SelectItem key={m.user_id} value={String(m.user_id)}>
+                      {m.full_name || m.username || `User ${m.user_id}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="note-due">Due date</Label>
+              <Input
+                id="note-due"
+                type="date"
+                value={detailsDue}
+                onChange={(e) => setDetailsDue(e.target.value)}
+              />
+            </div>
+            <Button
+              type="button"
+              variant={detailsPinned ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDetailsPinned((v) => !v)}
+              aria-pressed={detailsPinned}
+            >
+              {detailsPinned ? 'Pinned' : 'Pin to top'}
+            </Button>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDetailsNote(null)} disabled={detailsSaving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveNoteDetails} disabled={detailsSaving}>
+              {detailsSaving ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* This host's findings, inline — appears once a note here is promoted. */}
+      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
 
       {/* Vulnerabilities */}
       {hasVulnerabilities && (
@@ -1398,7 +1650,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       </p>
                     )}
                   </div>
-                  {/* Severity + exploitability badges, stacked. */}
+                  {/* Severity + exploitability badges, stacked, with
+                      promote/dismiss-to-finding actions (triage through the
+                      spine rather than annotating the raw vuln). */}
                   <div className="flex shrink-0 flex-col items-end gap-xxs">
                     <Badge variant={severityBadgeVariant(vuln.severity)}>
                       {(vuln.severity ?? 'unknown').toUpperCase()}
@@ -1406,6 +1660,43 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     {vuln.exploitable && (
                       <Badge variant="destructive">Exploit available</Badge>
                     )}
+                    {(() => {
+                      const promotedFindingId = vuln.finding_id ?? promotedVulns[vuln.id];
+                      return promotedFindingId ? (
+                        <Link to={`/findings/${promotedFindingId}`} aria-label={`View the finding for ${title}`}>
+                          <Badge variant="info" className="hover:underline">Promoted → finding</Badge>
+                        </Link>
+                      ) : (
+                        <div className="flex items-center gap-xxs">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost" size="icon"
+                                disabled={vulnActionId === vuln.id}
+                                onClick={() => handlePromoteVuln(vuln.id, 'confirmed')}
+                                aria-label={`Promote ${title} to a finding`}
+                              >
+                                <Flag className="size-3.5" aria-hidden />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Promote to finding</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost" size="icon"
+                                disabled={vulnActionId === vuln.id}
+                                onClick={() => handlePromoteVuln(vuln.id, 'false_positive')}
+                                aria-label={`Dismiss ${title} as a false positive`}
+                              >
+                                <Ban className="size-3.5" aria-hidden />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Dismiss (false positive)</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -1682,10 +1973,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                               <TableCell>{port.port_number}</TableCell>
                               <TableCell>{port.protocol}</TableCell>
                               <TableCell>{port.service_name || 'Unknown'}</TableCell>
-                              <TableCell className="truncate">
+                              <TableCell className="max-w-[16rem] truncate" title={port.service_extrainfo || undefined}>
                                 {port.service_product && port.service_version
                                   ? `${port.service_product} ${port.service_version}`
                                   : port.service_product || 'N/A'}
+                                {port.service_extrainfo && (
+                                  <span className="ml-xxs text-caption text-muted-foreground">
+                                    ({port.service_extrainfo})
+                                  </span>
+                                )}
                               </TableCell>
                               <TableCell>
                                 <Badge variant={stateBadgeVariant(port.state)}>

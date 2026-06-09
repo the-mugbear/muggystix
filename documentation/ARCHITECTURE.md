@@ -1,6 +1,6 @@
 # BlueStick Architecture
 
-> **Last verified against:** backend 2.24.0 / frontend 2.19.0 (2026-05-15)
+> **Last verified against:** backend 2.115.0 / frontend 5.25.1 (2026-06-07)
 
 BlueStick is a multi-user, multi-project pentest-operations platform that ingests scanner output, deduplicates hosts, correlates them to project scopes, enriches findings with vulnerability data, and drives agent-assisted test-plan generation and execution. This document is the canonical architecture reference — update it when domains, endpoints, or workflows change materially.
 
@@ -40,13 +40,13 @@ Four containers, one Docker network:
            │                                   │    reaper                │
            │                                   └──────────────────────────┘
            ▼
-  Browser (React + MUI, Chart.js, react-router)
+  Browser (React + Tailwind v4 + Radix, Chart.js, react-router)
 ```
 
-- **Frontend container** (`networkmapper-frontend-1`) runs Nginx to terminate TLS, serve the Vite build, and reverse-proxy `/api/*` to the backend.
+- **Frontend container** (`networkmapper-frontend-1`) runs Nginx to terminate TLS, serve the Vite build, and reverse-proxy `/api/*` to the backend. The SPA is built on Tailwind v4 + Radix (shadcn-style primitives) + Sonner + lucide-react — Material UI was fully removed in the v4 frontend line (the app is now on the v5 line).
 - **Backend container** (`networkmapper-backend-1`) runs `uvicorn app.main:app` with multiple workers. Exposes `/api/v1` and `/health`.
 - **Worker container** (`networkmapper-worker-1`) runs `python -m app.worker` — a single long-lived process that LISTENs on the Postgres channel `ingestion_jobs`, polls for queued work with `SELECT … FOR UPDATE SKIP LOCKED`, processes each job through the parser pipeline, and reaps orphaned jobs whose heartbeat has gone stale. The backend writes upload files to a shared volume; the worker reads from the same path.
-- **Database container** (`networkmapper-db-1`) runs PostgreSQL 16 with a persistent volume for data. Schema is owned by **Alembic** — `alembic upgrade head` runs on every backend boot before the app serves traffic. The previous startup-DDL compatibility path (`app/db/init.py`, `_ensure_schema` calls in services) has been retired; the model is the schema, and Alembic enforces it. Migrations live in `backend/alembic/versions/`, baseline at `b46cd59c17f5_baseline_schema`.
+- **Database container** (`networkmapper-db-1`) runs PostgreSQL 16 with a persistent volume for data. Schema is owned by **Alembic** — `alembic upgrade head` runs on every backend boot before the app serves traffic. The previous startup-DDL compatibility path (`Base.metadata.create_all` plus a hand-rolled migration list in `app/db/init.py`, and `_ensure_schema` calls in services) has been retired; `app/db/init.py` now does nothing but bring the database up to the Alembic head (serialized across the API + worker processes). The model is the schema, and Alembic enforces it. Migrations live in `backend/alembic/versions/`, baseline at `b46cd59c17f5_baseline_schema`.
 
 A single `docker-compose.yml` wires all four. `scripts/deploy.sh` is the unified entry point (first-time SSL setup, rebuild, nuclear cleanup, status).
 
@@ -103,15 +103,21 @@ backend/app/
 │       ├── agent_test_plans.py    # /agent/* — plan-generation workflow
 │       ├── agent_execution.py     # /agent/* — execution workflow + environment probe
 │       ├── agent_recon.py         # /agent/* — agentic reconnaissance
+│       ├── agent_assist.py        # /agent/* — read-only "ask about hosts" assist workflow (v2.64.0)
+│       ├── agent_sessions.py      # JWT — human-facing read of agent session state
 │       ├── agent_activity.py      # JWT — human-facing read of the agent API call log
-│       ├── agent_common.py        # shared helpers for the four agent routers
+│       ├── agent_common.py        # shared helpers for the agent routers
 │       ├── agent_schemas.py       # Pydantic models for the agent surface
-│       └── (project-scoped) upload, scans, hosts, host_follow, host_notes,
-│                             dashboard, scopes, export, dns, parse_errors, reports,
-│                             risk, agents, test_plans
+│       └── (project-scoped) upload, scans, hosts (+ host_follow, host_notes,
+│                             host_tags, host_bulk, host_filter_views, host_queries),
+│                             webhooks, dashboard, workbench, scopes (+ subnet_labels),
+│                             export, dns, parse_errors, reports, risk, coverage,
+│                             agents, test_plans (+ test_plan_bundles), assist,
+│                             recon_sessions, execution_sessions, activity
 ├── db/
 │   ├── session.py            # SessionLocal + engine
-│   ├── init.py               # startup DDL: create_all + ALTER TABLE compatibility
+│   ├── init.py               # startup: runs `alembic upgrade head`, serialized
+│   │                         # across API + worker (no more create_all/ALTER DDL)
 │   ├── models.py             # core (Host, Port, Scan, IngestionJob)
 │   ├── models_project.py     # Project, ProjectMembership
 │   ├── models_auth.py        # User, UserRole, UserSession, AuditLog
@@ -163,9 +169,9 @@ backend/app/
 │   ├── masscan_parser.py / naabu_parser.py / rustscan_parser.py
 │   ├── nessus_parser.py + openvas_parser.py   # defusedxml-hardened for XXE
 │   ├── nmap_parser.py / masscan_parser.py     # lxml with resolve_entities=False, no_network=True, huge_tree=False (v2.41.0)
-│   ├── eyewitness_parser.py / dns_parser.py
+│   ├── eyewitness_parser.py / dns_parser.py / dnsx_parser.py
 │   ├── nikto_parser.py / amass_parser.py / bloodhound_parser.py
-│   ├── dirbuster_parser.py / smbmap_parser.py / netexec_parser.py
+│   ├── httpx_parser.py / dirbuster_parser.py / smbmap_parser.py / netexec_parser.py
 │   └── parser_utils.py (shared ensure_scan/extract_first_ip helpers)
 └── schemas/
     ├── schemas.py           # primary Pydantic request/response models
@@ -246,6 +252,14 @@ For air-gapped or long-running engagements, a user can export a plan as a zip bu
 
 Re-importing the same file is safe — it upserts, doesn't append. `is_final=True` transitions the session to `completed`; partial imports leave it `active`.
 
+### 5.5 Assist (Workflow E — read-only Q&A)
+
+For the senior-tester case where the operator just wants to *query* a project — "which hosts expose FTP?", "summarize my critical findings", "what did the last recon turn up?" — without minting a plan key or triggering the plan-approval ceremony, there is a dedicated **assist** workflow (v2.64.0):
+
+1. **`POST /projects/{id}/assist/start`** (JWT user, `assist.py`) opens an `AssistSession`, mints a fresh `assist`-scoped API key, and returns it plus the agent prompt. `POST /assist/sessions/{session_id}/end` revokes the key (the session row stays for audit history); `GET /assist/sessions` lists recent sessions.
+2. The agent authenticates against the `/agent/assist/*` surface (`agent_assist.py`, `X-API-Key`) — `/assist/context`, `/assist/hosts`, `/assist/hosts/{host_id}`, `/assist/scopes`, `/assist/scans`, plus `/assist/sessions/{session_id}/environment` for the per-session probe.
+3. **Read-only by design.** Assist keys are rejected on plan, recon, and execution endpoints and vice-versa (`require_assist_scope`), mirroring the workflow isolation on the other agent surfaces. v1 has no execution authority, plan creation, or follow mutation.
+
 ---
 
 ## 6. Security model
@@ -272,38 +286,47 @@ Security work landed across v2.9.5, v2.9.7, and v2.9.8. The below is the current
 
 ---
 
-## 7. Frontend architecture (React + Vite + MUI)
+## 7. Frontend architecture (React + Vite + Tailwind v4 + Radix)
+
+The frontend is a Vite-built React SPA. Material UI + Emotion were fully removed in the v4 frontend line; the substrate is now **Tailwind v4** for styling, **Radix** primitives wrapped shadcn-style under `components/ui/`, **Sonner** for toasts, and **lucide-react** for icons. Navigation is organised into hubs (Inventory, Workflows, Collaboration, Settings) declared in a single navigation manifest.
 
 ```
 frontend/src/
-├── pages/                   # route-level views
-│   ├── Dashboard.tsx, PortfolioDashboard.tsx, Scans.tsx, ScanDetail.tsx,
-│   │ Hosts.tsx, HostDetail.tsx, Scopes.tsx, ScopeDetail.tsx,
-│   │ TestPlans.tsx, TestPlanDetail.tsx, Feedback.tsx, Activity.tsx,
+├── pages/                   # route-level views (representative, not exhaustive)
+│   ├── Operations.tsx, PortfolioDashboard.tsx, NetworkTopology.tsx,
+│   │ Scans.tsx, ScanDetail.tsx, ScanDiff.tsx,
+│   │ Hosts.tsx, HostDetail.tsx, Scopes.tsx,
+│   │ TestPlans.tsx, TestPlanCompare.tsx, ExecutionDetail.tsx, ExecutionsList.tsx,
+│   │ ReconRunsList.tsx, ReconRunDetail.tsx, ReconCompare.tsx, PlanCompare.tsx,
+│   │ Activity.tsx, ProjectActivity.tsx, ToolActivity.tsx, Feedback.tsx,
 │   │ RiskAssessment.tsx, ParseErrors.tsx, Reference.tsx, ToolReference.tsx,
-│   │ UserGuide.tsx, DefaultCredentials.tsx,
+│   │ SbomReference.tsx, UserGuide.tsx, DefaultCredentials.tsx,
 │   │ Login.tsx, ForceChangePassword.tsx, Profile.tsx, ProjectSettings.tsx,
 │   │ SystemSettings.tsx, LLMSettings.tsx, IntegrationSettings.tsx
-├── components/              # shared widgets
-│   ├── Layout.tsx, VersionFooter.tsx, UserMenu.tsx, PasswordField.tsx,
-│   │ AccessibleIconButton.tsx, CriticalFindingsWidget.tsx,
-│   │ HostFilters.tsx, ExportDialog.tsx, InAppAgentPanel.tsx,
-│   │ ProposedTestList.tsx, ServiceActions.tsx, ScopeExport.tsx,
-│   │ OutOfScopeExport.tsx, ToolReadyOutput.tsx, LastUpdated.tsx,
-│   │ PageSkeleton.tsx
+│   └── hubs/                # InventoryHub, WorkflowsHub, CollaborationHub,
+│                            # SettingsHub, HubLanding
+├── components/
+│   ├── ui/                  # ~28 Radix-wrapped shadcn-style primitives
+│   │                        # (dialog, select, tabs, tooltip, switch, …)
+│   └── (shared widgets)     # Layout, VersionFooter, UserMenu, HostFilters,
+│                            # HostCommandBar, ToolReadyOutput, ProposedTestList, …
 ├── contexts/
 │   ├── AuthContext.tsx      # JWT token + user profile + must_change gate
 │   ├── ProjectContext.tsx   # active project, member list, switcher
-│   ├── ThemeContext.tsx     # light/dark toggle (persisted to localStorage)
-│   └── ToastContext.tsx     # success/warning/error toasts
+│   ├── ThemeContext.tsx     # theme selection (5 themes incl. phosphor terminal),
+│   │                        # persisted to localStorage
+│   └── ToastContext.tsx     # success/warning/error toasts (Sonner-backed)
 ├── hooks/
 │   ├── useConfirm.tsx       # destructive-action confirmation dialog
 │   ├── useReconPlan.ts      # /Scopes "Start Agentic Recon" lifecycle
-│   └── useReportDownload.ts # /TestPlanDetail report-dialog state machine
+│   └── useReportDownload.ts # execution report-dialog state machine
 ├── services/
-│   └── api.ts               # axios client, typed interfaces, auth interceptors
+│   └── api/                 # axios client split into per-domain modules
+│                            # (hosts, scans, scopes, dashboard, … + shared primitives)
+├── config/
+│   └── navigation.tsx       # single navigation manifest (hubs, roles, palette)
 ├── utils/
-│   ├── uiStyles.ts          # shared overflow/clamp/truncate sx objects
+│   ├── uiStyles.ts          # shared overflow/clamp/truncate helpers
 │   ├── apiErrors.ts         # formatApiError (handles Pydantic 422 arrays)
 │   ├── promptSanitizer.ts   # client-side LLM prompt redaction
 │   └── statusMeta.ts        # chip colors + label formatting
@@ -360,8 +383,8 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 
 ## 10. Test & quality gates
 
-- **Backend** — `pytest` with a 70% coverage floor. The suite currently runs **251 tests** across service, parser, and contract layers under `backend/tests/`. `conftest.py` uses the SQLAlchemy join-to-outer-transaction + nested savepoint pattern so services that commit internally (integration, LLM provider, agent API log middleware) don't break test isolation. **Postgres is the preferred test backend** — the harness auto-creates a `<app-db>_test` database on the app's own Postgres server when reachable, falling back to in-memory SQLite when not. The Postgres path lets the Postgres-only code (`pg_advisory_lock`, masscan batch-upserts, the raw `pg_catalog` SQL in `delete_scan`) actually run.
-- **Frontend** — Vitest + Testing Library. Coverage is thinner than backend — dashboard + version/build flows are covered; host, activity, and upload flows are still on the roadmap.
+- **Backend** — `pytest` with a 70% coverage floor. The suite currently runs **~640 tests** across service, parser, and contract layers under `backend/tests/`. `conftest.py` uses the SQLAlchemy join-to-outer-transaction + nested savepoint pattern so services that commit internally (integration, LLM provider, agent API log middleware) don't break test isolation. **Postgres is the preferred test backend** — the harness auto-creates a `<app-db>_test` database on the app's own Postgres server when reachable, falling back to in-memory SQLite when not. The Postgres path lets the Postgres-only code (`pg_advisory_lock`, masscan batch-upserts, the raw `pg_catalog` SQL in `delete_scan`) actually run.
+- **Frontend** — Vitest + Testing Library. Coverage spans page-level views (Hosts, Operations, ProjectActivity, the execution + recon detail/list views, the compare views), shared components (HostFilters, HostCommandBar, HostLineagePanel, ExecutionSession, VersionFooter), and pure utilities (host query-DSL translation, tool-ready output, navigation manifest, version consistency).
 - **CI** — not yet wired; tests run locally via `docker-compose exec backend python -m pytest` and `cd frontend && npx tsc --noEmit && npm test`.
 - **Type safety** — frontend runs TypeScript strict mode; every PR should typecheck clean before merge. Backend uses gradual typing via type hints but does not enforce mypy in CI.
 
@@ -389,4 +412,4 @@ Auxiliary scripts:
 
 ---
 
-This document reflects the v2.24.0 state of the system. When a domain, endpoint, or workflow changes, update the relevant section here and bump the version stamp at the top so future maintainers have an accurate map.
+This document reflects the v2.115.0 / 5.25.1 state of the system. When a domain, endpoint, or workflow changes, update the relevant section here and bump the version stamp at the top so future maintainers have an accurate map.

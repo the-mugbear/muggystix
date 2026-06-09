@@ -15,7 +15,6 @@ from app.services.host_serialization import _serialize_follow, _serialize_note  
 from app.api.v1.endpoints.hosts import _build_filtered_host_query, HostFilterParams
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
-from app.db.models_risk import HostRiskAssessment, SecurityFinding
 import io
 import csv
 import json
@@ -86,7 +85,7 @@ class ReportGenerator:
             selectinload(models.Host.host_scripts),
             selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
             selectinload(models.Host.last_updated_scan),
-            selectinload(models.Host.notes).selectinload(models.HostNote.author),
+            selectinload(models.Host.notes).selectinload(models.Annotation.author),
             selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
         ).distinct().limit(self.MAX_REPORT_HOSTS)
 
@@ -328,6 +327,13 @@ class ReportGenerator:
         </div>
     </div>
 
+    <div class="section" id="findings">
+        <div class="section-header">Findings</div>
+        <div class="section-content">
+            {self._generate_findings_html(hosts)}
+        </div>
+    </div>
+
     <div class="section" id="hosts">
         <div class="section-header">Host Details</div>
         <div class="section-content">
@@ -519,8 +525,75 @@ class ReportGenerator:
                 host_data["ports"].append(port_data)
             
             report_data["hosts"].append(host_data)
-        
+
+        report_data["findings"] = self._findings_for_report(hosts)
         return report_data
+
+    def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
+        """Findings affecting the report's hosts, severity-ordered — the
+        triaged record that rolls up across hosts (note promotions, scanner
+        promotions, execution results). Included in every export format so a
+        report carries the analyst's conclusions, not just raw scan data."""
+        from app.db.models_findings import Finding, FindingHost
+        host_ids = [h.id for h in hosts]
+        if not host_ids:
+            return []
+        findings = (
+            self.db.query(Finding)
+            .options(
+                selectinload(Finding.hosts).selectinload(FindingHost.host),
+                selectinload(Finding.owner),
+            )
+            .filter(
+                Finding.project_id == self.project_id,
+                Finding.hosts.any(FindingHost.host_id.in_(host_ids)),
+            )
+            .all()
+        )
+        out = [
+            {
+                "id": f.id,
+                "title": f.title,
+                "severity": f.severity,
+                "status": f.status,
+                "source": f.source,
+                "owner": (f.owner.full_name or f.owner.username) if f.owner else None,
+                "host_count": len(f.hosts),
+                "affected_hosts": [fh.host.ip_address for fh in f.hosts if fh.host],
+                "vuln_id": f.vuln_id,
+            }
+            for f in findings
+        ]
+        out.sort(key=lambda x: self.SEVERITY_ORDER.get(x["severity"], 5))
+        return out
+
+    def _generate_findings_html(self, hosts: List[models.Host]) -> str:
+        """Findings table fragment for the HTML report (severity-ordered)."""
+        findings = self._findings_for_report(hosts)
+        if not findings:
+            return '<p class="muted">No findings recorded for these hosts.</p>'
+        rows = []
+        for f in findings:
+            affected = f["affected_hosts"]
+            hosts_str = ", ".join(affected[:5])
+            if len(affected) > 5:
+                hosts_str += f" (+{len(affected) - 5} more)"
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(str(f['severity']))}</td>"
+                f"<td>{html.escape(str(f['title']))}</td>"
+                f"<td>{html.escape(str(f['status']))}</td>"
+                f"<td>{html.escape(str(f['source']))}</td>"
+                f"<td>{html.escape(str(f['owner'] or '—'))}</td>"
+                f"<td>{html.escape(hosts_str)}</td>"
+                "</tr>"
+            )
+        return (
+            '<table class="data-table"><thead><tr>'
+            "<th>Severity</th><th>Finding</th><th>Status</th>"
+            "<th>Source</th><th>Owner</th><th>Affected hosts</th>"
+            f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        )
 
     def generate_agent_package(self, hosts: List[models.Host], filters: Dict[str, Any]) -> bytes:
         """Generate a ZIP package optimized for agentic workflows."""
@@ -563,6 +636,7 @@ class ReportGenerator:
             len([port for port in record["ports"] if port.get("state") == "open"])
             for record in records
         )
+        findings = self._findings_for_report(hosts)
 
         manifest = {
             "export_type": "host_report_package",
@@ -575,6 +649,7 @@ class ReportGenerator:
                 "hosts_up": len([record for record in records if record["identity"].get("state") == "up"]),
                 "open_ports": total_open_ports,
                 "vulnerabilities": total_vulnerabilities,
+                "findings": len(findings),
             },
             "included_sections": [
                 "identity",
@@ -584,7 +659,6 @@ class ReportGenerator:
                 "ports",
                 "host_scripts",
                 "vulnerabilities",
-                "risk",
                 "analyst_context",
                 "confidence",
             ],
@@ -592,6 +666,7 @@ class ReportGenerator:
 
         return {
             "manifest": manifest,
+            "findings": findings,
             "hosts": records,
             "scans": context["scans"],
         }, artifacts
@@ -636,25 +711,6 @@ class ReportGenerator:
                 .all()
             )
             follow_map = {record.host_id: record for record in follow_records}
-
-        risk_map: Dict[int, HostRiskAssessment] = {}
-        finding_map: Dict[int, List[SecurityFinding]] = {}
-        if host_ids:
-            risk_records = (
-                self.db.query(HostRiskAssessment)
-                .filter(HostRiskAssessment.host_id.in_(host_ids))
-                .all()
-            )
-            risk_map = {record.host_id: record for record in risk_records}
-
-            findings = (
-                self.db.query(SecurityFinding)
-                .filter(SecurityFinding.host_id.in_(host_ids))
-                .order_by(SecurityFinding.severity.asc(), SecurityFinding.id.asc())
-                .all()
-            )
-            for finding in findings:
-                finding_map.setdefault(finding.host_id, []).append(finding)
 
         subnet_map: Dict[int, List[Dict[str, Optional[str]]]] = {}
         if host_ids:
@@ -739,8 +795,6 @@ class ReportGenerator:
 
         return {
             "follow_map": follow_map,
-            "risk_map": risk_map,
-            "finding_map": finding_map,
             "subnet_map": subnet_map,
             "host_confidence_map": host_confidence_map,
             "port_confidence_map": port_confidence_map,
@@ -779,11 +833,6 @@ class ReportGenerator:
         ]
         subnet_entries = context["subnet_map"].get(host.id, [])
         follow_record = context["follow_map"].get(host.id)
-        risk_record = context["risk_map"].get(host.id)
-        security_findings = [
-            self._serialize_security_finding(finding)
-            for finding in context["finding_map"].get(host.id, [])
-        ]
 
         return {
             "host_id": host.id,
@@ -828,7 +877,6 @@ class ReportGenerator:
             ],
             "vulnerabilities": vulnerabilities,
             "vulnerability_summary": self._build_vulnerability_summary(vulnerabilities),
-            "risk": self._serialize_risk_for_export(risk_record, security_findings),
             "analyst_context": {
                 "follow_status": getattr(follow_record.status, "value", None) if follow_record else None,
                 "follow": _serialize_follow(follow_record).model_dump(mode="json") if follow_record else None,
@@ -964,42 +1012,8 @@ class ReportGenerator:
             "references": references,
         }
 
-    def _serialize_note_for_export(self, note: models.HostNote) -> Dict[str, Any]:
+    def _serialize_note_for_export(self, note: models.Annotation) -> Dict[str, Any]:
         return _serialize_note(note).model_dump(mode="json")
-
-    def _serialize_risk_for_export(
-        self,
-        risk: Optional[HostRiskAssessment],
-        findings: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        if not risk and not findings:
-            return None
-        return {
-            "risk_score": risk.risk_score if risk else None,
-            "risk_level": risk.risk_level if risk else None,
-            "risk_summary": risk.risk_summary if risk else None,
-            "attack_surface_score": risk.attack_surface_score if risk else None,
-            "patch_urgency_score": risk.patch_urgency_score if risk else None,
-            "exposure_risk_score": risk.exposure_risk_score if risk else None,
-            "configuration_risk_score": risk.configuration_risk_score if risk else None,
-            "security_findings": findings,
-        }
-
-    def _serialize_security_finding(self, finding: SecurityFinding) -> Dict[str, Any]:
-        return {
-            "id": finding.id,
-            "finding_type": finding.finding_type,
-            "title": finding.title,
-            "description": finding.description,
-            "severity": finding.severity,
-            "risk_score": finding.risk_score,
-            "evidence": finding.evidence,
-            "affected_component": finding.affected_component,
-            "recommendation": finding.recommendation,
-            "remediation_effort": finding.remediation_effort,
-            "source": finding.source,
-            "discovery_date": self._iso(finding.discovery_date),
-        }
 
     def _serialize_host_confidence(self, confidence: HostConfidence) -> Dict[str, Any]:
         return {

@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.24.0 / frontend 2.19.0 (2026-05-15)
+> **Last verified against:** backend 2.115.0 / frontend 5.25.1 (2026-06-07)
 
 Base path: `/api/v1`
 
@@ -40,17 +40,18 @@ Roles: `admin`, `analyst`, `auditor`, `viewer`. Project membership adds a per-pr
 
 ### 1.2 Agent API keys
 
-Agents get a short-lived key via one of two flows:
+Agents get a short-lived key via one of these flows:
 
 - **Recon** — user clicks "Start Agentic Recon" on the Scopes page → `POST /api/v1/projects/{id}/scopes/{scope_id}/recon/start` mints a scope-bound `reconnaissance` key.
 - **Plan generation** — user clicks "Generate with AI" on the Test Plans page → `POST /api/v1/projects/{id}/test-plans/generate` mints a `plan_generation`-scoped key.
 - **Execution** — user approves a plan and clicks "Execute with AI" → `POST /api/v1/projects/{id}/test-plans/{plan_id}/execute` mints a plan-scoped `execution` key bound to that exact plan.
+- **Assist** — user starts a read-only Q&A session → `POST /api/v1/projects/{id}/assist/start` mints an `assist`-scoped key (v2.64.0). Read-only; rejected on plan/recon/execution endpoints.
 - **Rotate** — when a per-plan key expires (24h TTL) but the user wants to continue, `POST /api/v1/projects/{id}/test-plans/{plan_id}/rotate-key` mints a fresh key and revokes the prior ones (v2.19.0).
 
 Keys are:
 - **Hashed at rest** in `agent_api_keys` (the plaintext is returned to the user **exactly once**, never stored).
 - **Time-bound** — default 24h TTL, controlled by `settings.AGENT_API_KEY_TTL_HOURS`.
-- **Scoped** — each key declares its workflow (`plan_generation`, `execution`, `reconnaissance`) and, for execution keys, a specific `test_plan_id`. Scope-mismatched calls return 403.
+- **Scoped** — each key declares its workflow (`plan_generation`, `execution`, `reconnaissance`, `assist`) and, for execution keys, a specific `test_plan_id`. Scope-mismatched calls return 403.
 
 Every `/api/v1/agent/*` request must include:
 
@@ -82,6 +83,7 @@ The `require_plan_scope` dependency validates the key, loads the bound agent + p
 │   ├── /{id}/members         # project membership (admin or project-admin)
 │   └── /{id}/...             # PROJECT-SCOPED SUBTREE — see §4
 ├── /portfolio                # cross-project dashboard
+├── /activity                 # cross-project note/activity feed
 ├── /notifications            # read/unread, mark-seen
 ├── /llm-providers            # per-user LLM credentials + /{id}/complete
 ├── /integrations             # per-user scanner tool credentials
@@ -192,8 +194,10 @@ Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — se
 
 | Method | Path | Notes |
 |---|---|---|
+| GET | `/references/` | Index of the reference endpoints below, with descriptions. |
 | GET | `/references/sbom` | **v2.20.0** — Software Bill of Materials reflecting the deployed build's resolved dependency tree. Reads `requirements.txt` + `frontend/package-lock.json`. Memoised by manifest mtimes + `app_version` (so a release bump invalidates the cache even if dependencies didn't change). Classifies each component as direct (listed in `requirements.txt` / `package.json` root) or transitive. |
-| GET | `/references/tools` | Tool catalog — the recon-time scanner inventory the agent gets via `/agent/recon/context`, surfaced publicly so humans can review what the agent sees. |
+| GET | `/references/preflight-script` | Returns `scripts/preflight.sh` (text/x-shellscript) — the recon-workflow environment probe agents run to check which tools the host has. Supports `--json`, `--strict`, `--help`. |
+| GET | `/references/tool-readiness` | **Authenticated** — the agent tool catalog checked against the current user's most recent environment probe: per-tool `installed`/`missing`/`warn`/`unknown` status + install hints. Returns `has_probe: false` (all `unknown`) when the user hasn't probed yet. Powers the ToolReference page's Host Readiness panel. |
 
 ---
 
@@ -434,6 +438,22 @@ All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the r
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/agent/feedback` | Record structured feedback at the end of a run. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. Session and plan binding are inferred from the API key. |
+
+### 5.7 Assist workflow (read-only Q&A — v2.64.0)
+
+For "ask questions about this project" agents that shouldn't trigger the plan-approval ceremony. All endpoints require an `assist`-scoped key (`require_assist_scope`); plan/recon/execution keys are rejected here, and assist keys are rejected on the other agent surfaces.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/agent/assist/sessions/{session_id}/environment` | Per-session environment probe, same shape as execution/recon. |
+| GET | `/agent/assist/context` | Project + assist-session context. |
+| GET | `/agent/assist/hosts` | Paginated, filterable host list (read-only). |
+| GET | `/agent/assist/hosts/{host_id}` | Host detail with ports, services, vulns. |
+| GET | `/agent/assist/scopes` | Scope list. |
+| GET | `/agent/assist/scans` | Scan list. |
+| GET | `/agent/assist/session` | Current assist-session metadata. |
+
+The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt (shown once); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists recent sessions.
 
 ---
 
@@ -752,4 +772,4 @@ Callers should be aware of these enforced constraints — they're documented her
 
 ---
 
-This document reflects the v2.41.1 state of the API. Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.
+This document reflects the v2.115.0 state of the API. Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.

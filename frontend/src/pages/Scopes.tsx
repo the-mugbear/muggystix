@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowDownToLine,
+  Building2,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -13,6 +14,7 @@ import {
   RefreshCw,
   Rocket,
   Save,
+  Search,
   Tags as TagsIcon,
   Trash2,
   Upload,
@@ -39,6 +41,7 @@ import OutOfScopeExport from '../components/OutOfScopeExport';
 import StartReconDialog from '../components/StartReconDialog';
 import { useConfirm } from '../hooks/useConfirm';
 import { useReconPlan } from '../hooks/useReconPlan';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -71,6 +74,7 @@ import {
   SubnetLabelEditorPopover,
   SubnetLabelChip,
 } from '../components/SubnetLabelManager';
+import SiteManagerDialog from '../components/SiteManagerDialog';
 
 type CoverageTone = 'success' | 'warning' | 'destructive' | 'muted';
 
@@ -115,6 +119,7 @@ const Scopes: React.FC = () => {
   const [editingSubnetId, setEditingSubnetId] = useState<number | null>(null);
   const [editCidrDraft, setEditCidrDraft] = useState('');
   const [editDescDraft, setEditDescDraft] = useState('');
+  const [editSiteDraft, setEditSiteDraft] = useState('');
   const [savingSubnet, setSavingSubnet] = useState(false);
 
   // v2.94.0 — the subnet list is server-paginated so a 6000-subnet project
@@ -123,12 +128,20 @@ const Scopes: React.FC = () => {
   // re-fetch as many subnets as are currently shown so the view is stable.
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Subnet search — a case-insensitive substring filter over cidr +
+  // description, applied server-side (before pagination) so users can jump
+  // straight to an entry instead of paging.  Debounced so we don't fire a
+  // request per keystroke; the result resets the list to page 0.
+  const [subnetSearch, setSubnetSearch] = useState('');
+  const debouncedSubnetSearch = useDebouncedValue(subnetSearch, 300);
+
   // v2.86.0 — subnet-label state.  The project-wide label catalogue
   // is fetched on mount and refreshed whenever the manager dialog
   // mutates it; selectedSubnetIds drives the bulk-apply affordance
   // that appears in the toolbar once any subnet is checked.
   const [labelCatalogue, setLabelCatalogue] = useState<SubnetLabelWithCounts[]>([]);
   const [labelManagerOpen, setLabelManagerOpen] = useState(false);
+  const [siteManagerOpen, setSiteManagerOpen] = useState(false);
   const [selectedSubnetIds, setSelectedSubnetIds] = useState<Set<number>>(new Set());
   const [bulkApplying, setBulkApplying] = useState(false);
 
@@ -153,11 +166,22 @@ const Scopes: React.FC = () => {
   const currentSubnetWindow = () =>
     Math.max(scope?.subnets.length ?? 0, SUBNET_PAGE_SIZE);
 
+  // Single place that shapes the paginated scope fetch and injects the active
+  // search term.  The four callers below (initial load, refresh, search,
+  // load-more) all route through here so a new param (e.g. withFindingsOnly)
+  // only has to be threaded in once instead of four times.
+  const fetchScopePage = (skip: number, limit: number) =>
+    getDefaultScope({
+      subnetsSkip: skip,
+      subnetsLimit: limit,
+      subnetsSearch: debouncedSubnetSearch,
+    });
+
   const loadData = async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
     try {
       const [scopeData, coverageData] = await Promise.all([
-        getDefaultScope({ subnetsSkip: 0, subnetsLimit: currentSubnetWindow() }),
+        fetchScopePage(0, currentSubnetWindow()),
         getScopeCoverage(),
       ]);
       setScope(scopeData);
@@ -174,7 +198,7 @@ const Scopes: React.FC = () => {
   const refreshScope = async () => {
     try {
       const [scopeData, coverageData] = await Promise.all([
-        getDefaultScope({ subnetsSkip: 0, subnetsLimit: currentSubnetWindow() }),
+        fetchScopePage(0, currentSubnetWindow()),
         getScopeCoverage(),
       ]);
       setScope(scopeData);
@@ -184,14 +208,36 @@ const Scopes: React.FC = () => {
     }
   };
 
+  // Re-fetch the first page whenever the (debounced) search term changes.
+  // Skip the initial mount — the [] effect's loadData() already covers it,
+  // so this only fires on real search edits.
+  const searchInitialized = useRef(false);
+  useEffect(() => {
+    if (!searchInitialized.current) {
+      searchInitialized.current = true;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const scopeData = await fetchScopePage(0, SUBNET_PAGE_SIZE);
+        if (!cancelled) setScope(scopeData);
+      } catch (err) {
+        console.error('Error searching subnets:', err);
+        toast.error('Failed to search subnets.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSubnetSearch]);
+
   const loadMoreSubnets = async () => {
     if (!scope || loadingMore) return;
     setLoadingMore(true);
     try {
-      const next = await getDefaultScope({
-        subnetsSkip: scope.subnets.length,
-        subnetsLimit: SUBNET_PAGE_SIZE,
-      });
+      const next = await fetchScopePage(scope.subnets.length, SUBNET_PAGE_SIZE);
       setScope((prev) =>
         prev
           ? {
@@ -227,15 +273,19 @@ const Scopes: React.FC = () => {
     }
   };
 
-  const startEditSubnet = (id: number, cidr: string, description: string | null) => {
+  const startEditSubnet = (
+    id: number, cidr: string, description: string | null, site: string | null,
+  ) => {
     setEditingSubnetId(id);
     setEditCidrDraft(cidr);
     setEditDescDraft(description || '');
+    setEditSiteDraft(site || '');
   };
   const cancelEditSubnet = () => {
     setEditingSubnetId(null);
     setEditCidrDraft('');
     setEditDescDraft('');
+    setEditSiteDraft('');
   };
 
   const handleSaveSubnet = async (subnetId: number) => {
@@ -245,6 +295,7 @@ const Scopes: React.FC = () => {
       await updateSubnet(scope.id, subnetId, {
         cidr: editCidrDraft.trim(),
         description: editDescDraft.trim(),
+        site: editSiteDraft.trim(),
       });
       toast.success('Entry updated.');
       cancelEditSubnet();
@@ -609,6 +660,7 @@ const Scopes: React.FC = () => {
               <span className="flex-1 text-metadata text-muted-foreground">
                 {(scope.subnets_total ?? scope.subnets.length).toLocaleString()} entr
                 {(scope.subnets_total ?? scope.subnets.length) === 1 ? 'y' : 'ies'}
+                {debouncedSubnetSearch.trim() ? ' matching' : ''}
               </span>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -686,6 +738,46 @@ const Scopes: React.FC = () => {
                 <TagsIcon className="size-4" aria-hidden />
                 Manage labels
               </Button>
+              <Button
+                variant="outline"
+                onClick={() => setSiteManagerOpen(true)}
+                className="shrink-0 whitespace-nowrap"
+                aria-label="Manage site criticality and coverage"
+              >
+                <Building2 className="size-4" aria-hidden />
+                Manage sites
+              </Button>
+            </div>
+
+            {/* Subnet search — filters the server-paginated list so users
+                can jump to an entry instead of paging.  Debounced; resets
+                to page 0 and drives subnets_total so "Showing N of T" and
+                "Load more" stay correct under the filter. */}
+            <div className="flex items-center gap-xs border-b border-border px-sm py-xs">
+              <div className="relative min-w-0 flex-1">
+                <Search
+                  className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden
+                />
+                <Input
+                  value={subnetSearch}
+                  onChange={(e) => setSubnetSearch(e.target.value)}
+                  placeholder="Search subnets by CIDR or description…"
+                  className="pl-8"
+                  aria-label="Search subnets by CIDR or description"
+                />
+              </div>
+              {subnetSearch && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSubnetSearch('')}
+                  aria-label="Clear subnet search"
+                >
+                  <CloseIcon className="size-4" aria-hidden />
+                  Clear
+                </Button>
+              )}
             </div>
 
             {/* v2.86.0 — bulk-action bar: hidden until at least one
@@ -744,6 +836,7 @@ const Scopes: React.FC = () => {
                     </TableHead>
                     <TableHead className="w-1/5">Subnet / IP</TableHead>
                     <TableHead>Description</TableHead>
+                    <TableHead className="w-40">Site</TableHead>
                     <TableHead className="min-w-[180px]">Labels</TableHead>
                     <TableHead className="w-32">Added</TableHead>
                     <TableHead className="w-32 text-right">Actions</TableHead>
@@ -752,8 +845,10 @@ const Scopes: React.FC = () => {
                 <TableBody>
                   {scope.subnets.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
-                        No entries in this project's scope yet. Add one above or upload a file.
+                      <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
+                        {debouncedSubnetSearch.trim()
+                          ? `No subnets match "${debouncedSubnetSearch.trim()}". Try a different search or clear it.`
+                          : "No entries in this project's scope yet. Add one above or upload a file."}
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -792,10 +887,29 @@ const Scopes: React.FC = () => {
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description)}
+                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
                                 className="text-metadata italic text-muted-foreground hover:text-foreground focus:outline-none focus-visible:underline"
                               >
                                 Click to add description
+                              </button>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {isEditing ? (
+                              <Input
+                                value={editSiteDraft}
+                                onChange={(e) => setEditSiteDraft(e.target.value)}
+                                placeholder="Site / location…"
+                              />
+                            ) : subnet.site ? (
+                              <span className="break-words text-metadata">{subnet.site}</span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
+                                className="text-metadata italic text-muted-foreground hover:text-foreground focus:outline-none focus-visible:underline"
+                              >
+                                Click to add site
                               </button>
                             )}
                           </TableCell>
@@ -870,7 +984,7 @@ const Scopes: React.FC = () => {
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description)}
+                                      onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
                                       aria-label={`Edit subnet ${subnet.cidr}`}
                                     >
                                       <Pencil className="size-4" aria-hidden />
@@ -949,17 +1063,20 @@ const Scopes: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Upload Subnet File</DialogTitle>
             <DialogDescription>
-              Upload a list of subnets to create a new scope.  Accepts
-              <code className="font-mono"> .txt </code>or
-              <code className="font-mono"> .csv </code>files with one
-              CIDR per line; the file name becomes the new scope's name.
+              Append subnets to this project's scope.  Accepts
+              <code className="font-mono"> .txt </code>(one CIDR/IP per line) or
+              <code className="font-mono"> .csv </code>(one entry per row: subnet in
+              column 1, optional space-delimited labels in column 2, optional
+              description in column 3, optional site in column 4).
             </DialogDescription>
           </DialogHeader>
           <p className="text-metadata text-muted-foreground">
-            Supported formats: <code className="font-mono">.txt</code>,{' '}
-            <code className="font-mono">.csv</code> — one subnet per line (e.g.{' '}
-            <code className="font-mono">192.168.1.0/24</code>). A new scope will be created
-            automatically from the filename.
+            <code className="font-mono">.txt</code> — one subnet per line. {' '}
+            <code className="font-mono">.csv</code> — per row{' '}
+            <code className="font-mono">192.168.1.0/24,prod internet-facing,UK DMZ,London DC</code>{' '}
+            (label, description + site columns optional). Re-uploading is safe: duplicate
+            subnets are skipped, labels are <em>added</em> (never replaced), and a
+            description updates only when provided.
           </p>
           <div
             {...getRootProps()}
@@ -1026,6 +1143,8 @@ const Scopes: React.FC = () => {
           refreshScope();
         }}
       />
+
+      <SiteManagerDialog open={siteManagerOpen} onOpenChange={setSiteManagerOpen} />
 
       {confirmEl}
     </div>
