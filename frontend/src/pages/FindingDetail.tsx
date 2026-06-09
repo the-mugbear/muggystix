@@ -155,14 +155,13 @@ const FindingDetail: React.FC = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead>Host</TableHead>
-                  <TableHead className="w-40">Disposition</TableHead>
                   <TableHead className="w-16" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {finding.hosts.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={3} className="py-lg text-center text-muted-foreground">
+                    <TableCell colSpan={2} className="py-lg text-center text-muted-foreground">
                       No hosts attached.
                     </TableCell>
                   </TableRow>
@@ -175,7 +174,6 @@ const FindingDetail: React.FC = () => {
                         </Link>
                         {h.hostname && <span className="ml-xs text-caption text-muted-foreground">{h.hostname}</span>}
                       </TableCell>
-                      <TableCell className="capitalize">{h.host_status.replace(/_/g, ' ')}</TableCell>
                       <TableCell>
                         <Button
                           variant="ghost" size="icon"

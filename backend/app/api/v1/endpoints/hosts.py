@@ -976,6 +976,8 @@ def get_host_v2(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
         selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
+        # serialize_vulnerability reads vuln.promoted_findings for the "Promoted" badge.
+        selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.promoted_findings),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan)
     ).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
 

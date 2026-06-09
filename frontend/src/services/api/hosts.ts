@@ -50,6 +50,9 @@ export interface HostVulnerability {
   protocol: string | null;
   service_name: string | null;
   exploitable: boolean | null;
+  // Set when this vuln has been promoted to a finding — drives the "Promoted"
+  // badge/link and guards a duplicate promote.
+  finding_id?: number | null;
   first_seen: string | null;
   last_seen: string | null;
   solution: string | null;

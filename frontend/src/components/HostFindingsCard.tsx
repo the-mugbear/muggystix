@@ -94,14 +94,7 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-xs">
-        {findings.map((f) => {
-          // This host's own disposition within a (possibly multi-host)
-          // finding — distinct from the project-level status select. Surfaced
-          // so a host remediated here doesn't look open just because the
-          // finding is still open on another host.
-          const thisHost = f.hosts.find((h) => h.host_id === hostId);
-          const perHost = f.host_count > 1 && thisHost ? thisHost.host_status : null;
-          return (
+        {findings.map((f) => (
           <div key={f.id} className="flex flex-wrap items-center gap-xs border-b border-border pb-xs last:border-0 last:pb-0">
             <Badge variant={SEVERITY_VARIANT[f.severity] as never}>
               {f.severity[0].toUpperCase() + f.severity.slice(1)}
@@ -117,11 +110,6 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
             ) : (
               <span className="min-w-0 flex-1 truncate" title={f.title}>{f.title}</span>
             )}
-            {perHost && (
-              <Badge variant="outline" className="capitalize" title="This host's disposition">
-                {perHost.replace(/_/g, ' ')}
-              </Badge>
-            )}
             <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
               <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>
                 <SelectValue />
@@ -134,8 +122,7 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
             </Select>
             <FindingHistoryButton findingId={f.id} />
           </div>
-          );
-        })}
+        ))}
       </CardContent>
     </Card>
   );

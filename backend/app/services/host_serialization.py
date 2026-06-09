@@ -295,6 +295,9 @@ def serialize_vulnerability(vuln: Vulnerability) -> dict:
         "protocol": protocol,
         "service_name": service_name,
         "exploitable": vuln.exploitable,
+        # If promoted to a finding, surface its id so the vuln row shows a
+        # "Promoted" badge + guards a duplicate promote.
+        "finding_id": (vuln.promoted_findings[0].id if vuln.promoted_findings else None),
         "first_seen": vuln.first_seen,
         "last_seen": vuln.last_seen,
         "solution": vuln.solution,

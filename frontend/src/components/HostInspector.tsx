@@ -19,7 +19,7 @@
  * sheet header therefore stay minimal.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   Bookmark,
@@ -345,6 +345,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // Promote / dismiss a scanner vulnerability as a finding (status 'confirmed'
   // promotes; a terminal status dismisses). Idempotent server-side.
   const [vulnActionId, setVulnActionId] = useState<number | null>(null);
+  // vulnId → finding id, optimistically set after a promote/dismiss so the
+  // row shows "Promoted" immediately (the host's vuln rows only carry the
+  // authoritative finding_id on the next host load).
+  const [promotedVulns, setPromotedVulns] = useState<Record<number, number>>({});
   const handlePromoteVuln = async (vulnId: number, status: 'confirmed' | 'false_positive') => {
     setVulnActionId(vulnId);
     try {
@@ -355,6 +359,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           : `Dismissed as false positive: ${finding.title}`,
         { autoHideMs: 3000 },
       );
+      setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
       setFindingsRefresh((n) => n + 1);
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update vulnerability.'));
@@ -1653,34 +1658,43 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     {vuln.exploitable && (
                       <Badge variant="destructive">Exploit available</Badge>
                     )}
-                    <div className="flex items-center gap-xxs">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost" size="icon"
-                            disabled={vulnActionId === vuln.id}
-                            onClick={() => handlePromoteVuln(vuln.id, 'confirmed')}
-                            aria-label={`Promote ${title} to a finding`}
-                          >
-                            <Flag className="size-3.5" aria-hidden />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Promote to finding</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost" size="icon"
-                            disabled={vulnActionId === vuln.id}
-                            onClick={() => handlePromoteVuln(vuln.id, 'false_positive')}
-                            aria-label={`Dismiss ${title} as a false positive`}
-                          >
-                            <Ban className="size-3.5" aria-hidden />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Dismiss (false positive)</TooltipContent>
-                      </Tooltip>
-                    </div>
+                    {(() => {
+                      const promotedFindingId = vuln.finding_id ?? promotedVulns[vuln.id];
+                      return promotedFindingId ? (
+                        <Link to={`/findings/${promotedFindingId}`} aria-label={`View the finding for ${title}`}>
+                          <Badge variant="info" className="hover:underline">Promoted → finding</Badge>
+                        </Link>
+                      ) : (
+                        <div className="flex items-center gap-xxs">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost" size="icon"
+                                disabled={vulnActionId === vuln.id}
+                                onClick={() => handlePromoteVuln(vuln.id, 'confirmed')}
+                                aria-label={`Promote ${title} to a finding`}
+                              >
+                                <Flag className="size-3.5" aria-hidden />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Promote to finding</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost" size="icon"
+                                disabled={vulnActionId === vuln.id}
+                                onClick={() => handlePromoteVuln(vuln.id, 'false_positive')}
+                                aria-label={`Dismiss ${title} as a false positive`}
+                              >
+                                <Ban className="size-3.5" aria-hidden />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Dismiss (false positive)</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               );
