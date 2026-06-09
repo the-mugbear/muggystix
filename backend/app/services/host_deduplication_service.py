@@ -353,7 +353,12 @@ class HostDeduplicationService:
         new_state = host_data.get('state')
         if new_state and new_state != 'unknown' and new_state != host.state:
             host.state = new_state
-            host.state_reason = host_data.get('state_reason')
+            # Only overwrite the reason when the new scan actually supplies one
+            # — gnmap emits an empty reason, which would otherwise erase a
+            # meaningful nmap reason (e.g. "syn-ack") on a re-scan.
+            new_reason = host_data.get('state_reason')
+            if new_reason:
+                host.state_reason = new_reason
             updated = True
         
         # Update OS information if new scan has higher accuracy or we don't have OS info

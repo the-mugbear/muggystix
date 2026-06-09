@@ -207,7 +207,6 @@ def list_hosts(
             "persisted so this filter would have matched nothing."
         ),
     ),
-    min_risk_score: Optional[int] = Query(None, ge=0, le=100),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
     not_in_plan_id: Optional[int] = Query(None, description="Exclude hosts already in this plan"),
     limit: int = Query(500, ge=1, le=5000),
@@ -229,7 +228,7 @@ def list_hosts(
         q, db, state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         has_exploit_available=has_exploit_available,
-        min_risk_score=min_risk_score, search=search, not_in_plan_id=not_in_plan_id,
+        search=search, not_in_plan_id=not_in_plan_id,
     )
     hosts = q.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
     return _enrich_host_briefs(db, hosts)
@@ -330,7 +329,8 @@ def list_scans(
     # column; malformed input returns no rows rather than 400 so the
     # agent can ratchet the filter without first probing format.
     if tool:
-        q = q.filter(models.Scan.tool_name.ilike(f"%{tool}%"))
+        from app.services.host_query_common import escape_like
+        q = q.filter(models.Scan.tool_name.ilike(f"%{escape_like(tool)}%", escape='\\'))
     if created_after:
         from datetime import datetime
         try:

@@ -541,23 +541,3 @@ class NessusParser:
     def get_supported_extensions(self) -> List[str]:
         """Return list of supported file extensions"""
         return ['.nessus', '.xml']
-
-    def validate_file(self, file_path: str) -> Tuple[bool, str]:
-        """Validate if file is a supported Nessus XML file"""
-        try:
-            tree = DET.parse(file_path)
-            root = tree.getroot()
-
-            if root.tag != 'NessusClientData_v2':
-                return False, "Not a valid Nessus XML file (missing NessusClientData_v2 root)"
-
-            # Check for required elements
-            if not root.find('.//Report'):
-                return False, "No Report section found in Nessus file"
-
-            return True, "Valid Nessus XML file"
-
-        except ET.ParseError as e:
-            return False, f"XML parsing error: {e}"
-        except Exception as e:
-            return False, f"File validation error: {e}"

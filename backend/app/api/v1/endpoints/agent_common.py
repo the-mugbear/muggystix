@@ -81,7 +81,6 @@ def _apply_agent_host_filters(
     has_critical_vulns: Optional[bool] = None,
     has_high_vulns: Optional[bool] = None,
     has_exploit_available: Optional[bool] = None,
-    min_risk_score: Optional[int] = None,
     search: Optional[str] = None,
     not_in_plan_id: Optional[int] = None,
 ):
@@ -191,12 +190,15 @@ def _apply_agent_host_filters(
 
     if search:
         from sqlalchemy import or_
-        pattern = f"%{search}%"
+        from app.services.host_query_common import escape_like
+        # Escape LIKE metacharacters so a literal % / _ in the agent's search
+        # term isn't treated as a wildcard (matches the user-side filters).
+        pattern = f"%{escape_like(search)}%"
         q = q.filter(
             or_(
-                models.Host.ip_address.ilike(pattern),
-                models.Host.hostname.ilike(pattern),
-                models.Host.os_name.ilike(pattern),
+                models.Host.ip_address.ilike(pattern, escape='\\'),
+                models.Host.hostname.ilike(pattern, escape='\\'),
+                models.Host.os_name.ilike(pattern, escape='\\'),
             )
         )
 

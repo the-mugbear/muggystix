@@ -451,6 +451,11 @@ def require_assist_scope(
                 "have access to assist endpoints."
             ),
         )
+    # Stash the key's agent project so _load_assist_session can re-assert
+    # session.project_id == agent.project_id (defence-in-depth against a
+    # hand-edited api_keys row pairing an agent with another project's
+    # session — mirrors the recon loader's scope_id re-check).
+    request.state.scoped_agent_project_id = agent.project_id
     return agent
 
 

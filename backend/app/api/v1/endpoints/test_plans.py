@@ -192,7 +192,6 @@ class FilterCriteria(BaseModel):
     min_severity: Optional[Literal["critical", "high", "medium", "low"]] = None
     has_critical_vulns: Optional[bool] = None
     has_high_vulns: Optional[bool] = None
-    min_risk_score: Optional[int] = Field(None, ge=0, le=100)
     search: Optional[str] = None
 
 
