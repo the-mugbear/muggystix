@@ -72,6 +72,7 @@ import EntryResultsPanel from './EntryResultsPanel';
 import WebInterfacesCard from './WebInterfacesCard';
 import NseScriptsCard from './NseScriptsCard';
 import NetExecCard from './NetExecCard';
+import HostFindingsCard from './HostFindingsCard';
 import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
@@ -286,6 +287,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
   const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
   const [promoting, setPromoting] = useState(false);
+  // Bumped after a promote so the inline HostFindingsCard refetches.
+  const [findingsRefresh, setFindingsRefresh] = useState(0);
 
   const handlePromoteNote = async () => {
     if (promoteNoteId === null) return;
@@ -294,6 +297,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       const finding = await promoteAnnotation(promoteNoteId, { severity: promoteSeverity });
       toast.success(`Promoted to finding: ${finding.title}`, { autoHideMs: 3000 });
       setPromoteNoteId(null);
+      setFindingsRefresh((n) => n + 1);
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to promote note to finding.'));
     } finally {
@@ -1328,6 +1332,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* This host's findings, inline — appears once a note here is promoted. */}
+      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
 
       {/* Vulnerabilities */}
       {hasVulnerabilities && (
