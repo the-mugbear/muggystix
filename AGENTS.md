@@ -458,7 +458,12 @@ POST /agent/recon/upload  (multipart/form-data)
 
 # 4. Poll the parse job
 GET /agent/recon/jobs/{job_id}
-# → { status: "queued"|"processing"|"completed"|"failed", scan_id, tool_name, last_error, ... }
+# → { status: "queued"|"processing"|"completed"|"failed", scan_id, tool_name, last_error,
+#     queue_age_s, parse_s, ... }
+#   queue_age_s = seconds the upload waited before the worker picked it up
+#   parse_s     = seconds spent parsing (created->started, started->completed)
+#   Both are null until the matching transition happens — use them to tell a
+#   backed-up queue from a genuinely slow parse before you keep polling.
 
 # 5. Check the rolling summary — decide what to do next
 GET /agent/recon/summary
@@ -532,11 +537,12 @@ Content-Type: application/json
   "web_targets": [                               // pre-computed for follow-on web tooling
     {"host_id": 18, "ip_address": "192.168.7.200", "hostname": "pi.hole",
      "port": 80, "protocol": "http", "url": "http://192.168.7.200/"}
-  ]
+  ],
+  "live_hosts_file_content": "192.168.7.200\n..."  // every host found SO FAR, newline-joined
 }
 ```
 
-Per-host fields use `open_ports` (full objects) and `services` (deduped names) — *not* `ports`. `web_targets` is pre-filtered to ports detected as HTTP/HTTPS so an agent can drive httpx/eyewitness/nikto from a single array without re-scanning the open_ports list.
+Per-host fields use `open_ports` (full objects) and `services` (deduped names) — *not* `ports`. `web_targets` is pre-filtered to ports detected as HTTP/HTTPS so an agent can drive httpx/eyewitness/nikto from a single array without re-scanning the open_ports list. `live_hosts_file_content` is a ready-to-redirect target file of every host discovered so far this session (newline-joined IPs, trailing newline) — write it straight to `session-hosts.txt` and feed the next stage with `-iL` instead of rebuilding the list from `hosts[]`. Empty string until the first host lands.
 
 > **`hosts[]` and `web_targets[]` are UNBOUNDED — no pagination, no truncation flag.** Every in-scope discovered host is returned in one response with full per-host port detail; a `/20` sweep can return tens of thousands of host objects. The payload is *complete* (good for coverage) but can blow your context window if you read or echo it whole. Don't dump it — iterate incrementally, and use the scalar counters (`scans_ingested`, `hosts_discovered`, `ports_discovered`) for progress reporting.
 
@@ -686,6 +692,8 @@ Use this only when the user explicitly chooses to narrow during plan approval. W
 Derived from `hosts[].open_ports` using the standard HTTP/HTTPS port map (80/8080/8000/81 → http, 443/8443/4443 → https) plus explicit service-name hits for non-standard ports (e.g., https on 10443 that nmap version-probed). Feed directly to httpx / eyewitness / nikto without a second round trip.
 
 Each `hosts[].open_ports[]` entry carries `{port, protocol, state, service, product, version}` — enough to build any follow-up target list without cross-referencing `/agent/hosts` or parsing the uploaded XML locally.
+
+The same response also carries `live_hosts_file_content` — a newline-joined file of every host discovered so far this session (trailing newline, IP-sorted). For the staged service-probe pass below, write it straight to `session-hosts.txt` and run `nmap -sV -iL session-hosts.txt` rather than rebuilding the list from `hosts[]`. It's empty until the first host lands, and (unlike `known_hosts_probe.live_hosts_file_content`, which is *prior* recon) it reflects THIS session's running discoveries.
 
 **Staged discovery is mandatory.** Never run `nmap -sV` on a full CIDR — it probes dead addresses for hours. Always: fast sweep → live-host list → service probe on hits only. `--top-ports 1000` covers >95% of real services; use `-p-` only as a targeted escalation on high-value hosts flagged during triage.
 

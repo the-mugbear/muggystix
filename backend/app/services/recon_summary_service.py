@@ -552,6 +552,20 @@ def web_targets_from_hosts(hosts: List[ReconHostBrief]) -> List[WebTarget]:
     return targets
 
 
+def session_hosts_file_content(hosts: List[ReconHostBrief]) -> str:
+    """Newline-joined IP list of the hosts discovered so far this session,
+    ready to redirect to a file and feed the next tool via ``-iL``.
+
+    Mirrors the ``KnownHostsProbeHelper.live_hosts_file_content`` blob
+    format (trailing newline included) but draws from the session's own
+    breakdown rather than prior-recon known hosts.  Returns an empty string
+    when nothing's been discovered yet.  ``hosts`` is already IP-sorted by
+    ``recon_session_host_breakdown``, so the file order is deterministic.
+    """
+    ips = [h.ip_address for h in hosts if h.ip_address]
+    return ("\n".join(ips) + "\n") if ips else ""
+
+
 def build_known_hosts_probe(
     db: Session, project_id: int, scope_id: int,
 ) -> KnownHostsProbeHelper | None:

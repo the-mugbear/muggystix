@@ -790,6 +790,13 @@ class ReconJobStatus(BaseModel):
     parse_error_id: Optional[int] = None
     recon_session_id: Optional[int] = None
     last_error: Optional[str] = None
+    # Derived timing so the agent can see where an upload spent its time
+    # without polling repeatedly.  Both are None until the relevant
+    # transition has happened: ``queue_age_s`` (created -> started) once the
+    # worker has picked the job up, ``parse_s`` (started -> completed) once
+    # parsing has finished.
+    queue_age_s: Optional[float] = None
+    parse_s: Optional[float] = None
 
 
 class ReconPortBrief(BaseModel):
@@ -852,6 +859,15 @@ class ReconSummaryResponse(BaseModel):
     # v2.13.2 — pre-computed web-fingerprint target list derived from
     # hosts[].open_ports.  Saves agents a round trip.
     web_targets: List[WebTarget] = Field(default_factory=list)
+    # Newline-joined IP list of every host discovered SO FAR in this
+    # session, ready to redirect to a file and pipe into the next tool
+    # (e.g. `nmap -iL session-hosts.txt`).  Mirrors
+    # KnownHostsProbeHelper.live_hosts_file_content, but for this session's
+    # own discoveries rather than prior-recon known hosts — so an agent
+    # chaining discovery → port scan → web doesn't have to rebuild the
+    # target file from `hosts[]` itself.  Empty string until the first
+    # host lands.
+    live_hosts_file_content: str = ""
 
 
 class ReconCompleteRequest(BaseModel):

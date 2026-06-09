@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.34.0",
+        "app_version": "2.139.0",
+        "summary": (
+            "Recon-agent ergonomics from a live test run. (1) GET "
+            "/agent/recon/jobs/{id} now echoes queue_age_s (created->started) "
+            "and parse_s (started->completed), both null until the transition "
+            "happens, so an agent can tell a backed-up queue from a slow parse "
+            "before it keeps polling. (2) GET /agent/recon/summary and POST "
+            "/agent/recon/complete now carry live_hosts_file_content — a "
+            "ready-to-redirect, newline-joined IP file of every host discovered "
+            "SO FAR this session — so the mandatory staged service-probe pass can "
+            "`-iL session-hosts.txt` instead of rebuilding the list from hosts[]. "
+            "Distinct from known_hosts_probe.live_hosts_file_content, which is "
+            "PRIOR recon. AGENTS.md updated in both the polling-loop and "
+            "summary-envelope sections."
+        ),
+    },
+    {
         "version": "1.33.0",
         "app_version": "2.109.0",
         "summary": (

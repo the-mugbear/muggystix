@@ -38,6 +38,7 @@ from app.services.recon_summary_service import (
     recon_session_host_breakdown as _recon_session_host_breakdown,
     web_targets_from_hosts as _web_targets_from_hosts,
     build_known_hosts_probe as _build_known_hosts_probe,
+    session_hosts_file_content as _session_hosts_file_content,
 )
 from app.services.recon_planning_service import (
     analyze_scope_size as _analyze_scope_size,
@@ -47,6 +48,21 @@ from app.services.recon_planning_service import (
 )
 
 router = APIRouter()
+
+
+def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Optional[float]:
+    """Elapsed seconds between two job timestamps, rounded to 2 dp.
+
+    Returns None unless both ends are present, so an in-flight job reports
+    None rather than a misleading partial delta — and we never subtract a
+    tz-aware timestamp from a naive one (the PG vs SQLite backends differ)."""
+    if start is None or end is None:
+        return None
+    try:
+        return round((end - start).total_seconds(), 2)
+    except TypeError:
+        # Mixed tz-aware / naive — don't guess, just omit the timing.
+        return None
 
 
 def _load_recon_session(db: Session, request: Request) -> ReconSession:
@@ -462,6 +478,12 @@ def get_recon_job(
     if not job:
         raise HTTPException(status_code=404, detail="Recon job not found")
 
+    # Echo definitive timings so the agent can tell a slow queue from a slow
+    # parse.  Computed only from completed transitions (no "now" delta) to
+    # avoid mixing tz-aware/naive timestamps across the PG/SQLite backends.
+    queue_age_s = _seconds_between(job.created_at, job.started_at)
+    parse_s = _seconds_between(job.started_at, job.completed_at)
+
     return ReconJobStatus(
         job_id=job.id,
         status=job.status,
@@ -472,6 +494,8 @@ def get_recon_job(
         parse_error_id=job.parse_error_id,
         recon_session_id=job.recon_session_id,
         last_error=job.last_error,
+        queue_age_s=queue_age_s,
+        parse_s=parse_s,
     )
 
 
@@ -567,6 +591,7 @@ def get_recon_summary(
         completed_at=session.completed_at,
         hosts=hosts_breakdown,
         web_targets=_web_targets_from_hosts(hosts_breakdown),
+        live_hosts_file_content=_session_hosts_file_content(hosts_breakdown),
     )
 
 
@@ -678,4 +703,5 @@ def complete_recon_session(
         completed_at=session.completed_at,
         hosts=hosts_breakdown,
         web_targets=_web_targets_from_hosts(hosts_breakdown),
+        live_hosts_file_content=_session_hosts_file_content(hosts_breakdown),
     )
