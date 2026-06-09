@@ -142,13 +142,17 @@ class FindingService:
             return existing
 
         derived_title = (title or _first_body_line(annotation.body))[:500]
+        # A promoted finding shouldn't land "unassigned": carry the note
+        # thread's existing work-assignee if it has one, else default to the
+        # promoter — they're the one triaging it.  (Explicit owner_id wins.)
+        effective_owner = owner_id or annotation.assignee_id or actor_id
         finding = Finding(
             project_id=project_id,
             title=derived_title,
             severity=severity,
             status=status,
             source=FindingSource.NOTE.value,
-            owner_id=owner_id,
+            owner_id=effective_owner,
             evidence_annotation_id=evidence_id,
             created_by_id=actor_id,
         )

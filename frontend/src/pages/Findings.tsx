@@ -7,6 +7,7 @@
  * up" lands on.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Loader2, AlertTriangle } from 'lucide-react';
 
 import {
@@ -15,6 +16,7 @@ import {
   FindingSeverity,
   FindingStatus,
   listFindings,
+  setFindingStatus,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -55,15 +57,6 @@ const STATUS_LABEL: Record<FindingStatus, string> = {
   retest: 'Retest',
 };
 
-const STATUS_VARIANT: Record<FindingStatus, string> = {
-  open: 'warning',
-  confirmed: 'destructive',
-  false_positive: 'muted',
-  accepted_risk: 'muted',
-  remediated: 'success',
-  retest: 'info',
-};
-
 const Findings: React.FC = () => {
   const toast = useToast();
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -98,6 +91,16 @@ const Findings: React.FC = () => {
   useEffect(() => {
     fetchFindings();
   }, [fetchFindings]);
+
+  const handleStatusChange = async (findingId: number, status: FindingStatus) => {
+    try {
+      const updated = await setFindingStatus(findingId, status);
+      setFindings((prev) => prev.map((f) => (f.id === findingId ? updated : f)));
+      toast.success(`Status → ${STATUS_LABEL[status]}`, { autoHideMs: 1500 });
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update finding status.'));
+    }
+  };
 
   return (
     <div className="p-md md:p-lg">
@@ -187,10 +190,39 @@ const Findings: React.FC = () => {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <span className="block truncate" title={f.title}>{f.title}</span>
+                    {/* The note thread is the finding's evidence — link the
+                        title to it (deep-links to the thread on the host, with
+                        all its replies/discussion) so promote isn't a one-way
+                        trip that drops the context. */}
+                    {f.source === 'note' && f.evidence_annotation_id && f.hosts.length > 0 ? (
+                      <Link
+                        to={`/hosts/${f.hosts[0].host_id}#note-${f.evidence_annotation_id}`}
+                        className="block truncate text-info hover:underline"
+                        title={`${f.title} — view evidence thread`}
+                      >
+                        {f.title}
+                      </Link>
+                    ) : (
+                      <span className="block truncate" title={f.title}>{f.title}</span>
+                    )}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={STATUS_VARIANT[f.status] as never}>{STATUS_LABEL[f.status]}</Badge>
+                    <Select
+                      value={f.status}
+                      onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus)}
+                    >
+                      <SelectTrigger
+                        className="h-7 text-caption"
+                        aria-label={`Status for ${f.title}`}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                          <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </TableCell>
                   <TableCell className="text-caption text-muted-foreground">{f.source}</TableCell>
                   <TableCell>
@@ -198,14 +230,19 @@ const Findings: React.FC = () => {
                       <span className="text-muted-foreground">—</span>
                     ) : (
                       <span
-                        className="block truncate font-mono text-caption"
+                        className="block truncate text-caption"
                         title={f.hosts
                           .map((h) => h.ip_address + (h.hostname ? ` (${h.hostname})` : ''))
                           .join(', ')}
                       >
-                        {f.hosts[0].ip_address}
+                        <Link
+                          to={`/hosts/${f.hosts[0].host_id}`}
+                          className="font-mono text-info hover:underline"
+                        >
+                          {f.hosts[0].ip_address}
+                        </Link>
                         {f.host_count > 1 && (
-                          <span className="font-sans text-muted-foreground"> +{f.host_count - 1}</span>
+                          <span className="text-muted-foreground"> +{f.host_count - 1}</span>
                         )}
                       </span>
                     )}
