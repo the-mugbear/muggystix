@@ -37,7 +37,6 @@ from app.db import models
 from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationModel
 from app.db.models_auth import User
 from app.db.models_agent import TestExecutionResult, TestPlanEntry
-from app.db.models_risk import HostRiskAssessment
 from app.db.models_vulnerability import Vulnerability
 
 # Leaf module — no import cycle (host_query imports *us*, not the reverse).
@@ -261,14 +260,6 @@ def severity_predicate(db: Session, severities: Iterable[str]) -> ColumnElement:
 def has_exploit_predicate(db: Session) -> ColumnElement:
     """Host has a vulnerability flagged exploitable by Nessus."""
     sub = db.query(Vulnerability.host_id).filter(Vulnerability.exploitable.is_(True)).distinct()
-    return models.Host.id.in_(sub)
-
-
-def risk_predicate(db: Session, min_score: int) -> ColumnElement:
-    """Host has a risk assessment at or above ``min_score``."""
-    sub = db.query(HostRiskAssessment.host_id).filter(
-        HostRiskAssessment.risk_score >= min_score
-    )
     return models.Host.id.in_(sub)
 
 

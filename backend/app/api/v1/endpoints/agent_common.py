@@ -189,16 +189,6 @@ def _apply_agent_host_filters(
             )
         )
 
-    if min_risk_score is not None:
-        from app.db.models_risk import RiskAssessment
-        q = q.filter(
-            models.Host.id.in_(
-                db.query(RiskAssessment.host_id).filter(
-                    RiskAssessment.overall_score >= min_risk_score
-                )
-            )
-        )
-
     if search:
         from sqlalchemy import or_
         pattern = f"%{search}%"

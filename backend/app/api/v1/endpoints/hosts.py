@@ -30,7 +30,6 @@ from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHis
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
 from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
-from app.db.models_risk import HostRiskAssessment
 from app.schemas.schemas import (
     Host as HostSchema,
     HostListResponse,
@@ -217,7 +216,6 @@ class HostFilterParams:
         has_low_vulns: Optional[bool] = Query(None, description="If true, only hosts with low-severity vulnerabilities"),
         has_exploit_available: Optional[bool] = Query(None, description="If true, only hosts with at least one vulnerability flagged as exploitable by Nessus (exploit_available / metasploit_name / canvas_package / core_impact_name / exploit_code_maturity in {functional, high, proof-of-concept})"),
         has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have had at least one agentic test executed against them (i.e. at least one TestExecutionResult row recorded via any TestPlanEntry for the host). Drives the 'tested' badge on the Hosts list."),
-        min_risk_score: Optional[int] = Query(None, ge=0, le=100, description="Minimum risk score threshold (0-100)", examples=[70]),
         follow_status: Optional[str] = Query(None, description="Filter by review status: watching, in_review, reviewed, or none", examples=["watching"]),
         out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
         scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),
@@ -244,7 +242,6 @@ class HostFilterParams:
         self.has_low_vulns = has_low_vulns
         self.has_exploit_available = has_exploit_available
         self.has_test_execution = has_test_execution
-        self.min_risk_score = min_risk_score
         self.follow_status = follow_status
         self.out_of_scope_only = out_of_scope_only
         self.scan_ids = scan_ids

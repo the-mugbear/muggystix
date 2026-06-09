@@ -176,7 +176,6 @@ async def upload_subnet_file(
         if sub is None:
             sub = Subnet(cidr=cidr, scope_id=scope.id, description=(description or None))
             db.add(sub)
-            db.flush()  # need sub.id for label assignments
             existing_subnets[cidr] = sub
             added += 1
             if description:
@@ -186,6 +185,11 @@ async def upload_subnet_file(
             # provides one (empty col 3 leaves any existing description intact).
             sub.description = description
             descriptions_set += 1
+    # One flush for the whole batch — populates .id on every pending Subnet
+    # (the existing_subnets map holds live object refs) for the label
+    # assignments below.  Avoids a per-row round-trip (and a regression on the
+    # label-less .txt path, which never flushed in the loop before).
+    db.flush()
 
     # Labels: get-or-create the project label, then add only assignments that
     # don't already exist (the uq_subnet_label_assignment dedup, applied in

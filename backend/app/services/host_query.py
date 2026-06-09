@@ -130,7 +130,6 @@ def build_filtered_host_query(
     has_low_vulns: Optional[bool] = None,
     has_exploit_available: Optional[bool] = None,
     has_test_execution: Optional[bool] = None,
-    min_risk_score: Optional[int] = None,
     follow_status: Optional[str] = None,
     out_of_scope_only: Optional[bool] = None,
     scan_ids: Optional[str] = None,
@@ -226,9 +225,6 @@ def build_filtered_host_query(
 
     if has_test_execution:
         query = query.filter(P.has_test_execution_predicate(db))
-
-    if min_risk_score is not None:
-        query = query.filter(P.risk_predicate(db, min_risk_score))
 
     if scan_ids:
         try:
