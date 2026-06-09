@@ -404,7 +404,14 @@ export default function Layout({ children }: LayoutProps) {
 
   const drawer = (
     <div className="flex h-full flex-col">
-      <div className="brand-sidebar-header flex h-[88px] items-center gap-sm border-b border-border px-md">
+      {/* Height tracks the topbar's measured `--topbar-h` (not a fixed 88px)
+          so the brand header's bottom border lines up with the page header's
+          — and stays aligned when the topbar grows (e.g. a long project name
+          wraps).  Fallback 76px matches the topbar's min-height. */}
+      <div
+        className="brand-sidebar-header flex items-center gap-sm border-b border-border px-md"
+        style={{ height: 'var(--topbar-h, 76px)' }}
+      >
         <img
           src="/bs.svg"
           alt=""

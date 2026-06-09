@@ -19,6 +19,7 @@ import {
   getFinding,
   getFindingHistory,
   setFindingStatus,
+  updateFinding,
   removeFindingHost,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
@@ -42,6 +43,12 @@ const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
 const STATUS_LABEL: Record<FindingStatus, string> = {
   open: 'Open', confirmed: 'Confirmed', false_positive: 'False positive',
   accepted_risk: 'Accepted risk', remediated: 'Remediated', retest: 'Retest',
+};
+// Severity is an editable attribute (not a lifecycle transition, so it isn't
+// in the status history) — surfaced here so a mis-set severity from
+// promotion (e.g. medium that should be low) can be reclassified in place.
+const SEVERITY_LABEL: Record<FindingSeverity, string> = {
+  critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Info',
 };
 const histLabel = (s: string | null) => (s ? STATUS_LABEL[s as FindingStatus] ?? s : '—');
 
@@ -85,6 +92,17 @@ const FindingDetail: React.FC = () => {
       await load(); // refresh status + history trail together
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update status.'));
+    }
+  };
+
+  const handleSeverity = async (severity: FindingSeverity) => {
+    if (!finding || severity === finding.severity) return;
+    try {
+      await updateFinding(finding.id, { severity });
+      await load(); // refresh so the headline badge + rollups reflect the change
+      toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update severity.'));
     }
   };
 
@@ -134,6 +152,19 @@ const FindingDetail: React.FC = () => {
             <SelectContent>
               {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
                 <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-xs">
+          <span className="text-muted-foreground">Severity</span>
+          <Select value={finding.severity} onValueChange={(v) => handleSeverity(v as FindingSeverity)}>
+            <SelectTrigger className="h-7 w-[8rem] text-caption" aria-label="Finding severity">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(SEVERITY_LABEL) as FindingSeverity[]).map((s) => (
+                <SelectItem key={s} value={s}>{SEVERITY_LABEL[s]}</SelectItem>
               ))}
             </SelectContent>
           </Select>
