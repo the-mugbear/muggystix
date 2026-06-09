@@ -17,7 +17,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.services.finding_service import FindingService
+from app.services.finding_service import FindingService, validate_severity
 from app.schemas.findings import (
     FindingResponse, FindingHostInfo, FindingListResponse,
     PromoteAnnotationRequest, FindingCreateRequest, FindingUpdateRequest,
@@ -125,8 +125,12 @@ def promote_annotation(
     if not annotation:
         raise HTTPException(status_code=404, detail="Annotation not found")
     svc = FindingService(db)
-    # Guard cross-tenant: the resolved project must match the path project.
-    if svc._project_id_for_annotation(annotation) != project.id:
+    # Guard cross-tenant: a resolvable project that isn't ours → 404.  When
+    # the project can't be resolved (scan/port/plan-targeted note), let the
+    # service raise its clearer 422 ("promote a host-/scope-/project-scoped
+    # note") rather than masking it as a 404 here.
+    resolved = svc._project_id_for_annotation(annotation)
+    if resolved is not None and resolved != project.id:
         raise HTTPException(status_code=404, detail="Annotation not found in this project")
     finding = svc.promote_annotation(
         annotation=annotation, severity=body.severity, title=body.title,
@@ -145,12 +149,13 @@ def update_finding(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
+    # Only status transitions are audited (via finding_status_history);
+    # title/severity/owner edits are not — they're attributes, not lifecycle.
     finding = _load(db, project, finding_id)
     if body.title is not None:
         finding.title = body.title[:500]
     if body.severity is not None:
-        from app.services.finding_service import _validate_severity
-        finding.severity = _validate_severity(body.severity)
+        finding.severity = validate_severity(body.severity)
     if body.owner_id is not None:
         finding.owner_id = body.owner_id
     db.commit()

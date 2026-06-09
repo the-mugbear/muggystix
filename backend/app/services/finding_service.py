@@ -9,7 +9,7 @@ owner + the cross-host M2M.
 from typing import List, Optional, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host, Scope
 from app.db.models_findings import (
@@ -23,7 +23,7 @@ _VALID_SEVERITIES = {s.value for s in FindingSeverity}
 _VALID_STATUSES = {s.value for s in FindingStatus}
 
 
-def _validate_severity(severity: str) -> str:
+def validate_severity(severity: str) -> str:
     if severity not in _VALID_SEVERITIES:
         raise HTTPException(
             status_code=422,
@@ -39,6 +39,14 @@ def _validate_status(status: str) -> str:
             detail=f"status must be one of {sorted(_VALID_STATUSES)}",
         )
     return status
+
+
+def _first_body_line(body: Optional[str]) -> str:
+    """First non-empty line of a note body, or a fallback title."""
+    for line in (body or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return "Promoted finding"
 
 
 class FindingService:
@@ -66,9 +74,27 @@ class FindingService:
     # ------------------------------------------------------------------
     def _attach_hosts(self, finding: Finding, host_ids: Sequence[int]) -> None:
         seen = {fh.host_id for fh in finding.hosts}
-        for hid in host_ids:
-            if hid is None or hid in seen:
-                continue
+        requested = [hid for hid in host_ids if hid is not None and hid not in seen]
+        if not requested:
+            return
+        # Cross-tenant guard (the single choke point all three write paths
+        # share — create / promote / add-hosts).  host_ids are global,
+        # sequential hosts_v2 ids; without this an analyst in project A could
+        # attach project B's hosts to an A finding AND read back B's
+        # IP/hostname via the response.  Same IDOR shape as the agent_activity
+        # fix.  One query; reject the whole request if any host is foreign.
+        valid = {
+            r[0] for r in self.db.query(Host.id)
+            .filter(Host.id.in_(requested), Host.project_id == finding.project_id)
+            .all()
+        }
+        invalid = [hid for hid in requested if hid not in valid]
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Hosts {invalid} are not in this project.",
+            )
+        for hid in requested:
             self.db.add(FindingHost(
                 finding_id=finding.id, host_id=hid,
                 host_status=FindingHostStatus.OPEN.value,
@@ -89,7 +115,7 @@ class FindingService:
         """Promote an annotation thread into a Finding.  Classifying a note
         as a finding is itself a confirmation, so status defaults to
         ``confirmed``; severity is required (the one real new input)."""
-        _validate_severity(severity)
+        validate_severity(severity)
         _validate_status(status)
         project_id = self._project_id_for_annotation(annotation)
         if project_id is None:
@@ -98,11 +124,24 @@ class FindingService:
                 detail="Cannot resolve a project for this annotation; promote a "
                        "host-, scope-, or project-scoped note.",
             )
-        derived_title = title or (annotation.body or "").strip().splitlines()[0:1]
-        derived_title = (title or (derived_title[0] if derived_title else "Promoted finding"))[:500]
         # The thread root is the evidence anchor (== self for a root note).
         evidence_id = annotation.thread_root_id or annotation.id
 
+        # Idempotent: a double-click / retry must not create a second finding
+        # for the same note thread.  "References, never copies" (model
+        # docstring) — one note-sourced finding per evidence thread root.
+        existing = (
+            self.db.query(Finding)
+            .filter(
+                Finding.evidence_annotation_id == evidence_id,
+                Finding.source == FindingSource.NOTE.value,
+            )
+            .first()
+        )
+        if existing is not None:
+            return existing
+
+        derived_title = (title or _first_body_line(annotation.body))[:500]
         finding = Finding(
             project_id=project_id,
             title=derived_title,
@@ -145,7 +184,7 @@ class FindingService:
         vuln_id: Optional[int] = None,
         exec_result_id: Optional[int] = None,
     ) -> Finding:
-        _validate_severity(severity)
+        validate_severity(severity)
         _validate_status(status)
         finding = Finding(
             project_id=project_id, title=title[:500], severity=severity,
@@ -202,7 +241,17 @@ class FindingService:
         owner_id: Optional[int] = None, source: Optional[str] = None,
         host_id: Optional[int] = None, limit: int = 100, offset: int = 0,
     ):
-        q = self.db.query(Finding).filter(Finding.project_id == project_id)
+        # Eager-load what _serialize touches (each finding's hosts + their
+        # Host rows, and the owner) so a page of findings — amplified by the
+        # one-finding-many-hosts design — doesn't N+1.  Mirrors _load.
+        q = (
+            self.db.query(Finding)
+            .options(
+                selectinload(Finding.hosts).selectinload(FindingHost.host),
+                selectinload(Finding.owner),
+            )
+            .filter(Finding.project_id == project_id)
+        )
         if status:
             q = q.filter(Finding.status == status)
         if severity:

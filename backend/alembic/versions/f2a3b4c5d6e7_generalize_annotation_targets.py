@@ -53,4 +53,7 @@ def downgrade() -> None:
         op.drop_index(f"ix_annotations_{col}", table_name="annotations")
         op.drop_constraint(f"fk_annotations_{col}", "annotations", type_="foreignkey")
         op.drop_column("annotations", col)
+    # Best-effort: re-applying host_id NOT NULL FAILS if any non-host
+    # annotation (scope/scan/plan/project-targeted) exists by now.  Delete or
+    # re-home those first if you must downgrade a DB that used the feature.
     op.alter_column("annotations", "host_id", existing_type=sa.Integer(), nullable=False)
