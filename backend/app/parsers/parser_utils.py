@@ -213,10 +213,17 @@ def upsert_vulnerability(
     query = db.query(Vulnerability).filter(
         Vulnerability.host_id == host_id,
         Vulnerability.source == source,
-        Vulnerability.title == title,
     )
     if plugin_id:
+        # A plugin/NVT id is a stable identifier — dedup on it and treat the
+        # title as an UPDATABLE attribute.  Keying on title too (the old
+        # behaviour) wrote a duplicate when the same NVT reported a slightly
+        # different name across rows (e.g. OpenVAS name vs the "OpenVAS
+        # finding" fallback).  Matches the Nessus path, which keys on plugin_id.
         query = query.filter(Vulnerability.plugin_id == plugin_id)
+    else:
+        # No stable id — fall back to the title as the discriminator.
+        query = query.filter(Vulnerability.title == title)
     if port_id is None:
         query = query.filter(Vulnerability.port_id.is_(None))
     else:
@@ -227,6 +234,9 @@ def upsert_vulnerability(
         existing.last_seen = datetime.utcnow()
         existing.scan_id = scan_id
         existing.severity = severity
+        # Title can change across scans for the same plugin_id — keep latest.
+        if title:
+            existing.title = title
         existing.cvss_score = cvss_score
         existing.description = description or existing.description
         existing.cve_id = cve_id or existing.cve_id

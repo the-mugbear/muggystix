@@ -339,9 +339,14 @@ class HostDeduplicationService:
         """
         updated = False
         
-        # Update hostname if new one is provided and not null
+        # Fill the hostname only when we don't already have one.  The old
+        # "longer hostname wins" heuristic let a long but wrong vhost
+        # (very-long-marketing-redirect.example.com) clobber a correct short
+        # PTR (db01), and contradicted the overwrite=False protection the dnsx
+        # parser added for canonical names.  Without a per-attribute
+        # confidence signal here, first-non-empty-wins is the safe rule.
         new_hostname = host_data.get('hostname')
-        if new_hostname and (not host.hostname or len(new_hostname) > len(host.hostname or '')):
+        if new_hostname and not host.hostname:
             host.hostname = new_hostname
             updated = True
         
