@@ -1,7 +1,7 @@
 import React from 'react';
 import { Reply, Trash2 } from 'lucide-react';
 
-import type { HostNote, NoteStatus } from '../../services/api';
+import type { Annotation, NoteStatus } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import {
@@ -49,9 +49,9 @@ export interface NoteStatusMeta {
 
 export interface NoteThreadProps {
   /** Top-level notes (depth=0).  Each one starts its own thread. */
-  topLevel: HostNote[];
+  topLevel: Annotation[];
   /** Map of parent_id → reply array, sorted oldest-first by the parent. */
-  repliesByParent: Record<number, HostNote[]>;
+  repliesByParent: Record<number, Annotation[]>;
   /** Display metadata per note status — owned by HostInspector. */
   noteStatusMeta: Record<NoteStatus, NoteStatusMeta>;
   /** Active reply target (which note is being replied to) + composed body. */
@@ -68,7 +68,7 @@ export interface NoteThreadProps {
 }
 
 interface NoteRowProps extends Omit<NoteThreadProps, 'topLevel'> {
-  note: HostNote;
+  note: Annotation;
   depth: number;
 }
 

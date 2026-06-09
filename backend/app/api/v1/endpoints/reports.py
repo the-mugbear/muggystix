@@ -86,7 +86,7 @@ class ReportGenerator:
             selectinload(models.Host.host_scripts),
             selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
             selectinload(models.Host.last_updated_scan),
-            selectinload(models.Host.notes).selectinload(models.HostNote.author),
+            selectinload(models.Host.notes).selectinload(models.Annotation.author),
             selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
         ).distinct().limit(self.MAX_REPORT_HOSTS)
 
@@ -964,7 +964,7 @@ class ReportGenerator:
             "references": references,
         }
 
-    def _serialize_note_for_export(self, note: models.HostNote) -> Dict[str, Any]:
+    def _serialize_note_for_export(self, note: models.Annotation) -> Dict[str, Any]:
         return _serialize_note(note).model_dump(mode="json")
 
     def _serialize_risk_for_export(

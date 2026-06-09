@@ -11,13 +11,13 @@ logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
 from app.db import models
-from app.db.models import HostNote as HostNoteModel, NoteStatus, ActivityCursor
+from app.db.models import Annotation as AnnotationModel, NoteStatus, ActivityCursor
 from app.db.models_auth import User, UserRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole, ProjectMembership
 from app.schemas.schemas import (
-    HostNote, HostNoteCreate, HostNoteUpdate, HostNoteStatusHistoryEntry,
+    Annotation, AnnotationCreate, AnnotationUpdate, AnnotationStatusHistoryEntry,
 )
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import safe_dispatch
@@ -53,16 +53,16 @@ def get_unread_activity_count(
         .first()
     )
     last_seen = cursor.last_seen_at if cursor else None
-    query = db.query(func.count(HostNoteModel.id)).join(
-        models.Host, HostNoteModel.host_id == models.Host.id
+    query = db.query(func.count(AnnotationModel.id)).join(
+        models.Host, AnnotationModel.host_id == models.Host.id
     ).filter(
         models.Host.project_id == project.id,
         # Always exclude the caller's own notes from the unread count.
-        HostNoteModel.user_id != current_user.id,
+        AnnotationModel.user_id != current_user.id,
     )
     if last_seen:
         query = query.filter(
-            func.coalesce(HostNoteModel.updated_at, HostNoteModel.created_at) > last_seen
+            func.coalesce(AnnotationModel.updated_at, AnnotationModel.created_at) > last_seen
         )
     count = query.scalar() or 0
     return {"unread_count": count}
@@ -106,9 +106,9 @@ def get_note_activity(
 ):
     """Get all note activity grouped by host for the activity page."""
     query = (
-        db.query(HostNoteModel)
-        .options(selectinload(HostNoteModel.author))
-        .join(models.Host, HostNoteModel.host_id == models.Host.id)
+        db.query(AnnotationModel)
+        .options(selectinload(AnnotationModel.author))
+        .join(models.Host, AnnotationModel.host_id == models.Host.id)
         .filter(models.Host.project_id == project.id)
     )
 
@@ -117,18 +117,18 @@ def get_note_activity(
         # status: return every message of threads whose root has `status`,
         # so the feed agrees with the root-status badge the UI renders.
         root_ids_with_status = (
-            db.query(HostNoteModel.id)
-            .join(models.Host, HostNoteModel.host_id == models.Host.id)
+            db.query(AnnotationModel.id)
+            .join(models.Host, AnnotationModel.host_id == models.Host.id)
             .filter(
                 models.Host.project_id == project.id,
-                HostNoteModel.parent_id.is_(None),
-                HostNoteModel.status == status,
+                AnnotationModel.parent_id.is_(None),
+                AnnotationModel.status == status,
             )
         )
-        query = query.filter(HostNoteModel.thread_root_id.in_(root_ids_with_status))
+        query = query.filter(AnnotationModel.thread_root_id.in_(root_ids_with_status))
 
     if author_id:
-        query = query.filter(HostNoteModel.user_id == author_id)
+        query = query.filter(AnnotationModel.user_id == author_id)
 
     if search:
         from app.api.v1.endpoints.hosts import _escape_like
@@ -136,11 +136,11 @@ def get_note_activity(
         query = query.filter(
             (models.Host.ip_address.ilike(f"%{escaped}%"))
             | (models.Host.hostname.ilike(f"%{escaped}%"))
-            | (HostNoteModel.body.ilike(f"%{escaped}%"))
+            | (AnnotationModel.body.ilike(f"%{escaped}%"))
         )
 
     notes = (
-        query.order_by(desc(func.coalesce(HostNoteModel.updated_at, HostNoteModel.created_at)))
+        query.order_by(desc(func.coalesce(AnnotationModel.updated_at, AnnotationModel.created_at)))
         .offset(skip)
         .limit(limit)
         .all()
@@ -154,8 +154,8 @@ def get_note_activity(
 
     while pending_parent_ids:
         parent_notes = (
-            db.query(HostNoteModel)
-            .filter(HostNoteModel.id.in_(pending_parent_ids))
+            db.query(AnnotationModel)
+            .filter(AnnotationModel.id.in_(pending_parent_ids))
             .all()
         )
         if not parent_notes:
@@ -179,32 +179,32 @@ def get_note_activity(
     host_note_counts = {}
     if host_ids:
         counts = (
-            db.query(HostNoteModel.host_id, func.count(HostNoteModel.id))
-            .filter(HostNoteModel.host_id.in_(host_ids))
-            .group_by(HostNoteModel.host_id)
+            db.query(AnnotationModel.host_id, func.count(AnnotationModel.id))
+            .filter(AnnotationModel.host_id.in_(host_ids))
+            .group_by(AnnotationModel.host_id)
             .all()
         )
         host_note_counts = dict(counts)
 
     # Aggregate stats (scoped to project)
-    total_notes = db.query(func.count(HostNoteModel.id)).join(
-        models.Host, HostNoteModel.host_id == models.Host.id
+    total_notes = db.query(func.count(AnnotationModel.id)).join(
+        models.Host, AnnotationModel.host_id == models.Host.id
     ).filter(models.Host.project_id == project.id).scalar() or 0
     # review #5 — status counts are THREAD counts by root status (root
     # notes only), matching the thread-status filter above so totals and
     # filtered results can't contradict each other.
     status_counts = dict(
-        db.query(HostNoteModel.status, func.count(HostNoteModel.id))
-        .join(models.Host, HostNoteModel.host_id == models.Host.id)
+        db.query(AnnotationModel.status, func.count(AnnotationModel.id))
+        .join(models.Host, AnnotationModel.host_id == models.Host.id)
         .filter(
             models.Host.project_id == project.id,
-            HostNoteModel.parent_id.is_(None),
+            AnnotationModel.parent_id.is_(None),
         )
-        .group_by(HostNoteModel.status)
+        .group_by(AnnotationModel.status)
         .all()
     )
 
-    def resolve_thread_root_id(note: HostNoteModel) -> int:
+    def resolve_thread_root_id(note: AnnotationModel) -> int:
         current = note
         seen = {note.id}
 
@@ -264,8 +264,8 @@ def get_note_activity(
     from app.db.models_auth import User as UserModel
     author_rows = (
         db.query(UserModel.id, UserModel.username, UserModel.full_name)
-        .join(HostNoteModel, HostNoteModel.user_id == UserModel.id)
-        .join(models.Host, HostNoteModel.host_id == models.Host.id)
+        .join(AnnotationModel, AnnotationModel.user_id == UserModel.id)
+        .join(models.Host, AnnotationModel.host_id == models.Host.id)
         .filter(models.Host.project_id == project.id)
         .distinct()
         .all()
@@ -289,7 +289,7 @@ def get_note_activity(
 
 @router.get(
     "/{host_id:int}/notes",
-    response_model=List[HostNote],
+    response_model=List[Annotation],
     summary="List notes on a host",
 )
 def list_host_notes(
@@ -311,14 +311,14 @@ def list_host_notes(
 
 @router.post(
     "/{host_id:int}/notes",
-    response_model=HostNote,
+    response_model=Annotation,
     summary="Create a note on a host (parses @mentions to notify users)",
     # RV-4 — note writes require ANALYST+; viewers/auditors are read-only.
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def create_host_note(
     host_id: int,
-    payload: HostNoteCreate,
+    payload: AnnotationCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -383,7 +383,7 @@ def create_host_note(
 
     serialized = _serialize_note(note)
     if mention_warning:
-        # HostNote is a Pydantic model; use model_copy to attach the
+        # Annotation is a Pydantic model; use model_copy to attach the
         # warning without mutating the schema signature.  Frontend
         # clients that don't know about mention_warning simply ignore
         # the extra field.
@@ -393,7 +393,7 @@ def create_host_note(
 
 @router.patch(
     "/{host_id:int}/notes/{note_id:int}",
-    response_model=HostNote,
+    response_model=Annotation,
     summary="Edit a note body (author-only) and/or thread work-state (any project member)",
     # RV-4 — ANALYST+ to mutate; "any project member" in the docstring
     # means any member who can write (ANALYST/ADMIN), not viewers/auditors.
@@ -402,7 +402,7 @@ def create_host_note(
 def update_host_note(
     host_id: int,
     note_id: int,
-    payload: HostNoteUpdate,
+    payload: AnnotationUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -430,8 +430,8 @@ def update_host_note(
     # BEFORE mutating, capture the pre-change root status for the status
     # notification, and never partially commit (review #1).
     target = (
-        db.query(HostNoteModel)
-        .filter(HostNoteModel.id == note_id, HostNoteModel.host_id == host_id)
+        db.query(AnnotationModel)
+        .filter(AnnotationModel.id == note_id, AnnotationModel.host_id == host_id)
         .first()
     )
     if target is None:
@@ -588,7 +588,7 @@ def update_host_note(
 
 @router.get(
     "/{host_id:int}/notes/{note_id:int}/history",
-    response_model=List[HostNoteStatusHistoryEntry],
+    response_model=List[AnnotationStatusHistoryEntry],
     summary="Status-transition history for a note thread",
 )
 def get_host_note_history(
@@ -602,8 +602,8 @@ def get_host_note_history(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
     note = (
-        db.query(HostNoteModel)
-        .filter(HostNoteModel.id == note_id, HostNoteModel.host_id == host_id)
+        db.query(AnnotationModel)
+        .filter(AnnotationModel.id == note_id, AnnotationModel.host_id == host_id)
         .first()
     )
     if note is None:
@@ -616,7 +616,7 @@ def get_host_note_history(
     root_id = note.thread_root_id or follow_service._root_note(note).id
     rows = follow_service.get_status_history(root_id)
     return [
-        HostNoteStatusHistoryEntry(
+        AnnotationStatusHistoryEntry(
             id=r.id,
             from_status=r.from_status,
             to_status=r.to_status,

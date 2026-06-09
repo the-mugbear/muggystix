@@ -82,7 +82,7 @@ class HostFollowInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class HostNoteBase(BaseModel):
+class AnnotationBase(BaseModel):
     # Cap free-form text at 16 KB.  A realistic triage note is under
     # 1 KB; the ceiling exists so a copy-pasted pentest report or a
     # stuck client loop can't insert multi-megabyte rows into the DB.
@@ -90,7 +90,7 @@ class HostNoteBase(BaseModel):
     status: NoteStatus = NoteStatus.open
 
 
-class HostNote(HostNoteBase):
+class Annotation(AnnotationBase):
     id: int
     author_id: Optional[int] = Field(None, validation_alias="user_id")
     author_name: Optional[str] = None
@@ -146,12 +146,12 @@ class HostFollowUpdate(BaseModel):
     status: FollowStatus
 
 
-class HostNoteCreate(HostNoteBase):
+class AnnotationCreate(AnnotationBase):
     status: NoteStatus = NoteStatus.open
     parent_id: Optional[int] = None
 
 
-class HostNoteUpdate(BaseModel):
+class AnnotationUpdate(BaseModel):
     body: Optional[str] = Field(None, max_length=16384)
     status: Optional[NoteStatus] = None
     # Thread-level work fields (P3). The endpoint uses ``model_fields_set``
@@ -163,7 +163,7 @@ class HostNoteUpdate(BaseModel):
     pinned: Optional[bool] = None
 
 
-class HostNoteStatusHistoryEntry(BaseModel):
+class AnnotationStatusHistoryEntry(BaseModel):
     id: int
     from_status: Optional[str] = None
     to_status: str
@@ -279,7 +279,7 @@ class Host(HostBase):
     vulnerability_summary: Optional[HostVulnerabilitySummary] = None
     vulnerabilities: List[HostVulnerability] = []
     follow: Optional[HostFollowInfo] = None
-    notes: List[HostNote] = []
+    notes: List[Annotation] = []
     note_count: int = 0
     test_plan_entry_count: int = 0
     # v2.81.0 — count of TestExecutionResult rows recorded against this

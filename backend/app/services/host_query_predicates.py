@@ -34,7 +34,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.types import String as SAString
 
 from app.db import models
-from app.db.models import FollowStatus, HostFollow, HostNote as HostNoteModel
+from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationModel
 from app.db.models_auth import User
 from app.db.models_agent import TestExecutionResult, TestPlanEntry
 from app.db.models_risk import HostRiskAssessment
@@ -278,17 +278,17 @@ def risk_predicate(db: Session, min_score: int) -> ColumnElement:
 
 def has_notes_predicate(db: Session) -> ColumnElement:
     """Host has at least one note."""
-    sub = db.query(HostNoteModel.host_id).distinct()
+    sub = db.query(AnnotationModel.host_id).distinct()
     return models.Host.id.in_(sub)
 
 
 def note_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Host has a note whose ``body`` ILIKE-matches any value."""
     conditions = [
-        HostNoteModel.body.ilike(f'%{escape_like(v)}%', escape='\\')
+        AnnotationModel.body.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = db.query(HostNoteModel.host_id).filter(or_(*conditions)).distinct()
+    sub = db.query(AnnotationModel.host_id).filter(or_(*conditions)).distinct()
     return models.Host.id.in_(sub)
 
 

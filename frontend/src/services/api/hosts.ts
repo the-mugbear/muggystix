@@ -69,7 +69,7 @@ export interface Host {
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];
   follow?: HostFollowInfo | null;
-  notes?: HostNote[];
+  notes?: Annotation[];
   note_count?: number;
   test_plan_entry_count?: number;
   test_execution_count?: number;
@@ -123,7 +123,7 @@ export interface HostFollowInfo {
   updated_at?: string | null;
 }
 
-export interface HostNote {
+export interface Annotation {
   id: number;
   body: string;
   status: NoteStatus;
@@ -141,7 +141,7 @@ export interface HostNote {
   updated_at?: string | null;
 }
 
-export interface HostNoteStatusHistoryEntry {
+export interface AnnotationStatusHistoryEntry {
   id: number;
   from_status: string | null;
   to_status: string;
@@ -281,15 +281,15 @@ export const recordHostView = async (hostId: number): Promise<void> => {
   await api.post(`${p()}/hosts/${hostId}/view`);
 };
 
-export const createHostNote = async (
+export const createAnnotation = async (
   hostId: number,
   payload: { body: string; status?: NoteStatus; parent_id?: number },
-): Promise<HostNote> => {
+): Promise<Annotation> => {
   const response = await api.post(`${p()}/hosts/${hostId}/notes`, payload);
   return response.data;
 };
 
-export interface HostNoteUpdatePayload {
+export interface AnnotationUpdatePayload {
   body?: string;
   status?: NoteStatus;
   // Thread-level work fields (P3). Sending `null` clears a nullable field;
@@ -301,24 +301,24 @@ export interface HostNoteUpdatePayload {
   pinned?: boolean;
 }
 
-export const updateHostNote = async (
+export const updateAnnotation = async (
   hostId: number,
   noteId: number,
-  payload: HostNoteUpdatePayload,
-): Promise<HostNote> => {
+  payload: AnnotationUpdatePayload,
+): Promise<Annotation> => {
   const response = await api.patch(`${p()}/hosts/${hostId}/notes/${noteId}`, payload);
   return response.data;
 };
 
-export const getHostNoteHistory = async (
+export const getAnnotationHistory = async (
   hostId: number,
   noteId: number,
-): Promise<HostNoteStatusHistoryEntry[]> => {
+): Promise<AnnotationStatusHistoryEntry[]> => {
   const response = await api.get(`${p()}/hosts/${hostId}/notes/${noteId}/history`);
   return response.data;
 };
 
-export const deleteHostNote = async (hostId: number, noteId: number): Promise<void> => {
+export const deleteAnnotation = async (hostId: number, noteId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/${hostId}/notes/${noteId}`);
 };
 

@@ -14,7 +14,7 @@ from sqlalchemy import func
 
 from app.db.models_project import Notification, NoteMention, Project, ProjectMembership
 from app.db.models_auth import User
-from app.db.models import HostNote
+from app.db.models import Annotation
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class NotificationService:
 
     def process_note_mentions(
         self,
-        note: HostNote,
+        note: Annotation,
         actor: User,
         project: Project,
     ) -> List[Notification]:
@@ -112,7 +112,7 @@ class NotificationService:
 
     def notify_status_change(
         self,
-        note: HostNote,
+        note: Annotation,
         old_status: str,
         new_status: str,
         actor: User,
@@ -131,11 +131,11 @@ class NotificationService:
         # the thread root and notify all its participants, minus the actor.
         root_id = getattr(note, "thread_root_id", None) or note.id
         participant_rows = (
-            self.db.query(HostNote.user_id)
+            self.db.query(Annotation.user_id)
             .filter(
-                HostNote.thread_root_id == root_id,
-                HostNote.user_id.isnot(None),
-                HostNote.user_id != actor.id,
+                Annotation.thread_root_id == root_id,
+                Annotation.user_id.isnot(None),
+                Annotation.user_id != actor.id,
             )
             .distinct()
             .all()

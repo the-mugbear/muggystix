@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
 from app.db.models import (
-    HostFollow, FollowStatus, HostNote, NoteStatus, HostNoteStatusHistory,
+    HostFollow, FollowStatus, Annotation, NoteStatus, AnnotationStatusHistory,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,12 +126,12 @@ class HostFollowService:
             self.db.delete(follow)
             self.db.commit()
 
-    def list_notes(self, host_id: int, limit: int = 50) -> List[HostNote]:
+    def list_notes(self, host_id: int, limit: int = 50) -> List[Annotation]:
         return (
-            self.db.query(HostNote)
-            .filter(HostNote.host_id == host_id)
-            .options(selectinload(HostNote.author))
-            .order_by(HostNote.created_at.desc())
+            self.db.query(Annotation)
+            .filter(Annotation.host_id == host_id)
+            .options(selectinload(Annotation.author))
+            .order_by(Annotation.created_at.desc())
             .limit(limit)
             .all()
         )
@@ -143,7 +143,7 @@ class HostFollowService:
         body: str,
         status: NoteStatus = NoteStatus.OPEN,
         parent_id: Optional[int] = None,
-    ) -> HostNote:
+    ) -> Annotation:
         # Security fix: previously trusted ``parent_id`` verbatim, so a
         # note on host A in Project A could be threaded under a note on
         # host B in Project B — every status-change on the child would
@@ -153,13 +153,13 @@ class HostFollowService:
         parent = None
         if parent_id is not None:
             parent = (
-                self.db.query(HostNote)
-                .filter(HostNote.id == parent_id, HostNote.host_id == host_id)
+                self.db.query(Annotation)
+                .filter(Annotation.id == parent_id, Annotation.host_id == host_id)
                 .first()
             )
             if parent is None:
                 raise ValueError("parent_id must reference a note on the same host")
-        note = HostNote(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
+        note = Annotation(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
         self.db.add(note)
         self.db.flush()  # assign note.id before stamping thread_root_id
         # Persist the thread root (review #5): a root note points at itself;
@@ -170,14 +170,14 @@ class HostFollowService:
         self.db.refresh(note, attribute_names=["author"])
         return note
 
-    def _root_note(self, note: HostNote) -> HostNote:
+    def _root_note(self, note: Annotation) -> Annotation:
         """Walk parent_id to the thread root (cycle-guarded)."""
         current = note
         seen = {note.id}
         while current.parent_id is not None:
             parent = (
-                self.db.query(HostNote)
-                .filter(HostNote.id == current.parent_id)
+                self.db.query(Annotation)
+                .filter(Annotation.id == current.parent_id)
                 .first()
             )
             if parent is None or parent.id in seen:
@@ -193,7 +193,7 @@ class HostFollowService:
         body: str,
         host_id: Optional[int] = None,
         commit: bool = True,
-    ) -> HostNote:
+    ) -> Annotation:
         """Edit a note's body — AUTHOR ONLY (P3 permission split).
 
         Body is authored content; only its writer may change it.  Thread
@@ -204,7 +204,7 @@ class HostFollowService:
         committing, so the endpoint can apply body + thread-meta in ONE
         transaction (avoids the partial-commit-then-400 bug — review #1).
         """
-        note = self.db.query(HostNote).filter(HostNote.id == note_id).first()
+        note = self.db.query(Annotation).filter(Annotation.id == note_id).first()
         if not note:
             raise ValueError("Note not found")
         if note.user_id != user_id:
@@ -231,12 +231,12 @@ class HostFollowService:
         resolution_summary=_UNSET,
         pinned=_UNSET,
         commit: bool = True,
-    ) -> HostNote:
+    ) -> Annotation:
         """Update a thread's work-state — ANY project member (P3).
 
         Operates on the thread ROOT (so replying never reopens, and a
         teammate can resolve/reassign an abandoned thread).  Records a
-        ``HostNoteStatusHistory`` row on every status transition and
+        ``AnnotationStatusHistory`` row on every status transition and
         enforces resolve-requires-summary.  Fields left as ``_UNSET`` are
         untouched; passing ``None`` clears a nullable field.
 
@@ -245,7 +245,7 @@ class HostFollowService:
         (review #3), mirroring host assignment.  ``commit=False`` defers
         the commit to the caller for one-transaction PATCHes (review #1).
         """
-        target = self.db.query(HostNote).filter(HostNote.id == note_id).first()
+        target = self.db.query(Annotation).filter(Annotation.id == note_id).first()
         if not target:
             raise ValueError("Note not found")
         if host_id is not None and target.host_id != host_id:
@@ -280,7 +280,7 @@ class HostFollowService:
         if status is not _UNSET and status != note.status:
             old_status = note.status
             note.status = status
-            self.db.add(HostNoteStatusHistory(
+            self.db.add(AnnotationStatusHistory(
                 note_id=note.id,
                 from_status=old_status.value if hasattr(old_status, "value") else str(old_status),
                 to_status=status.value if hasattr(status, "value") else str(status),
@@ -296,17 +296,17 @@ class HostFollowService:
             self.db.refresh(note, attribute_names=["author", "assignee"])
         return note
 
-    def get_status_history(self, note_id: int) -> List[HostNoteStatusHistory]:
+    def get_status_history(self, note_id: int) -> List[AnnotationStatusHistory]:
         return (
-            self.db.query(HostNoteStatusHistory)
-            .filter(HostNoteStatusHistory.note_id == note_id)
-            .options(selectinload(HostNoteStatusHistory.changed_by))
-            .order_by(HostNoteStatusHistory.created_at.asc())
+            self.db.query(AnnotationStatusHistory)
+            .filter(AnnotationStatusHistory.note_id == note_id)
+            .options(selectinload(AnnotationStatusHistory.changed_by))
+            .order_by(AnnotationStatusHistory.created_at.asc())
             .all()
         )
 
     def delete_note(self, note_id: int, user_id: int, host_id: Optional[int] = None) -> None:
-        note = self.db.query(HostNote).filter(HostNote.id == note_id).first()
+        note = self.db.query(Annotation).filter(Annotation.id == note_id).first()
         if not note:
             raise ValueError("Note not found")
         if note.user_id != user_id:
@@ -318,10 +318,10 @@ class HostFollowService:
         # note that still has descendants would raise a raw DB FK error.
         # Reject cleanly; the operator must resolve/delete replies first.
         has_replies = (
-            self.db.query(HostNote.id)
+            self.db.query(Annotation.id)
             .filter(
-                HostNote.id != note.id,
-                or_(HostNote.parent_id == note.id, HostNote.thread_root_id == note.id),
+                Annotation.id != note.id,
+                or_(Annotation.parent_id == note.id, Annotation.thread_root_id == note.id),
             )
             .first()
         )
@@ -335,9 +335,9 @@ class HostFollowService:
     def get_dashboard_activity(self, user_id: int, limit: int = 5, project_id: int = None) -> Dict[str, object]:
         """Return recent note activity and follow counts for dashboard display,
         optionally scoped to a project."""
-        note_query = self.db.query(func.count(HostNote.id)).filter(HostNote.user_id == user_id)
+        note_query = self.db.query(func.count(Annotation.id)).filter(Annotation.user_id == user_id)
         if project_id is not None:
-            note_query = note_query.join(models.Host, HostNote.host_id == models.Host.id).filter(models.Host.project_id == project_id)
+            note_query = note_query.join(models.Host, Annotation.host_id == models.Host.id).filter(models.Host.project_id == project_id)
         total_notes = note_query.scalar() or 0
 
         follow_query = self.db.query(func.count(HostFollow.id)).filter(HostFollow.user_id == user_id)
@@ -346,15 +346,15 @@ class HostFollowService:
         follows_count = follow_query.scalar() or 0
 
         notes_query = (
-            self.db.query(HostNote)
-            .filter(HostNote.user_id == user_id)
-            .options(selectinload(HostNote.host))
+            self.db.query(Annotation)
+            .filter(Annotation.user_id == user_id)
+            .options(selectinload(Annotation.host))
         )
         if project_id is not None:
-            notes_query = notes_query.join(models.Host, HostNote.host_id == models.Host.id).filter(models.Host.project_id == project_id)
+            notes_query = notes_query.join(models.Host, Annotation.host_id == models.Host.id).filter(models.Host.project_id == project_id)
         notes = (
             notes_query
-            .order_by(func.coalesce(HostNote.updated_at, HostNote.created_at).desc())
+            .order_by(func.coalesce(Annotation.updated_at, Annotation.created_at).desc())
             .limit(limit)
             .all()
         )

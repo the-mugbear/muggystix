@@ -18,9 +18,9 @@ from datetime import datetime
 from typing import List, Optional
 
 from app.db import models
-from app.db.models import HostFollow, HostNote as HostNoteModel
+from app.db.models import HostFollow, Annotation as AnnotationModel
 from app.db.models_vulnerability import Vulnerability
-from app.schemas.schemas import HostVulnerabilitySummary, HostNote, HostFollowInfo
+from app.schemas.schemas import HostVulnerabilitySummary, Annotation, HostFollowInfo
 
 
 # CR4-2 — these two ORM->schema mappers used to live in the host_follow /
@@ -37,14 +37,14 @@ def _serialize_follow(follow: HostFollow) -> HostFollowInfo:
     )
 
 
-def _serialize_note(note: HostNoteModel) -> HostNote:
+def _serialize_note(note: AnnotationModel) -> Annotation:
     author_name = None
     if note.author:
         author_name = note.author.full_name or note.author.username
     assignee_name = None
     if note.assignee:
         assignee_name = note.assignee.full_name or note.assignee.username
-    return HostNote(
+    return Annotation(
         id=note.id,
         body=note.body,
         status=note.status,
@@ -212,7 +212,7 @@ def serialize_host_detail(
     host: models.Host,
     vuln_data: Optional[dict],
     follow: Optional[HostFollow],
-    notes: List[HostNoteModel],
+    notes: List[AnnotationModel],
 ) -> dict:
     """Detail-endpoint payload — base + follow state + notes +
     ordered vulnerabilities."""

@@ -44,9 +44,9 @@ import {
   getHostConflicts,
   followHost,
   unfollowHost,
-  createHostNote,
-  updateHostNote,
-  deleteHostNote,
+  createAnnotation,
+  updateAnnotation,
+  deleteAnnotation,
   recordHostView,
   getHostTestPlanEntries,
   updateTestPlanEntry,
@@ -57,7 +57,7 @@ import type {
   HostConflict,
   ConflictHistoryEntry,
   FollowStatus,
-  HostNote,
+  Annotation,
   NoteStatus,
   HostTestPlanEntry,
   ProposedTestObject,
@@ -230,7 +230,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [loading, setLoading] = useState(true);
   const [followStatus, setFollowStatus] = useState<FollowStatus | ''>('');
   const [followLoading, setFollowLoading] = useState(false);
-  const [notes, setNotes] = useState<HostNote[]>([]);
+  const [notes, setNotes] = useState<Annotation[]>([]);
   // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
   // the conditional early returns (loading / !host) so the hook count is
   // stable across the first-paint-with-skeleton → data-loaded transition.
@@ -239,7 +239,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // moment the loading skeleton flipped to real content.
   const noteThreadGroups = React.useMemo(() => {
     const topLevel = notes.filter((n) => !n.parent_id);
-    const repliesByParent: Record<number, HostNote[]> = {};
+    const repliesByParent: Record<number, Annotation[]> = {};
     notes.filter((n) => n.parent_id).forEach((n) => {
       const pid = n.parent_id!;
       if (!repliesByParent[pid]) repliesByParent[pid] = [];
@@ -484,7 +484,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     }
     setNoteSubmitting(true);
     try {
-      const response = await createHostNote(hostId, {
+      const response = await createAnnotation(hostId, {
         body: noteBody.trim(),
         status: noteStatus,
       });
@@ -515,7 +515,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!ok) return;
     setNoteActionId(noteId);
     try {
-      await deleteHostNote(hostId, noteId);
+      await deleteAnnotation(hostId, noteId);
       setNotes((previous) => previous.filter((note) => note.id !== noteId));
       setHost((previous) =>
         previous
@@ -537,7 +537,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!replyTo || !replyBody.trim()) return;
     setNoteSubmitting(true);
     try {
-      const newNote = await createHostNote(hostId, {
+      const newNote = await createAnnotation(hostId, {
         body: replyBody.trim(),
         status: 'open',
         parent_id: replyTo.id,
@@ -570,7 +570,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     }
     setNoteActionId(noteId);
     try {
-      const response = await updateHostNote(hostId, noteId, {
+      const response = await updateAnnotation(hostId, noteId, {
         status,
         ...(resolutionSummary ? { resolution_summary: resolutionSummary } : {}),
       });

@@ -36,9 +36,9 @@ from app.schemas.schemas import (
     HostListResponse,
     HostVulnerabilitySummary,
     HostFollowInfo,
-    HostNote,
-    HostNoteCreate,
-    HostNoteUpdate,
+    Annotation,
+    AnnotationCreate,
+    AnnotationUpdate,
     HostFollowUpdate,
 )
 from pydantic import BaseModel, ConfigDict, Field
@@ -63,7 +63,7 @@ from app.services.host_serialization import (
     serialize_vulnerability as _serialize_vulnerability,
     vulnerability_sort_key as _vulnerability_sort_key,
 )
-from app.db.models import HostFollow, FollowStatus, HostNote as HostNoteModel, NoteStatus
+from app.db.models import HostFollow, FollowStatus, Annotation as AnnotationModel, NoteStatus
 
 
 # --- Response schemas for previously untyped endpoints ---
@@ -324,18 +324,18 @@ def get_hosts_v2(
     discoveries_by_host: Dict[int, list] = {}
     if host_ids:
         note_count_map = dict(
-            db.query(models.HostNote.host_id, func.count(models.HostNote.id))
-            .filter(models.HostNote.host_id.in_(host_ids))
-            .group_by(models.HostNote.host_id)
+            db.query(models.Annotation.host_id, func.count(models.Annotation.id))
+            .filter(models.Annotation.host_id.in_(host_ids))
+            .group_by(models.Annotation.host_id)
             .all()
         )
         note_rn = func.row_number().over(
-            partition_by=models.HostNote.host_id,
-            order_by=(models.HostNote.created_at.desc(), models.HostNote.id.desc()),
+            partition_by=models.Annotation.host_id,
+            order_by=(models.Annotation.created_at.desc(), models.Annotation.id.desc()),
         ).label("rn")
         ranked_notes = (
-            db.query(models.HostNote.id.label("nid"), note_rn)
-            .filter(models.HostNote.host_id.in_(host_ids))
+            db.query(models.Annotation.id.label("nid"), note_rn)
+            .filter(models.Annotation.host_id.in_(host_ids))
             .subquery()
         )
         top_note_ids = [
@@ -343,11 +343,11 @@ def get_hosts_v2(
         ]
         if top_note_ids:
             for n in (
-                db.query(models.HostNote)
-                .filter(models.HostNote.id.in_(top_note_ids))
+                db.query(models.Annotation)
+                .filter(models.Annotation.id.in_(top_note_ids))
                 .options(
-                    selectinload(models.HostNote.author),
-                    selectinload(models.HostNote.assignee),
+                    selectinload(models.Annotation.author),
+                    selectinload(models.Annotation.assignee),
                 )
                 .all()
             ):
@@ -889,10 +889,10 @@ def get_hosts_by_scan_v2(
     query = db.query(models.Host).options(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
-        selectinload(models.Host.notes).selectinload(models.HostNote.author),
+        selectinload(models.Host.notes).selectinload(models.Annotation.author),
         # review #8a — _serialize_note reads note.assignee; eager-load it so
         # the notes slice doesn't trigger an N+1 over assignees.
-        selectinload(models.Host.notes).selectinload(models.HostNote.assignee),
+        selectinload(models.Host.notes).selectinload(models.Annotation.assignee),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
     ).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id

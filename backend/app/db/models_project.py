@@ -116,7 +116,7 @@ class NoteMention(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    note = relationship("HostNote")
+    note = relationship("Annotation")
     user = relationship("User")
 
     __table_args__ = (

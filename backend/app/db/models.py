@@ -51,7 +51,7 @@ class Host(Base):
     vulnerabilities = relationship("Vulnerability", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     attributes = relationship("HostAttribute", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     follows = relationship("HostFollow", back_populates="host", cascade="all, delete-orphan")
-    notes = relationship("HostNote", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
+    notes = relationship("Annotation", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     tag_assignments = relationship("HostTagAssignment", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (
@@ -773,7 +773,7 @@ class NoteStatus(str, enum.Enum):
     RESOLVED = "resolved"
 
 
-class HostNote(Base):
+class Annotation(Base):
     __tablename__ = "host_notes"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -813,14 +813,14 @@ class HostNote(Base):
     # (parent_id + thread_root_id), so the parent/replies join must be
     # explicit or SQLAlchemy can't pick one.
     replies = relationship(
-        "HostNote",
-        backref=backref("parent", remote_side="HostNote.id"),
-        foreign_keys="HostNote.parent_id",
+        "Annotation",
+        backref=backref("parent", remote_side="Annotation.id"),
+        foreign_keys="Annotation.parent_id",
         lazy="selectin",
     )
 
 
-class HostNoteStatusHistory(Base):
+class AnnotationStatusHistory(Base):
     """Audit trail of note-thread status transitions (P3).
 
     One row per transition (open → in_progress → resolved, etc.), so the
