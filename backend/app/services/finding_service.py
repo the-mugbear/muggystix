@@ -174,6 +174,65 @@ class FindingService:
         self.db.flush()
         return finding
 
+    def promote_vulnerability(
+        self,
+        *,
+        vuln,
+        project_id: int,
+        actor_id: Optional[int],
+        severity: Optional[str] = None,
+        status: str = FindingStatus.CONFIRMED.value,
+        owner_id: Optional[int] = None,
+    ) -> Finding:
+        """Promote a scanner vulnerability into a Finding (references, never
+        copies — Finding.vuln_id).  Severity defaults to the vuln's own
+        severity (``unknown`` → ``info``, since findings have no unknown).
+        Idempotent on (vuln_id, source='scanner') so a double-click / a
+        promote-then-dismiss can't fork two findings for one vuln — pass a
+        terminal ``status`` (false_positive / accepted_risk) to dismiss.
+        """
+        raw = severity or getattr(vuln.severity, "value", vuln.severity) or "medium"
+        sev = "info" if str(raw).lower() == "unknown" else str(raw).lower()
+        validate_severity(sev)
+        _validate_status(status)
+
+        existing = (
+            self.db.query(Finding)
+            .filter(
+                Finding.vuln_id == vuln.id,
+                Finding.source == FindingSource.SCANNER.value,
+            )
+            .first()
+        )
+        if existing is not None:
+            # Already promoted — if the caller is dismissing/redispositioning,
+            # honour the new status rather than silently returning stale.
+            if status != existing.status:
+                self.set_status(finding=existing, status=status, actor_id=actor_id,
+                                summary="Re-dispositioned scanner finding")
+            return existing
+
+        finding = Finding(
+            project_id=project_id,
+            title=(vuln.title or "Vulnerability")[:500],
+            severity=sev,
+            status=status,
+            source=FindingSource.SCANNER.value,
+            owner_id=owner_id or actor_id,
+            vuln_id=vuln.id,
+            created_by_id=actor_id,
+        )
+        self.db.add(finding)
+        self.db.flush()
+        self._attach_hosts(finding, [vuln.host_id] if vuln.host_id else [])
+        record_status_transition(
+            self.db, history_model=FindingStatusHistory, fk_field="finding_id",
+            entity_id=finding.id, from_status=None, to_status=status,
+            changed_by_id=actor_id, summary="Promoted from scanner vulnerability",
+        )
+        self.db.flush()
+        return finding
+
     def create_finding(
         self,
         *,

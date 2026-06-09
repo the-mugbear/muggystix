@@ -24,10 +24,12 @@ import {
   AlertTriangle,
   Bookmark,
   BookmarkPlus,
+  Ban,
   ClipboardList,
   Computer,
   Copy,
   ExternalLink,
+  Flag,
   Loader2,
   MessageSquare,
   Network,
@@ -48,6 +50,7 @@ import {
   updateAnnotation,
   deleteAnnotation,
   promoteAnnotation,
+  promoteVulnerability,
   recordHostView,
   getHostTestPlanEntries,
   updateTestPlanEntry,
@@ -336,6 +339,27 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       toast.error(formatApiError(err, 'Failed to update note details.'));
     } finally {
       setDetailsSaving(false);
+    }
+  };
+
+  // Promote / dismiss a scanner vulnerability as a finding (status 'confirmed'
+  // promotes; a terminal status dismisses). Idempotent server-side.
+  const [vulnActionId, setVulnActionId] = useState<number | null>(null);
+  const handlePromoteVuln = async (vulnId: number, status: 'confirmed' | 'false_positive') => {
+    setVulnActionId(vulnId);
+    try {
+      const finding = await promoteVulnerability(vulnId, { status });
+      toast.success(
+        status === 'confirmed'
+          ? `Promoted to finding: ${finding.title}`
+          : `Dismissed as false positive: ${finding.title}`,
+        { autoHideMs: 3000 },
+      );
+      setFindingsRefresh((n) => n + 1);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update vulnerability.'));
+    } finally {
+      setVulnActionId(null);
     }
   };
 
@@ -1619,7 +1643,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       </p>
                     )}
                   </div>
-                  {/* Severity + exploitability badges, stacked. */}
+                  {/* Severity + exploitability badges, stacked, with
+                      promote/dismiss-to-finding actions (triage through the
+                      spine rather than annotating the raw vuln). */}
                   <div className="flex shrink-0 flex-col items-end gap-xxs">
                     <Badge variant={severityBadgeVariant(vuln.severity)}>
                       {(vuln.severity ?? 'unknown').toUpperCase()}
@@ -1627,6 +1653,34 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     {vuln.exploitable && (
                       <Badge variant="destructive">Exploit available</Badge>
                     )}
+                    <div className="flex items-center gap-xxs">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost" size="icon"
+                            disabled={vulnActionId === vuln.id}
+                            onClick={() => handlePromoteVuln(vuln.id, 'confirmed')}
+                            aria-label={`Promote ${title} to a finding`}
+                          >
+                            <Flag className="size-3.5" aria-hidden />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Promote to finding</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost" size="icon"
+                            disabled={vulnActionId === vuln.id}
+                            onClick={() => handlePromoteVuln(vuln.id, 'false_positive')}
+                            aria-label={`Dismiss ${title} as a false positive`}
+                          >
+                            <Ban className="size-3.5" aria-hidden />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Dismiss (false positive)</TooltipContent>
+                      </Tooltip>
+                    </div>
                   </div>
                 </div>
               );

@@ -60,6 +60,16 @@ class PromoteAnnotationRequest(BaseModel):
     extra_host_ids: List[int] = []
 
 
+class PromoteVulnerabilityRequest(BaseModel):
+    vuln_id: int
+    # Severity defaults to the vulnerability's own severity server-side.
+    severity: Optional[str] = None
+    # Defaults to 'confirmed'; pass a terminal status (false_positive /
+    # accepted_risk) to dismiss the vuln as a finding instead.
+    status: Optional[str] = None
+    owner_id: Optional[int] = None
+
+
 class FindingCreateRequest(BaseModel):
     title: str = Field(..., max_length=500)
     severity: str

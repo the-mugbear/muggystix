@@ -141,3 +141,17 @@ export const getFindingHistory = async (
   const response = await api.get<FindingStatusHistoryEntry[]>(`${p()}/findings/${findingId}/history`);
   return response.data;
 };
+
+// Promote (or dismiss) a scanner vulnerability as a finding. Severity defaults
+// to the vuln's own; a terminal status (false_positive/accepted_risk)
+// dismisses it. Idempotent per vuln.
+export const promoteVulnerability = async (
+  vulnId: number,
+  payload: { severity?: string; status?: FindingStatus; owner_id?: number } = {},
+): Promise<Finding> => {
+  const response = await api.post<Finding>(
+    `${p()}/vulnerabilities/${vulnId}/promote`,
+    { vuln_id: vulnId, ...payload },
+  );
+  return response.data;
+};

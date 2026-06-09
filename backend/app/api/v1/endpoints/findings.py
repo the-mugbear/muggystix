@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
-from app.db.models import Annotation
+from app.db.models import Annotation, Host
+from app.db.models_vulnerability import Vulnerability
 from app.db.models_findings import Finding, FindingHost, FindingStatus, FindingStatusHistory
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
@@ -20,7 +21,8 @@ from app.api.deps import get_current_project, require_project_role
 from app.services.finding_service import FindingService, validate_severity
 from app.schemas.findings import (
     FindingResponse, FindingHostInfo, FindingListResponse,
-    PromoteAnnotationRequest, FindingCreateRequest, FindingUpdateRequest,
+    PromoteAnnotationRequest, PromoteVulnerabilityRequest,
+    FindingCreateRequest, FindingUpdateRequest,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
 )
 
@@ -136,6 +138,42 @@ def promote_annotation(
         annotation=annotation, severity=body.severity, title=body.title,
         status=body.status or FindingStatus.CONFIRMED.value, owner_id=body.owner_id,
         extra_host_ids=body.extra_host_ids, actor_id=current_user.id,
+    )
+    db.commit()
+    return _serialize(_load(db, project, finding.id))
+
+
+@router.post(
+    "/vulnerabilities/{vuln_id}/promote",
+    response_model=FindingResponse, status_code=201,
+)
+def promote_vulnerability(
+    vuln_id: int,
+    body: PromoteVulnerabilityRequest,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    current_user: User = Depends(get_current_user),
+):
+    """Promote (or dismiss) a scanner vulnerability as a Finding. The finding
+    references the vuln (vuln_id), severity defaults to the vuln's own, and a
+    terminal status dismisses it (false_positive / accepted_risk). Idempotent
+    per vuln. The path id and body.vuln_id must agree and belong to this
+    project (joined through the host — cross-tenant 404s)."""
+    if body.vuln_id != vuln_id:
+        raise HTTPException(status_code=400, detail="vuln_id in path and body must match")
+    vuln = (
+        db.query(Vulnerability)
+        .join(Host, Vulnerability.host_id == Host.id)
+        .filter(Vulnerability.id == vuln_id, Host.project_id == project.id)
+        .first()
+    )
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found in this project")
+    finding = FindingService(db).promote_vulnerability(
+        vuln=vuln, project_id=project.id, actor_id=current_user.id,
+        severity=body.severity, status=body.status or FindingStatus.CONFIRMED.value,
+        owner_id=body.owner_id,
     )
     db.commit()
     return _serialize(_load(db, project, finding.id))
