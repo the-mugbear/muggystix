@@ -25,7 +25,6 @@ import {
   X,
 } from 'lucide-react';
 import { ColumnDef, ExpandedState, Row, RowSelectionState } from '@tanstack/react-table';
-import { RISK_SCORING_ENABLED } from '../config/featureFlags';
 import {
   getHosts,
   getHostFilterData,
@@ -150,7 +149,6 @@ type HostQueryContext = {
   has_high_vulns?: boolean;
   has_exploit_available?: boolean;
   has_test_execution?: boolean;
-  min_risk_score?: number;
   out_of_scope_only?: boolean;
   follow_status?: string;
   scan_ids?: string;
@@ -489,7 +487,6 @@ export default function Hosts() {
     if (filters.hasHighVulns !== undefined) params.has_high_vulns = filters.hasHighVulns;
     if (filters.hasExploitAvailable !== undefined) params.has_exploit_available = filters.hasExploitAvailable;
     if (filters.hasTestExecution !== undefined) params.has_test_execution = filters.hasTestExecution;
-    if (filters.minRiskScore !== undefined) params.min_risk_score = filters.minRiskScore;
     if (filters.outOfScopeOnly) params.out_of_scope_only = filters.outOfScopeOnly;
     if (followFilter !== 'all') params.follow_status = followFilter;
     if (filters.scanIds?.length) params.scan_ids = filters.scanIds.join(',');
@@ -661,7 +658,7 @@ export default function Hosts() {
       'port_states', 'scan_ids', 'tags', 'subnet_labels', 'out_of_scope_only',
       'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'has_critical_vulns',
       'has_high_vulns', 'has_exploit_available', 'has_test_execution',
-      'min_risk_score', 'has_web_interface', 'tech', 'follow_status', 'follow',
+      'has_web_interface', 'tech', 'follow_status', 'follow',
       'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
     ];
     const urlIsAuthoritative = HOST_URL_PARAMS.some((p) => urlParams.has(p));
@@ -761,13 +758,6 @@ export default function Hosts() {
       initialFilters.hasTestExecution = urlParams.get('has_test_execution') === 'true';
     } else if (savedState?.filters?.hasTestExecution !== undefined) {
       initialFilters.hasTestExecution = savedState.filters.hasTestExecution;
-    }
-
-    if (urlParams.has('min_risk_score')) {
-      const score = Number(urlParams.get('min_risk_score'));
-      if (!Number.isNaN(score)) initialFilters.minRiskScore = score;
-    } else if (savedState?.filters?.minRiskScore !== undefined) {
-      initialFilters.minRiskScore = savedState.filters.minRiskScore;
     }
 
     if (urlParams.has('has_web_interface')) {
@@ -1396,15 +1386,6 @@ export default function Hosts() {
         key: 'hasTestExecution',
         label: 'Has been tested',
         onDelete: () => clearFilterKey('hasTestExecution'),
-      });
-    // Risk-score filter hidden while risk scoring is broken (see
-    // featureFlags.RISK_SCORING_ENABLED / TODO.md) — don't surface its chip
-    // even if a min_risk_score lingers in the URL.
-    if (RISK_SCORING_ENABLED && filters.minRiskScore !== undefined)
-      chips.push({
-        key: 'minRiskScore',
-        label: `Min risk score ≥ ${filters.minRiskScore}`,
-        onDelete: () => clearFilterKey('minRiskScore'),
       });
     if (filters.outOfScopeOnly)
       chips.push({

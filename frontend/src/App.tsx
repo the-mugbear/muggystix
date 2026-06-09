@@ -93,7 +93,6 @@ const Activity = lazy(() => import('./pages/Activity'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
 const ParseErrors = lazy(() => import('./pages/ParseErrors'));
-const RiskAssessment = lazy(() => import('./pages/RiskAssessment'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
 const Profile = lazy(() => import('./pages/Profile'));
 const SystemSettings = lazy(() => import('./pages/SystemSettings'));
@@ -435,14 +434,6 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="analyst">
                             <ParseErrors />
-                          </ProtectedRoute>
-                        }
-                      />
-                      <Route
-                        path="/risk-assessment"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <RiskAssessment />
                           </ProtectedRoute>
                         }
                       />

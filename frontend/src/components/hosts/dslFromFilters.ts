@@ -62,7 +62,6 @@ export function dslFromFilters(filters: HostFilterOptions): DslConversion {
   if (filters.hasExploitAvailable) { clauses.push('has:exploit'); take('hasExploitAvailable'); }
   if (filters.hasTestExecution) { clauses.push('has:tested'); take('hasTestExecution'); }
   if (filters.onlyWithNotes) { clauses.push('has:notes'); take('onlyWithNotes'); }
-  if (filters.minRiskScore !== undefined) { clauses.push(`risk:${filters.minRiskScore}`); take('minRiskScore'); }
   if (filters.followFilter) {
     clauses.push(field('follow', [filters.followFilter]));
     take('followFilter');
