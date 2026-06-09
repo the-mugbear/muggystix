@@ -95,6 +95,9 @@ export interface Host {
   // Foundation 6d — count of ACTIVE findings (open/confirmed/retest)
   // affecting this host; drives the Hosts-list finding badge.
   finding_count?: number;
+  // True when the host's most-recent scan flipped its state or added a port
+  // vs the prior scan — drives the "Changed" triage badge.
+  changed_recently?: boolean;
   // OTHER users (not the caller) who have this host In Review — drives the
   // Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only: the
   // caller's own status is on the Follow control, so including the caller

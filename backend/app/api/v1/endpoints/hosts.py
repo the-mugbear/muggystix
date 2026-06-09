@@ -10,7 +10,7 @@ envelope assembly.
 import logging
 from pathlib import Path
 from typing import Any, List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import ipaddress
 import json
 
@@ -263,6 +263,60 @@ class HostFilterParams:
         """True if any filter (including ``q``) is set — used by the
         filter-data endpoint to decide whether to scope the cascade."""
         return any(v is not None for v in self.__dict__.values())
+
+
+def _hosts_changed_since_prior_scan(db: Session, host_ids: List[int]) -> set:
+    """Host ids that CHANGED at their most-recent scan vs the prior one — a
+    host-state flip (HostScanHistory.state_at_scan) or a port first observed
+    after the prior scan.  Hosts with <2 scans are never "changed" (the first
+    scan is all-new, not a change).  Batched via a window function — no N+1.
+    Removed-port detection is intentionally omitted: the dedup keeps ports and
+    doesn't track per-scan presence, so "removed" isn't reliably derivable.
+    """
+    if not host_ids:
+        return set()
+    rn = func.row_number().over(
+        partition_by=models.HostScanHistory.host_id,
+        order_by=models.HostScanHistory.discovered_at.desc(),
+    ).label("rn")
+    sub = (
+        db.query(
+            models.HostScanHistory.host_id.label("hid"),
+            models.HostScanHistory.discovered_at.label("disc"),
+            models.HostScanHistory.state_at_scan.label("state"),
+            rn,
+        )
+        .filter(models.HostScanHistory.host_id.in_(host_ids))
+        .subquery()
+    )
+    latest: Dict[int, tuple] = {}
+    prior: Dict[int, tuple] = {}
+    for hid, disc, state, rn_ in db.query(sub.c.hid, sub.c.disc, sub.c.state, sub.c.rn).filter(sub.c.rn <= 2).all():
+        (latest if rn_ == 1 else prior)[hid] = (disc, state)
+
+    changed: set = set()
+    # State flip between the two most recent scans.
+    for hid, (_pdisc, pstate) in prior.items():
+        if hid in latest and latest[hid][1] != pstate:
+            changed.add(hid)
+    # A port first observed AFTER the prior scan = added in the latest sweep.
+    prior_time = {hid: prior[hid][0] for hid in prior}
+    if prior_time:
+        maxfs = dict(
+            db.query(models.Port.host_id, func.max(models.Port.first_seen))
+            .filter(models.Port.host_id.in_(list(prior_time)))
+            .group_by(models.Port.host_id)
+            .all()
+        )
+        for hid, ptime in prior_time.items():
+            mfs = maxfs.get(hid)
+            if mfs is None or ptime is None:
+                continue
+            mfs = mfs if mfs.tzinfo else mfs.replace(tzinfo=timezone.utc)
+            pt = ptime if ptime.tzinfo else ptime.replace(tzinfo=timezone.utc)
+            if mfs > pt:
+                changed.add(hid)
+    return changed
 
 
 @router.get("/", response_model=HostListResponse)
@@ -535,6 +589,10 @@ def get_hosts_v2(
         ):
             finding_count_map[hid] = cnt
 
+    # "Changed since last scan" — host ids whose most-recent scan flipped state
+    # or added a port vs the prior scan. Batched window-function query.
+    changed_map = _hosts_changed_since_prior_scan(db, host_ids)
+
     serialized_hosts = []
     for host in hosts:
         # Review #5 — pass the windowed discoveries + aggregate note_count so
@@ -556,6 +614,7 @@ def get_hosts_v2(
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
         serialized["finding_count"] = finding_count_map.get(host.id, 0)
+        serialized["changed_recently"] = host.id in changed_map
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
         serialized["assignees"] = assignee_map.get(host.id, [])
         serialized["notes"] = [

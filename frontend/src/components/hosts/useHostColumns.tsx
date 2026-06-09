@@ -448,6 +448,11 @@ export function useHostColumns({
           const findingCount = row.original.finding_count ?? 0;
           return (
             <div className="flex flex-col items-end gap-xxs">
+              {row.original.changed_recently && (
+                <Badge variant="info" title="Changed since the prior scan — state flip or a new port">
+                  Changed
+                </Badge>
+              )}
               {findingCount > 0 && (
                 <Badge variant="warning" title="Active findings (open / confirmed / retest)">
                   {findingCount} finding{findingCount === 1 ? '' : 's'}
