@@ -124,6 +124,11 @@ class NessusParser:
 
         def host_generator() -> Iterable[NessusHost]:
             root_seen = False
+            # <Report> is the parent of every <ReportHost>.  Captured on its
+            # start event so each fully-consumed host can be detached from it
+            # (see the end-of-ReportHost finally) — otherwise the child list
+            # accumulates one empty shell per host for the whole file.
+            report_elem = None
             try:
                 for event, elem in context:
                     tag = strip_namespace(elem.tag)
@@ -136,6 +141,7 @@ class NessusParser:
                         if tag == "policyName" and elem.text and 'policy_name' not in scan_info:
                             scan_info['policy_name'] = elem.text
                         elif tag == "Report":
+                            report_elem = elem
                             report_name = elem.get('name')
                             if report_name:
                                 scan_info['report_name'] = report_name
@@ -155,7 +161,18 @@ class NessusParser:
                             if host:
                                 yield host
                         finally:
+                            # elem.clear() empties this ReportHost's contents but
+                            # leaves the empty node attached to <Report>, so the
+                            # child list would grow one shell per host across the
+                            # whole file.  Detach the fully-consumed host from its
+                            # parent too, keeping peak memory flat on large
+                            # exports (the streaming intent of this path).
                             elem.clear()
+                            if report_elem is not None:
+                                try:
+                                    report_elem.remove(elem)
+                                except ValueError:
+                                    pass
             except ET.ParseError as exc:
                 # v2.91.3 (code review #1) — also propagate the truncation
                 # to the caller so the integration service can mark the

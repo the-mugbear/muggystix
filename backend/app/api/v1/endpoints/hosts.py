@@ -16,7 +16,7 @@ import json
 
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy.orm import Session, selectinload, aliased
+from sqlalchemy.orm import Session, selectinload, noload, aliased
 from sqlalchemy import or_, and_, distinct, func, select, true
 from sqlalchemy.sql import exists
 
@@ -361,6 +361,17 @@ def get_hosts_v2(
         # Eager-load tag + its definition so serialize_host_base reads
         # host.tag_assignments[].tag without an N+1 per host.
         selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
+        # Suppress the mapper-level lazy="selectin" defaults for the three
+        # relationships this endpoint computes via bulk/window queries instead
+        # (vuln_map, note_count_map/notes_by_host, attributes are unused here).
+        # Without these, loading a 100-host page silently fires a batched
+        # SELECT for every vuln/attribute/note of those hosts — work the light
+        # serializer throws away (serialize_host_base reads the precomputed
+        # maps, never host.vulnerabilities/.attributes/.notes). Detail re-loads
+        # what it needs explicitly, so this only trims the list path.
+        noload(models.Host.vulnerabilities),
+        noload(models.Host.attributes),
+        noload(models.Host.notes),
     )
 
     # Apply pagination and return
