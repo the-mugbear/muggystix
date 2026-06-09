@@ -23,6 +23,8 @@ from app.api.v1.endpoints import (
     coverage,
     # Refactor P2 — batched Operations workbench + since-last-visit cursor.
     workbench,
+    # Site-metrics arc P1 — project "needs help" attention model.
+    attention,
     # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
     recon_sessions,
     # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
@@ -122,6 +124,7 @@ project_router.include_router(host_queries.router, prefix="/hosts", tags=["host-
 project_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 project_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 project_router.include_router(workbench.router, prefix="/workbench", tags=["workbench"])
+project_router.include_router(attention.router, prefix="/attention", tags=["attention"])
 # v2.86.0 — subnet labels share the /scopes prefix so URLs read as
 # /projects/{pid}/scopes/subnet-labels and
 # /projects/{pid}/scopes/subnets/{sid}/labels.  Separate file from
