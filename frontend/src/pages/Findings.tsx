@@ -143,8 +143,11 @@ const Findings: React.FC = () => {
     // Terminal dispositions get a "why" prompt (the summary is the audit
     // rationale on the history trail); non-terminal moves apply immediately.
     if (TERMINAL_STATUSES.has(status)) {
-      setSummaryPrompt({ findingId, status, title });
       setSummaryText('');
+      // Defer the dialog open to the next tick: opening a modal Dialog inside
+      // a Radix Select's onValueChange races the Select's dismiss layer, which
+      // can leave the body pointer-events:none so the dialog never appears.
+      setTimeout(() => setSummaryPrompt({ findingId, status, title }), 0);
     } else {
       void applyStatus(findingId, status, title);
     }
