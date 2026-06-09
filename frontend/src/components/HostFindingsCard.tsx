@@ -7,7 +7,6 @@
  * changes (the inspector bumps it after a promote).
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { AlertHexIcon } from './AppIcons';
 
 import {
@@ -120,12 +119,6 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
                 ))}
               </SelectContent>
             </Select>
-            <Link
-              to="/findings"
-              className="text-caption text-muted-foreground hover:text-foreground hover:underline"
-            >
-              all
-            </Link>
           </div>
         ))}
       </CardContent>
