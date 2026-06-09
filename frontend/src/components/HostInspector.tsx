@@ -47,6 +47,7 @@ import {
   createAnnotation,
   updateAnnotation,
   deleteAnnotation,
+  promoteAnnotation,
   recordHostView,
   getHostTestPlanEntries,
   updateTestPlanEntry,
@@ -62,6 +63,7 @@ import type {
   HostTestPlanEntry,
   ProposedTestObject,
   HostFollowerEntry,
+  FindingSeverity,
 } from '../services/api';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
@@ -91,6 +93,14 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Label } from './ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
 import {
   Select,
   SelectContent,
@@ -272,6 +282,24 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [noteError, setNoteError] = useState<string | null>(null);
+  // Promote-note-to-finding dialog state (foundation 6b).
+  const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
+  const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
+  const [promoting, setPromoting] = useState(false);
+
+  const handlePromoteNote = async () => {
+    if (promoteNoteId === null) return;
+    setPromoting(true);
+    try {
+      const finding = await promoteAnnotation(promoteNoteId, { severity: promoteSeverity });
+      toast.success(`Promoted to finding: ${finding.title}`, { autoHideMs: 3000 });
+      setPromoteNoteId(null);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to promote note to finding.'));
+    } finally {
+      setPromoting(false);
+    }
+  };
   const [noteActionId, setNoteActionId] = useState<number | null>(null);
   const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
   // Per-vuln expand state for the (often long) description writeup.
@@ -1252,10 +1280,54 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               noteActionId={noteActionId}
               onUpdateNoteStatus={handleUpdateNoteStatus}
               onDeleteNote={handleDeleteNote}
+              onPromoteNote={(noteId) => {
+                setPromoteNoteId(noteId);
+                setPromoteSeverity('medium');
+              }}
             />
           )}
         </CardContent>
       </Card>
+
+      {/* Promote-to-finding dialog (foundation 6b) — the bridge from a note
+          thread (which stays as the finding's evidence) to a durable,
+          roll-up-able record.  Severity is the one required input. */}
+      <Dialog open={promoteNoteId !== null} onOpenChange={(v) => { if (!v) setPromoteNoteId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Promote to finding</DialogTitle>
+            <DialogDescription>
+              Creates a finding from this note thread. The thread stays attached as the
+              finding's evidence; the finding rolls up on the Findings page and can span
+              multiple hosts.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-xs">
+            <Label htmlFor="promote-severity">Severity</Label>
+            <Select
+              value={promoteSeverity}
+              onValueChange={(v) => setPromoteSeverity(v as FindingSeverity)}
+            >
+              <SelectTrigger id="promote-severity">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
+                  <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPromoteNoteId(null)} disabled={promoting}>
+              Cancel
+            </Button>
+            <Button onClick={handlePromoteNote} disabled={promoting}>
+              {promoting ? 'Promoting…' : 'Promote'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Vulnerabilities */}
       {hasVulnerabilities && (

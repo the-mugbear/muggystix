@@ -1,5 +1,5 @@
 import React from 'react';
-import { Reply, Trash2 } from 'lucide-react';
+import { Flag, Reply, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
 import { Badge } from '../ui/badge';
@@ -65,6 +65,8 @@ export interface NoteThreadProps {
   noteActionId: number | null;
   onUpdateNoteStatus: (noteId: number, status: NoteStatus) => void;
   onDeleteNote: (noteId: number) => void;
+  /** Promote a root note into a finding (omit to hide the affordance). */
+  onPromoteNote?: (noteId: number) => void;
 }
 
 interface NoteRowProps extends Omit<NoteThreadProps, 'topLevel'> {
@@ -86,6 +88,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
   noteActionId,
   onUpdateNoteStatus,
   onDeleteNote,
+  onPromoteNote,
 }) => {
   const isReply = depth > 0;
   const statusMeta = noteStatusMeta[note.status];
@@ -159,6 +162,21 @@ const NoteRow: React.FC<NoteRowProps> = ({
               </TooltipTrigger>
               <TooltipContent>Reply</TooltipContent>
             </Tooltip>
+            {!isReply && onPromoteNote && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onPromoteNote(note.id)}
+                    aria-label="Promote note to finding"
+                  >
+                    <Flag className="size-4" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Promote to finding</TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
