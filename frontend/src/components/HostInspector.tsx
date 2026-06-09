@@ -1089,9 +1089,21 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <h3 className="mb-xs text-subheading">
                   Discovered in {discoveryTimeline.length} scan
                   {discoveryTimeline.length === 1 ? '' : 's'}
+                  {discoveryTimeline.length > 3 && (
+                    <span className="ml-xs text-caption font-normal text-muted-foreground">
+                      (most recent 3)
+                    </span>
+                  )}
                 </h3>
                 <div className="space-y-xs">
-                  {discoveryTimeline.slice(0, 5).map((entry) => {
+                  {[...discoveryTimeline]
+                    .sort((a, b) => {
+                      const t = (e: typeof a) =>
+                        new Date(e.scan_end || e.scan_start || e.discovered_at || 0).getTime();
+                      return t(b) - t(a);
+                    })
+                    .slice(0, 3)
+                    .map((entry) => {
                     // SOC alert correlation needs the scan window (when the
                     // tool was probing the network), not the ingest time.
                     // Fall back to discovered_at only when the parser
