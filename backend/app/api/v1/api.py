@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
-    host_queries,
+    host_queries, findings,
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, dns, parse_errors, reports, auth, risk,
     audit, users, projects, notifications,
@@ -114,6 +114,7 @@ project_router.include_router(scans.router, prefix="/scans", tags=["scans"])
 project_router.include_router(hosts.router, prefix="/hosts", tags=["hosts"])
 project_router.include_router(host_follow.router, prefix="/hosts", tags=["host-follow"])
 project_router.include_router(host_notes.router, prefix="/hosts", tags=["host-notes"])
+project_router.include_router(findings.router, prefix="", tags=["findings"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])
 project_router.include_router(host_bulk.router, prefix="/hosts", tags=["host-bulk"])
 project_router.include_router(host_filter_views.router, prefix="/hosts", tags=["host-filter-views"])
