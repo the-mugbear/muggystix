@@ -248,17 +248,13 @@ const Findings: React.FC = () => {
                         title to it (deep-links to the thread on the host, with
                         all its replies/discussion) so promote isn't a one-way
                         trip that drops the context. */}
-                    {f.source === 'note' && f.evidence_annotation_id && f.hosts.length > 0 ? (
-                      <Link
-                        to={`/hosts/${f.hosts[0].host_id}#note-${f.evidence_annotation_id}`}
-                        className="block truncate text-info hover:underline"
-                        title={`${f.title} — view evidence thread`}
-                      >
-                        {f.title}
-                      </Link>
-                    ) : (
-                      <span className="block truncate" title={f.title}>{f.title}</span>
-                    )}
+                    <Link
+                      to={`/findings/${f.id}`}
+                      className="block truncate text-info hover:underline"
+                      title={`${f.title} — open finding`}
+                    >
+                      {f.title}
+                    </Link>
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-xxs">

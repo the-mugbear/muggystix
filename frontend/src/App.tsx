@@ -43,6 +43,7 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/test-plans/:id/*', kind: 'detail' },
   { pattern: '/recon/runs/:id', kind: 'detail' },
   { pattern: '/executions/:id', kind: 'detail' },
+  { pattern: '/findings/:id', kind: 'detail' },
   { pattern: '/profile', kind: 'detail' },
   { pattern: '/force-change-password', kind: 'detail' },
   // cards
@@ -122,6 +123,7 @@ const ToolActivity = lazy(() => import('./pages/ToolActivity'));
 const TestPlanCompare = lazy(() => import('./pages/TestPlanCompare'));
 const Operations = lazy(() => import('./pages/Operations'));
 const Findings = lazy(() => import('./pages/Findings'));
+const FindingDetail = lazy(() => import('./pages/FindingDetail'));
 const ReconRunDetail = lazy(() => import('./pages/ReconRunDetail'));
 const ReconRunsList = lazy(() => import('./pages/ReconRunsList'));
 const ReconCompare = lazy(() => import('./pages/ReconCompare'));
@@ -337,6 +339,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <Findings />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/findings/:findingId"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <FindingDetail />
                           </ProtectedRoute>
                         }
                       />
