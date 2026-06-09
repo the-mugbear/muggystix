@@ -1027,16 +1027,18 @@ const Scopes: React.FC = () => {
             <DialogDescription>
               Append subnets to this project's scope.  Accepts
               <code className="font-mono"> .txt </code>(one CIDR/IP per line) or
-              <code className="font-mono"> .csv </code>(one entry per row:
-              subnet in column 1, optional space-delimited labels in column 2).
+              <code className="font-mono"> .csv </code>(one entry per row: subnet in
+              column 1, optional space-delimited labels in column 2, optional
+              description in column 3).
             </DialogDescription>
           </DialogHeader>
           <p className="text-metadata text-muted-foreground">
             <code className="font-mono">.txt</code> — one subnet per line. {' '}
             <code className="font-mono">.csv</code> — per row{' '}
-            <code className="font-mono">192.168.1.0/24,prod internet-facing</code>{' '}
-            (column 2 labels are optional, space-delimited). Re-uploading is safe:
-            duplicate subnets are skipped and labels are <em>added</em>, never replaced.
+            <code className="font-mono">192.168.1.0/24,prod internet-facing,UK DMZ</code>{' '}
+            (label + description columns optional). Re-uploading is safe: duplicate
+            subnets are skipped, labels are <em>added</em> (never replaced), and a
+            description updates only when provided.
           </p>
           <div
             {...getRootProps()}

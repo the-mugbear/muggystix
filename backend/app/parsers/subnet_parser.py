@@ -11,21 +11,24 @@ class SubnetParser:
         self.db = db
         self._trie = None  # Lazy-loaded IP trie
 
-    def parse_subnet_label_csv(self, file_content: str) -> List[Tuple[str, List[str]]]:
+    def parse_subnet_csv(self, file_content: str) -> List[Tuple[str, List[str], str]]:
         """Parse a subnet CSV where each row is one entry:
 
-            <subnet>[, <label1> <label2> ...]
+            <subnet>[, <label1> <label2> ...][, <description>]
 
         Column 1 is the subnet (CIDR or single IP, normalized via
         ``ip_network(strict=False)`` so ``10.0.0.5`` → ``10.0.0.5/32``);
-        column 2 (optional) is one or more whitespace-delimited label names.
-        Returns ``[(cidr, [labels]), ...]`` with per-row labels deduped.
+        column 2 (optional) is one or more whitespace-delimited label names;
+        column 3 (optional) is a free-text description for the subnet.
+        Returns ``[(cidr, [labels], description), ...]`` with per-row labels
+        deduped and an empty string for a missing description.
 
         Blank rows and ``#`` comments are skipped.  A first-row header whose
-        first cell isn't a valid subnet (e.g. ``subnet,labels``) is skipped;
-        an invalid subnet on any later row raises so typos aren't dropped.
+        first cell isn't a valid subnet (e.g. ``subnet,labels,description``)
+        is skipped; an invalid subnet on any later row raises so typos aren't
+        silently dropped.
         """
-        out: List[Tuple[str, List[str]]] = []
+        out: List[Tuple[str, List[str], str]] = []
         reader = csv.reader(io.StringIO(file_content))
         for row_num, row in enumerate(reader, 1):
             if not row:
@@ -49,7 +52,8 @@ class SubnetParser:
                     if name and name not in seen:
                         seen.add(name)
                         labels.append(name)
-            out.append((str(network), labels))
+            description = row[2].strip() if len(row) > 2 else ""
+            out.append((str(network), labels, description))
         if not out:
             raise ValueError("No valid subnets found in file")
         return out

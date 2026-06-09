@@ -145,9 +145,9 @@ async def upload_subnet_file(
     try:
         parser = SubnetParser(db)
         if is_csv:
-            entries = parser.parse_subnet_label_csv(file_content)
+            entries = parser.parse_subnet_csv(file_content)
         else:
-            entries = [(c, []) for c in parser.parse_cidr_list(file_content)]
+            entries = [(c, [], "") for c in parser.parse_cidr_list(file_content)]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -170,13 +170,22 @@ async def upload_subnet_file(
         s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
     }
     added = 0
-    for cidr, _labels in entries:
-        if cidr not in existing_subnets:
-            sub = Subnet(cidr=cidr, scope_id=scope.id)
+    descriptions_set = 0
+    for cidr, _labels, description in entries:
+        sub = existing_subnets.get(cidr)
+        if sub is None:
+            sub = Subnet(cidr=cidr, scope_id=scope.id, description=(description or None))
             db.add(sub)
             db.flush()  # need sub.id for label assignments
             existing_subnets[cidr] = sub
             added += 1
+            if description:
+                descriptions_set += 1
+        elif description:
+            # Update the description on an existing subnet when the CSV
+            # provides one (empty col 3 leaves any existing description intact).
+            sub.description = description
+            descriptions_set += 1
 
     # Labels: get-or-create the project label, then add only assignments that
     # don't already exist (the uq_subnet_label_assignment dedup, applied in
@@ -198,7 +207,7 @@ async def upload_subnet_file(
             label_cache[name] = lbl
         return lbl
 
-    affected_ids = [existing_subnets[c].id for c, _ in entries]
+    affected_ids = [existing_subnets[c].id for c, _, _ in entries]
     existing_assignments = set()
     if affected_ids:
         for sid, lid in (
@@ -209,7 +218,7 @@ async def upload_subnet_file(
             existing_assignments.add((sid, lid))
 
     labels_applied = 0
-    for cidr, label_names in entries:
+    for cidr, label_names, _description in entries:
         if not label_names:
             continue
         sub = existing_subnets[cidr]
@@ -240,6 +249,8 @@ async def upload_subnet_file(
         message += f" ({skipped} duplicate{'s' if skipped != 1 else ''} skipped)"
     if labels_applied > 0:
         message += f"; applied {labels_applied} label assignment{'s' if labels_applied != 1 else ''}"
+    if descriptions_set > 0:
+        message += f"; set {descriptions_set} description{'s' if descriptions_set != 1 else ''}"
     if correlated_hosts is not None:
         message += f"; correlated {correlated_hosts} host-subnet relationships"
 
