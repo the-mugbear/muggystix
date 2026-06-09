@@ -789,7 +789,7 @@ class Annotation(Base):
     # added in the migration — kept OUT of __table_args__ so the SQLite
     # test create_all stays portable (num_nonnulls is Postgres-only); the
     # write paths also validate it in code.
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=True)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True, index=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
     scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=True, index=True)

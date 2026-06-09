@@ -935,7 +935,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               {host.os_name && (
                 <Badge variant="outline" className="max-w-[18rem] overflow-hidden">
                   <Computer className="size-3" aria-hidden />
-                  <span className="truncate">{host.os_name}</span>
+                  <span className="truncate">
+                    {host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
+                      ? `${host.os_vendor} ${host.os_name}`
+                      : host.os_name}
+                  </span>
+                  {host.os_accuracy != null && host.os_accuracy !== '' && (
+                    <span className="ml-xxs text-caption opacity-70">
+                      {Number(host.os_accuracy)}%
+                    </span>
+                  )}
                 </Badge>
               )}
             </div>
@@ -1773,10 +1782,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                               <TableCell>{port.port_number}</TableCell>
                               <TableCell>{port.protocol}</TableCell>
                               <TableCell>{port.service_name || 'Unknown'}</TableCell>
-                              <TableCell className="truncate">
+                              <TableCell className="max-w-[16rem] truncate" title={port.service_extrainfo || undefined}>
                                 {port.service_product && port.service_version
                                   ? `${port.service_product} ${port.service_version}`
                                   : port.service_product || 'N/A'}
+                                {port.service_extrainfo && (
+                                  <span className="ml-xxs text-caption text-muted-foreground">
+                                    ({port.service_extrainfo})
+                                  </span>
+                                )}
                               </TableCell>
                               <TableCell>
                                 <Badge variant={stateBadgeVariant(port.state)}>

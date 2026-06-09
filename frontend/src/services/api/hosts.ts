@@ -64,7 +64,16 @@ export interface Host {
   ip_address: string;
   hostname: string | null;
   state: string | null;
+  state_reason?: string | null;
   os_name: string | null;
+  // OS-detail fields the serializer returns but the UI previously dropped —
+  // os_accuracy (nmap match confidence %) + os_vendor are what an analyst
+  // needs to judge "Windows Server 2019" as a 95% match vs a 60% guess.
+  os_family?: string | null;
+  os_generation?: string | null;
+  os_type?: string | null;
+  os_vendor?: string | null;
+  os_accuracy?: number | string | null;
   ports: Port[];
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];
@@ -189,6 +198,13 @@ export interface Port {
   service_name: string | null;
   service_product: string | null;
   service_version: string | null;
+  // Returned by the serializer but previously dropped here: service_extrainfo
+  // often carries the most useful banner detail ("Ubuntu; protocol 2.0");
+  // service_conf/reason/method indicate detection confidence + how.
+  service_extrainfo?: string | null;
+  service_conf?: string | null;
+  service_method?: string | null;
+  reason?: string | null;
   scripts?: NseScript[];
 }
 
