@@ -32,17 +32,18 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '../components/ui/dialog';
+import { Textarea } from '../components/ui/textarea';
+import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
+import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 
 const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
   critical: 'severity-critical', high: 'severity-high', medium: 'severity-medium',
   low: 'severity-low', info: 'muted',
-};
-const STATUS_LABEL: Record<FindingStatus, string> = {
-  open: 'Open', confirmed: 'Confirmed', false_positive: 'False positive',
-  accepted_risk: 'Accepted risk', remediated: 'Remediated', retest: 'Retest',
 };
 // Severity is an editable attribute (not a lifecycle transition, so it isn't
 // in the status history) — surfaced here so a mis-set severity from
@@ -62,6 +63,10 @@ const FindingDetail: React.FC = () => {
   const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Terminal-disposition "why" prompt — mirrors the /findings list so a
+  // status change on this page also captures the audit rationale.
+  const [summaryPrompt, setSummaryPrompt] = useState<{ status: FindingStatus } | null>(null);
+  const [summaryText, setSummaryText] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,13 +90,27 @@ const FindingDetail: React.FC = () => {
     return host ? `/hosts/${host.host_id}#note-${finding.evidence_annotation_id}` : null;
   }, [finding]);
 
-  const handleStatus = async (status: FindingStatus) => {
+  const applyStatus = async (status: FindingStatus, summary?: string) => {
     if (!finding) return;
     try {
-      await setFindingStatus(finding.id, status);
+      await setFindingStatus(finding.id, status, summary);
       await load(); // refresh status + history trail together
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update status.'));
+    }
+  };
+
+  const handleStatus = (status: FindingStatus) => {
+    if (!finding || status === finding.status) return;
+    // Terminal dispositions get the same "why" prompt the /findings list
+    // shows — the summary is the audit rationale on the history trail.
+    // Defer the open a tick so the modal doesn't race the Radix Select's
+    // dismiss layer (which can otherwise leave body pointer-events:none).
+    if (TERMINAL_STATUSES.has(status)) {
+      setSummaryText('');
+      setTimeout(() => setSummaryPrompt({ status }), 0);
+    } else {
+      void applyStatus(status);
     }
   };
 
@@ -246,6 +265,48 @@ const FindingDetail: React.FC = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Terminal-disposition "why" prompt — same policy as the /findings
+          list; the summary lands on the finding's disposition history. */}
+      <Dialog open={summaryPrompt !== null} onOpenChange={(v) => { if (!v) setSummaryPrompt(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark {summaryPrompt ? STATUS_LABEL[summaryPrompt.status] : ''}</DialogTitle>
+            <DialogDescription>
+              Optionally record why — this is kept on the finding's disposition history.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            rows={3}
+            autoFocus
+            placeholder="e.g. confirmed false positive — scanner flagged the backport, not the CVE"
+            value={summaryText}
+            onChange={(e) => setSummaryText(e.target.value)}
+            aria-label="Disposition reason"
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                const p = summaryPrompt;
+                setSummaryPrompt(null);
+                if (p) void applyStatus(p.status);
+              }}
+            >
+              Skip
+            </Button>
+            <Button
+              onClick={() => {
+                const p = summaryPrompt;
+                setSummaryPrompt(null);
+                if (p) void applyStatus(p.status, summaryText.trim() || undefined);
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

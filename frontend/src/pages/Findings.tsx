@@ -53,6 +53,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
+import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 
 const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
   critical: 'severity-critical',
@@ -60,19 +61,6 @@ const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
   medium: 'severity-medium',
   low: 'severity-low',
   info: 'muted',
-};
-
-// Terminal dispositions — moving a finding here prompts for a "why" summary
-// that lands on the disposition history trail.
-const TERMINAL_STATUSES = new Set<FindingStatus>(['false_positive', 'accepted_risk', 'remediated']);
-
-const STATUS_LABEL: Record<FindingStatus, string> = {
-  open: 'Open',
-  confirmed: 'Confirmed',
-  false_positive: 'False positive',
-  accepted_risk: 'Accepted risk',
-  remediated: 'Remediated',
-  retest: 'Retest',
 };
 
 const Findings: React.FC = () => {

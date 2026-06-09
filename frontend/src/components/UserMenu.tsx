@@ -219,7 +219,7 @@ const UserMenu: React.FC = () => {
             </div>
             <div>
               <dt className="text-caption text-muted-foreground">Author</dt>
-              <dd>"Kevin and the robots"</dd>
+              <dd>Kevin M - Remember me fondly!</dd>
             </div>
           </dl>
           <DialogFooter>
