@@ -246,10 +246,10 @@ class HostDiscovery(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class HostReviewer(BaseModel):
-    """A user who has this host In Review.  Drives the Hosts-list
-    "In review · <name>" indicator.  v4.9.1 — added (teammates only);
-    later widened to include the caller's own in-review too, so every
-    in-review host shows a named badge regardless of who's viewing."""
+    """Another user (not the caller) who has this host In Review.  Drives the
+    Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only by
+    design — the caller's own status is shown by the row's Follow control, so
+    including the caller produced a duplicate badge."""
     user_id: int
     name: str
 
@@ -289,11 +289,10 @@ class Host(HostBase):
     # from `test_plan_entry_count`, which only means "host is in a
     # plan" — i.e. planned, not necessarily executed).
     test_execution_count: int = 0
-    # v4.9.1 — users who have this host In Review.  Now includes the caller's
-    # OWN in-review (originally teammates-only), so every in-review host shows
-    # a named badge regardless of who's viewing.  Field name kept for API
-    # stability despite the "other_" prefix.  Empty for the host-detail
-    # endpoint; populated by the list endpoint's batch query.
+    # v4.9.1 — OTHER users (not the caller) who have this host In Review.
+    # Teammates-only by design: the caller's own status is on the Follow
+    # control, so including the caller duplicated the badge.  Empty for the
+    # host-detail endpoint; populated by the list endpoint's batch query.
     other_reviewers: List[HostReviewer] = []
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to

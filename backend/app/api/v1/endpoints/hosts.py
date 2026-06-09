@@ -458,17 +458,19 @@ def get_hosts_v2(
         )
         wi_count_map = {row[0]: row[1] for row in wi_rows}
 
-    # Batch lookup: every In-Review follow per host (v4.9.1).  Drives the
-    # "In review · <name>" indicator on the Hosts list so anyone browsing
-    # /hosts sees which hosts are under review and by whom.  One query for
-    # the whole page — not N+1.
+    # Batch lookup: OTHER users' In-Review follows per host (v4.9.1).  Drives
+    # the "In review · <name>" indicator on the Hosts list so an operator sees
+    # a teammate is already on a host before picking it up.  One query for the
+    # whole page — not N+1.
     #
-    # NOTE: this now INCLUDES the caller's own in-review follow (previously
-    # it filtered `user_id != current_user.id`, leaving your own reviews
-    # nameless — only teammates' showed a named badge).  The field is still
-    # serialized as `other_reviewers` for API stability, but it is no longer
-    # "others only"; the caller's own name appears too, alongside their
-    # interactive Follow menu.
+    # EXCLUDES the caller (`user_id != current_user.id`) ON PURPOSE: the
+    # caller's own in-review status is already shown by the row's interactive
+    # Follow control ("In Review").  Including the caller here produced a
+    # DUPLICATE — the Follow control's "In Review" AND a second "In review ·
+    # <you>" badge.  No self-inclusion avoids that dup, so the named badge is
+    # teammates-only; your own status lives on the Follow control.  (Briefly
+    # included self in a prior pass; reverted — do NOT re-add without first
+    # removing the Follow-control status display.)
     other_review_map: Dict[int, list] = {}
     if host_ids:
         review_rows = (
@@ -476,6 +478,7 @@ def get_hosts_v2(
             .join(User, HostFollow.user_id == User.id)
             .filter(
                 HostFollow.host_id.in_(host_ids),
+                HostFollow.user_id != current_user.id,
                 HostFollow.status == FollowStatus.IN_REVIEW.value,
             )
             .all()

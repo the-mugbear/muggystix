@@ -80,9 +80,10 @@ export interface Host {
   // Count of NetExec credentialed-enumeration rows — gates the
   // HostInspector NetExec card.
   netexec_result_count?: number;
-  // Users who have this host In Review — drives the Hosts-list
-  // "In review · <name>" indicator (v4.9.1).  Includes the caller's own
-  // in-review (not just teammates'); field name kept for API stability.
+  // OTHER users (not the caller) who have this host In Review — drives the
+  // Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only: the
+  // caller's own status is on the Follow control, so including the caller
+  // duplicated the badge.
   other_reviewers?: { user_id: number; name: string }[];
   // v2.71.0 — project tags on this host, and users it's assigned to.
   tags?: HostTagInfo[];
