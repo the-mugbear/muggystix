@@ -300,6 +300,10 @@ class Host(HostBase):
     # 2) to render a "Web" badge.  Populated by the host-detail
     # endpoint; the list endpoint can populate via a batch query.
     web_interface_count: int = 0
+    # Foundation 6d — count of ACTIVE findings affecting this host (open /
+    # confirmed / retest); drives the Hosts-list finding badge.  Populated by
+    # the list endpoint's batch query.
+    finding_count: int = 0
     # v2.45.7: count of NetExec credentialed-enumeration rows observed
     # on this host.  Gates the HostInspector NetExec card.
     netexec_result_count: int = 0

@@ -518,6 +518,25 @@ def get_hosts_v2(
                 "assigned_by_id": assigned_by_id,
             })
 
+    # Batch lookup: count of ACTIVE findings per host (foundation 6d).  Drives
+    # the Hosts-list finding badge so triage state is visible without opening
+    # each host.  "Active" = not yet closed (excludes false_positive /
+    # accepted_risk / remediated).  One grouped query for the page — not N+1.
+    finding_count_map: Dict[int, int] = {}
+    if host_ids:
+        from app.db.models_findings import Finding, FindingHost, FindingStatus
+        _active = [
+            FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value, FindingStatus.RETEST.value,
+        ]
+        for hid, cnt in (
+            db.query(FindingHost.host_id, func.count(func.distinct(Finding.id)))
+            .join(Finding, Finding.id == FindingHost.finding_id)
+            .filter(FindingHost.host_id.in_(host_ids), Finding.status.in_(_active))
+            .group_by(FindingHost.host_id)
+            .all()
+        ):
+            finding_count_map[hid] = cnt
+
     serialized_hosts = []
     for host in hosts:
         # Review #5 — pass the windowed discoveries + aggregate note_count so
@@ -538,6 +557,7 @@ def get_hosts_v2(
         serialized["test_plan_entry_count"] = tp_count_map.get(host.id, 0)
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
+        serialized["finding_count"] = finding_count_map.get(host.id, 0)
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
         serialized["assignees"] = assignee_map.get(host.id, [])
         serialized["notes"] = [

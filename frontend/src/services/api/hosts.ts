@@ -80,6 +80,9 @@ export interface Host {
   // Count of NetExec credentialed-enumeration rows — gates the
   // HostInspector NetExec card.
   netexec_result_count?: number;
+  // Foundation 6d — count of ACTIVE findings (open/confirmed/retest)
+  // affecting this host; drives the Hosts-list finding badge.
+  finding_count?: number;
   // OTHER users (not the caller) who have this host In Review — drives the
   // Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only: the
   // caller's own status is on the Follow control, so including the caller

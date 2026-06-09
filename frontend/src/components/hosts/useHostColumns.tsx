@@ -443,8 +443,16 @@ export function useHostColumns({
           const critical = summary?.critical ?? 0;
           const high = summary?.high ?? 0;
           const total = summary?.total_vulnerabilities ?? 0;
+          // Triaged findings (the spine) are distinct from raw scanner
+          // vulns above — a promoted/confirmed result, not raw output.
+          const findingCount = row.original.finding_count ?? 0;
           return (
             <div className="flex flex-col items-end gap-xxs">
+              {findingCount > 0 && (
+                <Badge variant="warning" title="Active findings (open / confirmed / retest)">
+                  {findingCount} finding{findingCount === 1 ? '' : 's'}
+                </Badge>
+              )}
               {critical > 0 && (
                 <Badge variant="severity-critical">{critical} critical</Badge>
               )}
