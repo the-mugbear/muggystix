@@ -327,6 +327,13 @@ class ReportGenerator:
         </div>
     </div>
 
+    <div class="section" id="findings">
+        <div class="section-header">Findings</div>
+        <div class="section-content">
+            {self._generate_findings_html(hosts)}
+        </div>
+    </div>
+
     <div class="section" id="hosts">
         <div class="section-header">Host Details</div>
         <div class="section-content">
@@ -518,8 +525,75 @@ class ReportGenerator:
                 host_data["ports"].append(port_data)
             
             report_data["hosts"].append(host_data)
-        
+
+        report_data["findings"] = self._findings_for_report(hosts)
         return report_data
+
+    def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
+        """Findings affecting the report's hosts, severity-ordered — the
+        triaged record that rolls up across hosts (note promotions, scanner
+        promotions, execution results). Included in every export format so a
+        report carries the analyst's conclusions, not just raw scan data."""
+        from app.db.models_findings import Finding, FindingHost
+        host_ids = [h.id for h in hosts]
+        if not host_ids:
+            return []
+        findings = (
+            self.db.query(Finding)
+            .options(
+                selectinload(Finding.hosts).selectinload(FindingHost.host),
+                selectinload(Finding.owner),
+            )
+            .filter(
+                Finding.project_id == self.project_id,
+                Finding.hosts.any(FindingHost.host_id.in_(host_ids)),
+            )
+            .all()
+        )
+        out = [
+            {
+                "id": f.id,
+                "title": f.title,
+                "severity": f.severity,
+                "status": f.status,
+                "source": f.source,
+                "owner": (f.owner.full_name or f.owner.username) if f.owner else None,
+                "host_count": len(f.hosts),
+                "affected_hosts": [fh.host.ip_address for fh in f.hosts if fh.host],
+                "vuln_id": f.vuln_id,
+            }
+            for f in findings
+        ]
+        out.sort(key=lambda x: self.SEVERITY_ORDER.get(x["severity"], 5))
+        return out
+
+    def _generate_findings_html(self, hosts: List[models.Host]) -> str:
+        """Findings table fragment for the HTML report (severity-ordered)."""
+        findings = self._findings_for_report(hosts)
+        if not findings:
+            return '<p class="muted">No findings recorded for these hosts.</p>'
+        rows = []
+        for f in findings:
+            affected = f["affected_hosts"]
+            hosts_str = ", ".join(affected[:5])
+            if len(affected) > 5:
+                hosts_str += f" (+{len(affected) - 5} more)"
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(str(f['severity']))}</td>"
+                f"<td>{html.escape(str(f['title']))}</td>"
+                f"<td>{html.escape(str(f['status']))}</td>"
+                f"<td>{html.escape(str(f['source']))}</td>"
+                f"<td>{html.escape(str(f['owner'] or '—'))}</td>"
+                f"<td>{html.escape(hosts_str)}</td>"
+                "</tr>"
+            )
+        return (
+            '<table class="data-table"><thead><tr>'
+            "<th>Severity</th><th>Finding</th><th>Status</th>"
+            "<th>Source</th><th>Owner</th><th>Affected hosts</th>"
+            f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        )
 
     def generate_agent_package(self, hosts: List[models.Host], filters: Dict[str, Any]) -> bytes:
         """Generate a ZIP package optimized for agentic workflows."""
@@ -562,6 +636,7 @@ class ReportGenerator:
             len([port for port in record["ports"] if port.get("state") == "open"])
             for record in records
         )
+        findings = self._findings_for_report(hosts)
 
         manifest = {
             "export_type": "host_report_package",
@@ -574,6 +649,7 @@ class ReportGenerator:
                 "hosts_up": len([record for record in records if record["identity"].get("state") == "up"]),
                 "open_ports": total_open_ports,
                 "vulnerabilities": total_vulnerabilities,
+                "findings": len(findings),
             },
             "included_sections": [
                 "identity",
@@ -583,7 +659,6 @@ class ReportGenerator:
                 "ports",
                 "host_scripts",
                 "vulnerabilities",
-                "risk",
                 "analyst_context",
                 "confidence",
             ],
@@ -591,6 +666,7 @@ class ReportGenerator:
 
         return {
             "manifest": manifest,
+            "findings": findings,
             "hosts": records,
             "scans": context["scans"],
         }, artifacts
