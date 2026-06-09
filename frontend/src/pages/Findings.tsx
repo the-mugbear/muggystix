@@ -66,8 +66,12 @@ const Findings: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<FindingStatus | 'all'>('all');
   const [severityFilter, setSeverityFilter] = useState<FindingSeverity | 'all'>('all');
 
+  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all';
+
   const filters = useMemo<FindingFilters>(() => {
-    const f: FindingFilters = { limit: 200 };
+    // 500 is the backend cap; pagination is a follow-up. Until then we at
+    // least surface "showing N of T" so truncation isn't silent.
+    const f: FindingFilters = { limit: 500 };
     if (statusFilter !== 'all') f.status = statusFilter;
     if (severityFilter !== 'all') f.severity = severityFilter;
     return f;
@@ -92,11 +96,18 @@ const Findings: React.FC = () => {
     fetchFindings();
   }, [fetchFindings]);
 
-  const handleStatusChange = async (findingId: number, status: FindingStatus) => {
+  const handleStatusChange = async (findingId: number, status: FindingStatus, title: string) => {
     try {
       const updated = await setFindingStatus(findingId, status);
-      setFindings((prev) => prev.map((f) => (f.id === findingId ? updated : f)));
-      toast.success(`Status → ${STATUS_LABEL[status]}`, { autoHideMs: 1500 });
+      setFindings((prev) =>
+        prev
+          // Drop a row that no longer matches the active status filter so the
+          // filtered view stays truthful.
+          .filter((f) => f.id !== findingId || statusFilter === 'all' || updated.status === statusFilter)
+          .map((f) => (f.id === findingId ? updated : f)),
+      );
+      const short = title.length > 40 ? `${title.slice(0, 40)}…` : title;
+      toast.success(`${short} → ${STATUS_LABEL[status]}`, { autoHideMs: 2500 });
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update finding status.'));
     }
@@ -140,13 +151,20 @@ const Findings: React.FC = () => {
             </SelectContent>
           </Select>
         </div>
-        <span className="ml-auto text-metadata text-muted-foreground">
-          {total.toLocaleString()} finding{total === 1 ? '' : 's'}
+        <span className="ml-auto text-metadata text-muted-foreground" role="status" aria-live="polite">
+          {loading
+            ? 'Loading findings…'
+            : findings.length < total
+              ? `Showing ${findings.length.toLocaleString()} of ${total.toLocaleString()} — refine filters to narrow`
+              : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
         </span>
       </div>
 
       <Card>
         <CardContent className="p-0">
+          {/* overflow-x-auto per the Table primitive's documented usage —
+              keeps the fixed-width columns from forcing page-level overflow. */}
+          <div className="overflow-x-auto">
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
@@ -159,7 +177,9 @@ const Findings: React.FC = () => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading && (
+              {/* Only blank the table on the INITIAL load; a filter refetch
+                  keeps prior rows visible (no full-table flash). */}
+              {loading && findings.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
                     <Loader2 className="mx-auto size-5 animate-spin" aria-hidden />
@@ -177,8 +197,9 @@ const Findings: React.FC = () => {
               {!loading && !error && findings.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
-                    No findings yet. Promote a note from a host (Notes → Promote to finding) to
-                    record one here.
+                    {hasActiveFilters
+                      ? 'No findings match these filters. Clear them to see all.'
+                      : 'No findings yet. Promote a note from a host (Notes → Promote to finding) to record one here.'}
                   </TableCell>
                 </TableRow>
               )}
@@ -209,7 +230,7 @@ const Findings: React.FC = () => {
                   <TableCell>
                     <Select
                       value={f.status}
-                      onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus)}
+                      onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
                     >
                       <SelectTrigger
                         className="h-7 text-caption"
@@ -254,6 +275,7 @@ const Findings: React.FC = () => {
               ))}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
