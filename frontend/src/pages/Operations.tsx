@@ -992,6 +992,8 @@ const Operations: React.FC = () => {
             <MyWorkCard
               queue={workbench?.my_queue ?? null}
               tasks={workbench?.my_tasks ?? null}
+              notes={workbench?.my_notes ?? null}
+              findings={workbench?.my_findings ?? null}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}

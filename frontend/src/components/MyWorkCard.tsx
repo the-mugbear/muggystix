@@ -1,20 +1,34 @@
 /**
- * Unified "My work" list (RV-DESIGN2) — merges the two personal surfaces
- * into ONE prioritised list so an analyst has a single queue to work, not
- * two cards to reconcile:
- *   - HOST rows  = hosts the caller marked In Review (from my_queue)
- *   - TASK rows  = test-plan steps the caller owns (from my_tasks):
- *                  assigned / on an in-review host / unassigned crit-high triage
+ * Unified "My work" list — the analyst's single resume queue.  Merges four
+ * personal surfaces from the one /workbench response into a grouped,
+ * one-line-per-row worklist, ordered worst-first:
+ *   - Overdue      = assigned notes past their due date
+ *   - Handoffs     = note threads of type 'handoff' assigned to the caller
+ *   - Findings     = active findings the caller owns
+ *   - Assigned     = assigned notes + test-plan steps assigned to the caller
+ *   - In review    = hosts the caller marked In Review (+ in-review steps)
+ *   - Triage       = unassigned critical/high test-plan steps
  *
- * Both arrays already arrive in the single /workbench response, so the
- * merge is client-side; rows are sorted by reason (assigned → in_review →
- * triage) then priority (critical → info) then recency.
+ * P0 (resume pass): every row deep-links to its EXACT artifact — a note to
+ * its thread anchor (/hosts/:id#note-:id), a plan step to its entry
+ * (/test-plans/:plan#entry-:entry), a finding to its evidence thread — so
+ * the analyst lands where they left off, not on a generic host page.
  */
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, RefreshCw, ServerIcon, SquareArrowOutUpRight } from 'lucide-react';
+import {
+  AlertTriangle,
+  ClipboardList,
+  Flag,
+  Loader2,
+  MessageSquare,
+  RefreshCw,
+  ServerIcon,
+} from 'lucide-react';
 import type {
   MyAttentionResponse,
+  MyFindingsResponse,
+  MyNotesResponse,
   MyTaskReason,
   MyTasksResponse,
 } from '../services/api';
@@ -22,46 +36,27 @@ import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
-import { Separator } from './ui/separator';
 import { cn } from '../utils/cn';
 
-type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary';
+type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
 
-const REASON_META: Record<MyTaskReason, { label: string; tone: BadgeTone; rank: number }> = {
-  assigned: { label: 'Assigned', tone: 'info', rank: 0 },
-  in_review: { label: 'In review', tone: 'muted', rank: 1 },
-  triage: { label: 'Triage', tone: 'warning', rank: 2 },
+type GroupKey = 'overdue' | 'handoff' | 'finding' | 'assigned' | 'in_review' | 'triage';
+
+const GROUP_META: Record<GroupKey, { label: string; rank: number; tone: BadgeTone }> = {
+  overdue: { label: 'Overdue', rank: 0, tone: 'destructive' },
+  handoff: { label: 'Handoffs', rank: 1, tone: 'info' },
+  finding: { label: 'Findings you own', rank: 2, tone: 'warning' },
+  assigned: { label: 'Assigned', rank: 3, tone: 'info' },
+  in_review: { label: 'In review', rank: 4, tone: 'muted' },
+  triage: { label: 'Triage', rank: 5, tone: 'warning' },
 };
-const PRIORITY_RANK: Record<string, number> = {
-  critical: 0, high: 1, medium: 2, low: 3, info: 4,
-};
-const priorityTone = (p: string): BadgeTone =>
+const GROUP_ORDER = (Object.keys(GROUP_META) as GroupKey[]).sort(
+  (a, b) => GROUP_META[a].rank - GROUP_META[b].rank,
+);
+
+const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+const sevTone = (p: string): BadgeTone =>
   p === 'critical' ? 'destructive' : p === 'high' ? 'warning' : p === 'medium' ? 'info' : 'muted';
-
-interface WorkItem {
-  key: string;
-  kind: 'host' | 'task';
-  hostId: number;
-  ip: string;
-  hostname: string | null;
-  reason: MyTaskReason;       // primary reason (drives grouping/sort)
-  allReasons: MyTaskReason[]; // tasks can carry several
-  priority: string;          // critical/high/… (severity for hosts)
-  subtitle: string;
-  tsEpoch: number;           // recency tiebreaker (desc)
-}
-
-function fmtAgo(value?: string | null): string {
-  if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
 
 const tsOf = (v?: string | null): number => {
   if (!v) return 0;
@@ -69,58 +64,141 @@ const tsOf = (v?: string | null): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
+function fmtAgo(ms: number): string {
+  if (!ms) return '';
+  const mins = Math.floor((Date.now() - ms) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
+}
+
+/** "Overdue 2d" / "Due today" / "Due 3d" from a due timestamp. */
+function fmtDue(due: string | null): { label: string; tone: BadgeTone } | null {
+  if (!due) return null;
+  const t = new Date(due).getTime();
+  if (Number.isNaN(t)) return null;
+  const days = Math.round((t - Date.now()) / 86400000);
+  if (days < 0) return { label: `Overdue ${Math.abs(days)}d`, tone: 'destructive' };
+  if (days === 0) return { label: 'Due today', tone: 'warning' };
+  return { label: `Due ${days}d`, tone: days <= 2 ? 'warning' : 'muted' };
+}
+
+interface WorkItem {
+  key: string;
+  group: GroupKey;
+  Icon: typeof ServerIcon;
+  to: string;
+  primary: string;
+  primaryMono: boolean;
+  chip: { label: string; tone: BadgeTone } | null;
+  meta: string;
+  right: { label: string; tone: BadgeTone | null };
+  priorityRank: number;
+  tsEpoch: number;
+}
+
 function buildItems(
   queue: MyAttentionResponse | null,
   tasks: MyTasksResponse | null,
+  notes: MyNotesResponse | null,
+  findings: MyFindingsResponse | null,
 ): WorkItem[] {
   const items: WorkItem[] = [];
 
+  // Notes — overdue / handoff / assigned, deep-linked to the thread anchor.
+  for (const n of notes?.items ?? []) {
+    const group: GroupKey = n.is_overdue ? 'overdue' : n.note_type === 'handoff' ? 'handoff' : 'assigned';
+    const due = fmtDue(n.due_at);
+    items.push({
+      key: `note-${n.note_id}`,
+      group,
+      Icon: MessageSquare,
+      to: n.host_id ? `/hosts/${n.host_id}#note-${n.note_id}` : '/operations',
+      primary: n.host_ip || `Note #${n.note_id}`,
+      primaryMono: !!n.host_ip,
+      chip: n.note_type && n.note_type !== 'observation'
+        ? { label: n.note_type, tone: 'secondary' }
+        : null,
+      meta: n.body_preview || '(no text)',
+      right: due
+        ? { label: due.label, tone: due.tone }
+        : { label: fmtAgo(tsOf(n.updated_at)), tone: null },
+      priorityRank: 2,
+      tsEpoch: tsOf(n.due_at) || tsOf(n.updated_at),
+    });
+  }
+
+  // Findings the caller owns — link to evidence thread when present.
+  for (const f of findings?.items ?? []) {
+    items.push({
+      key: `finding-${f.finding_id}`,
+      group: 'finding',
+      Icon: Flag,
+      to: f.evidence_annotation_id && f.host_id
+        ? `/hosts/${f.host_id}#note-${f.evidence_annotation_id}`
+        : '/findings',
+      primary: f.title,
+      primaryMono: false,
+      chip: { label: f.severity, tone: sevTone(f.severity) },
+      meta: f.host_count > 0 ? `${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${f.status}` : f.status,
+      right: { label: fmtAgo(tsOf(f.updated_at)), tone: null },
+      priorityRank: PRIORITY_RANK[f.severity] ?? 5,
+      tsEpoch: tsOf(f.updated_at),
+    });
+  }
+
+  // In-review hosts.
   for (const h of queue?.items ?? []) {
-    // A host's "priority" is its worst finding severity (for ranking).
-    const severity = h.critical_vulns > 0 ? 'critical' : h.high_vulns > 0 ? 'high' : 'low';
-    const findings =
-      h.critical_vulns > 0 || h.high_vulns > 0
-        ? `${h.critical_vulns ? `${h.critical_vulns} crit` : ''}${
-            h.critical_vulns && h.high_vulns ? ' · ' : ''
-          }${h.high_vulns ? `${h.high_vulns} high` : ''}`
-        : 'no critical/high findings';
+    const sev = h.critical_vulns > 0 ? 'critical' : h.high_vulns > 0 ? 'high' : 'low';
+    const findingsStr =
+      h.critical_vulns || h.high_vulns
+        ? `${h.critical_vulns ? `${h.critical_vulns} crit` : ''}${h.critical_vulns && h.high_vulns ? ' · ' : ''}${h.high_vulns ? `${h.high_vulns} high` : ''}`
+        : 'no crit/high';
     items.push({
       key: `host-${h.host_id}`,
-      kind: 'host',
-      hostId: h.host_id,
-      ip: h.ip_address,
-      hostname: h.hostname,
-      reason: 'in_review',
-      allReasons: ['in_review'],
-      priority: severity,
-      subtitle: `${findings} · ${h.open_port_count} port${h.open_port_count === 1 ? '' : 's'}`,
+      group: 'in_review',
+      Icon: ServerIcon,
+      to: `/hosts/${h.host_id}`,
+      primary: h.ip_address,
+      primaryMono: true,
+      chip: null,
+      meta: `${h.hostname ? `${h.hostname} · ` : ''}${findingsStr} · ${h.open_port_count} port${h.open_port_count === 1 ? '' : 's'}`,
+      right: { label: fmtAgo(tsOf(h.follow_updated_at)), tone: null },
+      priorityRank: PRIORITY_RANK[sev] ?? 5,
       tsEpoch: tsOf(h.follow_updated_at),
     });
   }
 
+  // Test-plan steps — assigned / in_review / triage; link to the entry.
   for (const t of tasks?.items ?? []) {
     const reasons = (t.reasons && t.reasons.length ? t.reasons : ['triage']) as MyTaskReason[];
-    // Primary reason = strongest (lowest rank) the task satisfies.
-    const primary = [...reasons].sort((a, b) => REASON_META[a].rank - REASON_META[b].rank)[0];
+    const primaryReason: MyTaskReason = reasons.includes('assigned')
+      ? 'assigned'
+      : reasons.includes('in_review')
+        ? 'in_review'
+        : 'triage';
+    const group: GroupKey = primaryReason; // assigned|in_review|triage map 1:1
     items.push({
       key: `task-${t.entry_id}`,
-      kind: 'task',
-      hostId: t.host_id,
-      ip: t.host_ip,
-      hostname: t.host_hostname,
-      reason: primary,
-      allReasons: reasons,
-      priority: t.priority,
-      subtitle: `${t.plan_title} · ${t.test_phase.replace('_', ' ')}`,
+      group,
+      Icon: ClipboardList,
+      to: `/test-plans/${t.plan_id}#entry-${t.entry_id}`,
+      primary: t.host_ip,
+      primaryMono: true,
+      chip: { label: t.priority, tone: sevTone(t.priority) },
+      meta: `${t.plan_title} · ${t.test_phase.replace(/_/g, ' ')}`,
+      right: { label: fmtAgo(tsOf(t.updated_at)), tone: null },
+      priorityRank: PRIORITY_RANK[t.priority] ?? 5,
       tsEpoch: tsOf(t.updated_at),
     });
   }
 
   items.sort((a, b) => {
-    const r = REASON_META[a.reason].rank - REASON_META[b.reason].rank;
-    if (r !== 0) return r;
-    const p = (PRIORITY_RANK[a.priority] ?? 5) - (PRIORITY_RANK[b.priority] ?? 5);
-    if (p !== 0) return p;
+    const g = GROUP_META[a.group].rank - GROUP_META[b.group].rank;
+    if (g !== 0) return g;
+    if (a.priorityRank !== b.priorityRank) return a.priorityRank - b.priorityRank;
     return b.tsEpoch - a.tsEpoch;
   });
   return items;
@@ -129,59 +207,52 @@ function buildItems(
 export interface MyWorkCardProps {
   queue: MyAttentionResponse | null;
   tasks: MyTasksResponse | null;
+  notes: MyNotesResponse | null;
+  findings: MyFindingsResponse | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
 }
 
-const PREVIEW = 12;
+const PREVIEW = 14;
 
-export const MyWorkCard: React.FC<MyWorkCardProps> = ({ queue, tasks, loading, error, onRetry }) => {
+export const MyWorkCard: React.FC<MyWorkCardProps> = ({
+  queue, tasks, notes, findings, loading, error, onRetry,
+}) => {
   const navigate = useNavigate();
   const [expanded, setExpanded] = React.useState(false);
 
-  const items = React.useMemo(() => buildItems(queue, tasks), [queue, tasks]);
+  const items = React.useMemo(
+    () => buildItems(queue, tasks, notes, findings),
+    [queue, tasks, notes, findings],
+  );
   const shown = expanded ? items : items.slice(0, PREVIEW);
 
-  // Non-zero reason breakdown across the merged set.
-  // Authoritative totals from the server (the merged item list is capped at
-  // the per-source fetch limits, so it must NOT be treated as the total —
-  // review CR3-#1).  reason_counts is the server's task breakdown.
-  const totalHosts = queue?.in_review_count ?? 0;
-  const totalTasks = tasks?.total_open ?? 0;
-  const shownHosts = items.filter((i) => i.kind === 'host').length;
-  const shownTasks = items.filter((i) => i.kind === 'task').length;
-  const moreHosts = totalHosts > shownHosts;
-  const moreTasks = totalTasks > shownTasks;
-  const taskReasons = tasks?.reason_counts;
+  // Authoritative server totals (the merged list is capped at the per-source
+  // fetch limits, so it must NOT stand in for the totals).
+  const totalCount =
+    (notes?.total_open ?? 0) + (findings?.total_open ?? 0) +
+    (queue?.in_review_count ?? 0) + (tasks?.total_open ?? 0);
+  const overdue = notes?.overdue_count ?? 0;
+
+  // Group-count headers, computed over the SHOWN rows (the visible grouping).
+  const shownGroupCounts = React.useMemo(() => {
+    const m = new Map<GroupKey, number>();
+    for (const it of shown) m.set(it.group, (m.get(it.group) ?? 0) + 1);
+    return m;
+  }, [shown]);
 
   return (
     <Card className="h-full">
       <CardContent className="p-md">
-        <div className="mb-sm flex items-start justify-between gap-sm">
-          <div className="min-w-0">
-            <p className="text-subheading font-semibold text-foreground">My work</p>
-            <p className="text-caption text-muted-foreground">
-              Hosts you're investigating and the test-plan steps you own, in one
-              prioritised queue.
-            </p>
-            {(totalHosts > 0 || totalTasks > 0) && (
-              <div className="mt-xxs flex flex-wrap items-center gap-xxs">
-                <Badge variant="secondary">{totalHosts} In Review</Badge>
-                <Badge variant="outline">{totalTasks} task{totalTasks === 1 ? '' : 's'}</Badge>
-                {taskReasons && taskReasons.assigned > 0 && (
-                  <Badge variant={REASON_META.assigned.tone}>{taskReasons.assigned} assigned</Badge>
-                )}
-                {taskReasons && taskReasons.triage > 0 && (
-                  <Badge variant={REASON_META.triage.tone}>{taskReasons.triage} triage</Badge>
-                )}
-              </div>
-            )}
-          </div>
+        <div className="mb-sm flex flex-wrap items-center gap-xs">
+          <p className="text-subheading font-semibold text-foreground">My work</p>
+          {totalCount > 0 && <Badge variant="secondary">{totalCount}</Badge>}
+          {overdue > 0 && <Badge variant="destructive">{overdue} overdue</Badge>}
         </div>
 
         {loading ? (
-          <div className="flex items-center gap-xs">
+          <div className="flex items-center gap-xs" role="status" aria-live="polite">
             <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
             <p className="text-metadata text-muted-foreground">Loading your work…</p>
           </div>
@@ -191,104 +262,81 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({ queue, tasks, loading, e
             <AlertDescription>
               <p className="break-words">{error}</p>
               <Button size="sm" variant="outline" className="mt-xs" onClick={onRetry}>
-                <RefreshCw className="size-3.5" aria-hidden />
-                Retry
+                <RefreshCw className="size-3.5" aria-hidden /> Retry
               </Button>
             </AlertDescription>
           </Alert>
         ) : items.length === 0 ? (
           <Alert variant="info">
             <AlertDescription>
-              Nothing in your queue. Work shows here when you mark a host{' '}
-              <strong>In Review</strong>, a test-plan step is <strong>assigned</strong> to
-              you, or unassigned <strong>critical/high</strong> work needs triage.
+              Nothing in your queue. Work shows here when you're <strong>assigned a note</strong>,
+              {' '}<strong>own a finding</strong>, mark a host <strong>In Review</strong>, or a
+              test-plan step is assigned to you.
             </AlertDescription>
           </Alert>
         ) : (
           <ul className="flex flex-col">
-            {shown.map((it, idx) => (
-              <li key={it.key}>
-                {idx > 0 && <Separator />}
-                <button
-                  type="button"
-                  onClick={() => navigate(`/hosts/${it.hostId}`)}
-                  className={cn(
-                    'flex w-full flex-col gap-xxs px-xs py-sm text-left',
-                    'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  )}
-                >
-                  <div className="flex flex-wrap items-center gap-xs">
-                    <Badge variant={it.kind === 'host' ? 'secondary' : 'outline'} className="gap-xxs">
-                      {it.kind === 'host' && <ServerIcon className="size-3" aria-hidden />}
-                      {it.kind === 'host' ? 'Host' : 'Task'}
-                    </Badge>
-                    {it.kind === 'task' && (
-                      <Badge variant={priorityTone(it.priority)}>{it.priority}</Badge>
-                    )}
-                    <p className="truncate font-mono text-metadata font-medium text-foreground">
-                      {it.ip}
-                    </p>
-                    {(['assigned', 'in_review', 'triage'] as MyTaskReason[])
-                      .filter((r) => it.allReasons.includes(r))
-                      .map((r) => (
-                        <Badge key={r} variant={REASON_META[r].tone}>
-                          {REASON_META[r].label}
-                        </Badge>
-                      ))}
-                    {it.tsEpoch > 0 && (
-                      <span className="ml-auto text-caption text-muted-foreground">
-                        {fmtAgo(new Date(it.tsEpoch).toISOString())}
+            {shown.map((it, idx) => {
+              const newGroup = idx === 0 || shown[idx - 1].group !== it.group;
+              return (
+                <li key={it.key}>
+                  {newGroup && (
+                    <div className="mb-xxs mt-sm flex items-center gap-xs first:mt-0">
+                      <Badge variant={GROUP_META[it.group].tone}>{GROUP_META[it.group].label}</Badge>
+                      <span className="text-caption text-muted-foreground">
+                        {shownGroupCounts.get(it.group)}
                       </span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => navigate(it.to)}
+                    className={cn(
+                      'flex w-full items-center gap-xs px-xs py-xxs text-left',
+                      'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     )}
-                  </div>
-                  <p className="truncate text-metadata text-muted-foreground">
-                    {it.hostname ? `${it.hostname} · ` : ''}{it.subtitle}
-                  </p>
-                </button>
-              </li>
-            ))}
+                  >
+                    <it.Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                    {it.chip && <Badge variant={it.chip.tone}>{it.chip.label}</Badge>}
+                    <span
+                      className={cn(
+                        'shrink-0 text-metadata font-medium text-foreground',
+                        it.primaryMono && 'font-mono',
+                      )}
+                    >
+                      {it.primary}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
+                      — {it.meta}
+                    </span>
+                    {it.right.label && (
+                      it.right.tone ? (
+                        <Badge variant={it.right.tone}>{it.right.label}</Badge>
+                      ) : (
+                        <span className="shrink-0 text-caption text-muted-foreground">{it.right.label}</span>
+                      )
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
 
-        {/* Footer — expand the FETCHED rows, plus honest "X of Y" totals and
-            links to the complete lists.  The merged list is capped at the
-            fetch limits, so "Show more" never implies it's everything
-            (review CR3-#1). */}
         {!loading && !error && items.length > 0 && (
           <div className="mt-sm flex flex-wrap items-center gap-x-md gap-y-xxs">
             {items.length > PREVIEW && (
               <button
                 type="button"
                 onClick={() => setExpanded((v) => !v)}
-                className="text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {expanded ? 'Show fewer' : `Show ${items.length - PREVIEW} more here`}
+                {expanded ? 'Show fewer' : `Show ${items.length - PREVIEW} more`}
               </button>
             )}
             <span className="text-caption text-muted-foreground">
-              Showing {shownHosts} of {totalHosts} host{totalHosts === 1 ? '' : 's'} ·{' '}
-              {shownTasks} of {totalTasks} task{totalTasks === 1 ? '' : 's'}
+              Showing {shown.length} of {totalCount}
             </span>
-            <div className="ml-auto flex items-center gap-md">
-              {moreHosts && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/hosts?follow_status=in_review')}
-                  className="inline-flex items-center gap-xxs text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-                >
-                  All In Review <SquareArrowOutUpRight className="size-3" aria-hidden />
-                </button>
-              )}
-              {moreTasks && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/test-plans')}
-                  className="inline-flex items-center gap-xxs text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-                >
-                  All tasks <SquareArrowOutUpRight className="size-3" aria-hidden />
-                </button>
-              )}
-            </div>
           </div>
         )}
       </CardContent>

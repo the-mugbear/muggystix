@@ -37,9 +37,13 @@ from app.api.deps import get_current_project
 from app.services.operations_read_service import (
     compute_my_attention_queue,
     compute_my_tasks,
+    compute_my_assigned_notes,
+    compute_my_findings,
     compute_team_review,
     MyAttentionResponse,
     MyTasksResponse,
+    MyNotesResponse,
+    MyFindingsResponse,
     TeamReviewResponse,
 )
 
@@ -77,6 +81,11 @@ class SinceLastVisit(BaseModel):
 class WorkbenchResponse(BaseModel):
     my_queue: MyAttentionResponse = Field(default_factory=MyAttentionResponse)
     my_tasks: MyTasksResponse = Field(default_factory=MyTasksResponse)
+    # P0 — My Work resume pass: assigned note threads + owned findings, so the
+    # card surfaces the annotation/finding work an analyst owns, not just
+    # in-review hosts and plan steps.
+    my_notes: MyNotesResponse = Field(default_factory=MyNotesResponse)
+    my_findings: MyFindingsResponse = Field(default_factory=MyFindingsResponse)
     team_review: TeamReviewResponse = Field(default_factory=TeamReviewResponse)
     since_last_visit: SinceLastVisit = Field(default_factory=SinceLastVisit)
 
@@ -179,12 +188,16 @@ def get_workbench(
     """
     my_queue = compute_my_attention_queue(db, current_user, project, limit=10)
     my_tasks = compute_my_tasks(db, current_user, project, limit=15)
+    my_notes = compute_my_assigned_notes(db, current_user, project, limit=15)
+    my_findings = compute_my_findings(db, current_user, project, limit=15)
     team_review = compute_team_review(db, current_user, project, limit=500)
     since = _compute_since_last_visit(db, current_user, project)
 
     return WorkbenchResponse(
         my_queue=my_queue,
         my_tasks=my_tasks,
+        my_notes=my_notes,
+        my_findings=my_findings,
         team_review=team_review,
         since_last_visit=since,
     )

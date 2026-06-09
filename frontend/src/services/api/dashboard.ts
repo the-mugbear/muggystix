@@ -177,6 +177,44 @@ export const getMyTasks = async (limit = 15): Promise<MyTasksResponse> => {
   return response.data;
 };
 
+// --- My Notes / My Findings (P0 — My Work resume pass) ---
+
+export interface MyNoteItem {
+  note_id: number;
+  host_id: number | null;
+  host_ip: string | null;
+  host_hostname: string | null;
+  body_preview: string;
+  note_type: string | null; // observation|finding|question|decision|action|handoff
+  status: string;
+  due_at: string | null;
+  is_overdue: boolean;
+  updated_at: string | null;
+}
+
+export interface MyNotesResponse {
+  items: MyNoteItem[];
+  total_open: number;
+  handoff_count: number;
+  overdue_count: number;
+}
+
+export interface MyFindingItem {
+  finding_id: number;
+  title: string;
+  severity: string;
+  status: string;
+  host_id: number | null;
+  host_count: number;
+  evidence_annotation_id: number | null;
+  updated_at: string | null;
+}
+
+export interface MyFindingsResponse {
+  items: MyFindingItem[];
+  total_open: number;
+}
+
 // --- Operations workbench (batched personal surface + since-last-visit) ---
 
 export interface SinceLastVisit {
@@ -194,6 +232,8 @@ export interface SinceLastVisit {
 export interface WorkbenchResponse {
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
+  my_notes: MyNotesResponse;
+  my_findings: MyFindingsResponse;
   team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;
 }

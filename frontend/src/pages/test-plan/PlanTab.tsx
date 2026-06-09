@@ -654,7 +654,11 @@ const PlanTab: React.FC = () => {
                     const isExpanded = expandedEntries.has(entry.id);
                     return (
                       <React.Fragment key={entry.id}>
-                        <TableRow>
+                        {/* Anchor for #entry-{id} deep-links from My Work.
+                            Native jump works when the entry is on the visible
+                            page; a follow-up will flip the (two-level paged)
+                            list to the entry's page + scroll. */}
+                        <TableRow id={`entry-${entry.id}`}>
                           <TableCell>
                             <Button
                               variant="ghost"
