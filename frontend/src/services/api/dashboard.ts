@@ -270,6 +270,29 @@ export const getProjectAttention = async (): Promise<ProjectAttention> => {
   return response.data;
 };
 
+export interface SiteAttentionEntry {
+  site: string | null;
+  unassigned: boolean;
+  host_count: number;
+  exposure: {
+    raw_score: number;
+    active_findings: number;
+    by_severity: { critical: number; high: number; medium: number; low: number; info: number };
+  };
+  neglect: { unowned_active_findings: number; unreviewed_hosts: number };
+  recommended_action: { kind: string; text: string };
+}
+
+export interface SiteAttention {
+  adopted: boolean;
+  sites: SiteAttentionEntry[];
+}
+
+export const getSiteAttention = async (): Promise<SiteAttention> => {
+  const response = await api.get(`${p()}/attention/sites`);
+  return response.data;
+};
+
 export const markWorkbenchSeen = async (): Promise<{ last_viewed_at: string }> => {
   const response = await api.post(`${p()}/workbench/seen`);
   return response.data;

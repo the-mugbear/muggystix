@@ -13,7 +13,7 @@ from app.db.models_project import Project
 from app.db.models_auth import User
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project
-from app.services.attention_service import compute_project_attention
+from app.services.attention_service import compute_project_attention, compute_site_attention
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -25,3 +25,14 @@ def get_project_attention(
     _user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     return compute_project_attention(db, project.id)
+
+
+@router.get("/sites", summary="Per-site decomposition of the attention model (worst-first)")
+def get_site_attention(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """``adopted=False`` when no subnet carries a site — the UI suppresses the
+    per-site view (and the Unassigned-gap nag) until sites are in use."""
+    return compute_site_attention(db, project.id)

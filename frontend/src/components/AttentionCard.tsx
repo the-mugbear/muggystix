@@ -10,7 +10,10 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
 
-import { getProjectAttention, type ProjectAttention } from '../services/api';
+import {
+  getProjectAttention, getSiteAttention,
+  type ProjectAttention, type SiteAttention,
+} from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
@@ -34,13 +37,14 @@ const SEVERITY_VARIANT: Record<string, string> = {
 
 export const AttentionCard: React.FC = () => {
   const [data, setData] = useState<ProjectAttention | null>(null);
+  const [sites, setSites] = useState<SiteAttention | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = React.useCallback(() => {
     setLoading(true);
-    getProjectAttention()
-      .then((d) => { setData(d); setError(null); })
+    Promise.all([getProjectAttention(), getSiteAttention()])
+      .then(([d, s]) => { setData(d); setSites(s); setError(null); })
       .catch((e) => setError(formatApiError(e, 'Could not load project attention.')))
       .finally(() => setLoading(false));
   }, []);
@@ -122,6 +126,36 @@ export const AttentionCard: React.FC = () => {
                 </span>
               </div>
             </div>
+
+            {/* Per-site breakdown — the same components grouped by site,
+                worst-first. Only when the project has organised subnets into
+                sites (otherwise the project-level view above is all there is). */}
+            {sites?.adopted && sites.sites.length > 0 && (
+              <div>
+                <p className="mb-xxs text-caption text-muted-foreground">By site</p>
+                <div className="flex flex-col gap-xxs">
+                  {sites.sites.slice(0, 6).map((s) => (
+                    <div
+                      key={s.site ?? '__unassigned__'}
+                      className="flex flex-wrap items-center gap-xs border-b border-border pb-xxs last:border-0"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-metadata font-medium text-foreground">
+                        {s.unassigned ? <span className="italic text-muted-foreground">Unassigned</span> : s.site}
+                      </span>
+                      <span className="text-caption text-muted-foreground">{s.host_count}h</span>
+                      {(['critical', 'high'] as const)
+                        .filter((sev) => s.exposure.by_severity[sev] > 0)
+                        .map((sev) => (
+                          <Badge key={sev} variant={SEVERITY_VARIANT[sev] as never}>
+                            {s.exposure.by_severity[sev]} {sev}
+                          </Badge>
+                        ))}
+                      <span className="text-caption text-muted-foreground">{s.recommended_action.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : null}
       </CardContent>
