@@ -225,7 +225,22 @@ class FindingService:
         )
         self.db.add(finding)
         self.db.flush()
-        self._attach_hosts(finding, [vuln.host_id] if vuln.host_id else [])
+        # Cross-host dedup: a scanner finding keyed by plugin_id is the SAME
+        # issue wherever that plugin fires, so attach every host in the project
+        # carrying it — "promote once" yields one finding spanning all affected
+        # hosts (the spine's whole point). Plugin-less vulns attach just their
+        # own host.
+        host_ids = [vuln.host_id] if vuln.host_id else []
+        if vuln.plugin_id:
+            from app.db.models_vulnerability import Vulnerability as _Vuln
+            sibling = (
+                self.db.query(_Vuln.host_id)
+                .join(Host, _Vuln.host_id == Host.id)
+                .filter(Host.project_id == project_id, _Vuln.plugin_id == vuln.plugin_id)
+                .distinct()
+            )
+            host_ids = list(dict.fromkeys(host_ids + [hid for (hid,) in sibling if hid is not None]))
+        self._attach_hosts(finding, host_ids)
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,

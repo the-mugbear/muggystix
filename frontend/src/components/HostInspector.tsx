@@ -353,10 +353,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setVulnActionId(vulnId);
     try {
       const finding = await promoteVulnerability(vulnId, { status });
+      // Scanner findings span every host with the same plugin — report it.
+      const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
       toast.success(
         status === 'confirmed'
-          ? `Promoted to finding: ${finding.title}`
-          : `Dismissed as false positive: ${finding.title}`,
+          ? `Promoted to finding${span}: ${finding.title}`
+          : `Dismissed as false positive${span}: ${finding.title}`,
         { autoHideMs: 3000 },
       );
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
