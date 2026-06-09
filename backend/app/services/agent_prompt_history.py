@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.35.0",
+        "app_version": "2.140.0",
+        "summary": (
+            "whatweb promoted to a first-class recon web tool. A new "
+            "WhatwebParser ingests `whatweb --log-json` output into the same "
+            "web_interfaces table as httpx (source=\"whatweb\": title, server "
+            "header, detected tech stack), so the agent can now run AND upload "
+            "whatweb instead of it being only an httpx fallback it couldn't "
+            "ingest. build_tool_catalog gains a first-class phase=web whatweb "
+            "entry (apt/brew/gem install hints; `whatweb --version` preflight); "
+            "httpx/nmap_web list it as an alternative. preflight.sh + the "
+            "AGENTS.md preflight tool list now check whatweb. Use it as the "
+            "dependable web pass when httpx (Go binary / Python-CLI collision) "
+            "won't install."
+        ),
+    },
+    {
         "version": "1.34.0",
         "app_version": "2.139.0",
         "summary": (

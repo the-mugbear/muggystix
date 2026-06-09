@@ -322,6 +322,7 @@ def build_tool_catalog(
             "requires_privileges": "none",
             "alternatives": [
                 "nmap_web (always-available fallback — see below; ingests via nmap-XML)",
+                "whatweb (apt-installable Ruby fingerprinter; ingests as web_interfaces)",
                 "eyewitness (heavier; screenshots too)",
                 "nikto (intrusive; CVE-focused)",
             ],
@@ -372,8 +373,51 @@ def build_tool_catalog(
             "requires_privileges": "none",
             "alternatives": [
                 "httpx (preferred when ProjectDiscovery binary is available)",
+                "whatweb (apt-installable tech fingerprinter; ingests as web_interfaces)",
                 "eyewitness (adds screenshots on top of fingerprinting)",
             ],
+        },
+        {
+            # v2.140.0 — whatweb promoted to a first-class web tool.  It's a
+            # Ruby tech-fingerprinter that ships in Debian/Kali apt repos, so
+            # it's reliably present where ProjectDiscovery's httpx (Go binary
+            # / Python-CLI name collision) is not.  Its --log-json output now
+            # ingests through WhatwebParser into the same web_interfaces table
+            # as httpx (source="whatweb"): title, server header, and the
+            # detected tech stack land as chips on the host detail UI.
+            "phase": "web",
+            "tool": "whatweb",
+            "command": (
+                "whatweb -a 3 --input-file=targets.txt "
+                "--log-json=whatweb.json --no-errors"
+            ),
+            "rationale": (
+                "apt-installable web tech-fingerprinter — the most reliable "
+                "web pass when httpx isn't available (no Go toolchain, Python-"
+                "CLI shadowing, or restricted network).  `-a 3` is the "
+                "aggression level that runs version-bearing plugins; "
+                "`--input-file` takes the same newline-delimited target list "
+                "as httpx, and `--log-json` produces the JSON this platform "
+                "ingests into web_interfaces (title / server / tech stack). "
+                "Slower per target than httpx (no concurrency by default) and "
+                "no favicon hash or structured TLS block, but it covers the "
+                "core fingerprint and always installs."
+            ),
+            "intrusive": False,
+            "output_format": "json",
+            "best_for": "web fingerprinting when httpx can't be installed",
+            "preflight": "whatweb --version",
+            "requires_privileges": "none",
+            "alternatives": [
+                "httpx (faster, concurrent, adds favicon hash + TLS)",
+                "nmap_web (always-available; ingests via nmap-XML)",
+            ],
+            "install_hints": {
+                "apt": "sudo apt install whatweb   # Debian / Kali / Ubuntu",
+                "brew": "brew install whatweb       # macOS",
+                "gem": "gem install whatweb",
+                "note": "Pure Ruby — no compiler or Go toolchain needed, which is why it's the dependable httpx alternative in locked-down environments.",
+            },
         },
         {
             "phase": "web",

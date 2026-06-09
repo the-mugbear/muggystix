@@ -725,7 +725,7 @@ curl -sk https://<nm-host>/api/v1/references/preflight-script | bash -s -- --str
 ```powershell
 curl.exe -sk https://<nm-host>/api/v1/references/preflight-script -o preflight.sh
 # Inspect preflight.sh to see the tool list it checks for (nmap, masscan, rustscan,
-# httpx, eyewitness, nikto, subfinder, amass, naabu, netexec, smbmap, nuclei, ...).
+# httpx, whatweb, eyewitness, nikto, subfinder, amass, naabu, netexec, smbmap, nuclei, ...).
 # For each tool produce one tools_status[] entry of the same shape the script's
 # --json mode would have emitted:
 #   {"name": "nmap", "status": "ok" | "warn" | "missing", "issue": "..."}

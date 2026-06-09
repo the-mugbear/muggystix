@@ -224,6 +224,10 @@ set_meta nikto     "Web misconfiguration / CVE scanner (intrusive)"             
 add_hints nikto    "apt=sudo apt install nikto" "brew=brew install nikto" "git=git clone https://github.com/sullo/nikto   # sullo is the upstream author"
 simple_check nikto nikto "nikto -Version 2>&1" false
 
+set_meta whatweb   "Ruby web tech-fingerprinter — apt-installable httpx alternative (--log-json ingests as web_interfaces)"  "https://github.com/urbanadventurer/WhatWeb"
+add_hints whatweb  "apt=sudo apt install whatweb   # Debian / Kali / Ubuntu" "brew=brew install whatweb" "gem=gem install whatweb"
+simple_check whatweb whatweb "whatweb --version 2>&1" false
+
 # --- DNS enumeration ---
 set_meta subfinder "ProjectDiscovery subfinder — passive subdomain discovery"          "https://github.com/projectdiscovery/subfinder"
 add_hints subfinder "go=go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest" "binary=https://github.com/projectdiscovery/subfinder/releases/latest" "brew=brew install projectdiscovery/tap/subfinder"

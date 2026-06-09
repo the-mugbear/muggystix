@@ -830,6 +830,12 @@ class IngestionService:
                 _extra_parsers[_DnsxParser] = _DnsxParser
             except ImportError:
                 pass
+            # v2.140.0 — register whatweb parser (promoted to first-class).
+            try:
+                from app.parsers.whatweb_parser import WhatwebParser as _WhatwebParser
+                _extra_parsers[_WhatwebParser] = _WhatwebParser
+            except ImportError:
+                pass
 
             parser_map = {
                 NmapXMLParser: NmapXMLParser,
@@ -1060,6 +1066,12 @@ class IngestionService:
             from app.parsers.httpx_parser import HttpxParser, looks_like_httpx
             if looks_like_httpx(sample, filename):
                 attempts.append(("httpx_json", HttpxParser, "httpx web fingerprint (JSON/JSONL)"))
+            # v2.140.0 — whatweb web fingerprint.  Distinct signature
+            # (``target`` + ``plugins`` dict) so it sits beside httpx with
+            # no risk of cross-matching the other JSON probes.
+            from app.parsers.whatweb_parser import WhatwebParser, looks_like_whatweb
+            if looks_like_whatweb(sample, filename):
+                attempts.append(("whatweb_json", WhatwebParser, "whatweb web fingerprint (JSON/JSONL)"))
             if _cd.looks_like_bloodhound(sample, filename):
                 attempts.append(("bloodhound_json", BloodHoundParser, "BloodHound/SharpHound JSON export"))
             if _cd.looks_like_amass(sample, filename):
