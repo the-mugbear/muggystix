@@ -89,7 +89,7 @@ class User(Base):
     # is SET NULL + nullable=True (see host_notes.user_id).
     # foreign_keys pins this to Annotation.user_id — Annotation also has
     # assignee_id (a second FK to users), so the path must be explicit.
-    host_notes = relationship(
+    annotations = relationship(
         "Annotation", back_populates="author", foreign_keys="Annotation.user_id",
     )
 

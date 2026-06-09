@@ -774,7 +774,7 @@ class NoteStatus(str, enum.Enum):
 
 
 class Annotation(Base):
-    __tablename__ = "host_notes"
+    __tablename__ = "annotations"
 
     id = Column(Integer, primary_key=True, index=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
@@ -783,12 +783,12 @@ class Annotation(Base):
     # deleted user" instead of either blocking the delete (NOT NULL
     # before the fix) or wiping shared annotations (CASCADE).
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    parent_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True)
+    parent_id = Column(Integer, ForeignKey("annotations.id"), nullable=True)
     # Persisted thread root (review #5): id of the thread's root note
     # (== self for a root note).  Lets activity status filters/counts query
     # by the THREAD's status (the root's) instead of a reply's, and resolves
     # history by root — without an ancestor walk per request.
-    thread_root_id = Column(Integer, ForeignKey("host_notes.id"), nullable=True, index=True)
+    thread_root_id = Column(Integer, ForeignKey("annotations.id"), nullable=True, index=True)
     body = Column(Text, nullable=False)
     status = Column(SQLEnum(NoteStatus), nullable=False, default=NoteStatus.OPEN)
     # Thread-level work fields (P3) — semantically belong to the ROOT note
@@ -807,7 +807,7 @@ class Annotation(Base):
 
     host = relationship("Host", back_populates="notes")
     # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
-    author = relationship("User", foreign_keys=[user_id], back_populates="host_notes")
+    author = relationship("User", foreign_keys=[user_id], back_populates="annotations")
     assignee = relationship("User", foreign_keys=[assignee_id])
     # foreign_keys pinned to parent_id — there are two self-FKs now
     # (parent_id + thread_root_id), so the parent/replies join must be
@@ -828,10 +828,10 @@ class AnnotationStatusHistory(Base):
     captured at the moment of resolving.  ``changed_by_id`` SET NULL on
     user delete preserves the history with an anonymous actor.
     """
-    __tablename__ = "host_note_status_history"
+    __tablename__ = "annotation_status_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    note_id = Column(Integer, ForeignKey("host_notes.id", ondelete="CASCADE"), nullable=False, index=True)
+    note_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False, index=True)
     from_status = Column(String(20), nullable=True)
     to_status = Column(String(20), nullable=False)
     changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

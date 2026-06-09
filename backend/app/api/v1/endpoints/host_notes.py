@@ -414,7 +414,7 @@ def update_host_note(
       ``note_type``/``resolution_summary``/``pinned``) is collaborative —
       any project member may change it, so a teammate can resolve or
       reassign an abandoned thread.  Status changes are recorded in
-      ``host_note_status_history`` and resolving requires a summary.
+      ``annotation_status_history`` and resolving requires a summary.
 
     ``model_fields_set`` distinguishes an omitted field from an explicit
     null (which clears a nullable thread field).
