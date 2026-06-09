@@ -397,7 +397,6 @@ export const getHosts = async (params: {
   has_low_vulns?: boolean;
   has_exploit_available?: boolean;
   has_test_execution?: boolean;
-  min_risk_score?: number;
   out_of_scope_only?: boolean;
   follow_status?: string;
   scan_ids?: string;

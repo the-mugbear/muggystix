@@ -157,7 +157,6 @@ interface GenFormState {
   ports: string;
   services: string;
   minSeverity: GenSeverity;
-  minRisk: string;
 }
 
 const INITIAL_GEN_FORM: GenFormState = {
@@ -167,7 +166,6 @@ const INITIAL_GEN_FORM: GenFormState = {
   ports: '',
   services: '',
   minSeverity: '',
-  minRisk: '',
 };
 
 type GenFormAction =
@@ -177,7 +175,6 @@ type GenFormAction =
   | { type: 'setPorts'; value: string }
   | { type: 'setServices'; value: string }
   | { type: 'setMinSeverity'; value: GenSeverity }
-  | { type: 'setMinRisk'; value: string }
   | { type: 'reset'; title?: string };
 
 function genFormReducer(state: GenFormState, action: GenFormAction): GenFormState {
@@ -188,7 +185,6 @@ function genFormReducer(state: GenFormState, action: GenFormAction): GenFormStat
     case 'setPorts': return { ...state, ports: action.value };
     case 'setServices': return { ...state, services: action.value };
     case 'setMinSeverity': return { ...state, minSeverity: action.value };
-    case 'setMinRisk': return { ...state, minRisk: action.value };
     case 'reset': return { ...INITIAL_GEN_FORM, title: action.title ?? '' };
   }
 }
@@ -377,7 +373,6 @@ const TestPlans: React.FC = () => {
       if (genForm.ports) fc.ports = genForm.ports;
       if (genForm.services) fc.services = genForm.services;
       if (genForm.minSeverity) fc.min_severity = genForm.minSeverity;
-      if (genForm.minRisk && parseInt(genForm.minRisk)) fc.min_risk_score = parseInt(genForm.minRisk);
       if (Object.keys(fc).length > 0) req.filter_criteria = fc;
 
       const result = await generateTestPlan(req);
@@ -1071,17 +1066,6 @@ const TestPlans: React.FC = () => {
                         <p className="mt-xxs text-caption text-muted-foreground">
                           Hosts must have ≥1 vulnerability at this severity or above.
                         </p>
-                      </div>
-                      <div className="max-w-40">
-                        <Label htmlFor="gen-min-risk">Min Risk Score</Label>
-                        <Input
-                          id="gen-min-risk"
-                          value={genForm.minRisk}
-                          onChange={(e) => dispatchGenForm({ type: 'setMinRisk', value: e.target.value })}
-                          type="number"
-                          min={0}
-                          max={100}
-                        />
                       </div>
                     </div>
                   </AccordionContent>

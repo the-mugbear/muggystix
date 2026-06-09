@@ -105,7 +105,6 @@ export interface PlanFilterCriteria {
   has_critical_vulns?: boolean;
   /** @deprecated Use min_severity. */
   has_high_vulns?: boolean;
-  min_risk_score?: number;
   search?: string;
 }
 

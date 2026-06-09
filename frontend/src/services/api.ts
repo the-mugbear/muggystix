@@ -390,7 +390,6 @@ export const generateHostsReport = async (
     subnets?: string;
     has_critical_vulns?: boolean;
     has_high_vulns?: boolean;
-    min_risk_score?: number;
     follow_status?: string;
     out_of_scope_only?: boolean;
     scan_ids?: string;
@@ -449,7 +448,6 @@ export const getToolReadyOutput = async (
     has_high_vulns?: boolean;
     has_exploit_available?: boolean;
     has_test_execution?: boolean;
-    min_risk_score?: number;
     follow_status?: string;
     out_of_scope_only?: boolean;
     scan_ids?: string;
