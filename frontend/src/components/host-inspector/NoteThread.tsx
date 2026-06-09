@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Flag, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
@@ -116,6 +117,11 @@ const NoteRow: React.FC<NoteRowProps> = ({
             {!isReply && note.note_type && (
               <Badge variant="outline" className="capitalize">{note.note_type}</Badge>
             )}
+            {!isReply && note.finding_id && (
+              <Link to={`/findings/${note.finding_id}`} aria-label="View the finding promoted from this note">
+                <Badge variant="info" className="hover:underline">Promoted → finding</Badge>
+              </Link>
+            )}
             <span className="text-metadata font-semibold">{authorLabel}</span>
             <span className="text-caption text-muted-foreground">
               {new Date(note.created_at).toLocaleString()}
@@ -180,7 +186,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
                 <TooltipContent>Type · assignee · due · pin</TooltipContent>
               </Tooltip>
             )}
-            {!isReply && onPromoteNote && (
+            {!isReply && onPromoteNote && !note.finding_id && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button

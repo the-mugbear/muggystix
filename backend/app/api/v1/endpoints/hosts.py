@@ -345,6 +345,7 @@ def get_hosts_v2(
                 .options(
                     selectinload(models.Annotation.author),
                     selectinload(models.Annotation.assignee),
+                    selectinload(models.Annotation.promoted_findings),
                 )
                 .all()
             ):
@@ -913,6 +914,8 @@ def get_hosts_by_scan_v2(
         # review #8a — _serialize_note reads note.assignee; eager-load it so
         # the notes slice doesn't trigger an N+1 over assignees.
         selectinload(models.Host.notes).selectinload(models.Annotation.assignee),
+        # _serialize_note reads note.promoted_findings for the "promoted" badge.
+        selectinload(models.Host.notes).selectinload(models.Annotation.promoted_findings),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
     ).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id

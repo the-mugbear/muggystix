@@ -829,6 +829,14 @@ class Annotation(Base):
     scope = relationship("Scope")
     plan = relationship("TestPlan")
     project = relationship("Project")
+    # Findings promoted from this annotation thread — Finding.evidence_annotation_id
+    # points at the thread ROOT. viewonly: the FK is owned on the Finding side;
+    # this is just a read-back so the note UI can show a "promoted" badge +
+    # link and block a duplicate promote. Eager-load it where notes are
+    # serialized (host detail/list) to avoid an N+1.
+    promoted_findings = relationship(
+        "Finding", foreign_keys="Finding.evidence_annotation_id", viewonly=True,
+    )
     # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
     author = relationship("User", foreign_keys=[user_id], back_populates="annotations")
     assignee = relationship("User", foreign_keys=[assignee_id])

@@ -102,6 +102,9 @@ class Annotation(AnnotationBase):
     note_type: Optional[str] = None
     resolution_summary: Optional[str] = None
     pinned: bool = False
+    # Set when this thread root has been promoted to a finding — drives the
+    # note's "promoted" badge + link and guards a duplicate promote.
+    finding_id: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     # Audit finding H3: optional warning populated by the

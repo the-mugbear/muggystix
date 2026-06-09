@@ -345,6 +345,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     try {
       const finding = await promoteAnnotation(promoteNoteId, { severity: promoteSeverity });
       toast.success(`Promoted to finding: ${finding.title}`, { autoHideMs: 3000 });
+      // Optimistically mark the note promoted so its badge appears + the
+      // promote affordance hides without waiting for a host reload.
+      setNotes((prev) => prev.map((n) => (n.id === promoteNoteId ? { ...n, finding_id: finding.id } : n)));
       setPromoteNoteId(null);
       setFindingsRefresh((n) => n + 1);
     } catch (err) {

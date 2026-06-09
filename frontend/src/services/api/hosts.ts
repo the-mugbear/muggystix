@@ -150,6 +150,9 @@ export interface Annotation {
   note_type?: NoteType | null;
   resolution_summary?: string | null;
   pinned?: boolean;
+  // Set when this thread root has been promoted to a finding — drives the
+  // "Promoted" badge/link and guards a duplicate promote.
+  finding_id?: number | null;
   created_at: string;
   updated_at?: string | null;
 }
