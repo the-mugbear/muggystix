@@ -22,6 +22,7 @@ import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent } from '../components/ui/card';
+import { DataTablePagination } from '../components/ui/data-table';
 import { Label } from '../components/ui/label';
 import {
   Select,
@@ -65,17 +66,21 @@ const Findings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<FindingStatus | 'all'>('all');
   const [severityFilter, setSeverityFilter] = useState<FindingSeverity | 'all'>('all');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all';
 
+  // A filter change resets to the first page so we never sit on an
+  // out-of-range page after the result set shrinks.
+  useEffect(() => { setPage(0); }, [statusFilter, severityFilter]);
+
   const filters = useMemo<FindingFilters>(() => {
-    // 500 is the backend cap; pagination is a follow-up. Until then we at
-    // least surface "showing N of T" so truncation isn't silent.
-    const f: FindingFilters = { limit: 500 };
+    const f: FindingFilters = { limit: pageSize, offset: page * pageSize };
     if (statusFilter !== 'all') f.status = statusFilter;
     if (severityFilter !== 'all') f.severity = severityFilter;
     return f;
-  }, [statusFilter, severityFilter]);
+  }, [statusFilter, severityFilter, page, pageSize]);
 
   const fetchFindings = useCallback(async () => {
     setLoading(true);
@@ -152,11 +157,7 @@ const Findings: React.FC = () => {
           </Select>
         </div>
         <span className="ml-auto text-metadata text-muted-foreground" role="status" aria-live="polite">
-          {loading
-            ? 'Loading findings…'
-            : findings.length < total
-              ? `Showing ${findings.length.toLocaleString()} of ${total.toLocaleString()} — refine filters to narrow`
-              : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
+          {loading ? 'Loading findings…' : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
         </span>
       </div>
 
@@ -276,6 +277,19 @@ const Findings: React.FC = () => {
             </TableBody>
           </Table>
           </div>
+          {!error && total > 0 && (
+            <div className="border-t border-border p-xs">
+              <DataTablePagination
+                pageIndex={page}
+                pageSize={pageSize}
+                totalCount={total}
+                onPageChange={setPage}
+                onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+                pageSizeOptions={[25, 50, 100, 200]}
+                leftLabel={null}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
