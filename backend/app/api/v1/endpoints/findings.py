@@ -77,11 +77,18 @@ def list_findings(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    rows, total = FindingService(db).list_findings(
+    svc = FindingService(db)
+    rows, total = svc.list_findings(
         project_id=project.id, status=status, severity=severity,
         owner_id=owner_id, source=source, host_id=host_id, limit=limit, offset=offset,
     )
-    return FindingListResponse(items=[_serialize(f) for f in rows], total=total)
+    sev_counts = svc.severity_counts(
+        project_id=project.id, status=status, owner_id=owner_id,
+        source=source, host_id=host_id,
+    )
+    return FindingListResponse(
+        items=[_serialize(f) for f in rows], total=total, severity_counts=sev_counts,
+    )
 
 
 @router.get("/findings/{finding_id}", response_model=FindingResponse)

@@ -38,6 +38,9 @@ class FindingResponse(BaseModel):
 class FindingListResponse(BaseModel):
     items: List[FindingResponse]
     total: int
+    # Per-severity counts for the rollup header (respects all filters except
+    # severity; independent of pagination). Keys: critical/high/medium/low/info.
+    severity_counts: dict = {}
 
 
 class FindingStatusHistoryEntry(BaseModel):

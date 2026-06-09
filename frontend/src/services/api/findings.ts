@@ -42,6 +42,8 @@ export interface Finding {
 export interface FindingListResponse {
   items: Finding[];
   total: number;
+  // Per-severity counts for the rollup header (all filters except severity).
+  severity_counts?: Partial<Record<FindingSeverity, number>>;
 }
 
 export interface FindingFilters {

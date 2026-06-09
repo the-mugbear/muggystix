@@ -79,6 +79,7 @@ const Findings: React.FC = () => {
   const toast = useToast();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [total, setTotal] = useState(0);
+  const [sevCounts, setSevCounts] = useState<Partial<Record<FindingSeverity, number>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<FindingStatus | 'all'>('all');
@@ -114,6 +115,7 @@ const Findings: React.FC = () => {
       const res = await listFindings(filters);
       setFindings(res.items);
       setTotal(res.total);
+      setSevCounts(res.severity_counts ?? {});
       setError(null);
     } catch (err) {
       setError(formatApiError(err, 'Failed to load findings.'));
@@ -250,6 +252,20 @@ const Findings: React.FC = () => {
           {loading ? 'Loading findings…' : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
         </span>
       </div>
+
+      {/* Severity rollup — "how bad is this scope" at a glance (respects the
+          status/source filters, ignores severity + pagination). */}
+      {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).some((s) => sevCounts[s]) && (
+        <div className="mb-md flex flex-wrap items-center gap-xs">
+          {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[])
+            .filter((s) => sevCounts[s])
+            .map((s) => (
+              <Badge key={s} variant={SEVERITY_VARIANT[s] as never}>
+                {sevCounts[s]} {s}
+              </Badge>
+            ))}
+        </div>
+      )}
 
       {/* Bulk triage bar — appears when rows are selected. Applies one
           disposition to all selected (no per-item summary prompt in bulk). */}

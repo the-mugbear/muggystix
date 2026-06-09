@@ -9,6 +9,7 @@ owner + the cross-host M2M.
 from typing import List, Optional, Sequence
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host, Scope
@@ -331,3 +332,26 @@ class FindingService:
             .offset(offset).limit(limit).all()
         )
         return rows, total
+
+    def severity_counts(
+        self, *, project_id: int,
+        status: Optional[str] = None, owner_id: Optional[int] = None,
+        source: Optional[str] = None, host_id: Optional[int] = None,
+    ) -> dict:
+        """Per-severity finding counts for the rollup header.  Respects every
+        filter EXCEPT severity (the point is to show the full severity
+        breakdown within the current status/source/host/owner scope) and
+        ignores pagination."""
+        q = (
+            self.db.query(Finding.severity, func.count(Finding.id))
+            .filter(Finding.project_id == project_id)
+        )
+        if status:
+            q = q.filter(Finding.status == status)
+        if owner_id is not None:
+            q = q.filter(Finding.owner_id == owner_id)
+        if source:
+            q = q.filter(Finding.source == source)
+        if host_id is not None:
+            q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
+        return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
