@@ -777,7 +777,20 @@ class Annotation(Base):
     __tablename__ = "annotations"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    # Foundation phase 2 — Annotation generalized beyond hosts.  An
+    # annotation targets exactly ONE entity (host / port / scan / scope /
+    # plan / project); the other target columns are null.  host_id is now
+    # nullable (was NOT NULL) so non-host annotations are possible.
+    # "Exactly one target" is enforced by a DB CHECK (num_nonnulls = 1)
+    # added in the migration — kept OUT of __table_args__ so the SQLite
+    # test create_all stays portable (num_nonnulls is Postgres-only); the
+    # write paths also validate it in code.
+    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=True)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
+    scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=True, index=True)
+    plan_id = Column(Integer, ForeignKey("test_plans.id", ondelete="CASCADE"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     # v2.86.2 — was nullable=False, no ondelete.  Flipped to nullable +
     # SET NULL so a deleted author leaves the note body behind as "by
     # deleted user" instead of either blocking the delete (NOT NULL
@@ -806,6 +819,12 @@ class Annotation(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     host = relationship("Host", back_populates="notes")
+    # Generalized targets (foundation 2) — each unambiguous (distinct table).
+    port = relationship("Port")
+    scan = relationship("Scan")
+    scope = relationship("Scope")
+    plan = relationship("TestPlan")
+    project = relationship("Project")
     # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
     author = relationship("User", foreign_keys=[user_id], back_populates="annotations")
     assignee = relationship("User", foreign_keys=[assignee_id])
