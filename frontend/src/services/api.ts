@@ -35,6 +35,7 @@ export * from './api/coverage';
 export * from './api/dashboard';
 export * from './api/execution-sessions';
 export * from './api/feedback';
+export * from './api/findings';
 export * from './api/hosts';
 export * from './api/integrations';
 export * from './api/llm-providers';

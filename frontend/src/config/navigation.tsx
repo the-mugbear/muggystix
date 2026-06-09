@@ -152,6 +152,10 @@ export const NAV_PAGES: NavPage[] = [
     id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm'], order: 5 },
   },
+  {
+    id: 'findings', path: '/findings', label: 'Findings', requiredRole: 'viewer', hub: 'workflows',
+    palette: { Icon: AlertHexIcon, keywords: ['finding', 'vuln', 'triage', 'result'], order: 6 },
+  },
 
   // Collaboration hub
   {
