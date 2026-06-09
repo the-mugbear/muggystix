@@ -243,6 +243,33 @@ export const getWorkbench = async (): Promise<WorkbenchResponse> => {
   return response.data;
 };
 
+// --- Project attention ("needs help") model — site-metrics arc P1 ---
+
+export interface ProjectAttention {
+  project_id: number;
+  exposure: {
+    raw_score: number;
+    active_findings: number;
+    by_severity: { critical: number; high: number; medium: number; low: number; info: number };
+  };
+  neglect: {
+    scan_count: number;
+    scan_staleness_days: number | null;
+    unowned_active_findings: number;
+    unreviewed_hosts: number;
+    total_hosts: number;
+  };
+  recommended_action: {
+    kind: 'onboard' | 'scan' | 'triage' | 'remediate' | 'review' | 'ok';
+    text: string;
+  };
+}
+
+export const getProjectAttention = async (): Promise<ProjectAttention> => {
+  const response = await api.get(`${p()}/attention`);
+  return response.data;
+};
+
 export const markWorkbenchSeen = async (): Promise<{ last_viewed_at: string }> => {
   const response = await api.post(`${p()}/workbench/seen`);
   return response.data;

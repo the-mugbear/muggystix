@@ -22,6 +22,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import MyWorkCard from '../components/MyWorkCard';
+import AttentionCard from '../components/AttentionCard';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -998,6 +999,12 @@ const Operations: React.FC = () => {
               error={workbenchError}
               onRetry={reload}
             />
+          </div>
+          {/* Project "needs help" model — exposure + neglect + next action
+              (site-metrics arc P1). Sits between the personal resume queue
+              and the unowned-work pool. */}
+          <div className="mb-md">
+            <AttentionCard />
           </div>
           <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} />
           <RunsSection />
