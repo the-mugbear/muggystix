@@ -7,6 +7,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
+from app.services.status_history_service import record_status_transition
 from app.db.models import (
     HostFollow, FollowStatus, Annotation, NoteStatus, AnnotationStatusHistory,
 )
@@ -280,15 +281,18 @@ class HostFollowService:
         if status is not _UNSET and status != note.status:
             old_status = note.status
             note.status = status
-            self.db.add(AnnotationStatusHistory(
-                note_id=note.id,
-                from_status=old_status.value if hasattr(old_status, "value") else str(old_status),
-                to_status=status.value if hasattr(status, "value") else str(status),
+            record_status_transition(
+                self.db,
+                history_model=AnnotationStatusHistory,
+                fk_field="note_id",
+                entity_id=note.id,
+                from_status=old_status,
+                to_status=status,
                 changed_by_id=actor_id,
                 summary=(
                     note.resolution_summary if status == NoteStatus.RESOLVED else None
                 ),
-            ))
+            )
 
         if commit:
             self.db.commit()
