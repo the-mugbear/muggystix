@@ -177,66 +177,33 @@ class DnsxParser:
 
             ttl = row.get("ttl") if isinstance(row.get("ttl"), int) else None
 
-            for field_key, record_type in _RECORD_TYPE_FIELDS:
-                values = row.get(field_key)
-                if not isinstance(values, list):
-                    continue
-                for raw in values:
-                    value_str = _stringify_value(raw)
-                    if not value_str:
-                        continue
-                    if self._persist_record(
-                        seen, host, record_type, value_str, ttl, resolver,
-                        scan_id=scan.id,
-                    ):
-                        records_written += 1
-                    # RV-1 — a forward A/AAAA answer (domain -> IP) is a
-                    # discovered asset.  Create a host observation for the
-                    # resolved IP (hostname = the queried domain), mirroring
-                    # the PTR path, so a dnsx run that only resolves names
-                    # no longer produces a host-less "empty" scan.
-                    if record_type in ("A", "AAAA") and _is_valid_ip(value_str):
-                        # overwrite=False — never clobber an existing PTR /
-                        # scanner hostname with a forward-resolved vhost name.
-                        if self._update_host_hostname(
-                            scan.id, value_str, host, overwrite=False,
-                        ):
-                            a_hosts_created += 1
-
-            ptr_values = row.get("ptr")
-            if isinstance(ptr_values, list):
-                # For PTR, ``host`` is the queried IP and the value is
-                # the discovered hostname.  Persist the DNS record under
-                # the *hostname* (matching the canonical "PTR maps
-                # in-addr.arpa -> name" semantic the existing CSV
-                # parser uses for value=ip / domain=hostname) AND
-                # update the host inventory so a successful reverse
-                # lookup populates Host.hostname.
-                if not _is_valid_ip(host):
-                    # Some dnsx flag combos emit ptr-of-hostname (forward
-                    # lookup style); just persist as a generic PTR
-                    # record with host as the domain.
-                    for raw in ptr_values:
-                        value_str = _stringify_value(raw)
-                        if not value_str:
-                            continue
-                        if self._persist_record(
-                            seen, host, "PTR", value_str, ttl, resolver,
-                            scan_id=scan.id,
-                        ):
-                            records_written += 1
-                else:
-                    for raw in ptr_values:
-                        hostname = _stringify_value(raw)
-                        if not hostname:
-                            continue
-                        if self._persist_record(
-                            seen, hostname, "PTR", host, ttl, resolver,
-                            scan_id=scan.id,
-                        ):
-                            records_written += 1
-                        if self._update_host_hostname(scan.id, host, hostname):
-                            ptr_hosts_updated += 1
+            # Per-record isolation: wrap each row's answer-persistence in a
+            # SAVEPOINT so one malformed answer (a bad value, an unexpected
+            # constraint violation) is skipped rather than poisoning the whole
+            # upload's transaction — the same resilience
+            # persist_host_observation(isolate=True) gives the other
+            # per-record parsers (naabu/amass/dirbuster).  The cheap pre-checks
+            # above touch no DB state, so they stay outside the savepoint to
+            # avoid a SAVEPOINT round-trip per resolution failure.
+            added_keys: List[tuple] = []
+            sp = self.db.begin_nested()
+            try:
+                row_records, row_ptr_hosts, row_a_hosts = self._persist_row_answers(
+                    seen, added_keys, row, host, ttl, resolver, scan.id,
+                )
+                sp.commit()
+                records_written += row_records
+                ptr_hosts_updated += row_ptr_hosts
+                a_hosts_created += row_a_hosts
+            except Exception as exc:  # noqa: BLE001 — isolate one bad record
+                sp.rollback()
+                skipped_records += 1
+                # The DNSRecord rows rolled back with the savepoint; drop this
+                # row's in-memory dedup keys too so an identical answer in a
+                # LATER row still persists instead of being deduped away.
+                for k in added_keys:
+                    seen.discard(k)
+                logger.warning("dnsx: skipping malformed record host=%r: %s", host, exc)
 
         if records_written == 0:
             raise ValueError(
@@ -297,9 +264,96 @@ class DnsxParser:
             return True
         return False
 
+    def _persist_row_answers(
+        self,
+        seen: set,
+        added_keys: List[tuple],
+        row: Dict[str, Any],
+        host: str,
+        ttl: Optional[int],
+        resolver: Optional[str],
+        scan_id: int,
+    ) -> tuple[int, int, int]:
+        """Persist every DNS answer carried by one dnsx row — the record-type
+        fields plus PTR — updating the host inventory for forward A/AAAA and
+        reverse PTR answers.  Returns this row's
+        ``(records_written, ptr_hosts_updated, a_hosts_created)``.
+
+        Raises on any persistence error so the caller's SAVEPOINT can isolate
+        a single bad record; ``added_keys`` collects the dedup keys inserted
+        for this row so the caller can roll them back out of ``seen`` on
+        failure.
+        """
+        records_written = 0
+        ptr_hosts_updated = 0
+        a_hosts_created = 0
+
+        for field_key, record_type in _RECORD_TYPE_FIELDS:
+            values = row.get(field_key)
+            if not isinstance(values, list):
+                continue
+            for raw in values:
+                value_str = _stringify_value(raw)
+                if not value_str:
+                    continue
+                if self._persist_record(
+                    seen, added_keys, host, record_type, value_str, ttl, resolver,
+                    scan_id=scan_id,
+                ):
+                    records_written += 1
+                # RV-1 — a forward A/AAAA answer (domain -> IP) is a
+                # discovered asset.  Create a host observation for the
+                # resolved IP (hostname = the queried domain), mirroring
+                # the PTR path, so a dnsx run that only resolves names
+                # no longer produces a host-less "empty" scan.
+                if record_type in ("A", "AAAA") and _is_valid_ip(value_str):
+                    # overwrite=False — never clobber an existing PTR /
+                    # scanner hostname with a forward-resolved vhost name.
+                    if self._update_host_hostname(
+                        scan_id, value_str, host, overwrite=False,
+                    ):
+                        a_hosts_created += 1
+
+        ptr_values = row.get("ptr")
+        if isinstance(ptr_values, list):
+            # For PTR, ``host`` is the queried IP and the value is the
+            # discovered hostname.  Persist the DNS record under the
+            # *hostname* (matching the canonical "PTR maps in-addr.arpa ->
+            # name" semantic the existing CSV parser uses for value=ip /
+            # domain=hostname) AND update the host inventory so a successful
+            # reverse lookup populates Host.hostname.
+            if not _is_valid_ip(host):
+                # Some dnsx flag combos emit ptr-of-hostname (forward lookup
+                # style); just persist as a generic PTR record with host as
+                # the domain.
+                for raw in ptr_values:
+                    value_str = _stringify_value(raw)
+                    if not value_str:
+                        continue
+                    if self._persist_record(
+                        seen, added_keys, host, "PTR", value_str, ttl, resolver,
+                        scan_id=scan_id,
+                    ):
+                        records_written += 1
+            else:
+                for raw in ptr_values:
+                    hostname = _stringify_value(raw)
+                    if not hostname:
+                        continue
+                    if self._persist_record(
+                        seen, added_keys, hostname, "PTR", host, ttl, resolver,
+                        scan_id=scan_id,
+                    ):
+                        records_written += 1
+                    if self._update_host_hostname(scan_id, host, hostname):
+                        ptr_hosts_updated += 1
+
+        return records_written, ptr_hosts_updated, a_hosts_created
+
     def _persist_record(
         self,
         seen: set[tuple[str, str, str, Optional[str]]],
+        added_keys: List[tuple],
         domain: str,
         record_type: str,
         value: str,
@@ -311,6 +365,7 @@ class DnsxParser:
         if key in seen:
             return False
         seen.add(key)
+        added_keys.append(key)
         self.db.add(
             models.DNSRecord(
                 project_id=self._project_id,
