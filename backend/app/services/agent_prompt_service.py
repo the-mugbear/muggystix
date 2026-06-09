@@ -242,7 +242,6 @@ def _render_filter_criteria(fc: Dict[str, Any]) -> str:
         "min_severity": "Minimum vulnerability severity",
         "has_critical_vulns": "Only hosts with critical vulnerabilities",
         "has_high_vulns": "Only hosts with high vulnerabilities",
-        "min_risk_score": "Minimum risk score",
         "search": "Search term",
     }
     lines = []
@@ -801,7 +800,7 @@ def build_assist_instructions(
         f"3. **Answer the operator's question.**  Use:\n"
         f"   - `GET /agent/assist/hosts?…` (filter shape mirrors the "
         f"`/hosts` page: `state`, `ports`, `services`, `subnets`, "
-        f"`has_critical_vulns`, `has_high_vulns`, `min_risk_score`, "
+        f"`has_critical_vulns`, `has_high_vulns`, "
         f"`search`).  **Paginated and capped**: it returns a bare array of at "
         f"most `limit` hosts (default 500, max 5000) with NO `total`/`has_more` "
         f"signal.  To answer any count/coverage question you MUST page — start "

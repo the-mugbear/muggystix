@@ -3,7 +3,7 @@ from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
     host_queries, findings,
     webhooks, dashboard, upload,
-    scopes, subnet_labels, export, dns, parse_errors, reports, auth, risk,
+    scopes, subnet_labels, export, dns, parse_errors, reports, auth,
     audit, users, projects, notifications,
     portfolio, agents, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
@@ -137,7 +137,6 @@ project_router.include_router(export.router, prefix="/export", tags=["export"])
 project_router.include_router(dns.router, prefix="/dns", tags=["dns"])
 project_router.include_router(parse_errors.router, prefix="/parse-errors", tags=["parse-errors"])
 project_router.include_router(reports.router, prefix="/reports", tags=["reports"])
-project_router.include_router(risk.router, prefix="/risk", tags=["risk"])
 project_router.include_router(agents.router, prefix="/agents", tags=["agents"])
 project_router.include_router(test_plans.router, prefix="/test-plans", tags=["test-plans"])
 # Offline-bundle sub-surface carved out of test_plans.py — same prefix so the

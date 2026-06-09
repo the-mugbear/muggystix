@@ -36,7 +36,6 @@ from app.db import (  # noqa: F401  (side-effect imports)
     models_integrations,
     models_llm,
     models_project,
-    models_risk,
     models_vulnerability,
 )
 

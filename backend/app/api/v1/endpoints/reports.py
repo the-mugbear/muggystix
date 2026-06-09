@@ -15,7 +15,6 @@ from app.services.host_serialization import _serialize_follow, _serialize_note  
 from app.api.v1.endpoints.hosts import _build_filtered_host_query, HostFilterParams
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
-from app.db.models_risk import HostRiskAssessment, SecurityFinding
 import io
 import csv
 import json
@@ -637,25 +636,6 @@ class ReportGenerator:
             )
             follow_map = {record.host_id: record for record in follow_records}
 
-        risk_map: Dict[int, HostRiskAssessment] = {}
-        finding_map: Dict[int, List[SecurityFinding]] = {}
-        if host_ids:
-            risk_records = (
-                self.db.query(HostRiskAssessment)
-                .filter(HostRiskAssessment.host_id.in_(host_ids))
-                .all()
-            )
-            risk_map = {record.host_id: record for record in risk_records}
-
-            findings = (
-                self.db.query(SecurityFinding)
-                .filter(SecurityFinding.host_id.in_(host_ids))
-                .order_by(SecurityFinding.severity.asc(), SecurityFinding.id.asc())
-                .all()
-            )
-            for finding in findings:
-                finding_map.setdefault(finding.host_id, []).append(finding)
-
         subnet_map: Dict[int, List[Dict[str, Optional[str]]]] = {}
         if host_ids:
             subnet_rows = (
@@ -739,8 +719,6 @@ class ReportGenerator:
 
         return {
             "follow_map": follow_map,
-            "risk_map": risk_map,
-            "finding_map": finding_map,
             "subnet_map": subnet_map,
             "host_confidence_map": host_confidence_map,
             "port_confidence_map": port_confidence_map,
@@ -779,11 +757,6 @@ class ReportGenerator:
         ]
         subnet_entries = context["subnet_map"].get(host.id, [])
         follow_record = context["follow_map"].get(host.id)
-        risk_record = context["risk_map"].get(host.id)
-        security_findings = [
-            self._serialize_security_finding(finding)
-            for finding in context["finding_map"].get(host.id, [])
-        ]
 
         return {
             "host_id": host.id,
@@ -828,7 +801,6 @@ class ReportGenerator:
             ],
             "vulnerabilities": vulnerabilities,
             "vulnerability_summary": self._build_vulnerability_summary(vulnerabilities),
-            "risk": self._serialize_risk_for_export(risk_record, security_findings),
             "analyst_context": {
                 "follow_status": getattr(follow_record.status, "value", None) if follow_record else None,
                 "follow": _serialize_follow(follow_record).model_dump(mode="json") if follow_record else None,
@@ -966,40 +938,6 @@ class ReportGenerator:
 
     def _serialize_note_for_export(self, note: models.Annotation) -> Dict[str, Any]:
         return _serialize_note(note).model_dump(mode="json")
-
-    def _serialize_risk_for_export(
-        self,
-        risk: Optional[HostRiskAssessment],
-        findings: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        if not risk and not findings:
-            return None
-        return {
-            "risk_score": risk.risk_score if risk else None,
-            "risk_level": risk.risk_level if risk else None,
-            "risk_summary": risk.risk_summary if risk else None,
-            "attack_surface_score": risk.attack_surface_score if risk else None,
-            "patch_urgency_score": risk.patch_urgency_score if risk else None,
-            "exposure_risk_score": risk.exposure_risk_score if risk else None,
-            "configuration_risk_score": risk.configuration_risk_score if risk else None,
-            "security_findings": findings,
-        }
-
-    def _serialize_security_finding(self, finding: SecurityFinding) -> Dict[str, Any]:
-        return {
-            "id": finding.id,
-            "finding_type": finding.finding_type,
-            "title": finding.title,
-            "description": finding.description,
-            "severity": finding.severity,
-            "risk_score": finding.risk_score,
-            "evidence": finding.evidence,
-            "affected_component": finding.affected_component,
-            "recommendation": finding.recommendation,
-            "remediation_effort": finding.remediation_effort,
-            "source": finding.source,
-            "discovery_date": self._iso(finding.discovery_date),
-        }
 
     def _serialize_host_confidence(self, confidence: HostConfidence) -> Dict[str, Any]:
         return {
