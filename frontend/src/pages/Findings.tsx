@@ -14,6 +14,7 @@ import {
   Finding,
   FindingFilters,
   FindingSeverity,
+  FindingSource,
   FindingStatus,
   listFindings,
   setFindingStatus,
@@ -23,6 +24,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
+import { Checkbox } from '../components/ui/checkbox';
 import { DataTablePagination } from '../components/ui/data-table';
 import {
   Dialog,
@@ -81,25 +83,30 @@ const Findings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<FindingStatus | 'all'>('all');
   const [severityFilter, setSeverityFilter] = useState<FindingSeverity | 'all'>('all');
+  const [sourceFilter, setSourceFilter] = useState<FindingSource | 'all'>('all');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
+  // Bulk triage — selected finding ids on the current page.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkApplying, setBulkApplying] = useState(false);
   const [summaryPrompt, setSummaryPrompt] = useState<
     { findingId: number; status: FindingStatus; title: string } | null
   >(null);
   const [summaryText, setSummaryText] = useState('');
 
-  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all';
+  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || sourceFilter !== 'all';
 
   // A filter change resets to the first page so we never sit on an
   // out-of-range page after the result set shrinks.
-  useEffect(() => { setPage(0); }, [statusFilter, severityFilter]);
+  useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter]);
 
   const filters = useMemo<FindingFilters>(() => {
     const f: FindingFilters = { limit: pageSize, offset: page * pageSize };
     if (statusFilter !== 'all') f.status = statusFilter;
     if (severityFilter !== 'all') f.severity = severityFilter;
+    if (sourceFilter !== 'all') f.source = sourceFilter;
     return f;
-  }, [statusFilter, severityFilter, page, pageSize]);
+  }, [statusFilter, severityFilter, sourceFilter, page, pageSize]);
 
   const fetchFindings = useCallback(async () => {
     setLoading(true);
@@ -136,6 +143,40 @@ const Findings: React.FC = () => {
       toast.success(`${short} → ${STATUS_LABEL[status]}`, { autoHideMs: 2500 });
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update finding status.'));
+    }
+  };
+
+  const toggleSelected = (id: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
+  const applyBulkStatus = async (status: FindingStatus) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBulkApplying(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => setFindingStatus(id, status)));
+      const updatedById = new Map<number, Finding>();
+      let failed = 0;
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') updatedById.set(ids[i], r.value);
+        else failed += 1;
+      });
+      setFindings((prev) =>
+        prev
+          // Drop rows that no longer match the active status filter.
+          .filter((f) => !updatedById.has(f.id) || statusFilter === 'all' || updatedById.get(f.id)!.status === statusFilter)
+          .map((f) => updatedById.get(f.id) ?? f),
+      );
+      setSelected(new Set());
+      const ok = ids.length - failed;
+      if (failed === 0) toast.success(`${ok} finding${ok === 1 ? '' : 's'} → ${STATUS_LABEL[status]}`, { autoHideMs: 2500 });
+      else toast.warning(`${ok}/${ids.length} updated; ${failed} failed`);
+    } finally {
+      setBulkApplying(false);
     }
   };
 
@@ -191,10 +232,43 @@ const Findings: React.FC = () => {
             </SelectContent>
           </Select>
         </div>
+        <div className="min-w-40">
+          <Label htmlFor="findings-source">Source</Label>
+          <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as FindingSource | 'all')}>
+            <SelectTrigger id="findings-source">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sources</SelectItem>
+              {(['note', 'scanner', 'execution', 'manual'] as FindingSource[]).map((s) => (
+                <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         <span className="ml-auto text-metadata text-muted-foreground" role="status" aria-live="polite">
           {loading ? 'Loading findings…' : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
         </span>
       </div>
+
+      {/* Bulk triage bar — appears when rows are selected. Applies one
+          disposition to all selected (no per-item summary prompt in bulk). */}
+      {selected.size > 0 && (
+        <div className="mb-sm flex flex-wrap items-center gap-sm rounded-control border border-border bg-muted/30 p-sm">
+          <span className="text-metadata font-medium">{selected.size} selected</span>
+          <Select onValueChange={(v) => void applyBulkStatus(v as FindingStatus)} disabled={bulkApplying}>
+            <SelectTrigger className="h-8 w-48 text-caption" aria-label="Set status for selected findings">
+              <SelectValue placeholder={bulkApplying ? 'Applying…' : 'Set status…'} />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>Clear</Button>
+        </div>
+      )}
 
       <Card>
         <CardContent className="p-0">
@@ -204,6 +278,15 @@ const Findings: React.FC = () => {
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    aria-label="Select all findings on this page"
+                    checked={findings.length > 0 && findings.every((f) => selected.has(f.id))}
+                    onCheckedChange={(v) =>
+                      setSelected(v ? new Set(findings.map((f) => f.id)) : new Set())
+                    }
+                  />
+                </TableHead>
                 <TableHead className="w-28">Severity</TableHead>
                 <TableHead>Title</TableHead>
                 <TableHead className="w-32">Status</TableHead>
@@ -217,14 +300,14 @@ const Findings: React.FC = () => {
                   keeps prior rows visible (no full-table flash). */}
               {loading && findings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     <Loader2 className="mx-auto size-5 animate-spin" aria-hidden />
                   </TableCell>
                 </TableRow>
               )}
               {!loading && error && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-lg text-center text-destructive">
+                  <TableCell colSpan={7} className="py-lg text-center text-destructive">
                     <AlertTriangle className="mx-auto mb-xs size-5" aria-hidden />
                     {error}
                   </TableCell>
@@ -232,7 +315,7 @@ const Findings: React.FC = () => {
               )}
               {!loading && !error && findings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-xl text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     {hasActiveFilters
                       ? 'No findings match these filters. Clear them to see all.'
                       : 'No findings yet. Promote a note from a host (Notes → Promote to finding) to record one here.'}
@@ -240,7 +323,14 @@ const Findings: React.FC = () => {
                 </TableRow>
               )}
               {!loading && !error && findings.map((f) => (
-                <TableRow key={f.id}>
+                <TableRow key={f.id} data-state={selected.has(f.id) ? 'selected' : undefined}>
+                  <TableCell>
+                    <Checkbox
+                      aria-label={`Select ${f.title}`}
+                      checked={selected.has(f.id)}
+                      onCheckedChange={() => toggleSelected(f.id)}
+                    />
+                  </TableCell>
                   <TableCell>
                     <Badge variant={SEVERITY_VARIANT[f.severity] as never}>
                       {f.severity[0].toUpperCase() + f.severity.slice(1)}
