@@ -332,13 +332,29 @@ class HostDeduplicationService:
         )
         return host
     
+    def _record_conflict(self, object_type, object_id, field_name, previous_value, new_value, previous_scan_id, new_scan_id):
+        """Record that a scan reported a DIFFERENT value for an attribute than
+        the one we hold — so "scan A said Linux, scan B said Windows" leaves an
+        audit trail (surfaced via GET /hosts/{id}/conflicts) instead of the
+        loser being silently dropped.  Recorded whether or not we adopt the new
+        value; confidence/method stay null (the dedup has no confidence model)."""
+        from app.db.models_confidence import ConflictHistory
+        self.db.add(ConflictHistory(
+            object_type=object_type, object_id=object_id, field_name=field_name,
+            previous_value=str(previous_value) if previous_value is not None else None,
+            new_value=str(new_value) if new_value is not None else None,
+            previous_scan_id=previous_scan_id, new_scan_id=new_scan_id,
+            resolved_at=func.now(),
+        ))
+
     def _update_existing_host(self, host: Host, scan_id: int, host_data: Dict[str, Any]) -> Host:
         """
         Update existing host with new data using conflict resolution strategy.
         Strategy: "Most recent wins" with some intelligence for better data.
         """
         updated = False
-        
+        prior_scan = host.last_updated_scan_id  # captured before we overwrite it
+
         # Fill the hostname only when we don't already have one.  The old
         # "longer hostname wins" heuristic let a long but wrong vhost
         # (very-long-marketing-redirect.example.com) clobber a correct short
@@ -346,10 +362,13 @@ class HostDeduplicationService:
         # parser added for canonical names.  Without a per-attribute
         # confidence signal here, first-non-empty-wins is the safe rule.
         new_hostname = host_data.get('hostname')
+        if new_hostname and host.hostname and new_hostname != host.hostname:
+            # We keep the existing hostname, but record that a scan disagreed.
+            self._record_conflict('host', host.id, 'hostname', host.hostname, new_hostname, prior_scan, scan_id)
         if new_hostname and not host.hostname:
             host.hostname = new_hostname
             updated = True
-        
+
         # Update state (most recent wins) — but 'unknown' carries no
         # information and must never clobber a known state.  gnmap, for
         # example, emits a host's Status: and Ports: on separate lines;
@@ -357,6 +376,8 @@ class HostDeduplicationService:
         # guard it would overwrite the 'up' from the Status: line.
         new_state = host_data.get('state')
         if new_state and new_state != 'unknown' and new_state != host.state:
+            if host.state:
+                self._record_conflict('host', host.id, 'state', host.state, new_state, prior_scan, scan_id)
             host.state = new_state
             # Only overwrite the reason when the new scan actually supplies one
             # — gnmap emits an empty reason, which would otherwise erase a
@@ -365,9 +386,12 @@ class HostDeduplicationService:
             if new_reason:
                 host.state_reason = new_reason
             updated = True
-        
+
         # Update OS information if new scan has higher accuracy or we don't have OS info
         new_accuracy = host_data.get('os_accuracy', 0)
+        new_os = host_data.get('os_name')
+        if new_os and host.os_name and new_os != host.os_name:
+            self._record_conflict('host', host.id, 'os_name', host.os_name, new_os, prior_scan, scan_id)
         if (not host.os_name or new_accuracy > (host.os_accuracy or 0)):
             if host_data.get('os_name'):
                 host.os_name = host_data.get('os_name')
