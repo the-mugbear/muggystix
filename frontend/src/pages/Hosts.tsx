@@ -1548,7 +1548,7 @@ export default function Hosts() {
   // Render
   // ---------------------------------------------------------------------------
 
-  const renderFollowChip = (label: string, value: 'all' | FollowStatus, badgeClass?: string) => {
+  const renderFollowChip = (label: string, value: 'all' | 'none' | FollowStatus, badgeClass?: string) => {
     const active = followFilter === value;
     return (
       <button
@@ -1764,6 +1764,9 @@ export default function Hosts() {
           >
             <span className="text-caption text-muted-foreground">Follow status:</span>
             {renderFollowChip('All', 'all')}
+            {/* "Not reviewed" = no follow record for you (follow:none) — the
+                hosts you haven't touched. Was only in the filters card. */}
+            {renderFollowChip('Not reviewed', 'none')}
             {FOLLOW_STATUS_OPTIONS.map((option) =>
               renderFollowChip(option.label, option.value, option.badgeClass),
             )}
