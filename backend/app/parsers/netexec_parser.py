@@ -181,15 +181,38 @@ class NetexecParser:
             'raw_line': full_line
         }
 
+    @staticmethod
+    def _parse_credential(details: str):
+        """Pull (domain, username) out of a NetExec auth-success detail string.
+
+        NetExec prints ``[+] DOMAIN\\username:password (Pwn3d!)`` (the trailing
+        ``(...)`` flag is optional, and similar for LDAP/WinRM).  Returns
+        ``(domain, username)`` with either possibly None.  A NULL/guest session
+        prints a blank username (``DOMAIN\\:`` → username ``''``), which is the
+        signal the weak-auth hygiene lens keys on — so we preserve the empty
+        string rather than collapsing it to None.
+        """
+        if not details:
+            return None, None
+        identity = details.strip().split(':', 1)[0]  # drop password (+flags)
+        if '\\' in identity:
+            domain, username = identity.split('\\', 1)
+        else:
+            domain, username = None, identity
+        return (domain or None), username
+
     def _parse_auth_success_line(self, match, full_line: str) -> Dict[str, Any]:
         """Parse authentication success line"""
         protocol, ip, port, details = match.groups()
+        domain, username = self._parse_credential(details)
 
         return {
             'ip_address': ip,
             'port': int(port),
             'protocol': protocol.lower(),
             'auth_success': True,
+            'username': username,
+            'domain': domain,
             'details': details.strip(),
             'confidence_factors': {
                 'authentication_verified': True,
@@ -403,6 +426,7 @@ class NetexecParser:
             hostname=host_data.get('hostname'),
             domain_name=host_data.get('domain'),
             auth_success=host_data.get('auth_success', False),
+            username=host_data.get('username'),
             shares=host_data.get('shares'),
             raw_output=raw_output[:10000],  # Limit size
             connection_stable=True,
