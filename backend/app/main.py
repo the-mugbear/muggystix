@@ -590,8 +590,29 @@ async def root():
 
 
 @app.get('/health')
-async def health_check():
-    return {'status': 'healthy'}
+def health_check():
+    # Real readiness probe.  A static 200 only proved uvicorn was up — not
+    # that the app could reach its database — so a DB outage still reported
+    # "healthy" (the Dockerfile HEALTHCHECK curls this, and `curl -f` fails on
+    # 503, so an unreachable DB now correctly marks the container unhealthy).
+    # Sync def → FastAPI runs it in the threadpool, keeping the SELECT 1 off
+    # the event loop.  Unhealthy status alone does not restart the container
+    # (Docker only restarts on process exit), so a transient blip is visible,
+    # not disruptive.
+    from app.db.session import SessionLocal
+    from sqlalchemy import text as _sql_text
+    db = SessionLocal()
+    try:
+        db.execute(_sql_text("SELECT 1"))
+        return {'status': 'healthy', 'database': 'ok'}
+    except Exception:
+        logger.exception("Health check DB probe failed")
+        return JSONResponse(
+            status_code=503,
+            content={'status': 'unhealthy', 'database': 'unreachable'},
+        )
+    finally:
+        db.close()
 
 
 @app.get('/.well-known/networkmapper.json')
