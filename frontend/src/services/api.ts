@@ -37,6 +37,7 @@ export * from './api/execution-sessions';
 export * from './api/feedback';
 export * from './api/findings';
 export * from './api/hosts';
+export * from './api/insights';
 export * from './api/integrations';
 export * from './api/llm-providers';
 export * from './api/notifications';

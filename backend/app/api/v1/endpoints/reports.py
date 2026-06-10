@@ -8,6 +8,8 @@ from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.schemas.schemas import Host
 from app.core.config import settings
 from app.services.report_templates import ReportTemplates
+from app.services.subnet_insight_service import resolve_host_locations, compute_subnet_insights
+from app.services.attention_service import compute_site_attention
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project
@@ -17,6 +19,7 @@ from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
 import io
 import csv
+import ipaddress
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -56,9 +59,34 @@ class ReportGenerator:
         self.db = db
         self.current_user = current_user
         self.project_id = project_id
-    
+        # Lazily-computed, report-lifetime caches so the host→site/subnet map
+        # and the hotspots roll-up are each built at most once per report even
+        # though multiple format sections consume them.
+        self._host_loc_cache: Optional[Dict[int, Dict[str, Any]]] = None
+        self._hotspots_cache: Optional[Dict[str, Any]] = None
+
     # Maximum number of hosts a single report can include to prevent OOM
     MAX_REPORT_HOSTS = 10000
+
+    # --- Site / subnet enrichment (shared across formats) -----------------
+
+    def _host_locations(self) -> Dict[int, Dict[str, Any]]:
+        """host_id → {subnet_id, cidr, site, site_id, scope_name} for the
+        project's in-scope hosts (most-specific subnet wins).  Single source
+        with the subnet-insights view via ``resolve_host_locations``."""
+        if self._host_loc_cache is None:
+            self._host_loc_cache = (
+                resolve_host_locations(self.db, self.project_id) if self.project_id else {}
+            )
+        return self._host_loc_cache
+
+    def _host_site(self, host_id: int) -> str:
+        loc = self._host_locations().get(host_id)
+        return (loc.get("site") or "") if loc else ""
+
+    def _host_subnet(self, host_id: int) -> str:
+        loc = self._host_locations().get(host_id)
+        return (loc.get("cidr") or "") if loc else ""
 
     def get_hosts_for_report(self, filters: Dict[str, Any]) -> List[models.Host]:
         """Get hosts based on filter parameters (capped at MAX_REPORT_HOSTS).
@@ -93,10 +121,11 @@ class ReportGenerator:
         
         # Headers
         writer.writerow([
-            'IP Address', 'Hostname', 'State', 'OS Name', 'OS Family', 'OS Type', 'OS Accuracy',
+            'IP Address', 'Hostname', 'State', 'Site', 'Subnet',
+            'OS Name', 'OS Family', 'OS Type', 'OS Accuracy',
             'Open Ports', 'Total Ports', 'Services', 'Scan File', 'Scan Date'
         ])
-        
+
         for host in hosts:
             open_ports = [p for p in (host.ports or []) if p.state == 'open']
             total_ports = len(host.ports or [])
@@ -127,6 +156,8 @@ class ReportGenerator:
                 host.ip_address,
                 host.hostname or '',
                 host.state or '',
+                self._host_site(host.id),
+                self._host_subnet(host.id),
                 host.os_name or '',
                 host.os_family or '',
                 host.os_type or '',
@@ -283,6 +314,7 @@ class ReportGenerator:
         <a href="#summary">Summary</a>
         <a href="#metrics">Metrics</a>
         <a href="#exposure">Exposure Highlights</a>
+        <a href="#hotspots">Hotspots</a>
         <a href="#hosts">Host Details</a>
     </nav>
 
@@ -322,6 +354,14 @@ class ReportGenerator:
         </div>
     </div>
 
+    <div class="section" id="hotspots">
+        <div class="section-header">Site &amp; Subnet Hotspots</div>
+        <div class="section-content">
+            <p class="muted">Worst-first ranking of sites and subnets by exposure (severity-weighted active findings, scaled by site criticality), neglect, and hygiene (end-of-life OS, certificate issues, weak auth, risky services). Project-wide — not limited to the filtered hosts above.</p>
+            {self._generate_hotspots_html()}
+        </div>
+    </div>
+
     <div class="section" id="findings">
         <div class="section-header">Findings</div>
         <div class="section-content">
@@ -343,6 +383,8 @@ class ReportGenerator:
                             <th>IP Address</th>
                             <th>Hostname</th>
                             <th>State</th>
+                            <th>Site</th>
+                            <th>Subnet</th>
                             <th>OS</th>
                             <th>Open Ports</th>
                             <th>Services</th>
@@ -453,11 +495,16 @@ class ReportGenerator:
             scan = scan_info.get('scan')
             scan_label = html.escape(getattr(scan, 'filename', '') or '')
 
+            site_label = html.escape(self._host_site(host.id) or '—')
+            subnet_label = html.escape(self._host_subnet(host.id) or '—')
+
             rows.append(f"""
                 <tr class="host-row">
                     <td>{html.escape(host.ip_address)}</td>
                     <td>{html.escape(host.hostname or '')}</td>
                     <td class="{state_class}">{html.escape(host.state or '')}</td>
+                    <td>{site_label}</td>
+                    <td>{subnet_label}</td>
                     <td>{html.escape(host.os_name or '')}</td>
                     <td class="port-list">{html.escape(open_ports_str)}</td>
                     <td class="service-list">{html.escape(services_str)}</td>
@@ -481,11 +528,18 @@ class ReportGenerator:
         }
         
         for host in hosts:
+            location = self._host_locations().get(host.id)
             host_data = {
                 "id": host.id,
                 "ip_address": host.ip_address,
                 "hostname": host.hostname,
                 "state": host.state,
+                "location": {
+                    "site": location.get("site") if location else None,
+                    "subnet": location.get("cidr") if location else None,
+                    "scope_name": location.get("scope_name") if location else None,
+                    "in_scope": location is not None,
+                },
                 "os_info": {
                     "name": host.os_name,
                     "family": host.os_family,
@@ -522,6 +576,7 @@ class ReportGenerator:
             report_data["hosts"].append(host_data)
 
         report_data["findings"] = self._findings_for_report(hosts)
+        report_data["hotspots"] = self._build_hotspots()
         return report_data
 
     def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
@@ -590,6 +645,163 @@ class ReportGenerator:
             f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
         )
 
+    # --- Site / subnet hotspots (shared across formats) -------------------
+
+    def _build_hotspots(self, top_n: int = 10) -> Dict[str, Any]:
+        """Worst-first site + subnet hotspots, reusing the live attention /
+        subnet-insights services so the report agrees with the dashboards.
+
+        Project-wide (not filtered to the report's host subset) on purpose: a
+        "where are the worst ranges" section is only meaningful against the
+        whole engagement, and a filtered export shouldn't redefine which site
+        is on fire.  Trimmed to ``top_n`` each; cached for the report's life.
+        """
+        if self._hotspots_cache is None:
+            if not self.project_id:
+                self._hotspots_cache = {
+                    "sites_adopted": False, "subnets_adopted": False,
+                    "sites": [], "subnets": [], "totals": None,
+                }
+            else:
+                sites = compute_site_attention(self.db, self.project_id)
+                subnets = compute_subnet_insights(self.db, self.project_id)
+                self._hotspots_cache = {
+                    "sites_adopted": bool(sites.get("adopted")),
+                    "subnets_adopted": bool(subnets.get("adopted")),
+                    "sites": (sites.get("sites") or [])[:top_n],
+                    "subnets": (subnets.get("subnets") or [])[:top_n],
+                    "totals": subnets.get("totals"),
+                }
+        return self._hotspots_cache
+
+    def _generate_hotspots_html(self) -> str:
+        """HTML fragment: a Sites table + a Subnets table, worst-first."""
+        data = self._build_hotspots()
+        parts: List[str] = []
+
+        sites = data["sites"]
+        if data["sites_adopted"] and sites:
+            rows = []
+            for s in sites:
+                name = "Unassigned" if s.get("unassigned") else (s.get("site") or "—")
+                tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
+                sev = s["exposure"]["by_severity"]
+                gap = s.get("coverage_gap")
+                rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(name))}</td>"
+                    f"<td>{tier}</td>"
+                    f"<td>{s.get('host_count', 0)}{f' (−{gap})' if gap else ''}</td>"
+                    f"<td>{s['exposure'].get('weighted_score', 0)}</td>"
+                    f"<td>{sev.get('critical', 0)}</td>"
+                    f"<td>{sev.get('high', 0)}</td>"
+                    f"<td>{s['neglect'].get('unowned_active_findings', 0)}</td>"
+                    f"<td>{html.escape(str(s['recommended_action'].get('text', '')))}</td>"
+                    "</tr>"
+                )
+            parts.append(
+                '<h4>Site hotspots</h4>'
+                '<table class="data-table"><thead><tr>'
+                '<th>Site</th><th>Tier</th><th>Hosts</th><th>Exposure</th>'
+                '<th>Crit</th><th>High</th><th>Unowned</th><th>Recommended action</th>'
+                f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+            )
+        elif self.project_id:
+            parts.append('<p class="muted">No sites defined — assign subnets to sites to rank site hotspots.</p>')
+
+        subnets = data["subnets"]
+        if data["subnets_adopted"] and subnets:
+            rows = []
+            for s in subnets:
+                site = "—" if not s.get("site") else s["site"]
+                tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
+                sev = s["exposure"]["by_severity"]
+                hy = s["hygiene"]
+                rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(s.get('cidr', '')))}</td>"
+                    f"<td>{html.escape(str(site))}</td>"
+                    f"<td>{tier}</td>"
+                    f"<td>{s.get('host_count', 0)}</td>"
+                    f"<td>{s['exposure'].get('weighted_score', 0)}</td>"
+                    f"<td>{sev.get('critical', 0)}</td>"
+                    f"<td>{hy.get('eol_os_hosts', 0)}</td>"
+                    f"<td>{hy.get('cert_issue_hosts', 0)}</td>"
+                    f"<td>{hy.get('weak_auth_hosts', 0)}</td>"
+                    f"<td>{hy.get('risky_service_hosts', 0)}</td>"
+                    f"<td>{html.escape(str(s['recommended_action'].get('text', '')))}</td>"
+                    "</tr>"
+                )
+            parts.append(
+                '<h4>Subnet hotspots</h4>'
+                '<table class="data-table"><thead><tr>'
+                '<th>Subnet</th><th>Site</th><th>Tier</th><th>Hosts</th><th>Exposure</th>'
+                '<th>Crit</th><th>EOL</th><th>Cert</th><th>Weak</th><th>Risky</th>'
+                '<th>Recommended action</th>'
+                f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+            )
+        elif self.project_id:
+            parts.append('<p class="muted">No scoped subnets — define a scope to rank subnet hotspots.</p>')
+
+        return "".join(parts) if parts else '<p class="muted">No site or subnet data available.</p>'
+
+    def _hotspots_markdown_lines(self) -> List[str]:
+        """Markdown lines for the Site & Subnet Hotspots section."""
+        data = self._build_hotspots()
+        lines: List[str] = [
+            "## Site & Subnet Hotspots",
+            "",
+            "Worst-first by exposure (severity-weighted active findings, scaled by site"
+            " criticality), neglect, and hygiene (EOL OS / cert issues / weak auth / risky"
+            " services). Project-wide, not limited to the filtered hosts.",
+            "",
+        ]
+        if data["sites_adopted"] and data["sites"]:
+            lines += [
+                "### Site hotspots",
+                "| Site | Tier | Hosts | Exposure | Crit | High | Unowned | Action |",
+                "|---|---|---:|---:|---:|---:|---:|---|",
+            ]
+            for s in data["sites"]:
+                name = "Unassigned" if s.get("unassigned") else (s.get("site") or "—")
+                tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
+                sev = s["exposure"]["by_severity"]
+                gap = s.get("coverage_gap")
+                hosts_cell = f"{s.get('host_count', 0)}" + (f" (−{gap})" if gap else "")
+                action = (s["recommended_action"].get("text") or "").replace("|", "/")
+                lines.append(
+                    f"| {name} | {tier} | {hosts_cell} | {s['exposure'].get('weighted_score', 0)} | "
+                    f"{sev.get('critical', 0)} | {sev.get('high', 0)} | "
+                    f"{s['neglect'].get('unowned_active_findings', 0)} | {action} |"
+                )
+            lines.append("")
+        elif self.project_id:
+            lines += ["_No sites defined — assign subnets to sites to rank site hotspots._", ""]
+
+        if data["subnets_adopted"] and data["subnets"]:
+            lines += [
+                "### Subnet hotspots",
+                "| Subnet | Site | Tier | Hosts | Exposure | Crit | EOL | Cert | Weak | Risky | Action |",
+                "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+            ]
+            for s in data["subnets"]:
+                site = s.get("site") or "—"
+                tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
+                sev = s["exposure"]["by_severity"]
+                hy = s["hygiene"]
+                action = (s["recommended_action"].get("text") or "").replace("|", "/")
+                lines.append(
+                    f"| {s.get('cidr', '')} | {site} | {tier} | {s.get('host_count', 0)} | "
+                    f"{s['exposure'].get('weighted_score', 0)} | {sev.get('critical', 0)} | "
+                    f"{hy.get('eol_os_hosts', 0)} | {hy.get('cert_issue_hosts', 0)} | "
+                    f"{hy.get('weak_auth_hosts', 0)} | {hy.get('risky_service_hosts', 0)} | {action} |"
+                )
+            lines.append("")
+        elif self.project_id:
+            lines += ["_No scoped subnets — define a scope to rank subnet hotspots._", ""]
+
+        return lines
+
     def generate_agent_package(self, hosts: List[models.Host], filters: Dict[str, Any]) -> bytes:
         """Generate a ZIP package optimized for agentic workflows."""
         dataset, artifacts = self._build_export_dataset(hosts, filters)
@@ -599,6 +811,7 @@ class ReportGenerator:
             bundle.writestr("manifest.json", json.dumps(dataset["manifest"], indent=2))
             bundle.writestr("schema.json", json.dumps(self._build_schema_reference(), indent=2))
             bundle.writestr("scans.json", json.dumps(dataset["scans"], indent=2))
+            bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
             ndjson_lines = "\n".join(json.dumps(host, separators=(",", ":")) for host in dataset["hosts"])
             bundle.writestr("hosts.ndjson", f"{ndjson_lines}\n" if ndjson_lines else "")
             for artifact_path, content in artifacts.items():
@@ -613,6 +826,7 @@ class ReportGenerator:
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             bundle.writestr("report.md", self._generate_markdown_report(dataset))
+            bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
             bundle.writestr("hosts.csv", self._generate_hosts_csv(dataset["hosts"]))
             bundle.writestr("findings.csv", self._generate_findings_csv(dataset["hosts"]))
             bundle.writestr("scans.csv", self._generate_scans_csv(dataset["scans"]))
@@ -710,14 +924,21 @@ class ReportGenerator:
         subnet_map: Dict[int, List[Dict[str, Optional[str]]]] = {}
         if host_ids:
             subnet_rows = (
-                self.db.query(models.HostSubnetMapping.host_id, models.Subnet.cidr, models.Scope.name)
+                self.db.query(
+                    models.HostSubnetMapping.host_id,
+                    models.Subnet.cidr,
+                    models.Subnet.site,
+                    models.Scope.name,
+                )
                 .join(models.Subnet, models.HostSubnetMapping.subnet_id == models.Subnet.id)
                 .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
                 .filter(models.HostSubnetMapping.host_id.in_(host_ids))
                 .all()
             )
-            for host_id, cidr, scope_name in subnet_rows:
-                subnet_map.setdefault(host_id, []).append({"cidr": cidr, "scope_name": scope_name})
+            for host_id, cidr, site, scope_name in subnet_rows:
+                subnet_map.setdefault(host_id, []).append(
+                    {"cidr": cidr, "site": site, "scope_name": scope_name}
+                )
 
         host_confidence_map: Dict[int, List[HostConfidence]] = {}
         if host_ids:
@@ -827,6 +1048,7 @@ class ReportGenerator:
             for vuln in sorted(list(host.vulnerabilities or []), key=self._vulnerability_sort_key)
         ]
         subnet_entries = context["subnet_map"].get(host.id, [])
+        primary_site = self._primary_site(subnet_entries)
         follow_record = context["follow_map"].get(host.id)
 
         return {
@@ -840,6 +1062,7 @@ class ReportGenerator:
             "scope": {
                 "in_scope": bool(subnet_entries),
                 "out_of_scope": not bool(subnet_entries),
+                "site": primary_site,
                 "subnets": subnet_entries,
             },
             "timeline": {
@@ -1085,8 +1308,8 @@ class ReportGenerator:
             ),
             "",
             "## Priority Hosts",
-            "| IP | Hostname | Scope | Risk | Critical | High | Key Services | Follow |",
-            "|---|---|---|---:|---:|---:|---|---|",
+            "| IP | Hostname | Site | Scope | Risk | Critical | High | Key Services | Follow |",
+            "|---|---|---|---|---:|---:|---:|---|---|",
         ]
 
         priority_hosts = sorted(
@@ -1106,12 +1329,16 @@ class ReportGenerator:
                 if port.get("state") == "open"
             ) or "none"
             risk_score = (host.get("risk") or {}).get("risk_score")
+            site = host["scope"].get("site") or "—"
             lines.append(
                 f"| {host['identity']['ip_address']} | {host['identity'].get('hostname') or ''} | "
-                f"{scope} | {risk_score if risk_score is not None else ''} | "
+                f"{site} | {scope} | {risk_score if risk_score is not None else ''} | "
                 f"{host['vulnerability_summary']['critical']} | {host['vulnerability_summary']['high']} | "
                 f"{key_services} | {host['analyst_context'].get('follow_status') or ''} |"
             )
+
+        lines.append("")
+        lines.extend(self._hotspots_markdown_lines())
 
         lines.extend(["", "## Host Details", ""])
         for host in hosts:
@@ -1119,6 +1346,7 @@ class ReportGenerator:
             lines.extend([
                 f"### {host['identity']['ip_address']} - {host['identity'].get('hostname') or 'unresolved'}",
                 f"- State: {host['identity'].get('state') or 'unknown'}",
+                f"- Site: {host['scope'].get('site') or 'unassigned'}",
                 f"- Scope: {'in-scope' if host['scope']['in_scope'] else 'out-of-scope'}",
                 f"- OS: {host['os'].get('name') or 'unknown'}",
                 f"- First seen: {host['timeline'].get('first_seen') or 'unknown'}",
@@ -1184,12 +1412,16 @@ class ReportGenerator:
     def _generate_hosts_csv(self, hosts: List[Dict[str, Any]]) -> str:
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["IP Address", "Hostname", "State", "Scope", "Risk Score", "Critical", "High", "Open Services", "Follow Status"])
+        writer.writerow(["IP Address", "Hostname", "State", "Site", "Subnet", "Scope", "Risk Score", "Critical", "High", "Open Services", "Follow Status"])
         for host in hosts:
+            subnets = host["scope"].get("subnets") or []
+            subnet_str = ", ".join(s.get("cidr") for s in subnets if s.get("cidr"))
             _safe_csv_row(writer, [
                 host["identity"]["ip_address"],
                 host["identity"].get("hostname") or "",
                 host["identity"].get("state") or "",
+                host["scope"].get("site") or "",
+                subnet_str,
                 "in-scope" if host["scope"]["in_scope"] else "out-of-scope",
                 (host.get("risk") or {}).get("risk_score") or "",
                 host["vulnerability_summary"]["critical"],
@@ -1282,6 +1514,26 @@ class ReportGenerator:
         if not suggestions:
             suggestions.append("Service enumeration and banner validation")
         return suggestions
+
+    @staticmethod
+    def _primary_site(subnet_entries: List[Dict[str, Optional[str]]]) -> Optional[str]:
+        """Pick the site of the most-specific (longest-prefix) subnet a host
+        belongs to — matches the host→site rule used everywhere else so the
+        bundle agrees with the dashboard on which site owns a host."""
+        best_prefix = -1
+        best_site: Optional[str] = None
+        for entry in subnet_entries:
+            site = entry.get("site")
+            if not site:
+                continue
+            try:
+                prefixlen = ipaddress.ip_network(entry.get("cidr"), strict=False).prefixlen
+            except (ValueError, TypeError):
+                prefixlen = 0
+            if prefixlen > best_prefix:
+                best_prefix = prefixlen
+                best_site = site
+        return best_site
 
     @staticmethod
     def _iso(value: Optional[datetime]) -> Optional[str]:

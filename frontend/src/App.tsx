@@ -94,6 +94,7 @@ const Hosts = lazy(() => import('./pages/Hosts'));
 const Activity = lazy(() => import('./pages/Activity'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
+const SubnetInsights = lazy(() => import('./pages/SubnetInsights'));
 const ParseErrors = lazy(() => import('./pages/ParseErrors'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -436,6 +437,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <NetworkTopology />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/insights"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <SubnetInsights />
                           </ProtectedRoute>
                         }
                       />
