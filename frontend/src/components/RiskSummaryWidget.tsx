@@ -282,13 +282,13 @@ const RiskSummaryWidget: React.FC = () => {
                   onClick={() => navigate(`/hosts/${host.host_id}`)}
                   className="flex items-center justify-between rounded-control border border-border p-sm text-left hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <div>
-                    <p className="text-metadata font-medium">{host.ip_address}</p>
-                    <p className="text-caption text-muted-foreground">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-metadata font-medium">{host.ip_address}</p>
+                    <p className="truncate text-caption text-muted-foreground" title={host.hostname || undefined}>
                       {host.hostname || 'Unknown hostname'}
                     </p>
                   </div>
-                  <div className="text-right">
+                  <div className="shrink-0 text-right">
                     <Badge variant={levelTone(host.risk_level)}>
                       {host.risk_level.toUpperCase()}
                     </Badge>
