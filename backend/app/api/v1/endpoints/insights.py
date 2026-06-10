@@ -7,7 +7,7 @@ attention surface it extends.
 """
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -25,7 +25,11 @@ def get_subnet_insights(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=500, description="Page size (worst-first)."),
+    offset: int = Query(0, ge=0, description="Row offset for pagination."),
 ) -> Dict[str, Any]:
-    """``adopted=False`` when the project has no scoped subnets — the UI shows
-    an onboarding empty state (define a scope) instead of an empty table."""
-    return compute_subnet_insights(db, project.id)
+    """Paginated, worst-first.  ``subnets`` is the requested page; ``total`` is
+    the full count and ``totals`` is project-wide (not page-scoped).
+    ``adopted=False`` when the project has no scoped subnets — the UI shows an
+    onboarding empty state instead of an empty table."""
+    return compute_subnet_insights(db, project.id, limit=limit, offset=offset)

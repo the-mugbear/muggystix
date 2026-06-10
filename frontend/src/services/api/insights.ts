@@ -72,6 +72,11 @@ export interface SubnetInsight {
 export interface SubnetInsightsResponse {
   adopted: boolean;
   subnets: SubnetInsight[];
+  // Pagination: `subnets` is the requested page (worst-first); `total` is the
+  // full count; `totals` is project-wide, not page-scoped.
+  total: number;
+  limit: number;
+  offset: number;
   totals: {
     subnet_count: number;
     hosts_in_scope: number;
@@ -83,7 +88,12 @@ export interface SubnetInsightsResponse {
   };
 }
 
-export const getSubnetInsights = async (): Promise<SubnetInsightsResponse> => {
-  const response = await api.get<SubnetInsightsResponse>(`${p()}/insights/subnets`);
+export const getSubnetInsights = async (
+  limit = 50,
+  offset = 0,
+): Promise<SubnetInsightsResponse> => {
+  const response = await api.get<SubnetInsightsResponse>(`${p()}/insights/subnets`, {
+    params: { limit, offset },
+  });
   return response.data;
 };

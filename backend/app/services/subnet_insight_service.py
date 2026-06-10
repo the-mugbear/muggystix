@@ -208,13 +208,24 @@ def resolve_host_locations(
     return locations
 
 
-def compute_subnet_insights(db: Session, project_id: int) -> Dict[str, Any]:
+def compute_subnet_insights(
+    db: Session, project_id: int, limit: Optional[int] = 50, offset: int = 0,
+) -> Dict[str, Any]:
+    """Worst-first subnet insights, paginated.
+
+    The aggregation is bounded by project size (a handful of bulk queries), but
+    the *response* must be bounded too — a 6,000-subnet project would otherwise
+    ship a multi-MB body and render 6,000 rows.  ``totals`` stays project-wide;
+    ``subnets`` is the requested page of the worst-first list, with ``total``
+    for the pager.  ``limit=None`` returns everything (used internally).
+    """
     now = datetime.now(timezone.utc)
 
     # --- Subnets in this project's scopes ---------------------------------
     subnet_meta = _load_subnet_meta(db, project_id)
     if not subnet_meta:
-        return {"adopted": False, "subnets": [], "totals": _empty_totals()}
+        return {"adopted": False, "subnets": [], "total": 0,
+                "limit": limit, "offset": offset, "totals": _empty_totals()}
 
     # --- Resolve each host to its most-specific subnet --------------------
     host_locations = resolve_host_locations(db, project_id, subnet_meta)
@@ -506,7 +517,10 @@ def compute_subnet_insights(db: Session, project_id: int) -> Dict[str, Any]:
     for r in out:
         r.pop("_neglect_magnitude", None)
 
-    return {"adopted": True, "subnets": out, "totals": totals}
+    total = len(out)
+    page = out[offset:offset + limit] if limit is not None else out[offset:]
+    return {"adopted": True, "subnets": page, "total": total,
+            "limit": limit, "offset": offset, "totals": totals}
 
 
 def _recommend(*, no_coverage, unowned, critical, eol, weak, stale, cert, unreviewed) -> Dict[str, str]:

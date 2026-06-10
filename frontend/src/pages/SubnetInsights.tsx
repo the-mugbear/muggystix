@@ -73,16 +73,22 @@ const SubnetInsights: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Pagination — the page can have thousands of subnets; render one page.
+  const PAGE_SIZE = 50;
+  const [offset, setOffset] = useState(0);
 
   const load = useCallback(() => {
     setLoading(true);
-    getSubnetInsights()
+    getSubnetInsights(PAGE_SIZE, offset)
       .then((d) => { setData(d); setError(null); })
       .catch((e) => setError(formatApiError(e, 'Could not load subnet insights.')))
       .finally(() => setLoading(false));
-  }, []);
+  }, [offset]);
 
-  // Reload when the active project changes (the API client reads the
+  // Reset to the first page when the project changes.
+  useEffect(() => { setOffset(0); }, [currentProject?.id]);
+
+  // Reload when the active project or page changes (the API client reads the
   // current project id, so a stale fetch would otherwise show the wrong
   // project's subnets after a switch).
   useEffect(() => { load(); }, [load, currentProject?.id]);
@@ -197,6 +203,34 @@ const SubnetInsights: React.FC = () => {
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {/* Pager — the worst subnets are first, so page 1 is the most
+              actionable; further pages exist only on large projects. */}
+          {data && data.total > PAGE_SIZE && (
+            <div className="flex items-center justify-between gap-sm text-caption text-muted-foreground">
+              <span>
+                Showing {data.total === 0 ? 0 : offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} of {data.total} subnets (worst-first)
+              </span>
+              <div className="flex items-center gap-xs">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={loading || offset === 0}
+                  onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={loading || offset + PAGE_SIZE >= data.total}
+                  onClick={() => setOffset((o) => o + PAGE_SIZE)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           )}
         </>
       )}

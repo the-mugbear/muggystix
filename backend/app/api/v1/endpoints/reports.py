@@ -664,7 +664,9 @@ class ReportGenerator:
                 }
             else:
                 sites = compute_site_attention(self.db, self.project_id)
-                subnets = compute_subnet_insights(self.db, self.project_id)
+                # Only the worst top_n are rendered in the report — ask for
+                # exactly that page rather than the default 50.
+                subnets = compute_subnet_insights(self.db, self.project_id, limit=top_n)
                 self._hotspots_cache = {
                     "sites_adopted": bool(sites.get("adopted")),
                     "subnets_adopted": bool(subnets.get("adopted")),
