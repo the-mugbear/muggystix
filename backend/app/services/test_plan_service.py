@@ -182,6 +182,14 @@ class TestPlanService:
         title: Optional[str] = None,
         description: Optional[str] = None,
         status: Optional[str] = None,
+        # Status changes are gated: only the dedicated lifecycle methods
+        # (submit/approve/reject/archive — which enforce the allowed
+        # transitions) may set status, and they pass _allow_status_change=True.
+        # Without this, update_plan was an unguarded backdoor that could jump a
+        # plan to any state (e.g. a completed plan back to draft, or straight
+        # to approved skipping review). No external caller passes status today;
+        # this keeps it that way.
+        _allow_status_change: bool = False,
         # v2.19.0: agent self-reported generation provenance.  Set once by
         # the agent during the plan-generation PATCH step; the service does
         # not over-write a previously-set value with NULL (the agent might
@@ -199,6 +207,12 @@ class TestPlanService:
         if description is not None and description != plan.description:
             plan.description = description
         if status is not None and status != plan.status:
+            if not _allow_status_change:
+                raise ValueError(
+                    "update_plan must not change status: use the dedicated "
+                    "lifecycle methods (submit/approve/reject/archive), which "
+                    "enforce the allowed state transitions."
+                )
             self._record_history(
                 plan.id, None, actor_type, actor_id, "status_changed",
                 "status", plan.status, status,
@@ -231,7 +245,10 @@ class TestPlanService:
         )
         if entry_count == 0:
             raise ValueError("Cannot submit an empty test plan — add entries first")
-        return self.update_plan(plan, actor_type, actor_id, status=TestPlanStatus.PROPOSED.value)
+        return self.update_plan(
+            plan, actor_type, actor_id,
+            status=TestPlanStatus.PROPOSED.value, _allow_status_change=True,
+        )
 
     def approve_plan(self, plan: TestPlan, user_id: int) -> TestPlan:
         if plan.status not in (TestPlanStatus.PROPOSED.value, TestPlanStatus.REJECTED.value):
