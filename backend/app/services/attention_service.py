@@ -187,7 +187,11 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
     project actually organises subnets into sites.
     """
     host_to_site = _resolve_host_sites(db, project_id)
-    if not host_to_site:
+    # Site metadata catalog, loaded up front so configured sites with ZERO
+    # discovered hosts still surface — a site with an expected host count but
+    # none found is the strongest coverage failure, not something to hide.
+    sites_by_name = {s.name: s for s in db.query(Site).filter(Site.project_id == project_id).all()}
+    if not host_to_site and not sites_by_name:
         return {"adopted": False, "sites": []}
 
     # Every project host, bucketed by resolved site (unassigned otherwise).
@@ -195,6 +199,10 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
     site_host_ids: Dict[str, List[int]] = defaultdict(list)
     for hid in all_host_ids:
         site_host_ids[host_to_site.get(hid, _UNASSIGNED)].append(hid)
+    # Seed every configured site (even zero-host ones) so a site with expected
+    # hosts but none discovered surfaces with its full coverage gap.
+    for name in sites_by_name:
+        site_host_ids.setdefault(name, [])
 
     # Reviewed hosts (any user) → per-site review gap.
     reviewed = {
@@ -231,10 +239,6 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
                 site_sev[site][sev] += 1
             if owner is None:
                 site_unowned[site] += 1
-
-    # Site metadata (tier / expected host count / owner) keyed by name — the
-    # Site entity holds it; the name is the subnet.site string they group by.
-    sites_by_name = {s.name: s for s in db.query(Site).filter(Site.project_id == project_id).all()}
 
     out: List[Dict[str, Any]] = []
     for site, host_ids in site_host_ids.items():
