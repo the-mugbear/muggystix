@@ -37,8 +37,6 @@ export interface SubnetInsight {
   site: string | null;
   site_id: number | null;
   criticality_tier: number;
-  owner_id: number | null;
-  owner_name: string | null;
   host_count: number;
   usable_addresses: number;
   no_coverage: boolean;

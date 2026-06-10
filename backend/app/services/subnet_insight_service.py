@@ -45,7 +45,6 @@ from app.db.models import (
     Subnet,
     WebInterface,
 )
-from app.db.models_auth import User
 from app.db.models_confidence import NetexecResult
 from app.db.models_findings import Finding, FindingHost
 from app.services.attention_service import (
@@ -140,14 +139,14 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
     subnet_rows = (
         db.query(
             Subnet.id, Subnet.cidr, Subnet.description, Subnet.site,
-            Subnet.site_id, Subnet.owner_id, Scope.name,
+            Subnet.site_id, Scope.name,
         )
         .join(Scope, Subnet.scope_id == Scope.id)
         .filter(Scope.project_id == project_id)
         .all()
     )
     meta: Dict[int, Dict[str, Any]] = {}
-    for sid, cidr, desc, site, site_id, owner_id, scope_name in subnet_rows:
+    for sid, cidr, desc, site, site_id, scope_name in subnet_rows:
         try:
             prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
         except ValueError:
@@ -158,7 +157,6 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
             "description": desc,
             "site": site,
             "site_id": site_id,
-            "owner_id": owner_id,
             "scope_name": scope_name,
             "prefixlen": prefixlen,
             "usable_addresses": metrics.get("usable_addresses", 0),
@@ -380,13 +378,8 @@ def compute_subnet_insights(
             risky_hosts[sid].add(host_id)
             risky_ports[sid][port_number].add(host_id)
 
-    # --- Site tiers + subnet owner usernames ------------------------------
+    # --- Site tiers -------------------------------------------------------
     sites_by_id = {s.id: s for s in db.query(Site).filter(Site.project_id == project_id).all()}
-    owner_ids = {m["owner_id"] for m in subnet_meta.values() if m["owner_id"]}
-    owner_names: Dict[int, str] = {}
-    if owner_ids:
-        for uid, uname in db.query(User.id, User.username).filter(User.id.in_(owner_ids)).all():
-            owner_names[uid] = uname
 
     # --- Assemble per-subnet rows -----------------------------------------
     out: List[Dict[str, Any]] = []
@@ -462,8 +455,6 @@ def compute_subnet_insights(
             "site": meta["site"],
             "site_id": meta["site_id"],
             "criticality_tier": tier,
-            "owner_id": meta["owner_id"],
-            "owner_name": owner_names.get(meta["owner_id"]) if meta["owner_id"] else None,
             "host_count": host_count,
             "usable_addresses": meta["usable_addresses"],
             "no_coverage": no_coverage,

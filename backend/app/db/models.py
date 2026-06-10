@@ -267,18 +267,11 @@ class Subnet(Base):
     # sync on every write via the get-or-create-site helper.
     site = Column(String(255), nullable=True)
     site_id = Column(Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True)
-    # Operator/IT contact accountable for this network range.  Site carries
-    # an owner for the whole site; this is the finer-grained "who manages
-    # THIS /24" handle the subnet-insights report needs to make a neglected
-    # range actionable ("this unmanaged subnet belongs to X").  Null = no
-    # owner assigned (itself a mild neglect signal).
-    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     scope = relationship("Scope", back_populates="subnets")
     site_ref = relationship("Site", foreign_keys=[site_id])
-    owner = relationship("User", foreign_keys=[owner_id])
     host_mappings = relationship("HostSubnetMapping", back_populates="subnet", cascade="all, delete-orphan")
     # v2.86.0 — project-scoped subnet labels (parallel to HostTag).  Eager-
     # loaded so the labels list rides along on Subnet responses without a

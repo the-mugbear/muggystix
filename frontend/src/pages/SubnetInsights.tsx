@@ -353,7 +353,6 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
                   <li>Unreviewed hosts: <span className="font-medium">{s.neglect.unreviewed_hosts}</span></li>
                   <li>Median host age: <span className="font-medium">{medianAgeLabel(s.neglect.median_host_age_days)}</span></li>
                   <li>Stale hosts: <span className="font-medium">{s.neglect.stale_host_count}{s.neglect.stale_host_pct !== null ? ` (${s.neglect.stale_host_pct}%)` : ''}</span></li>
-                  <li>Owner: <span className="font-medium">{safeFallback(s.owner_name, 'unassigned')}</span></li>
                 </ul>
               </div>
 
