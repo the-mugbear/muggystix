@@ -23,6 +23,18 @@ describe('dslFromFilters', () => {
     expect(dsl).toBe('NOT has:web');
   });
 
+  it('flags a conversion as lossy only when >=2 port dimensions combine', () => {
+    // One port dimension round-trips faithfully.
+    expect(dslFromFilters({ ports: ['22'] }).lossy).toBe(false);
+    expect(dslFromFilters({ services: ['http'] }).lossy).toBe(false);
+    // Combining loses the same-port-row correlation the panel enforces.
+    expect(dslFromFilters({ ports: ['22'], services: ['http'] }).lossy).toBe(true);
+    expect(dslFromFilters({ ports: ['22'], portStates: ['open'] }).lossy).toBe(true);
+    expect(dslFromFilters({ services: ['http'], portStates: ['open'] }).lossy).toBe(true);
+    // has_open_ports is a standalone exclusion, not part of the fused match.
+    expect(dslFromFilters({ ports: ['22'], hasOpenPorts: true }).lossy).toBe(false);
+  });
+
   it('quotes values that need it and ANDs with an existing query', () => {
     const { dsl } = dslFromFilters({ query: 'tag:prod', search: 'web server' });
     expect(dsl).toBe('tag:prod "web server"');

@@ -32,6 +32,16 @@ function field(name: string, values: string[]): string {
 export interface DslConversion {
   dsl: string;
   consumedKeys: (keyof HostFilterOptions)[];
+  /**
+   * True when the conversion CHANGES result semantics and can't be made
+   * faithful.  The panel fuses ports/services/port-states into one port row
+   * (a single port must satisfy all — "HTTP on port 22"), but the DSL has no
+   * same-row grouping, so it emits them as independent host-level clauses
+   * ("port 22 anywhere AND HTTP anywhere").  That only diverges when ≥2 of
+   * those three port dimensions are set together; a single one round-trips
+   * fine.  The caller warns before applying a lossy conversion.
+   */
+  lossy: boolean;
 }
 
 export function dslFromFilters(filters: HostFilterOptions): DslConversion {
@@ -71,5 +81,16 @@ export function dslFromFilters(filters: HostFilterOptions): DslConversion {
   // Combine with any existing query (whitespace = implicit AND).
   const existing = (filters.query || '').trim();
   const dsl = [existing, ...clauses].filter(Boolean).join(' ');
-  return { dsl, consumedKeys: consumed };
+
+  // Lossy when ≥2 port dimensions are combined — the panel correlates them to
+  // one port row, the DSL can't.  has_open_ports is excluded: the backend
+  // treats it as a standalone exclusion, not part of the fused port match.
+  const portDimensions = [
+    filters.ports?.length,
+    filters.services?.length,
+    filters.portStates?.length,
+  ].filter(Boolean).length;
+  const lossy = portDimensions >= 2;
+
+  return { dsl, consumedKeys: consumed, lossy };
 }

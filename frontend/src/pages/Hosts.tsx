@@ -46,7 +46,8 @@ import { useToast } from '../contexts/ToastContext';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import HostFilters, { HostFilterOptions } from '../components/HostFilters';
 import HostCommandBar from '../components/hosts/HostCommandBar';
-import { dslFromFilters } from '../components/hosts/dslFromFilters';
+import { dslFromFilters, type DslConversion } from '../components/hosts/dslFromFilters';
+import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import {
   FOLLOW_STATUS_OPTIONS,
   FollowMenu,
@@ -1024,24 +1025,38 @@ export default function Hosts() {
     setSaveViewDialogOpen(true);
   }, [setQuery]);
 
-  // One-way panel → DSL: serialize the representable panel filters into the
-  // query string and clear exactly the keys that were moved (id-based
-  // tag/label selections and out-of-scope / first-seen stay in the panel).
-  const handleConvertFiltersToQuery = useCallback(() => {
-    const { dsl, consumedKeys } = dslFromFilters(filters);
-    if (!dsl) {
-      toast.info('No filters to convert into a query', { autoHideMs: 2000 });
-      return;
-    }
+  // A lossy conversion the user has been warned about and may still apply.
+  const [pendingConversion, setPendingConversion] = useState<DslConversion | null>(null);
+
+  const applyConversion = useCallback((conversion: DslConversion) => {
     setFilters((previous) => {
       const updated = { ...previous } as HostFilterOptions;
-      consumedKeys.forEach((key) => { delete (updated as any)[key]; });
-      updated.query = dsl;
+      conversion.consumedKeys.forEach((key) => { delete (updated as any)[key]; });
+      updated.query = conversion.dsl;
       return updated;
     });
     setPage(0);
     toast.info('Converted filters into a query', { autoHideMs: 2000 });
-  }, [filters, setFilters, setPage, toast]);
+  }, [setFilters, setPage, toast]);
+
+  // One-way panel → DSL: serialize the representable panel filters into the
+  // query string and clear exactly the keys that were moved (id-based
+  // tag/label selections and out-of-scope / first-seen stay in the panel).
+  // When the conversion would silently change results (≥2 port dimensions
+  // combined — the panel matches them on one port row, the DSL can't), we
+  // confirm first instead of producing a wrong query.
+  const handleConvertFiltersToQuery = useCallback(() => {
+    const conversion = dslFromFilters(filters);
+    if (!conversion.dsl) {
+      toast.info('No filters to convert into a query', { autoHideMs: 2000 });
+      return;
+    }
+    if (conversion.lossy) {
+      setPendingConversion(conversion);
+      return;
+    }
+    applyConversion(conversion);
+  }, [filters, applyConversion, toast]);
 
   // Facet values for the command-bar autocomplete, keyed by the DSL
   // value_source.  Tag/label suggest by NAME (the DSL resolves them by
@@ -2108,6 +2123,28 @@ export default function Hosts() {
           </SideSheetBody>
         </SideSheetContent>
       </SideSheet>
+
+      {/* Guard: converting combined port/service/state filters to a query
+          changes their meaning (panel matches one port row; the query matches
+          each clause independently).  Confirm before producing a wrong query. */}
+      <ConfirmDialog
+        open={pendingConversion !== null}
+        onOpenChange={(open) => { if (!open) setPendingConversion(null); }}
+        title="This conversion changes what you'll match"
+        description={
+          'Your panel combines port, service, or port-state filters, which match the SAME port '
+          + '(e.g. "HTTP on port 22"). The query language matches each independently, so the '
+          + 'converted query can return different hosts (e.g. "port 22 anywhere AND HTTP anywhere"). '
+          + 'Convert anyway?'
+        }
+        confirmLabel="Convert anyway"
+        confirmVariant="default"
+        cancelLabel="Keep the filters"
+        onConfirm={() => {
+          if (pendingConversion) applyConversion(pendingConversion);
+          setPendingConversion(null);
+        }}
+      />
       {confirmEl}
     </div>
   );
