@@ -127,7 +127,10 @@ import {
 import { Textarea } from './ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
-const FOLLOW_STATUS_ORDER: FollowStatus[] = ['watching', 'in_review', 'reviewed'];
+// Selectable review stages, in order.  'watching' is retired (see
+// FOLLOW_STATUS_OPTIONS) — kept in FOLLOW_STATUS_META below for legacy
+// rows, but never offered as a choice.
+const FOLLOW_STATUS_ORDER: FollowStatus[] = ['in_review', 'reviewed'];
 
 const VULNERABILITY_PREVIEW_LIMIT = 10;
 
@@ -244,6 +247,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [host, setHost] = useState<Host | null>(null);
   const [conflicts, setConflicts] = useState<HostConflict[]>([]);
   const [conflictHistory, setConflictHistory] = useState<ConflictHistoryEntry[]>([]);
+  // Canonical conflict count from the API (same definition as the Hosts-list
+  // badge).  The old "N conflicts" derived from `conflicts.length` (per-field
+  // confidence records, host + port) — a different number that disagreed with
+  // the list badge.
+  const [conflictCount, setConflictCount] = useState(0);
   const [showConflicts, setShowConflicts] = useState(false);
   const [conflictsError, setConflictsError] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -475,6 +483,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         if (fetchId !== fetchIdRef.current) return;
         setConflicts(conflictData?.confidence || []);
         setConflictHistory(conflictData?.conflict_history || []);
+        setConflictCount(conflictData?.conflict_count ?? 0);
         setConflictsError(false);
       })
       .catch(() => {
@@ -733,7 +742,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     );
   }
 
-  const hasConflicts = conflicts.length > 0;
+  const hasConflicts = conflictCount > 0;
   const conflictsByField = conflicts.reduce(
     (acc, conflict) => {
       if (!acc[conflict.field_name]) acc[conflict.field_name] = [];
@@ -869,10 +878,24 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           <Button
             variant={showConflicts ? 'default' : 'outline'}
             size="sm"
-            onClick={() => setShowConflicts((open) => !open)}
+            aria-expanded={showConflicts}
+            aria-controls="host-detail-conflicts"
+            onClick={() => {
+              const opening = !showConflicts;
+              setShowConflicts(opening);
+              // The detail panel renders near the bottom of the inspector and
+              // is conditionally mounted, so on open it appears off-screen and
+              // the click reads as a no-op ("where is this info?").  Scroll to
+              // it once it has mounted (two rAFs = after the commit + layout).
+              if (opening) {
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => scrollToSection('host-detail-conflicts')),
+                );
+              }
+            }}
           >
             <AlertTriangle className="size-4" aria-hidden />
-            {conflicts.length} conflict{conflicts.length === 1 ? '' : 's'}
+            {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
           </Button>
         ) : conflictsError ? (
           <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground" title="The data-conflict check failed to load — this is not a confirmation that the host has none">
@@ -1131,7 +1154,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     followStatus ? FOLLOW_STATUS_META[followStatus].badgeVariant : 'outline'
                   }
                 >
-                  {followStatus ? FOLLOW_STATUS_META[followStatus].label : 'Not Following'}
+                  {followStatus ? FOLLOW_STATUS_META[followStatus].label : 'Not reviewed'}
                 </Badge>
                 {followInfo && (
                   <span className="text-caption text-muted-foreground">
@@ -1155,7 +1178,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">Not Following</SelectItem>
+                    <SelectItem value="none">Not reviewed</SelectItem>
                     {FOLLOW_STATUS_ORDER.map((status) => (
                       <SelectItem key={status} value={status}>
                         {FOLLOW_STATUS_META[status].label}
@@ -1169,7 +1192,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
             {otherFollowers.length > 0 && (
               <div className="rounded-control border border-border bg-muted/30 p-sm">
-                <p className="mb-xxs text-caption text-muted-foreground">Also tracking this host</p>
+                <p className="mb-xxs text-caption text-muted-foreground">Also reviewing this host</p>
                 <div className="flex flex-wrap gap-xs">
                   {otherFollowers.map((f) => {
                     const label = f.full_name || f.username;
@@ -2182,7 +2205,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
       {/* Data conflicts */}
       {showConflicts && hasConflicts && (
-        <Card>
+        <Card id="host-detail-conflicts" className="scroll-mt-20">
           <CardHeader>
             <div className="flex items-center gap-xs">
               <AlertTriangle className="size-5 text-warning" aria-hidden />

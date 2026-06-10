@@ -19,7 +19,6 @@ import type { FollowStatus, HostFilterData } from '../services/api';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
-import { Checkbox } from './ui/checkbox';
 import {
   Combobox,
   type ComboboxOption,
@@ -64,13 +63,15 @@ export interface HostFilterOptions {
   subnetLabels?: string[];
   assignedToMe?: boolean;
   // v4.51.0 — followFilter + onlyWithNotes folded into HostFilterOptions
-  // so the page state is a single object instead of three useStates.  The
-  // sticky-bar "Follow status" chip group still writes here; absent
-  // followFilter means "no follow-status filter" (the old 'all' sentinel),
-  // absent onlyWithNotes means the toggle is off.  See Hosts.tsx for the
-  // setter helpers that delete the keys when the user clears them so
-  // `Object.keys(filters).length === 0` remains the canonical "nothing
-  // filtered" check.
+  // so the page state is a single object instead of three useStates.  Both
+  // the sticky-bar "Review status" chip group and the card's Review status
+  // select write here; absent followFilter means "no review-status filter"
+  // (the old 'all' sentinel), absent onlyWithNotes means the toggle is off.
+  // See Hosts.tsx for the setter helpers that delete the keys when the user
+  // clears them so `Object.keys(filters).length === 0` remains the canonical
+  // "nothing filtered" check.  Review status is team-shared (see the backend
+  // follow_predicate): 'none' = nobody is reviewing, in_review/reviewed = any
+  // teammate.
   followFilter?: 'none' | FollowStatus;
   onlyWithNotes?: boolean;
   // v5.0.0 — boolean query DSL string (the command bar's power input).
@@ -127,7 +128,7 @@ export const HOST_FILTER_PRESETS: Array<{
     id: 'not_reviewed',
     name: 'Not Reviewed',
     Icon: Eye,
-    description: 'Hosts you have not yet reviewed',
+    description: 'Hosts nobody on the team is reviewing yet',
     filters: { followFilter: 'none' },
   },
   {
@@ -143,13 +144,6 @@ export const HOST_FILTER_PRESETS: Array<{
     Icon: ShieldCheck,
     description: 'Hosts with high-severity findings and open ports',
     filters: { hasHighVulns: true, hasOpenPorts: true },
-  },
-  {
-    id: 'needs_review',
-    name: 'Watching',
-    Icon: Eye,
-    description: 'Hosts on your watch list',
-    filters: { followFilter: 'watching' },
   },
   {
     id: 'out_of_scope',
@@ -515,12 +509,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
     );
   }, [availableData?.subnet_labels]);
 
-  const webInterfaceLabel = filters.hasWebInterface === true
-    ? 'Has web interface'
-    : filters.hasWebInterface === false
-      ? 'No web interface'
-      : 'Web interface: any';
-
   return (
     <Card className="mb-md">
       <CardContent className="space-y-md pt-md">
@@ -676,6 +664,35 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                     {option.label}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Review status — team-shared.  Lives in the card (not only the
+              sticky-bar chips) so it composes with the property toggles
+              below: e.g. "Critical vulnerabilities" + "Not reviewed" =
+              critical hosts nobody is looking at.  Writes the same
+              filters.followFilter the sticky chips do, so the two stay in
+              sync. */}
+          <div className="space-y-xxs">
+            <Label htmlFor="hosts-filter-review">Review status</Label>
+            <Select
+              value={filters.followFilter ?? 'any'}
+              onValueChange={(value) =>
+                handleFilterChange(
+                  'followFilter',
+                  value === 'any' ? undefined : (value as 'none' | FollowStatus),
+                )
+              }
+            >
+              <SelectTrigger id="hosts-filter-review">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="any">Any</SelectItem>
+                <SelectItem value="none">Not reviewed</SelectItem>
+                <SelectItem value="in_review">In review</SelectItem>
+                <SelectItem value="reviewed">Reviewed</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -889,26 +906,37 @@ const HostFilters: React.FC<HostFiltersProps> = ({
               />
             </div>
 
-            {/* Web interface tri-state */}
-            <div className="flex items-start gap-sm">
-              <Checkbox
-                id="hosts-filter-web"
-                checked={
+            {/* Web interface — three explicit choices.  Was a tri-state
+                checkbox whose indeterminate "Web interface: any" looked
+                like inert text and gave no hint it cycled; a labelled
+                Select reads the same as the Host state / Review status
+                selects and makes all three options discoverable. */}
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-web" id="hosts-filter-web-label">Web interface</Label>
+              <Select
+                value={
                   filters.hasWebInterface === undefined
-                    ? 'indeterminate'
+                    ? 'any'
                     : filters.hasWebInterface
+                      ? 'yes'
+                      : 'no'
                 }
-                onCheckedChange={() => {
-                  const current = filters.hasWebInterface;
-                  const next =
-                    current === undefined ? true : current === true ? false : undefined;
-                  handleFilterChange('hasWebInterface', next);
-                }}
-                aria-label="Toggle web interface filter (cycles any → has → none)"
-              />
-              <Label htmlFor="hosts-filter-web" className="text-metadata">
-                {webInterfaceLabel}
-              </Label>
+                onValueChange={(value) =>
+                  handleFilterChange(
+                    'hasWebInterface',
+                    value === 'any' ? undefined : value === 'yes',
+                  )
+                }
+              >
+                <SelectTrigger id="hosts-filter-web">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any</SelectItem>
+                  <SelectItem value="yes">Has web interface</SelectItem>
+                  <SelectItem value="no">No web interface</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Tech */}

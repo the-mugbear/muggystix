@@ -297,6 +297,33 @@ class Host(HostBase):
     # control, so including the caller duplicated the badge.  Empty for the
     # host-detail endpoint; populated by the list endpoint's batch query.
     other_reviewers: List[HostReviewer] = []
+    # Teammates (not the caller) who have COMPLETED review of this host, and
+    # the team-wide review state (most-advanced status across ALL users incl
+    # the caller).  Review is team-shared (the list filter classifies hosts by
+    # team state), so the row must surface team state too — otherwise a host
+    # the filter returns as "Reviewed" shows no evidence of who reviewed it.
+    reviewed_by: List[HostReviewer] = []
+    team_review_status: Optional[str] = None  # "reviewed" | "in_review" | None
+    # Computed review/attention signals.  Declared here so response_model does
+    # NOT strip them: conflict_count surfaces the confidence subsystem's "scans
+    # disagreed" flag; changed_recently flags a host whose latest scan flipped
+    # state or added a port.  Both drive Hosts-list badges.
+    conflict_count: int = 0
+    changed_recently: bool = False
+    # Host-level discovery timestamps (model-backed; previously omitted from
+    # the response).  Drive the Hosts-list "new" / relative-last-seen / stale
+    # signals in the redesigned Host column.
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    # Count of this host's vulnerabilities with a known public exploit
+    # (Vulnerability.exploitable) — drives the Attention column's "exploit
+    # available" reason.  Populated by the list endpoint's batch query.
+    exploitable_count: int = 0
+    # Most-specific (longest-prefix) subnet CIDR + its site that this host
+    # falls in, or null when out of scope.  Surfaced in the Host column so an
+    # operator sees where the host lives without opening it.
+    primary_subnet: Optional[str] = None
+    primary_site: Optional[str] = None
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to
     # show/hide the "Web Interfaces" card and by the Hosts list (phase

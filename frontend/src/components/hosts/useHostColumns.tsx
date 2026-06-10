@@ -8,7 +8,6 @@ import {
   ChevronRight,
   ChevronUp,
   Copy,
-  Eye,
   Users,
 } from 'lucide-react';
 
@@ -24,6 +23,10 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { cn } from '../../utils/cn';
+import {
+  PORTS_OF_INTEREST_BY_PORT,
+  type PortOfInterestDefinition,
+} from '../../utils/portsOfInterest';
 
 // Map a tag's palette key to a coloured dot.  Unknown / null colours
 // fall back to a neutral dot — the backend stores whatever string the
@@ -87,12 +90,15 @@ const CopyIpButton: React.FC<{ ip: string }> = ({ ip }) => {
 
 // --- Status / display constants -------------------------------------------
 
+// Review lifecycle the operator drives: In Review → Reviewed.  The legacy
+// "watching" follow state is retired (nobody followed hosts, they review
+// them) — it stays in the FollowStatus type + display meta so any old row
+// still renders, but it is no longer offered as a choice anywhere.
 export const FOLLOW_STATUS_OPTIONS: Array<{
   value: FollowStatus;
   label: string;
   badgeClass: string;
 }> = [
-  { value: 'watching', label: 'Watching', badgeClass: 'bg-info text-info-foreground' },
   { value: 'in_review', label: 'In Review', badgeClass: 'bg-warning text-warning-foreground' },
   { value: 'reviewed', label: 'Reviewed', badgeClass: 'bg-success text-success-foreground' },
 ];
@@ -126,6 +132,115 @@ export const formatRelativeLastViewed = (value?: string | null): string | null =
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+};
+
+// --- Redesign helpers: Host / Exposure / Attention columns ----------------
+
+/** Compact relative age ("3d", "5h", "2mo") for a host's last_seen. */
+export const relativeAge = (iso?: string | null): string | null => {
+  if (!iso) return null;
+  const diff = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(diff)) return null;
+  const mins = Math.floor(Math.max(diff, 0) / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(days / 365)}y`;
+};
+
+/** A host first seen within the last 7 days reads as "new". */
+export const isNewHost = (iso?: string | null): boolean => {
+  if (!iso) return false;
+  const diff = Date.now() - new Date(iso).getTime();
+  return !Number.isNaN(diff) && diff >= 0 && diff < 7 * 86_400_000;
+};
+
+/** A host whose latest observation is > 30 days old reads as "stale". */
+const isStaleHost = (iso?: string | null): boolean => {
+  if (!iso) return false;
+  const diff = Date.now() - new Date(iso).getTime();
+  return !Number.isNaN(diff) && diff > 30 * 86_400_000;
+};
+
+/** This host's OPEN ports-of-interest, de-duplicated and risk-ranked. */
+export const exposurePortsOfInterest = (ports?: Port[]): PortOfInterestDefinition[] => {
+  const seen = new Set<number>();
+  const out: PortOfInterestDefinition[] = [];
+  for (const p of ports ?? []) {
+    if (p.state !== 'open') continue;
+    const def = PORTS_OF_INTEREST_BY_PORT.get(p.port_number);
+    if (def && !seen.has(def.port)) {
+      seen.add(def.port);
+      out.push(def);
+    }
+  }
+  return out.sort((a, b) => b.weight - a.weight);
+};
+
+interface AttentionReason {
+  label: string;
+  tone: 'severity-critical' | 'severity-high' | 'destructive' | 'warning' | 'info' | 'muted';
+  // Plain-language explanation shown on hover — the chip label is terse, so
+  // the "why" (e.g. what "Changed" means) lives here.
+  detail: string;
+}
+
+/**
+ * The single most-important reason a host needs attention, plus any others.
+ * Priority: critical (folding in exploitability) → exploit-only → data
+ * conflict → changed-since-scan → high → stale.  Out-of-scope is surfaced in
+ * the Host column next to the subnet, not here.
+ */
+export const computeAttention = (
+  host: Host,
+): { primary: AttentionReason | null; others: AttentionReason[] } => {
+  const vs = host.vulnerability_summary;
+  const crit = vs?.critical ?? 0;
+  const high = vs?.high ?? 0;
+  const exploit = host.exploitable_count ?? 0;
+  const conflicts = host.conflict_count ?? 0;
+  const reasons: AttentionReason[] = [];
+  if (crit > 0) {
+    reasons.push({
+      label: exploit > 0 ? `${crit} critical · exploit` : `${crit} critical`,
+      tone: 'severity-critical',
+      detail:
+        exploit > 0
+          ? `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}, at least one with a known public exploit.`
+          : `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}.`,
+    });
+  } else if (exploit > 0) {
+    reasons.push({
+      label: 'Exploit available',
+      tone: 'destructive',
+      detail: 'A vulnerability on this host has a known public exploit.',
+    });
+  }
+  if (conflicts > 0) {
+    reasons.push({
+      label: `${conflicts} conflict${conflicts === 1 ? '' : 's'}`,
+      tone: 'warning',
+      detail: 'Scans disagreed on this host’s data (e.g. OS or state). Open the host to reconcile.',
+    });
+  }
+  if (host.changed_recently) {
+    reasons.push({
+      label: 'Changed',
+      tone: 'info',
+      detail: 'A port opened or closed, or the host’s up/down state changed, at the most recent scan vs the prior one.',
+    });
+  }
+  if (high > 0) {
+    reasons.push({ label: `${high} high`, tone: 'severity-high', detail: `${high} high-severity vulnerability${high === 1 ? '' : 'ies'}.` });
+  }
+  if (isStaleHost(host.last_seen)) {
+    reasons.push({ label: 'Stale', tone: 'muted', detail: 'Not seen in a scan for over 30 days — data may be out of date.' });
+  }
+  return { primary: reasons[0] ?? null, others: reasons.slice(1) };
 };
 
 // --- FollowMenu -----------------------------------------------------------
@@ -171,7 +286,7 @@ export const FollowMenu: React.FC<FollowMenuProps> = ({ host, updating, onChange
           ) : (
             <BookmarkPlus className="size-3" aria-hidden />
           )}
-          {followOption?.label ?? 'Follow'}
+          {followOption?.label ?? 'Review'}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
@@ -189,7 +304,7 @@ export const FollowMenu: React.FC<FollowMenuProps> = ({ host, updating, onChange
           onSelect={() => onChange('none')}
           disabled={updating || !status}
         >
-          Stop following
+          Clear review
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -290,10 +405,11 @@ export function useHostColumns({
       },
       {
         id: 'ip',
-        header: 'IP / Hostname',
+        header: 'Host',
         cell: ({ row }) => {
           const host = row.original;
-          const latestDiscovery = getLatestDiscovery(host.discoveries);
+          const lastSeenAge = relativeAge(host.last_seen);
+          const newHost = isNewHost(host.first_seen);
           // v2.44.1 (UX review #2): the IP/hostname is the keyboard-activation
           // target for the row-level "open host inspector" action — a real
           // <button> with a focus ring.  Only IP + hostname live inside it;
@@ -341,20 +457,36 @@ export function useHostColumns({
               {host.os_name && (
                 <PivotValue
                   onPivot={onAddFilter ? () => onAddFilter({ kind: 'os', value: host.os_name! }) : undefined}
-                  title={`Filter to hosts running ${host.os_name}`}
+                  title={
+                    host.os_accuracy != null
+                      ? `Filter to hosts running ${host.os_name} (OS confidence ${host.os_accuracy}%)`
+                      : `Filter to hosts running ${host.os_name}`
+                  }
                   className="mt-xxs block max-w-full truncate text-caption text-muted-foreground"
                 >
                   {host.os_name}
                 </PivotValue>
               )}
-              {latestDiscovery && (
-                <div className="line-clamp-1 text-caption text-muted-foreground">
-                  Last seen in {getScanLabel(latestDiscovery)}
-                </div>
-              )}
+              {/* Where the host lives + how fresh it is.  Subnet · site, then
+                  a relative last-seen age, then a "New" badge for hosts first
+                  discovered in the last week. */}
+              <div className="mt-xxs flex flex-wrap items-center gap-x-sm gap-y-xxs text-caption text-muted-foreground">
+                {host.primary_subnet ? (
+                  <span className="truncate font-mono" title={host.primary_subnet}>
+                    {host.primary_subnet}
+                  </span>
+                ) : (
+                  <span className="italic" title="Not mapped to any configured scope">out of scope</span>
+                )}
+                {host.primary_site && (
+                  <span className="truncate" title={host.primary_site}>· {host.primary_site}</span>
+                )}
+                {lastSeenAge && <span title={host.last_seen ?? undefined}>seen {lastSeenAge} ago</span>}
+                {newHost && <Badge variant="info">New</Badge>}
+              </div>
               {host.tags && host.tags.length > 0 && (
                 <div className="mt-xxs flex flex-wrap gap-xxs">
-                  {host.tags.slice(0, 4).map((tag) => (
+                  {host.tags.slice(0, 3).map((tag) => (
                     <PivotValue
                       key={tag.id}
                       onPivot={onAddFilter ? () => onAddFilter({ kind: 'tag', value: tag.name }) : undefined}
@@ -368,205 +500,146 @@ export function useHostColumns({
                       <span className="truncate">{tag.name}</span>
                     </PivotValue>
                   ))}
-                  {host.tags.length > 4 && (
-                    <span className="text-caption text-muted-foreground">+{host.tags.length - 4}</span>
+                  {host.tags.length > 3 && (
+                    <span className="text-caption text-muted-foreground">+{host.tags.length - 3}</span>
                   )}
                 </div>
               )}
-              {host.assignees && host.assignees.length > 0 && (
-                <div className="line-clamp-1 text-caption text-muted-foreground">
-                  Assigned: {host.assignees.map((a) => a.name).join(', ')}
+            </div>
+          );
+        },
+      },
+      {
+        id: 'exposure',
+        header: 'Exposure',
+        size: 210,
+        cell: ({ row }) => {
+          // Open-port count + the host's risk-ranked high-value services
+          // (ports of interest), replacing the arbitrary first-3-services
+          // list.  Chips are non-interactive (the service filter matches the
+          // raw service_name, not these labels) — they're a risk read, not a
+          // pivot.
+          const host = row.original;
+          const openCount = host.ports?.filter((port) => port.state === 'open').length ?? 0;
+          const poi = exposurePortsOfInterest(host.ports);
+          return (
+            <div className="flex w-full min-w-0 flex-col gap-xxs">
+              <div className="text-caption text-muted-foreground">
+                <strong className="text-foreground">{openCount}</strong> open
+                {host.ports ? ` / ${host.ports.length}` : ''}
+              </div>
+              {poi.length > 0 ? (
+                <div className="flex flex-wrap gap-xxs">
+                  {poi.slice(0, 3).map((d) => (
+                    <span
+                      key={d.port}
+                      title={`${d.label} — port ${d.port} (high-value service)`}
+                      className="inline-flex items-center rounded-chip border border-warning/40 bg-warning/10 px-xs py-px text-caption text-warning"
+                    >
+                      {d.label}
+                    </span>
+                  ))}
+                  {poi.length > 3 && (
+                    <span className="text-caption text-muted-foreground">+{poi.length - 3}</span>
+                  )}
                 </div>
+              ) : openCount > 0 ? (
+                <span className="text-caption text-muted-foreground">no high-value services</span>
+              ) : (
+                <span className="text-caption text-muted-foreground">no open ports</span>
               )}
             </div>
           );
         },
       },
       {
-        id: 'open_ports',
-        header: () => <span className="block text-right">Open Ports</span>,
-        size: 110,
+        id: 'attention',
+        header: 'Attention',
+        size: 180,
         cell: ({ row }) => {
-          const host = row.original;
-          const openPorts = host.ports?.filter((port) => port.state === 'open') || [];
-          return (
-            <div className="text-right">
-              <div className="font-semibold text-foreground">{openPorts.length}</div>
-              <div className="text-caption text-muted-foreground">
-                of {host.ports?.length || 0}
-              </div>
-            </div>
-          );
-        },
-      },
-      {
-        id: 'services',
-        header: 'Top Services',
-        cell: ({ row }) => {
-          // Service names are identifiers, not state — chips here added
-          // visual weight without aiding scanning.  Comma-joined text
-          // with a two-line clamp keeps the same content at a fraction
-          // of the row's chromatic load.  Each name is an inline pivot
-          // (click to filter to hosts running it) but stays text, not a
-          // chip, to preserve that low-chroma density.
-          const services = getTopServices(row.original.ports || []);
-          if (services.length === 0) {
-            return <span className="text-caption text-muted-foreground">No named services</span>;
+          // The single most-important reason this host needs a human, with a
+          // "+N" for any others (full list in the tooltip).  Replaces the
+          // badge pile: one prioritized signal answers "why this host?".
+          const { primary, others } = computeAttention(row.original);
+          if (!primary) {
+            return <span className="text-caption text-muted-foreground">—</span>;
           }
           return (
-            <div className="line-clamp-2 text-caption text-foreground break-words">
-              {services.map((svc, i) => (
-                <React.Fragment key={svc}>
-                  {i > 0 && ', '}
-                  <PivotValue
-                    onPivot={onAddFilter ? () => onAddFilter({ kind: 'service', value: svc }) : undefined}
-                    title={`Filter to hosts running ${svc}`}
-                    className="inline text-foreground"
-                  >
-                    {svc}
-                  </PivotValue>
-                </React.Fragment>
-              ))}
+            <div className="flex w-full min-w-0 flex-wrap items-center gap-xxs">
+              <Badge variant={primary.tone as never} className="max-w-full overflow-hidden" title={primary.detail}>
+                <span className="truncate">{primary.label}</span>
+              </Badge>
+              {others.length > 0 && (
+                <span
+                  className="text-caption text-muted-foreground"
+                  title={others.map((o) => `${o.label} — ${o.detail}`).join('\n')}
+                >
+                  +{others.length}
+                </span>
+              )}
             </div>
           );
         },
       },
       {
-        id: 'findings',
-        size: 140,
-        header: () => <span className="block text-right">Findings</span>,
+        id: 'review',
+        header: 'Review',
+        size: 190,
         cell: ({ row }) => {
-          // Reserve the chip for the genuine alert (critical > 0) —
-          // showing "0 critical" as a chip on every row was chip-noise
-          // diluting the rows where there's actually something to flag.
-          const summary = row.original.vulnerability_summary;
-          const critical = summary?.critical ?? 0;
-          const high = summary?.high ?? 0;
-          const total = summary?.total_vulnerabilities ?? 0;
-          // Triaged findings (the spine) are distinct from raw scanner
-          // vulns above — a promoted/confirmed result, not raw output.
-          const findingCount = row.original.finding_count ?? 0;
-          return (
-            <div className="flex flex-col items-end gap-xxs">
-              {row.original.changed_recently && (
-                <Badge variant="info" title="Changed since the prior scan — state flip or a new port">
-                  Changed
-                </Badge>
-              )}
-              {findingCount > 0 && (
-                <Badge variant="warning" title="Active findings (open / confirmed / retest)">
-                  {findingCount} finding{findingCount === 1 ? '' : 's'}
-                </Badge>
-              )}
-              {critical > 0 && (
-                <Badge variant="severity-critical">{critical} critical</Badge>
-              )}
-              <span className="text-caption text-muted-foreground">
-                {critical === 0 && <>0 critical · </>}
-                {high} high · {total} total
-              </span>
-            </div>
-          );
-        },
-      },
-      {
-        id: 'notes',
-        size: 200,
-        header: 'Notes / Follow',
-        cell: ({ row }) => {
+          // Team review state + owner + a compact action, with notes as plain
+          // muted text.  Plan / web / execution counts and the conflict badge
+          // moved out of this column (to the inspector / the Attention column)
+          // so it stops being an overloaded badge pile.
           const host = row.original;
           const noteCount = host.note_count ?? host.notes?.length ?? 0;
-          const relativeViewed = formatRelativeLastViewed(host.follow?.last_viewed_at);
           const otherReviewerCount = host.other_reviewers?.length ?? 0;
+          const reviewedCount = host.reviewed_by?.length ?? 0;
+          const owner = host.assignees?.[0]?.name;
           return (
-            // v4.25.1 — `w-full min-w-0` lets the column's fixed 200px
-            // width propagate to children so the In-review badge can
-            // truncate.  Without `min-w-0` the flex item refuses to
-            // shrink below its intrinsic content width, and a long
-            // reviewer name overflows the cell into the next column.
             <div className="flex w-full min-w-0 flex-col items-start gap-xxs">
               <FollowMenu
                 host={host}
                 updating={updatingHostId === host.id}
                 onChange={(status) => onFollowChange(host.id, status)}
               />
-              {/* v4.25.0 — review indicator at table-row level.  Mobile
-                  card view (Hosts.tsx) already renders this; the table
-                  column was missing it, so on the desktop layout the
-                  operator had no signal that a host was already under
-                  review (by a teammate or themselves) until they opened
-                  the inspector.  Ordered second so it
-                  sits directly under the FollowMenu — high-salience
-                  state belongs next to the action that would change
-                  ownership.
-
-                  v4.25.1 — `max-w-full overflow-hidden` clamps the
-                  badge to the cell width (Badge.tsx documents this
-                  as the call-site opt-in for truncation); `shrink-0`
-                  on the icon keeps it intact while the name span
-                  truncates.  The `title` attribute carries the full
-                  reviewer list for hover discoverability. */}
               {otherReviewerCount > 0 && (
                 <Badge
                   variant="warning"
                   className="max-w-full overflow-hidden"
-                  title={`In review by ${host.other_reviewers!.map((r) => r.name).join(', ')}`}
+                  title={`Reviewing: ${host.other_reviewers!.map((r) => r.name).join(', ')}`}
                 >
                   <Users className="size-3 shrink-0" aria-hidden />
                   <span className="truncate">
-                    In review · {host.other_reviewers![0].name}
-                    {otherReviewerCount > 1 && ` +${otherReviewerCount - 1}`}
+                    {host.other_reviewers![0].name}
+                    {otherReviewerCount > 1 && ` +${otherReviewerCount - 1}`} reviewing
                   </span>
                 </Badge>
               )}
-              {relativeViewed && (
-                <Badge variant="success">
-                  <Eye className="size-3" aria-hidden />
-                  Viewed
+              {reviewedCount > 0 && (
+                <Badge
+                  variant="success"
+                  className="max-w-full overflow-hidden"
+                  title={`Reviewed by: ${host.reviewed_by!.map((r) => r.name).join(', ')}`}
+                >
+                  <Check className="size-3 shrink-0" aria-hidden />
+                  <span className="truncate">
+                    Reviewed · {host.reviewed_by![0].name}
+                    {reviewedCount > 1 && ` +${reviewedCount - 1}`}
+                  </span>
                 </Badge>
               )}
-              <span className="line-clamp-2 text-caption text-muted-foreground">
+              {owner && (
+                <span
+                  className="line-clamp-1 max-w-full text-caption text-muted-foreground"
+                  title={`Assigned: ${host.assignees!.map((a) => a.name).join(', ')}`}
+                >
+                  Owner: <span className="text-foreground">{owner}</span>
+                  {(host.assignees?.length ?? 0) > 1 ? ` +${host.assignees!.length - 1}` : ''}
+                </span>
+              )}
+              <span className="text-caption text-muted-foreground">
                 {noteCount} note{noteCount === 1 ? '' : 's'}
-                {relativeViewed ? ` • Viewed ${relativeViewed}` : ''}
               </span>
-              {(host.test_plan_entry_count ?? 0) > 0 && (
-                <Badge variant="outline" className="border-primary/40 text-primary">
-                  {host.test_plan_entry_count} plan entr
-                  {host.test_plan_entry_count === 1 ? 'y' : 'ies'}
-                </Badge>
-              )}
-              {(host.web_interface_count ?? 0) > 0 && (
-                <Badge variant="outline" className="border-info/40 text-info">
-                  {host.web_interface_count} web
-                </Badge>
-              )}
-              {(host.netexec_result_count ?? 0) > 0 && (
-                <Badge
-                  variant="outline"
-                  className="border-warning/50 text-warning"
-                  title="NetExec results (credential / auth / share checks) recorded for this host"
-                >
-                  {host.netexec_result_count} netexec
-                </Badge>
-              )}
-              {(host.test_execution_count ?? 0) > 0 && (
-                <Badge
-                  variant="outline"
-                  className="border-success/40 text-success"
-                  title="Test executions run against this host (vs only planned)"
-                >
-                  {host.test_execution_count} executed
-                </Badge>
-              )}
-              {(host.conflict_count ?? 0) > 0 && (
-                <Badge
-                  variant="outline"
-                  className="border-destructive/40 text-destructive"
-                  title="Scans disagreed on one or more of this host's fields (e.g. OS, state) — open the host to review the conflict"
-                >
-                  {host.conflict_count} conflict{host.conflict_count === 1 ? '' : 's'}
-                </Badge>
-              )}
             </div>
           );
         },

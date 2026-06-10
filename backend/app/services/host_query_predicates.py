@@ -379,21 +379,39 @@ def label_predicate_by_name(db: Session, names: Sequence[str], project_id: int) 
 # ---------------------------------------------------------------------------
 
 def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElement:
-    """Review-status predicate.
+    """Review-status predicate — review is a SHARED, host-level state.
 
-    ``none`` → no follow row for the caller; ``in_review_any`` → any user
-    marked In Review; otherwise → the caller's follow row with that
-    status.  Mirrors the legacy ``follow_status`` block including the
-    valid-status guard (raises via the caller).
+    Review is a team activity: a host is "being reviewed" if ANY teammate
+    has it In Review, and "reviewed" if ANY teammate marked it Reviewed.  The
+    filter answers team-level questions, not per-user ones:
+
+      * ``none`` → no teammate has this host In Review or Reviewed (nobody is
+        looking at it yet).  This is the fix for the "Not Reviewed shows hosts
+        that are in review" bug — the old per-caller ``none`` returned hosts
+        another teammate was actively reviewing.
+      * ``in_review`` / ``in_review_any`` → some teammate has it In Review.
+      * ``reviewed`` → some teammate has marked it Reviewed.
+
+    Per-user posture ("hosts assigned to me", "my in-review queue") is served
+    by the ``assigned`` filter and the Operations My-Queue, not here.  Any
+    other value (the retired ``watching`` follow state) falls through to the
+    caller's own row so a legacy saved view / DSL query still resolves.
     """
+    review_states = (FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value)
     if status == "none":
-        followed = db.query(HostFollow.host_id).filter(HostFollow.user_id == current_user.id)
-        return models.Host.id.notin_(followed)
-    if status == "in_review_any":
+        touched = db.query(HostFollow.host_id).filter(HostFollow.status.in_(review_states))
+        return models.Host.id.notin_(touched)
+    if status in ("in_review", "in_review_any"):
         in_review = db.query(HostFollow.host_id).filter(
             HostFollow.status == FollowStatus.IN_REVIEW.value
         )
         return models.Host.id.in_(in_review)
+    if status == "reviewed":
+        reviewed = db.query(HostFollow.host_id).filter(
+            HostFollow.status == FollowStatus.REVIEWED.value
+        )
+        return models.Host.id.in_(reviewed)
+    # Legacy per-user fallback (e.g. the retired 'watching' state).
     follow_ids = db.query(HostFollow.host_id).filter(
         HostFollow.user_id == current_user.id, HostFollow.status == status
     )

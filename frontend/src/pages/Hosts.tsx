@@ -1223,22 +1223,17 @@ export default function Hosts() {
       if (status === 'none') {
         await unfollowHost(hostId);
         applyFollowUpdate(hostId, null);
-        toast.info('Removed from your follow list', { autoHideMs: 2000 });
+        toast.info('Review status cleared', { autoHideMs: 2000 });
       } else {
         const response = await followHost(hostId, status);
         applyFollowUpdate(hostId, response);
-        const label =
-          status === 'in_review'
-            ? 'In Review'
-            : status === 'watching'
-              ? 'Watching'
-              : 'Reviewed';
+        const label = status === 'in_review' ? 'In Review' : 'Reviewed';
         toast.success(`Marked as ${label}`, { autoHideMs: 2000 });
       }
       setError(null);
     } catch (err) {
-      console.error('Error updating follow status:', err);
-      const message = formatApiError(err, 'Unable to update follow status. Please try again.');
+      console.error('Error updating review status:', err);
+      const message = formatApiError(err, 'Unable to update review status. Please try again.');
       setError(message);
       toast.error(message);
     } finally {
@@ -1395,11 +1390,13 @@ export default function Hosts() {
       });
     if (followFilter !== 'all') {
       const followLabel =
-        FOLLOW_STATUS_OPTIONS.find((option) => option.value === followFilter)?.label ??
-        titleCase(followFilter);
+        followFilter === 'none'
+          ? 'Not reviewed'
+          : FOLLOW_STATUS_OPTIONS.find((option) => option.value === followFilter)?.label ??
+            titleCase(followFilter);
       chips.push({
         key: 'followFilter',
-        label: `Follow: ${followLabel}`,
+        label: `Review: ${followLabel}`,
         onDelete: () => setFollowFilter('all'),
       });
     }
@@ -1522,7 +1519,7 @@ export default function Hosts() {
   const exportQueryContext = useMemo(buildHostQueryContext, [buildHostQueryContext]);
 
   if (loading && !hosts.length) {
-    return <ListPageSkeleton titleWidth={180} actionCount={3} tableProps={{ rows: 10, columns: 7 }} />;
+    return <ListPageSkeleton titleWidth={180} actionCount={3} tableProps={{ rows: 10, columns: 6 }} />;
   }
 
   // ---------------------------------------------------------------------------
@@ -1737,16 +1734,16 @@ export default function Hosts() {
               HostFilters card now.  See HOST_FILTER_PRESETS in
               HostFilters.tsx. */}
 
-          {/* Follow status */}
+          {/* Review status */}
           <div
             className="flex flex-wrap items-center gap-xs"
             role="group"
-            aria-label="Follow status filter"
+            aria-label="Review status filter"
           >
-            <span className="text-caption text-muted-foreground">Follow status:</span>
+            <span className="text-caption text-muted-foreground">Review status:</span>
             {renderFollowChip('All', 'all')}
-            {/* "Not reviewed" = no follow record for you (follow:none) — the
-                hosts you haven't touched. Was only in the filters card. */}
+            {/* "Not reviewed" = nobody on the team has this host In Review or
+                Reviewed (team-shared, follow:none). */}
             {renderFollowChip('Not reviewed', 'none')}
             {FOLLOW_STATUS_OPTIONS.map((option) =>
               renderFollowChip(option.label, option.value, option.badgeClass),
@@ -2030,12 +2027,25 @@ export default function Hosts() {
                         <Badge
                           variant="warning"
                           className="max-w-full overflow-hidden"
-                          title={`In review by ${host.other_reviewers!.map((r) => r.name).join(', ')}`}
+                          title={`Reviewing: ${host.other_reviewers!.map((r) => r.name).join(', ')}`}
                         >
                           <Users className="size-3 shrink-0" aria-hidden />
                           <span className="truncate">
-                            In review · {host.other_reviewers![0].name}
-                            {host.other_reviewers!.length > 1 && ` +${host.other_reviewers!.length - 1}`}
+                            {host.other_reviewers![0].name}
+                            {host.other_reviewers!.length > 1 && ` +${host.other_reviewers!.length - 1}`} reviewing
+                          </span>
+                        </Badge>
+                      )}
+                      {(host.reviewed_by?.length ?? 0) > 0 && (
+                        <Badge
+                          variant="success"
+                          className="max-w-full overflow-hidden"
+                          title={`Reviewed by: ${host.reviewed_by!.map((r) => r.name).join(', ')}`}
+                        >
+                          <Check className="size-3 shrink-0" aria-hidden />
+                          <span className="truncate">
+                            Reviewed · {host.reviewed_by![0].name}
+                            {host.reviewed_by!.length > 1 && ` +${host.reviewed_by!.length - 1}`}
                           </span>
                         </Badge>
                       )}

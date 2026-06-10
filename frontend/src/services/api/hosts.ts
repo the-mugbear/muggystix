@@ -106,6 +106,20 @@ export interface Host {
   // caller's own status is on the Follow control, so including the caller
   // duplicated the badge.
   other_reviewers?: { user_id: number; name: string }[];
+  // Teammates (not the caller) who have COMPLETED review of this host, plus
+  // the team-wide review state (most-advanced across all users).  Review is
+  // team-shared, so the row surfaces who reviewed a host the filter classifies
+  // as "Reviewed" — not just who is currently in review.
+  reviewed_by?: { user_id: number; name: string }[];
+  team_review_status?: 'reviewed' | 'in_review' | null;
+  // Host discovery timestamps + attention inputs surfaced for the redesigned
+  // Hosts table (Host column "new"/last-seen/stale; Attention column
+  // "exploit available"; Host column site/subnet).
+  first_seen?: string | null;
+  last_seen?: string | null;
+  exploitable_count?: number;
+  primary_subnet?: string | null;
+  primary_site?: string | null;
   // v2.71.0 — project tags on this host, and users it's assigned to.
   tags?: HostTagInfo[];
   assignees?: HostAssignee[];
@@ -249,6 +263,10 @@ export interface ConflictHistoryEntry {
 }
 
 export interface HostConflictsResponse {
+  // Canonical host-level conflict count — the SAME number the Hosts-list badge
+  // shows.  Use this for the "N conflicts" count; `confidence` is per-field
+  // confidence records (host + port), not a conflict count.
+  conflict_count: number;
   confidence: HostConflict[];
   conflict_history: ConflictHistoryEntry[];
 }
@@ -844,7 +862,7 @@ export const getHostConflicts = async (hostId: number): Promise<HostConflictsRes
     // Only swallow 404 (endpoint not available in older deployments);
     // let auth errors and server failures propagate.
     if (error?.response?.status === 404) {
-      return { confidence: [], conflict_history: [] };
+      return { conflict_count: 0, confidence: [], conflict_history: [] };
     }
     throw error;
   }

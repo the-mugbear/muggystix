@@ -159,6 +159,8 @@ def serialize_host_base(
         "os_vendor": host.os_vendor,
         "os_accuracy": host.os_accuracy,
         "last_updated_scan_id": host.last_updated_scan_id,
+        "first_seen": host.first_seen,
+        "last_seen": host.last_seen,
         "ports": host.ports,
         "host_scripts": host.host_scripts,
         "vulnerability_summary": build_vuln_summary(vuln_data),

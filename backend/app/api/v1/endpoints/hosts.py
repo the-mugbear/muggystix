@@ -159,6 +159,11 @@ class ConflictEntry(BaseModel):
     resolved_at: Optional[str] = None
 
 class HostConflictsResponse(BaseModel):
+    # Canonical host-level conflict count (same definition as the Hosts-list
+    # badge — see _host_conflict_counts).  The detail pane shows this, NOT the
+    # length of `confidence` (which is per-field confidence records, host AND
+    # port, and is not a conflict count).
+    conflict_count: int = 0
     confidence: List[ConfidenceEntry]
     conflict_history: List[ConflictEntry]
 
@@ -220,7 +225,7 @@ class HostFilterParams:
         has_low_vulns: Optional[bool] = Query(None, description="If true, only hosts with low-severity vulnerabilities"),
         has_exploit_available: Optional[bool] = Query(None, description="If true, only hosts with at least one vulnerability flagged as exploitable by Nessus (exploit_available / metasploit_name / canvas_package / core_impact_name / exploit_code_maturity in {functional, high, proof-of-concept})"),
         has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have had at least one agentic test executed against them (i.e. at least one TestExecutionResult row recorded via any TestPlanEntry for the host). Drives the 'tested' badge on the Hosts list."),
-        follow_status: Optional[str] = Query(None, description="Filter by review status: watching, in_review, reviewed, or none", examples=["watching"]),
+        follow_status: Optional[str] = Query(None, description="Filter by team-shared review status: in_review, reviewed, or none (nobody reviewing)", examples=["none"]),
         out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
         scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),
         first_seen_in_scan: Optional[bool] = Query(None, description="Used with scan_ids — if true, only hosts first discovered in those scans"),
@@ -267,6 +272,31 @@ class HostFilterParams:
         """True if any filter (including ``q``) is set — used by the
         filter-data endpoint to decide whether to scope the cascade."""
         return any(v is not None for v in self.__dict__.values())
+
+
+def _host_conflict_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
+    """Canonical per-host data-conflict count → the number of HOST-level
+    ``ConflictHistory`` rows (each is a recorded disagreement where a later
+    scan's value displaced a prior value on one of the host's fields, e.g. one
+    scan said OS=Linux, another OS=Windows).
+
+    Single source of truth: BOTH the Hosts-list ``conflict_count`` badge and
+    the host-detail conflicts pane call this, so the two can no longer diverge.
+    They used to disagree (the list counted ``ConflictHistory`` rows while the
+    detail pane counted *confidence records* — a different table, including
+    port-level rows — so the same host showed e.g. 14 vs 12).
+    """
+    if not host_ids:
+        return {}
+    return dict(
+        db.query(ConflictHistory.object_id, func.count(ConflictHistory.id))
+        .filter(
+            ConflictHistory.object_type == 'host',
+            ConflictHistory.object_id.in_(host_ids),
+        )
+        .group_by(ConflictHistory.object_id)
+        .all()
+    )
 
 
 def _hosts_changed_since_prior_scan(db: Session, host_ids: List[int]) -> set:
@@ -526,18 +556,9 @@ def get_hosts_v2(
 
     # Batch lookup: host-level data conflicts (scans disagreed on a field) —
     # surfaces the confidence/conflict subsystem's "this host's data is
-    # contested" signal as a list badge.  Indexed by (object_type, object_id).
-    conflict_count_map: Dict[int, int] = {}
-    if host_ids:
-        conflict_count_map = dict(
-            db.query(ConflictHistory.object_id, func.count(ConflictHistory.id))
-            .filter(
-                ConflictHistory.object_type == 'host',
-                ConflictHistory.object_id.in_(host_ids),
-            )
-            .group_by(ConflictHistory.object_id)
-            .all()
-        )
+    # contested" signal as a list badge.  Shares ONE definition with the
+    # host-detail conflicts pane via _host_conflict_counts (see its docstring).
+    conflict_count_map = _host_conflict_counts(db, host_ids)
 
     # Batch lookup: web interface counts per host (v2.12.0).
     # Drives the "Web" badge on the Hosts list (phase 2 UI) and
@@ -552,36 +573,50 @@ def get_hosts_v2(
         )
         wi_count_map = {row[0]: row[1] for row in wi_rows}
 
-    # Batch lookup: OTHER users' In-Review follows per host (v4.9.1).  Drives
-    # the "In review · <name>" indicator on the Hosts list so an operator sees
-    # a teammate is already on a host before picking it up.  One query for the
-    # whole page — not N+1.
+    # Batch lookup: team review state per host (v4.9.1, extended for team-
+    # shared review).  Review is a team activity and the list filter classifies
+    # hosts by team state, so the row must surface team state too — otherwise a
+    # host the filter returns as "Reviewed" would show no reviewer.  One query
+    # for the whole page — not N+1.
     #
-    # EXCLUDES the caller (`user_id != current_user.id`) ON PURPOSE: the
-    # caller's own in-review status is already shown by the row's interactive
-    # Follow control ("In Review").  Including the caller here produced a
-    # DUPLICATE — the Follow control's "In Review" AND a second "In review ·
-    # <you>" badge.  No self-inclusion avoids that dup, so the named badge is
-    # teammates-only; your own status lives on the Follow control.  (Briefly
-    # included self in a prior pass; reverted — do NOT re-add without first
-    # removing the Follow-control status display.)
+    # We split TEAMMATES (excluding the caller — their own state is on the
+    # interactive Follow control, and including them double-rendered the badge)
+    # into in_review (``other_review_map``, kept under the existing
+    # ``other_reviewers`` field) and reviewed (``reviewed_map``).  Separately we
+    # derive ``team_status_map``: the most-advanced state across ALL users
+    # INCLUDING the caller (reviewed outranks in_review), which is what the
+    # filter matches on.
     other_review_map: Dict[int, list] = {}
+    reviewed_map: Dict[int, list] = {}
+    team_status_map: Dict[int, str] = {}
     if host_ids:
         review_rows = (
-            db.query(HostFollow.host_id, HostFollow.user_id, User.username, User.full_name)
+            db.query(
+                HostFollow.host_id, HostFollow.user_id, HostFollow.status,
+                User.username, User.full_name,
+            )
             .join(User, HostFollow.user_id == User.id)
             .filter(
                 HostFollow.host_id.in_(host_ids),
-                HostFollow.user_id != current_user.id,
-                HostFollow.status == FollowStatus.IN_REVIEW.value,
+                HostFollow.status.in_([
+                    FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value,
+                ]),
             )
             .all()
         )
-        for hid, uid, username, full_name in review_rows:
-            other_review_map.setdefault(hid, []).append({
-                "user_id": uid,
-                "name": full_name or username,
-            })
+        for hid, uid, status, username, full_name in review_rows:
+            # Team status across ALL users (caller included): reviewed wins.
+            if status == FollowStatus.REVIEWED.value:
+                team_status_map[hid] = FollowStatus.REVIEWED.value
+            elif team_status_map.get(hid) != FollowStatus.REVIEWED.value:
+                team_status_map[hid] = FollowStatus.IN_REVIEW.value
+            # Teammate display lists exclude the caller (own state = control).
+            if uid != current_user.id:
+                entry = {"user_id": uid, "name": full_name or username}
+                if status == FollowStatus.REVIEWED.value:
+                    reviewed_map.setdefault(hid, []).append(entry)
+                else:
+                    other_review_map.setdefault(hid, []).append(entry)
 
     # Batch lookup: assignees per host (v2.71.0).  A follow row with a
     # non-null assigned_at means "host assigned to user_id".  One query
@@ -635,6 +670,39 @@ def get_hosts_v2(
     # or added a port vs the prior scan. Batched window-function query.
     changed_map = _hosts_changed_since_prior_scan(db, host_ids)
 
+    # Batch lookup: count of exploitable vulns per host — drives the Attention
+    # column's "exploit available" reason.  One grouped query for the page.
+    exploit_count_map: Dict[int, int] = {}
+    if host_ids:
+        for hid, cnt in (
+            db.query(Vulnerability.host_id, func.count(Vulnerability.id))
+            .filter(Vulnerability.host_id.in_(host_ids), Vulnerability.exploitable.is_(True))
+            .group_by(Vulnerability.host_id)
+            .all()
+        ):
+            exploit_count_map[hid] = cnt
+
+    # Batch lookup: each host's MOST-SPECIFIC (longest-prefix) subnet + site,
+    # so the Host column can show where the host lives.  Bounded by the page's
+    # host_ids (paginated), not the whole project.  Most-specific-wins mirrors
+    # the insights/attention resolution so overlapping ranges agree.
+    host_location_map: Dict[int, dict] = {}
+    if host_ids:
+        best_prefix: Dict[int, int] = {}
+        for hid, cidr, site in (
+            db.query(models.HostSubnetMapping.host_id, models.Subnet.cidr, models.Subnet.site)
+            .join(models.Subnet, models.HostSubnetMapping.subnet_id == models.Subnet.id)
+            .filter(models.HostSubnetMapping.host_id.in_(host_ids))
+            .all()
+        ):
+            try:
+                pfx = ipaddress.ip_network(cidr, strict=False).prefixlen
+            except ValueError:
+                pfx = 0
+            if hid not in best_prefix or pfx > best_prefix[hid]:
+                best_prefix[hid] = pfx
+                host_location_map[hid] = {"subnet": cidr, "site": site}
+
     serialized_hosts = []
     for host in hosts:
         # Review #5 — pass the windowed discoveries + aggregate note_count so
@@ -659,7 +727,13 @@ def get_hosts_v2(
         serialized["conflict_count"] = conflict_count_map.get(host.id, 0)
         serialized["finding_count"] = finding_count_map.get(host.id, 0)
         serialized["changed_recently"] = host.id in changed_map
+        serialized["exploitable_count"] = exploit_count_map.get(host.id, 0)
+        _loc = host_location_map.get(host.id)
+        serialized["primary_subnet"] = _loc["subnet"] if _loc else None
+        serialized["primary_site"] = _loc["site"] if _loc else None
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
+        serialized["reviewed_by"] = reviewed_map.get(host.id, [])
+        serialized["team_review_status"] = team_status_map.get(host.id)
         serialized["assignees"] = assignee_map.get(host.id, [])
         serialized["notes"] = [
             _serialize_note(note) for note in notes_by_host.get(host.id, [])
@@ -1223,6 +1297,7 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
         })
 
     return {
+        "conflict_count": _host_conflict_counts(db, [host_id]).get(host_id, 0),
         "confidence": confidence_data,
         "conflict_history": conflicts,
     }

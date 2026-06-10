@@ -169,10 +169,18 @@ export default function Layout({ children }: LayoutProps) {
 
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
+        // Use the BORDER-box height, not contentRect (the content box, which
+        // excludes the 1px bottom border).  --topbar-h is consumed as a
+        // border-box `height` on the brand-sidebar-header so their bottom
+        // borders align; feeding it the content height made the brand header
+        // 1px short of the topbar a frame after load, skewing the two
+        // borders.  borderBoxSize matches the initial offsetHeight read.
+        const target = entry.target as HTMLElement;
+        const borderBoxH = entry.borderBoxSize?.[0]?.blockSize ?? target.offsetHeight;
         if (entry.target === topbarRef.current) {
-          schedule('topbar', entry.contentRect.height);
+          schedule('topbar', borderBoxH);
         } else if (entry.target === secondaryNavRef.current) {
-          schedule('secondary', entry.contentRect.height);
+          schedule('secondary', borderBoxH);
         }
       }
     });

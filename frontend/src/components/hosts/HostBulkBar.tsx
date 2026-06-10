@@ -60,8 +60,9 @@ interface HostBulkBarProps {
   onApplied: () => void;
 }
 
+// Review stages a bulk action can set.  'watching' is retired (see
+// FOLLOW_STATUS_OPTIONS) — hosts are reviewed, not followed.
 const STATUS_OPTIONS: Array<{ value: FollowStatus; label: string }> = [
-  { value: 'watching', label: 'Watching' },
   { value: 'in_review', label: 'In review' },
   { value: 'reviewed', label: 'Reviewed' },
 ];
@@ -325,7 +326,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size="sm" variant="outline" disabled={working}>
-              <Eye className="size-3.5" aria-hidden /> Status
+              <Eye className="size-3.5" aria-hidden /> Review
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
