@@ -243,9 +243,25 @@ class DnsxParser:
             warning_parts.append(f"A/AAAA discovered {a_hosts_created} host(s)")
         warnings = " | ".join(warning_parts) if warning_parts else None
 
+        # Final one-line count summary for the ingestion job's progress
+        # column.  The written count was previously only logged (below) and
+        # never persisted, so a successful dnsx upload showed an empty
+        # progress column and no record count anywhere in the UI.
+        summary_parts = [
+            f"{records_written} DNS record{'s' if records_written != 1 else ''}"
+        ]
+        if ptr_hosts_updated:
+            summary_parts.append(
+                f"{ptr_hosts_updated} host{'s' if ptr_hosts_updated != 1 else ''} named via PTR"
+            )
+        if a_hosts_created:
+            summary_parts.append(
+                f"{a_hosts_created} host{'s' if a_hosts_created != 1 else ''} discovered"
+            )
         self.last_parse_stats = {
             "skipped": skipped_records,
             "warnings": warnings,
+            "summary": ", ".join(summary_parts),
         }
 
         elapsed = time.time() - start

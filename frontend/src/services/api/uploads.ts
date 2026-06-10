@@ -38,6 +38,10 @@ export interface IngestionJob {
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
+  // Final import-count summary set at completion (e.g. "6 DNS records").
+  // Fast JSON parsers (dnsx/httpx/…) don't stream progress, so this is where
+  // their record count surfaces in the recent-jobs list.
+  progress?: string | null;
   // v2.86.2 — operator-set dismissal marker; non-null means the user
   // acknowledged this failed row and it should drop out of the queue.
   dismissed_at?: string | null;

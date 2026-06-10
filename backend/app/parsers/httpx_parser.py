@@ -168,6 +168,7 @@ class HttpxParser:
                 f"{skipped} httpx record(s) malformed or missing required fields"
                 if skipped > 0 else None
             ),
+            "summary": f"{written} web interface{'s' if written != 1 else ''}",
         }
         return scan
 

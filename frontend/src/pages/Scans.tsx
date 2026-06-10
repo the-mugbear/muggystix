@@ -1060,7 +1060,10 @@ export default function Scans() {
 
                     const displayMessage = isFailure
                       ? job.error_message || job.message || 'Unknown error'
-                      : job.message || '-';
+                      // Prefer the import-count summary ("6 DNS records") over
+                      // the generic "<tool> processed successfully" so the row
+                      // actually shows how much was ingested.
+                      : job.progress || job.message || '-';
 
                     return (
                       <React.Fragment key={job.id}>

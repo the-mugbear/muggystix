@@ -549,6 +549,12 @@ class IngestionService:
                 # skipped" instead of a silent partial success.
                 job.skipped_count = result.get("skipped_count", 0)
                 job.parser_warnings = result.get("parser_warnings")
+                # Final import-count summary (e.g. "6 DNS records").  Only
+                # overwrite when the parser supplied one — streaming parsers
+                # (nmap) already left a meaningful "N hosts" in progress.
+                _progress_summary = result.get("progress_summary")
+                if _progress_summary:
+                    job.progress = _progress_summary
                 # Set uploaded_by on the scan record
                 if job.scan_id and job.submitted_by_id:
                     from app.db.models import Scan
@@ -933,6 +939,11 @@ class IngestionService:
             "tool_name": tool_name,
             "skipped_count": int(parse_stats.get("skipped", 0)) if parse_stats else 0,
             "parser_warnings": " | ".join(warnings_parts) if warnings_parts else None,
+            # Final import-count summary for the job's progress column.  Fast
+            # parsers (dnsx/httpx/whatweb/eyewitness) never stream report_progress,
+            # so without this their completed jobs showed an empty progress
+            # column and no record count anywhere.
+            "progress_summary": parse_stats.get("summary") if parse_stats else None,
         }
 
     def _enrich_dns(self, db: Session, scan_id: int, dns_server: Optional[str], project_id: int = None) -> int:
