@@ -54,6 +54,32 @@ class TestScanContentEscaping:
         assert ESCAPED in html
 
 
+class TestScopeContentEscaping:
+    def test_subnet_description_escaped(self):
+        html = ReportTemplates._generate_scope_content({
+            'scope': {
+                'subnets': [
+                    # cidr is a valid network so SubnetCalculator doesn't bail;
+                    # description is operator free-text — the injection vector
+                    # this path previously interpolated without escaping.
+                    {'cidr': '10.0.0.0/24', 'description': XSS},
+                ],
+            },
+            'hosts': [],
+            'out_of_scope_hosts': [],
+        })
+        _assert_no_raw_script(html, '_generate_scope_content')
+        assert ESCAPED in html
+
+    def test_scope_executive_summary_name_escaped(self):
+        html = ReportTemplates._generate_scope_executive_summary({
+            'scope': {'name': XSS, 'subnets': []},
+            'statistics': {'total_subnets': 1, 'total_hosts': 2, 'total_scans': 1},
+        })
+        _assert_no_raw_script(html, '_generate_scope_executive_summary')
+        assert ESCAPED in html
+
+
 class TestOutOfScopeContentEscaping:
     def test_finding_fields_escaped(self):
         html = ReportTemplates._generate_out_of_scope_content({

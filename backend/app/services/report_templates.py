@@ -712,7 +712,7 @@ class ReportTemplates:
         summary = f"""
         <div class="executive-summary">
             <h3>Executive Summary</h3>
-            <p><strong>Scope:</strong> {scope.get('name', 'Unknown')} contains {stats.get('total_subnets', 0)} 
+            <p><strong>Scope:</strong> {ReportTemplates._escape_html(scope.get('name', 'Unknown'))} contains {stats.get('total_subnets', 0)}
             subnet(s) with a total address space of {aggregates.get('total_usable_addresses', 0):,} usable IP addresses.</p>
             
             <p><strong>Discovery Results:</strong> Network scanning discovered {stats.get('total_hosts', 0)} 
@@ -1014,12 +1014,16 @@ class ReportTemplates:
                             <tbody>
             """
             
+            # Subnet CIDR + description are operator/import-supplied strings —
+            # escape them like every other external value in the report (the
+            # scan/oos paths already do; this path previously did not).
+            esc = ReportTemplates._escape_html
             for subnet in scope['subnets']:
                 metrics = SubnetCalculator.calculate_subnet_metrics(subnet.get('cidr', ''))
                 content += f"""
                 <tr>
-                    <td><code>{subnet.get('cidr', 'N/A')}</code></td>
-                    <td>{subnet.get('description', 'No description')}</td>
+                    <td><code>{esc(subnet.get('cidr', 'N/A'))}</code></td>
+                    <td>{esc(subnet.get('description', 'No description'))}</td>
                     <td>{metrics['usable_addresses']:,} usable ({metrics['total_addresses']:,} total)</td>
                     <td>{'Private' if metrics['is_private'] else 'Public'}</td>
                 </tr>
