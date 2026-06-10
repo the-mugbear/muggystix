@@ -746,56 +746,14 @@ def delete_scan(
         # All steps run inside a single transaction — if any step fails,
         # the entire operation is rolled back and no data is lost.
 
-        # Pre-fetch the FK graph for all parent tables we'll clean up.
-        # Uses pg_constraint directly — avoids the cartesian-product risk
-        # of information_schema joins on composite/multi-column FKs.
-        # TODO: these read-only catalog queries could run outside the write
-        # transaction to reduce lock duration, but this endpoint is
-        # admin-only and low-frequency so the overhead is acceptable.
-        _fk_cache: dict[str, list[tuple]] = {}
-        for _parent in ("ports_v2", "hosts_v2", "scans"):
-            _fk_cache[_parent] = db.execute(text("""
-                SELECT
-                    child_cls.relname  AS table_name,
-                    child_att.attname  AS column_name,
-                    CASE WHEN child_att.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable
-                FROM pg_constraint  con
-                JOIN pg_class       child_cls  ON con.conrelid  = child_cls.oid
-                JOIN pg_attribute   child_att  ON child_att.attrelid = con.conrelid
-                                               AND child_att.attnum  = ANY(con.conkey)
-                JOIN pg_class       parent_cls ON con.confrelid = parent_cls.oid
-                JOIN pg_attribute   parent_att ON parent_att.attrelid = con.confrelid
-                                               AND parent_att.attnum  = ANY(con.confkey)
-                WHERE con.contype = 'f'
-                  AND parent_cls.relname = :parent
-                  AND parent_att.attname = 'id'
-            """), {"parent": _parent}).fetchall()
-
-        def _clear_fk_refs(fk_rows: list[tuple], parent_ids: list[int]) -> None:
-            """NULL (nullable) or DELETE (non-nullable) rows referencing
-            the given parent IDs.  Identifiers are double-quoted to prevent
-            SQL injection from unusual table/column names."""
-            if not parent_ids:
-                return
-            for tbl, col, nullable in fk_rows:
-                if nullable == "YES":
-                    db.execute(
-                        text(f'UPDATE "{tbl}" SET "{col}" = NULL WHERE "{col}" = ANY(:ids)'),
-                        {"ids": parent_ids},
-                    )
-                else:
-                    db.execute(
-                        text(f'DELETE FROM "{tbl}" WHERE "{col}" = ANY(:ids)'),
-                        {"ids": parent_ids},
-                    )
-
-        # NOTE: _clear_fk_refs deletes/nulls rows that reference a parent
-        # BY the parent's ID values.  The parent row itself is deleted
-        # AFTER this call.  We call in bottom-up order (ports -> hosts ->
-        # scans) so children are removed before their parents.  This is
-        # safe as long as no child table has its own children that also
-        # reference the same parent (no circular FK deps exist as of
-        # 2026-04).
+        # DB-level ON DELETE actions (migration f1a9c7e3b528) now cascade a
+        # scan's / host's / port's owned children and SET NULL the nullable
+        # provenance pointers, so the former pg_constraint-reflection
+        # workaround (_clear_fk_refs) is gone: deleting the orphan hosts and
+        # the scan lets the database clean up every dependent row.  (Steps
+        # 2-3 still re-point surviving rows' last_updated_scan_id BEFORE the
+        # delete so they keep a meaningful scan instead of the bare NULL the
+        # SET NULL cascade would leave.)
 
         # 1. Identify hosts only seen by this scan (orphans to remove)
         orphan_host_ids = [
@@ -861,26 +819,19 @@ def delete_scan(
               AND host_id != ALL(:orphan_host_ids)
         """), {"scan_id": scan_id, "orphan_host_ids": orphan_host_ids or []})
 
-        # 4. Delete orphaned hosts and all their children (ports, scripts, etc.)
+        # 4. Delete orphaned hosts — their ports/scripts/vulns/confidence/
+        #    history and the ports' own children all cascade from the host
+        #    (FK ON DELETE CASCADE), so a single DELETE suffices.
         if orphan_host_ids:
-            orphan_port_ids = [
-                r[0]
-                for r in db.execute(
-                    text('SELECT id FROM "ports_v2" WHERE host_id = ANY(:hids)'),
-                    {"hids": orphan_host_ids},
-                ).fetchall()
-            ]
-            _clear_fk_refs(_fk_cache["ports_v2"], orphan_port_ids)
-            if orphan_port_ids:
-                db.execute(text('DELETE FROM "ports_v2" WHERE id = ANY(:ids)'), {"ids": orphan_port_ids})
-            _clear_fk_refs(_fk_cache["hosts_v2"], orphan_host_ids)
             db.execute(text('DELETE FROM "hosts_v2" WHERE id = ANY(:ids)'), {"ids": orphan_host_ids})
 
-        # 5. Clear all remaining FK references to this scan
-        _clear_fk_refs(_fk_cache["scans"], [scan_id])
-
-        # 6. Delete the scan itself
-        db.delete(scan)
+        # 5. Delete the scan — its owned children cascade and the nullable
+        #    provenance pointers (last_updated_scan_id, conflict_history.*) are
+        #    SET NULL by the FK actions.  Raw DELETE (rather than db.delete(scan))
+        #    so the database does the cascade in one statement instead of
+        #    SQLAlchemy loading every child of the scan's delete-orphan
+        #    relationships (vulnerabilities, web_interfaces) into memory first.
+        db.execute(text('DELETE FROM "scans" WHERE id = :sid'), {"sid": scan_id})
 
         # Single commit — all or nothing
         db.commit()
