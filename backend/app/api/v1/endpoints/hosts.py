@@ -289,12 +289,9 @@ def _host_conflict_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
     if not host_ids:
         return {}
     return dict(
-        db.query(ConflictHistory.object_id, func.count(ConflictHistory.id))
-        .filter(
-            ConflictHistory.object_type == 'host',
-            ConflictHistory.object_id.in_(host_ids),
-        )
-        .group_by(ConflictHistory.object_id)
+        db.query(ConflictHistory.host_id, func.count(ConflictHistory.id))
+        .filter(ConflictHistory.host_id.in_(host_ids))
+        .group_by(ConflictHistory.host_id)
         .all()
     )
 
@@ -1232,15 +1229,13 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
 
     # Get conflict history for this host
     host_conflicts = db.query(ConflictHistory).filter(
-        ConflictHistory.object_type == 'host',
-        ConflictHistory.object_id == host_id
+        ConflictHistory.host_id == host_id
     ).order_by(ConflictHistory.resolved_at.desc()).limit(10).all()
 
     # Get conflict history for ports of this host
     port_ids = db.query(models.Port.id).filter(models.Port.host_id == host_id).scalar_subquery()
     port_conflicts = db.query(ConflictHistory).filter(
-        ConflictHistory.object_type == 'port',
-        ConflictHistory.object_id.in_(port_ids)
+        ConflictHistory.port_id.in_(port_ids)
     ).order_by(ConflictHistory.resolved_at.desc()).limit(10).all()
 
     # Format response
@@ -1277,13 +1272,16 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
             'port_id': conf.port_id
         })
 
-    # Format conflict history
+    # Format conflict history.  The storage is now host_id/port_id FKs; the
+    # response keeps the object_type/object_id shape (derived) so the API
+    # contract — and the frontend that reads it — is unchanged.
     conflicts = []
     for conflict in host_conflicts + port_conflicts:
+        _is_host = conflict.host_id is not None
         conflicts.append({
             'id': conflict.id,
-            'object_type': conflict.object_type,
-            'object_id': conflict.object_id,
+            'object_type': 'host' if _is_host else 'port',
+            'object_id': conflict.host_id if _is_host else conflict.port_id,
             'field_name': conflict.field_name,
             'previous_value': conflict.previous_value,
             'previous_confidence': conflict.previous_confidence,

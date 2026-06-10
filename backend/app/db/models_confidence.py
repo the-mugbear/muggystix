@@ -78,9 +78,14 @@ class ConflictHistory(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # What was in conflict
-    object_type = Column(String, nullable=False)  # host, port
-    object_id = Column(Integer, nullable=False)  # host_id or port_id
+    # What was in conflict — real FKs (de-polymorphized from the old
+    # object_type/object_id pair, which had no referential integrity and left
+    # orphan rows when a host/port was deleted).  Exactly ONE is set: a host
+    # field conflict sets host_id (port_id null); a port field conflict sets
+    # port_id (host_id null, the host derivable via the port).  ON DELETE
+    # CASCADE means a deleted host/port takes its conflict history with it.
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=True)
     field_name = Column(String, nullable=False)
 
     # Previous value that lost the conflict
@@ -103,7 +108,8 @@ class ConflictHistory(Base):
     new_scan = relationship("Scan", foreign_keys=[new_scan_id])
 
     __table_args__ = (
-        Index("idx_conflict_history_object", "object_type", "object_id"),
+        Index("idx_conflict_history_host", "host_id"),
+        Index("idx_conflict_history_port", "port_id"),
         Index("idx_conflict_history_prev_scan", "previous_scan_id"),
         Index("idx_conflict_history_new_scan", "new_scan_id"),
         Index("idx_conflict_history_resolved_at", "resolved_at"),

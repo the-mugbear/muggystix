@@ -965,27 +965,21 @@ class ReportGenerator:
         if host_ids:
             host_conflicts = (
                 self.db.query(ConflictHistory)
-                .filter(
-                    ConflictHistory.object_type == "host",
-                    ConflictHistory.object_id.in_(host_ids),
-                )
+                .filter(ConflictHistory.host_id.in_(host_ids))
                 .order_by(ConflictHistory.resolved_at.desc())
                 .all()
             )
             for conflict in host_conflicts:
-                host_conflicts_map.setdefault(conflict.object_id, []).append(conflict)
+                host_conflicts_map.setdefault(conflict.host_id, []).append(conflict)
         for chunk in _id_chunks(port_ids):
             port_conflicts = (
                 self.db.query(ConflictHistory)
-                .filter(
-                    ConflictHistory.object_type == "port",
-                    ConflictHistory.object_id.in_(chunk),
-                )
+                .filter(ConflictHistory.port_id.in_(chunk))
                 .order_by(ConflictHistory.resolved_at.desc())
                 .all()
             )
             for conflict in port_conflicts:
-                port_conflicts_map.setdefault(conflict.object_id, []).append(conflict)
+                port_conflicts_map.setdefault(conflict.port_id, []).append(conflict)
 
         scans: Dict[str, Any] = {}
         if scan_ids:

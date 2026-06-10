@@ -340,7 +340,9 @@ class HostDeduplicationService:
         value; confidence/method stay null (the dedup has no confidence model)."""
         from app.db.models_confidence import ConflictHistory
         self.db.add(ConflictHistory(
-            object_type=object_type, object_id=object_id, field_name=field_name,
+            host_id=object_id if object_type == 'host' else None,
+            port_id=object_id if object_type == 'port' else None,
+            field_name=field_name,
             previous_value=str(previous_value) if previous_value is not None else None,
             new_value=str(new_value) if new_value is not None else None,
             previous_scan_id=previous_scan_id, new_scan_id=new_scan_id,

@@ -351,8 +351,8 @@ class NetexecParser:
             if confidence.score > existing.confidence_score:
                 # Log conflict
                 conflict = ConflictHistory(
-                    object_type=object_type,
-                    object_id=object_id,
+                    host_id=object_id if object_type == 'host' else None,
+                    port_id=object_id if object_type == 'port' else None,
                     field_name=field_name,
                     previous_value=str(getattr(existing, 'current_value', 'unknown')),
                     previous_confidence=existing.confidence_score,
