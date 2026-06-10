@@ -814,6 +814,9 @@ export interface HostDnsRecordsResponse {
   total: number;
   resolvers: string[];
   record_types: string[];
+  // Total DNS records ingested for the whole project — lets the card show
+  // "N ingested, none match this host" instead of silently rendering nothing.
+  project_total: number;
 }
 
 export const getHostDnsRecords = async (
@@ -827,7 +830,7 @@ export const getHostDnsRecords = async (
     // an empty result so HostInspector can still render the rest of
     // the page.
     if (error?.response?.status === 404) {
-      return { items: [], total: 0, resolvers: [], record_types: [] };
+      return { items: [], total: 0, resolvers: [], record_types: [], project_total: 0 };
     }
     throw error;
   }

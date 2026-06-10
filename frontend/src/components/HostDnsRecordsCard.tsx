@@ -81,11 +81,16 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
     };
   }, [hostId]);
 
-  // Render-nothing path: don't add visual clutter when the host has
-  // no DNS evidence and there's nothing to debug.
-  if (!loading && !error && (!data || data.total === 0)) {
+  // Render-nothing path: only when there's no DNS data ANYWHERE in the
+  // project.  If records exist project-wide but none match this host, we
+  // still render the card with an explicit "none match" hint (below) so an
+  // ingested-but-unmatched DNS upload isn't mistaken for "no DNS evidence".
+  const projectTotal = data?.project_total ?? 0;
+  if (!loading && !error && (!data || (data.total === 0 && projectTotal === 0))) {
     return null;
   }
+  const noneMatchThisHost =
+    !loading && !error && !!data && data.total === 0 && projectTotal > 0;
 
   // Group records by type so the card renders one section per record
   // type instead of a single flat list.
@@ -137,6 +142,16 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
           <Alert variant="warning">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
+        )}
+        {noneMatchThisHost && (
+          <div className="rounded-control border border-border bg-muted/30 p-sm text-caption text-muted-foreground">
+            <strong className="font-semibold text-foreground">
+              {projectTotal} DNS record{projectTotal === 1 ? '' : 's'}
+            </strong>{' '}
+            ingested in this project, but none match this host&apos;s IP or hostname —
+            they may belong to a different host, or the resolved value/name doesn&apos;t
+            line up with this host&apos;s record.
+          </div>
         )}
         {data &&
           sortedTypes.map((recordType) => {

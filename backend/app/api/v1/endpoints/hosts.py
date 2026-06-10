@@ -183,6 +183,10 @@ class HostDnsRecordsResponse(BaseModel):
     total: int
     resolvers: List[str]
     record_types: List[str]
+    # Total DNS records ingested for the whole project — lets the host card
+    # distinguish "no DNS data at all" from "N records ingested, none match
+    # this host" instead of silently rendering nothing.
+    project_total: int = 0
 
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -1305,11 +1309,17 @@ def get_host_dns_records(
     # without a second client-side pass.
     resolvers = sorted({r.resolver_name for r in rows if r.resolver_name})
     record_types = sorted({r.record_type for r in rows if r.record_type})
+    project_total = (
+        db.query(func.count(models.DNSRecord.id))
+        .filter(models.DNSRecord.project_id == project.id)
+        .scalar()
+    ) or 0
     return HostDnsRecordsResponse(
         items=items,
         total=len(items),
         resolvers=resolvers,
         record_types=record_types,
+        project_total=project_total,
     )
 
 
