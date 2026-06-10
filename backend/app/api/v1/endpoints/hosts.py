@@ -508,6 +508,18 @@ def get_hosts_v2(
         )
         te_count_map = {row[0]: row[1] for row in te_rows}
 
+    # Batch lookup: NetExec result counts per host — surfaces the "NetExec /
+    # credential checks ran" signal as a Hosts-list badge.  One grouped query
+    # per page (mirrors te_count_map); netexec_results is indexed by host_id.
+    netexec_count_map: Dict[int, int] = {}
+    if host_ids:
+        netexec_count_map = dict(
+            db.query(NetexecResult.host_id, func.count(NetexecResult.id))
+            .filter(NetexecResult.host_id.in_(host_ids))
+            .group_by(NetexecResult.host_id)
+            .all()
+        )
+
     # Batch lookup: web interface counts per host (v2.12.0).
     # Drives the "Web" badge on the Hosts list (phase 2 UI) and
     # feeds the per-host HostDetail card count.
@@ -624,6 +636,7 @@ def get_hosts_v2(
         serialized["test_plan_entry_count"] = tp_count_map.get(host.id, 0)
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
+        serialized["netexec_result_count"] = netexec_count_map.get(host.id, 0)
         serialized["finding_count"] = finding_count_map.get(host.id, 0)
         serialized["changed_recently"] = host.id in changed_map
         serialized["other_reviewers"] = other_review_map.get(host.id, [])

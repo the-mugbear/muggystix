@@ -540,6 +540,24 @@ export function useHostColumns({
                   {host.web_interface_count} web
                 </Badge>
               )}
+              {(host.netexec_result_count ?? 0) > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-warning/50 text-warning"
+                  title="NetExec results (credential / auth / share checks) recorded for this host"
+                >
+                  {host.netexec_result_count} netexec
+                </Badge>
+              )}
+              {(host.test_execution_count ?? 0) > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-success/40 text-success"
+                  title="Test executions run against this host (vs only planned)"
+                >
+                  {host.test_execution_count} executed
+                </Badge>
+              )}
             </div>
           );
         },
