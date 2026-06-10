@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.db import models
-from app.db.models import HostNote, NoteStatus
+from app.db.models import Annotation, NoteStatus
 from app.db.models_project import ProjectMembership, ProjectRole
 from app.api.deps import require_project_role
 
@@ -48,7 +48,7 @@ def _make_host(db_session, project_id, ip):
 
 
 def _make_note(db_session, host_id, user_id, status=NoteStatus.OPEN, parent_id=None, body="note"):
-    n = HostNote(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
+    n = Annotation(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
     db_session.add(n)
     db_session.flush()
     return n
@@ -152,7 +152,7 @@ def test_patch_is_atomic_no_partial_commit(client, db_session, test_project, tes
     )
     assert r.status_code == 400, r.text
     db_session.expire_all()
-    refreshed = db_session.query(HostNote).filter(HostNote.id == note.id).first()
+    refreshed = db_session.query(Annotation).filter(Annotation.id == note.id).first()
     assert refreshed.body == "original body"  # body NOT committed
     assert refreshed.status == NoteStatus.OPEN
 
@@ -204,8 +204,8 @@ def test_delete_root_with_replies_rejected(client, db_session, test_project, tes
     assert r.status_code == 409, r.text
     # The reply itself (a leaf) can still be deleted.
     reply = (
-        db_session.query(HostNote)
-        .filter(HostNote.parent_id == root.id)
+        db_session.query(Annotation)
+        .filter(Annotation.parent_id == root.id)
         .first()
     )
     assert client.delete(_note_url(test_project.id, host.id, reply.id)).status_code == 204

@@ -133,11 +133,21 @@ def test_engine():
 
     create_all binds every table registered on ``models.Base`` — the
     side-effect imports above ensure all model modules are loaded first.
-    On Postgres we drop first so a previous run's leftovers can't leak in;
-    the in-memory SQLite DB is per-process so there is nothing to drop.
+
+    On Postgres we DROP THE WHOLE SCHEMA rather than ``metadata.drop_all``.
+    drop_all only knows the current model tables, so a table that a past
+    schema version created but the models no longer declare (e.g. the legacy
+    ``host_notes``, since renamed to ``annotations``) is left behind — and its
+    dangling FK to ``hosts_v2`` then makes drop_all fail with
+    ``DependentObjectsStillExist``, erroring every DB-backed test at setup.
+    Recreating ``public`` clears legacy + current tables in one shot so the
+    test DB always matches the live models.  SQLite is per-process in-memory,
+    so there's nothing to drop.
     """
     if USING_POSTGRES:
-        models.Base.metadata.drop_all(bind=engine)
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
     models.Base.metadata.create_all(bind=engine)
     yield engine
     engine.dispose()

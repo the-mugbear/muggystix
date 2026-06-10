@@ -18,7 +18,7 @@ def test_list_windows_notes_and_discoveries(client, db_session, test_project, te
     db_session.flush()
     # 5 notes — only the 3 newest should come back, but note_count == 5.
     for i in range(5):
-        db_session.add(models.HostNote(
+        db_session.add(models.Annotation(
             host_id=host.id, user_id=test_user.id, body=f"note {i}",
             status=models.NoteStatus.OPEN,
         ))

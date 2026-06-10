@@ -46,7 +46,7 @@ def _seed(db_session, project_id):
         server_header="nginx/1.18.0", title="Welcome",
         technologies=["Nginx"],
     ))
-    db_session.add(models.HostNote(host_id=h1.id, body="needs review: TLS misconfig here"))
+    db_session.add(models.Annotation(host_id=h1.id, body="needs review: TLS misconfig here"))
     db_session.add(Vulnerability(
         host_id=h1.id, scan_id=scan.id, cve_id="CVE-2021-44228", plugin_id="155999",
         title="Apache Log4Shell RCE", severity=VulnerabilitySeverity.CRITICAL,

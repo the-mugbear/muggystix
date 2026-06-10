@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.db import models
-from app.db.models import HostNote, NoteStatus
+from app.db.models import Annotation, NoteStatus
 from app.db.models_project import Project
 
 _UID = [5000]
@@ -76,8 +76,8 @@ def test_activity_seen_does_not_leak_across_projects(client, db_session, test_pr
     host_a = _make_host(db_session, test_project.id, "10.6.0.1")
     host_b = _make_host(db_session, proj_b.id, "10.6.1.1")
     db_session.add_all([
-        HostNote(host_id=host_a.id, user_id=other.id, body="A note", status=NoteStatus.OPEN),
-        HostNote(host_id=host_b.id, user_id=other.id, body="B note", status=NoteStatus.OPEN),
+        Annotation(host_id=host_a.id, user_id=other.id, body="A note", status=NoteStatus.OPEN),
+        Annotation(host_id=host_b.id, user_id=other.id, body="B note", status=NoteStatus.OPEN),
     ])
     db_session.flush()
 
