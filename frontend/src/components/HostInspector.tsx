@@ -245,6 +245,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [conflicts, setConflicts] = useState<HostConflict[]>([]);
   const [conflictHistory, setConflictHistory] = useState<ConflictHistoryEntry[]>([]);
   const [showConflicts, setShowConflicts] = useState(false);
+  const [conflictsError, setConflictsError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [followStatus, setFollowStatus] = useState<FollowStatus | ''>('');
   const [followLoading, setFollowLoading] = useState(false);
@@ -474,10 +475,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         if (fetchId !== fetchIdRef.current) return;
         setConflicts(conflictData?.confidence || []);
         setConflictHistory(conflictData?.conflict_history || []);
+        setConflictsError(false);
       })
       .catch(() => {
-        // getHostConflicts already swallows 404 (older deployments).
-        // Anything else here is non-fatal for the host panel itself.
+        // getHostConflicts already swallows 404 (older deployments), so a
+        // rejection here is a real failure — surface it instead of letting an
+        // empty list read as "no conflicts" (a data-quality false negative).
+        if (fetchId === fetchIdRef.current) setConflictsError(true);
       });
 
     getHostTestPlanEntries(hostId)
@@ -861,7 +865,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             host.ip_address
           )}
         </h1>
-        {hasConflicts && (
+        {hasConflicts ? (
           <Button
             variant={showConflicts ? 'default' : 'outline'}
             size="sm"
@@ -870,7 +874,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             <AlertTriangle className="size-4" aria-hidden />
             {conflicts.length} conflict{conflicts.length === 1 ? '' : 's'}
           </Button>
-        )}
+        ) : conflictsError ? (
+          <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground" title="The data-conflict check failed to load — this is not a confirmation that the host has none">
+            <AlertTriangle className="size-3.5" aria-hidden />
+            Couldn&apos;t check conflicts
+          </span>
+        ) : null}
       </div>
 
       {/* v4.55.0 — triage summary strip (UI/UX phase 2).  Compact
@@ -1010,13 +1019,28 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           <div className="space-y-sm md:col-span-7">
             <div className="flex flex-wrap items-center gap-xs">
               <Badge variant={stateBadgeVariant(host.state)}>{host.state || 'unknown'}</Badge>
+              {host.state_reason && (
+                <span
+                  className="truncate max-w-[10rem] text-caption text-muted-foreground"
+                  title={`State reason: ${host.state_reason}`}
+                >
+                  {host.state_reason}
+                </span>
+              )}
               {host.hostname && (
                 <span className="truncate max-w-full text-metadata text-foreground/90 inline-block">
                   {host.hostname}
                 </span>
               )}
               {host.os_name && (
-                <Badge variant="outline" className="max-w-[18rem] overflow-hidden">
+                <Badge
+                  variant="outline"
+                  className="max-w-[18rem] overflow-hidden"
+                  title={
+                    [host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · ') ||
+                    undefined
+                  }
+                >
                   <Computer className="size-3" aria-hidden />
                   <span className="truncate">
                     {host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
@@ -1972,7 +1996,21 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                             <TableRow key={port.id}>
                               <TableCell>{port.port_number}</TableCell>
                               <TableCell>{port.protocol}</TableCell>
-                              <TableCell>{port.service_name || 'Unknown'}</TableCell>
+                              <TableCell className="truncate" title={port.service_name || undefined}>
+                                <div className="truncate">{port.service_name || 'Unknown'}</div>
+                                {(port.service_method || (port.service_conf != null && port.service_conf !== '')) && (
+                                  <div className="truncate text-caption text-muted-foreground" title="How the service was detected (and nmap confidence 0–10)">
+                                    {[
+                                      port.service_method,
+                                      port.service_conf != null && port.service_conf !== ''
+                                        ? `conf ${port.service_conf}`
+                                        : null,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(' · ')}
+                                  </div>
+                                )}
+                              </TableCell>
                               <TableCell className="max-w-[16rem] truncate" title={port.service_extrainfo || undefined}>
                                 {port.service_product && port.service_version
                                   ? `${port.service_product} ${port.service_version}`
@@ -1987,6 +2025,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                                 <Badge variant={stateBadgeVariant(port.state)}>
                                   {port.state || 'unknown'}
                                 </Badge>
+                                {port.reason && (
+                                  <div className="truncate text-caption text-muted-foreground" title={`Why this port is ${port.state || 'in this state'}: ${port.reason}`}>
+                                    {port.reason}
+                                  </div>
+                                )}
                               </TableCell>
                               <TableCell className="text-center">
                                 <Popover>
