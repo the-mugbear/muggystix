@@ -558,6 +558,15 @@ export function useHostColumns({
                   {host.test_execution_count} executed
                 </Badge>
               )}
+              {(host.conflict_count ?? 0) > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-destructive/40 text-destructive"
+                  title="Scans disagreed on one or more of this host's fields (e.g. OS, state) — open the host to review the conflict"
+                >
+                  {host.conflict_count} conflict{host.conflict_count === 1 ? '' : 's'}
+                </Badge>
+              )}
             </div>
           );
         },

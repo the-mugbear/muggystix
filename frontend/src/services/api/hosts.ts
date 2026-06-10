@@ -92,6 +92,9 @@ export interface Host {
   // Count of NetExec credentialed-enumeration rows — gates the
   // HostInspector NetExec card.
   netexec_result_count?: number;
+  // Count of recorded host-field data conflicts (scans disagreed on a value;
+  // ConflictHistory rows) — drives the Hosts-list "conflict" data-quality badge.
+  conflict_count?: number;
   // Foundation 6d — count of ACTIVE findings (open/confirmed/retest)
   // affecting this host; drives the Hosts-list finding badge.
   finding_count?: number;

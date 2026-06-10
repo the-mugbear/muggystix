@@ -520,6 +520,21 @@ def get_hosts_v2(
             .all()
         )
 
+    # Batch lookup: host-level data conflicts (scans disagreed on a field) —
+    # surfaces the confidence/conflict subsystem's "this host's data is
+    # contested" signal as a list badge.  Indexed by (object_type, object_id).
+    conflict_count_map: Dict[int, int] = {}
+    if host_ids:
+        conflict_count_map = dict(
+            db.query(ConflictHistory.object_id, func.count(ConflictHistory.id))
+            .filter(
+                ConflictHistory.object_type == 'host',
+                ConflictHistory.object_id.in_(host_ids),
+            )
+            .group_by(ConflictHistory.object_id)
+            .all()
+        )
+
     # Batch lookup: web interface counts per host (v2.12.0).
     # Drives the "Web" badge on the Hosts list (phase 2 UI) and
     # feeds the per-host HostDetail card count.
@@ -637,6 +652,7 @@ def get_hosts_v2(
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
         serialized["netexec_result_count"] = netexec_count_map.get(host.id, 0)
+        serialized["conflict_count"] = conflict_count_map.get(host.id, 0)
         serialized["finding_count"] = finding_count_map.get(host.id, 0)
         serialized["changed_recently"] = host.id in changed_map
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
