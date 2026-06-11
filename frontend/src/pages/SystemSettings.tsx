@@ -75,6 +75,7 @@ interface User {
 interface NewUserForm {
   username: string;
   password: string;
+  confirm_password: string;
   full_name: string;
   role: string;
 }
@@ -117,6 +118,7 @@ const SystemSettings: React.FC = () => {
   const [newUserForm, setNewUserForm] = useState<NewUserForm>({
     username: '',
     password: '',
+    confirm_password: '',
     full_name: '',
     role: 'member',
   });
@@ -128,6 +130,7 @@ const SystemSettings: React.FC = () => {
 
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   // v2.59.0 — separate state from selectedUser so the memberships
   // dialog can be open without conflicting with the Edit Profile /
   // Reset Password flows that share selectedUser.
@@ -159,10 +162,12 @@ const SystemSettings: React.FC = () => {
   const handleCreateUser = async () => {
     setSaving(true);
     try {
-      const response = await apiClient.post('/auth/register', newUserForm);
+      // confirm_password is a client-only guard against typos — don't send it.
+      const { confirm_password: _confirm, ...payload } = newUserForm;
+      const response = await apiClient.post('/auth/register', payload);
       setUsers((prev) => [...prev, response.data]);
       setNewUserDialogOpen(false);
-      setNewUserForm({ username: '', password: '', full_name: '', role: 'member' });
+      setNewUserForm({ username: '', password: '', confirm_password: '', full_name: '', role: 'member' });
       toast.success('User created.');
     } catch (err: unknown) {
       toast.error(formatApiError(err, 'Failed to create user.'));
@@ -170,6 +175,15 @@ const SystemSettings: React.FC = () => {
       setSaving(false);
     }
   };
+
+  // Client-only typo guard for the create-user dialog (the password is set
+  // once at creation, so a mistype would otherwise lock the new account out).
+  const newUserPasswordMismatch =
+    newUserForm.confirm_password.length > 0 &&
+    newUserForm.password !== newUserForm.confirm_password;
+  // Same typo guard for the admin reset-password dialog.
+  const resetPasswordMismatch =
+    confirmNewPassword.length > 0 && newPassword !== confirmNewPassword;
 
   const handleUpdateUser = async () => {
     if (!selectedUser) return;
@@ -260,6 +274,7 @@ const SystemSettings: React.FC = () => {
       await apiClient.post(`/users/${selectedUser.id}/reset-password`, { new_password: newPassword });
       setResetPasswordDialogOpen(false);
       setNewPassword('');
+    setConfirmNewPassword('');
       toast.success('Password reset.');
     } catch (err: unknown) {
       toast.error(formatApiError(err, 'Failed to reset password.'));
@@ -300,6 +315,7 @@ const SystemSettings: React.FC = () => {
   const openResetPasswordDialog = (user: User) => {
     setSelectedUser(user);
     setNewPassword('');
+    setConfirmNewPassword('');
     setResetPasswordDialogOpen(true);
   };
 
@@ -600,6 +616,23 @@ const SystemSettings: React.FC = () => {
               />
             </div>
             <div className="flex flex-col gap-xs">
+              <Label htmlFor="new-confirm-password">Confirm Password</Label>
+              <Input
+                id="new-confirm-password"
+                type="password"
+                value={newUserForm.confirm_password}
+                onChange={(e) => setNewUserForm({ ...newUserForm, confirm_password: e.target.value })}
+                required
+                aria-invalid={newUserPasswordMismatch}
+                aria-describedby={newUserPasswordMismatch ? 'new-password-mismatch' : undefined}
+              />
+              {newUserPasswordMismatch && (
+                <p id="new-password-mismatch" role="alert" className="text-caption text-warning">
+                  Passwords do not match
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-xs">
               <Label htmlFor="new-role">Account role</Label>
               <Select
                 value={newUserForm.role}
@@ -629,7 +662,8 @@ const SystemSettings: React.FC = () => {
               disabled={
                 saving ||
                 !newUserForm.username ||
-                !isPasswordValid(newUserForm.password)
+                !isPasswordValid(newUserForm.password) ||
+                newUserForm.password !== newUserForm.confirm_password
               }
             >
               {saving ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Creating…</> : 'Create User'}
@@ -702,11 +736,31 @@ const SystemSettings: React.FC = () => {
             />
             <PasswordRulesChecklist id="reset-pw-rules" password={newPassword} />
           </div>
+          <div className="flex flex-col gap-xs">
+            <Label htmlFor="reset-confirm-pw">Confirm New Password</Label>
+            <Input
+              id="reset-confirm-pw"
+              type="password"
+              value={confirmNewPassword}
+              onChange={(e) => setConfirmNewPassword(e.target.value)}
+              required
+              aria-invalid={resetPasswordMismatch}
+              aria-describedby={resetPasswordMismatch ? 'reset-pw-mismatch' : undefined}
+            />
+            {resetPasswordMismatch && (
+              <p id="reset-pw-mismatch" role="alert" className="text-caption text-warning">
+                Passwords do not match
+              </p>
+            )}
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setResetPasswordDialogOpen(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={handleResetPassword} disabled={saving || !isPasswordValid(newPassword)}>
+            <Button
+              onClick={handleResetPassword}
+              disabled={saving || !isPasswordValid(newPassword) || newPassword !== confirmNewPassword}
+            >
               {saving ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Resetting…</> : <><Lock className="size-4" aria-hidden /> Reset Password</>}
             </Button>
           </DialogFooter>
