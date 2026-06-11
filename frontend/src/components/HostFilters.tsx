@@ -244,12 +244,6 @@ const PORT_STATE_OPTIONS: ComboboxOption[] = [
   { value: 'filtered', label: 'Filtered' },
 ];
 
-const HOST_STATE_VALUES = [
-  { value: 'all', label: 'All States' },
-  { value: 'up', label: 'Up' },
-  { value: 'down', label: 'Down' },
-];
-
 /**
  * Inline switch+label row used several times in the filter grid.
  */
@@ -714,26 +708,10 @@ const HostFilters: React.FC<HostFiltersProps> = ({
             />
           </div>
 
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-state">Host state</Label>
-            <Select
-              value={filters.state || 'all'}
-              onValueChange={(value) =>
-                handleFilterChange('state', value === 'all' ? undefined : value)
-              }
-            >
-              <SelectTrigger id="hosts-filter-state">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {HOST_STATE_VALUES.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Host state control removed (v5.65.1) — in practice every
+              detected host is "up" (or "unknown"); the nmap parser drops bare
+              down-hosts, so the Up/Down select was clutter that also hid
+              "unknown" hosts.  The `state` param stays for DSL `state:` use. */}
 
           {/* Review status — team-shared.  Lives in the card (not only the
               sticky-bar chips) so it composes with the property toggles
