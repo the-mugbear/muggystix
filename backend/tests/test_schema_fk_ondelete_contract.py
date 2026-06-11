@@ -154,8 +154,6 @@ EXPECTED_ONDELETE = {
     ('out_of_scope_hosts', 'project_id'): 'CASCADE',
     ('out_of_scope_hosts', 'scan_id'): 'CASCADE',
     ('parse_errors', 'project_id'): 'CASCADE',
-    ('port_attributes', 'port_id'): 'CASCADE',
-    ('port_attributes', 'scan_id'): 'CASCADE',
     ('port_confidence', 'port_id'): 'CASCADE',
     ('port_confidence', 'scan_id'): 'CASCADE',
     ('port_scan_history', 'port_id'): 'CASCADE',

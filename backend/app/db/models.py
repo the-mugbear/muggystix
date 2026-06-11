@@ -97,7 +97,6 @@ class Port(Base):
 
     # New vulnerability and attribute relationships
     vulnerabilities = relationship("Vulnerability", back_populates="port", cascade="all, delete-orphan")
-    attributes = relationship("PortAttribute", back_populates="port", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint('host_id', 'port_number', 'protocol', name='uq_host_port_protocol'),
