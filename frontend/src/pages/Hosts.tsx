@@ -148,6 +148,8 @@ type HostQueryContext = {
   subnets?: string;
   has_critical_vulns?: boolean;
   has_high_vulns?: boolean;
+  has_medium_vulns?: boolean;
+  has_low_vulns?: boolean;
   has_exploit_available?: boolean;
   has_test_execution?: boolean;
   out_of_scope_only?: boolean;
@@ -486,6 +488,8 @@ export default function Hosts() {
     if (filters.subnets?.length) params.subnets = filters.subnets.join(',');
     if (filters.hasCriticalVulns !== undefined) params.has_critical_vulns = filters.hasCriticalVulns;
     if (filters.hasHighVulns !== undefined) params.has_high_vulns = filters.hasHighVulns;
+    if (filters.hasMediumVulns !== undefined) params.has_medium_vulns = filters.hasMediumVulns;
+    if (filters.hasLowVulns !== undefined) params.has_low_vulns = filters.hasLowVulns;
     if (filters.hasExploitAvailable !== undefined) params.has_exploit_available = filters.hasExploitAvailable;
     if (filters.hasTestExecution !== undefined) params.has_test_execution = filters.hasTestExecution;
     if (filters.outOfScopeOnly) params.out_of_scope_only = filters.outOfScopeOnly;
@@ -658,7 +662,8 @@ export default function Hosts() {
       'search', 'q', 'state', 'os_filter', 'subnets', 'ports', 'services',
       'port_states', 'scan_ids', 'tags', 'subnet_labels', 'out_of_scope_only',
       'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'has_critical_vulns',
-      'has_high_vulns', 'has_exploit_available', 'has_test_execution',
+      'has_high_vulns', 'has_medium_vulns', 'has_low_vulns',
+      'has_exploit_available', 'has_test_execution',
       'has_web_interface', 'tech', 'follow_status', 'follow',
       'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
     ];
@@ -747,6 +752,18 @@ export default function Hosts() {
       initialFilters.hasHighVulns = urlParams.get('has_high_vulns') === 'true';
     } else if (savedState?.filters?.hasHighVulns !== undefined) {
       initialFilters.hasHighVulns = savedState.filters.hasHighVulns;
+    }
+
+    if (urlParams.has('has_medium_vulns')) {
+      initialFilters.hasMediumVulns = urlParams.get('has_medium_vulns') === 'true';
+    } else if (savedState?.filters?.hasMediumVulns !== undefined) {
+      initialFilters.hasMediumVulns = savedState.filters.hasMediumVulns;
+    }
+
+    if (urlParams.has('has_low_vulns')) {
+      initialFilters.hasLowVulns = urlParams.get('has_low_vulns') === 'true';
+    } else if (savedState?.filters?.hasLowVulns !== undefined) {
+      initialFilters.hasLowVulns = savedState.filters.hasLowVulns;
     }
 
     if (urlParams.has('has_exploit_available')) {
@@ -1384,6 +1401,18 @@ export default function Hosts() {
         key: 'hasHighVulns',
         label: 'High vulnerabilities',
         onDelete: () => clearFilterKey('hasHighVulns'),
+      });
+    if (filters.hasMediumVulns)
+      chips.push({
+        key: 'hasMediumVulns',
+        label: 'Medium vulnerabilities',
+        onDelete: () => clearFilterKey('hasMediumVulns'),
+      });
+    if (filters.hasLowVulns)
+      chips.push({
+        key: 'hasLowVulns',
+        label: 'Low vulnerabilities',
+        onDelete: () => clearFilterKey('hasLowVulns'),
       });
     if (filters.hasExploitAvailable)
       chips.push({

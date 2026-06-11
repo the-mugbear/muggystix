@@ -46,6 +46,8 @@ export interface HostFilterOptions {
   subnets?: string[];
   hasCriticalVulns?: boolean;
   hasHighVulns?: boolean;
+  hasMediumVulns?: boolean;
+  hasLowVulns?: boolean;
   hasExploitAvailable?: boolean;
   hasTestExecution?: boolean;
   outOfScopeOnly?: boolean;
@@ -269,6 +271,53 @@ const SwitchRow: React.FC<{
   </div>
 );
 
+/**
+ * A binary filter toggle rendered as a pressable chip — replaces the row of
+ * switches.  Denser, scannable, and consistent with the preset chips; a
+ * single click toggles on/off (vs a switch that needs a precise hit).
+ */
+const ToggleChip: React.FC<{
+  label: string;
+  active: boolean;
+  onToggle: () => void;
+  activeClass?: string;
+}> = ({ label, active, onToggle, activeClass }) => (
+  <button
+    type="button"
+    onClick={onToggle}
+    aria-pressed={active}
+    className={cn(
+      'inline-flex items-center gap-xxs rounded-chip border px-sm py-xxs text-caption font-medium transition-colors',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+      active
+        ? activeClass ?? 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
+        : 'border-border bg-card text-foreground hover:bg-accent',
+    )}
+  >
+    {active && <Check className="size-3" aria-hidden />}
+    {label}
+  </button>
+);
+
+// Vulnerability severities (#48) — the backend ORs the selected `has_*_vulns`
+// flags into one severity match, so this reads as one multi-select.
+const SEVERITY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; activeClass: string }> = [
+  { key: 'hasCriticalVulns', label: 'Critical', activeClass: 'border-transparent bg-destructive text-destructive-foreground' },
+  { key: 'hasHighVulns', label: 'High', activeClass: 'border-transparent bg-warning text-warning-foreground' },
+  { key: 'hasMediumVulns', label: 'Medium', activeClass: 'border-transparent bg-info text-info-foreground' },
+  { key: 'hasLowVulns', label: 'Low', activeClass: 'border-transparent bg-success text-success-foreground' },
+];
+
+// Binary "show only" property filters (#42/#4) — each means "only hosts WITH
+// this", off means "don't filter" (the backend has_* params are positive-only).
+const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string }> = [
+  { key: 'hasOpenPorts', label: 'Open ports' },
+  { key: 'hasExploitAvailable', label: 'Exploitable' },
+  { key: 'hasTestExecution', label: 'Tested by agent' },
+  { key: 'outOfScopeOnly', label: 'Out of scope' },
+  { key: 'assignedToMe', label: 'Assigned to me' },
+];
+
 const HostFilters: React.FC<HostFiltersProps> = ({
   filters,
   onFiltersChange,
@@ -334,6 +383,8 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       !!filters.osFilter,
       filters.hasCriticalVulns !== undefined,
       filters.hasHighVulns !== undefined,
+      filters.hasMediumVulns !== undefined,
+      filters.hasLowVulns !== undefined,
       filters.hasExploitAvailable !== undefined,
       filters.hasTestExecution !== undefined,
       (filters.subnets?.length ?? 0) > 0,
@@ -361,7 +412,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
   const advancedFiltersActive = useMemo(() => {
     return [
       (filters.portStates?.length ?? 0) > 0,
-      filters.hasWebInterface !== undefined,
       (filters.tech?.length ?? 0) > 0,
       (filters.subnetLabels?.length ?? 0) > 0,
     ].filter((active) => active).length;
@@ -773,98 +823,65 @@ const HostFilters: React.FC<HostFiltersProps> = ({
           </div>
         </div>
 
-        {/* Boolean-filter panel — extracted from the common grid
-            (v4.26.0) so toggles aren't interleaved with comboboxes
-            and selects, and so "Only hosts with notes" can live with
-            its peers instead of floating in the sticky bar above the
-            table.  Two-column layout reads as a checklist at a
-            glance. */}
-        <div className="rounded-control border border-border/60 bg-muted/30 p-sm">
-          <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">
-            Host properties
-          </p>
-          <div className="grid gap-y-xs gap-x-md md:grid-cols-2">
-            <SwitchRow
-              id="hosts-filter-open-ports"
-              label="Has open ports"
-              checked={filters.hasOpenPorts || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('hasOpenPorts', checked ? true : undefined)
-              }
-            />
+        {/* Property filters as toggle-chips (v5.64.0) — replaces the row of
+            switches + the Web-interface dropdown.  Denser, single-click, and
+            consistent; severity becomes one multi-select that mirrors the
+            backend's OR; web surface is honest about meaning "recorded web
+            row", not "proof of (no) web service". */}
+        <div className="space-y-sm rounded-control border border-border/60 bg-muted/30 p-sm">
+          <div>
+            <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">
+              Vulnerability severity
+              <span className="ml-xs font-normal normal-case tracking-normal text-muted-foreground/80">matches any selected</span>
+            </p>
+            <div className="flex flex-wrap gap-xs">
+              {SEVERITY_FILTERS.map((s) => (
+                <ToggleChip
+                  key={s.key}
+                  label={s.label}
+                  active={filters[s.key] === true}
+                  activeClass={s.activeClass}
+                  onToggle={() => handleFilterChange(s.key, filters[s.key] ? undefined : true)}
+                />
+              ))}
+            </div>
+          </div>
 
-            <SwitchRow
-              id="hosts-filter-oos"
-              label="Out of scope only"
-              checked={filters.outOfScopeOnly || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('outOfScopeOnly', checked ? true : undefined)
-              }
-            />
+          <div>
+            <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">Show only</p>
+            <div className="flex flex-wrap gap-xs">
+              {PROPERTY_FILTERS.map((p) => (
+                <ToggleChip
+                  key={p.key}
+                  label={p.label}
+                  active={filters[p.key] === true}
+                  onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
+                />
+              ))}
+              {notesToggleAvailable && (
+                <ToggleChip
+                  label="With notes"
+                  active={onlyWithNotes}
+                  onToggle={() => handleOnlyWithNotesChange(!onlyWithNotes)}
+                />
+              )}
+            </div>
+          </div>
 
-            <SwitchRow
-              id="hosts-filter-critical"
-              label="Critical vulnerabilities"
-              checked={filters.hasCriticalVulns || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('hasCriticalVulns', checked ? true : undefined)
-              }
-            />
-
-            <SwitchRow
-              id="hosts-filter-high"
-              label="High vulnerabilities"
-              checked={filters.hasHighVulns || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('hasHighVulns', checked ? true : undefined)
-              }
-            />
-
-            {/* v4.43.0 — "Has PoC / exploit available" filter. Backed by
-                Vulnerability.exploitable, which the Nessus parser sets when
-                the .nessus ReportItem carries exploit_available=true,
-                metasploit_name, core_impact_name, canvas_package, or
-                exploit_code_maturity in {functional, high, proof-of-concept}. */}
-            <SwitchRow
-              id="hosts-filter-exploit-available"
-              label="Has PoC / exploit available"
-              checked={filters.hasExploitAvailable || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('hasExploitAvailable', checked ? true : undefined)
-              }
-            />
-
-            {/* v4.45.0 — "Has been tested" filter.  Backed by a count of
-                TestExecutionResult rows joined via TestPlanEntry.host_id;
-                true means an agentic test was actually executed against
-                the host (distinct from `test_plan_entry_count` which only
-                means "host is in a plan"). */}
-            <SwitchRow
-              id="hosts-filter-test-execution"
-              label="Has been tested (agentic execution)"
-              checked={filters.hasTestExecution || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('hasTestExecution', checked ? true : undefined)
-              }
-            />
-
-            <SwitchRow
-              id="hosts-filter-assigned-me"
-              label="Assigned to me"
-              checked={filters.assignedToMe || false}
-              onCheckedChange={(checked) =>
-                handleFilterChange('assignedToMe', checked ? true : undefined)
-              }
-            />
-
-            {notesToggleAvailable && (
-              <SwitchRow
-                id="hosts-filter-only-notes"
-                label="Only hosts with notes"
-                checked={onlyWithNotes}
-                onCheckedChange={handleOnlyWithNotesChange}
+          <div>
+            <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">Web surface</p>
+            <div className="flex flex-wrap gap-xs">
+              <ToggleChip
+                label="Detected"
+                active={filters.hasWebInterface === true}
+                onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === true ? undefined : true)}
               />
-            )}
+              <ToggleChip
+                label="Not detected"
+                active={filters.hasWebInterface === false}
+                onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === false ? undefined : false)}
+              />
+            </div>
           </div>
         </div>
 
@@ -904,39 +921,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 }
                 placeholder="Any"
               />
-            </div>
-
-            {/* Web interface — three explicit choices.  Was a tri-state
-                checkbox whose indeterminate "Web interface: any" looked
-                like inert text and gave no hint it cycled; a labelled
-                Select reads the same as the Host state / Review status
-                selects and makes all three options discoverable. */}
-            <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-web" id="hosts-filter-web-label">Web interface</Label>
-              <Select
-                value={
-                  filters.hasWebInterface === undefined
-                    ? 'any'
-                    : filters.hasWebInterface
-                      ? 'yes'
-                      : 'no'
-                }
-                onValueChange={(value) =>
-                  handleFilterChange(
-                    'hasWebInterface',
-                    value === 'any' ? undefined : value === 'yes',
-                  )
-                }
-              >
-                <SelectTrigger id="hosts-filter-web">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">Any</SelectItem>
-                  <SelectItem value="yes">Has web interface</SelectItem>
-                  <SelectItem value="no">No web interface</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
 
             {/* Tech */}
