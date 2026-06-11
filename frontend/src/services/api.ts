@@ -379,7 +379,7 @@ export const getScanCommandExplanation = async (scanId: number): Promise<Command
 // the UI today; the list/stats/update/delete wrappers were removed in
 // the cleanup pass after months of zero consumers.  Re-add when a
 export const generateHostsReport = async (
-  format: 'csv' | 'html' | 'json' | 'agent-package' | 'markdown-bundle',
+  format: 'csv' | 'html' | 'pdf' | 'json' | 'agent-package' | 'markdown-bundle',
   filters: {
     scan_id?: number;
     state?: string;
@@ -398,7 +398,10 @@ export const generateHostsReport = async (
     first_seen_in_scan?: boolean;
     with_notes_only?: boolean;
     q?: string;
-  }
+  },
+  // 'comprehensive' (full security report) | 'inventory' (concise host list).
+  // Ignored by csv (always the inventory table) and the structured zip exports.
+  reportType?: 'inventory' | 'comprehensive',
 ) => {
   const queryParams = new URLSearchParams();
 
@@ -407,6 +410,9 @@ export const generateHostsReport = async (
       queryParams.append(key, value.toString());
     }
   });
+  if (reportType && (format === 'html' || format === 'pdf' || format === 'json')) {
+    queryParams.append('report_type', reportType);
+  }
 
   const response = await api.get(`${p()}/reports/hosts/${format}?${queryParams}`, {
     responseType: 'blob'

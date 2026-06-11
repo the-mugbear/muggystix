@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict, Any, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import or_, and_, distinct, func
 from app.db.session import get_db
@@ -21,10 +22,13 @@ import io
 import csv
 import ipaddress
 import json
+import logging
 import zipfile
 from datetime import datetime, timezone
 import hashlib
 import html
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -64,9 +68,15 @@ class ReportGenerator:
         # though multiple format sections consume them.
         self._host_loc_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._hotspots_cache: Optional[Dict[str, Any]] = None
+        # Set by get_hosts_for_report: True when the filter matched more than
+        # MAX_REPORT_HOSTS and the in-memory report was capped.  Surfaced to
+        # the user (HTML banner / JSON flag / X-Report-Truncated header) so a
+        # capped report is never mistaken for a complete one.
+        self.report_truncated = False
 
-    # Maximum number of hosts a single report can include to prevent OOM
-    MAX_REPORT_HOSTS = 10000
+    # Maximum number of hosts an in-memory report (PDF/HTML/JSON, zips) can
+    # include to prevent OOM.  Configurable; the streaming CSV ignores it.
+    MAX_REPORT_HOSTS = settings.REPORT_MAX_HOSTS
 
     # --- Site / subnet enrichment (shared across formats) -----------------
 
@@ -110,26 +120,122 @@ class ReportGenerator:
             selectinload(models.Host.last_updated_scan),
             selectinload(models.Host.notes).selectinload(models.Annotation.author),
             selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
-        ).distinct().limit(self.MAX_REPORT_HOSTS)
+            # Tags ride along on the inventory CSV (a queryable working-set
+            # dimension analysts filter by); eager-load to avoid an N+1.
+            selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
+            # Fetch one past the cap so we can detect (and surface) truncation
+            # without a separate COUNT.
+        ).distinct().limit(self.MAX_REPORT_HOSTS + 1)
 
-        return query.all()
+        rows = query.all()
+        self.report_truncated = len(rows) > self.MAX_REPORT_HOSTS
+        return rows[: self.MAX_REPORT_HOSTS]
+
+    def _filtered_host_id_query(self, filters: Dict[str, Any]):
+        """Just the matching host ids, ordered — the cheap driver for the
+        streaming CSV (ints only; the per-chunk hydrate loads the heavy
+        relationships)."""
+        return (
+            _build_filtered_host_query(
+                self.db, self.current_user, **filters, project_id=self.project_id,
+            )
+            .with_entities(models.Host.id)
+            .distinct()
+        )
+
+    def iter_inventory_csv(self, filters: Dict[str, Any], chunk_size: int = None):
+        """Yield the Host Inventory CSV incrementally over a chunked cursor —
+        no MAX_REPORT_HOSTS cap, bounded memory (one chunk hydrated at a time).
+
+        Drives the streaming CSV export so a project with >cap hosts still gets
+        a complete inventory.  Header first, then rows in id-ordered chunks.
+        ``_host_locations`` is one project-wide query built up front (cached);
+        each chunk re-loads only its own hosts' ports/vulns/tags/scan history.
+        """
+        chunk_size = chunk_size or settings.REPORT_STREAM_CHUNK
+        # Header row.
+        _hdr = io.StringIO()
+        csv.writer(_hdr).writerow(self.INVENTORY_CSV_HEADER)
+        yield _hdr.getvalue()
+
+        host_ids = [row[0] for row in self._filtered_host_id_query(filters).all()]
+        for start in range(0, len(host_ids), chunk_size):
+            chunk_ids = host_ids[start:start + chunk_size]
+            hosts = (
+                self.db.query(models.Host)
+                .filter(models.Host.id.in_(chunk_ids))
+                .options(
+                    selectinload(models.Host.ports),
+                    selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
+                    selectinload(models.Host.last_updated_scan),
+                    selectinload(models.Host.notes),
+                    selectinload(models.Host.vulnerabilities),
+                    selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
+                )
+                .all()
+            )
+            # Preserve the id-query ordering within the chunk.
+            order = {hid: i for i, hid in enumerate(chunk_ids)}
+            hosts.sort(key=lambda h: order.get(h.id, 0))
+            yield self._inventory_csv_rows(hosts)
+            # Release the chunk's ORM objects so peak memory stays ~chunk_size.
+            self.db.expunge_all()
     
+    @staticmethod
+    def _host_vuln_counts(host: models.Host) -> Dict[str, int]:
+        """Per-severity vulnerability counts from the host's loaded
+        ``vulnerabilities`` relationship (no extra query — already
+        selectin-loaded by ``get_hosts_for_report``)."""
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        for v in (host.vulnerabilities or []):
+            sev = enum_value(v.severity)
+            if sev in counts:
+                counts[sev] += 1
+        return counts
+
+    @staticmethod
+    def _host_tags(host: models.Host) -> str:
+        names = []
+        for a in (getattr(host, "tag_assignments", None) or []):
+            tag = getattr(a, "tag", None)
+            if tag is not None and tag.name:
+                names.append(tag.name)
+        return ", ".join(sorted(names, key=str.lower))
+
+    # Enriched beyond identity with the columns analysts actually triage on
+    # (severity counts, SMB signing, tags, recency).  Shared by the single-shot
+    # and streaming CSV paths so the two can never drift.
+    INVENTORY_CSV_HEADER = [
+        'IP Address', 'Hostname', 'State', 'Site', 'Subnet',
+        'OS Name', 'OS Family', 'OS Type', 'OS Accuracy', 'SMB Signing',
+        'Open Ports', 'Total Ports', 'Services',
+        'Critical', 'High', 'Medium', 'Low',
+        'Tags', 'Notes', 'Last Seen', 'Scan File', 'Scan Date',
+    ]
+
     def generate_csv_report(self, hosts: List[models.Host]) -> str:
-        """Generate CSV report from hosts data"""
+        """Generate the Host Inventory CSV — header + a flat, queryable row per
+        host.
+
+        This is the "concise identification" report: who/where/what + the
+        risk-triage signals (vuln counts, SMB-signing posture, tags) an
+        analyst or manager needs to say "these hosts are problematic",
+        without the full per-host findings detail (that lives in the
+        Comprehensive report).
+        """
+        output = io.StringIO()
+        csv.writer(output).writerow(self.INVENTORY_CSV_HEADER)
+        return output.getvalue() + self._inventory_csv_rows(hosts)
+
+    def _inventory_csv_rows(self, hosts: List[models.Host]) -> str:
+        """Inventory CSV body rows (no header) for ``hosts`` — the unit the
+        streaming path yields per chunk."""
         output = io.StringIO()
         writer = csv.writer(output)
-        
-        # Headers
-        writer.writerow([
-            'IP Address', 'Hostname', 'State', 'Site', 'Subnet',
-            'OS Name', 'OS Family', 'OS Type', 'OS Accuracy',
-            'Open Ports', 'Total Ports', 'Services', 'Scan File', 'Scan Date'
-        ])
-
         for host in hosts:
             open_ports = [p for p in (host.ports or []) if p.state == 'open']
             total_ports = len(host.ports or [])
-            
+
             # Get unique services
             services = list(set([p.service_name for p in open_ports if p.service_name]))
             services_str = ', '.join(services[:5])  # Limit to 5 services
@@ -152,6 +258,9 @@ class ReportGenerator:
             else:
                 scan_date_str = ''
 
+            vc = self._host_vuln_counts(host)
+            last_seen_str = host.last_seen.strftime('%Y-%m-%d %H:%M:%S') if host.last_seen else ''
+
             _safe_csv_row(writer, [
                 host.ip_address,
                 host.hostname or '',
@@ -162,17 +271,38 @@ class ReportGenerator:
                 host.os_family or '',
                 host.os_type or '',
                 host.os_accuracy or '',
+                host.smb_signing or '',
                 open_ports_str,
                 total_ports,
                 services_str,
+                vc['critical'],
+                vc['high'],
+                vc['medium'],
+                vc['low'],
+                self._host_tags(host),
+                len(host.notes or []),
+                last_seen_str,
                 scan_filename,
                 scan_date_str
             ])
 
         return output.getvalue()
     
-    def generate_html_report(self, hosts: List[models.Host], filters: Dict[str, Any]) -> str:
-        """Generate HTML report from hosts data"""
+    def generate_html_report(
+        self, hosts: List[models.Host], filters: Dict[str, Any],
+        report_type: str = "comprehensive",
+    ) -> str:
+        """Generate the HTML host report.
+
+        ``report_type``:
+          * ``"comprehensive"`` (default) — the full security report: summary +
+            metrics + exposure charts + **Findings** + **Site/Subnet Hotspots** +
+            the host table.  The artifact a security review hands over.
+          * ``"inventory"`` — the concise "these hosts are problematic" list:
+            summary + metrics + exposure + host table only (no project-wide
+            findings/hotspots roll-ups).
+        """
+        is_comprehensive = report_type != "inventory"
         # Calculate summary statistics
         total_hosts = len(hosts)
         hosts_up = len([h for h in hosts if h.state == 'up'])
@@ -202,6 +332,46 @@ class ReportGenerator:
         frontend_version = settings.FRONTEND_VERSION
         max_service_value = max(dict(top_services).values()) if top_services else 1
         max_os_value = max(dict(top_os).values()) if top_os else 1
+
+        # Comprehensive-only sections.  Computed here (not inline in the main
+        # f-string) so the inventory variant can omit them entirely — and so
+        # the per-finding "Evidence" gallery (screenshots attached to notes/
+        # findings) can later slot into the Findings section without touching
+        # the page skeleton.
+        if is_comprehensive:
+            hotspots_nav = '<a href="#hotspots">Hotspots</a>'
+            findings_nav = '<a href="#findings">Findings</a>'
+            hotspots_section = f"""
+    <div class="section" id="hotspots">
+        <div class="section-header">Site &amp; Subnet Hotspots</div>
+        <div class="section-content">
+            <p class="muted">Worst-first ranking of sites and subnets by exposure (severity-weighted active findings, scaled by site criticality), neglect, and hygiene (end-of-life OS, certificate issues, weak auth, risky services). Project-wide — not limited to the filtered hosts above.</p>
+            {self._generate_hotspots_html()}
+        </div>
+    </div>"""
+            findings_section = f"""
+    <div class="section" id="findings">
+        <div class="section-header">Findings</div>
+        <div class="section-content">
+            {self._generate_findings_html(hosts)}
+        </div>
+    </div>"""
+        else:
+            hotspots_nav = findings_nav = ""
+            hotspots_section = findings_section = ""
+
+        # Loud truncation banner — a capped report must never read as complete.
+        if self.report_truncated:
+            truncation_banner = (
+                '<div class="section" style="border-left:4px solid #c0392b;background:#fdecea;'
+                'padding:12px 16px;margin:0 0 16px;color:#7b241c;">'
+                f'<strong>⚠ Report truncated.</strong> Your filters matched more than '
+                f'{self.MAX_REPORT_HOSTS:,} hosts; this report includes only the first '
+                f'{self.MAX_REPORT_HOSTS:,}. Narrow the filters, or use the CSV inventory export '
+                '(it streams the full set).</div>'
+            )
+        else:
+            truncation_banner = ""
 
         html_content = f"""
 <!DOCTYPE html>
@@ -314,9 +484,12 @@ class ReportGenerator:
         <a href="#summary">Summary</a>
         <a href="#metrics">Metrics</a>
         <a href="#exposure">Exposure Highlights</a>
-        <a href="#hotspots">Hotspots</a>
+        {hotspots_nav}
+        {findings_nav}
         <a href="#hosts">Host Details</a>
     </nav>
+
+    {truncation_banner}
 
     <div class="executive-summary" id="summary">
         <h3>Executive Summary</h3>
@@ -354,20 +527,8 @@ class ReportGenerator:
         </div>
     </div>
 
-    <div class="section" id="hotspots">
-        <div class="section-header">Site &amp; Subnet Hotspots</div>
-        <div class="section-content">
-            <p class="muted">Worst-first ranking of sites and subnets by exposure (severity-weighted active findings, scaled by site criticality), neglect, and hygiene (end-of-life OS, certificate issues, weak auth, risky services). Project-wide — not limited to the filtered hosts above.</p>
-            {self._generate_hotspots_html()}
-        </div>
-    </div>
-
-    <div class="section" id="findings">
-        <div class="section-header">Findings</div>
-        <div class="section-content">
-            {self._generate_findings_html(hosts)}
-        </div>
-    </div>
+    {hotspots_section}
+    {findings_section}
 
     <div class="section" id="hosts">
         <div class="section-header">Host Details</div>
@@ -514,15 +675,25 @@ class ReportGenerator:
         
         return ''.join(rows)
 
-    def generate_json_report(self, hosts: List[models.Host]) -> Dict[str, Any]:
-        """Generate JSON report from hosts data"""
+    def generate_json_report(
+        self, hosts: List[models.Host], report_type: str = "comprehensive",
+    ) -> Dict[str, Any]:
+        """Generate JSON host report.  ``report_type='inventory'`` omits the
+        project-wide findings + hotspots roll-ups (host records are unchanged)."""
+        is_comprehensive = report_type != "inventory"
         report_data = {
             "generated_at": datetime.now().isoformat(),
+            "report_type": "comprehensive" if is_comprehensive else "inventory",
             "summary": {
                 "total_hosts": len(hosts),
                 "hosts_up": len([h for h in hosts if h.state == 'up']),
                 "hosts_down": len([h for h in hosts if h.state == 'down']),
-                "total_open_ports": sum(len([p for p in (h.ports or []) if p.state == 'open']) for h in hosts)
+                "total_open_ports": sum(len([p for p in (h.ports or []) if p.state == 'open']) for h in hosts),
+                # True when the filter matched more than the in-memory cap and
+                # this payload was truncated to ``cap`` hosts (use the CSV
+                # inventory for the complete set).
+                "truncated": self.report_truncated,
+                "host_cap": self.MAX_REPORT_HOSTS,
             },
             "hosts": []
         }
@@ -575,8 +746,9 @@ class ReportGenerator:
             
             report_data["hosts"].append(host_data)
 
-        report_data["findings"] = self._findings_for_report(hosts)
-        report_data["hotspots"] = self._build_hotspots()
+        if is_comprehensive:
+            report_data["findings"] = self._findings_for_report(hosts)
+            report_data["hotspots"] = self._build_hotspots()
         return report_data
 
     def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
@@ -862,6 +1034,10 @@ class ReportGenerator:
                 "vulnerabilities": total_vulnerabilities,
                 "findings": len(findings),
             },
+            # True when the filter matched more than the host cap and this
+            # bundle was truncated (use the streaming CSV for the full set).
+            "truncated": self.report_truncated,
+            "host_cap": self.MAX_REPORT_HOSTS,
             "included_sections": [
                 "identity",
                 "scope",
@@ -1561,20 +1737,23 @@ def generate_hosts_csv_report(
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    hosts = generator.get_hosts_for_report(filter_kwargs)
-    csv_content = generator.generate_csv_report(hosts)
-    
-    filename = f"hosts_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    
-    return Response(
-        content=csv_content,
+    # Stream the inventory over a chunked cursor — no host cap, bounded memory,
+    # so a project with >cap hosts still gets a complete CSV.
+    filename = f"hosts_inventory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        generator.iter_inventory_csv(filter_kwargs),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 @router.get("/hosts/html")
 def generate_hosts_html_report(
     filters: HostFilterParams = Depends(),
+    report_type: str = Query(
+        "comprehensive",
+        pattern="^(inventory|comprehensive)$",
+        description="'comprehensive' (full security report: findings + hotspots + host detail) or 'inventory' (concise host list, no project-wide roll-ups).",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -1589,19 +1768,85 @@ def generate_hosts_html_report(
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
     hosts = generator.get_hosts_for_report(filter_kwargs)
-    html_content = generator.generate_html_report(hosts, filter_kwargs)
-    
-    filename = f"hosts_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    
+    html_content = generator.generate_html_report(hosts, filter_kwargs, report_type)
+
+    filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+
     return Response(
         content=html_content,
         media_type="text/html",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Report-Truncated": "true" if generator.report_truncated else "false",
+        },
     )
+
+
+@router.get("/hosts/pdf")
+def generate_hosts_pdf_report(
+    filters: HostFilterParams = Depends(),
+    report_type: str = Query(
+        "comprehensive",
+        pattern="^(inventory|comprehensive)$",
+        description="'comprehensive' or 'inventory' — same content as the HTML report, rendered to PDF.",
+    ),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Generate a PDF host report (the HTML report rendered via WeasyPrint).
+
+    The natural manager/handover artifact.  Renders the same HTML the /html
+    route produces, then converts to PDF.  A deny-all ``url_fetcher`` blocks
+    every external/file resource at render time: untrusted scan data flows
+    into this HTML, so WeasyPrint must never be allowed to fetch a remote URL
+    or read a local file an attacker-controlled value could point at (defence
+    in depth over the already-escaped template).
+    """
+    filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
+
+    generator = ReportGenerator(db, current_user, project_id=project.id)
+    hosts = generator.get_hosts_for_report(filter_kwargs)
+    html_content = generator.generate_html_report(hosts, filter_kwargs, report_type)
+
+    try:
+        # OSError (not just ImportError) when the native Pango/Cairo/GObject
+        # libraries are missing — weasyprint dlopen's them at import time.
+        from weasyprint import HTML
+    except (ImportError, OSError) as exc:
+        logger.warning("PDF export unavailable — weasyprint failed to load: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="PDF export is unavailable: the server's PDF rendering libraries are not installed.",
+        )
+
+    def _deny_all_fetcher(url, *args, **kwargs):
+        # Block every resource resolution — no remote URLs, no file:// reads.
+        # WeasyPrint treats any exception from the fetcher as an unfetchable
+        # resource; our template is self-contained (inline CSS) so this should
+        # never fire — it's a hard backstop against future template drift.
+        raise ValueError(f"External resource blocked in PDF report: {url}")
+
+    pdf_bytes = HTML(string=html_content, url_fetcher=_deny_all_fetcher).write_pdf()
+    filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Report-Truncated": "true" if generator.report_truncated else "false",
+        },
+    )
+
 
 @router.get("/hosts/json")
 def generate_hosts_json_report(
     filters: HostFilterParams = Depends(),
+    report_type: str = Query(
+        "comprehensive",
+        pattern="^(inventory|comprehensive)$",
+        description="'comprehensive' (adds findings + hotspots roll-ups) or 'inventory' (host records only).",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -1616,14 +1861,17 @@ def generate_hosts_json_report(
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
     hosts = generator.get_hosts_for_report(filter_kwargs)
-    report_data = generator.generate_json_report(hosts)
-    
-    filename = f"hosts_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    
+    report_data = generator.generate_json_report(hosts, report_type)
+
+    filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
     return Response(
         content=json.dumps(report_data, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Report-Truncated": "true" if generator.report_truncated else "false",
+        },
     )
 
 

@@ -22,10 +22,20 @@ FROM python:3.11-slim as production
 
 WORKDIR /app
 
-# Install runtime dependencies including curl for health check
+# Install runtime dependencies: libpq5 (psycopg2), curl (health check), and
+# the WeasyPrint native stack (Pango/Cairo/GObject/GDK-PixBuf + fonts) used
+# by the PDF report + test-plan PDF exports.  libpangocairo pulls in
+# libcairo2 + libglib2.0-0 (gobject-2.0) transitively; fonts-dejavu-core gives
+# WeasyPrint a usable default font so text renders.
 RUN apt-get update && apt-get install -y \
     libpq5 \
     curl \
+    libpangocairo-1.0-0 \
+    libpango-1.0-0 \
+    libgdk-pixbuf-2.0-0 \
+    libffi8 \
+    libjpeg62-turbo \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

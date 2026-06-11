@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Code,
   Download,
@@ -7,6 +7,7 @@ import {
   FileText,
   Globe,
   Loader2,
+  ServerCog,
   Table as TableIcon,
 } from 'lucide-react';
 import { generateHostsReport } from '../services/api';
@@ -28,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from './ui/select';
+import { cn } from '../utils/cn';
 
 interface ReportsDialogProps {
   open: boolean;
@@ -36,102 +38,138 @@ interface ReportsDialogProps {
   totalHosts: number;
 }
 
-type ReportFormat = 'csv' | 'html' | 'json' | 'agent-package' | 'markdown-bundle';
+type ReportType = 'inventory' | 'comprehensive';
+type HumanFormat = 'pdf' | 'html' | 'csv' | 'json';
+type StructuredFormat = 'markdown-bundle' | 'agent-package';
 
-const REPORT_FORMATS: Array<{
-  value: ReportFormat;
+// Keep in sync with REPORT_MAX_HOSTS (default). Flat CSV streams the full
+// set; the document formats (PDF/HTML/JSON) build in memory and cap here.
+const REPORT_HOST_CAP = 50000;
+
+const REPORT_TYPES: Array<{ value: ReportType; label: string; description: string }> = [
+  {
+    value: 'comprehensive',
+    label: 'Comprehensive Security Report',
+    description:
+      'Everything per host — findings, vulnerabilities, services, site context — plus project hotspots. The security review hand-off.',
+  },
+  {
+    value: 'inventory',
+    label: 'Host Inventory',
+    description:
+      'Concise one-row-per-host list (identity, OS, open ports, vuln counts, SMB signing, tags). The "these hosts are problematic" handout.',
+  },
+];
+
+// Allowed output formats per report type.
+const HUMAN_FORMATS: Record<ReportType, Array<{ value: HumanFormat; label: string; Icon: typeof Globe }>> = {
+  comprehensive: [
+    { value: 'pdf', label: 'PDF', Icon: FileDown },
+    { value: 'html', label: 'HTML', Icon: Globe },
+    { value: 'json', label: 'JSON', Icon: Code },
+  ],
+  inventory: [
+    { value: 'pdf', label: 'PDF', Icon: FileDown },
+    { value: 'html', label: 'HTML', Icon: Globe },
+    { value: 'csv', label: 'CSV', Icon: TableIcon },
+  ],
+};
+
+// Machine-readable exports — not human reports. Segregated so a manager
+// clicking "Export" doesn't end up with a zip of NDJSON.
+const STRUCTURED_FORMATS: Array<{
+  value: StructuredFormat;
   label: string;
   Icon: typeof FileArchive;
   description: string;
 }> = [
   {
-    value: 'agent-package',
-    label: 'Agent Package (.zip)',
-    Icon: FileArchive,
-    description: 'Full structured export for agentic LLM planning and execution',
-  },
-  {
     value: 'markdown-bundle',
-    label: 'Markdown Report Bundle (.zip)',
+    label: 'Markdown bundle (.zip)',
     Icon: FileText,
-    description: 'Human-readable Markdown report with companion CSV files',
+    description: 'Human-readable report.md + companion hosts/findings/scans CSVs.',
   },
   {
-    value: 'csv',
-    label: 'CSV',
-    Icon: TableIcon,
-    description: 'Best for spreadsheet analysis',
-  },
-  {
-    value: 'html',
-    label: 'HTML Report',
-    Icon: Globe,
-    description: 'Formatted web page with styling',
-  },
-  {
-    value: 'json',
-    label: 'JSON Data',
-    Icon: Code,
-    description: 'Machine-readable structured data',
+    value: 'agent-package',
+    label: 'Agent dataset — NDJSON (.zip)',
+    Icon: ServerCog,
+    description: 'Structured per-host NDJSON + schema for feeding an AI agent. Not a human report.',
   },
 ];
 
-const ReportsDialog: React.FC<ReportsDialogProps> = ({
-  open,
-  onClose,
-  filters,
-  totalHosts,
-}) => {
-  const [selectedFormat, setSelectedFormat] = useState<ReportFormat>('agent-package');
-  const [isGenerating, setIsGenerating] = useState(false);
+const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, totalHosts }) => {
+  const [reportType, setReportType] = useState<ReportType>('comprehensive');
+  const [format, setFormat] = useState<HumanFormat>('pdf');
+  // Tracks which action is in flight ('pdf', 'agent-package', …) so only that
+  // button spins and the rest disable.
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleGenerateReport = async () => {
-    setIsGenerating(true);
-    setError(null);
-    try {
-      await generateHostsReport(selectedFormat, filters);
-      onClose();
-    } catch (err) {
-      setError(
-        `Failed to generate report: ${err instanceof Error ? err.message : 'Unknown error'}`,
-      );
-    } finally {
-      setIsGenerating(false);
+  const allowedFormats = HUMAN_FORMATS[reportType];
+
+  const handleTypeChange = (t: ReportType) => {
+    setReportType(t);
+    // Keep the format valid for the new type (csv↔json swap on type change).
+    if (!HUMAN_FORMATS[t].some((f) => f.value === format)) {
+      setFormat(HUMAN_FORMATS[t][0].value);
     }
   };
 
-  const renderActiveFilters = (): string[] => {
-    const activeFilters: string[] = [];
-    if (filters.search) activeFilters.push(`Search: "${filters.search}"`);
-    if (filters.state) activeFilters.push(`State: ${filters.state}`);
-    if (filters.ports) activeFilters.push(`Ports: ${filters.ports}`);
-    if (filters.services) activeFilters.push(`Services: ${filters.services}`);
-    if (filters.port_states) activeFilters.push(`Port states: ${filters.port_states}`);
-    if (filters.has_open_ports !== undefined)
-      activeFilters.push(`Has open ports: ${filters.has_open_ports ? 'Yes' : 'No'}`);
-    if (filters.os_filter) activeFilters.push(`OS: ${filters.os_filter}`);
-    if (filters.subnets) activeFilters.push(`Subnets: ${filters.subnets}`);
-    if (filters.has_critical_vulns) activeFilters.push('Critical vulnerabilities');
-    if (filters.has_high_vulns) activeFilters.push('High vulnerabilities');
-    if (filters.follow_status) activeFilters.push(`Follow: ${filters.follow_status}`);
-    if (filters.out_of_scope_only) activeFilters.push('Out of scope');
-    if (filters.scan_ids) activeFilters.push(`Scan IDs: ${filters.scan_ids}`);
-    if (filters.first_seen_in_scan) activeFilters.push('First seen in selected scans');
-    if (filters.with_notes_only) activeFilters.push('With notes only');
-    return activeFilters;
+  const runExport = async (fmt: HumanFormat | StructuredFormat, type?: ReportType) => {
+    setBusy(fmt);
+    setError(null);
+    try {
+      await generateHostsReport(fmt, filters, type);
+      onClose();
+    } catch (err) {
+      setError(`Failed to generate report: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setBusy(null);
+    }
   };
 
-  const activeFilters = renderActiveFilters();
-  const selectedFormatInfo = REPORT_FORMATS.find((f) => f.value === selectedFormat);
+  const activeFilters = useMemo((): string[] => {
+    const f = filters;
+    const out: string[] = [];
+    if (f.search) out.push(`Search: "${f.search}"`);
+    if (f.q) out.push(`Query: ${f.q}`);
+    if (f.state) out.push(`State: ${f.state}`);
+    if (f.sites) out.push(`Site: ${f.sites}`);
+    if (f.subnets) out.push(`Subnets: ${f.subnets}`);
+    if (f.subnet_labels) out.push(`Subnet labels: ${f.subnet_labels}`);
+    if (f.tags) out.push(`Tags: ${f.tags}`);
+    if (f.ports) out.push(`Ports: ${f.ports}`);
+    if (f.services) out.push(`Services: ${f.services}`);
+    if (f.port_states) out.push(`Port states: ${f.port_states}`);
+    if (f.has_open_ports !== undefined) out.push(`Has open ports: ${f.has_open_ports ? 'Yes' : 'No'}`);
+    if (f.os_filter) out.push(`OS: ${f.os_filter}`);
+    if (f.tech) out.push(`Tech: ${f.tech}`);
+    if (f.has_critical_vulns) out.push('Critical vulnerabilities');
+    if (f.has_high_vulns) out.push('High vulnerabilities');
+    if (f.has_medium_vulns) out.push('Medium vulnerabilities');
+    if (f.has_low_vulns) out.push('Low vulnerabilities');
+    if (f.has_exploit_available) out.push('Exploit available');
+    if (f.has_test_execution) out.push('Has test execution');
+    if (f.has_web_interface !== undefined) out.push(`Web interface: ${f.has_web_interface ? 'Yes' : 'No'}`);
+    if (f.follow_status) out.push(`Follow: ${f.follow_status}`);
+    if (f.assigned_to) out.push(`Assigned: ${f.assigned_to}`);
+    if (f.out_of_scope_only) out.push('Out of scope');
+    if (f.scan_ids) out.push(`Scan IDs: ${f.scan_ids}`);
+    if (f.first_seen_in_scan) out.push('First seen in selected scans');
+    if (f.with_notes_only) out.push('With notes only');
+    return out;
+  }, [filters]);
+
+  const overCap = totalHosts > REPORT_HOST_CAP;
+  const isBusy = busy !== null;
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && !isGenerating && onClose()}>
+    <Dialog open={open} onOpenChange={(v) => !v && !isBusy && onClose()}>
       <DialogContent size="md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <FileDown className="size-5" aria-hidden />
-            Generate Host Report
+            Export Host Report
           </DialogTitle>
         </DialogHeader>
 
@@ -142,11 +180,19 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({
         )}
 
         <div className="space-y-xs">
-          <h3 className="text-subheading">Report Summary</h3>
           <p className="text-metadata text-muted-foreground">
-            This report will include approximately <strong>{totalHosts}</strong> host
-            {totalHosts === 1 ? '' : 's'} based on your current filters.
+            Based on your current filters this covers <strong>{totalHosts.toLocaleString()}</strong> host
+            {totalHosts === 1 ? '' : 's'}.
           </p>
+          {overCap && (
+            <Alert variant="warning">
+              <AlertDescription>
+                Your filters match {totalHosts.toLocaleString()} hosts. PDF, HTML and JSON reports include
+                the first {REPORT_HOST_CAP.toLocaleString()} — narrow your filters to capture everything, or
+                use the <strong>CSV</strong> inventory which streams the full set.
+              </AlertDescription>
+            </Alert>
+          )}
           {activeFilters.length > 0 && (
             <div className="space-y-xxs">
               <p className="text-caption font-semibold text-muted-foreground">
@@ -163,39 +209,55 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({
           )}
         </div>
 
+        {/* Step 1 — report type */}
         <div className="space-y-xxs">
-          <Label htmlFor="reports-format">Report format</Label>
-          <Select
-            value={selectedFormat}
-            onValueChange={(v) => setSelectedFormat(v as ReportFormat)}
-          >
+          <Label>Report type</Label>
+          <div className="grid grid-cols-1 gap-xs sm:grid-cols-2">
+            {REPORT_TYPES.map((t) => {
+              const selected = reportType === t.value;
+              return (
+                <button
+                  key={t.value}
+                  type="button"
+                  onClick={() => handleTypeChange(t.value)}
+                  aria-pressed={selected}
+                  className={cn(
+                    'rounded-control border p-sm text-left transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    selected ? 'border-primary bg-accent/40' : 'border-border hover:bg-accent/20',
+                  )}
+                >
+                  <p className="text-metadata font-semibold text-foreground">{t.label}</p>
+                  <p className="mt-xxs text-caption text-muted-foreground">{t.description}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Step 2 — format */}
+        <div className="space-y-xxs">
+          <Label htmlFor="reports-format">Format</Label>
+          <Select value={format} onValueChange={(v) => setFormat(v as HumanFormat)}>
             <SelectTrigger id="reports-format">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {REPORT_FORMATS.map((format) => (
-                <SelectItem key={format.value} value={format.value}>
-                  {format.label}
+              {allowedFormats.map((f) => (
+                <SelectItem key={f.value} value={f.value}>
+                  {f.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
 
-        {selectedFormatInfo && (
-          <div className="rounded-control bg-muted/50 p-sm">
-            <p className="text-metadata">
-              <strong>{selectedFormatInfo.label}:</strong> {selectedFormatInfo.description}
-            </p>
-          </div>
-        )}
-
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={isGenerating}>
+          <Button variant="outline" onClick={onClose} disabled={isBusy}>
             Cancel
           </Button>
-          <Button onClick={handleGenerateReport} disabled={isGenerating}>
-            {isGenerating ? (
+          <Button onClick={() => runExport(format, reportType)} disabled={isBusy}>
+            {busy === format ? (
               <>
                 <Loader2 className="size-4 animate-spin" aria-hidden />
                 Generating…
@@ -203,11 +265,41 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({
             ) : (
               <>
                 <Download className="size-4" aria-hidden />
-                Generate Report
+                Generate {format.toUpperCase()}
               </>
             )}
           </Button>
         </DialogFooter>
+
+        {/* Structured / AI exports — separated from human reports */}
+        <div className="mt-xs border-t border-border pt-sm">
+          <p className="text-caption font-semibold text-muted-foreground">Structured &amp; agent data</p>
+          <div className="mt-xxs space-y-xxs">
+            {STRUCTURED_FORMATS.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => runExport(s.value)}
+                disabled={isBusy}
+                className={cn(
+                  'flex w-full items-start gap-xs rounded-control border border-border p-xs text-left',
+                  'hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'disabled:opacity-60',
+                )}
+              >
+                {busy === s.value ? (
+                  <Loader2 className="mt-xxs size-4 shrink-0 animate-spin" aria-hidden />
+                ) : (
+                  <s.Icon className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
+                )}
+                <span className="min-w-0">
+                  <span className="block text-metadata font-medium text-foreground">{s.label}</span>
+                  <span className="block text-caption text-muted-foreground">{s.description}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

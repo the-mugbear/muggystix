@@ -88,6 +88,15 @@ class Settings:
     # Default 100KB.  Configurable because some tools (Nessus, nmap scripts)
     # produce verbose output that operators may want to retain in full.
     TEST_OUTPUT_MAX_BYTES: int = int(os.getenv("TEST_OUTPUT_MAX_BYTES", str(100 * 1024)))
+    # Max hosts a single in-memory report (PDF/HTML/JSON, agent/markdown zips)
+    # may materialize — protects worker memory.  Raised from the old hard-coded
+    # 10k now that the cap is surfaced (truncation banner/flag/header) instead
+    # of silently dropping rows.  The streaming CSV inventory ignores this and
+    # exports the full filtered set.
+    REPORT_MAX_HOSTS: int = int(os.getenv("REPORT_MAX_HOSTS", "50000"))
+    # Chunk size for the streaming CSV inventory cursor (hosts hydrated +
+    # serialized per batch, bounding peak memory regardless of total rows).
+    REPORT_STREAM_CHUNK: int = int(os.getenv("REPORT_STREAM_CHUNK", "500"))
 
     # CORS origins - read from environment variable, fall back to localhost
     @property
