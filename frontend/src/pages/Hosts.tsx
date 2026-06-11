@@ -20,6 +20,7 @@ import {
   Shield,
   SlidersHorizontal,
   StickyNote,
+  Crosshair,
   Users,
   Wand2,
   X,
@@ -1715,10 +1716,36 @@ export default function Hosts() {
         <CardContent className="space-y-sm pt-md">
           <div className="flex flex-col gap-sm lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0 space-y-xxs">
-              <p className="text-body font-semibold">
-                {totalHosts} host{totalHosts === 1 ? '' : 's'}
-                {activeFilterChips.length > 0 ? ' match the current filters' : ' in inventory'}
-              </p>
+              <div className="flex items-center gap-sm">
+                <span
+                  className={cn(
+                    'flex size-9 shrink-0 items-center justify-center rounded-control border transition-colors',
+                    activeFilterChips.length > 0
+                      ? 'border-primary/30 bg-primary/10 text-primary'
+                      : 'border-border bg-muted text-muted-foreground',
+                  )}
+                  aria-hidden
+                >
+                  <Crosshair className="size-4" />
+                </span>
+                <p className="text-body">
+                  {/* key remounts the number on change so the fade/zoom replays
+                      — transform + opacity only, so it never shifts layout. */}
+                  <span
+                    key={totalHosts}
+                    className={cn(
+                      'inline-block text-section-title font-bold tabular-nums animate-in fade-in zoom-in-95 duration-300',
+                      activeFilterChips.length > 0 ? 'text-primary' : 'text-foreground',
+                    )}
+                  >
+                    {totalHosts.toLocaleString()}
+                  </span>{' '}
+                  <span className="text-muted-foreground">
+                    host{totalHosts === 1 ? '' : 's'}{' '}
+                    {activeFilterChips.length > 0 ? 'match the current filters' : 'in inventory'}
+                  </span>
+                </p>
+              </div>
               <p className="text-metadata text-muted-foreground">
                 Page {Math.min(page + 1, Math.max(Math.ceil(totalHosts / rowsPerPage), 1))} of{' '}
                 {Math.max(Math.ceil(totalHosts / rowsPerPage), 1)}
