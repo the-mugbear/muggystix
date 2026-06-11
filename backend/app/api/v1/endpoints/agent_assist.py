@@ -340,6 +340,7 @@ def list_assist_hosts(
     q = _apply_agent_host_filters(
         q,
         db,
+        project_id=session.project_id,
         state=state,
         ports=ports,
         services=services,

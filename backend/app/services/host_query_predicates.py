@@ -229,37 +229,72 @@ def webtitle_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 # Vulnerability / evidence predicates
 # ---------------------------------------------------------------------------
 
-def cve_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
-    """Host has a vulnerability whose ``cve_id`` ILIKE-matches any value."""
+# The vuln/notes/tested predicates below scope their child-table subquery to
+# ``project_id`` via a join to Host.  Without it the subquery materializes the
+# matching host-ids across EVERY project in the deployment before the outer
+# ``Host.project_id`` filter trims them — a real perf trap on multi-project,
+# Nessus-heavy installs (the global ``vulnerabilities``/``annotations`` tables).
+# Results are identical (the outer filter already constrained them); only the
+# query plan tightens.  An aliased Host (``aliased(models.Host)``) keeps the
+# subquery's hosts_v2 distinct from the outer query's.
+
+def cve_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
+    """Host has a vulnerability whose ``cve_id`` ILIKE-matches any value
+    (project-scoped)."""
+    _H = aliased(models.Host)
     conditions = [
         Vulnerability.cve_id.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = db.query(Vulnerability.host_id).filter(or_(*conditions)).distinct()
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, or_(*conditions))
+        .distinct()
+    )
     return models.Host.id.in_(sub)
 
 
-def vuln_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
-    """Host has a vulnerability whose ``title`` ILIKE-matches any value."""
+def vuln_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
+    """Host has a vulnerability whose ``title`` ILIKE-matches any value
+    (project-scoped)."""
+    _H = aliased(models.Host)
     conditions = [
         Vulnerability.title.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = db.query(Vulnerability.host_id).filter(or_(*conditions)).distinct()
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, or_(*conditions))
+        .distinct()
+    )
     return models.Host.id.in_(sub)
 
 
-def severity_predicate(db: Session, severities: Iterable[str]) -> ColumnElement:
+def severity_predicate(db: Session, severities: Iterable[str], project_id: int) -> ColumnElement:
     """Host has a vulnerability of any of the given severities (upper-case
-    ``CRITICAL``/``HIGH``/``MEDIUM``/``LOW``)."""
+    ``CRITICAL``/``HIGH``/``MEDIUM``/``LOW``), project-scoped."""
+    _H = aliased(models.Host)
     sev_list = [s.upper() for s in severities]
-    sub = db.query(Vulnerability.host_id).filter(Vulnerability.severity.in_(sev_list)).distinct()
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, Vulnerability.severity.in_(sev_list))
+        .distinct()
+    )
     return models.Host.id.in_(sub)
 
 
-def has_exploit_predicate(db: Session) -> ColumnElement:
-    """Host has a vulnerability flagged exploitable by Nessus."""
-    sub = db.query(Vulnerability.host_id).filter(Vulnerability.exploitable.is_(True)).distinct()
+def has_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host has a vulnerability flagged exploitable by Nessus (project-scoped)."""
+    _H = aliased(models.Host)
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, Vulnerability.exploitable.is_(True))
+        .distinct()
+    )
     return models.Host.id.in_(sub)
 
 
@@ -267,36 +302,55 @@ def has_exploit_predicate(db: Session) -> ColumnElement:
 # Notes / tested predicates
 # ---------------------------------------------------------------------------
 
-def has_notes_predicate(db: Session) -> ColumnElement:
-    """Host has at least one note — directly, or on one of its ports.
+def has_notes_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host has at least one note — directly, or on one of its ports
+    (project-scoped).
 
     The annotations table pins each note to exactly one target (host, port,
     scan, …), so a note left on a host's port carries ``host_id = NULL``.
     Counting only direct host notes would miss those, so we union in the hosts
     reached through a port-level note."""
-    host_noted = db.query(AnnotationModel.host_id).filter(AnnotationModel.host_id.isnot(None))
+    _H1 = aliased(models.Host)
+    _H2 = aliased(models.Host)
+    host_noted = (
+        db.query(AnnotationModel.host_id)
+        .join(_H1, _H1.id == AnnotationModel.host_id)
+        .filter(_H1.project_id == project_id, AnnotationModel.host_id.isnot(None))
+    )
     port_noted = (
         db.query(models.Port.host_id)
         .join(AnnotationModel, AnnotationModel.port_id == models.Port.id)
+        .join(_H2, _H2.id == models.Port.host_id)
+        .filter(_H2.project_id == project_id)
     )
     return models.Host.id.in_(host_noted.union(port_noted))
 
 
-def note_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
-    """Host has a note whose ``body`` ILIKE-matches any value."""
+def note_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
+    """Host has a note whose ``body`` ILIKE-matches any value (project-scoped)."""
+    _H = aliased(models.Host)
     conditions = [
         AnnotationModel.body.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = db.query(AnnotationModel.host_id).filter(or_(*conditions)).distinct()
+    sub = (
+        db.query(AnnotationModel.host_id)
+        .join(_H, _H.id == AnnotationModel.host_id)
+        .filter(_H.project_id == project_id, or_(*conditions))
+        .distinct()
+    )
     return models.Host.id.in_(sub)
 
 
-def has_test_execution_predicate(db: Session) -> ColumnElement:
-    """Host has had at least one agentic test executed against it."""
+def has_test_execution_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host has had at least one agentic test executed against it
+    (project-scoped)."""
+    _H = aliased(models.Host)
     sub = (
         db.query(TestPlanEntry.host_id)
         .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
+        .join(_H, _H.id == TestPlanEntry.host_id)
+        .filter(_H.project_id == project_id)
         .distinct()
     )
     return models.Host.id.in_(sub)

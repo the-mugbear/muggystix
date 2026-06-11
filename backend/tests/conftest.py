@@ -17,6 +17,14 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.models_auth import User, UserRole
 
+# Mandatory-2FA enforcement (REQUIRE_2FA defaults true in prod) would make the
+# post-login gate 403 every data endpoint for the fixture user, who is never
+# TOTP-enrolled — breaking the whole suite.  The data-surface tests exercise
+# endpoints, not the 2FA flow (which has its own coverage), so disable
+# enforcement for the suite.  Set on the imported singleton (the env-read
+# already happened at import) so it applies before any fixture runs.
+settings.REQUIRE_2FA = False
+
 # A real bcrypt hash so password-verifying endpoints (change-password,
 # etc.) don't blow up with passlib UnknownHashError on a placeholder
 # string.  Tests that need to authenticate as the fixture user can use

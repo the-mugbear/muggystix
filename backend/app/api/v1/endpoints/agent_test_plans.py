@@ -239,6 +239,7 @@ def get_planning_context(
     q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
     q = _apply_agent_host_filters(
         q, db,
+        project_id=agent.project_id,
         state=filters.get("state"),
         ports=filters.get("ports"),
         services=filters.get("services"),

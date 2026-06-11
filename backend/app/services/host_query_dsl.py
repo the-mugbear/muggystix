@@ -344,14 +344,14 @@ class FieldSpec:
 
 _HAS_KEYWORDS = {
     "web": lambda ctx: P.has_web_interface_predicate(ctx.db),
-    "notes": lambda ctx: P.has_notes_predicate(ctx.db),
-    "exploit": lambda ctx: P.has_exploit_predicate(ctx.db),
-    "tested": lambda ctx: P.has_test_execution_predicate(ctx.db),
+    "notes": lambda ctx: P.has_notes_predicate(ctx.db, ctx.project_id),
+    "exploit": lambda ctx: P.has_exploit_predicate(ctx.db, ctx.project_id),
+    "tested": lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
     "open_ports": lambda ctx: P.has_open_ports_predicate(ctx.db),
-    "critical": lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"]),
-    "high": lambda ctx: P.severity_predicate(ctx.db, ["HIGH"]),
-    "medium": lambda ctx: P.severity_predicate(ctx.db, ["MEDIUM"]),
-    "low": lambda ctx: P.severity_predicate(ctx.db, ["LOW"]),
+    "critical": lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
+    "high": lambda ctx: P.severity_predicate(ctx.db, ["HIGH"], ctx.project_id),
+    "medium": lambda ctx: P.severity_predicate(ctx.db, ["MEDIUM"], ctx.project_id),
+    "low": lambda ctx: P.severity_predicate(ctx.db, ["LOW"], ctx.project_id),
 }
 
 _FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any"}
@@ -446,11 +446,11 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("assigned", _b_assigned),
     FieldSpec("scan", _b_scan, value_source="scan"),
     FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS)),
-    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v), trgm=True),
-    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v), trgm=True),
+    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v, c.project_id), trgm=True),
+    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True),
     FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True),
     FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True),
-    FieldSpec("note", lambda c, v: P.note_predicate(c.db, v), trgm=True),
+    FieldSpec("note", lambda c, v: P.note_predicate(c.db, v, c.project_id), trgm=True),
 ]
 
 # name/alias -> spec

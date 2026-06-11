@@ -196,7 +196,7 @@ def build_filtered_host_query(
         query = query.filter(build_search_predicate(db, search))
 
     if with_notes_only:
-        query = query.filter(P.has_notes_predicate(db))
+        query = query.filter(P.has_notes_predicate(db, project_id))
 
     if follow_status:
         if follow_status not in ("none", "in_review_any") and follow_status not in {s.value for s in FollowStatus}:
@@ -219,13 +219,13 @@ def build_filtered_host_query(
     if has_low_vulns:
         severities.append('LOW')
     if severities:
-        query = query.filter(P.severity_predicate(db, severities))
+        query = query.filter(P.severity_predicate(db, severities, project_id))
 
     if has_exploit_available:
-        query = query.filter(P.has_exploit_predicate(db))
+        query = query.filter(P.has_exploit_predicate(db, project_id))
 
     if has_test_execution:
-        query = query.filter(P.has_test_execution_predicate(db))
+        query = query.filter(P.has_test_execution_predicate(db, project_id))
 
     if scan_ids:
         try:

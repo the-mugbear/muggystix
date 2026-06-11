@@ -6,7 +6,6 @@ Must not import from the endpoint modules (agent_browse / agent_test_plans
 / agent_execution / agent_recon) to avoid circular imports.
 """
 
-from ipaddress import ip_network
 from typing import Dict, List, Optional
 
 from sqlalchemy import func, select
@@ -73,6 +72,7 @@ def _scoped_scan_ids_subq(db: Session, scope_id: int):
 
 def _apply_agent_host_filters(
     q, db: Session, *,
+    project_id: int,
     state: Optional[str] = None,
     ports: Optional[str] = None,
     services: Optional[str] = None,
@@ -84,115 +84,86 @@ def _apply_agent_host_filters(
     search: Optional[str] = None,
     not_in_plan_id: Optional[int] = None,
 ):
-    """Apply optional filters to a Host query. Returns the modified query."""
-    from sqlalchemy import text as sa_text
+    """Apply optional filters to a Host query. Returns the modified query.
+
+    Filter semantics live in the shared predicate library
+    (``host_query_predicates``) so the agent surface and the user-side
+    ``q=`` DSL / discrete-filter path can't drift.  The vuln-dimension
+    predicates (severity / exploit) take ``project_id`` and scope their
+    child-table subquery to it via a Host join — without that the
+    ``vulnerabilities`` scan materializes matching host-ids across EVERY
+    project before the outer filter trims them (the perf trap fixed
+    project-wide in the host_query refactor; the agent path had the same
+    unscoped subqueries until this unification).
+
+    The port/service dimensions keep the agent's "must be an *open* port"
+    semantics (the DSL ``port:`` leaf matches any state); services still
+    expand through ``_SERVICE_PORT_MAP`` to port numbers rather than
+    matching ``service_name`` text, which is the agent's intended model
+    ("give me web hosts" = standard web ports).
+    """
+    from app.services import host_query_predicates as P
 
     if state:
-        q = q.filter(models.Host.state == state)
+        q = q.filter(P.state_predicate([state]))
 
     if ports:
         port_nums = [int(p.strip()) for p in ports.split(",") if p.strip().isdigit()]
         if port_nums:
-            q = q.filter(
-                models.Host.id.in_(
-                    db.query(models.Port.host_id).filter(
-                        models.Port.port_number.in_(port_nums),
-                        models.Port.state == "open",
-                    )
-                )
-            )
+            q = q.filter(models.Host.id.in_(
+                P.port_match_subquery(db, ports=port_nums, require_open=True)
+            ))
 
     if services:
         svc_ports = set()
         for svc in services.split(","):
             svc_ports.update(_SERVICE_PORT_MAP.get(svc.strip().lower(), []))
         if svc_ports:
-            q = q.filter(
-                models.Host.id.in_(
-                    db.query(models.Port.host_id).filter(
-                        models.Port.port_number.in_(list(svc_ports)),
-                        models.Port.state == "open",
-                    )
-                )
-            )
+            q = q.filter(models.Host.id.in_(
+                P.port_match_subquery(db, ports=list(svc_ports), require_open=True)
+            ))
 
     if subnets:
-        from sqlalchemy import or_
-        cidr_conditions = []
-        for idx, cidr in enumerate(subnets.split(",")):
-            cidr = cidr.strip()
-            try:
-                ip_network(cidr, strict=False)
-                param_name = f"cidr_{idx}"
-                cidr_conditions.append(
-                    sa_text(f"hosts_v2.ip_address::inet <<= :{param_name}::inet")
-                    .bindparams(**{param_name: cidr})
-                )
-            except ValueError:
-                pass
-        if cidr_conditions:
-            q = q.filter(or_(*cidr_conditions))
+        pred = P.subnet_predicate([c.strip() for c in subnets.split(",") if c.strip()])
+        if pred is not None:
+            q = q.filter(pred)
 
     if min_severity:
         # Severity tiers — picking "high" matches hosts with at least one
         # vulnerability of severity high OR critical (i.e. high-or-above).
         # That's the mental model most users have, and avoids the AND
-        # surprise of the legacy has_critical_vulns + has_high_vulns pair
-        # below.  Both filters can coexist on the same plan; they layer.
+        # surprise of the has_critical_vulns + has_high_vulns pair below.
+        # Both filters can coexist on the same plan; they layer.
         _tiers = {
-            "critical": [VulnerabilitySeverity.CRITICAL],
-            "high":     [VulnerabilitySeverity.CRITICAL, VulnerabilitySeverity.HIGH],
-            "medium":   [VulnerabilitySeverity.CRITICAL, VulnerabilitySeverity.HIGH, VulnerabilitySeverity.MEDIUM],
-            "low":      [VulnerabilitySeverity.CRITICAL, VulnerabilitySeverity.HIGH, VulnerabilitySeverity.MEDIUM, VulnerabilitySeverity.LOW],
+            "critical": ["CRITICAL"],
+            "high":     ["CRITICAL", "HIGH"],
+            "medium":   ["CRITICAL", "HIGH", "MEDIUM"],
+            "low":      ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
         }
         sevs = _tiers.get(min_severity.lower())
         if sevs:
-            q = q.filter(
-                models.Host.id.in_(
-                    db.query(Vulnerability.host_id).filter(
-                        Vulnerability.severity.in_(sevs)
-                    )
-                )
-            )
+            q = q.filter(P.severity_predicate(db, sevs, project_id))
 
     if has_critical_vulns:
-        q = q.filter(
-            models.Host.id.in_(
-                db.query(Vulnerability.host_id).filter(
-                    Vulnerability.severity == VulnerabilitySeverity.CRITICAL
-                )
-            )
-        )
+        q = q.filter(P.severity_predicate(db, ["CRITICAL"], project_id))
 
     if has_high_vulns:
-        q = q.filter(
-            models.Host.id.in_(
-                db.query(Vulnerability.host_id).filter(
-                    Vulnerability.severity == VulnerabilitySeverity.HIGH
-                )
-            )
-        )
+        q = q.filter(P.severity_predicate(db, ["HIGH"], project_id))
 
     # v2.85.0 — exploit-available filter, surfaced on the agent side now
     # that v2.83.2 actually persists Vulnerability.exploitable from the
-    # Nessus parser.  Matches the user-side filter at host_query.py:371.
-    # Plan-gen agents use this to bias the entry rubric toward
-    # confirmed-real-world-exploitable findings instead of severity
-    # alone.
+    # Nessus parser.  Plan-gen agents use this to bias the entry rubric
+    # toward confirmed-real-world-exploitable findings over severity alone.
     if has_exploit_available:
-        q = q.filter(
-            models.Host.id.in_(
-                db.query(Vulnerability.host_id).filter(
-                    Vulnerability.exploitable.is_(True)
-                )
-            )
-        )
+        q = q.filter(P.has_exploit_predicate(db, project_id))
 
     if search:
         from sqlalchemy import or_
         from app.services.host_query_common import escape_like
         # Escape LIKE metacharacters so a literal % / _ in the agent's search
         # term isn't treated as a wildcard (matches the user-side filters).
+        # Kept inline: the agent search is ip/hostname/os_name only, narrower
+        # than os_predicate's os_name-OR-os_family union.
         pattern = f"%{escape_like(search)}%"
         q = q.filter(
             or_(

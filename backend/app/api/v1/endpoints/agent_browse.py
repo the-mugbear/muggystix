@@ -225,7 +225,8 @@ def list_hosts(
     if scoped_scope is not None:
         q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     q = _apply_agent_host_filters(
-        q, db, state=state, ports=ports, services=services, subnets=subnets,
+        q, db, project_id=agent.project_id,
+        state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         has_exploit_available=has_exploit_available,
         search=search, not_in_plan_id=not_in_plan_id,
