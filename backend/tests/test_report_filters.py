@@ -29,6 +29,24 @@ def test_report_threads_full_filter_context(fmt, client, test_project, monkeypat
         reports_mod.ReportGenerator, "get_hosts_for_report", spy, raising=True
     )
 
+    # The streaming CSV route drives off the cheap id-only query, not
+    # get_hosts_for_report — but both splat the SAME filters into
+    # _build_filtered_host_query, so CSV honours the full context too.  Patch
+    # it so the spy captures that path's filters as well (returns a stub whose
+    # .all() yields no rows).
+    class _EmptyIdQuery:
+        def all(self):
+            return []
+
+    def id_spy(self, filters):
+        captured.clear()
+        captured.update(filters)
+        return _EmptyIdQuery()
+
+    monkeypatch.setattr(
+        reports_mod.ReportGenerator, "_filtered_host_id_query", id_spy, raising=True
+    )
+
     resp = client.get(
         f"/api/v1/projects/{test_project.id}/reports/hosts/{fmt}",
         params={
