@@ -23,13 +23,6 @@ import {
 } from './ui/combobox';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
 import { Switch } from './ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { cn } from '../utils/cn';
@@ -685,32 +678,10 @@ const HostFilters: React.FC<HostFiltersProps> = ({
             "Show only" panel + nested "More filters" disclosure with one flat
             surface organised by what an analyst is actually asking. */}
 
-        {/* WORKFLOW — review, ownership, notes */}
-        <FilterSection title="Workflow">
-          <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
-            <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-review">Review status</Label>
-              <Select
-                value={filters.followFilter ?? 'any'}
-                onValueChange={(value) =>
-                  handleFilterChange(
-                    'followFilter',
-                    value === 'any' ? undefined : (value as 'none' | FollowStatus),
-                  )
-                }
-              >
-                <SelectTrigger id="hosts-filter-review">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">Any</SelectItem>
-                  <SelectItem value="none">Not reviewed</SelectItem>
-                  <SelectItem value="in_review">In review</SelectItem>
-                  <SelectItem value="reviewed">Reviewed</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+        {/* WORKFLOW — ownership, notes.  Review status is NOT here: it lives
+            in the always-visible chip row above the table (#45 — the card
+            dropdown was a redundant second control on the same followFilter). */}
+        <FilterSection title="Workflow" hint="review status: use the chips above the table">
           <div className="flex flex-wrap gap-xs">
             {PROPERTY_FILTERS.filter((p) => p.group === 'workflow').map((p) => (
               <ToggleChip
