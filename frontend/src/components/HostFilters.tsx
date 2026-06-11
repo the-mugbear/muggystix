@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
-  ChevronDown,
-  ChevronUp,
   Computer as ComputerIcon,
   Eye,
   FileText,
@@ -342,14 +340,27 @@ const SEVERITY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; act
 
 // Binary "show only" property filters (#42/#4) — each means "only hosts WITH
 // this", off means "don't filter" (the backend has_* params are positive-only).
-// Tooltips note provenance, verified against the parsers/predicates.
-const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; tooltip: string }> = [
-  { key: 'hasOpenPorts', label: 'Open ports', tooltip: 'Hosts with ≥1 open port — from any port scan (Nmap, Masscan, Naabu, RustScan…).' },
-  { key: 'hasExploitAvailable', label: 'Exploitable', tooltip: 'Hosts with a finding flagged exploitable — Nessus only: set when the plugin reports exploit_available, a Metasploit / Core Impact / Canvas module, or proof-of-concept-or-higher maturity.' },
-  { key: 'hasTestExecution', label: 'Tested by agent', tooltip: 'Hosts an agentic test plan was actually executed against (not merely drafted) — from the agent execution workflow.' },
-  { key: 'outOfScopeOnly', label: 'Out of scope', tooltip: 'Hosts outside every subnet in your defined scope — from your uploaded scope/subnets.' },
-  { key: 'assignedToMe', label: 'Assigned to me', tooltip: 'Hosts you own — explicitly assigned to you (the bulk Assign action) or that you took In Review / Reviewed.' },
+// Tooltips note provenance, verified against the parsers/predicates; `group`
+// places each chip in its intent section (#43).
+type FilterGroup = 'workflow' | 'risk' | 'exposure' | 'inventory';
+const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; tooltip: string; group: FilterGroup }> = [
+  { key: 'hasOpenPorts', label: 'Open ports', group: 'exposure', tooltip: 'Hosts with ≥1 open port — from any port scan (Nmap, Masscan, Naabu, RustScan…).' },
+  { key: 'hasExploitAvailable', label: 'Exploitable', group: 'risk', tooltip: 'Hosts with a finding flagged exploitable — Nessus only: set when the plugin reports exploit_available, a Metasploit / Core Impact / Canvas module, or proof-of-concept-or-higher maturity.' },
+  { key: 'hasTestExecution', label: 'Tested by agent', group: 'workflow', tooltip: 'Hosts an agentic test plan was actually executed against (not merely drafted) — from the agent execution workflow.' },
+  { key: 'outOfScopeOnly', label: 'Out of scope', group: 'inventory', tooltip: 'Hosts outside every subnet in your defined scope — from your uploaded scope/subnets.' },
+  { key: 'assignedToMe', label: 'Assigned to me', group: 'workflow', tooltip: 'Hosts you own — explicitly assigned to you (the bulk Assign action) or that you took In Review / Reviewed.' },
 ];
+
+/** A labelled filter group (#43) — one intent (Workflow / Risk / …) per box. */
+const FilterSection: React.FC<{ title: string; hint?: string; children: React.ReactNode }> = ({ title, hint, children }) => (
+  <div className="space-y-sm">
+    <div className="flex items-baseline gap-xs">
+      <h3 className="text-metadata font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3>
+      {hint && <span className="text-caption font-normal text-muted-foreground/80">{hint}</span>}
+    </div>
+    {children}
+  </div>
+);
 
 const HostFilters: React.FC<HostFiltersProps> = ({
   filters,
@@ -378,18 +389,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
   // lives in the command bar (maps to filters.query). The `/` focus shortcut
   // moved there too. filters.search may still arrive from a saved view or an
   // older shared URL, so it stays in the active-filter model (chip + counts).
-
-  // Advanced-filter collapse — persisted to localStorage so a user who
-  // prefers the full form stays expanded between page visits.
-  const [advancedOpen, setAdvancedOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem('hosts.advancedFiltersOpen') === 'true';
-  });
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('hosts.advancedFiltersOpen', advancedOpen ? 'true' : 'false');
-    }
-  }, [advancedOpen]);
 
   // Use a ref to always have the latest filters available to effects without
   // adding filters to the dependency array (which would defeat debouncing).
@@ -438,24 +437,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
     ].filter((active) => active).length;
   }, [filters, notesToggleAvailable]);
 
-  // Count only the filters that live in the collapsed advanced section
-  // so the badge next to "More filters" is accurate when collapsed.
-  // v5.2.0 — OS / ports / services / subnets / tags were surfaced into the
-  // always-visible grid, so they no longer count toward the advanced badge.
-  const advancedFiltersActive = useMemo(() => {
-    return [
-      (filters.portStates?.length ?? 0) > 0,
-      (filters.tech?.length ?? 0) > 0,
-      (filters.subnetLabels?.length ?? 0) > 0,
-    ].filter((active) => active).length;
-  }, [filters]);
-
-  useEffect(() => {
-    if (advancedFiltersActive > 0 && !advancedOpen) {
-      setAdvancedOpen(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const handleFilterChange = <K extends keyof HostFilterOptions>(
     key: K,
@@ -692,250 +673,140 @@ const HostFilters: React.FC<HostFiltersProps> = ({
           </h3>
         </div>
 
-        {/* Common filter grid — selects + comboboxes only.  Switches
-            moved into their own sub-panel below (v4.26.0) so the
-            mixed-cell-height look is gone.  Exception: the
-            "first-seen" switch stays paired with the scans combobox
-            because its enablement depends on a non-empty scan
-            selection — keeping them spatially adjacent surfaces the
-            dependency. */}
-        <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
-          {/* Scan discovery filter */}
-          <div className="space-y-xxs md:col-span-2 lg:col-span-2">
-            <Label htmlFor="hosts-filter-scans" id="hosts-filter-scans-label">Discovered in scans</Label>
-            <Combobox
-              id="hosts-filter-scans"
-              multiple
-              options={scanOptions}
-              values={filters.scanIds ?? []}
-              onValuesChange={(values) =>
-                handleFilterChange('scanIds', values.length ? values : undefined)
-              }
-              placeholder="Select scans…"
-              emptyMessage={facetEmpty('No scans available.')}
-            />
-          </div>
+        {/* Intent-grouped sections (v5.66.1) — replaces the mixed grid +
+            "Show only" panel + nested "More filters" disclosure with one flat
+            surface organised by what an analyst is actually asking. */}
 
-          {/* Wrapped in a label-on-top cell to match the surrounding
-              combobox/select cells' vertical rhythm — without this
-              wrap the SwitchRow's flex-row alignment misaligned with
-              the controls in the same grid track. */}
-          <div className="space-y-xxs">
-            <Label className="text-metadata text-transparent" aria-hidden>
-              &nbsp;
-            </Label>
-            <SwitchRow
-              id="hosts-filter-first-seen"
-              label="Only first discovered in selected scans"
-              checked={filters.firstSeenInSelectedScans || false}
-              disabled={!filters.scanIds || filters.scanIds.length === 0}
-              onCheckedChange={(checked) =>
-                handleFilterChange('firstSeenInSelectedScans', checked ? true : undefined)
-              }
-            />
-          </div>
-
-          {/* Host state control removed (v5.65.1) — in practice every
-              detected host is "up" (or "unknown"); the nmap parser drops bare
-              down-hosts, so the Up/Down select was clutter that also hid
-              "unknown" hosts.  The `state` param stays for DSL `state:` use. */}
-
-          {/* Review status — team-shared.  Lives in the card (not only the
-              sticky-bar chips) so it composes with the property toggles
-              below: e.g. "Critical vulnerabilities" + "Not reviewed" =
-              critical hosts nobody is looking at.  Writes the same
-              filters.followFilter the sticky chips do, so the two stay in
-              sync. */}
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-review">Review status</Label>
-            <Select
-              value={filters.followFilter ?? 'any'}
-              onValueChange={(value) =>
-                handleFilterChange(
-                  'followFilter',
-                  value === 'any' ? undefined : (value as 'none' | FollowStatus),
-                )
-              }
-            >
-              <SelectTrigger id="hosts-filter-review">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="any">Any</SelectItem>
-                <SelectItem value="none">Not reviewed</SelectItem>
-                <SelectItem value="in_review">In review</SelectItem>
-                <SelectItem value="reviewed">Reviewed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* v5.2.0 — common network filters surfaced into the always-visible
-              grid (were behind "More filters"). Ports/services/OS/tags/subnets
-              are everyday triage filters, so they no longer require a click. */}
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-os" id="hosts-filter-os-label">Operating system</Label>
-            <Combobox
-              id="hosts-filter-os"
-              options={osOptions}
-              value={filters.osFilter ?? null}
-              onChange={(value) => handleFilterChange('osFilter', value ?? undefined)}
-              placeholder="Any"
-              emptyMessage={facetEmpty('No OSes seen yet.')}
-            />
-          </div>
-
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-ports" id="hosts-filter-ports-label">Ports</Label>
-            <Combobox
-              id="hosts-filter-ports"
-              multiple
-              options={portOptions}
-              values={filters.ports ?? []}
-              onValuesChange={(values) =>
-                handleFilterChange('ports', values.length ? values : undefined)
-              }
-              placeholder="Select ports…"
-              emptyMessage={facetEmpty('No ports seen yet.')}
-            />
-          </div>
-
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-services" id="hosts-filter-services-label">Services</Label>
-            <Combobox
-              id="hosts-filter-services"
-              multiple
-              options={serviceOptions}
-              values={filters.services ?? []}
-              onValuesChange={(values) =>
-                handleFilterChange('services', values.length ? values : undefined)
-              }
-              placeholder="Select services…"
-              emptyMessage={facetEmpty('No services seen yet.')}
-            />
-          </div>
-
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-subnets" id="hosts-filter-subnets-label">Subnets</Label>
-            <Combobox
-              id="hosts-filter-subnets"
-              multiple
-              options={subnetOptions}
-              values={filters.subnets ?? []}
-              onValuesChange={(values) =>
-                handleFilterChange('subnets', values.length ? values : undefined)
-              }
-              placeholder="Select subnets…"
-              emptyMessage={facetEmpty('No subnets configured.')}
-            />
-          </div>
-
-          <div className="space-y-xxs">
-            <Label htmlFor="hosts-filter-tags" id="hosts-filter-tags-label">Tags</Label>
-            <Combobox
-              id="hosts-filter-tags"
-              multiple
-              options={tagOptions}
-              values={filters.tags ?? []}
-              onValuesChange={(values) =>
-                handleFilterChange('tags', values.length ? values : undefined)
-              }
-              placeholder="Filter by tag…"
-              emptyMessage={facetEmpty('No tags created yet.')}
-            />
-          </div>
-        </div>
-
-        {/* Property filters as toggle-chips (v5.64.0) — replaces the row of
-            switches + the Web-interface dropdown.  Denser, single-click, and
-            consistent; severity becomes one multi-select that mirrors the
-            backend's OR; web surface is honest about meaning "recorded web
-            row", not "proof of (no) web service". */}
-        <div className="space-y-sm rounded-control border border-border/60 bg-muted/30 p-sm">
-          <div>
-            <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">
-              Vulnerability severity
-              <span className="ml-xs font-normal normal-case tracking-normal text-muted-foreground/80">matches any selected</span>
-            </p>
-            <div className="flex flex-wrap gap-xs">
-              {SEVERITY_FILTERS.map((s) => (
-                <ToggleChip
-                  key={s.key}
-                  label={s.label}
-                  active={filters[s.key] === true}
-                  activeClass={s.activeClass}
-                  tooltip={s.tooltip}
-                  onToggle={() => handleFilterChange(s.key, filters[s.key] ? undefined : true)}
-                />
-              ))}
+        {/* WORKFLOW — review, ownership, notes */}
+        <FilterSection title="Workflow">
+          <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-review">Review status</Label>
+              <Select
+                value={filters.followFilter ?? 'any'}
+                onValueChange={(value) =>
+                  handleFilterChange(
+                    'followFilter',
+                    value === 'any' ? undefined : (value as 'none' | FollowStatus),
+                  )
+                }
+              >
+                <SelectTrigger id="hosts-filter-review">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any</SelectItem>
+                  <SelectItem value="none">Not reviewed</SelectItem>
+                  <SelectItem value="in_review">In review</SelectItem>
+                  <SelectItem value="reviewed">Reviewed</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
-
-          <div>
-            <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">Show only</p>
-            <div className="flex flex-wrap gap-xs">
-              {PROPERTY_FILTERS.map((p) => (
-                <ToggleChip
-                  key={p.key}
-                  label={p.label}
-                  active={filters[p.key] === true}
-                  tooltip={p.tooltip}
-                  onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
-                />
-              ))}
-              {notesToggleAvailable && (
-                <ToggleChip
-                  label="With notes"
-                  active={onlyWithNotes}
-                  tooltip="Hosts with ≥1 analyst note — from in-app notes."
-                  onToggle={() => handleOnlyWithNotesChange(!onlyWithNotes)}
-                />
-              )}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">Web surface</p>
-            <div className="flex flex-wrap gap-xs">
+          <div className="flex flex-wrap gap-xs">
+            {PROPERTY_FILTERS.filter((p) => p.group === 'workflow').map((p) => (
               <ToggleChip
-                label="Detected"
-                active={filters.hasWebInterface === true}
-                tooltip="Hosts with a detected web interface — from web-detection imports (httpx, EyeWitness, WhatWeb)."
-                onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === true ? undefined : true)}
+                key={p.key}
+                label={p.label}
+                active={filters[p.key] === true}
+                tooltip={p.tooltip}
+                onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
               />
+            ))}
+            {notesToggleAvailable && (
               <ToggleChip
-                label="Not detected"
-                active={filters.hasWebInterface === false}
-                tooltip="Hosts with no recorded web-interface row — absence of evidence (httpx/EyeWitness/WhatWeb never saw one), not proof there's no web service."
-                onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === false ? undefined : false)}
+                label="With notes"
+                active={onlyWithNotes}
+                tooltip="Hosts with ≥1 analyst note — from in-app notes."
+                onToggle={() => handleOnlyWithNotesChange(!onlyWithNotes)}
               />
-            </div>
-          </div>
-        </div>
-
-        {/* Advanced collapse */}
-        <div className="flex flex-wrap items-center gap-xs pt-xxs">
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-expanded={advancedOpen}
-            aria-controls="host-filters-advanced"
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            {advancedOpen ? (
-              <ChevronUp className="size-3.5" aria-hidden />
-            ) : (
-              <ChevronDown className="size-3.5" aria-hidden />
             )}
-            {advancedOpen ? 'Hide advanced filters' : 'More filters'}
-          </Button>
-          {advancedFiltersActive > 0 && !advancedOpen && (
-            <Badge variant="default">{advancedFiltersActive} active</Badge>
-          )}
-        </div>
+          </div>
+        </FilterSection>
 
-        {advancedOpen && (
-          <div id="host-filters-advanced" className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
-            {/* Port states */}
+        <div className="h-px bg-border" role="separator" />
+
+        {/* RISK — vulnerabilities */}
+        <FilterSection title="Risk" hint="severity matches any selected">
+          <div className="flex flex-wrap gap-xs">
+            {SEVERITY_FILTERS.map((s) => (
+              <ToggleChip
+                key={s.key}
+                label={s.label}
+                active={filters[s.key] === true}
+                activeClass={s.activeClass}
+                tooltip={s.tooltip}
+                onToggle={() => handleFilterChange(s.key, filters[s.key] ? undefined : true)}
+              />
+            ))}
+            {PROPERTY_FILTERS.filter((p) => p.group === 'risk').map((p) => (
+              <ToggleChip
+                key={p.key}
+                label={p.label}
+                active={filters[p.key] === true}
+                tooltip={p.tooltip}
+                onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
+              />
+            ))}
+          </div>
+        </FilterSection>
+
+        <div className="h-px bg-border" role="separator" />
+
+        {/* NETWORK EXPOSURE — web surface, open ports/services/tech */}
+        <FilterSection title="Network exposure">
+          <div className="flex flex-wrap gap-xs">
+            {PROPERTY_FILTERS.filter((p) => p.group === 'exposure').map((p) => (
+              <ToggleChip
+                key={p.key}
+                label={p.label}
+                active={filters[p.key] === true}
+                tooltip={p.tooltip}
+                onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
+              />
+            ))}
+            <ToggleChip
+              label="Web: detected"
+              active={filters.hasWebInterface === true}
+              tooltip="Hosts with a detected web interface — from web-detection imports (httpx, EyeWitness, WhatWeb)."
+              onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === true ? undefined : true)}
+            />
+            <ToggleChip
+              label="Web: not detected"
+              active={filters.hasWebInterface === false}
+              tooltip="Hosts with no recorded web-interface row — absence of evidence (httpx/EyeWitness/WhatWeb never saw one), not proof there's no web service."
+              onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === false ? undefined : false)}
+            />
+          </div>
+          <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-ports" id="hosts-filter-ports-label">Ports</Label>
+              <Combobox
+                id="hosts-filter-ports"
+                multiple
+                options={portOptions}
+                values={filters.ports ?? []}
+                onValuesChange={(values) =>
+                  handleFilterChange('ports', values.length ? values : undefined)
+                }
+                placeholder="Select ports…"
+                emptyMessage={facetEmpty('No ports seen yet.')}
+              />
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-services" id="hosts-filter-services-label">Services</Label>
+              <Combobox
+                id="hosts-filter-services"
+                multiple
+                options={serviceOptions}
+                values={filters.services ?? []}
+                onValuesChange={(values) =>
+                  handleFilterChange('services', values.length ? values : undefined)
+                }
+                placeholder="Select services…"
+                emptyMessage={facetEmpty('No services seen yet.')}
+              />
+            </div>
             <div className="space-y-xxs">
               <Label htmlFor="hosts-filter-port-states" id="hosts-filter-port-states-label">Port states</Label>
               <Combobox
@@ -949,8 +820,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 placeholder="Any"
               />
             </div>
-
-            {/* Tech */}
             <div className="space-y-xxs">
               <Label htmlFor="hosts-filter-tech" id="hosts-filter-tech-label">Technologies</Label>
               <Combobox
@@ -965,9 +834,64 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 emptyMessage={facetEmpty('No technologies fingerprinted yet.')}
               />
             </div>
+          </div>
+        </FilterSection>
 
-            {/* Subnet labels (v2.86.0) — distinct vocabulary from tags;
-                AND between the two groups, OR within each. */}
+        <div className="h-px bg-border" role="separator" />
+
+        {/* INVENTORY & LOCATION — OS, network location, labels */}
+        <FilterSection title="Inventory & location">
+          <div className="flex flex-wrap gap-xs">
+            {PROPERTY_FILTERS.filter((p) => p.group === 'inventory').map((p) => (
+              <ToggleChip
+                key={p.key}
+                label={p.label}
+                active={filters[p.key] === true}
+                tooltip={p.tooltip}
+                onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
+              />
+            ))}
+          </div>
+          <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-os" id="hosts-filter-os-label">Operating system</Label>
+              <Combobox
+                id="hosts-filter-os"
+                options={osOptions}
+                value={filters.osFilter ?? null}
+                onChange={(value) => handleFilterChange('osFilter', value ?? undefined)}
+                placeholder="Any"
+                emptyMessage={facetEmpty('No OSes seen yet.')}
+              />
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-subnets" id="hosts-filter-subnets-label">Subnets</Label>
+              <Combobox
+                id="hosts-filter-subnets"
+                multiple
+                options={subnetOptions}
+                values={filters.subnets ?? []}
+                onValuesChange={(values) =>
+                  handleFilterChange('subnets', values.length ? values : undefined)
+                }
+                placeholder="Select subnets…"
+                emptyMessage={facetEmpty('No subnets configured.')}
+              />
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-tags" id="hosts-filter-tags-label">Tags</Label>
+              <Combobox
+                id="hosts-filter-tags"
+                multiple
+                options={tagOptions}
+                values={filters.tags ?? []}
+                onValuesChange={(values) =>
+                  handleFilterChange('tags', values.length ? values : undefined)
+                }
+                placeholder="Filter by tag…"
+                emptyMessage={facetEmpty('No tags created yet.')}
+              />
+            </div>
             <div className="space-y-xxs">
               <Label htmlFor="hosts-filter-subnet-labels" id="hosts-filter-subnet-labels-label">
                 Subnet labels
@@ -985,7 +909,43 @@ const HostFilters: React.FC<HostFiltersProps> = ({
               />
             </div>
           </div>
-        )}
+        </FilterSection>
+
+        <div className="h-px bg-border" role="separator" />
+
+        {/* DISCOVERY — which scans found the host */}
+        <FilterSection title="Discovery">
+          <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
+            <div className="space-y-xxs md:col-span-2 lg:col-span-2">
+              <Label htmlFor="hosts-filter-scans" id="hosts-filter-scans-label">Discovered in scans</Label>
+              <Combobox
+                id="hosts-filter-scans"
+                multiple
+                options={scanOptions}
+                values={filters.scanIds ?? []}
+                onValuesChange={(values) =>
+                  handleFilterChange('scanIds', values.length ? values : undefined)
+                }
+                placeholder="Select scans…"
+                emptyMessage={facetEmpty('No scans available.')}
+              />
+            </div>
+            <div className="space-y-xxs">
+              <Label className="text-metadata text-transparent" aria-hidden>
+                &nbsp;
+              </Label>
+              <SwitchRow
+                id="hosts-filter-first-seen"
+                label="Only first discovered in selected scans"
+                checked={filters.firstSeenInSelectedScans || false}
+                disabled={!filters.scanIds || filters.scanIds.length === 0}
+                onCheckedChange={(checked) =>
+                  handleFilterChange('firstSeenInSelectedScans', checked ? true : undefined)
+                }
+              />
+            </div>
+          </div>
+        </FilterSection>
 
         {/* v4.26.0 — the bottom "N filters active" Alert was redundant
             with the top-of-card count badge + Clear-all button (this

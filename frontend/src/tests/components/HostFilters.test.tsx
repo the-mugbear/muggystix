@@ -1,6 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import HostFilters from '../../components/HostFilters';
 
@@ -32,23 +31,24 @@ describe('HostFilters layout', () => {
     expect(screen.queryByLabelText('Search hosts')).not.toBeInTheDocument();
   });
 
-  it('surfaces common network filters without opening "More filters"', () => {
+  it('surfaces every filter in flat intent sections — no "More filters" disclosure', () => {
     renderFilters();
-    // Visible immediately (advanced section is collapsed by default).
-    for (const label of ['Operating system', 'Ports', 'Services', 'Subnets', 'Tags']) {
+    // v5.66.1 — the nested disclosure is gone; all controls render directly,
+    // including the formerly-advanced ones (Port states / Technologies /
+    // Subnet labels).
+    for (const label of [
+      'Operating system', 'Ports', 'Services', 'Subnets', 'Tags',
+      'Port states', 'Technologies', 'Subnet labels', 'Review status', 'Discovered in scans',
+    ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    // Genuinely-advanced filters stay behind the disclosure.
-    // (The "Min risk score" filter was removed with the dead risk-scoring
-    // subsystem.)
-    expect(screen.queryByText('Port states')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /More filters/i })).not.toBeInTheDocument();
   });
 
-  it('keeps less-common filters in the single "More filters" disclosure', async () => {
-    const user = userEvent.setup();
+  it('groups controls under intent section headers', () => {
     renderFilters();
-    await user.click(screen.getByRole('button', { name: /More filters/i }));
-    await waitFor(() => expect(screen.getByText('Port states')).toBeInTheDocument());
-    expect(screen.getByText('Technologies')).toBeInTheDocument();
+    for (const section of ['Workflow', 'Risk', 'Network exposure', 'Inventory & location', 'Discovery']) {
+      expect(screen.getByText(section)).toBeInTheDocument();
+    }
   });
 });
