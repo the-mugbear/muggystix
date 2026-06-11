@@ -95,6 +95,11 @@ const Profile: React.FC = () => {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordError, setPasswordError] = useState<string>('');
+  // Block submit + announce when the confirmation diverges (a11y: associated
+  // with the field via role=alert + aria-describedby).
+  const passwordMismatch =
+    passwordForm.confirm_password.length > 0 &&
+    passwordForm.new_password !== passwordForm.confirm_password;
 
   const [sessions, setSessions] = useState<UserSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
@@ -498,12 +503,15 @@ const Profile: React.FC = () => {
                 onChange={(e) =>
                   setPasswordForm({ ...passwordForm, confirm_password: e.target.value })
                 }
+                aria-invalid={passwordMismatch}
+                aria-describedby={passwordMismatch ? 'profile-pw-mismatch' : undefined}
                 required
               />
-              {passwordForm.confirm_password.length > 0 &&
-                passwordForm.new_password !== passwordForm.confirm_password && (
-                  <p className="text-caption text-warning">Passwords do not match</p>
-                )}
+              {passwordMismatch && (
+                <p id="profile-pw-mismatch" role="alert" className="text-caption text-warning">
+                  Passwords do not match
+                </p>
+              )}
             </div>
             <DialogFooter>
               <Button
@@ -514,7 +522,7 @@ const Profile: React.FC = () => {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={passwordSaving}>
+              <Button type="submit" disabled={passwordSaving || passwordMismatch}>
                 {passwordSaving ? (
                   <>
                     <Loader2 className="size-4 animate-spin" aria-hidden /> Changing…

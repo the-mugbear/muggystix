@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import { useNavigate, useLocation, useNavigationType, NavLink } from 'react-router-dom';
+import { useNavigate, useLocation, useNavigationType, NavLink, Link } from 'react-router-dom';
 import {
   FolderOpen,
   MenuIcon,
@@ -414,6 +414,21 @@ export default function Layout({ children }: LayoutProps) {
     [activeHub, hasPermission],
   );
 
+  // The single active secondary tab is the LONGEST matching child path, not
+  // every prefix.  Without this, a parent tab (/insights) and its sub-tab
+  // (/insights/systemic) both highlighted because NavLink's prefix match lit
+  // up both — so exactly one tab is "active" even when paths nest.
+  const activeChildPath = React.useMemo(() => {
+    let best = '';
+    for (const child of visibleHubChildren) {
+      const matches =
+        location.pathname === child.path ||
+        location.pathname.startsWith(child.path + '/');
+      if (matches && child.path.length > best.length) best = child.path;
+    }
+    return best;
+  }, [visibleHubChildren, location.pathname]);
+
   // Page title in the topbar: prefer the most-specific match.  If the
   // user is on a child path, show that child's label; otherwise show
   // the hub label.
@@ -561,13 +576,17 @@ export default function Layout({ children }: LayoutProps) {
       role="navigation"
       aria-label={`${activeHub.label} sections`}
     >
-      {visibleHubChildren.map((child) => (
-        <NavLink
-          key={child.path}
-          to={child.path}
-          end={false}
-          className={({ isActive }) =>
-            cn(
+      {visibleHubChildren.map((child) => {
+        // Active = longest-prefix match only (see activeChildPath); plain Link
+        // so we own both the styling and aria-current, instead of NavLink's
+        // prefix-based isActive which double-lit nested tabs.
+        const isActive = child.path === activeChildPath;
+        return (
+          <Link
+            key={child.path}
+            to={child.path}
+            aria-current={isActive ? 'page' : undefined}
+            className={cn(
               // Bottom-border indicator on active matches the strip's
               // "tab row" reading.  Hover lifts to text-foreground
               // for keyboard discoverability without painting the bg.
@@ -578,12 +597,12 @@ export default function Layout({ children }: LayoutProps) {
               isActive
                 ? 'border-b-primary text-foreground'
                 : 'border-b-transparent text-muted-foreground hover:text-foreground',
-            )
-          }
-        >
-          {child.label}
-        </NavLink>
-      ))}
+            )}
+          >
+            {child.label}
+          </Link>
+        );
+      })}
       {/* Right-edge fade hints there's more to scroll into view; the
           pointer-events-none keeps clicks pass-through to the tabs. */}
       <div

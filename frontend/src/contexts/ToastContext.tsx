@@ -48,6 +48,11 @@ export interface ToastOptions {
    * N) so we never spam a queue.
    */
   id?: string | number;
+  /**
+   * Optional inline action button (e.g. "Undo").  Backs reversible
+   * destructive flows — the click handler runs the reversal.
+   */
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastContextValue {
@@ -87,6 +92,9 @@ function dispatch(severity: ToastSeverity, message: string, options?: ToastOptio
   const sonnerOpts = {
     id: options?.id,
     duration: resolveDuration(severity, options),
+    action: options?.action
+      ? { label: options.action.label, onClick: options.action.onClick }
+      : undefined,
   };
   switch (severity) {
     case 'success':

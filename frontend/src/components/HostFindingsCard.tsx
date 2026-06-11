@@ -7,6 +7,7 @@
  * changes (the inspector bumps it after a promote).
  */
 import React, { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AlertHexIcon } from './AppIcons';
 
 import {
@@ -16,7 +17,9 @@ import {
   listFindings,
   setFindingStatus,
 } from '../services/api';
+import { TERMINAL_STATUSES } from '../utils/findingStatus';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { FindingHistoryButton } from './FindingHistoryButton';
@@ -54,6 +57,9 @@ interface HostFindingsCardProps {
 
 const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey }) => {
   const toast = useToast();
+  const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const canManage = hasPermission('analyst');
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loaded, setLoaded] = useState(false);
 
@@ -73,6 +79,12 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
   }, [fetchFindings, refreshKey]);
 
   const handleStatus = async (id: number, status: FindingStatus) => {
+    // Terminal dispositions carry an audit rationale — hand off to the canonical
+    // finding workspace (which prompts for it) instead of applying silently here.
+    if (TERMINAL_STATUSES.has(status)) {
+      navigate(`/findings/${id}`);
+      return;
+    }
     try {
       const updated = await setFindingStatus(id, status);
       setFindings((prev) => prev.map((f) => (f.id === id ? updated : f)));
@@ -110,16 +122,20 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
             ) : (
               <span className="min-w-0 flex-1 truncate" title={f.title}>{f.title}</span>
             )}
-            <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
-              <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
-                  <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {canManage ? (
+              <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
+                <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                    <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Badge variant="muted">{STATUS_LABEL[f.status]}</Badge>
+            )}
             <FindingHistoryButton findingId={f.id} />
           </div>
         ))}

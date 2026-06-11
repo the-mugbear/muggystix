@@ -20,6 +20,8 @@ import {
   setFindingStatus,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
+import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -63,8 +65,16 @@ const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
   info: 'muted',
 };
 
+type SummaryPrompt =
+  | { kind: 'single'; findingId: number; status: FindingStatus; title: string }
+  | { kind: 'bulk'; status: FindingStatus; ids: number[] };
+
 const Findings: React.FC = () => {
   const toast = useToast();
+  const { hasPermission } = useAuth();
+  // Viewers may read findings but not dispose/select; analyst+ may triage.
+  const canManage = hasPermission('analyst');
+  const [confirmDialog, confirm] = useConfirm();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [total, setTotal] = useState(0);
   const [sevCounts, setSevCounts] = useState<Partial<Record<FindingSeverity, number>>>({});
@@ -78,9 +88,7 @@ const Findings: React.FC = () => {
   // Bulk triage — selected finding ids on the current page.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkApplying, setBulkApplying] = useState(false);
-  const [summaryPrompt, setSummaryPrompt] = useState<
-    { findingId: number; status: FindingStatus; title: string } | null
-  >(null);
+  const [summaryPrompt, setSummaryPrompt] = useState<SummaryPrompt | null>(null);
   const [summaryText, setSummaryText] = useState('');
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || sourceFilter !== 'all';
@@ -143,12 +151,12 @@ const Findings: React.FC = () => {
       return next;
     });
 
-  const applyBulkStatus = async (status: FindingStatus) => {
-    const ids = [...selected];
-    if (ids.length === 0) return;
+  // The actual bulk apply, with one optional rationale applied to every row's
+  // history (the terminal-disposition audit trail).
+  const runBulk = async (ids: number[], status: FindingStatus, summary?: string) => {
     setBulkApplying(true);
     try {
-      const results = await Promise.allSettled(ids.map((id) => setFindingStatus(id, status)));
+      const results = await Promise.allSettled(ids.map((id) => setFindingStatus(id, status, summary)));
       const updatedById = new Map<number, Finding>();
       let failed = 0;
       results.forEach((r, i) => {
@@ -170,6 +178,26 @@ const Findings: React.FC = () => {
     }
   };
 
+  const applyBulkStatus = async (status: FindingStatus) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (TERMINAL_STATUSES.has(status)) {
+      // Terminal bulk disposition: collect ONE rationale (applied to every
+      // history row) + show the count — same audit discipline as the
+      // single-finding flow, instead of silently applying to up to 200.
+      setSummaryText('');
+      setTimeout(() => setSummaryPrompt({ kind: 'bulk', status, ids }), 0);
+      return;
+    }
+    // Non-terminal bulk move: confirm the blast radius before applying.
+    const ok = await confirm({
+      title: `Set ${ids.length} finding${ids.length === 1 ? '' : 's'} to ${STATUS_LABEL[status]}?`,
+      severity: 'warning',
+      confirmLabel: 'Apply',
+    });
+    if (ok) await runBulk(ids, status);
+  };
+
   const handleStatusChange = (findingId: number, status: FindingStatus, title: string) => {
     // Terminal dispositions get a "why" prompt (the summary is the audit
     // rationale on the history trail); non-terminal moves apply immediately.
@@ -178,7 +206,7 @@ const Findings: React.FC = () => {
       // Defer the dialog open to the next tick: opening a modal Dialog inside
       // a Radix Select's onValueChange races the Select's dismiss layer, which
       // can leave the body pointer-events:none so the dialog never appears.
-      setTimeout(() => setSummaryPrompt({ findingId, status, title }), 0);
+      setTimeout(() => setSummaryPrompt({ kind: 'single', findingId, status, title }), 0);
     } else {
       void applyStatus(findingId, status, title);
     }
@@ -283,13 +311,15 @@ const Findings: React.FC = () => {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
-                  <Checkbox
-                    aria-label="Select all findings on this page"
-                    checked={findings.length > 0 && findings.every((f) => selected.has(f.id))}
-                    onCheckedChange={(v) =>
-                      setSelected(v ? new Set(findings.map((f) => f.id)) : new Set())
-                    }
-                  />
+                  {canManage && (
+                    <Checkbox
+                      aria-label="Select all findings on this page"
+                      checked={findings.length > 0 && findings.every((f) => selected.has(f.id))}
+                      onCheckedChange={(v) =>
+                        setSelected(v ? new Set(findings.map((f) => f.id)) : new Set())
+                      }
+                    />
+                  )}
                 </TableHead>
                 <TableHead className="w-28">Severity</TableHead>
                 <TableHead>Title</TableHead>
@@ -329,11 +359,13 @@ const Findings: React.FC = () => {
               {!loading && !error && findings.map((f) => (
                 <TableRow key={f.id} data-state={selected.has(f.id) ? 'selected' : undefined}>
                   <TableCell>
-                    <Checkbox
-                      aria-label={`Select ${f.title}`}
-                      checked={selected.has(f.id)}
-                      onCheckedChange={() => toggleSelected(f.id)}
-                    />
+                    {canManage && (
+                      <Checkbox
+                        aria-label={`Select ${f.title}`}
+                        checked={selected.has(f.id)}
+                        onCheckedChange={() => toggleSelected(f.id)}
+                      />
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge variant={SEVERITY_VARIANT[f.severity] as never}>
@@ -355,22 +387,26 @@ const Findings: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-xxs">
-                      <Select
-                        value={f.status}
-                        onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
-                      >
-                        <SelectTrigger
-                          className="h-7 text-caption"
-                          aria-label={`Status for ${f.title}`}
+                      {canManage ? (
+                        <Select
+                          value={f.status}
+                          onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
                         >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
-                            <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                          <SelectTrigger
+                            className="h-7 text-caption"
+                            aria-label={`Status for ${f.title}`}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                              <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Badge variant="muted">{STATUS_LABEL[f.status]}</Badge>
+                      )}
                       <FindingHistoryButton findingId={f.id} />
                     </div>
                   </TableCell>
@@ -427,10 +463,16 @@ const Findings: React.FC = () => {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              Mark {summaryPrompt ? STATUS_LABEL[summaryPrompt.status] : ''}
+              {summaryPrompt
+                ? summaryPrompt.kind === 'bulk'
+                  ? `Mark ${summaryPrompt.ids.length} finding${summaryPrompt.ids.length === 1 ? '' : 's'} ${STATUS_LABEL[summaryPrompt.status]}`
+                  : `Mark ${STATUS_LABEL[summaryPrompt.status]}`
+                : ''}
             </DialogTitle>
             <DialogDescription>
-              Optionally record why — this is kept on the finding's disposition history.
+              {summaryPrompt?.kind === 'bulk'
+                ? 'One reason is recorded on every selected finding’s disposition history.'
+                : 'Optionally record why — this is kept on the finding’s disposition history.'}
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -447,7 +489,9 @@ const Findings: React.FC = () => {
               onClick={() => {
                 const p = summaryPrompt;
                 setSummaryPrompt(null);
-                if (p) void applyStatus(p.findingId, p.status, p.title);
+                if (!p) return;
+                if (p.kind === 'single') void applyStatus(p.findingId, p.status, p.title);
+                else void runBulk(p.ids, p.status);
               }}
             >
               Skip
@@ -455,8 +499,11 @@ const Findings: React.FC = () => {
             <Button
               onClick={() => {
                 const p = summaryPrompt;
+                const summary = summaryText.trim() || undefined;
                 setSummaryPrompt(null);
-                if (p) void applyStatus(p.findingId, p.status, p.title, summaryText.trim() || undefined);
+                if (!p) return;
+                if (p.kind === 'single') void applyStatus(p.findingId, p.status, p.title, summary);
+                else void runBulk(p.ids, p.status, summary);
               }}
             >
               Save
@@ -464,6 +511,7 @@ const Findings: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {confirmDialog}
     </div>
   );
 };

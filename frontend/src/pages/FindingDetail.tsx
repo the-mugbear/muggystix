@@ -21,8 +21,11 @@ import {
   setFindingStatus,
   updateFinding,
   removeFindingHost,
+  addFindingHosts,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
+import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
@@ -58,6 +61,11 @@ const FindingDetail: React.FC = () => {
   const id = Number(findingId);
   const toast = useToast();
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  // Findings routes admit viewers (read-only); analyst+ may dispose/detach.
+  // Gate the write affordances so viewers see history without 403-bait controls.
+  const canManage = hasPermission('analyst');
+  const [confirmDialog, confirm] = useConfirm();
 
   const [finding, setFinding] = useState<Finding | null>(null);
   const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
@@ -127,10 +135,31 @@ const FindingDetail: React.FC = () => {
 
   const handleRemoveHost = async (hostId: number) => {
     if (!finding) return;
+    const host = finding.hosts.find((h) => h.host_id === hostId);
+    const label = host?.ip_address || host?.hostname || `Host ${hostId}`;
+    // Detaching deletes the finding↔host link (no in-place re-add UI), so
+    // confirm first and offer an immediate Undo via addFindingHosts.
+    const ok = await confirm({
+      title: 'Detach host from finding?',
+      body: `"${label}" will be removed from this finding.`,
+      resourceName: label,
+      severity: 'danger',
+      confirmLabel: 'Detach',
+    });
+    if (!ok) return;
     try {
       const updated = await removeFindingHost(finding.id, hostId);
       setFinding(updated);
-      toast.success('Host detached from finding.');
+      toast.success(`Detached ${label}.`, {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            addFindingHosts(finding.id, [hostId])
+              .then((reverted) => { setFinding(reverted); toast.success(`Re-attached ${label}.`); })
+              .catch((err) => toast.error(formatApiError(err, 'Failed to undo detach.')));
+          },
+        },
+      });
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to remove host.'));
     }
@@ -164,29 +193,37 @@ const FindingDetail: React.FC = () => {
       <div className="mb-md flex flex-wrap items-center gap-md text-metadata">
         <div className="flex items-center gap-xs">
           <span className="text-muted-foreground">Status</span>
-          <Select value={finding.status} onValueChange={(v) => handleStatus(v as FindingStatus)}>
-            <SelectTrigger className="h-7 w-[10rem] text-caption" aria-label="Finding status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
-                <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {canManage ? (
+            <Select value={finding.status} onValueChange={(v) => handleStatus(v as FindingStatus)}>
+              <SelectTrigger className="h-7 w-[10rem] text-caption" aria-label="Finding status">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                  <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Badge variant="muted">{STATUS_LABEL[finding.status]}</Badge>
+          )}
         </div>
         <div className="flex items-center gap-xs">
           <span className="text-muted-foreground">Severity</span>
-          <Select value={finding.severity} onValueChange={(v) => handleSeverity(v as FindingSeverity)}>
-            <SelectTrigger className="h-7 w-[8rem] text-caption" aria-label="Finding severity">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(SEVERITY_LABEL) as FindingSeverity[]).map((s) => (
-                <SelectItem key={s} value={s}>{SEVERITY_LABEL[s]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {canManage ? (
+            <Select value={finding.severity} onValueChange={(v) => handleSeverity(v as FindingSeverity)}>
+              <SelectTrigger className="h-7 w-[8rem] text-caption" aria-label="Finding severity">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(SEVERITY_LABEL) as FindingSeverity[]).map((s) => (
+                  <SelectItem key={s} value={s}>{SEVERITY_LABEL[s]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Badge variant="muted">{SEVERITY_LABEL[finding.severity]}</Badge>
+          )}
         </div>
         <span><span className="text-muted-foreground">Owner</span> {safeFallback(finding.owner_name, 'Unassigned')}</span>
         <span><span className="text-muted-foreground">Source</span> {finding.source}</span>
@@ -225,13 +262,15 @@ const FindingDetail: React.FC = () => {
                         {h.hostname && <span className="ml-xs text-caption text-muted-foreground">{h.hostname}</span>}
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost" size="icon"
-                          onClick={() => handleRemoveHost(h.host_id)}
-                          aria-label={`Detach ${h.ip_address || h.host_id} from finding`}
-                        >
-                          <Trash2 className="size-4" aria-hidden />
-                        </Button>
+                        {canManage && (
+                          <Button
+                            variant="ghost" size="icon"
+                            onClick={() => handleRemoveHost(h.host_id)}
+                            aria-label={`Detach ${h.ip_address || h.host_id} from finding`}
+                          >
+                            <Trash2 className="size-4" aria-hidden />
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))
@@ -307,6 +346,7 @@ const FindingDetail: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {confirmDialog}
     </div>
   );
 };
