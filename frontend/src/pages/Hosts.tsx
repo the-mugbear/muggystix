@@ -1109,6 +1109,7 @@ export default function Hosts() {
     if (filterData?.technologies) map.tech = filterData.technologies.map((t) => t.name);
     if (filterData?.tags) map.tag = filterData.tags.map((t) => t.name);
     if (filterData?.subnet_labels) map.label = filterData.subnet_labels.map((l) => l.name);
+    if (filterData?.sites) map.site = filterData.sites.map((s) => s.name);
     if (filterData?.scans) map.scan = filterData.scans.map((s) => String(s.id));
     return map;
   }, [filterData]);

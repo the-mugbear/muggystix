@@ -56,6 +56,7 @@ export function dslFromFilters(filters: HostFilterOptions): DslConversion {
   if (filters.services?.length) { clauses.push(field('service', filters.services)); take('services'); }
   if (filters.portStates?.length) { clauses.push(field('portstate', filters.portStates)); take('portStates'); }
   if (filters.subnets?.length) { clauses.push(field('subnet', filters.subnets)); take('subnets'); }
+  if (filters.sites?.length) { clauses.push(field('site', filters.sites)); take('sites'); }
   if (filters.tech?.length) { clauses.push(field('tech', filters.tech)); take('tech'); }
   if (filters.scanIds?.length) { clauses.push(field('scan', filters.scanIds)); take('scanIds'); }
 

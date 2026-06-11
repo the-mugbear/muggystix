@@ -36,3 +36,8 @@ def test_site_filter_matches_only_hosts_in_that_site(db_session, test_project, t
     q2 = build_filtered_host_query(db_session, test_user, sites="DC-East,DC-West", project_id=pid)
     ids2 = {h.id for h in q2.all()}
     assert {h_east.id, h_west.id} <= ids2
+
+    # Same field is reachable via the boolean query DSL (site:).
+    q3 = build_filtered_host_query(db_session, test_user, q="site:DC-East", project_id=pid)
+    ids3 = {h.id for h in q3.all()}
+    assert h_east.id in ids3 and h_west.id not in ids3

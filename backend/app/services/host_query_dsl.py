@@ -441,6 +441,7 @@ _FIELD_SPECS: List[FieldSpec] = [
               value_source="tag"),
     FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
               value_source="label"),
+    FieldSpec("site", lambda c, v: P.site_predicate(c.db, v), value_source="site"),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES)),
     FieldSpec("assigned", _b_assigned),
     FieldSpec("scan", _b_scan, value_source="scan"),
