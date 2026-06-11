@@ -245,6 +245,97 @@ const UserGuide: React.FC = () => {
         ),
       },
       {
+        title: 'Host Search Syntax',
+        content: (
+          <div>
+            <Para>
+              The <strong>Hosts</strong> page command bar accepts a boolean query language. Combine
+              terms with <code className="font-mono">AND</code>, <code className="font-mono">OR</code>,
+              and <code className="font-mono">NOT</code> (case-insensitive), group with parentheses,
+              and quote multi-word values. A bare word with no field searches IP, hostname, and OS.
+            </Para>
+            <Para>
+              Each filter is a <code className="font-mono">field:value</code> term. Most text fields
+              match a case-insensitive substring; the data behind each field comes from a specific
+              tool or analyst action, shown in the table below.
+            </Para>
+
+            <Subhead>Examples</Subhead>
+            <UnorderedList>
+              <li><code className="font-mono">has:critical AND NOT follow:in_review_any</code> — critical-vuln hosts nobody is reviewing yet.</li>
+              <li><code className="font-mono">cve:CVE-2021-44228 OR vuln:"log4j"</code> — Log4Shell exposure by CVE or title.</li>
+              <li><code className="font-mono">port:445 AND os:Windows AND label:"PCI"</code> — SMB-exposed Windows hosts in PCI subnets.</li>
+              <li><code className="font-mono">service:http AND has:web AND NOT tag:reviewed</code> — un-reviewed web services.</li>
+            </UnorderedList>
+
+            <Subhead>Fields & where the data comes from</Subhead>
+            <div className="overflow-x-auto rounded-panel border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-1/5">Field</TableHead>
+                    <TableHead className="w-1/4">Example</TableHead>
+                    <TableHead>Matches &mdash; and where it's populated from</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {[
+                    { f: 'cve:', ex: 'cve:CVE-2021-44228', src: 'A finding’s CVE id (substring; e.g. cve:2021-44228 also matches). Populated by Nessus, OpenVAS, Nikto.' },
+                    { f: 'vuln:', ex: 'vuln:"log4j"', src: 'A finding’s title/plugin name. Populated by Nessus (plugin name), OpenVAS (NVT name), Nikto.' },
+                    { f: 'has:', ex: 'has:critical', src: 'Derived boolean flags — see the list below the table.' },
+                    { f: 'state:', ex: 'state:up', src: 'Host up / down / unknown. Any port/host scanner (nmap, masscan, naabu…).' },
+                    { f: 'ip:', ex: 'ip:10.0.0.5', src: 'Host IP address. Any scanner.' },
+                    { f: 'hostname:  (host:)', ex: 'hostname:dc01', src: 'Host name. nmap, DNS/PTR records, reverse lookups.' },
+                    { f: 'os:', ex: 'os:Windows', src: 'OS name. nmap OS detection (-O / -A).' },
+                    { f: 'port:', ex: 'port:445', src: 'An open port number. nmap, masscan, naabu, rustscan.' },
+                    { f: 'service:  (svc:)', ex: 'service:smb', src: 'Service name on an open port. nmap version detection (-sV).' },
+                    { f: 'portstate:', ex: 'portstate:open', src: 'Port state — open / closed / filtered.' },
+                    { f: 'subnet:  (cidr:)', ex: 'subnet:10.0.0.0/24', src: 'Host IP falls within the CIDR. Subnet correlation against uploaded scopes.' },
+                    { f: 'site:', ex: 'site:"London DC"', src: 'Site the host’s subnet belongs to. Site assigned to subnets (Scopes / CSV).' },
+                    { f: 'tech:', ex: 'tech:nginx', src: 'Detected web technology. httpx, whatweb, eyewitness.' },
+                    { f: 'header:', ex: 'header:Apache', src: 'HTTP Server response header. httpx.' },
+                    { f: 'webtitle:', ex: 'webtitle:login', src: 'Web page <title>. httpx, eyewitness.' },
+                    { f: 'tag:', ex: 'tag:owned', src: 'Project host tag. Applied by analysts (Hosts page).' },
+                    { f: 'label:', ex: 'label:"PCI"', src: 'Project subnet label. Applied by analysts (Scopes).' },
+                    { f: 'follow:', ex: 'follow:in_review', src: 'Review state — watching / in_review / reviewed / none / in_review_any. Set by analysts.' },
+                    { f: 'assigned:', ex: 'assigned:me', src: 'Host assignment — "me" or a username.' },
+                    { f: 'note:', ex: 'note:"false positive"', src: 'Note/annotation body text. Written by analysts.' },
+                    { f: 'scan:', ex: 'scan:nmap_full', src: 'A scan that observed the host — by filename or id (ingest provenance).' },
+                  ].map((row) => (
+                    <TableRow key={row.f}>
+                      <TableCell><code className="font-mono text-caption">{row.f}</code></TableCell>
+                      <TableCell><code className="font-mono text-caption">{row.ex}</code></TableCell>
+                      <TableCell className="text-body">{row.src}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <Subhead>has: flags</Subhead>
+            <Para>
+              <code className="font-mono">has:</code> takes one of:{' '}
+              <code className="font-mono">web</code> (a web interface),{' '}
+              <code className="font-mono">notes</code>,{' '}
+              <code className="font-mono">exploit</code> (a finding flagged exploitable by Nessus),{' '}
+              <code className="font-mono">tested</code> (an agentic test was executed),{' '}
+              <code className="font-mono">open_ports</code>, and the severity flags{' '}
+              <code className="font-mono">critical</code> / <code className="font-mono">high</code> /{' '}
+              <code className="font-mono">medium</code> / <code className="font-mono">low</code>{' '}
+              (host has a finding of that severity).
+            </Para>
+            <Alert className="mt-sm">
+              <AlertDescription>
+                Saved a query you reuse? Star it as a <strong>saved view</strong> from the command bar.
+                The field list here mirrors the server&rsquo;s query grammar
+                (<code className="font-mono text-caption">host_query_dsl.py</code>) &mdash; new fields
+                added there should be documented here too.
+              </AlertDescription>
+            </Alert>
+          </div>
+        ),
+      },
+      {
         title: 'Scopes & Subnets',
         content: (
           <div>
