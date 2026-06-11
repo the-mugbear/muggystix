@@ -1467,6 +1467,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 setPromoteSeverity('medium');
               }}
               onEditDetails={openNoteDetails}
+              hostId={hostId}
+              canManageNotes={canManageEntries}
+              onAttachmentsChanged={() => setRetryNonce((n) => n + 1)}
             />
           )}
         </CardContent>

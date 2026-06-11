@@ -180,8 +180,18 @@ export interface Annotation {
   // Set when this thread root has been promoted to a finding — drives the
   // "Promoted" badge/link and guards a duplicate promote.
   finding_id?: number | null;
+  // Image/screenshot attachments (evidence). Fetch each via getNoteAttachmentBlob.
+  attachments?: NoteAttachment[];
   created_at: string;
   updated_at?: string | null;
+}
+
+export interface NoteAttachment {
+  id: number;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  created_at: string;
 }
 
 export interface AnnotationStatusHistoryEntry {
@@ -374,6 +384,35 @@ export const getAnnotationHistory = async (
 
 export const deleteAnnotation = async (hostId: number, noteId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/${hostId}/notes/${noteId}`);
+};
+
+// --- Note image attachments (evidence) ---
+
+export const uploadNoteAttachment = async (
+  hostId: number,
+  noteId: number,
+  file: File,
+): Promise<NoteAttachment> => {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await api.post(
+    `${p()}/hosts/${hostId}/notes/${noteId}/attachments`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  );
+  return response.data;
+};
+
+export const deleteNoteAttachment = async (attachmentId: number): Promise<void> => {
+  await api.delete(`${p()}/hosts/notes/attachments/${attachmentId}`);
+};
+
+/** Fetch an attachment's bytes (authenticated) as an object URL for <img src>. */
+export const getNoteAttachmentObjectUrl = async (attachmentId: number): Promise<string> => {
+  const response = await api.get(`${p()}/hosts/notes/attachments/${attachmentId}`, {
+    responseType: 'blob',
+  });
+  return URL.createObjectURL(response.data as Blob);
 };
 
 export interface NoteActivityItem {

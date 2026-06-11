@@ -1,13 +1,45 @@
 """Host notes CRUD endpoints."""
 
 import logging
+import os
+import re
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
+from fastapi.responses import FileResponse
 from sqlalchemy import func, desc
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
+
+# Image attachment limits.  Images only (so the report can embed them and the
+# browser can render thumbnails); 10 MB cap; magic-byte sniffed so a renamed
+# non-image (or a polyglot) can't be stored as one.
+_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+_ATTACHMENT_TYPES = {
+    "image/png": (b"\x89PNG\r\n\x1a\n", "png"),
+    "image/jpeg": (b"\xff\xd8\xff", "jpg"),
+    "image/gif": (b"GIF8", "gif"),
+    "image/webp": (None, "webp"),  # RIFF....WEBP — checked specially below
+}
+
+
+def _sniff_image(data: bytes, declared_type: str) -> Optional[str]:
+    """Return the canonical extension if ``data`` really is the declared image
+    type (magic-byte check), else None."""
+    spec = _ATTACHMENT_TYPES.get(declared_type)
+    if not spec:
+        return None
+    magic, ext = spec
+    if declared_type == "image/webp":
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return ext
+        return None
+    return ext if data.startswith(magic) else None
 
 from app.db.session import get_db
 from app.db import models
@@ -18,6 +50,7 @@ from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole, ProjectMembership
 from app.schemas.schemas import (
     Annotation, AnnotationCreate, AnnotationUpdate, AnnotationStatusHistoryEntry,
+    NoteAttachmentOut,
 )
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import safe_dispatch
@@ -658,4 +691,161 @@ def delete_host_note(
         raise HTTPException(status_code=403, detail="Not authorized to delete this note")
     except NoteHasRepliesError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Note image attachments (evidence)
+# ---------------------------------------------------------------------------
+
+def _attachments_root() -> Path:
+    return Path(settings.UPLOAD_DIR) / "note_attachments"
+
+
+@router.post(
+    "/{host_id:int}/notes/{note_id:int}/attachments",
+    response_model=NoteAttachmentOut,
+    summary="Attach an image/screenshot to a note (evidence)",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def upload_note_attachment(
+    host_id: int,
+    note_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    # Scope the note to the host + project so an attachment can't be hung off
+    # another project's note via a tampered path.
+    host = db.query(models.Host).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    note = (
+        db.query(AnnotationModel)
+        .filter(AnnotationModel.id == note_id, AnnotationModel.host_id == host_id)
+        .first()
+    )
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    declared = (file.content_type or "").lower()
+    if declared not in _ATTACHMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG, GIF, or WebP images are allowed.")
+
+    # Read with a hard cap (one extra byte detects an over-limit file without
+    # materialising the whole thing).
+    data = file.file.read(_ATTACHMENT_MAX_BYTES + 1)
+    if len(data) > _ATTACHMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Image is too large (max 10 MB).")
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    ext = _sniff_image(data, declared)
+    if not ext:
+        raise HTTPException(status_code=400, detail="File content does not match an allowed image type.")
+
+    # Store under uploads/note_attachments/{note_id}/{uuid}.{ext}, 0700/0600.
+    note_dir = _attachments_root() / str(note_id)
+    note_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(note_dir, 0o700)
+    except OSError:
+        pass
+    stored_name = f"{uuid.uuid4().hex}.{ext}"
+    target = note_dir / stored_name
+    with open(target, "wb") as fh:
+        fh.write(data)
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+
+    # Sanitised original name for display only (never used as a path).
+    display_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(file.filename or ""))[:255] or f"image.{ext}"
+
+    att = models.NoteAttachment(
+        annotation_id=note_id,
+        project_id=project.id,
+        filename=display_name,
+        content_type=declared,
+        size_bytes=len(data),
+        storage_path=f"{note_id}/{stored_name}",
+        uploaded_by_id=current_user.id,
+    )
+    db.add(att)
+    db.commit()
+    db.refresh(att)
+    return att
+
+
+def _resolve_attachment(db: Session, attachment_id: int, project: Project) -> "models.NoteAttachment":
+    att = (
+        db.query(models.NoteAttachment)
+        .filter(models.NoteAttachment.id == attachment_id, models.NoteAttachment.project_id == project.id)
+        .first()
+    )
+    if not att:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return att
+
+
+@router.get(
+    "/notes/attachments/{attachment_id:int}",
+    summary="Serve a note image attachment (project-scoped, path-safe)",
+)
+def get_note_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    att = _resolve_attachment(db, attachment_id, project)
+    base = _attachments_root()
+    try:
+        target = (base / att.storage_path).resolve()
+        target.relative_to(base.resolve())
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="Attachment path invalid")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Attachment file missing on disk")
+    return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)
+
+
+@router.delete(
+    "/notes/attachments/{attachment_id:int}",
+    status_code=204,
+    summary="Delete a note attachment (author or project admin)",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def delete_note_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    att = _resolve_attachment(db, attachment_id, project)
+    # Uploader or a project admin may delete.
+    if att.uploaded_by_id not in (None, current_user.id):
+        membership = (
+            db.query(ProjectMembership)
+            .filter(
+                ProjectMembership.project_id == project.id,
+                ProjectMembership.user_id == current_user.id,
+            )
+            .first()
+        )
+        if not membership or membership.role != ProjectRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Only the uploader or a project admin can delete this attachment.")
+
+    base = _attachments_root()
+    try:
+        target = (base / att.storage_path).resolve()
+        target.relative_to(base.resolve())
+        if target.exists():
+            target.unlink()
+    except (ValueError, OSError):
+        pass  # best-effort file removal; the row delete is the source of truth
+    db.delete(att)
+    db.commit()
     return Response(status_code=204)

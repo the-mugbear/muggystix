@@ -18,6 +18,7 @@ from app.services.host_serialization import _serialize_follow, _serialize_note  
 from app.api.v1.endpoints.hosts import _build_filtered_host_query, HostFilterParams
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
+import base64
 import io
 import csv
 import ipaddress
@@ -25,6 +26,7 @@ import json
 import logging
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 import hashlib
 import html
 
@@ -783,14 +785,75 @@ class ReportGenerator:
                 "host_count": len(f.hosts),
                 "affected_hosts": [fh.host.ip_address for fh in f.hosts if fh.host],
                 "vuln_id": f.vuln_id,
+                # The note thread this finding was promoted from — its image
+                # attachments are the finding's visual evidence.  Just the int
+                # here (cheap, harmless in JSON exports); the HTML/PDF report
+                # resolves it to embedded images, the other formats ignore it.
+                "evidence_annotation_id": f.evidence_annotation_id,
             }
             for f in findings
         ]
         out.sort(key=lambda x: self.SEVERITY_ORDER.get(x["severity"], 5))
         return out
 
+    # Total bytes of evidence images embedded into one report, so a project
+    # with many large screenshots can't produce a runaway-sized PDF.
+    _EVIDENCE_IMAGE_BUDGET = 20 * 1024 * 1024
+
+    def _evidence_images_by_root(self, root_ids: List[int]) -> Dict[int, List[Tuple[str, str]]]:
+        """Map note-thread-root id → [(data_uri, caption), …] of image
+        attachments on that thread (root + replies), read from disk and inlined
+        as base64 data URIs (WeasyPrint never fetches a resource — see the PDF
+        endpoint's deny-all fetcher).  Capped by ``_EVIDENCE_IMAGE_BUDGET``."""
+        out: Dict[int, List[Tuple[str, str]]] = {}
+        root_ids = [r for r in root_ids if r]
+        if not root_ids:
+            return out
+        base = Path(settings.UPLOAD_DIR) / "note_attachments"
+        try:
+            base_resolved = base.resolve()
+        except OSError:
+            return out
+        used = 0
+        for root in root_ids:
+            ann_ids = [
+                r[0] for r in self.db.query(models.Annotation.id).filter(
+                    or_(models.Annotation.id == root, models.Annotation.thread_root_id == root)
+                ).all()
+            ]
+            if not ann_ids:
+                continue
+            atts = (
+                self.db.query(models.NoteAttachment)
+                .filter(models.NoteAttachment.annotation_id.in_(ann_ids))
+                .order_by(models.NoteAttachment.id)
+                .all()
+            )
+            uris: List[Tuple[str, str]] = []
+            for att in atts:
+                if used >= self._EVIDENCE_IMAGE_BUDGET:
+                    break
+                try:
+                    target = (base / att.storage_path).resolve()
+                    target.relative_to(base_resolved)
+                except (ValueError, OSError):
+                    continue
+                if not target.exists() or not target.is_file():
+                    continue
+                try:
+                    data = target.read_bytes()
+                except OSError:
+                    continue
+                used += len(data)
+                b64 = base64.b64encode(data).decode("ascii")
+                uris.append((f"data:{att.content_type};base64,{b64}", att.filename))
+            if uris:
+                out[root] = uris
+        return out
+
     def _generate_findings_html(self, hosts: List[models.Host]) -> str:
-        """Findings table fragment for the HTML report (severity-ordered)."""
+        """Findings table + an Evidence gallery (embedded screenshots) for the
+        HTML/PDF report (severity-ordered)."""
         findings = self._findings_for_report(hosts)
         if not findings:
             return '<p class="muted">No findings recorded for these hosts.</p>'
@@ -810,11 +873,44 @@ class ReportGenerator:
                 f"<td>{html.escape(hosts_str)}</td>"
                 "</tr>"
             )
-        return (
+        table = (
             '<table class="data-table"><thead><tr>'
             "<th>Severity</th><th>Finding</th><th>Status</th>"
             "<th>Source</th><th>Owner</th><th>Affected hosts</th>"
             f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        )
+
+        # Evidence gallery — embedded screenshots attached to each finding's
+        # source note thread.  Only findings that actually have images appear.
+        images_by_root = self._evidence_images_by_root(
+            [f.get("evidence_annotation_id") for f in findings]
+        )
+        if not images_by_root:
+            return table
+        blocks = []
+        for f in findings:
+            imgs = images_by_root.get(f.get("evidence_annotation_id"))
+            if not imgs:
+                continue
+            thumbs = "".join(
+                f'<figure style="margin:0;max-width:280px;">'
+                f'<img src="{uri}" alt="{html.escape(cap)}" '
+                f'style="max-width:280px;max-height:280px;border:1px solid var(--border);border-radius:6px;" />'
+                f'<figcaption class="muted" style="font-size:0.8em;word-break:break-all;">{html.escape(cap)}</figcaption>'
+                f'</figure>'
+                for uri, cap in imgs
+            )
+            blocks.append(
+                f'<div style="margin-top:14px;">'
+                f'<p style="font-weight:600;margin:0 0 6px;">{html.escape(str(f["title"]))}</p>'
+                f'<div style="display:flex;flex-wrap:wrap;gap:10px;">{thumbs}</div>'
+                f'</div>'
+            )
+        return (
+            f"{table}"
+            f'<h3 style="margin-top:20px;">Evidence</h3>'
+            f'<p class="muted">Screenshots attached to the findings\' source notes.</p>'
+            f'{"".join(blocks)}'
         )
 
     # --- Site / subnet hotspots (shared across formats) -------------------

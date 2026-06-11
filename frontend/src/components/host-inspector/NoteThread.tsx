@@ -15,6 +15,7 @@ import {
 import { Textarea } from '../ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { cn } from '../../utils/cn';
+import NoteAttachments from './NoteAttachments';
 
 /**
  * Recursive note-thread renderer extracted from HostInspector.tsx
@@ -70,6 +71,12 @@ export interface NoteThreadProps {
   onPromoteNote?: (noteId: number) => void;
   /** Edit a root note's work fields (type/assignee/due/pin). Omit to hide. */
   onEditDetails?: (note: Annotation) => void;
+  /** Host id — needed to attach/serve note image evidence. */
+  hostId: number;
+  /** Analyst+ — gates attach/delete of evidence images (display always on). */
+  canManageNotes: boolean;
+  /** Reload the notes thread after an attachment upload/delete. */
+  onAttachmentsChanged: () => void;
 }
 
 interface NoteRowProps extends Omit<NoteThreadProps, 'topLevel'> {
@@ -93,6 +100,9 @@ const NoteRow: React.FC<NoteRowProps> = ({
   onDeleteNote,
   onPromoteNote,
   onEditDetails,
+  hostId,
+  canManageNotes,
+  onAttachmentsChanged,
 }) => {
   const isReply = depth > 0;
   const statusMeta = noteStatusMeta[note.status];
@@ -218,6 +228,14 @@ const NoteRow: React.FC<NoteRowProps> = ({
           </div>
         </div>
         <p className="whitespace-pre-wrap text-body">{note.body}</p>
+        {/* Evidence images attached to this note. */}
+        <NoteAttachments
+          hostId={hostId}
+          noteId={note.id}
+          attachments={note.attachments ?? []}
+          canManage={canManageNotes}
+          onChanged={onAttachmentsChanged}
+        />
         {/* Thread work-state (P3) — shown on the root note only. */}
         {!isReply && (note.assignee_name || note.due_at || note.resolution_summary) && (
           <div className="mt-xs flex flex-col gap-xxs text-caption text-muted-foreground">
@@ -290,6 +308,9 @@ const NoteRow: React.FC<NoteRowProps> = ({
           noteActionId={noteActionId}
           onUpdateNoteStatus={onUpdateNoteStatus}
           onDeleteNote={onDeleteNote}
+          hostId={hostId}
+          canManageNotes={canManageNotes}
+          onAttachmentsChanged={onAttachmentsChanged}
         />
       ))}
     </React.Fragment>

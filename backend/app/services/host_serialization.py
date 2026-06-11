@@ -60,6 +60,7 @@ def _serialize_note(note: AnnotationModel) -> Annotation:
         # If this thread root has been promoted, surface the finding id so the
         # UI shows a "promoted" badge + link (and can warn on re-promote).
         finding_id=(note.promoted_findings[0].id if note.promoted_findings else None),
+        attachments=list(getattr(note, "attachments", None) or []),
         created_at=note.created_at,
         updated_at=note.updated_at,
     )

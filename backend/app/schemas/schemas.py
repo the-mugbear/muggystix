@@ -94,6 +94,16 @@ class AnnotationBase(BaseModel):
     status: NoteStatus = NoteStatus.open
 
 
+class NoteAttachmentOut(BaseModel):
+    id: int
+    filename: str
+    content_type: str
+    size_bytes: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Annotation(AnnotationBase):
     id: int
     author_id: Optional[int] = Field(None, validation_alias="user_id")
@@ -109,6 +119,9 @@ class Annotation(AnnotationBase):
     # Set when this thread root has been promoted to a finding — drives the
     # note's "promoted" badge + link and guards a duplicate promote.
     finding_id: Optional[int] = None
+    # Image/screenshot attachments on this note (evidence).  Empty for notes
+    # without any; the frontend builds each fetch URL from the attachment id.
+    attachments: List[NoteAttachmentOut] = []
     created_at: datetime
     updated_at: Optional[datetime] = None
     # Audit finding H3: optional warning populated by the

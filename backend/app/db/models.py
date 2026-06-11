@@ -890,6 +890,40 @@ class Annotation(Base):
         foreign_keys="Annotation.parent_id",
         lazy="selectin",
     )
+    # Image/screenshot attachments on this note (selectin so they ride along
+    # wherever notes are serialized — host detail/list, report evidence).
+    attachments = relationship(
+        "NoteAttachment",
+        back_populates="annotation",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="NoteAttachment.id",
+    )
+
+
+class NoteAttachment(Base):
+    """An image/screenshot attached to a note (Annotation), so findings can
+    carry visual evidence.
+
+    Bytes live on disk under ``uploads/note_attachments/{annotation_id}/`` (not
+    in the DB); this row holds the metadata + the relative ``storage_path``.
+    ``project_id`` is denormalized from the note's host at upload time so the
+    serve/delete endpoints can scope by project without a join.
+    """
+    __tablename__ = "note_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    annotation_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    filename = Column(String(255), nullable=False)      # original name, sanitized for display
+    content_type = Column(String(100), nullable=False)  # image/png | image/jpeg | ...
+    size_bytes = Column(Integer, nullable=False)
+    storage_path = Column(String, nullable=False)       # relative under uploads/note_attachments/
+    uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    annotation = relationship("Annotation", back_populates="attachments")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
 
 
 class AnnotationStatusHistory(Base):

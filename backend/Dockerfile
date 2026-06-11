@@ -82,4 +82,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # nginx's IP for EVERY client — globally exploitable login throttling and
 # wrong audit attribution (code-review C2).  '*' is safe only while the
 # backend is unexposed (reachable solely via the nginx proxy).
-CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]
+CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue /app/uploads/note_attachments 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]
