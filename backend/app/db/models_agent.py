@@ -529,6 +529,17 @@ class AgentSession(Base):
     __table_args__ = (
         Index("idx_agent_session_project", "project_id"),
         Index("idx_agent_session_workflow_status", "workflow", "status"),
+        # Workflow/target invariant (R5 contract): a plan workflow must carry a
+        # plan_id, recon must carry a scope_id, assist neither.  Constrains only
+        # KNOWN workflows — an unrecognised workflow passes the CHECK and is
+        # rejected at the auth layer (get_current_agent fails closed), so the
+        # DB and the app agree without making that defence-in-depth unreachable.
+        CheckConstraint(
+            "(workflow NOT IN ('execution','plan_generation') OR plan_id IS NOT NULL) "
+            "AND (workflow <> 'recon' OR scope_id IS NOT NULL) "
+            "AND (workflow <> 'assist' OR (plan_id IS NULL AND scope_id IS NULL))",
+            name="ck_agent_sessions_workflow_target",
+        ),
     )
 
 
