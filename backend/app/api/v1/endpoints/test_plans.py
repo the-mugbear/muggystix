@@ -27,11 +27,13 @@ from app.db.models import Host
 from app.db.models_auth import User, UserRole, APIKey
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_agent import (
-    Agent, TestPlan, TestPlanEntry, TestPlanHistory, TestPlanStatus,
+    Agent, AgentSession, AgentSessionWorkflow, TestPlan, TestPlanEntry,
+    TestPlanHistory, TestPlanStatus,
     TestEntryPriority, TestPhase, TestEntryStatus,
     ExecutionSession, ExecutionSessionStatus, ExecutionSessionMode,
     TestExecutionResult, HostSanityCheck, AgentApiCall,
 )
+from app.services.agent_session_service import create_agent_session
 from app.api.deps import get_current_project, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import settings as _settings
@@ -357,12 +359,22 @@ def generate_test_plan(
         ),
     )
 
-    # --- Mint a per-plan API key ---
+    # --- Mint a per-plan API key (linked to a unified plan_generation
+    # AgentSession base — R5 expand-completion) ---
+    base_session = create_agent_session(
+        db,
+        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
+        project_id=project.id,
+        agent_id=agent.id,
+        started_by_id=current_user.id,
+        plan_id=plan.id,
+    )
     raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     api_key_obj = APIKey(
         agent_id=agent.id,
         test_plan_id=plan.id,
+        agent_session_id=base_session.id,
         name=f"plan-{plan.id}",
         key_hash=key_hash,
         key_prefix=raw_key[:14],
@@ -1664,6 +1676,33 @@ def _resolve_execution_agent(
     return agent
 
 
+def _ensure_plan_agent_session(db: Session, *, agent: Agent, plan: TestPlan) -> int:
+    """Return the id of an AgentSession for this plan, reusing the most recent
+    one if present, else creating a plan_generation base.
+
+    Used by the key-mint helper for callers (rotate-key / resume-generation /
+    resume) that re-mint a plan key without owning a fresh session — so the
+    key still links to the plan's unified session (R5).
+    """
+    existing = (
+        db.query(AgentSession)
+        .filter(AgentSession.plan_id == plan.id)
+        .order_by(AgentSession.id.desc())
+        .first()
+    )
+    if existing is not None:
+        return existing.id
+    base = create_agent_session(
+        db,
+        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
+        project_id=plan.project_id,
+        agent_id=agent.id,
+        started_by_id=None,
+        plan_id=plan.id,
+    )
+    return base.id
+
+
 def _mint_plan_agent_key(
     db: Session,
     *,
@@ -1671,6 +1710,7 @@ def _mint_plan_agent_key(
     plan: TestPlan,
     name_suffix: str = "",
     name: Optional[str] = None,
+    agent_session_id: Optional[int] = None,
 ) -> str:
     """Mint a fresh per-plan agent API key; return the plaintext key.
 
@@ -1694,11 +1734,17 @@ def _mint_plan_agent_key(
         APIKey.is_active.is_(True),
     ).update({"is_active": False}, synchronize_session=False)
 
+    # Link the key to the plan's unified AgentSession; callers that own a
+    # fresh session pass it explicitly, others reuse/create via the helper (R5).
+    if agent_session_id is None:
+        agent_session_id = _ensure_plan_agent_session(db, agent=agent, plan=plan)
+
     raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
     db.add(
         APIKey(
             agent_id=agent.id,
             test_plan_id=plan.id,
+            agent_session_id=agent_session_id,
             name=name or f"exec-plan-{plan.id}{name_suffix}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
@@ -1781,7 +1827,18 @@ def execute_test_plan(
     # any prior active key for the plan (see _mint_plan_agent_key), so
     # only one agent key is ever live per plan.
     agent = _resolve_execution_agent(db, project=project, user=current_user)
-    raw_key = _mint_plan_agent_key(db, agent=agent, plan=plan)
+    # Unified execution base session, linked to both the key and the
+    # ExecutionSession detail row below (R5 expand-completion).
+    base_session = create_agent_session(
+        db,
+        workflow=AgentSessionWorkflow.EXECUTION.value,
+        project_id=plan.project_id,
+        agent_id=agent.id,
+        started_by_id=current_user.id,
+        plan_id=plan.id,
+        status=ExecutionSessionStatus.ACTIVE.value,
+    )
+    raw_key = _mint_plan_agent_key(db, agent=agent, plan=plan, agent_session_id=base_session.id)
 
     # --- Pause any existing active session for this plan ---
     db.query(ExecutionSession).filter(
@@ -1802,6 +1859,7 @@ def execute_test_plan(
         agent_id=agent.id,
         started_by_id=current_user.id,
         status=ExecutionSessionStatus.ACTIVE.value,
+        agent_session_id=base_session.id,
     )
     db.add(session)
     try:

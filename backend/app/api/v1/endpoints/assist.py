@@ -31,11 +31,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_agent import Agent, AssistSession, AssistSessionStatus
+from app.db.models_agent import Agent, AgentSessionWorkflow, AssistSession, AssistSessionStatus
 from app.db.models_auth import APIKey, User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
+from app.services.agent_session_service import create_agent_session
 from app.services.agent_prompt_service import build_assist_instructions
 
 router = APIRouter()
@@ -153,6 +154,7 @@ def _mint_assist_session_key(
     agent: Agent,
     assist_session: AssistSession,
     ttl_hours: Optional[int],
+    agent_session_id: Optional[int] = None,
 ) -> str:
     """Mint a fresh assist-session-pinned API key; return the plaintext.
 
@@ -171,6 +173,7 @@ def _mint_assist_session_key(
         APIKey(
             agent_id=agent.id,
             assist_session_id=assist_session.id,
+            agent_session_id=agent_session_id,
             name=f"assist-session-{assist_session.id}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
@@ -211,12 +214,24 @@ def start_assist_session(
     """
     agent = _resolve_assist_agent(db, project=project, user=current_user)
 
+    # Unified base session first, so the detail row + key both link to it
+    # (R5 — expand-phase completion; was left null for the backfill).
+    base_session = create_agent_session(
+        db,
+        workflow=AgentSessionWorkflow.ASSIST.value,
+        project_id=project.id,
+        agent_id=agent.id,
+        started_by_id=current_user.id,
+        status=AssistSessionStatus.ACTIVE.value,
+    )
+
     assist_session = AssistSession(
         project_id=project.id,
         agent_id=agent.id,
         started_by_id=current_user.id,
         status=AssistSessionStatus.ACTIVE.value,
         purpose=body.purpose,
+        agent_session_id=base_session.id,
     )
     db.add(assist_session)
     db.flush()
@@ -226,6 +241,7 @@ def start_assist_session(
         agent=agent,
         assist_session=assist_session,
         ttl_hours=body.ttl_hours,
+        agent_session_id=base_session.id,
     )
     instructions = build_assist_instructions(
         request=request,

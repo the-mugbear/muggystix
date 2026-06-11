@@ -53,6 +53,32 @@ def test_start_assist_session_returns_key_and_instructions(client, test_project)
     assert str(body["assist_session_id"]) in body["instructions"]
 
 
+def test_start_assist_populates_unified_agent_session(client, test_project, db_session):
+    """R5 expand-completion: starting an assist session now also creates the
+    unified AgentSession base row and links both the detail row and the minted
+    key to it (was left null for the backfill migration)."""
+    from app.db.models_agent import AssistSession, AgentSession, AgentSessionWorkflow
+    from app.db.models_auth import APIKey
+
+    body = _start_session(client, test_project.id)
+    sid = body["assist_session_id"]
+
+    detail = db_session.query(AssistSession).filter(AssistSession.id == sid).first()
+    assert detail.agent_session_id is not None
+
+    base = db_session.query(AgentSession).filter(AgentSession.id == detail.agent_session_id).first()
+    assert base is not None
+    assert base.workflow == AgentSessionWorkflow.ASSIST.value
+    assert base.project_id == test_project.id
+
+    key = (
+        db_session.query(APIKey)
+        .filter(APIKey.assist_session_id == sid, APIKey.is_active.is_(True))
+        .first()
+    )
+    assert key.agent_session_id == base.id
+
+
 def test_assist_key_can_read_context_and_hosts(client, test_project):
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])

@@ -27,6 +27,7 @@ from typing import List, Literal, Optional
 from sqlalchemy.orm import Session
 
 from app.db.models_agent import (
+    AgentSession,
     ExecutionSession,
     ReconSession,
     TestPlan,
@@ -34,6 +35,47 @@ from app.db.models_agent import (
 
 
 SessionKind = Literal["recon", "plan_generation", "execution"]
+
+
+def create_agent_session(
+    db: Session,
+    *,
+    workflow: str,
+    project_id: int,
+    agent_id: Optional[int],
+    started_by_id: Optional[int],
+    plan_id: Optional[int] = None,
+    scope_id: Optional[int] = None,
+    status: str = "active",
+) -> AgentSession:
+    """Create + flush the unified ``AgentSession`` base row and return it.
+
+    The single runtime home for "an agent workflow session started", so every
+    write path (recon / assist / plan-generation / execution) populates the
+    unified lifecycle record and links its detail row + API key to it via
+    ``agent_session_id`` — instead of leaving that null for a later backfill.
+
+    Behaviour-preserving: ``get_current_agent`` already prefers the linked
+    ``AgentSession`` and maps its ``workflow`` to the same scope the legacy
+    per-workflow FKs imply (plan_generation/execution → "plan", recon →
+    "recon", assist → "assist"); ``workflow`` MUST be a valid
+    ``AgentSessionWorkflow`` value or that path fails closed (403).
+
+    Expand phase (R5): the detail row + key keep their legacy FKs too; the
+    contract phase later drops those once ``agent_session_id`` is enforced.
+    """
+    base = AgentSession(
+        workflow=workflow,
+        project_id=project_id,
+        agent_id=agent_id,
+        started_by_id=started_by_id,
+        plan_id=plan_id,
+        scope_id=scope_id,
+        status=status,
+    )
+    db.add(base)
+    db.flush()
+    return base
 
 
 @dataclass

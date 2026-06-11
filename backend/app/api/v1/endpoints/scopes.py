@@ -1056,6 +1056,7 @@ def _mint_recon_session_key(
     recon_session,
     name_suffix="",
     ttl_hours: Optional[int] = None,
+    agent_session_id: Optional[int] = None,
 ):
     """Mint a fresh recon-scoped, session-pinned API key; return the
     plaintext key.
@@ -1083,6 +1084,7 @@ def _mint_recon_session_key(
             agent_id=agent.id,
             scope_id=scope.id,
             recon_session_id=recon_session.id,
+            agent_session_id=agent_session_id,
             name=f"recon-session-{recon_session.id}{name_suffix}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
@@ -1136,8 +1138,21 @@ def start_recon_session(
 
     # Resolve the agent, create the recon session, mint a session-pinned
     # key.  See the recon-session lifecycle helpers above.
-    from app.db.models_agent import ReconSession, ReconSessionStatus
+    from app.db.models_agent import ReconSession, ReconSessionStatus, AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
     agent = _resolve_recon_agent(db, project=project, user=current_user)
+
+    # Unified base session first, so the detail row + key link to it
+    # (R5 — expand-phase completion).
+    base_session = create_agent_session(
+        db,
+        workflow=AgentSessionWorkflow.RECON.value,
+        project_id=project.id,
+        agent_id=agent.id,
+        started_by_id=current_user.id,
+        scope_id=scope.id,
+        status=ReconSessionStatus.ACTIVE.value,
+    )
 
     # Create the recon session first so the API key can pin to it.
     # v2.45.0 — the key is bound to THIS session, not just the scope;
@@ -1149,12 +1164,14 @@ def start_recon_session(
         started_by_id=current_user.id,
         status=ReconSessionStatus.ACTIVE.value,
         notes=body.notes,
+        agent_session_id=base_session.id,
     )
     db.add(recon_session)
     db.flush()
 
     raw_key = _mint_recon_session_key(
-        db, agent=agent, scope=scope, recon_session=recon_session
+        db, agent=agent, scope=scope, recon_session=recon_session,
+        agent_session_id=base_session.id,
     )
     integrations_decrypted = _load_active_integrations(
         db, user=current_user, project=project
@@ -1262,8 +1279,11 @@ def resume_recon_session(
         db, project=project, user=current_user, prefer_agent_id=recon_session.agent_id
     )
     recon_session.agent_id = agent.id
+    # Reuse the session's existing unified base row (created at start) so the
+    # resumed key links to the same AgentSession (R5).
     raw_key = _mint_recon_session_key(
-        db, agent=agent, scope=scope, recon_session=recon_session, name_suffix="-resume"
+        db, agent=agent, scope=scope, recon_session=recon_session, name_suffix="-resume",
+        agent_session_id=recon_session.agent_session_id,
     )
     integrations_decrypted = _load_active_integrations(
         db, user=current_user, project=project
