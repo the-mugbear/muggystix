@@ -26,7 +26,8 @@ from app.db.models import HostFilterView
 from app.db.models_auth import User
 from app.db.models_project import Project
 from app.api.v1.endpoints.auth import get_current_user
-from app.api.deps import get_current_project
+from app.api.deps import get_current_project, require_project_role
+from app.db.models_project import ProjectRole
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -35,6 +36,7 @@ class HostFilterViewSchema(BaseModel):
     id: int
     name: str
     filter_json: dict
+    is_project_default: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -72,6 +74,88 @@ def list_host_filter_views(
         .all()
     )
     return views
+
+
+# --- Project default view (admin-promoted) -------------------------------
+# Registered before the parametric /views/{view_id} routes don't apply here
+# (distinct path), but kept together for readability.
+
+@router.get(
+    "/default-view",
+    response_model=Optional[HostFilterViewSchema],
+    summary="The project's default Hosts filter view (or null)",
+)
+def get_project_default_view(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Return the project's admin-promoted default view, if any.  Readable by
+    any project member (it's applied for everyone), regardless of owner."""
+    return (
+        db.query(HostFilterView)
+        .filter(
+            HostFilterView.project_id == project.id,
+            HostFilterView.is_project_default.is_(True),
+        )
+        .first()
+    )
+
+
+@router.post(
+    "/views/{view_id}/promote",
+    response_model=HostFilterViewSchema,
+    summary="Promote a saved view as the project default (admin)",
+    dependencies=[Depends(require_project_role(ProjectRole.ADMIN))],
+)
+def promote_project_default_view(
+    view_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Make one of the admin's saved views the project default (applied on the
+    Hosts page for everyone with no filter of their own).  Demotes any prior
+    default in the project — at most one default per project."""
+    view = (
+        db.query(HostFilterView)
+        .filter(
+            HostFilterView.id == view_id,
+            HostFilterView.user_id == current_user.id,
+            HostFilterView.project_id == project.id,
+        )
+        .first()
+    )
+    if not view:
+        raise HTTPException(status_code=404, detail="Saved view not found.")
+    # Demote any existing default first (single-default invariant).
+    db.query(HostFilterView).filter(
+        HostFilterView.project_id == project.id,
+        HostFilterView.is_project_default.is_(True),
+        HostFilterView.id != view_id,
+    ).update({"is_project_default": False})
+    view.is_project_default = True
+    db.commit()
+    db.refresh(view)
+    return view
+
+
+@router.delete(
+    "/default-view",
+    status_code=204,
+    summary="Clear the project's default Hosts filter view (admin)",
+    dependencies=[Depends(require_project_role(ProjectRole.ADMIN))],
+)
+def clear_project_default_view(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Remove the project default (no view is applied by default afterwards)."""
+    db.query(HostFilterView).filter(
+        HostFilterView.project_id == project.id,
+        HostFilterView.is_project_default.is_(True),
+    ).update({"is_project_default": False})
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post(

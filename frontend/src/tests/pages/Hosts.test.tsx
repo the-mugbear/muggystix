@@ -30,6 +30,9 @@ vi.mock('../../services/api', () => ({
   listHostFilterViews: vi.fn(),
   createHostFilterView: vi.fn(),
   deleteHostFilterView: vi.fn(),
+  getProjectDefaultView: vi.fn(),
+  promoteProjectDefaultView: vi.fn(),
+  clearProjectDefaultView: vi.fn(),
   // v5.0.0 — query-UX helpers the command bar (useQueryAssist) calls.
   getHostQuerySchema: vi.fn(),
   validateHostQuery: vi.fn(),
@@ -175,6 +178,9 @@ describe('Hosts', () => {
       updated_at: null,
     });
     mockedApi.deleteHostFilterView.mockResolvedValue(undefined);
+    // No project default by default — the auto-apply effect resolves to null.
+    mockedApi.getProjectDefaultView.mockResolvedValue(null);
+    mockedApi.clearProjectDefaultView.mockResolvedValue(undefined);
     // Query-UX defaults: empty schema/history, queries validate clean.
     mockedApi.getHostQuerySchema.mockResolvedValue({
       fields: [

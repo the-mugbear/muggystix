@@ -289,6 +289,8 @@ export interface HostFilterView {
   id: number;
   name: string;
   filter_json: Record<string, any>;
+  // True when a project admin has promoted this view as the project default.
+  is_project_default?: boolean;
   created_at: string;
   updated_at: string | null;
 }
@@ -311,6 +313,25 @@ export const createHostFilterView = async (
 
 export const deleteHostFilterView = async (viewId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/views/${viewId}`);
+};
+
+// --- Project default view (admin-promoted) ---
+
+/** The project's default Hosts filter view, or null if none is set. */
+export const getProjectDefaultView = async (): Promise<HostFilterView | null> => {
+  const response = await api.get(`${p()}/hosts/default-view`);
+  return response.data ?? null;
+};
+
+/** Promote a saved view as the project default (admin). */
+export const promoteProjectDefaultView = async (viewId: number): Promise<HostFilterView> => {
+  const response = await api.post(`${p()}/hosts/views/${viewId}/promote`);
+  return response.data;
+};
+
+/** Clear the project default (admin). */
+export const clearProjectDefaultView = async (): Promise<void> => {
+  await api.delete(`${p()}/hosts/default-view`);
 };
 
 // --- Host followers (who else is reviewing this host) ---

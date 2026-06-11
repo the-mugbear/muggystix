@@ -21,6 +21,7 @@ import {
   SlidersHorizontal,
   StickyNote,
   Crosshair,
+  Star,
   Users,
   Wand2,
   X,
@@ -34,6 +35,9 @@ import {
   listHostFilterViews,
   createHostFilterView,
   deleteHostFilterView,
+  getProjectDefaultView,
+  promoteProjectDefaultView,
+  clearProjectDefaultView,
 } from '../services/api';
 import type {
   Host,
@@ -44,6 +48,7 @@ import type {
   HostFilterData,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import HostFilters, { HostFilterOptions } from '../components/HostFilters';
 import HostCommandBar from '../components/hosts/HostCommandBar';
@@ -355,6 +360,14 @@ export default function Hosts() {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
+  const { hasPermission } = useAuth();
+  // Gates the "set as project default" affordance. Backend allows project
+  // admins too, but the per-project role isn't surfaced here, so we gate the
+  // UI on global admin (the common case) — non-admins simply don't see it.
+  const canSetProjectDefault = hasPermission('admin');
+  // Name of the project-default view auto-applied this visit (drives the chip);
+  // null when none applied.
+  const [appliedProjectDefault, setAppliedProjectDefault] = useState<string | null>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [totalHosts, setTotalHosts] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -918,7 +931,7 @@ export default function Hosts() {
   // effect knows to skip itself.
   const skipActiveClearRef = useRef(false);
 
-  const handleApplyView = (view: HostFilterView) => {
+  const applyViewFilters = useCallback((view: HostFilterView, opts?: { quiet?: boolean }) => {
     const blob = view.filter_json || {};
     skipActiveClearRef.current = true;
     // v4.51.0 — fold the legacy top-level keys into the combined
@@ -939,8 +952,10 @@ export default function Hosts() {
     setFilters(next);
     setActiveViewId(view.id);
     setPage(0);
-    toast.info(`Applied view "${view.name}"`, { autoHideMs: 2000 });
-  };
+    if (!opts?.quiet) toast.info(`Applied view "${view.name}"`, { autoHideMs: 2000 });
+  }, [toast]);
+
+  const handleApplyView = (view: HostFilterView) => applyViewFilters(view);
 
   const handleDeleteView = async (view: HostFilterView) => {
     const ok = await confirm({
@@ -960,6 +975,55 @@ export default function Hosts() {
       console.error('Failed to delete view:', err);
       toast.error(formatApiError(err, 'Failed to delete view.'));
     }
+  };
+
+  // Promote a saved view as the project default (admin), or clear it.
+  const handleToggleProjectDefault = async (view: HostFilterView) => {
+    try {
+      if (view.is_project_default) {
+        await clearProjectDefaultView();
+        setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: false })));
+        toast.info('Cleared the project default view.', { autoHideMs: 2000 });
+      } else {
+        await promoteProjectDefaultView(view.id);
+        setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: v.id === view.id })));
+        toast.success(`"${view.name}" is now the project default.`, { autoHideMs: 2500 });
+      }
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Failed to update the project default.'));
+    }
+  };
+
+  // Auto-apply the project default on a bare /hosts visit (no URL/saved-session
+  // filter, not dismissed this session). One-shot per mount.
+  const defaultCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!isInitialized || defaultCheckedRef.current) return;
+    defaultCheckedRef.current = true;
+    // Only when the user has no filter context of their own.
+    if (Object.keys(filters).length > 0) return;
+    let dismissed = false;
+    try {
+      dismissed = sessionStorage.getItem(projectScopedKey('projectDefaultDismissed')) === '1';
+    } catch { /* ignore */ }
+    if (dismissed) return;
+    getProjectDefaultView()
+      .then((view) => {
+        if (view && view.filter_json) {
+          applyViewFilters(view, { quiet: true });
+          setAppliedProjectDefault(view.name);
+        }
+      })
+      .catch(() => { /* non-fatal */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInitialized]);
+
+  const dismissProjectDefault = () => {
+    setAppliedProjectDefault(null);
+    clearAllFilters();
+    try {
+      sessionStorage.setItem(projectScopedKey('projectDefaultDismissed'), '1');
+    } catch { /* ignore */ }
   };
 
   useEffect(() => {
@@ -1857,6 +1921,19 @@ export default function Hosts() {
             )}
           </div>
 
+          {/* Project default applied — dismissible, never a trap */}
+          {appliedProjectDefault && (
+            <div className="flex flex-wrap items-center gap-xs rounded-control border border-primary/40 bg-accent/40 px-sm py-xxs text-caption">
+              <Star className="size-3.5 shrink-0 fill-current text-warning" aria-hidden />
+              <span className="text-foreground">
+                Project default filter applied: <strong>{appliedProjectDefault}</strong>
+              </span>
+              <Button variant="ghost" size="sm" className="h-6" onClick={dismissProjectDefault}>
+                Clear
+              </Button>
+            </div>
+          )}
+
           {/* Saved views */}
           {(savedViews.length > 0 || activeFilterChips.length > 0 || savedViewsError) && (
             <div className="flex flex-wrap items-center gap-xs">
@@ -1891,6 +1968,26 @@ export default function Hosts() {
                     >
                       {view.name}
                     </button>
+                    {view.is_project_default && (
+                      <Star
+                        className={cn('size-3 shrink-0 fill-current', isActive ? '' : 'text-warning')}
+                        aria-label="Project default"
+                      />
+                    )}
+                    {canSetProjectDefault && (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleProjectDefault(view)}
+                        aria-label={view.is_project_default ? `Clear project default` : `Set "${view.name}" as project default`}
+                        title={view.is_project_default ? 'Clear project default' : 'Set as project default'}
+                        className={cn(
+                          'inline-flex size-6 shrink-0 items-center justify-center rounded-sm',
+                          isActive ? 'hover:bg-primary-foreground/20' : 'hover:bg-accent',
+                        )}
+                      >
+                        <Star className={cn('size-3', view.is_project_default && 'fill-current')} aria-hidden />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleDeleteView(view)}

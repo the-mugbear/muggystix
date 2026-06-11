@@ -727,6 +727,12 @@ class HostFilterView(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     filter_json = Column(JSON, nullable=False)
+    # A project admin can promote one view as the PROJECT DEFAULT — applied on
+    # the Hosts page for everyone when they have no filter of their own
+    # ("show me the priority hosts first").  At most one per project (enforced
+    # in the promote endpoint by demoting the prior default); the view stays
+    # owned by the admin who created it.
+    is_project_default = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
