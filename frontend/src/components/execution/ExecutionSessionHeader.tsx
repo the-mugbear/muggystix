@@ -100,12 +100,50 @@ export const ExecutionSessionHeader: React.FC<ExecutionSessionHeaderProps> = ({
               {session.prompt_version && ` (prompt ${session.prompt_version})`}
             </p>
           )}
-          {session.environment_os_family && (
-            <p className="text-caption text-muted-foreground">
-              Operator host: <strong>{session.environment_os_family}</strong>
-              {session.environment_shell && ` (${session.environment_shell})`}
-            </p>
-          )}
+          {/* Operator-environment probe — full snapshot (tools, python, arch)
+              when available, parity with the recon run-detail panel; falls
+              back to the flat os_family/shell for pre-snapshot sessions. */}
+          {(() => {
+            const env = session.environment;
+            if (!env && !session.environment_os_family) return null;
+            const osLabel = env?.os_family ?? session.environment_os_family;
+            const shell = env?.shell ?? session.environment_shell;
+            const tools = env?.tools_status ?? [];
+            return (
+              <div className="mt-xxs flex flex-col gap-xxs">
+                <p className="text-caption text-muted-foreground">
+                  Operator host: <strong>{osLabel || 'unknown'}</strong>
+                  {env?.os_release ? ` ${env.os_release}` : ''}
+                  {shell ? ` · ${shell}` : ''}
+                  {env?.arch ? ` · ${env.arch}` : ''}
+                  {env?.python ? ` · Python ${env.python}` : ''}
+                </p>
+                {tools.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-xxs">
+                    {tools.map((t, i) => {
+                      const name = String(t.name ?? t.tool ?? 'tool');
+                      const status = String(t.status ?? '').toLowerCase();
+                      const ok = ['ok', 'present', 'found', 'available', 'installed'].includes(status);
+                      const issue = t.issue ? String(t.issue) : undefined;
+                      return (
+                        <Badge
+                          key={`${name}-${i}`}
+                          variant="outline"
+                          className={ok ? undefined : 'border-warning/40 text-warning'}
+                          title={issue || (ok ? `${name} available` : `${name}: ${status || 'unavailable'}`)}
+                        >
+                          {name}{!ok && status ? `: ${status}` : ''}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
+                {env?.notes && (
+                  <p className="text-caption text-muted-foreground">{env.notes}</p>
+                )}
+              </div>
+            );
+          })()}
         </div>
         {actions && <div className="flex flex-wrap gap-xs">{actions}</div>}
       </CardContent>

@@ -421,6 +421,9 @@ class ScanSummary(BaseModel):
     open_ports: int
     command_line: Optional[str] = None
     version: Optional[str] = None
+    # Username of the analyst who uploaded this scan (None for agent/recon
+    # ingests or deleted users) — surfaced for multi-analyst attribution.
+    uploaded_by: Optional[str] = None
     port_breakdown: Optional[ScanPortBreakdown] = None
     vulnerability_summary: Optional[ScanVulnerabilitySummary] = None
 

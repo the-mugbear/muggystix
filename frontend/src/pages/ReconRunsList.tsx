@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeftRight, RefreshCw, Rocket, Search, SquareArrowOutUpRight } from 'lucide-react';
 import { ReconSessionRow, ScopeSummary, getScopes, listReconSessions } from '../services/api';
@@ -141,7 +141,13 @@ const ReconRunsList: React.FC = () => {
   // matches beyond the loaded slice.
   const [totalRows, setTotalRows] = useState(0);
 
+  // Monotonic request id so a slow earlier search can't overwrite the
+  // results of a newer one (filter/search fire rapidly; responses race).
+  // Only the latest request's resolution is allowed to touch state.
+  const reqIdRef = useRef(0);
+
   const reload = () => {
+    const reqId = ++reqIdRef.current;
     setLoading(true);
     setError(null);
     listReconSessions({
@@ -149,11 +155,18 @@ const ReconRunsList: React.FC = () => {
       ...(debouncedSearchText.trim() ? { search: debouncedSearchText.trim() } : {}),
     })
       .then((resp) => {
+        if (reqIdRef.current !== reqId) return;
         setRows(resp.items);
         setTotalRows(resp.total);
       })
-      .catch((err) => setError(formatApiError(err, 'Failed to load recon runs.')))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (reqIdRef.current !== reqId) return;
+        setError(formatApiError(err, 'Failed to load recon runs.'));
+      })
+      .finally(() => {
+        if (reqIdRef.current !== reqId) return;
+        setLoading(false);
+      });
   };
 
   useEffect(() => {

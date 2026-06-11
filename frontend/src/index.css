@@ -36,6 +36,15 @@
  *
  * If you add a new spacing token whose key collides with a Tailwind
  * default sizing name, add the rescued max-w / min-w value here.
+ *
+ * NOTE: the unprefixed rules below rescue `max-w-md` but NOT the
+ * responsive variant `sm:max-w-md` (Tailwind emits a separate
+ * `.sm\:max-w-md` rule, equally shadowed by the spacing scale → 16px).
+ * Three dialogs shipped at 12–16px on desktop because of exactly this
+ * gap.  Prefer `<DialogContent size="...">` / unprefixed `max-w-*` over
+ * `{breakpoint}:max-w-*`; the `@media` block below rescues the `sm:`
+ * variant for the colliding keys so a responsive usage can't silently
+ * regress again.
  */
 @layer utilities {
   .max-w-xs { max-width: 20rem; }
@@ -57,6 +66,16 @@
   .min-w-lg { min-width: 32rem; }
   .min-w-xl { min-width: 36rem; }
   .min-w-2xl { min-width: 42rem; }
+
+  /* Rescue the `sm:`-prefixed responsive variants of the colliding
+   * sizing keys (the unprefixed rules above don't cover these). */
+  @media (min-width: 640px) {
+    .sm\:max-w-xs { max-width: 20rem; }
+    .sm\:max-w-sm { max-width: 24rem; }
+    .sm\:max-w-md { max-width: 28rem; }
+    .sm\:max-w-lg { max-width: 32rem; }
+    .sm\:max-w-xl { max-width: 36rem; }
+  }
 }
 
 /*

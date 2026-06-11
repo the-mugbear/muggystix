@@ -37,6 +37,9 @@ export interface Scan {
   open_ports: number;
   command_line?: string | null;
   version?: string | null;
+  // Username of the analyst who uploaded this scan (null for agent/recon
+  // ingests or deleted users) — multi-analyst attribution.
+  uploaded_by?: string | null;
   port_breakdown?: ScanPortBreakdown | null;
   vulnerability_summary?: ScanVulnerabilitySummary | null;
 }

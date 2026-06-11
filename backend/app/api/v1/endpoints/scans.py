@@ -22,7 +22,7 @@ from app.schemas.schemas import (
 from app.services.command_explanation_service import CommandExplanationService
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_auth import UserRole
+from app.db.models_auth import UserRole, User
 from app.db.models_project import Project, ProjectRole
 
 logger = logging.getLogger(__name__)
@@ -197,6 +197,7 @@ def get_scans(
             models.Scan.end_time,
             models.Scan.command_line,
             models.Scan.version,
+            models.Scan.uploaded_by_id,
             func.count(models.HostScanHistory.id).label('total_hosts'),
             func.sum(case((models.HostScanHistory.state_at_scan == 'up', 1), else_=0)).label('up_hosts')
         )
@@ -238,6 +239,7 @@ def get_scans(
             models.Scan.end_time,
             models.Scan.command_line,
             models.Scan.version,
+            models.Scan.uploaded_by_id,
         )
     )
     # v2.83.0 — sortable column headers on the /scans desktop table.
@@ -316,6 +318,18 @@ def get_scans(
         )
         vuln_stats_map = {row.scan_id: row for row in vuln_stats_rows}
 
+    # Batch-resolve uploader usernames (multi-analyst attribution on the
+    # Scans list).  One query keyed by the distinct uploader ids in this
+    # page — mirrors the port/vuln batch maps above; avoids per-row joins
+    # and keeps uploaded_by_id out of a User-joined GROUP BY.
+    uploader_map: Dict[int, str] = {}
+    uploader_ids = {r.uploaded_by_id for r in results if r.uploaded_by_id is not None}
+    if uploader_ids:
+        uploader_map = {
+            uid: uname
+            for uid, uname in db.query(User.id, User.username).filter(User.id.in_(uploader_ids)).all()
+        }
+
     scan_summaries = []
     for result in results:
         port_stats = port_stats_map.get(result.id)
@@ -356,6 +370,7 @@ def get_scans(
             open_ports=port_stats.open_ports if port_stats and port_stats.open_ports else 0,
             port_breakdown=port_breakdown,
             vulnerability_summary=vulnerability_summary,
+            uploaded_by=uploader_map.get(result.uploaded_by_id),
         ))
 
     return scan_summaries

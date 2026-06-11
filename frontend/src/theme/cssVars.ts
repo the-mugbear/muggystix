@@ -172,7 +172,13 @@ function buildVarMap(t: ColorTokens): Record<string, string> {
     '--destructive-foreground': '0 0% 100%',
 
     '--border': toHslComponentsWithAlpha(t.divider),
-    '--input': toHslComponentsWithAlpha(t.divider),
+    // --input must stay OPAQUE.  It's consumed via `hsl(var(--input) /
+    // <alpha-value>)` (tailwind.config border-input), so an alpha-bearing
+    // value here produces invalid double-alpha syntax AND, even when it
+    // parses, a ~12%-alpha control border is near-invisible.  The static
+    // fallback in index.css already ships this opaque; the runtime map
+    // must match.  (Form-control contrast — WCAG 1.4.11.)
+    '--input': toHslComponents(t.divider),
     '--ring': toHslComponents(t.primary),
 
     '--success': toHslComponents(t.success),

@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSearchFocus } from '../hooks/useSearchFocus';
-import { NavigableTableRow } from '../components/NavigableTableRow';
+import { NavigableTableRow, NavigableTableCell } from '../components/NavigableTableRow';
 import {
   getTestPlans,
   generateTestPlan,
@@ -374,6 +374,12 @@ const TestPlans: React.FC = () => {
       if (genForm.services) fc.services = genForm.services;
       if (genForm.minSeverity) fc.min_severity = genForm.minSeverity;
       if (Object.keys(fc).length > 0) req.filter_criteria = fc;
+      // Preserve recon provenance when the dialog was opened from a recon
+      // run (the dialog advertises "Source: recon run #N" — make it true).
+      if (sourceReconSessionId != null) {
+        req.source_kind = 'recon_session';
+        req.source_recon_session_id = sourceReconSessionId;
+      }
 
       const result = await generateTestPlan(req);
       setGenResult(result);
@@ -583,7 +589,9 @@ const TestPlans: React.FC = () => {
         <Card>
           <CardContent className="p-xl text-center">
             <Bot className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
-            {plans.length === 0 ? (
+            {plans.length === 0 && !statusFilter ? (
+              // Genuinely empty: no plans for this project AND no
+              // server-side status filter narrowing them away.
               <>
                 <p className="text-metadata text-muted-foreground">
                   No test plans in{' '}
@@ -598,16 +606,18 @@ const TestPlans: React.FC = () => {
                 </Button>
               </>
             ) : (
+              // Plans exist but the active status filter and/or search
+              // text excluded them — don't claim the project is empty.
               <>
                 <p className="text-metadata text-muted-foreground">
-                  No test plans match the current search.
+                  No test plans match the current filters.
                 </p>
                 <Button
                   variant="outline"
-                  onClick={() => setSearchText('')}
+                  onClick={() => { setSearchText(''); setStatusFilter(''); }}
                   className="mt-sm"
                 >
-                  Clear search
+                  Clear filters
                 </Button>
               </>
             )}
@@ -777,7 +787,15 @@ const TestPlans: React.FC = () => {
                                   )}
                                 </Button>
                               </TableCell>
-                              <TableCell>
+                              {/* Direct link to detail — matches the recon
+                                  and execution workflow lists (NavigableTableCell),
+                                  so the title is a real <Link> (open-in-new-tab,
+                                  keyboard) instead of plain text gated behind the
+                                  disclosure chevron. */}
+                              <NavigableTableCell
+                                to={`/test-plans/${plan.id}`}
+                                ariaLabel={`Open plan #${plan.id}: ${plan.title}`}
+                              >
                                 {/* Audit RSP·H6 — wrap in min-w-0
                                     block so `truncate` actually clips
                                     with long titles inside table-cell. */}
@@ -789,7 +807,7 @@ const TestPlans: React.FC = () => {
                                     </p>
                                   )}
                                 </div>
-                              </TableCell>
+                              </NavigableTableCell>
                               <TableCell>
                                 <Badge variant={planStatusTone(plan.status)} className="whitespace-nowrap">
                                   {formatStatusLabel(plan.status)}

@@ -84,11 +84,17 @@ class DNSParser:
                         logger.warning(f"Skipping row {i}: invalid IP address format: {ip_address}")
                         continue
 
-                    # Store the DNS record regardless of type
+                    # Store the DNS record regardless of type.  project_id +
+                    # scan_id mirror the PTR-host creation below (and the
+                    # dnsx parser): without them the row is orphaned —
+                    # invisible to project-scoped DNS reads and uncounted in
+                    # the producing scan's dns_record_count.
                     dns_record = models.DNSRecord(
                         domain=dns_name,
                         record_type=record_type,
-                        value=ip_address
+                        value=ip_address,
+                        project_id=self._project_id,
+                        scan_id=scan.id,
                     )
                     self.db.add(dns_record)
                     dns_records_processed += 1
@@ -140,14 +146,22 @@ class DNSParser:
                 f"(record_type, name, address) rows."
             )
 
+        # Persist parsed DNS rows + hosts BEFORE correlation.  Correlation
+        # can poison the session on a transient error; committing first means
+        # a correlation hiccup can't roll back an otherwise-good import, and
+        # the swallowed-exception path no longer leaves a pending rollback
+        # that turns the trailing commit into PendingRollbackError.  Matches
+        # the masscan/nmap ordering.
+        self.db.commit()
+
         # Correlate hosts to subnets
         if hosts_created > 0:
             try:
                 correlate_scan(self.db, scan.id)
+                self.db.commit()
             except Exception as e:
+                self.db.rollback()
                 logger.warning(f"Failed to correlate hosts to subnets for scan {scan.id}: {str(e)}")
-
-        self.db.commit()
 
         logger.info(
             f"DNS parsing complete - Created: {hosts_created} hosts, "

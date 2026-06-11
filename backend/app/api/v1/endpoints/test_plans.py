@@ -52,6 +52,7 @@ from app.schemas.test_plan_schemas import (
     TestPlanSummary,
     ApiKeyStatus,
     ExecutionSessionSummary,
+    ExecutionEnvironmentSnapshot,
     ExecutionSessionList,
     TestPlanDetail,
     TestPlanProgress,
@@ -694,6 +695,40 @@ def _session_summary(
     list endpoint can resolve it in one batched query.
     """
     env = session.environment or {}
+    # Full operator-environment snapshot for the detail panel — parity with
+    # recon's ReconEnvironmentSnapshot.  Only emit when a probe arrived (raw
+    # body or a probed_at timestamp); otherwise leave null so the UI renders
+    # the "no probe" affordance instead of empty fields that look like data.
+    env_snapshot: Optional[ExecutionEnvironmentSnapshot] = None
+    raw_env = env if isinstance(env, dict) else None
+    if raw_env or session.environment_probed_at:
+        # tools_status may arrive as a list ([{name,status,issue}, ...]) or a
+        # dict keyed by tool name; normalize to the canonical list so legacy
+        # rows of either shape render without 500ing (mirrors recon).
+        raw_status = (raw_env or {}).get("tools_status")
+        if isinstance(raw_status, list):
+            tools_status_norm = [e for e in raw_status if isinstance(e, dict)]
+        elif isinstance(raw_status, dict):
+            tools_status_norm = []
+            for name, payload in raw_status.items():
+                if isinstance(payload, dict):
+                    tools_status_norm.append({"name": name, **payload})
+                else:
+                    tools_status_norm.append({"name": name, "status": str(payload)})
+        else:
+            tools_status_norm = []
+        env_snapshot = ExecutionEnvironmentSnapshot(
+            probed_at=session.environment_probed_at,
+            probed_from_ip=getattr(session, "environment_probed_from_ip", None),
+            os_family=(raw_env or {}).get("os_family"),
+            os_release=(raw_env or {}).get("os_release"),
+            shell=(raw_env or {}).get("shell"),
+            arch=(raw_env or {}).get("arch"),
+            python=(raw_env or {}).get("python"),
+            notes=(raw_env or {}).get("notes"),
+            tools_status=tools_status_norm,
+            raw=raw_env,
+        )
     return ExecutionSessionSummary(
         id=session.id,
         status=session.status,
@@ -710,6 +745,7 @@ def _session_summary(
         environment_os_family=env.get("os_family"),
         environment_shell=env.get("shell"),
         environment_probed_at=session.environment_probed_at,
+        environment=env_snapshot,
         last_activity_at=last_activity_at,
         is_stale=_compute_is_stale(session, last_activity_at),
     )

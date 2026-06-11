@@ -334,8 +334,15 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                 {expanded ? 'Show fewer' : `Show ${items.length - PREVIEW} more`}
               </button>
             )}
+            {/* The Show-more toggle only reaches the LOADED items (the merged
+                list is capped at per-source fetch limits), so the footer must
+                not imply totalCount is reachable here.  When the server total
+                exceeds what's loaded, point to the source surfaces that own
+                the remainder rather than advertising an unreachable count. */}
             <span className="text-caption text-muted-foreground">
-              Showing {shown.length} of {totalCount}
+              Showing {shown.length} of {items.length}
+              {totalCount > items.length &&
+                ` · ${totalCount - items.length} more open in their source views`}
             </span>
           </div>
         )}

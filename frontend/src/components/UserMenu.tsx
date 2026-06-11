@@ -173,7 +173,7 @@ const UserMenu: React.FC = () => {
       </DropdownMenu>
 
       <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent size="sm">
           <DialogHeader>
             <DialogTitle>About BlueStick</DialogTitle>
             <DialogDescription>

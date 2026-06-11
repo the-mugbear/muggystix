@@ -127,7 +127,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && !isGenerating && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent size="md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <FileDown className="size-5" aria-hidden />

@@ -77,6 +77,10 @@ export interface Host {
   os_type?: string | null;
   os_vendor?: string | null;
   os_accuracy?: number | string | null;
+  // SMB message-signing posture (typed column parsed from nmap
+  // smb-security-mode / netexec): 'disabled' is relay-vulnerable, 'enabled'
+  // is on-but-not-required, 'required' is enforced. Null when not observed.
+  smb_signing?: 'disabled' | 'enabled' | 'required' | string | null;
   ports: Port[];
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];

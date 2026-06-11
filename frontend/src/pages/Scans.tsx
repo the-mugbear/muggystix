@@ -797,7 +797,7 @@ export default function Scans() {
             {scan.command_line}
           </div>
         </div>
-        {(scan.version || scan.tool_name) && (
+        {(scan.version || scan.tool_name || scan.uploaded_by) && (
           <div className="flex flex-wrap gap-md text-caption text-muted-foreground">
             {scan.version && (
               <span>
@@ -807,6 +807,11 @@ export default function Scans() {
             {scan.tool_name && (
               <span>
                 <strong>Tool:</strong> {scan.tool_name}
+              </span>
+            )}
+            {scan.uploaded_by && (
+              <span>
+                <strong>Uploaded by:</strong> {scan.uploaded_by}
               </span>
             )}
           </div>

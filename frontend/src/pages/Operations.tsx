@@ -779,6 +779,14 @@ const Operations: React.FC = () => {
   const [statsLoading, setStatsLoading] = useState(true);
   const [staleness, setStaleness] = useState<StalenessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Per-section errors for the non-structural fetches.  Pre-fix a failed
+  // stats/pending/staleness request silently degraded to an empty card,
+  // which reads as "nothing needs attention" — falsely implying a clean
+  // project.  Track each so we can show "unavailable" (with Retry) instead
+  // of a deceptively-empty section.  (UX review #8.)
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [pendingError, setPendingError] = useState<string | null>(null);
+  const [stalenessError, setStalenessError] = useState<string | null>(null);
   // P2 — Operations owns ONE /workbench fetch covering the personal cards
   // (My Queue / My Tasks) + the since-last-visit diff, and prop-drives them.
   // The page-level Refresh re-runs this in lockstep with the coverage/stats
@@ -838,9 +846,28 @@ const Operations: React.FC = () => {
     } else {
       setError(formatApiError(coverageR.reason, 'Failed to load Operations data.'));
     }
-    if (pendingR.status === 'fulfilled') setPendingPlans(pendingR.value);
-    if (statsR.status === 'fulfilled') setStats(statsR.value);
-    setStaleness(stalenessR.status === 'fulfilled' ? stalenessR.value : null);
+    // Distinguish "successfully empty" from "unavailable": set each
+    // section's error on rejection (and clear it on success) so the render
+    // can warn + offer Retry instead of showing a deceptively-empty card.
+    if (pendingR.status === 'fulfilled') {
+      setPendingPlans(pendingR.value);
+      setPendingError(null);
+    } else {
+      setPendingError(formatApiError(pendingR.reason, 'Could not load pending plans.'));
+    }
+    if (statsR.status === 'fulfilled') {
+      setStats(statsR.value);
+      setStatsError(null);
+    } else {
+      setStatsError(formatApiError(statsR.reason, 'Could not load project statistics.'));
+    }
+    if (stalenessR.status === 'fulfilled') {
+      setStaleness(stalenessR.value);
+      setStalenessError(null);
+    } else {
+      setStaleness(null);
+      setStalenessError(formatApiError(stalenessR.reason, 'Could not load scan freshness.'));
+    }
 
     setCoverageLoading(false);
     setPendingLoading(false);
@@ -969,13 +996,34 @@ const Operations: React.FC = () => {
               onDismiss={() => setSinceDismissed(true)}
             />
           )}
+          {statsError && (
+            <Alert variant="warning" className="mb-md">
+              <AlertDescription className="flex items-center justify-between gap-md">
+                <span>{statsError}</span>
+                <Button variant="outline" size="sm" onClick={reload}>
+                  <RefreshCw className="size-4" aria-hidden /> Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
           <ProjectStateCard
             stats={stats}
             statsLoading={statsLoading}
             coverage={coverage}
             coverageLoading={coverageLoading}
           />
-          <ScanFreshness data={staleness} />
+          {stalenessError ? (
+            <Alert variant="warning" className="mb-md">
+              <AlertDescription className="flex items-center justify-between gap-md">
+                <span>{stalenessError}</span>
+                <Button variant="outline" size="sm" onClick={reload}>
+                  <RefreshCw className="size-4" aria-hidden /> Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <ScanFreshness data={staleness} />
+          )}
           {/* My Queue + My Tasks are personal by definition — the hosts
               YOU marked In Review, the tasks assigned to YOU.  They
               render unconditionally; the Mine/All toggle scopes only
@@ -1006,6 +1054,16 @@ const Operations: React.FC = () => {
           <div className="mb-md">
             <AttentionCard />
           </div>
+          {pendingError && (
+            <Alert variant="warning" className="mb-md">
+              <AlertDescription className="flex items-center justify-between gap-md">
+                <span>{pendingError}</span>
+                <Button variant="outline" size="sm" onClick={reload}>
+                  <RefreshCw className="size-4" aria-hidden /> Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
           <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} />
           <RunsSection />
         </>

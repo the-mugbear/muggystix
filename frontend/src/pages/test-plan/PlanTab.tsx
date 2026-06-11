@@ -2,8 +2,8 @@
  * /test-plans/:planId/plan — entries table with filters, sortable
  * columns, expandable detail rows.
  */
-import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   ArrowDown,
   ArrowUp,
@@ -183,6 +183,7 @@ const compareEntries = (
 
 const PlanTab: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const toast = useToast();
   const {
     planId,
@@ -295,6 +296,81 @@ const PlanTab: React.FC = () => {
   const noFilteredEntriesMessage = hasMoreOnServer
     ? `No matches in the ${serverLoadedCount} loaded entries — load more below to apply the filter to more entries (${totalEntries - serverLoadedCount} remaining).`
     : 'No entries match the current filters.';
+  // ---------------------------------------------------------------------
+  // Deep-link to a specific entry (#entry-N).  "My Work" queue items link
+  // here (e.g. /test-plans/42#entry-913); previously the hash was inert —
+  // the anchor only exists for the current client page of the loaded server
+  // slice, so entries on another page (or beyond what was fetched) had no
+  // DOM node and the operator landed at the top of the plan.  This effect
+  // drives the whole resolution: pull more pages until the entry is loaded,
+  // clear any filter hiding it, page to it, expand it, then scroll + focus.
+  // The handled-ref makes it idempotent per hash target so it doesn't fight
+  // the user once they've arrived.
+  const hashEntryId = useMemo(() => {
+    const m = /^#entry-(\d+)$/.exec(location.hash);
+    return m ? Number(m[1]) : null;
+  }, [location.hash]);
+  const deepLinkHandledRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (hashEntryId == null) return;
+    if (deepLinkHandledRef.current === location.hash) return;
+
+    // 1. Ensure the entry is physically loaded.
+    const loaded = plan.entries.some((e) => e.id === hashEntryId);
+    if (!loaded) {
+      if (hasMoreOnServer && !isLoadingMoreEntries) {
+        // Pull the next server page; appended entries re-trigger this effect.
+        loadMoreEntries();
+      } else if (!hasMoreOnServer) {
+        // Fully loaded and still absent — the entry isn't in this plan.
+        // Stop trying so we don't loop.
+        deepLinkHandledRef.current = location.hash;
+      }
+      return;
+    }
+
+    // 2. Make sure no active filter hides it.  Clearing filters re-runs this
+    //    effect (and resets page to 0 via the existing reset effect).
+    const inFiltered = filteredEntries.some((e) => e.id === hashEntryId);
+    if (!inFiltered) {
+      setSearchText('');
+      setStatusFilter('all');
+      setPriorityFilter('all');
+      setPhaseFilter('all');
+      return;
+    }
+
+    // 3. Page to the entry's client page.
+    const idx = filteredEntries.findIndex((e) => e.id === hashEntryId);
+    const targetPage = Math.floor(idx / PAGE_SIZE);
+    if (safePage !== targetPage) {
+      setPage(targetPage);
+      return;
+    }
+
+    // 4. On the right page — expand, scroll, focus once.
+    setExpandedEntries((prev) => {
+      if (prev.has(hashEntryId)) return prev;
+      const next = new Set(prev);
+      next.add(hashEntryId);
+      return next;
+    });
+    deepLinkHandledRef.current = location.hash;
+    // Defer to the next frame so the (now-expanded) row has rendered.
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`entry-${hashEntryId}`);
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // Focus for keyboard users; the row isn't normally focusable.
+      el.setAttribute('tabindex', '-1');
+      (el as HTMLElement).focus({ preventScroll: true });
+    });
+  }, [
+    hashEntryId, location.hash, plan.entries, filteredEntries, safePage,
+    hasMoreOnServer, isLoadingMoreEntries, loadMoreEntries,
+  ]);
+
   // "Visible" = the current page (expand-all over thousands of entries is
   // the very thing pagination guards against).
   const allVisibleExpanded =

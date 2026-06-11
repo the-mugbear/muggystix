@@ -1081,6 +1081,29 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   )}
                 </Badge>
               )}
+              {/* SMB message-signing posture — promoted from raw NSE blobs to
+                  a queryable column.  'disabled' is the high-signal,
+                  relay-vulnerable case; surface it prominently so the analyst
+                  doesn't have to read smb-security-mode script text. */}
+              {host.smb_signing === 'disabled' && (
+                <Badge variant="destructive" title="SMB message signing disabled — NTLM relay-vulnerable">
+                  SMB signing: disabled
+                </Badge>
+              )}
+              {host.smb_signing === 'enabled' && (
+                <Badge
+                  variant="outline"
+                  className="border-warning/40 text-warning"
+                  title="SMB signing enabled but not required"
+                >
+                  SMB signing: enabled
+                </Badge>
+              )}
+              {host.smb_signing === 'required' && (
+                <Badge variant="outline" title="SMB signing required (enforced)">
+                  SMB signing: required
+                </Badge>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-xs">

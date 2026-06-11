@@ -90,7 +90,13 @@ const ExecutionsList: React.FC = () => {
   // so older rows aren't silently truncated behind a server-side cap.
   const [totalRows, setTotalRows] = useState(0);
 
+  // Monotonic request id so a slow earlier search can't overwrite the
+  // results of a newer one (filter/search fire rapidly; responses race).
+  // Only the latest request's resolution is allowed to touch state.
+  const reqIdRef = useRef(0);
+
   const reload = () => {
+    const reqId = ++reqIdRef.current;
     setLoading(true);
     setError(null);
     listExecutionSessionsProjectWide({
@@ -98,11 +104,18 @@ const ExecutionsList: React.FC = () => {
       ...(debouncedSearchText.trim() ? { search: debouncedSearchText.trim() } : {}),
     })
       .then((resp) => {
+        if (reqIdRef.current !== reqId) return;
         setRows(resp.items);
         setTotalRows(resp.total);
       })
-      .catch((err) => setError(formatApiError(err, 'Failed to load executions.')))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (reqIdRef.current !== reqId) return;
+        setError(formatApiError(err, 'Failed to load executions.'));
+      })
+      .finally(() => {
+        if (reqIdRef.current !== reqId) return;
+        setLoading(false);
+      });
   };
 
   useEffect(() => {

@@ -59,7 +59,7 @@ export const KeyboardShortcutsDialog: React.FC<KeyboardShortcutsDialogProps> = (
   const shortcuts = React.useMemo(buildShortcuts, []);
   return (
   <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="sm:max-w-md">
+    <DialogContent size="md">
       <DialogHeader>
         <DialogTitle>Keyboard shortcuts</DialogTitle>
         <DialogDescription>

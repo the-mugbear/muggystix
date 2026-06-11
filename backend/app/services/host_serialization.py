@@ -158,6 +158,12 @@ def serialize_host_base(
         "os_type": host.os_type,
         "os_vendor": host.os_vendor,
         "os_accuracy": host.os_accuracy,
+        # SMB message-signing posture, promoted from script-output blobs to a
+        # typed column (parsed by nmap smb-security-mode / netexec).  Surfaced
+        # so the host views can show the relay-vulnerable badge instead of
+        # making the analyst read raw NSE text.  'disabled' | 'enabled' |
+        # 'required' | None.
+        "smb_signing": host.smb_signing,
         "last_updated_scan_id": host.last_updated_scan_id,
         "first_seen": host.first_seen,
         "last_seen": host.last_seen,

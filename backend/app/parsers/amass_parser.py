@@ -90,6 +90,8 @@ class AmassParser:
                 domain=hostname,
                 record_type="A",
                 value=ip_address,
+                project_id=self._project_id,
+                scan_id=scan_id,
             )
         )
         persist_host_observation(
