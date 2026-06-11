@@ -185,12 +185,33 @@ const ApiTile: React.FC<{ label: string; value: number | string; cls?: string }>
   </Card>
 );
 
-const ApiCallSummaryCard: React.FC<{ summary: AgentActivitySummary | null }> = ({ summary }) => {
+const ApiCallSummaryCard: React.FC<{
+  summary: AgentActivitySummary | null;
+  error?: boolean;
+  onRetry?: () => void;
+}> = ({ summary, error, onRetry }) => {
   const navigate = useNavigate();
+  if (error) {
+    // Distinct from loading: a failed fetch used to render the spinner
+    // forever (the error was swallowed to null), indistinguishable from a
+    // slow load and with no way to retry.
+    return (
+      <Card className="mb-md">
+        <CardContent className="flex flex-wrap items-center justify-between gap-xs p-md">
+          <p className="text-metadata text-muted-foreground">API-call analytics are currently unavailable.</p>
+          {onRetry && (
+            <Button size="sm" variant="outline" onClick={onRetry}>
+              <RefreshCw className="size-3.5" aria-hidden /> Retry
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
   if (!summary) {
     return (
       <Card className="mb-md">
-        <CardContent className="flex items-center gap-xs p-md">
+        <CardContent className="flex items-center gap-xs p-md" role="status" aria-live="polite">
           <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
           <p className="text-metadata text-muted-foreground">Loading API-call analytics…</p>
         </CardContent>
@@ -242,9 +263,15 @@ const ApiCallSummaryCard: React.FC<{ summary: AgentActivitySummary | null }> = (
               {summary.daily.map((d) => (
                 <Tooltip key={d.day}>
                   <TooltipTrigger asChild>
-                    <div
+                    {/* Focusable button (not a bare div) so keyboard + screen
+                        readers can reach the daily value via aria-label; the
+                        tooltip also opens on focus. */}
+                    <button
+                      type="button"
+                      aria-label={`${d.day}: ${d.calls.toLocaleString()} call${d.calls === 1 ? '' : 's'}${d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}`}
                       className={cn(
-                        'min-w-[3px] flex-1 rounded-sm',
+                        'min-w-[3px] flex-1 rounded-sm border-0 p-0',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                         d.errors > 0 ? 'bg-destructive' : 'bg-info',
                       )}
                       style={{ height: `${Math.max(4, (d.calls / maxDay) * 100)}%` }}
@@ -308,6 +335,9 @@ const ProjectActivity: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ModelToolSummaryRow[] | null>(null);
   const [apiSummary, setApiSummary] = useState<AgentActivitySummary | null>(null);
+  const [apiSummaryError, setApiSummaryError] = useState(false);
+  // Grows on "Load older runs" so the unified timeline isn't silently capped.
+  const [limit, setLimit] = useState(200);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -332,17 +362,19 @@ const ProjectActivity: React.FC = () => {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setApiSummaryError(false);
     try {
-      const filters: Record<string, string | number> = { limit: 200 };
+      const filters: Record<string, string | number> = { limit };
       if (kindFilter) filters.kind = kindFilter;
       if (modelFilter) filters.model = modelFilter;
       if (toolFilter) filters.tool = toolFilter;
       // API-call analytics is best-effort — its failure must not blank
-      // the session timeline, so swallow its error to null.
+      // the session timeline; record the error so the card shows an
+      // "unavailable + Retry" state instead of an endless spinner.
       const [list, sum, apiSum] = await Promise.all([
         listAgentSessions(filters),
         getAgentSessionSummary(),
-        getAgentActivitySummary().catch(() => null),
+        getAgentActivitySummary().catch(() => { setApiSummaryError(true); return null; }),
       ]);
       setRows(list.sessions);
       setTotal(list.total);
@@ -353,7 +385,7 @@ const ProjectActivity: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [kindFilter, modelFilter, toolFilter]);
+  }, [kindFilter, modelFilter, toolFilter, limit]);
 
   useEffect(() => {
     fetchAll();
@@ -396,7 +428,11 @@ const ProjectActivity: React.FC = () => {
         </Tooltip>
       </div>
 
-      <ApiCallSummaryCard summary={apiSummary} />
+      <ApiCallSummaryCard
+        summary={apiSummary}
+        error={apiSummaryError}
+        onRetry={() => setRefreshNonce((n) => n + 1)}
+      />
 
       <ModelRollupCard rows={summary} />
 
@@ -455,6 +491,11 @@ const ProjectActivity: React.FC = () => {
             <p className="text-caption text-muted-foreground">
               {rows.length} of {total} shown
             </p>
+            {rows.length < total && !loading && (
+              <Button size="sm" variant="outline" onClick={() => setLimit((l) => l + 200)}>
+                Load older runs
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>

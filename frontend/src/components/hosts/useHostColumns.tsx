@@ -571,8 +571,10 @@ export function useHostColumns({
               </Badge>
               {others.length > 0 && (
                 <span
-                  className="text-caption text-muted-foreground"
+                  className="cursor-default rounded text-caption text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  tabIndex={0}
                   title={others.map((o) => `${o.label} — ${o.detail}`).join('\n')}
+                  aria-label={`Also: ${others.map((o) => `${o.label} (${o.detail})`).join(', ')}`}
                 >
                   +{others.length}
                 </span>
