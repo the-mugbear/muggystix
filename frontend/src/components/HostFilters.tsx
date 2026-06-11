@@ -291,18 +291,16 @@ const ToggleChip: React.FC<{
       onClick={onToggle}
       aria-pressed={active}
       className={cn(
-        'inline-flex items-center gap-xxs rounded-chip border px-sm py-xxs text-caption font-medium transition-colors',
+        'inline-flex items-center rounded-chip border px-sm py-xxs text-caption font-medium transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         active
           ? activeClass ?? 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
           : 'border-border bg-card text-foreground hover:bg-accent',
       )}
     >
-      {/* The check's width is ALWAYS reserved (invisible when inactive) so a
-          chip never changes size on toggle — otherwise activating one re-wraps
-          the flex row, the panel height jumps, and the page shifts under the
-          cursor. */}
-      <Check className={cn('size-3 shrink-0', !active && 'invisible')} aria-hidden />
+      {/* Active state is shown by fill colour only — no icon, so the chip's
+          width never changes on toggle (a width change re-wraps the flex row
+          and shifts the panel) and the label stays centred. */}
       {label}
     </button>
   );

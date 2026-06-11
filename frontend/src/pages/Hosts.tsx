@@ -1450,6 +1450,12 @@ export default function Hosts() {
         label: 'With notes only',
         onDelete: () => setOnlyWithNotes(false),
       });
+    if (filters.assignedToMe)
+      chips.push({
+        key: 'assignedToMe',
+        label: 'Assigned to me',
+        onDelete: () => clearFilterKey('assignedToMe'),
+      });
     return chips;
   }, [filters, clearFilterKey, removeListFilterValue, scanLookup, filterData]);
 

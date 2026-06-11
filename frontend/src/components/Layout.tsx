@@ -353,8 +353,15 @@ export default function Layout({ children }: LayoutProps) {
     };
   }, [location.key]);
 
+  const prevPathnameRef = React.useRef(location.pathname);
   React.useEffect(() => {
     const mainContent = document.getElementById('main-content');
+    // location.key changes on EVERY navigation, including a same-page
+    // navigate(replace) that only rewrites the search string — which is how
+    // pages like /hosts sync filter state to the URL.  Track the pathname so
+    // those filter-driven updates don't trigger a scroll reset.
+    const pathnameChanged = prevPathnameRef.current !== location.pathname;
+    prevPathnameRef.current = location.pathname;
     if (navigationType === 'POP') {
       const saved = scrollPositionsRef.current[location.key];
       if (typeof saved === 'number') {
@@ -368,8 +375,13 @@ export default function Layout({ children }: LayoutProps) {
         return;
       }
     }
-    window.scrollTo({ top: 0 });
-    mainContent?.scrollTo({ top: 0 });
+    // Only reset to top on an actual page change (forward navigation), never
+    // on a same-pathname search update — otherwise adjusting a filter while
+    // scrolled down snaps the page back to the top.
+    if (pathnameChanged) {
+      window.scrollTo({ top: 0 });
+      mainContent?.scrollTo({ top: 0 });
+    }
   }, [location.pathname, location.key, navigationType]);
 
   const handleNavigation = (path: string) => {
