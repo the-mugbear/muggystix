@@ -645,6 +645,10 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot post-load fetch
   }, [loading]);
 
+  // Panel-open state lives up here (above the cascading-facet effect) so the
+  // effect can gate on it.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   // Cascading refresh: when filters change (debounced 400ms), refetch
   // facet counts so the combobox trailing-count chips reflect the new
   // result set.  Pre-audit (H18) this depended on the whole
@@ -653,14 +657,21 @@ export default function Hosts() {
   // dropdown options.  Now depends only on the actual filter-shape
   // inputs.  Also gated on `filterData` having already loaded once, so
   // the initial post-load fetch above isn't double-fired.
+  //
+  // #49 — those cascading counts only render inside the filter panel's
+  // comboboxes, so only refetch while the panel is open.  When it's closed
+  // (filtering via the sticky review chips / query bar), a filter change no
+  // longer fires a heavy facet query; opening the panel re-runs this effect
+  // and refreshes the counts.  Chip labels rely on the one-shot initial load
+  // (names don't change with filters), so they're unaffected.
   useEffect(() => {
-    if (filterData === null) return;
+    if (filterData === null || !advancedOpen) return;
     const timer = setTimeout(() => {
       fetchFilterData(buildFacetParams());
     }, 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrowing per audit H18
-  }, [filters]);
+  }, [filters, advancedOpen]);
 
   useEffect(() => {
     if (isInitialized) return;
@@ -1009,7 +1020,6 @@ export default function Hosts() {
   };
 
   // v5.0.0 — command-bar query handlers.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const setQuery = useCallback((q: string) => {
     setFilters((previous) => {
