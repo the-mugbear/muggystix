@@ -5,7 +5,7 @@ These models extend the base v2 schema to track confidence scores
 and historical conflicts for better visibility into data quality.
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Float, JSON, func, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Float, JSON, func, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 
@@ -36,7 +36,11 @@ class HostConfidence(Base):
     scan = relationship("Scan", foreign_keys=[scan_id])
 
     __table_args__ = (
-        Index("idx_host_confidence_host_field", "host_id", "field_name"),
+        # One winning-confidence row per (host, field). _track_field_confidence
+        # check-then-updates on this exact key; the UNIQUE both enforces that
+        # (no silent accretion across scans) and serves the (host_id, field_name)
+        # lookup, so the old non-unique index is redundant and dropped.
+        UniqueConstraint("host_id", "field_name", name="uq_host_confidence_host_field"),
         Index("idx_host_confidence_scan", "scan_id"),
     )
 
@@ -67,7 +71,8 @@ class PortConfidence(Base):
     scan = relationship("Scan", foreign_keys=[scan_id])
 
     __table_args__ = (
-        Index("idx_port_confidence_port_field", "port_id", "field_name"),
+        # One winning-confidence row per (port, field) — see HostConfidence.
+        UniqueConstraint("port_id", "field_name", name="uq_port_confidence_port_field"),
         Index("idx_port_confidence_scan", "scan_id"),
     )
 

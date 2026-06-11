@@ -414,6 +414,16 @@ class NetexecParser:
 
             new_confidence = ConfidenceModel(**confidence_data)
             self.db.add(new_confidence)
+            # Flush so a repeat of the same (subject, field_name) later in
+            # the same scan — e.g. one IP appearing on both an SMB and an
+            # LDAP netexec line — is found by the existence check above
+            # instead of inserting a second row.  Required now that
+            # host_confidence/port_confidence carry a UNIQUE(subject,
+            # field_name) constraint (the session runs autoflush=False, so
+            # without this the duplicate insert only surfaces as an
+            # IntegrityError at commit).  Same v2.72.0 pattern as the
+            # vulnerability + host-attribute write paths.
+            self.db.flush()
 
     def _store_netexec_result(self, host_id: int, scan_id: int, host_data: Dict[str, Any], raw_output: str):
         """Store netexec-specific enumeration results"""

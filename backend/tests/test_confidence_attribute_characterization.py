@@ -111,6 +111,20 @@ def test_confidence_keyed_per_field(db_session, test_project):
     )
 
 
+def test_confidence_same_field_twice_in_scan_upserts(db_session, test_project):
+    """Two observations of the same (host, field) with NO intervening flush must
+    not create a duplicate — relies on the flush inside _track_field_confidence
+    so the second call finds the first. Guards the UNIQUE(host_id, field_name)."""
+    host, scan = _mk_host_and_scan(db_session, test_project.id, "10.8.0.7")
+    p = NetexecParser(db_session)
+    p._track_field_confidence("host", host.id, "os_name", "Windows", _score(85), scan.id)
+    p._track_field_confidence("host", host.id, "os_name", "Windows Server", _score(95), scan.id)
+    db_session.flush()
+    rows = _host_conf(db_session, host.id)
+    assert len(rows) == 1
+    assert rows[0].confidence_score == 95
+
+
 # --- host-attribute upsert -------------------------------------------------
 
 def test_host_attribute_same_value_upserts(db_session, test_project):
