@@ -374,6 +374,11 @@ export const updateAnnotation = async (
   return response.data;
 };
 
+export const getHostNotes = async (hostId: number): Promise<Annotation[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/notes`);
+  return response.data;
+};
+
 export const getAnnotationHistory = async (
   hostId: number,
   noteId: number,
@@ -433,6 +438,8 @@ export interface NoteActivityItem {
   created_at: string;
   updated_at: string | null;
   host_note_count: number;
+  // Image evidence on this note — thumbnails in the activity feed.
+  attachments?: NoteAttachment[];
 }
 
 export interface NoteActivityAuthor {

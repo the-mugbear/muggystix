@@ -30,6 +30,7 @@ import {
 } from '../components/ui/select';
 import { cn } from '../utils/cn';
 import { InlineLoader } from '../components/ui/inline-loader';
+import NoteAttachments from '../components/host-inspector/NoteAttachments';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All Statuses' },
@@ -492,6 +493,15 @@ const Activity: React.FC = () => {
                       <p className="text-metadata text-muted-foreground">
                         {note.body.length > 180 ? `${note.body.slice(0, 180)}…` : note.body}
                       </p>
+                      {note.attachments && note.attachments.length > 0 && (
+                        <NoteAttachments
+                          hostId={note.host_id}
+                          noteId={note.note_id}
+                          attachments={note.attachments}
+                          canManage={false}
+                          onChanged={() => {}}
+                        />
+                      )}
                     </div>
                   ))}
                 </div>

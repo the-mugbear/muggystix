@@ -291,6 +291,18 @@ def get_note_activity(
             "created_at": note.created_at.isoformat() if note.created_at else None,
             "updated_at": note.updated_at.isoformat() if note.updated_at else None,
             "host_note_count": host_note_counts.get(note.host_id, 0),
+            # Image evidence (selectin-loaded) so the activity feed can render
+            # thumbnails, matching the host inspector.
+            "attachments": [
+                {
+                    "id": a.id,
+                    "filename": a.filename,
+                    "content_type": a.content_type,
+                    "size_bytes": a.size_bytes,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+                for a in (note.attachments or [])
+            ],
         })
 
     # Get distinct authors for the user filter dropdown

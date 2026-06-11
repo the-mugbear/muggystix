@@ -16,13 +16,16 @@ import {
   FindingSeverity,
   FindingStatus,
   FindingStatusHistoryEntry,
+  Annotation,
   getFinding,
   getFindingHistory,
   setFindingStatus,
   updateFinding,
   removeFindingHost,
   addFindingHosts,
+  getHostNotes,
 } from '../services/api';
+import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
@@ -75,6 +78,9 @@ const FindingDetail: React.FC = () => {
   // status change on this page also captures the audit rationale.
   const [summaryPrompt, setSummaryPrompt] = useState<{ status: FindingStatus } | null>(null);
   const [summaryText, setSummaryText] = useState('');
+  // The note thread this finding was promoted from — body + image evidence,
+  // shown inline (the page previously only linked out to it).
+  const [evidenceThread, setEvidenceThread] = useState<Annotation[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,6 +103,42 @@ const FindingDetail: React.FC = () => {
     const host = finding.hosts[0];
     return host ? `/hosts/${host.host_id}#note-${finding.evidence_annotation_id}` : null;
   }, [finding]);
+
+  const evidenceHostId = finding?.hosts[0]?.host_id ?? null;
+
+  // Fetch the source note thread (root + replies, with image attachments) so
+  // the finding shows the actual evidence inline, not just a link out.
+  useEffect(() => {
+    const rootId = finding?.evidence_annotation_id;
+    if (!finding || finding.source !== 'note' || !rootId || !evidenceHostId) {
+      setEvidenceThread([]);
+      return;
+    }
+    let cancelled = false;
+    getHostNotes(evidenceHostId)
+      .then((notes) => {
+        if (cancelled) return;
+        // Walk the subtree from the root note via parent_id links.
+        const inThread = new Set<number>([rootId]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const n of notes) {
+            if (!inThread.has(n.id) && n.parent_id != null && inThread.has(n.parent_id)) {
+              inThread.add(n.id);
+              changed = true;
+            }
+          }
+        }
+        setEvidenceThread(notes.filter((n) => inThread.has(n.id)).sort((a, b) => a.id - b.id));
+      })
+      .catch(() => {
+        if (!cancelled) setEvidenceThread([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [finding, evidenceHostId]);
 
   const applyStatus = async (status: FindingStatus, summary?: string) => {
     if (!finding) return;
@@ -233,6 +275,36 @@ const FindingDetail: React.FC = () => {
           </Link>
         )}
       </div>
+
+      {evidenceThread.length > 0 && (
+        <Card className="mb-md">
+          <CardHeader><CardTitle>Evidence note</CardTitle></CardHeader>
+          <CardContent className="space-y-md">
+            {evidenceThread.map((note) => (
+              <div key={note.id} className={note.parent_id ? 'border-l-2 border-border pl-sm' : ''}>
+                <div className="mb-xxs flex flex-wrap items-center gap-xs">
+                  <span className="text-metadata font-semibold text-foreground">
+                    {note.author_name || 'Unknown analyst'}
+                  </span>
+                  <span className="text-caption text-muted-foreground">
+                    {new Date(note.created_at).toLocaleString()}
+                  </span>
+                </div>
+                <p className="whitespace-pre-wrap text-body">{note.body}</p>
+                {note.attachments && note.attachments.length > 0 && evidenceHostId && (
+                  <NoteAttachments
+                    hostId={evidenceHostId}
+                    noteId={note.id}
+                    attachments={note.attachments}
+                    canManage={false}
+                    onChanged={() => {}}
+                  />
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="mb-md">
         <CardHeader><CardTitle>Affected hosts ({finding.host_count})</CardTitle></CardHeader>
