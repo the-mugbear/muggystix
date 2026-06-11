@@ -568,6 +568,12 @@ export default function Hosts() {
 
   const hostsAbortRef = useRef<AbortController | null>(null);
   const filterAbortRef = useRef<AbortController | null>(null);
+  // True once the first host fetch has completed.  Gates the full-page
+  // skeleton so it only shows on initial load — never on a refetch whose
+  // current result happens to be empty (e.g. toggling a filter that matches
+  // 0 hosts, or rapid toggling), which would otherwise replace the whole
+  // page and snap the scroll to the top.
+  const hasFetchedOnceRef = useRef(false);
 
   const fetchHosts = async () => {
     hostsAbortRef.current?.abort();
@@ -587,7 +593,10 @@ export default function Hosts() {
       console.error('Error fetching hosts:', err);
       setError(formatApiError(err, 'Failed to fetch hosts. Please try again.'));
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+        hasFetchedOnceRef.current = true;
+      }
     }
   };
 
@@ -1569,7 +1578,7 @@ export default function Hosts() {
   // re-running their effects.  One stable reference per filter/page change.
   const exportQueryContext = useMemo(buildHostQueryContext, [buildHostQueryContext]);
 
-  if (loading && !hosts.length) {
+  if (loading && !hosts.length && !hasFetchedOnceRef.current) {
     return <ListPageSkeleton titleWidth={180} actionCount={3} tableProps={{ rows: 10, columns: 6 }} />;
   }
 

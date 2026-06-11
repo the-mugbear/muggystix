@@ -38,7 +38,7 @@ describe('HostFilters layout', () => {
     // Subnet labels).
     for (const label of [
       'Operating system', 'Ports', 'Services', 'Subnets', 'Tags',
-      'Port states', 'Technologies', 'Subnet labels', 'Review status', 'Discovered in scans',
+      'Technologies', 'Subnet labels', 'Review status', 'Discovered in scans',
     ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }

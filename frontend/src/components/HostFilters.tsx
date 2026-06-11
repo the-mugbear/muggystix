@@ -258,12 +258,6 @@ const presetIsApplied = (preset: HostFilterOptions, current: HostFilterOptions):
   return true;
 };
 
-const PORT_STATE_OPTIONS: ComboboxOption[] = [
-  { value: 'open', label: 'Open' },
-  { value: 'closed', label: 'Closed' },
-  { value: 'filtered', label: 'Filtered' },
-];
-
 /**
  * Inline switch+label row used several times in the filter grid.
  */
@@ -807,19 +801,10 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 emptyMessage={facetEmpty('No services seen yet.')}
               />
             </div>
-            <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-port-states" id="hosts-filter-port-states-label">Port states</Label>
-              <Combobox
-                id="hosts-filter-port-states"
-                multiple
-                options={PORT_STATE_OPTIONS}
-                values={filters.portStates ?? []}
-                onValuesChange={(values) =>
-                  handleFilterChange('portStates', values.length ? values : undefined)
-                }
-                placeholder="Any"
-              />
-            </div>
+            {/* Port states control removed (v5.67.1) — in practice every
+                recorded port is "open" (closed/filtered are almost never
+                ingested), so the Open/Closed/Filtered picker was clutter.
+                The `portStates` param stays for DSL `portstate:` use. */}
             <div className="space-y-xxs">
               <Label htmlFor="hosts-filter-tech" id="hosts-filter-tech-label">Technologies</Label>
               <Combobox
