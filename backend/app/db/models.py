@@ -19,7 +19,7 @@ class Host(Base):
     __tablename__ = "hosts_v2"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     ip_address = Column(String, nullable=False, index=True)
     hostname = Column(String)
     state = Column(String)
@@ -34,7 +34,7 @@ class Host(Base):
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    last_updated_scan_id = Column(Integer, ForeignKey("scans.id"))  # Track which scan last updated this host
+    last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))  # Track which scan last updated this host
 
     # Relationships.  Hot read paths (host list, serializers, reports) touch
     # ports + vulnerabilities + attributes on every host, so they default to
@@ -72,7 +72,7 @@ class Port(Base):
     __tablename__ = "ports_v2"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     port_number = Column(Integer, nullable=False, index=True)
     protocol = Column(String, nullable=False)
     state = Column(String)
@@ -87,7 +87,7 @@ class Port(Base):
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    last_updated_scan_id = Column(Integer, ForeignKey("scans.id"))
+    last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
     is_active = Column(Boolean, default=True)  # Track if port is currently active
     
     # Relationships
@@ -113,14 +113,14 @@ class Script(Base):
     __tablename__ = "scripts_v2"
 
     id = Column(Integer, primary_key=True, index=True)
-    port_id = Column(Integer, ForeignKey("ports_v2.id"), nullable=False)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=False)
     script_id = Column(String, nullable=False)
     output = Column(Text)
     
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     
     # Relationships
     port = relationship("Port", back_populates="scripts")
@@ -136,14 +136,14 @@ class HostScript(Base):
     __tablename__ = "host_scripts_v2"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     script_id = Column(String, nullable=False)
     output = Column(Text)
     
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now()) 
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     
     # Relationships
     host = relationship("Host", back_populates="host_scripts")
@@ -160,8 +160,8 @@ class HostScanHistory(Base):
     __tablename__ = "host_scan_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Host state at time of this scan
@@ -187,8 +187,8 @@ class PortScanHistory(Base):
     __tablename__ = "port_scan_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    port_id = Column(Integer, ForeignKey("ports_v2.id"), nullable=False)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Port state at time of this scan
@@ -214,7 +214,7 @@ class Scan(Base):
     __tablename__ = "scans"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     scan_type = Column(String)
     tool_name = Column(String)
@@ -241,7 +241,7 @@ class Scope(Base):
     __tablename__ = "scopes"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text)
     uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -257,7 +257,7 @@ class Subnet(Base):
     __tablename__ = "subnets"
 
     id = Column(Integer, primary_key=True, index=True)
-    scope_id = Column(Integer, ForeignKey("scopes.id"), nullable=False)
+    scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=False)
     cidr = Column(String, nullable=False, index=True)
     description = Column(Text)
     # Physical/logical site this subnet belongs to (e.g. "London DC", "AWS
@@ -336,8 +336,8 @@ class HostSubnetMapping(Base):
     __tablename__ = "host_subnet_mappings"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False, index=True)
-    subnet_id = Column(Integer, ForeignKey("subnets.id"), nullable=False, index=True)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
+    subnet_id = Column(Integer, ForeignKey("subnets.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -353,7 +353,7 @@ class ScanInfo(Base):
     __tablename__ = "scan_info"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     type = Column(String)
     protocol = Column(String)
     numservices = Column(Integer)
@@ -448,7 +448,7 @@ class DNSRecord(Base):
     __tablename__ = "dns_records"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     # RV-1 — provenance: which scan produced this DNS row, so a scan can
     # report its dns_record_count instead of looking "empty" when it only
     # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none,
@@ -473,8 +473,8 @@ class OutOfScopeHost(Base):
     __tablename__ = "out_of_scope_hosts"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     ip_address = Column(String, nullable=False, index=True)
     hostname = Column(String)
     ports = Column(JSON)  # Store port information as JSON
@@ -494,7 +494,7 @@ class ParseError(Base):
     __tablename__ = "parse_errors"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     file_type = Column(String)  # nmap_xml, eyewitness_json, masscan_xml, etc.
     file_size = Column(Integer)  # in bytes
@@ -512,7 +512,7 @@ class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     original_filename = Column(String, nullable=False)
     storage_path = Column(String, nullable=False)
@@ -536,8 +536,8 @@ class IngestionJob(Base):
     last_error = Column(Text, nullable=True)
 
     submitted_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
-    parse_error_id = Column(Integer, ForeignKey("parse_errors.id"), nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
+    parse_error_id = Column(Integer, ForeignKey("parse_errors.id", ondelete="SET NULL"), nullable=True)
     # v2.11.0: when the upload was submitted through the agent recon
     # workflow (POST /agent/recon/upload), this binds the job back to
     # the ReconSession so /agent/recon/summary can count results and
@@ -587,7 +587,7 @@ class HostFollow(Base):
     __tablename__ = "host_follows"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     status = Column(SQLEnum(FollowStatus), nullable=False, default=FollowStatus.WATCHING)
     last_viewed_at = Column(DateTime(timezone=True), nullable=True)
@@ -836,12 +836,12 @@ class Annotation(Base):
     # deleted user" instead of either blocking the delete (NOT NULL
     # before the fix) or wiping shared annotations (CASCADE).
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    parent_id = Column(Integer, ForeignKey("annotations.id"), nullable=True)
+    parent_id = Column(Integer, ForeignKey("annotations.id", ondelete="SET NULL"), nullable=True)
     # Persisted thread root (review #5): id of the thread's root note
     # (== self for a root note).  Lets activity status filters/counts query
     # by the THREAD's status (the root's) instead of a reply's, and resolves
     # history by root — without an ancestor walk per request.
-    thread_root_id = Column(Integer, ForeignKey("annotations.id"), nullable=True, index=True)
+    thread_root_id = Column(Integer, ForeignKey("annotations.id", ondelete="SET NULL"), nullable=True, index=True)
     body = Column(Text, nullable=False)
     status = Column(SQLEnum(NoteStatus), nullable=False, default=NoteStatus.OPEN)
     # Thread-level work fields (P3) — semantically belong to the ROOT note

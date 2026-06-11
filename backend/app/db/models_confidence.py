@@ -15,7 +15,7 @@ class HostConfidence(Base):
     __tablename__ = "host_confidence"
 
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     field_name = Column(String, nullable=False)  # hostname, os_name, state, etc.
 
     # Current winning value confidence
@@ -23,7 +23,7 @@ class HostConfidence(Base):
     scan_type = Column(String, nullable=False)  # nmap, netexec, masscan, etc.
     data_source = Column(String, nullable=False)  # service_banner, os_fingerprint, etc.
     method = Column(String, nullable=False)  # nmap -sV, netexec smb, etc.
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
 
     # Timestamps
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -46,7 +46,7 @@ class PortConfidence(Base):
     __tablename__ = "port_confidence"
 
     id = Column(Integer, primary_key=True, index=True)
-    port_id = Column(Integer, ForeignKey("ports_v2.id"), nullable=False)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=False)
     field_name = Column(String, nullable=False)  # service_name, service_version, state, etc.
 
     # Current winning value confidence
@@ -54,7 +54,7 @@ class PortConfidence(Base):
     scan_type = Column(String, nullable=False)  # nmap, netexec, masscan, etc.
     data_source = Column(String, nullable=False)  # service_banner, version_probe, etc.
     method = Column(String, nullable=False)  # nmap -sV, netexec smb, etc.
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
 
     # Timestamps
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -91,13 +91,13 @@ class ConflictHistory(Base):
     # Previous value that lost the conflict
     previous_value = Column(Text)
     previous_confidence = Column(Integer)
-    previous_scan_id = Column(Integer, ForeignKey("scans.id"))
+    previous_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
     previous_method = Column(String)
 
     # New value that won the conflict
     new_value = Column(Text)
     new_confidence = Column(Integer)
-    new_scan_id = Column(Integer, ForeignKey("scans.id"))
+    new_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
     new_method = Column(String)
 
     # When the conflict was resolved
@@ -121,7 +121,7 @@ class DataSourceMetadata(Base):
     __tablename__ = "data_source_metadata"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
 
     # Source identification
     scan_type = Column(String, nullable=False)  # nmap, netexec, masscan
@@ -158,8 +158,8 @@ class NetexecResult(Base):
     __tablename__ = "netexec_results"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id"), nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
 
     # Protocol and service info
     protocol = Column(String, nullable=False)  # smb, ldap, winrm, rdp
