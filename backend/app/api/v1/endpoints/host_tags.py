@@ -5,9 +5,9 @@ assignments.  Mounted under the ``/hosts`` prefix alongside host-follow
 and host-notes; tag-definition routes live at ``/tags`` (a static
 segment, so it never collides with ``/{host_id:int}/...``).
 
-Any authenticated project member may manage tags — ``get_current_project``
-already enforces membership, matching the low-stakes follow/notes
-surfaces rather than an admin gate.
+Reading tags is open to any project member; mutating them (create / rename /
+delete a tag, assign / remove on a host) requires analyst+ — viewer and auditor
+are read-only roles, so they must not be able to alter shared project state.
 """
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ from app.db.session import get_db
 from app.db import models
 from app.db.models import HostTag, HostTagAssignment
 from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
-from app.api.deps import get_current_project
+from app.api.deps import get_current_project, require_project_role
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -109,7 +109,10 @@ def list_tags(
     ]
 
 
-@router.post("/tags", response_model=TagInfo, status_code=201, summary="Create a project tag")
+@router.post(
+    "/tags", response_model=TagInfo, status_code=201, summary="Create a project tag",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
 def create_tag(
     payload: TagCreate,
     db: Session = Depends(get_db),
@@ -135,7 +138,10 @@ def create_tag(
     return TagInfo(id=tag.id, name=tag.name, color=tag.color, host_count=0)
 
 
-@router.patch("/tags/{tag_id:int}", response_model=TagInfo, summary="Rename or recolor a tag")
+@router.patch(
+    "/tags/{tag_id:int}", response_model=TagInfo, summary="Rename or recolor a tag",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
 def update_tag(
     tag_id: int,
     payload: TagUpdate,
@@ -164,7 +170,10 @@ def update_tag(
     return TagInfo(id=tag.id, name=tag.name, color=tag.color, host_count=count)
 
 
-@router.delete("/tags/{tag_id:int}", status_code=204, summary="Delete a tag (removes all its assignments)")
+@router.delete(
+    "/tags/{tag_id:int}", status_code=204, summary="Delete a tag (removes all its assignments)",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
 def delete_tag(
     tag_id: int,
     db: Session = Depends(get_db),
@@ -180,6 +189,7 @@ def delete_tag(
     "/{host_id:int}/tags",
     response_model=List[TagInfo],
     summary="Assign tags to a host (by id and/or create-by-name)",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def assign_host_tags(
     host_id: int,
@@ -243,6 +253,7 @@ def assign_host_tags(
     "/{host_id:int}/tags/{tag_id:int}",
     status_code=204,
     summary="Remove a tag from a host",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def remove_host_tag(
     host_id: int,

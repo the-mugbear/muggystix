@@ -21,9 +21,9 @@ from app.db.session import get_db
 from app.db import models
 from app.db.models import HostFollow, FollowStatus, HostTag, HostTagAssignment
 from app.db.models_auth import User, UserRole
-from app.db.models_project import Project, ProjectMembership, Notification
+from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
-from app.api.deps import get_current_project
+from app.api.deps import get_current_project, require_project_role
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -58,7 +58,11 @@ class BulkTagRequest(BaseModel):
     action: str = Field("add", pattern="^(add|remove)$")
 
 
-@router.post("/bulk/tags", response_model=BulkResult, summary="Add or remove tags on many hosts")
+@router.post(
+    "/bulk/tags", response_model=BulkResult, summary="Add or remove tags on many hosts",
+    # Bulk shared-state mutation — analyst+ only (viewer/auditor are read-only).
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
 def bulk_tags(
     payload: BulkTagRequest,
     db: Session = Depends(get_db),
@@ -126,7 +130,11 @@ class BulkAssignRequest(BaseModel):
     assignee_user_id: int
 
 
-@router.post("/bulk/assign", response_model=BulkResult, summary="Assign many hosts to one user")
+@router.post(
+    "/bulk/assign", response_model=BulkResult, summary="Assign many hosts to one user",
+    # Bulk shared-state mutation — analyst+ only (viewer/auditor are read-only).
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
 def bulk_assign(
     payload: BulkAssignRequest,
     db: Session = Depends(get_db),

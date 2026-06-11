@@ -13,7 +13,7 @@ from app.db.models import HostFollow
 from app.db.models_auth import User, UserRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project, ProjectMembership
+from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.schemas.schemas import HostFollowInfo, HostFollowUpdate
 from app.services.host_follow_service import HostFollowService
 from app.services.notification_service import NotificationService
@@ -206,6 +206,9 @@ def _status_str(follow: HostFollow) -> str:
     "/{host_id:int}/assign",
     response_model=HostAssignmentInfo,
     summary="Assign a host to a project member",
+    # Assigning a host to another member mutates shared workflow state and
+    # fires notifications/webhooks — analyst+ only, not every member.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def assign_host(
     host_id: int,
@@ -271,6 +274,8 @@ def assign_host(
     "/{host_id:int}/assign",
     status_code=204,
     summary="Unassign a host from a user (keeps their follow row)",
+    # Shared-state mutation (see assign) — analyst+ only.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def unassign_host(
     host_id: int,

@@ -952,7 +952,13 @@ export default function Hosts() {
     setFilters(next);
     setActiveViewId(view.id);
     setPage(0);
-    if (!opts?.quiet) toast.info(`Applied view "${view.name}"`, { autoHideMs: 2000 });
+    // Explicitly applying a view supersedes any auto-applied project default,
+    // so the "project default applied" chip would be stale — drop it. The
+    // quiet path IS the auto-apply, which sets the chip itself afterwards.
+    if (!opts?.quiet) {
+      setAppliedProjectDefault(null);
+      toast.info(`Applied view "${view.name}"`, { autoHideMs: 2000 });
+    }
   }, [toast]);
 
   const handleApplyView = (view: HostFilterView) => applyViewFilters(view);
@@ -1032,6 +1038,9 @@ export default function Hosts() {
       return;
     }
     setActiveViewId(null);
+    // A manual filter edit means the auto-applied project default no longer
+    // describes what's shown — clear the chip so it can't go stale.
+    setAppliedProjectDefault(null);
   }, [filters]);
 
   useEffect(() => {

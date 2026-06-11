@@ -21,7 +21,7 @@ from app.db.session import get_db
 from app.db.models_auth import User, UserRole
 from app.db.models_integrations import IntegrationCredential, IntegrationType
 from app.db.models_project import ProjectMembership
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.services.integration_service import IntegrationService
 from app.services.url_validator import (
     require_public_http_url,
@@ -197,7 +197,14 @@ class IntegrationTestResponse(BaseModel):
 )
 def test_integration(
     body: IntegrationTestRequest,
-    current_user: User = Depends(get_current_user),
+    # Admin-only: this endpoint dials an operator-supplied URL, so a lower-priv
+    # member could otherwise use it as an internal-network port/timing oracle
+    # (the scanner/LLM types intentionally allow private addresses).  URL
+    # validation still blocks cloud-metadata / link-local regardless; gating
+    # to admin removes the viewer/auditor probe vector. (Create still allows
+    # project members via _assert_project_member_or_admin — tightening that to
+    # match is a follow-up.)
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """Verify URL + credentials before saving.
 

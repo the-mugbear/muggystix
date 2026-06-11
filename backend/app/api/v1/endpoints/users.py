@@ -525,6 +525,21 @@ def admin_reset_password(
     user.password_changed_at = datetime.now(timezone.utc)
     user.must_change_password = True
 
+    # Revoke the target user's live sessions — an admin reset is a recovery /
+    # lockout action, so any token issued before it (e.g. a compromised
+    # session) must stop working.  Mirrors the self-service change-password
+    # path, which revokes for the same reason.  ``must_change_password`` only
+    # gates the next *login*; an already-issued token would otherwise stay
+    # valid for its full lifetime.
+    from app.db.models_auth import UserSession
+    db.query(UserSession).filter(
+        UserSession.user_id == user.id,
+        UserSession.revoked_at.is_(None),
+    ).update(
+        {"revoked_at": datetime.now(timezone.utc), "revoked_reason": "admin_password_reset"},
+        synchronize_session=False,
+    )
+
     db.commit()
 
     # Log password reset

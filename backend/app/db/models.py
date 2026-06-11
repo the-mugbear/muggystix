@@ -10,7 +10,7 @@ Key changes:
 """
 
 import enum
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
 from sqlalchemy.orm import relationship, backref
 from app.db.session import Base
 
@@ -740,6 +740,20 @@ class HostFilterView(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "project_id", "name", name="uq_host_filter_view_name"),
+        # At most one project-default view per project.  Mirrors migration
+        # f3a4b5c6d7e8 so the test schema (built via create_all) enforces the
+        # single-default invariant the promote endpoint relies on as a backstop.
+        # Both dialect predicates are required: prod is Postgres, but the test
+        # suite falls back to SQLite — without ``sqlite_where`` the WHERE clause
+        # is dropped there and the index degrades to a *full* unique on
+        # project_id, which would forbid more than one saved view per project.
+        Index(
+            "uq_host_filter_view_project_default",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_project_default"),
+            sqlite_where=text("is_project_default"),
+        ),
     )
 
 

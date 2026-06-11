@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.db.session import get_db
@@ -49,8 +49,10 @@ _USER_SESSION_ACTIVITY_DEBOUNCE_SECONDS = 60.0
 
 # Pydantic models for request/response
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    # Bounded so an unauthenticated caller can't ship a multi-megabyte body to
+    # the login route (the global Nginx body cap is large for scan uploads).
+    username: str = Field(..., max_length=255)
+    password: str = Field(..., max_length=1024)
 
 
 class RegisterRequest(BaseModel):
@@ -78,9 +80,11 @@ class TwoFactorChallengeResponse(BaseModel):
 
 
 class TwoFactorLoginRequest(BaseModel):
-    challenge_token: str
-    # A 6-digit TOTP code OR a recovery code (xxxxx-xxxxx).
-    code: str
+    # challenge_token is a signed JWT (~hundreds of bytes); code is a 6-digit
+    # TOTP or a recovery code (xxxxx-xxxxx).  Bounded so the unauthenticated
+    # 2FA route can't be used as an oversized-body sink.
+    challenge_token: str = Field(..., max_length=4096)
+    code: str = Field(..., max_length=64)
 
 
 class UserProfile(BaseModel):
