@@ -191,7 +191,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // the session and navigate.  ``data`` is the LoginResponse body.
   const completeLogin = useCallback((data: {
     access_token: string;
-    user: { id: number; username: string; role: string; must_change_password?: boolean } & Record<string, unknown>;
+    user: {
+      id: number; username: string; role: string;
+      must_change_password?: boolean; must_setup_2fa?: boolean;
+    } & Record<string, unknown>;
   }) => {
     localStorage.setItem('auth_token', data.access_token);
     localStorage.setItem('auth_user', JSON.stringify(data.user));
@@ -206,6 +209,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // frontend no longer double-posts one (code-review R7).
     if (data.user.must_change_password) {
       navigate('/force-change-password', { replace: true });
+    } else if (data.user.must_setup_2fa) {
+      // Mandatory 2FA not yet enrolled — go straight to the forced-setup page
+      // (deterministic, instead of waiting for a gated call to 403).
+      navigate('/force-2fa-setup', { replace: true });
     } else {
       const from = location.state?.from?.pathname || '/';
       navigate(from, { replace: true });

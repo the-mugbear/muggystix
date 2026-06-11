@@ -345,6 +345,15 @@ def _issue_user_session(
             "full_name": user.full_name,
             "role": user.role,
             "must_change_password": bool(user.must_change_password),
+            # Mandatory-2FA enrollment is pending — the client redirects to the
+            # forced-setup page at login (deterministic, not reliant on a later
+            # gated-call 403).  Only true when REQUIRE_2FA is on and the user
+            # hasn't enrolled (and isn't also forced to change password first).
+            "must_setup_2fa": bool(
+                settings.REQUIRE_2FA
+                and not user.totp_enabled
+                and not user.must_change_password
+            ),
         },
     )
 
