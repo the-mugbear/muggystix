@@ -166,12 +166,23 @@ class NetexecParser:
         """Parse SMB enumeration line"""
         ip, port, hostname, status, os_info, name, domain = match.groups()
 
+        # netexec reports the SMB signing posture inline, e.g.
+        # "(signing:False)" / "(signing:True)".  Extract to the queryable
+        # host column rather than leaving it in the raw line.
+        smb_signing = None
+        low = full_line.lower()
+        if "signing:false" in low:
+            smb_signing = "disabled"
+        elif "signing:true" in low:
+            smb_signing = "enabled"
+
         return {
             'ip_address': ip,
             'port': int(port),
             'hostname': name.strip(),
             'domain': domain.strip(),
             'os_name': os_info.strip(),
+            'smb_signing': smb_signing,
             'protocol': 'smb',
             'confidence_factors': {
                 'enumeration_success': True,
@@ -282,6 +293,11 @@ class NetexecParser:
         host = self._find_or_create_host_with_confidence(
             ip_address, scan_id, extracted_host_data, confidence
         )
+
+        # SMB signing posture → queryable host column (don't clobber a prior
+        # observation with None when this line didn't report it).
+        if host_data.get('smb_signing'):
+            host.smb_signing = host_data['smb_signing']
 
         # Store netexec-specific results
         self._store_netexec_result(host.id, scan_id, host_data, raw_output)

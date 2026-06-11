@@ -247,6 +247,12 @@ class NmapXMLParser:
         # Process host scripts
         self._process_host_scripts(hostscript_elem, host.id, scan_id)
 
+        # Extract SMB message-signing posture to the queryable host column
+        # (don't clobber a prior observation with None when this scan is silent).
+        signing = self._detect_smb_signing(hostscript_elem)
+        if signing:
+            host.smb_signing = signing
+
     def _find_primary_address(self, host_elem: etree.Element) -> Optional[etree.Element]:
         address_elem = host_elem.find('address[@addrtype="ipv4"]')
         if address_elem is None:
@@ -346,6 +352,35 @@ class NmapXMLParser:
             }
             
             self.dedup_service.add_or_update_script(port_id, scan_id, script_data)
+
+    @staticmethod
+    def _detect_smb_signing(hostscript_elem: Optional[etree.Element]) -> Optional[str]:
+        """Classify SMB message-signing from nmap smb(2)-security-mode output.
+
+        Returns 'disabled' (relay-vulnerable), 'required', 'enabled' (on but not
+        required), or None when no signing script ran.  Reads the ``output``
+        text of the smb-security-mode / smb2-security-mode host scripts.
+        """
+        if hostscript_elem is None:
+            return None
+        text = " ".join(
+            (s.get("output") or "")
+            for s in hostscript_elem.findall("script")
+            if (s.get("id") or "") in ("smb-security-mode", "smb2-security-mode")
+        ).lower()
+        if not text:
+            return None
+        # smb-security-mode: "message_signing: disabled|supported|required"
+        # smb2-security-mode: "Message signing enabled but not required" / "... and required"
+        if "signing" not in text and "message_signing" not in text:
+            return None
+        if "disabled" in text:
+            return "disabled"
+        if "required" in text and "not required" not in text:
+            return "required"
+        if "enabled" in text or "supported" in text:
+            return "enabled"
+        return None
 
     def _process_host_scripts(self, hostscript_elem: Optional[etree.Element], host_id: int, scan_id: int):
         """Process host scripts"""

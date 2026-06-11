@@ -30,6 +30,12 @@ class Host(Base):
     os_type = Column(String)
     os_vendor = Column(String)
     os_accuracy = Column(Integer)
+    # SMB message-signing posture, extracted to a queryable column (per the
+    # column-vs-blob policy) from nmap smb-security-mode / netexec rather than
+    # left in script-output blobs: 'disabled' (relay-vulnerable), 'enabled'
+    # (on but not required), 'required', or NULL when not observed.  Powers the
+    # systemic "SMB signing disabled estate-wide" blind-spot lens.
+    smb_signing = Column(String)
 
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())

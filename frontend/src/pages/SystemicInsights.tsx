@@ -57,6 +57,7 @@ const CONDITION_LABEL: Record<string, string> = {
   cleartext_services: 'Cleartext',
   tls_hygiene: 'TLS',
   weak_auth: 'Weak auth',
+  smb_signing: 'SMB signing',
 };
 
 function conditionChip(key: string): string {

@@ -60,6 +60,10 @@ def test_eol_spanning_sites_is_blind_spot_weak_auth_is_not(db_session, test_proj
     for h in (b1, b2, b3):
         _map(db_session, h, sn_b)
 
+    # SMB signing disabled on one host in each site → spans both sites.
+    a1.smb_signing = "disabled"
+    b1.smb_signing = "disabled"
+
     # Weak auth confined to subnet A only (guest session on a3).
     db_session.add(NetexecResult(
         scan_id=scan.id, host_id=a3.id, protocol="smb", port=445,
@@ -85,6 +89,11 @@ def test_eol_spanning_sites_is_blind_spot_weak_auth_is_not(db_session, test_proj
     assert by_key["weak_auth"]["site_spread"] == 1
     assert by_key["weak_auth"]["is_blind_spot"] is False
     assert "weak_auth" not in blind_keys
+
+    # SMB signing disabled spans both sites → a condition and an estate blind spot.
+    assert by_key["smb_signing"]["site_spread"] == 2
+    assert by_key["smb_signing"]["affected_hosts"] == 2
+    assert "smb_signing" in blind_keys
 
     # Diagnostic profiles surface per-subnet conditions.
     profiles = {p["subnet_id"]: p for p in out["diagnostic_profiles"]}

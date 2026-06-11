@@ -84,6 +84,9 @@ _CONDITIONS = [
     ("weak_auth", "Guest / anonymous authentication succeeds",
      "Unauthenticated access is tolerated — access control is not enforced.",
      7, "Disable guest/null sessions; require authenticated, least-privilege access."),
+    ("smb_signing", "SMB message signing disabled",
+     "No SMB hardening baseline — exposed to NTLM relay and lateral movement.",
+     7, "Enable and require SMB signing across the estate."),
 ]
 
 
@@ -124,17 +127,19 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     total_subnets = len(subnet_hosts)
     total_sites = len({s for s in host_site.values() if s is not None})
 
-    # --- per-host os (for EOL) -------------------------------------------
+    # --- per-host os (for EOL) + smb signing posture ----------------------
     host_os: Dict[int, Optional[str]] = {}
     host_ip: Dict[int, Optional[str]] = {}
-    for hid, os_name, ip in (
-        db.query(models.Host.id, models.Host.os_name, models.Host.ip_address)
+    host_smb: Dict[int, Optional[str]] = {}
+    for hid, os_name, ip, smb_signing in (
+        db.query(models.Host.id, models.Host.os_name, models.Host.ip_address, models.Host.smb_signing)
         .filter(models.Host.project_id == project_id)
         .all()
     ):
         if hid in in_scope:
             host_os[hid] = os_name
             host_ip[hid] = ip
+            host_smb[hid] = smb_signing
 
     # --- condition → set(host_ids) ---------------------------------------
     affected: Dict[str, Set[int]] = {k: set() for k, *_ in _CONDITIONS}
@@ -142,6 +147,10 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     for hid, os_name in host_os.items():
         if match_eol_os(os_name) is not None:
             affected["eol_os"].add(hid)
+
+    for hid, sig in host_smb.items():
+        if sig == "disabled":
+            affected["smb_signing"].add(hid)
 
     for hid, port_number in (
         db.query(models.Port.host_id, models.Port.port_number)
