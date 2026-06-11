@@ -31,6 +31,7 @@ import { Button } from './ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from './ui/select';
+import { useConfirm } from '../hooks/useConfirm';
 
 const ROLES = ['viewer', 'auditor', 'analyst', 'admin'] as const;
 type RoleTone = 'destructive' | 'success' | 'info' | 'muted';
@@ -54,6 +55,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [busyUserId, setBusyUserId] = React.useState<number | null>(null);
+  const [confirmDialog, confirm] = useConfirm();
 
   const [directory, setDirectory] = React.useState<UserDirectoryEntry[]>([]);
   const [addUserId, setAddUserId] = React.useState<string>('');
@@ -118,7 +120,15 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
 
   const handleRemove = async (m: ProjectMember) => {
     if (projectId == null) return;
-    if (!window.confirm(`Remove ${m.full_name || m.username} from ${projectName}?`)) return;
+    const who = m.full_name || m.username || 'this member';
+    const ok = await confirm({
+      title: 'Remove member?',
+      body: `Remove ${who} from ${projectName}? They lose access to this project.`,
+      resourceName: who,
+      severity: 'danger',
+      confirmLabel: 'Remove',
+    });
+    if (!ok) return;
     setBusyUserId(m.user_id);
     try {
       await removeProjectMember(projectId, m.user_id);
@@ -133,6 +143,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   };
 
   return (
+    <>
     <SideSheet open={open} onOpenChange={onOpenChange}>
       <SideSheetContent>
         <SideSheetHeader>
@@ -247,6 +258,8 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
         </SideSheetBody>
       </SideSheetContent>
     </SideSheet>
+    {confirmDialog}
+    </>
   );
 };
 

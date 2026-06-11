@@ -397,6 +397,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     }
   };
   const [noteActionId, setNoteActionId] = useState<number | null>(null);
+  // Resolution-summary capture (replaces window.prompt): the note id being
+  // resolved + its in-progress summary text.
+  const [resolvePrompt, setResolvePrompt] = useState<number | null>(null);
+  const [resolveText, setResolveText] = useState('');
   const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
   // Per-vuln expand state for the (often long) description writeup.
   const [expandedVulnIds, setExpandedVulnIds] = useState<Set<number>>(new Set());
@@ -681,21 +685,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     }
   };
 
-  const handleUpdateNoteStatus = async (noteId: number, status: NoteStatus) => {
-    // P3 — resolving a thread requires a summary (the backend rejects a
-    // summary-less resolve with 400). Capture it up front so the operator
-    // gets a clear prompt instead of an opaque error.
-    let resolutionSummary: string | undefined;
-    if (status === 'resolved') {
-      const entered = window.prompt(
-        'Resolution summary (required) — what was the outcome of this thread?',
-      );
-      if (entered === null || !entered.trim()) {
-        if (entered !== null) toast.error('A resolution summary is required to resolve a thread.');
-        return;
-      }
-      resolutionSummary = entered.trim();
-    }
+  const doUpdateNoteStatus = async (
+    noteId: number, status: NoteStatus, resolutionSummary?: string,
+  ) => {
     setNoteActionId(noteId);
     try {
       const response = await updateAnnotation(hostId, noteId, {
@@ -716,6 +708,18 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     } finally {
       setNoteActionId(null);
     }
+  };
+
+  const handleUpdateNoteStatus = (noteId: number, status: NoteStatus) => {
+    // Resolving a thread requires a summary (the backend rejects a
+    // summary-less resolve with 400).  Capture it in an accessible dialog
+    // (consistent styling/validation) instead of a native window.prompt.
+    if (status === 'resolved') {
+      setResolveText('');
+      setResolvePrompt(noteId);
+      return;
+    }
+    void doUpdateNoteStatus(noteId, status);
   };
 
   if (loading) {
@@ -2309,6 +2313,41 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
       {/* Workflow lineage */}
       <HostLineagePanel hostId={host.id} />
+
+      {/* Resolution-summary capture (replaces window.prompt) — required to
+          resolve a note thread; the backend 400s without it. */}
+      <Dialog open={resolvePrompt !== null} onOpenChange={(v) => { if (!v) setResolvePrompt(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resolve thread</DialogTitle>
+            <DialogDescription>
+              A resolution summary is required — record the outcome on the thread's history.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            rows={3}
+            autoFocus
+            value={resolveText}
+            onChange={(e) => setResolveText(e.target.value)}
+            placeholder="e.g. patched on all affected hosts; retest passed"
+            aria-label="Resolution summary"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResolvePrompt(null)}>Cancel</Button>
+            <Button
+              disabled={!resolveText.trim()}
+              onClick={() => {
+                const noteId = resolvePrompt;
+                const summary = resolveText.trim();
+                setResolvePrompt(null);
+                if (noteId !== null && summary) void doUpdateNoteStatus(noteId, 'resolved', summary);
+              }}
+            >
+              Resolve
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

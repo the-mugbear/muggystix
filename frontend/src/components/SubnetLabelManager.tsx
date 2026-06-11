@@ -11,6 +11,7 @@ import {
   SubnetLabelInfo,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 
 import { Badge } from './ui/badge';
@@ -126,6 +127,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   open, onOpenChange, onCatalogueChange,
 }) => {
   const toast = useToast();
+  const [confirmDialog, confirm] = useConfirm();
   const [labels, setLabels] = useState<SubnetLabelWithCounts[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -208,9 +210,16 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
     // server cascade detaches all assignments; the warning explains
     // the impact so a misclick doesn't quietly orphan subnets.
     const msg = label.subnet_count > 0
-      ? `Delete "${label.name}"? It's attached to ${label.subnet_count} subnet${label.subnet_count === 1 ? '' : 's'} and will be detached from all of them.`
-      : `Delete "${label.name}"?`;
-    if (!window.confirm(msg)) return;
+      ? `It's attached to ${label.subnet_count} subnet${label.subnet_count === 1 ? '' : 's'} and will be detached from all of them.`
+      : 'This label is not attached to any subnet.';
+    const ok = await confirm({
+      title: `Delete label "${label.name}"?`,
+      body: msg,
+      resourceName: label.name,
+      severity: 'danger',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     try {
       await deleteSubnetLabel(label.id);
       await fetchLabels();
@@ -222,6 +231,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
@@ -325,6 +335,8 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    {confirmDialog}
+    </>
   );
 };
 
