@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Shield,
   ShieldCheck,
+  ShieldOff,
   Activity,
   ClipboardCheck,
   Eye,
@@ -70,6 +71,7 @@ interface User {
   last_login: string | null;
   created_at: string;
   created_by_id: number | null;
+  totp_enabled: boolean;
 }
 
 interface NewUserForm {
@@ -108,6 +110,7 @@ const SystemSettings: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [roleSavingUserId, setRoleSavingUserId] = useState<number | null>(null);
   const [statusSavingUserId, setStatusSavingUserId] = useState<number | null>(null);
+  const [reset2faUserId, setReset2faUserId] = useState<number | null>(null);
 
   // Dialogs
   const [newUserDialogOpen, setNewUserDialogOpen] = useState(false);
@@ -267,6 +270,26 @@ const SystemSettings: React.FC = () => {
     }
   };
 
+  const handleReset2fa = async (user: User) => {
+    const ok = await confirm({
+      title: 'Reset two-factor authentication?',
+      body: `This clears ${user.full_name || user.username}'s 2FA enrollment and recovery codes — use it when they've lost their authenticator. With mandatory 2FA on, they'll be required to set it up again on their next login.`,
+      confirmLabel: 'Reset 2FA',
+      severity: 'danger',
+    });
+    if (!ok) return;
+    setReset2faUserId(user.id);
+    try {
+      await apiClient.post(`/users/${user.id}/reset-2fa`);
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, totp_enabled: false } : u)));
+      toast.success(`2FA reset for ${user.username}.`);
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Failed to reset 2FA.'));
+    } finally {
+      setReset2faUserId(null);
+    }
+  };
+
   const handleResetPassword = async () => {
     if (!selectedUser) return;
     setSaving(true);
@@ -355,9 +378,10 @@ const SystemSettings: React.FC = () => {
                     <TableHead>User</TableHead>
                     <TableHead>Role</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>2FA</TableHead>
                     <TableHead>Last Login</TableHead>
                     <TableHead>Created</TableHead>
-                    <TableHead className="w-12 text-right">Actions</TableHead>
+                    <TableHead className="w-24 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -447,6 +471,15 @@ const SystemSettings: React.FC = () => {
                             )}
                           </div>
                         </TableCell>
+                        <TableCell>
+                          {u.totp_enabled ? (
+                            <Badge variant="success" className="gap-xxs">
+                              <ShieldCheck className="size-3" aria-hidden /> On
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-muted-foreground">Off</Badge>
+                          )}
+                        </TableCell>
                         <TableCell className="text-metadata text-foreground">{fmtDate(u.last_login)}</TableCell>
                         <TableCell className="text-metadata text-foreground">{fmtDate(u.created_at)}</TableCell>
                         <TableCell className="text-right">
@@ -470,6 +503,12 @@ const SystemSettings: React.FC = () => {
                               </DropdownMenuItem>
                               <DropdownMenuItem onSelect={() => openResetPasswordDialog(u)}>
                                 <Lock className="size-3.5" aria-hidden /> Reset Password
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onSelect={() => handleReset2fa(u)}
+                                disabled={!u.totp_enabled || reset2faUserId === u.id}
+                              >
+                                <ShieldOff className="size-3.5" aria-hidden /> Reset 2FA
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 onSelect={() => handleDeleteUser(u)}

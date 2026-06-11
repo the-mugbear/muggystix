@@ -44,6 +44,9 @@ class UserListItem(BaseModel):
     last_login: Optional[datetime] = None
     created_at: datetime
     created_by_id: Optional[int] = None
+    # Whether the user has enrolled in 2FA — surfaced so admins can see the
+    # estate's 2FA coverage and reset a locked-out user.
+    totp_enabled: bool = False
 
 
 class UserDirectoryEntry(BaseModel):
@@ -283,7 +286,8 @@ def list_users(
             is_active=user.is_active,
             last_login=user.last_login,
             created_at=user.created_at,
-            created_by_id=user.created_by_id
+            created_by_id=user.created_by_id,
+            totp_enabled=bool(user.totp_enabled),
         )
         for user in users
     ]
@@ -318,7 +322,8 @@ def get_user(
         is_active=user.is_active,
         last_login=user.last_login,
         created_at=user.created_at,
-        created_by_id=user.created_by_id
+        created_by_id=user.created_by_id,
+        totp_enabled=bool(user.totp_enabled),
     )
 
 
@@ -477,7 +482,8 @@ def update_user(
         is_active=user.is_active,
         last_login=user.last_login,
         created_at=user.created_at,
-        created_by_id=user.created_by_id
+        created_by_id=user.created_by_id,
+        totp_enabled=bool(user.totp_enabled),
     )
 
 
@@ -533,6 +539,46 @@ def admin_reset_password(
     )
 
     return {"message": f"Password reset for user {user.username}"}
+
+
+@router.post(
+    "/{user_id}/reset-2fa",
+    response_model=MessageResponse,
+    responses={**_AUTH_RESPONSES, 404: {"description": "User not found"}},
+    summary="Reset (disable) a user's 2FA enrollment (admin)",
+)
+def admin_reset_two_factor(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Clear a user's TOTP 2FA — the recovery path for a lost/replaced
+    authenticator.  With REQUIRE_2FA on, the user is forced to re-enroll on
+    their next login; otherwise 2FA simply becomes opt-in again for them."""
+    from app.db.models_auth import UserRecoveryCode
+
+    client_info = get_client_info(request)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    user.totp_secret_encrypted = None
+    user.totp_enabled = False
+    user.totp_confirmed_at = None
+    db.query(UserRecoveryCode).filter(UserRecoveryCode.user_id == user.id).delete()
+    db.commit()
+
+    log_audit_event(
+        db=db,
+        user_id=current_user.id,
+        action="admin_2fa_reset",
+        resource_type="user",
+        resource_id=str(user_id),
+        details={"target_user": user.username},
+        **client_info,
+    )
+    return {"message": f"2FA reset for user {user.username}"}
 
 
 @router.delete(
