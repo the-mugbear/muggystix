@@ -163,6 +163,7 @@ type HostQueryContext = {
   tags?: string;
   // v2.86.0 — comma-separated subnet-label IDs round-tripped to the API.
   subnet_labels?: string;
+  sites?: string;
   assigned_to?: string;
   // v5.0.0 — boolean query DSL; ANDs with the structured params above.
   q?: string;
@@ -440,7 +441,7 @@ export default function Hosts() {
   // because removeListFilterValue couldn't accept the key.
   type ArrayFilterKeys =
     | 'ports' | 'services' | 'portStates' | 'subnets' | 'scanIds' | 'tech'
-    | 'tags' | 'subnetLabels';
+    | 'tags' | 'subnetLabels' | 'sites';
 
   const clearFilterKey = useCallback(
     (key: keyof HostFilterOptions) => {
@@ -503,6 +504,7 @@ export default function Hosts() {
     if (filters.tech?.length) params.tech = filters.tech.join(',');
     if (filters.tags?.length) params.tags = filters.tags.join(',');
     if (filters.subnetLabels?.length) params.subnet_labels = filters.subnetLabels.join(',');
+    if (filters.sites?.length) params.sites = filters.sites.join(',');
     if (filters.assignedToMe) params.assigned_to = 'me';
     if (filters.query?.trim()) params.q = filters.query.trim();
     params.sort_by = ({
@@ -670,7 +672,7 @@ export default function Hosts() {
     // entirely; fall back to the saved session only on a bare /hosts visit.
     const HOST_URL_PARAMS = [
       'search', 'q', 'state', 'os_filter', 'subnets', 'ports', 'services',
-      'port_states', 'scan_ids', 'tags', 'subnet_labels', 'out_of_scope_only',
+      'port_states', 'scan_ids', 'tags', 'subnet_labels', 'sites', 'out_of_scope_only',
       'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'has_critical_vulns',
       'has_high_vulns', 'has_medium_vulns', 'has_low_vulns',
       'has_exploit_available', 'has_test_execution',
@@ -732,6 +734,7 @@ export default function Hosts() {
     applyListParam('scan_ids', 'scanIds');
     applyListParam('tags', 'tags');
     applyListParam('subnet_labels', 'subnetLabels');
+    applyListParam('sites', 'sites');
 
     if (urlParams.has('out_of_scope_only') || urlParams.has('out_of_scope')) {
       initialFilters.outOfScopeOnly =
@@ -1392,6 +1395,13 @@ export default function Hosts() {
         key: `subnet-label-${labelId}`,
         label: `Subnet label: ${name ?? labelId}`,
         onDelete: () => removeListFilterValue('subnetLabels', labelId),
+      });
+    });
+    filters.sites?.forEach((site) => {
+      chips.push({
+        key: `site-${site}`,
+        label: `Site: ${site}`,
+        onDelete: () => removeListFilterValue('sites', site),
       });
     });
     if (filters.firstSeenInSelectedScans)

@@ -360,6 +360,22 @@ def label_predicate_by_id(db: Session, label_ids: Sequence[int], project_id: int
     return models.Host.id.in_(sub)
 
 
+def site_predicate(db: Session, names: Sequence[str]) -> ColumnElement:
+    """Host sits in a subnet belonging to any of the named sites.
+
+    "Any subnet" semantics: a host in an overlapping range counts for every
+    site its subnets belong to — deliberately broader than the single
+    ``primary_site`` shown in the list, so the filter never hides a host that
+    legitimately belongs to the selected site through one of its ranges."""
+    sub = (
+        db.query(models.HostSubnetMapping.host_id)
+        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
+        .filter(models.Subnet.site.in_(names))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
 def label_predicate_by_name(db: Session, names: Sequence[str], project_id: int) -> ColumnElement:
     """Host sits in a subnet carrying any label whose (case-insensitive)
     name matches, scoped to ``project_id``."""

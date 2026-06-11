@@ -139,6 +139,7 @@ def build_filtered_host_query(
     tech: Optional[str] = None,
     tags: Optional[str] = None,
     subnet_labels: Optional[str] = None,
+    sites: Optional[str] = None,
     assigned_to: Optional[str] = None,
     project_id: int = None,
     q: Optional[str] = None,
@@ -260,6 +261,13 @@ def build_filtered_host_query(
         label_id_list = [int(t.strip()) for t in subnet_labels.split(',') if t.strip().isdigit()]
         if label_id_list:
             query = query.filter(P.label_predicate_by_id(db, label_id_list, project_id))
+
+    # Site filter — comma-separated site names; a host matches if ANY of its
+    # subnets belongs to one of the sites (OR within the group).
+    if sites:
+        site_names = [s.strip() for s in sites.split(',') if s.strip()]
+        if site_names:
+            query = query.filter(P.site_predicate(db, site_names))
 
     # v2.71.0 — assignment filter.  "me" / "any" / numeric user id.
     if assigned_to:

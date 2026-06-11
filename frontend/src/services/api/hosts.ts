@@ -454,6 +454,8 @@ export const getHosts = async (params: {
   // v2.86.0 — comma-separated subnet-label IDs; OR semantics within the
   // group, AND against tags / other filter categories.
   subnet_labels?: string;
+  // Comma-separated site names; OR within the group.
+  sites?: string;
   assigned_to?: string;
   // v5.0.0 — boolean query DSL; ANDs with the discrete filters above.
   q?: string;
@@ -907,6 +909,7 @@ export interface HostFilterData {
   technologies?: Array<{ name: string; host_count: number }>;
   tags?: Array<{ id: number; name: string; color?: string | null; host_count: number }>;
   subnet_labels?: Array<{ id: number; name: string; color?: string | null; host_count: number }>;
+  sites?: Array<{ name: string; host_count: number }>;
 }
 
 export const getHostFilterData = async (params?: Record<string, string | boolean | number | undefined>, signal?: AbortSignal): Promise<HostFilterData> => {

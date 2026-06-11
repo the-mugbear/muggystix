@@ -234,6 +234,7 @@ class HostFilterParams:
         tech: Optional[str] = Query(None, description="Comma-separated list of technology strings; OR semantics — host qualifies if any interface has any listed tech (substring match, case-insensitive)", examples=["nginx,jenkins"]),
         tags: Optional[str] = Query(None, description="Comma-separated tag IDs; OR semantics — host qualifies if it carries any listed tag", examples=["3,7"]),
         subnet_labels: Optional[str] = Query(None, description="Comma-separated subnet-label IDs; OR semantics — host qualifies if it sits in any subnet carrying any listed label", examples=["2,5"]),
+        sites: Optional[str] = Query(None, description="Comma-separated site names; OR semantics — host qualifies if any of its subnets belongs to a listed site", examples=["London DC"]),
         assigned_to: Optional[str] = Query(None, description="Assignment filter: 'me', 'any', or a numeric user id", examples=["me"]),
         q: Optional[str] = Query(None, description="Boolean query DSL. Fields (port, os, service, subnet, tag, label, cve, vuln, header, note, has:, …) combined with AND/OR/NOT + parentheses. Comma = OR within a field; repeated field = AND. e.g. 'port:80 port:443 AND NOT tag:test', 'cve:CVE-2021-44228 OR vuln:\"log4j\"'. ANDs with the other filters."),
     ):
@@ -260,6 +261,7 @@ class HostFilterParams:
         self.tech = tech
         self.tags = tags
         self.subnet_labels = subnet_labels
+        self.sites = sites
         self.assigned_to = assigned_to
         self.q = q
 
@@ -1007,6 +1009,26 @@ def get_host_filter_data_v2(
         models.Subnet.id, models.Subnet.cidr, models.Scope.name
     ).order_by(func.count(models.HostSubnetMapping.id).desc()).limit(200).all()
 
+    # Sites — distinct site names with scoped host counts.  COUNT DISTINCT
+    # host_id so a host in two subnets of the same site isn't double-counted.
+    site_query = db.query(
+        models.Subnet.site,
+        func.count(func.distinct(models.HostSubnetMapping.host_id)).label('host_count'),
+    ).join(
+        models.Scope, models.Subnet.scope_id == models.Scope.id
+    ).outerjoin(
+        models.HostSubnetMapping, models.Subnet.id == models.HostSubnetMapping.subnet_id
+    ).filter(
+        models.Scope.project_id == project.id,
+        models.Subnet.site.isnot(None),
+        models.Subnet.site != '',
+    )
+    if host_scope is not None:
+        site_query = site_query.outerjoin(
+            models.Host, models.HostSubnetMapping.host_id == models.Host.id
+        ).filter(or_(host_scope, models.HostSubnetMapping.host_id.is_(None)))
+    sites_result = site_query.group_by(models.Subnet.site).order_by(models.Subnet.site).all()
+
     return {
         'common_ports': [
             {'port': p.port_number, 'service': p.service_name or 'unknown', 'state': p.state, 'count': p.count}
@@ -1035,6 +1057,10 @@ def get_host_filter_data_v2(
         'technologies': technologies_result,
         'tags': tags_result,
         'subnet_labels': subnet_labels_result,
+        'sites': [
+            {'name': s.site, 'host_count': s.host_count or 0}
+            for s in sites_result
+        ],
     }
 
 

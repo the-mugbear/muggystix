@@ -62,6 +62,8 @@ export interface HostFilterOptions {
   // because the vocabulary is separate; intersected with the tag group
   // (AND between groups, OR within each).
   subnetLabels?: string[];
+  // Site names (a host matches if any of its subnets belongs to the site).
+  sites?: string[];
   assignedToMe?: boolean;
   // v4.51.0 — followFilter + onlyWithNotes folded into HostFilterOptions
   // so the page state is a single object instead of three useStates.  Both
@@ -420,6 +422,7 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       (filters.tech?.length ?? 0) > 0,
       (filters.tags?.length ?? 0) > 0,
       (filters.subnetLabels?.length ?? 0) > 0,
+      (filters.sites?.length ?? 0) > 0,
       filters.assignedToMe === true,
       // v4.26.0 — previously omitted (count bug); the chip-row in
       // Hosts.tsx counts these, so the badge here was off by 1-2.
@@ -571,6 +574,17 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       })) || []
     );
   }, [availableData?.subnet_labels]);
+
+  // Site options — value is the site NAME (the filter matches by name).
+  const siteOptions: ComboboxOption[] = useMemo(() => {
+    return (
+      availableData?.sites?.map((s) => ({
+        value: s.name,
+        label: s.name,
+        trailing: `${s.host_count}`,
+      })) || []
+    );
+  }, [availableData?.sites]);
 
   return (
     <Card className="mb-md">
@@ -861,6 +875,20 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 }
                 placeholder="Select subnets…"
                 emptyMessage={facetEmpty('No subnets configured.')}
+              />
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="hosts-filter-sites" id="hosts-filter-sites-label">Site</Label>
+              <Combobox
+                id="hosts-filter-sites"
+                multiple
+                options={siteOptions}
+                values={filters.sites ?? []}
+                onValuesChange={(values) =>
+                  handleFilterChange('sites', values.length ? values : undefined)
+                }
+                placeholder="Select sites…"
+                emptyMessage={facetEmpty('No sites configured yet.')}
               />
             </div>
             <div className="space-y-xxs">
