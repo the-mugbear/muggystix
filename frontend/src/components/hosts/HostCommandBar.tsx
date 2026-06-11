@@ -45,6 +45,33 @@ function lastToken(text: string): { token: string; head: string } {
   return { token, head: text.slice(0, text.length - token.length) };
 }
 
+// Short, human descriptions for the syntax-help popover — keyed by the
+// server's field names (the field set itself comes live from the schema, so
+// no field can silently go missing; this only annotates them).
+const FIELD_DESCRIPTIONS: Record<string, string> = {
+  state: 'Host up / down / unknown',
+  ip: 'Host IP address',
+  hostname: 'Host name',
+  os: 'OS name (nmap detection)',
+  port: 'An open port number',
+  service: 'Service on an open port (nmap -sV)',
+  portstate: 'Port open / closed / filtered',
+  subnet: 'Host IP within a CIDR',
+  tech: 'Web technology (httpx / whatweb)',
+  tag: 'Project host tag',
+  label: 'Project subnet label',
+  site: 'Site of the host’s subnet',
+  follow: 'Review state (in_review / reviewed …)',
+  assigned: 'Assignment (“me” or a username)',
+  scan: 'A scan that observed the host',
+  has: 'Flags: web, notes, exploit, tested, critical …',
+  cve: 'Finding CVE id (Nessus / OpenVAS / Nikto)',
+  vuln: 'Finding title (Nessus / OpenVAS / Nikto)',
+  header: 'HTTP Server header (httpx)',
+  webtitle: 'Web page title (httpx / eyewitness)',
+  note: 'Note / annotation body text',
+};
+
 function buildSuggestions(
   draft: string,
   fields: HostQueryField[],
@@ -157,6 +184,16 @@ export default function HostCommandBar({
     const { head } = lastToken(draft);
     setDraft(`${head}${insert}`);
     setActiveIndex(-1);
+    inputRef.current?.focus();
+  };
+
+  // Click a field in the syntax popover to append `field:` to the query and
+  // focus the input so the user can type the value.
+  const insertField = (name: string) => {
+    setDraft((prev) => {
+      const trimmed = prev.replace(/\s+$/, '');
+      return `${trimmed}${trimmed ? ' ' : ''}${name}:`;
+    });
     inputRef.current?.focus();
   };
 
@@ -389,12 +426,23 @@ export default function HostCommandBar({
                 Combine fields with <code>AND</code> / <code>OR</code> / <code>NOT</code> and parentheses.
                 Comma = OR within a field (<code>port:80,443</code>); repeating a field = AND
                 (<code>port:80 port:443</code> ⇒ both). Bare text is a free-text search.
+                <strong> Click a field to add it.</strong>
               </p>
-              <div className="flex flex-wrap gap-xxs">
+              <div className="max-h-64 space-y-px overflow-y-auto">
                 {(schema?.fields ?? []).map((f) => (
-                  <Badge key={f.name} variant="outline" className="font-mono text-caption" title={f.aliases.length ? `aliases: ${f.aliases.join(', ')}` : undefined}>
-                    {f.name}:
-                  </Badge>
+                  <button
+                    key={f.name}
+                    type="button"
+                    onClick={() => insertField(f.name)}
+                    className="flex w-full items-baseline gap-xs rounded px-xs py-xxs text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    title={f.aliases.length ? `aliases: ${f.aliases.join(', ')}` : undefined}
+                  >
+                    <code className="shrink-0 font-mono text-caption text-foreground">{f.name}:</code>
+                    <span className="truncate text-caption text-muted-foreground">
+                      {FIELD_DESCRIPTIONS[f.name] ?? ''}
+                      {f.aliases.length ? ` · ${f.aliases.map((a) => `${a}:`).join(' ')}` : ''}
+                    </span>
+                  </button>
                 ))}
               </div>
             </PopoverContent>
