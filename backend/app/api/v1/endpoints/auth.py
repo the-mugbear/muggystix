@@ -5,7 +5,7 @@ Endpoints for user login, logout, registration, and session management.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -24,9 +24,17 @@ from app.core.security import (
     revoke_session,
     check_permissions,
     login_throttle_exceeded,
+    verify_password,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     LOGIN_THROTTLE_WINDOW_MINUTES,
 )
+from app.services import totp_service
+
+# Short-lived purpose claim minted after password (but before TOTP) succeeds.
+# A token carrying it is NOT a session: it has no UserSession row, and
+# get_current_user rejects the purpose explicitly (belt-and-suspenders).
+_2FA_CHALLENGE_PURPOSE = "2fa_challenge"
+_2FA_CHALLENGE_TTL_MINUTES = 5
 
 router = APIRouter()
 security = HTTPBearer()
@@ -58,6 +66,20 @@ class LoginResponse(BaseModel):
     token_type: str
     expires_in: int
     user: Dict[str, Any]
+
+
+class TwoFactorChallengeResponse(BaseModel):
+    """Returned by /login when the password is correct but the account has 2FA
+    enabled — the client must complete /login/2fa with a code."""
+    two_factor_required: bool = True
+    challenge_token: str
+    expires_in: int
+
+
+class TwoFactorLoginRequest(BaseModel):
+    challenge_token: str
+    # A 6-digit TOTP code OR a recovery code (xxxxx-xxxxx).
+    code: str
 
 
 class UserProfile(BaseModel):
@@ -102,6 +124,15 @@ def get_current_user(
     """
     token = credentials.credentials
     payload = verify_token(token)
+
+    # A 2FA-challenge token proves password-but-not-yet-TOTP; it must never
+    # authenticate a request.  (It also has no session row, so the lookup
+    # below would reject it anyway — this is the explicit, earlier guard.)
+    if payload.get("purpose") == _2FA_CHALLENGE_PURPOSE:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Two-factor authentication not completed",
+        )
 
     user_id = payload.get("sub")
     if not user_id:
@@ -193,13 +224,13 @@ def require_password_changed(
     return current_user
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=Union[LoginResponse, TwoFactorChallengeResponse])
 def login(
     login_data: LoginRequest,
     request: Request,
     db: Session = Depends(get_db)
 ):
-    """Authenticate user and create session"""
+    """Authenticate user; create a session, or return a 2FA challenge."""
     client_info = get_client_info(request)
 
     # Reject before doing any bcrypt work if this username or source IP is
@@ -248,29 +279,46 @@ def login(
             detail="Invalid username or password"
         )
 
-    # Create access token
+    # 2FA gate: password is correct, but if the account has TOTP enabled we
+    # issue a short-lived challenge (NOT a session) and require /login/2fa.
+    if user.totp_enabled:
+        challenge = create_access_token(
+            data={"sub": str(user.id), "purpose": _2FA_CHALLENGE_PURPOSE},
+            expires_delta=timedelta(minutes=_2FA_CHALLENGE_TTL_MINUTES),
+        )
+        log_audit_event(
+            db=db,
+            user_id=user.id,
+            action="login_2fa_challenge",
+            details={"method": "password"},
+            **client_info,
+        )
+        return TwoFactorChallengeResponse(
+            challenge_token=challenge,
+            expires_in=_2FA_CHALLENGE_TTL_MINUTES * 60,
+        )
+
+    return _issue_user_session(db, user, client_info, method="password")
+
+
+def _issue_user_session(
+    db: Session, user: User, client_info: Dict[str, Optional[str]], method: str,
+) -> LoginResponse:
+    """Mint the access token, record the session, audit, and build the
+    LoginResponse.  Shared by the password-only path and the 2FA-completed
+    path so both produce an identical, fully-authenticated session."""
     token_data = {"sub": str(user.id), "username": user.username, "role": user.role}
     access_token = create_access_token(data=token_data)
+    token_jti = verify_token(access_token)["jti"]
 
-    # Decode token to get JTI for session tracking
-    token_payload = verify_token(access_token)
-    token_jti = token_payload["jti"]
+    create_session(db=db, user=user, token_jti=token_jti, **client_info)
 
-    # Create session record
-    create_session(
-        db=db,
-        user=user,
-        token_jti=token_jti,
-        **client_info
-    )
-
-    # Log successful login
     log_audit_event(
         db=db,
         user_id=user.id,
         action="login_success",
-        details={"method": "password"},
-        **client_info
+        details={"method": method},
+        **client_info,
     )
 
     return LoginResponse(
@@ -283,8 +331,74 @@ def login(
             "full_name": user.full_name,
             "role": user.role,
             "must_change_password": bool(user.must_change_password),
-        }
+        },
     )
+
+
+@router.post("/login/2fa", response_model=LoginResponse)
+def login_2fa(
+    body: TwoFactorLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Complete a 2FA login: verify the challenge token + a TOTP or recovery
+    code, then issue the full session."""
+    client_info = get_client_info(request)
+
+    # The challenge token proves the password step already succeeded.
+    try:
+        payload = verify_token(body.challenge_token)
+    except HTTPException:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 2FA challenge")
+    if payload.get("purpose") != _2FA_CHALLENGE_PURPOSE:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA challenge")
+
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA challenge")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.is_active or not user.totp_enabled:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA challenge")
+
+    if not _verify_second_factor(db, user, body.code):
+        log_audit_event(
+            db=db, user_id=user.id, action="login_2fa_failed",
+            success=False, error_message="Invalid 2FA code", **client_info,
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication code")
+
+    return _issue_user_session(db, user, client_info, method="totp")
+
+
+def _verify_second_factor(db: Session, user: User, code: str) -> bool:
+    """True if ``code`` is a valid TOTP for the user OR an unused recovery code
+    (which is then consumed).  Recovery codes contain a '-'; TOTP codes don't."""
+    code = (code or "").strip()
+    if not code:
+        return False
+    # Recovery code path — single-use, marked consumed.
+    if "-" in code:
+        from app.db.models_auth import UserRecoveryCode
+        code_hash = totp_service.hash_recovery_code(code)
+        row = (
+            db.query(UserRecoveryCode)
+            .filter(
+                UserRecoveryCode.user_id == user.id,
+                UserRecoveryCode.code_hash == code_hash,
+                UserRecoveryCode.used_at.is_(None),
+            )
+            .first()
+        )
+        if not row:
+            return False
+        row.used_at = datetime.now(timezone.utc)
+        db.commit()
+        return True
+    # TOTP path.
+    secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
+    return bool(secret) and totp_service.verify_code(secret, code)
 
 
 @router.post("/logout")

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, UserCircle2, Loader2, LockKeyhole } from 'lucide-react';
+import { Lock, UserCircle2, Loader2, LockKeyhole, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from '../components/ui/card';
@@ -11,18 +11,28 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { cn } from '../utils/cn';
 
 const Login: React.FC = () => {
-  const { login } = useAuth();
+  const { login, verify2fa } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Non-null once the password step returns a 2FA challenge — switches the
+  // card to the code-entry step.
+  const [challengeToken, setChallengeToken] = useState<string | null>(null);
+  const [code, setCode] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
     try {
-      await login(username, password);
+      const outcome = await login(username, password);
+      if (outcome.twoFactorRequired) {
+        // Move to the second-factor step; login() did not create a session.
+        setChallengeToken(outcome.challengeToken);
+        setCode('');
+      }
+      // Non-2FA success navigates inside login(); nothing to do here.
     } catch (err: unknown) {
       // 401 vs 403 vs network/server — surface the most actionable text.
       // Audit C5: distinguish credential failure from account-disabled
@@ -49,7 +59,34 @@ const Login: React.FC = () => {
     }
   };
 
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!challengeToken) return;
+    setError('');
+    setIsLoading(true);
+    try {
+      await verify2fa(challengeToken, code.trim());
+      // verify2fa navigates on success.
+    } catch (err: unknown) {
+      const e2 = asAxiosError(err);
+      if (e2.response?.status === 401) {
+        setError('Incorrect or expired code. Try again, or start over.');
+      } else {
+        setError(formatApiError(err, 'Verification failed. Please try again.'));
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const backToPassword = () => {
+    setChallengeToken(null);
+    setCode('');
+    setError('');
+  };
+
   const hasError = error.length > 0;
+  const twoFactorStep = challengeToken !== null;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-md">
@@ -83,7 +120,8 @@ const Login: React.FC = () => {
               </Alert>
             )}
 
-            {/* Form */}
+            {/* Password step (hidden once a 2FA challenge is in progress) */}
+            {!twoFactorStep && (
             <form onSubmit={handleSubmit} className="flex flex-col gap-md" noValidate>
               <div className="flex flex-col gap-xs">
                 <Label htmlFor="login-username">Username</Label>
@@ -147,6 +185,56 @@ const Login: React.FC = () => {
                 )}
               </Button>
             </form>
+            )}
+
+            {/* Second-factor step — shown after the password returns a challenge */}
+            {twoFactorStep && (
+              <form onSubmit={handleVerify} className="flex flex-col gap-md" noValidate>
+                <div className="flex flex-col items-center gap-xs text-center">
+                  <ShieldCheck className="size-8 text-primary" aria-hidden />
+                  <p className="text-metadata font-semibold text-foreground">Two-factor authentication</p>
+                  <p className="text-caption text-muted-foreground">
+                    Enter the 6-digit code from your authenticator app — or one of your recovery codes.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-xs">
+                  <Label htmlFor="login-code">Authentication code</Label>
+                  <Input
+                    id="login-code"
+                    name="otp"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    autoFocus
+                    required
+                    disabled={isLoading}
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    aria-invalid={hasError || undefined}
+                    aria-describedby={hasError ? 'login-error' : undefined}
+                    placeholder="123 456"
+                  />
+                </div>
+                <Button
+                  type="submit"
+                  size="lg"
+                  className="mt-xs w-full"
+                  disabled={isLoading || !code.trim()}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" aria-hidden />
+                      Verifying…
+                    </>
+                  ) : (
+                    'Verify'
+                  )}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={backToPassword} disabled={isLoading}>
+                  Back to sign in
+                </Button>
+              </form>
+            )}
 
             {/* Security notice */}
             <div className="mt-lg flex items-center justify-center gap-xs rounded-panel border border-border bg-muted px-md py-sm text-caption text-muted-foreground">

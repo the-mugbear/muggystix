@@ -3,7 +3,7 @@ from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
     host_queries, findings,
     webhooks, dashboard, upload,
-    scopes, subnet_labels, export, dns, parse_errors, reports, auth,
+    scopes, subnet_labels, export, dns, parse_errors, reports, auth, two_factor,
     audit, users, projects, notifications,
     portfolio, agents, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
@@ -50,6 +50,8 @@ api_router = APIRouter()
 # Auth router is exempt from the password-change gate (login, change-password,
 # logout, and profile must remain accessible while the flag is set).
 api_router.include_router(auth.router, prefix="/auth", tags=["authentication"])
+# Two-factor (TOTP) management — same /auth prefix, no password-change gate.
+api_router.include_router(two_factor.router, prefix="/auth", tags=["two-factor"])
 api_router.include_router(users.router, prefix="/users", tags=["users"],
                           dependencies=[Depends(require_password_changed)])
 api_router.include_router(audit.router, prefix="/audit", tags=["audit"],

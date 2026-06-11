@@ -202,6 +202,7 @@ EXPECTED_ONDELETE = {
     ('test_plans', 'source_plan_id'): 'SET NULL',
     ('test_plans', 'source_recon_session_id'): 'SET NULL',
     ('users', 'created_by_id'): 'SET NULL',
+    ('user_recovery_codes', 'user_id'): 'CASCADE',
     ('user_sessions', 'user_id'): 'CASCADE',
     ('vulnerabilities', 'host_id'): 'CASCADE',
     ('vulnerabilities', 'port_id'): 'SET NULL',

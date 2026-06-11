@@ -34,6 +34,7 @@ import {
 import { cn } from '../utils/cn';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { PasswordRulesChecklist, isPasswordValid } from '../components/PasswordRulesChecklist';
+import TwoFactorCard from '../components/TwoFactorCard';
 
 interface UserSession {
   id: number;
@@ -294,6 +295,10 @@ const Profile: React.FC = () => {
             </Button>
           </CardFooter>
         </Card>
+
+        {/* Two-factor authentication — enroll (new or imported secret),
+            recovery codes, disable. */}
+        <TwoFactorCard />
 
         {/* Project Associations — every project the user is a member
             of, with their per-project role. Switching project from

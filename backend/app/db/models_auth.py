@@ -59,6 +59,17 @@ class User(Base):
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime(timezone=True))
 
+    # Two-factor authentication (TOTP, RFC 6238).  The base32 secret is stored
+    # as Fernet ciphertext under a TOTP-dedicated key (app.services.totp_service)
+    # — separate from the credential-encryption key so the two can't be
+    # confused.  The secret is written on /2fa/setup but ``totp_enabled`` stays
+    # False until the user confirms a code (/2fa/enable); only then does login
+    # require a second factor.  Users may IMPORT an existing secret (their PAM
+    # machine-login seed) so the same authenticator entry works here too.
+    totp_secret_encrypted = Column(Text, nullable=True)
+    totp_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    totp_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
     # Audit fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -92,6 +103,29 @@ class User(Base):
     annotations = relationship(
         "Annotation", back_populates="author", foreign_keys="Annotation.user_id",
     )
+    # One-time TOTP recovery codes — die with the user (and are cleared on
+    # /2fa/disable and regenerated on demand).
+    recovery_codes = relationship(
+        "UserRecoveryCode", back_populates="user", cascade="all, delete-orphan",
+    )
+
+
+class UserRecoveryCode(Base):
+    """A one-time backup code for TOTP 2FA.
+
+    Stored as a SHA-256 hash (the codes are high-entropy random, so a fast
+    hash is appropriate — same rationale as agent API keys).  ``used_at`` is
+    stamped when a code is consumed at login so it can't be replayed.
+    """
+    __tablename__ = "user_recovery_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash = Column(String(64), nullable=False)  # sha256 hex
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="recovery_codes")
 
 
 class UserSession(Base):

@@ -27,3 +27,7 @@ pydyf==0.10.0
 cryptography>=41.0.0
 defusedxml==0.7.1
 ijson==3.3.0
+# TOTP 2FA: pyotp (RFC 6238) + qrcode for the enrollment QR.  qrcode's SVG
+# image factory renders via lxml (already a dependency), so no Pillow needed.
+pyotp==2.9.0
+qrcode==7.4.2

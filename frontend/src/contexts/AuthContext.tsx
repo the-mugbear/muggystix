@@ -16,10 +16,18 @@ interface User {
 
 type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 
+export type LoginOutcome =
+  | { twoFactorRequired: false }
+  | { twoFactorRequired: true; challengeToken: string };
+
 interface AuthContextType {
   user: User | null;
   token: string | null;
-  login: (username: string, password: string) => Promise<void>;
+  // Resolves to a 2FA challenge when the account has TOTP enabled (the caller
+  // then collects a code and calls verify2fa); otherwise the session is live.
+  login: (username: string, password: string) => Promise<LoginOutcome>;
+  // Complete a 2FA login with the challenge token + a TOTP or recovery code.
+  verify2fa: (challengeToken: string, code: string) => Promise<void>;
   logout: () => void;
   updateUser: (updates: Partial<User>) => void;
   isAuthenticated: boolean;
@@ -179,7 +187,47 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const login = useCallback(async (username: string, password: string) => {
+  // Shared tail for both the password-only and 2FA-completed paths: persist
+  // the session and navigate.  ``data`` is the LoginResponse body.
+  const completeLogin = useCallback((data: {
+    access_token: string;
+    user: { id: number; username: string; role: string; must_change_password?: boolean } & Record<string, unknown>;
+  }) => {
+    localStorage.setItem('auth_token', data.access_token);
+    localStorage.setItem('auth_user', JSON.stringify(data.user));
+    flushSync(() => {
+      setToken(data.access_token);
+      setUser(data.user as unknown as User);
+    });
+    authLogger.audit('LOGIN_SUCCESS', {
+      userId: data.user.id, username: data.user.username, role: data.user.role,
+    });
+    // The backend records the authoritative login_success audit row; the
+    // frontend no longer double-posts one (code-review R7).
+    if (data.user.must_change_password) {
+      navigate('/force-change-password', { replace: true });
+    } else {
+      const from = location.state?.from?.pathname || '/';
+      navigate(from, { replace: true });
+    }
+  }, [authLogger, location.state, navigate]);
+
+  const verify2fa = useCallback(async (challengeToken: string, code: string) => {
+    const timer = authLogger.timer('2FA verify');
+    try {
+      const { data } = await api.post('/auth/login/2fa', { challenge_token: challengeToken, code });
+      completeLogin(data);
+      timer();
+    } catch (error: unknown) {
+      const axiosErr = error as { response?: { data?: { detail?: string } } };
+      const detail = axiosErr?.response?.data?.detail || (error instanceof Error ? error.message : 'Verification failed');
+      authLogger.audit('LOGIN_2FA_FAILED', { reason: detail });
+      timer();
+      throw new Error(detail);
+    }
+  }, [authLogger, completeLogin]);
+
+  const login = useCallback(async (username: string, password: string): Promise<LoginOutcome> => {
     const timer = authLogger.timer('Login process');
     authLogger.info('Login attempt started', {
       username,
@@ -191,63 +239,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       authLogger.debug('Sending login request to API');
       const { data } = await api.post('/auth/login', { username, password });
-      authLogger.debug('Login response data received', {
-        hasAccessToken: !!data.access_token,
-        tokenType: data.token_type,
-        expiresIn: data.expires_in,
-        hasUser: !!data.user,
-        userId: data.user?.id,
-        userRole: data.user?.role
-      });
 
-      // Store in localStorage first
-      authLogger.debug('Storing auth data in localStorage');
-      localStorage.setItem('auth_token', data.access_token);
-      localStorage.setItem('auth_user', JSON.stringify(data.user));
-
-      authLogger.debug('Setting token and user state synchronously');
-      // Use flushSync to ensure state updates are synchronous
-      flushSync(() => {
-        setToken(data.access_token);
-        setUser(data.user);
-      });
-
-      authLogger.info('Login successful', {
-        userId: data.user.id,
-        username: data.user.username,
-        role: data.user.role,
-        tokenSet: !!data.access_token,
-        userSet: !!data.user
-      });
-      authLogger.audit('LOGIN_SUCCESS', {
-        userId: data.user.id,
-        username: data.user.username,
-        role: data.user.role
-      });
-
-      // NOTE: the backend already records the authoritative `login_success`
-      // audit row at the login boundary (auth.py).  The frontend used to
-      // POST a second one via /audit/log, double-counting logins and pushing
-      // a client-trusted event into the admin audit trail (code-review R7).
-      // Removed — the backend event is the single source of truth.
-
-      // Navigate immediately after synchronous state update
-      if (data.user.must_change_password) {
-        authLogger.info('User must change password — redirecting to forced change page', {
-          userId: data.user.id,
-        });
-        navigate('/force-change-password', { replace: true });
-      } else {
-        const from = location.state?.from?.pathname || '/';
-        authLogger.debug('Navigating after successful login', {
-          fromPath: from,
-          currentPath: location.pathname,
-          replace: true,
-          authState: { hasToken: !!data.access_token, hasUser: !!data.user }
-        });
-        navigate(from, { replace: true });
+      // 2FA gate: password OK but the account needs a second factor. Don't
+      // store anything yet — hand the challenge back so the Login page can
+      // collect a code and call verify2fa.
+      if (data.two_factor_required) {
+        authLogger.info('Login requires second factor', { username });
+        timer();
+        return { twoFactorRequired: true, challengeToken: data.challenge_token };
       }
+
+      completeLogin(data);
       timer();
+      return { twoFactorRequired: false };
 
     } catch (error: unknown) {
       const axiosErr = error as { response?: { data?: { detail?: string } } };
@@ -257,7 +261,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       timer();
       throw new Error(detail);
     }
-  }, [authLogger, location.pathname, location.state, navigate]);
+  }, [authLogger, completeLogin, location.pathname, location.state]);
 
   const logout = useCallback(async () => {
     const timer = authLogger.timer('Logout process');
@@ -404,6 +408,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     user,
     token,
     login,
+    verify2fa,
     logout,
     updateUser,
     isAuthenticated,
@@ -411,7 +416,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     authStatus,
     hasRole,
     hasPermission,
-  }), [user, token, login, logout, updateUser, isAuthenticated, isLoading, authStatus, hasRole, hasPermission]);
+  }), [user, token, login, verify2fa, logout, updateUser, isAuthenticated, isLoading, authStatus, hasRole, hasPermission]);
 
   return (
     <AuthContext.Provider value={value}>
