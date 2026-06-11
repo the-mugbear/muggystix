@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from './ui/select';
 import { Switch } from './ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { cn } from '../utils/cn';
 
 export interface HostFilterOptions {
@@ -281,41 +282,59 @@ const ToggleChip: React.FC<{
   active: boolean;
   onToggle: () => void;
   activeClass?: string;
-}> = ({ label, active, onToggle, activeClass }) => (
-  <button
-    type="button"
-    onClick={onToggle}
-    aria-pressed={active}
-    className={cn(
-      'inline-flex items-center gap-xxs rounded-chip border px-sm py-xxs text-caption font-medium transition-colors',
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-      active
-        ? activeClass ?? 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
-        : 'border-border bg-card text-foreground hover:bg-accent',
-    )}
-  >
-    {active && <Check className="size-3" aria-hidden />}
-    {label}
-  </button>
-);
+  /** Provenance hint — where this filter's data comes from. */
+  tooltip?: string;
+}> = ({ label, active, onToggle, activeClass, tooltip }) => {
+  const chip = (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      className={cn(
+        'inline-flex items-center gap-xxs rounded-chip border px-sm py-xxs text-caption font-medium transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        active
+          ? activeClass ?? 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
+          : 'border-border bg-card text-foreground hover:bg-accent',
+      )}
+    >
+      {/* The check's width is ALWAYS reserved (invisible when inactive) so a
+          chip never changes size on toggle — otherwise activating one re-wraps
+          the flex row, the panel height jumps, and the page shifts under the
+          cursor. */}
+      <Check className={cn('size-3 shrink-0', !active && 'invisible')} aria-hidden />
+      {label}
+    </button>
+  );
+  if (!tooltip) return chip;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{chip}</TooltipTrigger>
+      <TooltipContent className="max-w-xs">{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+};
 
 // Vulnerability severities (#48) — the backend ORs the selected `has_*_vulns`
-// flags into one severity match, so this reads as one multi-select.
-const SEVERITY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; activeClass: string }> = [
-  { key: 'hasCriticalVulns', label: 'Critical', activeClass: 'border-transparent bg-destructive text-destructive-foreground' },
-  { key: 'hasHighVulns', label: 'High', activeClass: 'border-transparent bg-warning text-warning-foreground' },
-  { key: 'hasMediumVulns', label: 'Medium', activeClass: 'border-transparent bg-info text-info-foreground' },
-  { key: 'hasLowVulns', label: 'Low', activeClass: 'border-transparent bg-success text-success-foreground' },
+// flags into one severity match, so this reads as one multi-select.  Tooltips
+// state provenance: severity rows come from imported vuln scanners only.
+const SEVERITY_SOURCE = 'from imported vulnerability scans (Nessus, OpenVAS, Nikto).';
+const SEVERITY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; activeClass: string; tooltip: string }> = [
+  { key: 'hasCriticalVulns', label: 'Critical', activeClass: 'border-transparent bg-destructive text-destructive-foreground', tooltip: `Hosts with ≥1 Critical-severity finding — ${SEVERITY_SOURCE}` },
+  { key: 'hasHighVulns', label: 'High', activeClass: 'border-transparent bg-warning text-warning-foreground', tooltip: `Hosts with ≥1 High-severity finding — ${SEVERITY_SOURCE}` },
+  { key: 'hasMediumVulns', label: 'Medium', activeClass: 'border-transparent bg-info text-info-foreground', tooltip: `Hosts with ≥1 Medium-severity finding — ${SEVERITY_SOURCE}` },
+  { key: 'hasLowVulns', label: 'Low', activeClass: 'border-transparent bg-success text-success-foreground', tooltip: `Hosts with ≥1 Low-severity finding — ${SEVERITY_SOURCE}` },
 ];
 
 // Binary "show only" property filters (#42/#4) — each means "only hosts WITH
 // this", off means "don't filter" (the backend has_* params are positive-only).
-const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string }> = [
-  { key: 'hasOpenPorts', label: 'Open ports' },
-  { key: 'hasExploitAvailable', label: 'Exploitable' },
-  { key: 'hasTestExecution', label: 'Tested by agent' },
-  { key: 'outOfScopeOnly', label: 'Out of scope' },
-  { key: 'assignedToMe', label: 'Assigned to me' },
+// Tooltips note provenance, verified against the parsers/predicates.
+const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; tooltip: string }> = [
+  { key: 'hasOpenPorts', label: 'Open ports', tooltip: 'Hosts with ≥1 open port — from any port scan (Nmap, Masscan, Naabu, RustScan…).' },
+  { key: 'hasExploitAvailable', label: 'Exploitable', tooltip: 'Hosts with a finding flagged exploitable — Nessus only: set when the plugin reports exploit_available, a Metasploit / Core Impact / Canvas module, or proof-of-concept-or-higher maturity.' },
+  { key: 'hasTestExecution', label: 'Tested by agent', tooltip: 'Hosts an agentic test plan was actually executed against (not merely drafted) — from the agent execution workflow.' },
+  { key: 'outOfScopeOnly', label: 'Out of scope', tooltip: 'Hosts outside every subnet in your defined scope — from your uploaded scope/subnets.' },
+  { key: 'assignedToMe', label: 'Assigned to me', tooltip: 'Hosts with a note/work item assigned to you — from in-app notes.' },
 ];
 
 const HostFilters: React.FC<HostFiltersProps> = ({
@@ -841,6 +860,7 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   label={s.label}
                   active={filters[s.key] === true}
                   activeClass={s.activeClass}
+                  tooltip={s.tooltip}
                   onToggle={() => handleFilterChange(s.key, filters[s.key] ? undefined : true)}
                 />
               ))}
@@ -855,6 +875,7 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   key={p.key}
                   label={p.label}
                   active={filters[p.key] === true}
+                  tooltip={p.tooltip}
                   onToggle={() => handleFilterChange(p.key, filters[p.key] ? undefined : true)}
                 />
               ))}
@@ -862,6 +883,7 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 <ToggleChip
                   label="With notes"
                   active={onlyWithNotes}
+                  tooltip="Hosts with ≥1 analyst note — from in-app notes."
                   onToggle={() => handleOnlyWithNotesChange(!onlyWithNotes)}
                 />
               )}
@@ -874,11 +896,13 @@ const HostFilters: React.FC<HostFiltersProps> = ({
               <ToggleChip
                 label="Detected"
                 active={filters.hasWebInterface === true}
+                tooltip="Hosts with a detected web interface — from web-detection imports (httpx, EyeWitness, WhatWeb)."
                 onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === true ? undefined : true)}
               />
               <ToggleChip
                 label="Not detected"
                 active={filters.hasWebInterface === false}
+                tooltip="Hosts with no recorded web-interface row — absence of evidence (httpx/EyeWitness/WhatWeb never saw one), not proof there's no web service."
                 onToggle={() => handleFilterChange('hasWebInterface', filters.hasWebInterface === false ? undefined : false)}
               />
             </div>
