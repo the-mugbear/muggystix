@@ -3,7 +3,7 @@ Security utilities for authentication and authorization
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Sequence
 import jwt
 from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 import bcrypt
@@ -218,14 +218,21 @@ def login_throttle_exceeded(
     db: Session,
     username: Optional[str],
     ip_address: Optional[str],
+    actions: Sequence[str] = ("login_failed",),
 ) -> bool:
-    """Return True if recent failed-login activity for this username OR this
+    """Return True if recent failed-auth activity for this username OR this
     source IP exceeds the throttle. Reads ``audit_logs`` rows produced by
-    ``log_audit_event(action='login_failed')`` — no extra table needed.
+    ``log_audit_event(action=...)`` — no extra table needed.
+
+    ``actions`` selects which failure events count. The password step passes
+    the default (``login_failed``); the 2FA step passes both ``login_failed``
+    and ``login_2fa_failed`` so a 2FA-code brute force is bounded by the same
+    window/thresholds (the TOTP space is only 1e6, and the challenge JWT is
+    reusable for its full TTL, so an uncounted 2FA path would be sprayable).
     """
     window_start = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_THROTTLE_WINDOW_MINUTES)
     base = db.query(AuditLog).filter(
-        AuditLog.action == "login_failed",
+        AuditLog.action.in_(list(actions)),
         AuditLog.timestamp >= window_start,
     )
 

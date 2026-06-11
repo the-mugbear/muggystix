@@ -446,15 +446,13 @@ def list_assist_scopes(
 ):
     """List scopes; per-scope subnet CIDRs included.  Capped at the
     first 100 subnets per scope so a very-large scope's CIDR list
-    doesn't blow the agent context window.  This cap is currently
-    silent (ScopeBrief carries no per-scope subnet total / truncation
-    flag), so an assist agent can't tell a 100-CIDR scope from a
-    1000-CIDR one.  An assist key is rejected on every /agent/recon/*
-    endpoint, so full CIDR enumeration is NOT reachable from this
-    workflow — surface the partial list to the operator and note that
-    complete enumeration requires a recon session.  (Future: add a
-    subnet total / subnets_truncated flag to ScopeBrief so the cap is
-    detectable.)
+    doesn't blow the agent context window.  The cap is now explicit:
+    each ScopeBrief carries ``subnet_total`` (the true count) and
+    ``subnets_truncated``, so an assist agent can tell a 100-CIDR scope
+    from a 1000-CIDR one and surface "list truncated" to the operator.
+    An assist key is rejected on every /agent/recon/* endpoint, so full
+    CIDR enumeration is NOT reachable from this workflow — complete
+    enumeration requires a recon session.
     """
     session = _load_assist_session(db, request)
     scopes = (
@@ -473,10 +471,13 @@ def list_assist_scopes(
         .order_by(models.Subnet.scope_id, models.Subnet.cidr)
         .all()
     )
+    _SUBNET_CAP = 100
     cidrs_by_scope: dict[int, list[str]] = {}
+    total_by_scope: dict[int, int] = {}
     for scope_id, cidr in subnet_rows:
+        total_by_scope[scope_id] = total_by_scope.get(scope_id, 0) + 1
         bucket = cidrs_by_scope.setdefault(scope_id, [])
-        if len(bucket) < 100:
+        if len(bucket) < _SUBNET_CAP:
             bucket.append(cidr)
     return [
         ScopeBrief(
@@ -484,6 +485,8 @@ def list_assist_scopes(
             name=s.name,
             description=s.description,
             subnets=cidrs_by_scope.get(s.id, []),
+            subnet_total=total_by_scope.get(s.id, 0),
+            subnets_truncated=total_by_scope.get(s.id, 0) > _SUBNET_CAP,
         )
         for s in scopes
     ]

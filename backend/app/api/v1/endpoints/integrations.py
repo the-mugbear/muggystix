@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import User, UserRole
 from app.db.models_integrations import IntegrationCredential, IntegrationType
-from app.db.models_project import ProjectMembership
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.services.integration_service import IntegrationService
 from app.services.url_validator import (
@@ -29,35 +28,11 @@ from app.services.url_validator import (
 )
 
 
-# v2.90.4 (code review #4) — integration project_id must reference a
-# project the caller actually belongs to.  Pre-fix any user could
-# bind their credential to any project_id, leaving orphan credentials
-# attached to projects the owner has no membership in.  Secrets stay
-# owned by current_user so this isn't a leak, but the project
-# boundary was weakened; this gate restores it.  Global admins bypass
-# the membership check (consistent with the rest of the auth model).
-def _assert_project_member_or_admin(
-    db: Session, user: User, project_id: Optional[int],
-) -> None:
-    if project_id is None:
-        return
-    if user.role == UserRole.ADMIN:
-        return
-    membership = (
-        db.query(ProjectMembership)
-        .filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.user_id == user.id,
-        )
-        .first()
-    )
-    if not membership:
-        raise HTTPException(
-            status_code=403,
-            detail="You are not a member of that project.",
-        )
-
-
+# Integration credentials (scanner endpoints, LLM providers) are treated as
+# system infrastructure: only global admins create/update/delete/test them.
+# This supersedes the earlier per-project membership gate (v2.90.4) — managing
+# scanner/LLM secrets is an admin/ops action, and the test probe is a
+# network-egress primitive that must not be reachable by lower-priv members.
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
@@ -200,10 +175,8 @@ def test_integration(
     # Admin-only: this endpoint dials an operator-supplied URL, so a lower-priv
     # member could otherwise use it as an internal-network port/timing oracle
     # (the scanner/LLM types intentionally allow private addresses).  URL
-    # validation still blocks cloud-metadata / link-local regardless; gating
-    # to admin removes the viewer/auditor probe vector. (Create still allows
-    # project members via _assert_project_member_or_admin — tightening that to
-    # match is a follow-up.)
+    # validation still blocks cloud-metadata / link-local regardless.  Matches
+    # the admin gate on create/update/delete.
     current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     """Verify URL + credentials before saving.
@@ -241,11 +214,8 @@ def test_integration(
 def create_integration(
     body: IntegrationCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    # v2.90.4 (code review #4) — gate project_id by membership.
-    _assert_project_member_or_admin(db, current_user, body.project_id)
-
     # Audit finding C2 — SSRF: validate the base URL resolves to a
     # public address before storing it.  Ollama has a loopback
     # carve-out because users legitimately run it at localhost.
@@ -284,14 +254,8 @@ def update_integration(
     body: IntegrationUpdate,
     integration_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    # v2.90.4 (code review #4) — same gate as create.  Only triggers
-    # when the body actually sets project_id; clear_project moves the
-    # row OFF a project and doesn't need a membership check.
-    if body.project_id is not None:
-        _assert_project_member_or_admin(db, current_user, body.project_id)
-
     svc = IntegrationService(db)
     # Validate the new base_url against the existing row's type so
     # the Ollama carve-out applies correctly on update.  We need the
@@ -333,7 +297,7 @@ def update_integration(
 def delete_integration(
     integration_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
     svc = IntegrationService(db)
     try:

@@ -389,9 +389,33 @@ def login_2fa(
     if not user or not user.is_active or not user.totp_enabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA challenge")
 
+    # Throttle the second factor the same way as the password step. The TOTP
+    # space is only 1e6 and the challenge JWT is reusable for its whole TTL, so
+    # without this an attacker who already holds a valid challenge could spray
+    # codes.  Counts both failure kinds so password+2FA failures share a budget.
+    if login_throttle_exceeded(
+        db, username=user.username, ip_address=client_info.get("ip_address"),
+        actions=("login_failed", "login_2fa_failed"),
+    ):
+        log_audit_event(
+            db=db, user_id=user.id, action="login_throttled",
+            details={"username": user.username, "stage": "2fa"},
+            success=False, error_message="Throttled", **client_info,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Too many recent failed attempts. Try again in "
+                f"{LOGIN_THROTTLE_WINDOW_MINUTES} minutes."
+            ),
+        )
+
     if not _verify_second_factor(db, user, body.code):
         log_audit_event(
             db=db, user_id=user.id, action="login_2fa_failed",
+            # username in details so the per-username throttle branch counts it
+            # (login_throttle_exceeded reads the name from details, not user_id).
+            details={"username": user.username},
             success=False, error_message="Invalid 2FA code", **client_info,
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication code")
@@ -405,24 +429,24 @@ def _verify_second_factor(db: Session, user: User, code: str) -> bool:
     code = (code or "").strip()
     if not code:
         return False
-    # Recovery code path — single-use, marked consumed.
+    # Recovery code path — single-use, consumed atomically.  A read-then-write
+    # (.first() then set used_at) lets two concurrent requests both observe the
+    # same unused row and consume it twice.  A single conditional UPDATE makes
+    # the second request match zero rows: exactly one consumer wins.
     if "-" in code:
         from app.db.models_auth import UserRecoveryCode
         code_hash = totp_service.hash_recovery_code(code)
-        row = (
+        consumed = (
             db.query(UserRecoveryCode)
             .filter(
                 UserRecoveryCode.user_id == user.id,
                 UserRecoveryCode.code_hash == code_hash,
                 UserRecoveryCode.used_at.is_(None),
             )
-            .first()
+            .update({"used_at": datetime.now(timezone.utc)}, synchronize_session=False)
         )
-        if not row:
-            return False
-        row.used_at = datetime.now(timezone.utc)
         db.commit()
-        return True
+        return consumed == 1
     # TOTP path.
     secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
     return bool(secret) and totp_service.verify_code(secret, code)

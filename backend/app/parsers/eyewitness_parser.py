@@ -110,6 +110,14 @@ class EyewitnessParser:
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
+        # Per-parse memoization for the per-record Host/Port lookups.  EyeWitness
+        # emits many URLs per host (http + https, several ports/paths), so the
+        # same IP and (host, port) recur across records — without a cache each
+        # record re-queries hosts_v2 / ports_v2 (the N+1 the parser was flagged
+        # for).  Streaming-safe: filled lazily, including the Host rows this
+        # parse creates.  Reset per upload (one parse_file == one scan).
+        self._host_cache: dict = {}   # ip -> Host (or None when unresolvable)
+        self._port_cache: dict = {}   # (host_id, port_number) -> Port or None
         start = time.time()
         logger.info("Starting EyeWitness parse of %s", filename)
 
@@ -367,34 +375,44 @@ class EyewitnessParser:
 
         host_row = None
         if ip:
-            host_row = (
-                self.db.query(models.Host)
-                .filter(
-                    models.Host.ip_address == ip,
-                    models.Host.project_id == self._project_id,
+            host_row = self._host_cache.get(ip)
+            if host_row is None:
+                host_row = (
+                    self.db.query(models.Host)
+                    .filter(
+                        models.Host.ip_address == ip,
+                        models.Host.project_id == self._project_id,
+                    )
+                    .first()
                 )
-                .first()
-            )
-        if host_row is None and ip:
-            host_row = models.Host(
-                ip_address=ip,
-                state="up",
-                project_id=self._project_id,
-            )
-            self.db.add(host_row)
-            self.db.flush()
+                if host_row is None:
+                    host_row = models.Host(
+                        ip_address=ip,
+                        state="up",
+                        project_id=self._project_id,
+                    )
+                    self.db.add(host_row)
+                    self.db.flush()
+                self._host_cache[ip] = host_row
 
         port_row = None
         if host_row and port:
-            port_row = (
-                self.db.query(models.Port)
-                .filter(
-                    models.Port.host_id == host_row.id,
-                    models.Port.port_number == port,
-                    models.Port.protocol == "tcp",
+            pkey = (host_row.id, port)
+            if pkey in self._port_cache:
+                port_row = self._port_cache[pkey]
+            else:
+                port_row = (
+                    self.db.query(models.Port)
+                    .filter(
+                        models.Port.host_id == host_row.id,
+                        models.Port.port_number == port,
+                        models.Port.protocol == "tcp",
+                    )
+                    .first()
                 )
-                .first()
-            )
+                # Cache the miss too: this parse never creates Port rows, so a
+                # (host, port) that's absent now stays absent for the file.
+                self._port_cache[pkey] = port_row
 
         # Screenshot handling.  If we extracted from a zip, the record's
         # screenshot_path might be absolute or subdirectory-prefixed —

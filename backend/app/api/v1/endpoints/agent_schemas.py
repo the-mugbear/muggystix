@@ -198,6 +198,11 @@ class ScopeBrief(BaseModel):
     name: str
     description: Optional[str] = None
     subnets: List[str] = Field(default_factory=list)
+    # ``subnets`` is capped (assist context budget); these let the agent tell a
+    # truncated CIDR list from a complete one. ``subnet_total`` is the true
+    # count; ``subnets_truncated`` is True when the list was clipped.
+    subnet_total: int = 0
+    subnets_truncated: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
