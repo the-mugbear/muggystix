@@ -47,6 +47,7 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/findings/:id', kind: 'detail' },
   { pattern: '/profile', kind: 'detail' },
   { pattern: '/force-change-password', kind: 'detail' },
+  { pattern: '/force-2fa-setup', kind: 'detail' },
   // cards
   { pattern: '/portfolio', kind: 'cards' },
   { pattern: '/llm-settings', kind: 'cards' },
@@ -117,6 +118,7 @@ const Feedback = lazy(() => import('./pages/Feedback'));
 const LLMSettings = lazy(() => import('./pages/LLMSettings'));
 const IntegrationSettings = lazy(() => import('./pages/IntegrationSettings'));
 const ForceChangePassword = lazy(() => import('./pages/ForceChangePassword'));
+const ForceTwoFactorSetup = lazy(() => import('./pages/ForceTwoFactorSetup'));
 const ProjectActivity = lazy(() => import('./pages/ProjectActivity'));
 // v2.56.0 — cross-project SOC-correlation page.  Different intent from
 // /activity (notes/notifications) and /agent-activity (per-project
@@ -157,6 +159,18 @@ function App() {
               <ProtectedRoute>
                 <Suspense fallback={<RouteSkeleton />}>
                   <ForceChangePassword />
+                </Suspense>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Forced 2FA enrollment (REQUIRE_2FA) — no Layout/sidebar */}
+          <Route
+            path="/force-2fa-setup"
+            element={
+              <ProtectedRoute>
+                <Suspense fallback={<RouteSkeleton />}>
+                  <ForceTwoFactorSetup />
                 </Suspense>
               </ProtectedRoute>
             }

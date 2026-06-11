@@ -75,6 +75,12 @@ class Settings:
     )
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
+    # Mandatory 2FA.  When true (the default), every user must enroll in TOTP
+    # 2FA before they can reach any data endpoint — the post-login gate returns
+    # 403 ``two_factor_setup_required`` until they do, and the frontend forces
+    # enrollment.  Set REQUIRE_2FA=false to make 2FA opt-in (e.g. an air-gapped
+    # single-operator deployment).
+    REQUIRE_2FA: bool = os.getenv("REQUIRE_2FA", "true").lower() in ("1", "true", "yes", "on")
     AGENT_KEY_TTL_HOURS: int = int(os.getenv("AGENT_KEY_TTL_HOURS", "24"))
     # Hard upper bound on per-key TTL.  Operators creating an agent key
     # (or renewing one) can request any TTL up to this cap; requests

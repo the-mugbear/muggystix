@@ -11,6 +11,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.db.models_auth import User, UserSession, UserRole
 from app.core.security import (
@@ -211,15 +212,28 @@ def require_role(required_role: str):
 def require_password_changed(
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """Dependency that blocks API access when the user must change their password.
+    """Post-login account-readiness gate, applied to every data endpoint.
 
-    Raises 403 with a machine-readable detail string that the frontend
-    intercepts to redirect to the forced password-change page.
+    Blocks API access (403 with a machine-readable detail the frontend
+    intercepts) until the user has finished account setup:
+      * ``password_change_required`` — a forced password change is pending.
+      * ``two_factor_setup_required`` — mandatory 2FA (``REQUIRE_2FA``) is on
+        and the user hasn't enrolled yet.
+
+    Password change is checked first (most urgent).  The ``/auth/*`` surface —
+    login, logout, change-password, profile, and the ``/auth/2fa/*`` enrollment
+    endpoints — is intentionally NOT behind this gate, so a blocked user can
+    still complete setup.
     """
     if current_user.must_change_password:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="password_change_required",
+        )
+    if settings.REQUIRE_2FA and not current_user.totp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="two_factor_setup_required",
         )
     return current_user
 

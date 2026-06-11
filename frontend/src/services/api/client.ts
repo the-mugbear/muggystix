@@ -57,6 +57,15 @@ api.interceptors.response.use(
     ) {
       window.location.href = '/force-change-password';
     }
+    // Mandatory 2FA (REQUIRE_2FA): the gate returns this until the user
+    // enrolls.  Force them to the 2FA setup page so nothing else is reachable.
+    if (
+      error.response?.status === 403 &&
+      error.response?.data?.detail === 'two_factor_setup_required' &&
+      window.location.pathname !== '/force-2fa-setup'
+    ) {
+      window.location.href = '/force-2fa-setup';
+    }
     return Promise.reject(error);
   }
 );
