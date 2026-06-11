@@ -337,17 +337,42 @@ class HostDeduplicationService:
         the one we hold — so "scan A said Linux, scan B said Windows" leaves an
         audit trail (surfaced via GET /hosts/{id}/conflicts) instead of the
         loser being silently dropped.  Recorded whether or not we adopt the new
-        value; confidence/method stay null (the dedup has no confidence model)."""
+        value; confidence/method stay null (the dedup has no confidence model).
+
+        Idempotent on the distinct disagreement ``(object, field, prev, new)``:
+        the same held-vs-reported pair adds nothing after the first record, so
+        re-scans (or a host processed more than once in one scan) must not pile
+        up identical rows — that inflated the conflict count and made the
+        host-detail "Resolution history" show the same line many times.  A
+        repeat just refreshes the last-seen scan + timestamp."""
         from app.db.models_confidence import ConflictHistory
+        host_id = object_id if object_type == 'host' else None
+        port_id = object_id if object_type == 'port' else None
+        prev_s = str(previous_value) if previous_value is not None else None
+        new_s = str(new_value) if new_value is not None else None
+        existing = self.db.query(ConflictHistory).filter(
+            ConflictHistory.host_id == host_id,
+            ConflictHistory.port_id == port_id,
+            ConflictHistory.field_name == field_name,
+            ConflictHistory.previous_value == prev_s,
+            ConflictHistory.new_value == new_s,
+        ).first()
+        if existing is not None:
+            existing.new_scan_id = new_scan_id
+            existing.resolved_at = func.now()
+            return
         self.db.add(ConflictHistory(
-            host_id=object_id if object_type == 'host' else None,
-            port_id=object_id if object_type == 'port' else None,
+            host_id=host_id,
+            port_id=port_id,
             field_name=field_name,
-            previous_value=str(previous_value) if previous_value is not None else None,
-            new_value=str(new_value) if new_value is not None else None,
+            previous_value=prev_s,
+            new_value=new_s,
             previous_scan_id=previous_scan_id, new_scan_id=new_scan_id,
             resolved_at=func.now(),
         ))
+        # autoflush is off — flush so an identical conflict later in THIS same
+        # scan finds the row above instead of inserting a second copy.
+        self.db.flush()
 
     def _update_existing_host(self, host: Host, scan_id: int, host_data: Dict[str, Any]) -> Host:
         """
