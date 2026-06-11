@@ -18,7 +18,7 @@
  * that the same shape appears in both contexts.  Page chrome and
  * sheet header therefore stay minimal.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -47,6 +47,7 @@ import {
   followHost,
   unfollowHost,
   createAnnotation,
+  uploadNoteAttachment,
   updateAnnotation,
   deleteAnnotation,
   promoteAnnotation,
@@ -294,6 +295,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     return map;
   }, [host]);
   const [noteBody, setNoteBody] = useState('');
+  // Images pasted/attached into the composer, uploaded to the note on save.
+  const [pendingImages, setPendingImages] = useState<{ file: File; url: string }[]>([]);
   const [noteStatus, setNoteStatus] = useState<NoteStatus>('open');
   const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
@@ -609,6 +612,40 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     });
   };
 
+  const addPendingImages = useCallback((files: File[]) => {
+    const imgs = files
+      .filter((f) => f.type.startsWith('image/'))
+      .map((file) => ({ file, url: URL.createObjectURL(file) }));
+    if (imgs.length) setPendingImages((prev) => [...prev, ...imgs]);
+  }, []);
+
+  // Paste an image straight into the note composer (QoL) — captured here so it
+  // attaches to the note on save instead of pasting a garbage data URL into
+  // the text. Non-image clipboard content (plain text) pastes normally.
+  const handleComposerPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files: File[] = [];
+    for (const it of items) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) {
+      e.preventDefault();
+      addPendingImages(files);
+    }
+  }, [addPendingImages]);
+
+  const removePendingImage = useCallback((idx: number) => {
+    setPendingImages((prev) => {
+      const target = prev[idx];
+      if (target) URL.revokeObjectURL(target.url);
+      return prev.filter((_, i) => i !== idx);
+    });
+  }, []);
+
   const handleCreateNote = async () => {
     if (!noteBody.trim()) {
       setNoteError('Add a short note before saving.');
@@ -620,10 +657,23 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         body: noteBody.trim(),
         status: noteStatus,
       });
-      setNotes((previous) => [response, ...previous]);
+      // Upload any pasted/attached images to the new note, then attach the
+      // resulting metadata so the thumbnails show without a reload.
+      const uploaded = [];
+      for (const { file } of pendingImages) {
+        try {
+          uploaded.push(await uploadNoteAttachment(hostId, response.id, file));
+        } catch (e) {
+          console.error('Failed to upload pasted image:', e);
+        }
+      }
+      const noteWithImages = uploaded.length ? { ...response, attachments: uploaded } : response;
+      setNotes((previous) => [noteWithImages, ...previous]);
       setHost((previous) =>
-        previous ? { ...previous, notes: [response, ...(previous.notes ?? [])] } : previous,
+        previous ? { ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] } : previous,
       );
+      pendingImages.forEach((p) => URL.revokeObjectURL(p.url));
+      setPendingImages([]);
       setNoteBody('');
       setNoteStatus('open');
       setNoteError(null);
@@ -1386,11 +1436,34 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 if (noteError) setNoteError(null);
                 setNoteBody(event.target.value);
               }}
+              onPaste={handleComposerPaste}
               disabled={noteSubmitting}
             />
+            {pendingImages.length > 0 && (
+              <div className="flex flex-wrap gap-xs">
+                {pendingImages.map((img, idx) => (
+                  <div key={img.url} className="group relative">
+                    <img
+                      src={img.url}
+                      alt={`Pasted image ${idx + 1}`}
+                      className="size-16 rounded-control border border-border object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removePendingImage(idx)}
+                      aria-label={`Remove pasted image ${idx + 1}`}
+                      className="absolute -right-1 -top-1 rounded-full bg-destructive p-0.5 text-white shadow"
+                      disabled={noteSubmitting}
+                    >
+                      <X className="size-3" aria-hidden />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <p className="text-caption text-muted-foreground">
-              Tip: mention a teammate with <strong>@username</strong> to send them a notification.
-              Mentioning yourself doesn&apos;t fire — use it to flag a teammate to look at this host.
+              Tip: mention a teammate with <strong>@username</strong> to notify them — and you can
+              <strong> paste a screenshot</strong> (Ctrl/Cmd+V) to attach it as evidence.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-sm">
