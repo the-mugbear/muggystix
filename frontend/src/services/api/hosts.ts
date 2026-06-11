@@ -773,10 +773,8 @@ export interface NetexecResult {
   port?: number | null;
   auth_success?: boolean | null;
   username?: string | null;
-  domain?: string | null;
   hostname?: string | null;
   domain_name?: string | null;
-  os_version?: string | null;
   shares?: unknown;
   first_seen?: string | null;
 }

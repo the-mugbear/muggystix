@@ -1859,10 +1859,8 @@ class NetexecResultResponse(BaseModel):
     port: Optional[int] = None
     auth_success: Optional[bool] = None
     username: Optional[str] = None
-    domain: Optional[str] = None
     hostname: Optional[str] = None
     domain_name: Optional[str] = None
-    os_version: Optional[str] = None
     # `shares` is parser-shaped JSON (the netexec output varies); the
     # frontend renders it defensively.
     shares: Optional[Any] = None
@@ -1911,10 +1909,8 @@ def list_host_netexec_results(
             port=r.port,
             auth_success=r.auth_success,
             username=r.username,
-            domain=r.domain,
             hostname=r.hostname,
             domain_name=r.domain_name,
-            os_version=r.os_version,
             shares=r.shares,
             # NetexecResult model carries `discovered_at` (server_default
             # = func.now() when the row is inserted), not `first_seen`.

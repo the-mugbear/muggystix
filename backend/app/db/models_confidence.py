@@ -136,29 +136,26 @@ class NetexecResult(Base):
     # Authentication and access
     auth_success = Column(Boolean)
     username = Column(String)
-    domain = Column(String)
 
-    # Enumeration results
-    shares = Column(JSON)  # SMB shares
-    users = Column(JSON)   # Domain users
-    groups = Column(JSON)  # Domain groups
-    policies = Column(JSON) # Password policies, etc.
+    # Enumeration results — netexec-specific (no Host/Port equivalent);
+    # nullable until the relevant netexec module populates them.
+    shares = Column(JSON)   # SMB shares
+    users = Column(JSON)    # Domain users
+    groups = Column(JSON)   # Domain groups
+    policies = Column(JSON)  # Password policies, etc.
 
-    # Host information gathered
+    # Host info the parser records from the SMB enum line.
     hostname = Column(String)
     domain_name = Column(String)
-    os_version = Column(String)
-    arch = Column(String)
-
-    # Service banners and versions
-    service_banner = Column(Text)
-    service_version = Column(String)
+    # v2.163.0 — dropped the never-written columns that duplicated Host/Port
+    # (domain [dup of domain_name], os_version [Host.os_name], arch,
+    # service_banner / service_version [Port.*], response_time_ms): the parser
+    # never populated them and nothing read them.  See migration.
 
     # Raw output for debugging
     raw_output = Column(Text)
 
     # Confidence indicators
-    response_time_ms = Column(Float)
     connection_stable = Column(Boolean, default=True)
     multiple_confirmations = Column(Boolean, default=False)
 

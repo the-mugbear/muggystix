@@ -103,11 +103,6 @@ const NetExecResultRow: React.FC<{ result: NetexecResult }> = ({ result }) => {
             {host}
           </span>
         )}
-        {result.os_version && (
-          <span className="min-w-0 truncate text-caption text-muted-foreground">
-            {result.os_version}
-          </span>
-        )}
       </div>
 
       {shares.length > 0 ? (
