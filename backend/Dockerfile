@@ -66,4 +66,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # Start the application with multiple workers for concurrent request handling.
 # The worker count can be overridden via UVICORN_WORKERS env var.
 # The mkdir ensures the ingestion_queue directory exists on bind-mounted volumes.
-CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4}"]
+# --proxy-headers + --forwarded-allow-ips=* so X-Forwarded-For from nginx is
+# honoured: without it Uvicorn trusts forwarded headers only from 127.0.0.1,
+# but nginx connects over the Docker network, so request.client.host was
+# nginx's IP for EVERY client — globally exploitable login throttling and
+# wrong audit attribution (code-review C2).  '*' is safe only while the
+# backend is unexposed (reachable solely via the nginx proxy).
+CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]

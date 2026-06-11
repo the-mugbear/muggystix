@@ -68,6 +68,16 @@ vi.mock('../../services/api', () => ({
     },
   }),
   markWorkbenchSeen: vi.fn().mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' }),
+  // AttentionCard (rendered by Operations) fetches both attention endpoints.
+  // Pre-fix the mock omitted them, so the Promise threw "getProjectAttention
+  // is not a function" and the page rendered an error instead of content.
+  getProjectAttention: vi.fn().mockResolvedValue({
+    project_id: 1,
+    exposure: { raw_score: 0, active_findings: 0, by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 } },
+    neglect: { scan_count: 0, scan_staleness_days: null, unowned_active_findings: 0, unreviewed_hosts: 0, total_hosts: 0 },
+    recommended_action: { kind: 'ok', text: 'No outstanding attention items.' },
+  }),
+  getSiteAttention: vi.fn().mockResolvedValue({ adopted: false, sites: [] }),
   getCurrentProjectId: vi.fn(() => 1),
   setCurrentProjectId: vi.fn(),
 }));
@@ -190,7 +200,10 @@ describe('Operations page', () => {
   it('surfaces a pending-review plan in the Needs Attention queue', async () => {
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText('Needs attention')).toBeInTheDocument();
+      // Target the section heading specifically: AttentionCard (now rendered,
+      // since getProjectAttention/getSiteAttention are mocked) also renders a
+      // "Needs attention" label as a <p>, so a bare getByText is ambiguous.
+      expect(screen.getByRole('heading', { name: 'Needs attention' })).toBeInTheDocument();
     });
     expect(screen.getByText('1 pending review')).toBeInTheDocument();
     expect(screen.getByText(/Pending plan/)).toBeInTheDocument();

@@ -199,25 +199,29 @@ def seed_default_admin() -> None:
                 "  Password: set via DEFAULT_ADMIN_PASSWORD env var (not logged)"
             )
         else:
-            # Random password — log it once to stdout AND write to a
-            # file so the operator can pick it up either way.  The
-            # password is meant to be rotated immediately on first
-            # login (must_change_password=True).
-            logger.info("  Password: %s", admin_password)
+            # Random password — write it to a 0600 file the operator can
+            # read once, then rotate (must_change_password=True forces it on
+            # first login, after which the file is auto-deleted by the
+            # change-password endpoint).  NEVER log the password: docker logs
+            # are retained and often shipped off-box (code-review C4).
             logger.info(
                 "  Password was AUTO-GENERATED because DEFAULT_ADMIN_PASSWORD was unset."
             )
             try:
                 marker = os.path.join("/app", "uploads", "initial-admin-password.txt")
                 os.makedirs(os.path.dirname(marker), exist_ok=True)
-                with open(marker, "w") as f:
+                # O_EXCL: never overwrite/clobber an existing marker; 0600 so
+                # the credential isn't world-readable on the host-mounted
+                # uploads dir under the container's default umask.
+                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as f:
                     f.write(
                         f"username: {admin_username}\n"
                         f"password: {admin_password}\n"
-                        "(this file is created on first boot only; delete after the "
-                        "first login forces a password change)\n"
+                        "(created on first boot only; auto-deleted after the first "
+                        "login forces a password change)\n"
                     )
-                logger.info("  Also written to: %s", marker)
+                logger.info("  Password written (0600) to: %s", marker)
             except OSError as exc:
                 # Best-effort — the stdout log line is still authoritative.
                 logger.warning(

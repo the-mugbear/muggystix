@@ -225,14 +225,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         role: data.user.role
       });
 
-      // Send audit log to backend (asynchronously, don't block login)
-      logAuditEvent('login_success', 'authentication', {
-        userId: data.user.id,
-        username: data.user.username,
-        role: data.user.role
-      }).catch(error => {
-        authLogger.warn('Backend audit logging failed for login', { error: error instanceof Error ? error.message : String(error) });
-      });
+      // NOTE: the backend already records the authoritative `login_success`
+      // audit row at the login boundary (auth.py).  The frontend used to
+      // POST a second one via /audit/log, double-counting logins and pushing
+      // a client-trusted event into the admin audit trail (code-review R7).
+      // Removed — the backend event is the single source of truth.
 
       // Navigate immediately after synchronous state update
       if (data.user.must_change_password) {

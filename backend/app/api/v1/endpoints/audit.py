@@ -6,7 +6,7 @@ Endpoints for audit trail logging and retrieval.
 
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, Depends, Request, Query
+from fastapi import APIRouter, Depends, Request, Query, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -90,6 +90,18 @@ def get_client_info(request: Request) -> Dict[str, Optional[str]]:
     }
 
 
+# Actions a client is permitted to self-report via /audit/log.  Deliberately
+# narrow + non-privileged: the authoritative security events (login_success,
+# password_changed, user_*, role_*, …) are written backend-side at the
+# operation boundary and must never originate from a client.  login_success was
+# removed from the frontend (R7); these remain as plausible UI telemetry.
+_CLIENT_ALLOWED_ACTIONS = {
+    "logout",
+    "session_expired",
+    "client_error",
+}
+
+
 @router.post(
     "/log",
     response_model=AuditLogResponse,
@@ -102,7 +114,20 @@ def create_audit_log(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Create an audit log entry for the current user's action."""
+    """Create an audit log entry for the current user's action.
+
+    Client-submitted: an authenticated client could previously inject ANY
+    ``action`` string into the admin-facing audit trail (code-review R7).  We
+    now (a) restrict client events to an allowlist of genuinely client-side
+    telemetry — privileged/backend action names are rejected — and (b) stamp
+    ``source=client`` so admins can distinguish trusted backend events (written
+    at the operation boundary) from client-reported ones.
+    """
+    if audit_data.action not in _CLIENT_ALLOWED_ACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This action is not permitted for client-submitted audit events.",
+        )
     client_info = get_client_info(request)
 
     # No inner try/except — the global handler in main.py:359-382 logs
@@ -118,7 +143,9 @@ def create_audit_log(
         action=audit_data.action,
         resource_type=audit_data.resource_type,
         resource_id=audit_data.resource_id,
-        details=audit_data.details or {},
+        # Mark the row as client-reported so it's never mistaken for a
+        # backend-authoritative event during audit review.
+        details={**(audit_data.details or {}), "source": "client"},
         **client_info
     )
 

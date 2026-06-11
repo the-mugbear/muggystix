@@ -471,6 +471,14 @@ def change_password(
         **client_info
     )
 
+    # Auto-delete the first-boot admin-password marker once a rotation has
+    # happened — it must not outlive the forced first-login change (C4).
+    try:
+        import os
+        os.unlink(os.path.join("/app", "uploads", "initial-admin-password.txt"))
+    except OSError:
+        pass  # already gone / never existed / operator-supplied password
+
     return {"message": "Password successfully changed. All sessions have been revoked — please log in again."}
 
 

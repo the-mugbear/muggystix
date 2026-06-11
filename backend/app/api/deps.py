@@ -490,7 +490,7 @@ async def deny_scoped_keys(
 # Project access
 # ---------------------------------------------------------------------------
 
-async def get_current_project(
+def get_current_project(
     project_id: int = Path(..., description="Project ID", gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -501,6 +501,11 @@ async def get_current_project(
     ProjectMembership row for the given project.
 
     Returns the Project instance for use in endpoint handlers.
+
+    Plain ``def`` (not ``async``): the body does synchronous psycopg2
+    queries, so FastAPI must run it in the threadpool — an ``async def``
+    here blocked the worker's event loop for the project + membership
+    round trips on every project-scoped request (code-review C3).
     """
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
