@@ -86,7 +86,6 @@ EXPECTED_ONDELETE = {
     ('conflict_history', 'new_scan_id'): 'SET NULL',
     ('conflict_history', 'port_id'): 'CASCADE',
     ('conflict_history', 'previous_scan_id'): 'SET NULL',
-    ('data_source_metadata', 'scan_id'): 'CASCADE',
     ('dns_records', 'project_id'): 'CASCADE',
     ('dns_records', 'scan_id'): 'SET NULL',
     ('execution_sessions', 'agent_id'): 'SET NULL',

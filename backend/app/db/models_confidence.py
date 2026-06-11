@@ -116,43 +116,6 @@ class ConflictHistory(Base):
     )
 
 
-class DataSourceMetadata(Base):
-    """Track metadata about different data sources for analysis"""
-    __tablename__ = "data_source_metadata"
-
-    id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
-
-    # Source identification
-    scan_type = Column(String, nullable=False)  # nmap, netexec, masscan
-    tool_version = Column(String)
-    command_line = Column(Text)
-
-    # Quality metrics
-    total_hosts_scanned = Column(Integer)
-    successful_responses = Column(Integer)
-    failed_responses = Column(Integer)
-    timeout_count = Column(Integer)
-
-    # Timing information
-    scan_duration_seconds = Column(Float)
-    scan_started_at = Column(DateTime(timezone=True))
-    scan_completed_at = Column(DateTime(timezone=True))
-
-    # Source-specific metadata
-    source_metadata = Column(JSON)  # Different for each scan type
-
-    # Quality score for this data source
-    overall_quality_score = Column(Float)  # 0.0-1.0
-
-    # Relationships
-    scan = relationship("Scan", foreign_keys=[scan_id])
-
-    __table_args__ = (
-        Index("idx_data_source_metadata_scan", "scan_id"),
-    )
-
-
 class NetexecResult(Base):
     """Store netexec-specific enumeration results"""
     __tablename__ = "netexec_results"
