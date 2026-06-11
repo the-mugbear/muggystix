@@ -95,6 +95,7 @@ const Activity = lazy(() => import('./pages/Activity'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
 const SubnetInsights = lazy(() => import('./pages/SubnetInsights'));
+const SystemicInsights = lazy(() => import('./pages/SystemicInsights'));
 const ParseErrors = lazy(() => import('./pages/ParseErrors'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -445,6 +446,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <SubnetInsights />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/insights/systemic"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <SystemicInsights />
                           </ProtectedRoute>
                         }
                       />

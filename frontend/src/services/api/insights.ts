@@ -95,3 +95,63 @@ export const getSubnetInsights = async (
   });
   return response.data;
 };
+
+// --- Systemic insights -----------------------------------------------------
+// Cross-sectional, single-snapshot: which weaknesses recur across the estate
+// and how widely they spread. A condition spanning most sites is an estate
+// "blind spot" (the spread is the diagnosis).
+
+export interface SystemicCondition {
+  key: string;
+  label: string;
+  vector: string;
+  severity_weight: number;
+  recommended_action: string;
+  affected_hosts: number;
+  host_fraction: number;
+  subnet_spread: number;
+  site_spread: number;
+  systemic_score: number;
+  example_ips: (string | null)[];
+  is_blind_spot: boolean;
+  severity?: string; // present on shared-vulnerability blind spots
+}
+
+export interface SegmentOutlier {
+  subnet_id: number;
+  cidr: string;
+  site: string | null;
+  host_count: number;
+  issue_density: number;
+  estate_median_density: number;
+  times_median: number;
+  conditions: string[];
+}
+
+export interface DiagnosticProfile {
+  subnet_id: number;
+  cidr: string;
+  site: string | null;
+  host_count: number;
+  conditions: string[];
+  root_cause: { kind: string; text: string };
+}
+
+export interface SystemicInsightsResponse {
+  adopted: boolean;
+  estate?: {
+    hosts_in_scope: number;
+    subnets: number;
+    sites: number;
+    blind_spot_count: number;
+  };
+  blind_spots?: SystemicCondition[];
+  segment_outliers?: SegmentOutlier[];
+  conditions?: SystemicCondition[];
+  diagnostic_profiles?: DiagnosticProfile[];
+}
+
+export const getSystemicInsights = async (): Promise<SystemicInsightsResponse> => {
+  const response = await api.get<SystemicInsightsResponse>(`${p()}/insights/systemic`);
+  return response.data;
+};

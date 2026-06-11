@@ -150,6 +150,10 @@ export const NAV_PAGES: NavPage[] = [
     id: 'subnet-insights', path: '/insights', label: 'Insights', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: AlertHexIcon, keywords: ['subnet', 'hygiene', 'neglect', 'exposure', 'eol', 'attention'], order: 6.5 },
   },
+  {
+    id: 'systemic-insights', path: '/insights/systemic', label: 'Systemic', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: AlertHexIcon, keywords: ['systemic', 'blind spot', 'estate', 'outlier', 'vector', 'spread', 'diagnostic'], order: 6.6 },
+  },
 
   // Workflows hub
   {
