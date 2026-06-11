@@ -238,6 +238,28 @@ export const activeFilterPresetId = (filters: HostFilterOptions): string | null 
   return null;
 };
 
+// Composable presets: a preset is "applied" when EVERY key it sets is
+// satisfied in the live filters (a subset match — extra active filters are
+// fine, since presets now compose rather than replace).  Drives both the lit
+// state and the toggle-off behaviour.
+const presetIsApplied = (preset: HostFilterOptions, current: HostFilterOptions): boolean => {
+  const pKeys = definedFilterKeys(preset);
+  if (pKeys.length === 0) return false;
+  for (const k of pKeys) {
+    const pv = (preset as Record<string, unknown>)[k];
+    const cv = (current as Record<string, unknown>)[k];
+    if (Array.isArray(pv)) {
+      if (!Array.isArray(cv) || pv.length !== cv.length) return false;
+      const sp = [...pv].sort();
+      const sc = [...(cv as unknown[])].sort();
+      if (sp.some((v, i) => v !== sc[i])) return false;
+    } else if (pv !== cv) {
+      return false;
+    }
+  }
+  return true;
+};
+
 const PORT_STATE_OPTIONS: ComboboxOption[] = [
   { value: 'open', label: 'Open' },
   { value: 'closed', label: 'Closed' },
@@ -351,7 +373,7 @@ const HostFilters: React.FC<HostFiltersProps> = ({
     }
     onFiltersChange(updated);
   };
-  const activePresetId = useMemo(() => activeFilterPresetId(filters), [filters]);
+  const noFiltersActive = definedFilterKeys(filters).length === 0;
   // v5.2.0 — the legacy "Search hosts" field was removed; bare-text search now
   // lives in the command bar (maps to filters.query). The `/` focus shortcut
   // moved there too. filters.search may still arrive from a saved view or an
@@ -462,11 +484,16 @@ const HostFilters: React.FC<HostFiltersProps> = ({
   // If the user picks the already-active preset, clear it (toggle
   // behaviour matches the chip pressed-state).
   const applyPreset = (preset: (typeof HOST_FILTER_PRESETS)[number]) => {
-    if (activePresetId === preset.id) {
-      onFiltersChange({});
+    // Compose, don't replace: clicking a preset toggles ITS keys on top of
+    // whatever is already active, so a preset never silently wipes the user's
+    // other filters.  Clicking a lit preset removes just its keys.
+    const updated = { ...filters } as Record<string, unknown>;
+    if (presetIsApplied(preset.filters, filters)) {
+      for (const k of definedFilterKeys(preset.filters)) delete updated[k];
     } else {
-      onFiltersChange({ ...preset.filters });
+      Object.assign(updated, preset.filters);
     }
+    onFiltersChange(updated as HostFilterOptions);
   };
 
   // ---------------------------------------------------------------------
@@ -602,28 +629,28 @@ const HostFilters: React.FC<HostFiltersProps> = ({
             </h3>
           </div>
           <p className="text-caption text-muted-foreground">
-            Click a preset to apply that view. Picking one replaces any active filters; click the lit preset again to clear it.
+            Click presets to combine them with your filters; click a lit preset to remove just its part. "All Hosts" clears everything.
           </p>
           <div className="flex flex-wrap gap-xs" role="group" aria-label="Filter presets">
             <button
               key="all"
               type="button"
               onClick={() => onFiltersChange({})}
-              aria-pressed={activePresetId === 'all'}
+              aria-pressed={noFiltersActive}
               title="Clear all filters"
               className={cn(
                 'inline-flex items-center gap-xxs rounded-control border px-sm py-xxs text-caption font-medium transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                activePresetId === 'all'
+                noFiltersActive
                   ? 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
                   : 'border-border bg-card text-foreground hover:bg-accent',
               )}
             >
-              {activePresetId === 'all' && <Check className="size-3" aria-hidden />}
+              {noFiltersActive && <Check className="size-3" aria-hidden />}
               All Hosts
             </button>
             {HOST_FILTER_PRESETS.map((preset) => {
-              const active = activePresetId === preset.id;
+              const active = presetIsApplied(preset.filters, filters);
               return (
                 <button
                   key={preset.id}
