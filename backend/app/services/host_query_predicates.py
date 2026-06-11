@@ -268,9 +268,18 @@ def has_exploit_predicate(db: Session) -> ColumnElement:
 # ---------------------------------------------------------------------------
 
 def has_notes_predicate(db: Session) -> ColumnElement:
-    """Host has at least one note."""
-    sub = db.query(AnnotationModel.host_id).distinct()
-    return models.Host.id.in_(sub)
+    """Host has at least one note — directly, or on one of its ports.
+
+    The annotations table pins each note to exactly one target (host, port,
+    scan, …), so a note left on a host's port carries ``host_id = NULL``.
+    Counting only direct host notes would miss those, so we union in the hosts
+    reached through a port-level note."""
+    host_noted = db.query(AnnotationModel.host_id).filter(AnnotationModel.host_id.isnot(None))
+    port_noted = (
+        db.query(models.Port.host_id)
+        .join(AnnotationModel, AnnotationModel.port_id == models.Port.id)
+    )
+    return models.Host.id.in_(host_noted.union(port_noted))
 
 
 def note_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
@@ -421,7 +430,11 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
 def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[ColumnElement]:
     """Assignment predicate: ``any`` → assigned to anyone, ``me`` → the
     caller, or a numeric user id.  Returns ``None`` for an unusable value
-    so callers skip the filter (legacy parity)."""
+    so callers skip the filter (legacy parity).
+
+    "Assigned" keys on ``assigned_at`` (cleared on unassign).  Taking a host
+    In Review now sets ``assigned_at`` too (see the review-status write path),
+    so "review it = it's yours" holds without conflating the two here."""
     if value == "any":
         assigned = db.query(HostFollow.host_id).filter(HostFollow.assigned_at.isnot(None))
         return models.Host.id.in_(assigned)

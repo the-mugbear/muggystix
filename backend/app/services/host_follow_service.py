@@ -49,6 +49,15 @@ class HostFollowService:
         else:
             follow = HostFollow(host_id=host_id, user_id=user_id, status=status)
             self.db.add(follow)
+        # Taking a host into review makes that user its reviewer of record —
+        # which operators read as "this host is mine".  Stamp ownership so the
+        # "Assigned to me" filter (keyed on assigned_at) reflects it, mirroring
+        # the Assign action which already sets both.  Don't clobber an existing
+        # assignment; unassign clears assigned_at independently.
+        status_value = getattr(status, "value", status)
+        if status_value in ("in_review", "reviewed") and follow.assigned_at is None:
+            follow.assigned_at = func.now()
+            follow.assigned_by_id = user_id
         self.db.commit()
         self.db.refresh(follow)
         return follow

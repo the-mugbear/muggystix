@@ -332,7 +332,7 @@ const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; too
   { key: 'hasExploitAvailable', label: 'Exploitable', tooltip: 'Hosts with a finding flagged exploitable — Nessus only: set when the plugin reports exploit_available, a Metasploit / Core Impact / Canvas module, or proof-of-concept-or-higher maturity.' },
   { key: 'hasTestExecution', label: 'Tested by agent', tooltip: 'Hosts an agentic test plan was actually executed against (not merely drafted) — from the agent execution workflow.' },
   { key: 'outOfScopeOnly', label: 'Out of scope', tooltip: 'Hosts outside every subnet in your defined scope — from your uploaded scope/subnets.' },
-  { key: 'assignedToMe', label: 'Assigned to me', tooltip: 'Hosts with a note/work item assigned to you — from in-app notes.' },
+  { key: 'assignedToMe', label: 'Assigned to me', tooltip: 'Hosts you own — explicitly assigned to you (the bulk Assign action) or that you took In Review / Reviewed.' },
 ];
 
 const HostFilters: React.FC<HostFiltersProps> = ({
