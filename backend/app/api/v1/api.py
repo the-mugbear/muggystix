@@ -30,6 +30,9 @@ from app.api.v1.endpoints import (
     # Subnet-insights — per-subnet exposure + neglect + hygiene (the
     # attention model re-grouped by subnet; "which ranges are neglected?").
     insights,
+    # Security Posture — manager-facing roll-up composing attention +
+    # systemic + finding disposition + the agent decision queue.
+    posture,
     # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
     recon_sessions,
     # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
@@ -134,6 +137,7 @@ project_router.include_router(workbench.router, prefix="/workbench", tags=["work
 project_router.include_router(attention.router, prefix="/attention", tags=["attention"])
 project_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 project_router.include_router(insights.router, prefix="/insights", tags=["insights"])
+project_router.include_router(posture.router, prefix="/posture", tags=["posture"])
 # v2.86.0 — subnet labels share the /scopes prefix so URLs read as
 # /projects/{pid}/scopes/subnet-labels and
 # /projects/{pid}/scopes/subnets/{sid}/labels.  Separate file from

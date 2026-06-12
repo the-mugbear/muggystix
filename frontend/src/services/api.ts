@@ -43,6 +43,7 @@ export * from './api/llm-providers';
 export * from './api/notifications';
 export * from './api/parse-errors';
 export * from './api/portfolio';
+export * from './api/posture';
 export * from './api/projects';
 export * from './api/recon-sessions';
 export * from './api/references';

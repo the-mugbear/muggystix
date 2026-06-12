@@ -147,6 +147,10 @@ export const NAV_PAGES: NavPage[] = [
     id: 'network-topology', path: '/network-topology', label: 'Topology', requiredRole: 'viewer', hub: 'inventory',
   },
   {
+    id: 'security-posture', path: '/posture', label: 'Posture', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: ShieldCheck, keywords: ['posture', 'security', 'manager', 'exposure', 'coverage', 'ownership', 'summary', 'dashboard'], order: 6.4 },
+  },
+  {
     id: 'subnet-insights', path: '/insights', label: 'Insights', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: AlertHexIcon, keywords: ['subnet', 'hygiene', 'neglect', 'exposure', 'eol', 'attention'], order: 6.5 },
   },
