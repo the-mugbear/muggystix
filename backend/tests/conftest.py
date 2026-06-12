@@ -2,6 +2,14 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
+# seed_default_admin (run by the app lifespan in TestClient-based tests) now
+# fails closed if it can't write the credential-recovery marker to /app/uploads
+# — which is host-root-owned and unwritable by the UID-999 test process (the
+# exact unrecoverable-admin scenario the fix guards). Give tests the
+# operator-supplied path so seeding needs no marker write. MUST be set before
+# `from app.main import app` below triggers any startup wiring.
+os.environ.setdefault("DEFAULT_ADMIN_PASSWORD", "test-admin-password-not-used")
+
 import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import make_url

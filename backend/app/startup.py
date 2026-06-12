@@ -162,10 +162,55 @@ def seed_default_admin() -> None:
         # Treat unset, empty, or the literal "admin" as "no password
         # provided" — that last case used to be a silent foot-gun.
         operator_supplied = bool(raw_password) and raw_password != "admin"
+        marker = os.path.join("/app", "uploads", "initial-admin-password.txt")
+
         if operator_supplied:
             admin_password = raw_password
         else:
             admin_password = secrets.token_urlsafe(24)
+            # SECURE THE RECOVERY CHANNEL *BEFORE* CREATING THE ADMIN.  The
+            # random password is never logged (docker logs are retained and
+            # shipped off-box — code-review C4), so this 0600 marker file is the
+            # ONLY way to recover it.  Previously the admin was committed first
+            # and a marker-write failure was swallowed with a warning — on an
+            # unwritable uploads volume (UID 999 vs a host-root-owned dir) that
+            # created a *strictly unrecoverable* admin.  Now: write the marker
+            # first; if it can't be secured, fail startup loudly instead.
+            try:
+                os.makedirs(os.path.dirname(marker), exist_ok=True)
+                # O_EXCL doubles as the multi-worker bootstrap token: only one
+                # worker wins the marker and goes on to create the admin.
+                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                # Another worker already owns the bootstrap (wrote the marker),
+                # or a prior partial boot left one.  Don't create a second /
+                # mismatched admin from this worker.
+                logger.info(
+                    "Initial-admin credential marker already present (%s) — "
+                    "another worker is bootstrapping or a prior marker exists; "
+                    "skipping admin creation here.", marker,
+                )
+                return
+            except OSError as exc:
+                # The recovery file can't be written — fail closed rather than
+                # create an admin nobody can log in as.
+                raise RuntimeError(
+                    f"Refusing to create the default admin: the credential "
+                    f"recovery file {marker} could not be written ({exc}). The "
+                    f"generated password is NOT logged, so this would leave an "
+                    f"unrecoverable admin. Fix the uploads volume permissions "
+                    f"(chown 999:999 ./uploads) and restart, or set "
+                    f"DEFAULT_ADMIN_PASSWORD before first boot."
+                ) from exc
+            # Persist the password to the reserved marker before the admin is
+            # committed, so an admin can never exist without its recovery file.
+            with os.fdopen(fd, "w") as f:
+                f.write(
+                    f"username: {admin_username}\n"
+                    f"password: {admin_password}\n"
+                    "(created on first boot only; auto-deleted after the first "
+                    "login forces a password change)\n"
+                )
 
         admin_user = User(
             username=admin_username,
@@ -183,12 +228,15 @@ def seed_default_admin() -> None:
             # Catches the multi-worker race on first boot (two workers both
             # see "no admin" and both try to insert).  Also catches any
             # other constraint violation — schema drift, FK miss — which
-            # the audit (review N8) flagged as broader-than-named.  The
-            # rollback + early-return is the right move either way: a real
-            # FK error here means the schema is broken, and the next worker
-            # to hit this code will hit the same constraint and log the
-            # same warning, surfacing the issue without crashing boot.
+            # the audit (review N8) flagged as broader-than-named.
             db.rollback()
+            # We reserved the marker but our admin didn't land — remove it so a
+            # retry (or the race winner) isn't blocked by a stale credential.
+            if not operator_supplied:
+                try:
+                    os.unlink(marker)
+                except OSError:
+                    pass
             return
 
         logger.info("=" * 60)
@@ -199,34 +247,10 @@ def seed_default_admin() -> None:
                 "  Password: set via DEFAULT_ADMIN_PASSWORD env var (not logged)"
             )
         else:
-            # Random password — write it to a 0600 file the operator can
-            # read once, then rotate (must_change_password=True forces it on
-            # first login, after which the file is auto-deleted by the
-            # change-password endpoint).  NEVER log the password: docker logs
-            # are retained and often shipped off-box (code-review C4).
             logger.info(
                 "  Password was AUTO-GENERATED because DEFAULT_ADMIN_PASSWORD was unset."
             )
-            try:
-                marker = os.path.join("/app", "uploads", "initial-admin-password.txt")
-                os.makedirs(os.path.dirname(marker), exist_ok=True)
-                # O_EXCL: never overwrite/clobber an existing marker; 0600 so
-                # the credential isn't world-readable on the host-mounted
-                # uploads dir under the container's default umask.
-                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w") as f:
-                    f.write(
-                        f"username: {admin_username}\n"
-                        f"password: {admin_password}\n"
-                        "(created on first boot only; auto-deleted after the first "
-                        "login forces a password change)\n"
-                    )
-                logger.info("  Password written (0600) to: %s", marker)
-            except OSError as exc:
-                # Best-effort — the stdout log line is still authoritative.
-                logger.warning(
-                    "Could not write initial-admin-password.txt: %s", exc,
-                )
+            logger.info("  Password written (0600) to: %s", marker)
         logger.info("  Password change will be required on first login.")
         logger.info("=" * 60)
 

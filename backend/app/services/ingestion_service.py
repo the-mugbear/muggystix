@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -151,54 +152,63 @@ class IngestionService:
         # masked by umask, hence the explicit chmod.
         os.chmod(job_dir, 0o700)
 
-        # Audit finding H5: the previous implementation used
-        # ``upload.filename`` verbatim in the filesystem path.  The
-        # per-job UUID dir bounds traversal, but a filename containing
-        # newlines, null bytes, or ANSI escapes could corrupt log
-        # output and audit trails.  We strip the path component, then
-        # slugify to a safe character set and cap the length so the
-        # filesystem path stays well below any FS max.  The original
-        # filename is still kept on ``original_filename`` for the UI.
-        raw_name = Path(upload.filename or "upload").name or "upload"
-        safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', raw_name)[:120] or "upload"
-        destination = job_dir / safe_name
-        file_size = await self._write_upload(upload, destination)
-        # CR5-C2 — owner-only on the scan file too (umask leaves it 0644 by
-        # default); belt-and-suspenders with the 0700 job dir above.
-        os.chmod(destination, 0o600)
-
-        # Magic-byte sanity check.  The extension tells us which parser
-        # will run; the content should actually look like that format.
-        # This is a cheap first line of defense against uploaded binaries
-        # disguised as .xml/.json/.nessus that could crash the parser or
-        # get mis-routed.  We only peek at the first 1 KB.
+        # Everything from here to a committed job row is wrapped so a failure
+        # can't orphan the upload.  The file (up to MAX_FILE_SIZE) is on disk
+        # before the DB row exists, so a transient DB/constraint failure — or a
+        # validation reject — would otherwise leave an untracked file with no
+        # row to find it by; repeated failures could exhaust the shared storage
+        # volume.  On ANY failure: roll back and remove the whole per-job dir,
+        # then re-raise the original error.
         try:
-            self._validate_content_matches_extension(destination, raw_name)
-        except ValueError as exc:
-            destination.unlink(missing_ok=True)
-            raise ValueError(str(exc))
+            # Audit finding H5: the previous implementation used
+            # ``upload.filename`` verbatim in the filesystem path.  The
+            # per-job UUID dir bounds traversal, but a filename containing
+            # newlines, null bytes, or ANSI escapes could corrupt log
+            # output and audit trails.  We strip the path component, then
+            # slugify to a safe character set and cap the length so the
+            # filesystem path stays well below any FS max.  The original
+            # filename is still kept on ``original_filename`` for the UI.
+            raw_name = Path(upload.filename or "upload").name or "upload"
+            safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', raw_name)[:120] or "upload"
+            destination = job_dir / safe_name
+            file_size = await self._write_upload(upload, destination)
+            # CR5-C2 — owner-only on the scan file too (umask leaves it 0644 by
+            # default); belt-and-suspenders with the 0700 job dir above.
+            os.chmod(destination, 0o600)
 
-        opts = options or {}
-        job = IngestionJob(
-            filename=destination.name,
-            original_filename=upload.filename,
-            storage_path=str(destination),
-            status="queued",
-            file_size=file_size,
-            options=opts,
-            submitted_by_id=submitted_by_id,
-            project_id=opts.get("project_id"),
-            # Stamp recon_session_id in the SAME transaction that makes the
-            # row visible as ``queued``.  The worker polls for queued rows
-            # independently of the pg_notify hint, so any later "set the FK,
-            # commit again" step leaves a window where the worker can claim
-            # and process the job before it's attributed to its recon
-            # session.  Setting it here closes that window.
-            recon_session_id=opts.get("recon_session_id"),
-        )
-        db.add(job)
-        db.commit()
-        db.refresh(job)
+            # Magic-byte sanity check.  The extension tells us which parser
+            # will run; the content should actually look like that format.
+            # This is a cheap first line of defense against uploaded binaries
+            # disguised as .xml/.json/.nessus that could crash the parser or
+            # get mis-routed.  We only peek at the first 1 KB.  A reject raises
+            # ValueError, caught below to clean up the job dir.
+            self._validate_content_matches_extension(destination, raw_name)
+
+            opts = options or {}
+            job = IngestionJob(
+                filename=destination.name,
+                original_filename=upload.filename,
+                storage_path=str(destination),
+                status="queued",
+                file_size=file_size,
+                options=opts,
+                submitted_by_id=submitted_by_id,
+                project_id=opts.get("project_id"),
+                # Stamp recon_session_id in the SAME transaction that makes the
+                # row visible as ``queued``.  The worker polls for queued rows
+                # independently of the pg_notify hint, so any later "set the FK,
+                # commit again" step leaves a window where the worker can claim
+                # and process the job before it's attributed to its recon
+                # session.  Setting it here closes that window.
+                recon_session_id=opts.get("recon_session_id"),
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+        except Exception:
+            db.rollback()
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
         # Log the sanitized filename, not the raw one — prevents log
         # injection via filenames with embedded CR/LF.
         logger.info(

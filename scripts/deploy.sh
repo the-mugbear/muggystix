@@ -365,8 +365,9 @@ case $DEPLOY_CHOICE in
         echo "  Backend:  https://${CONFIGURED_IP:-localhost}:8000"
         echo "  API Docs: https://${CONFIGURED_IP:-localhost}:8000/docs"
         echo ""
-        print_info "Default admin credentials: admin / admin"
-        print_info "Password change is required on first login."
+        print_info "Default admin: username 'admin'. If DEFAULT_ADMIN_PASSWORD was not set,"
+        print_info "the password was auto-generated — read ./uploads/initial-admin-password.txt"
+        print_info "(or the backend startup logs). Password change is required on first login."
         ;;
 
     2)
@@ -409,7 +410,8 @@ case $DEPLOY_CHOICE in
         echo ""
         print_header "Default Admin Credentials"
         echo "  Username: admin"
-        echo "  Password: admin"
+        echo "  Password: auto-generated (unless DEFAULT_ADMIN_PASSWORD was set)."
+        echo "            Read it from ./uploads/initial-admin-password.txt or the backend logs."
         print_info "Password change is required on first login."
         echo ""
 
