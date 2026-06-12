@@ -173,3 +173,32 @@ def test_finding_comment_cross_finding_threading_rejected(client, test_project):
         json={"body": "reply on B but parented to A", "parent_id": a_comment},
     )
     assert bad.status_code == 400, bad.text
+
+
+def test_finding_comment_evidence_reaches_report(client, db_session, test_project, test_user):
+    """A finding's comment thread (repro/rationale) is carried into the report
+    — both the JSON findings list and the rendered HTML Evidence section."""
+    from unittest.mock import MagicMock
+    from app.api.v1.endpoints.reports import ReportGenerator
+
+    host = _make_host(db_session, test_project.id, "10.20.0.7")
+    db_session.commit()
+
+    fid = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "Anonymous FTP", "severity": "medium", "host_ids": [host.id]},
+    ).json()["id"]
+    client.post(
+        f"/api/v1/projects/{test_project.id}/findings/{fid}/notes",
+        json={"body": "Repro: ftp 10.20.0.7, login anonymous / any-password"},
+    )
+
+    gen = ReportGenerator(db=db_session, current_user=MagicMock(), project_id=test_project.id)
+    data = gen._findings_for_report([host])
+    assert data, "finding should be in the report dataset"
+    target = next(f for f in data if f["id"] == fid)
+    assert any("anonymous" in c["body"].lower() for c in target["comments"])
+
+    html_out = gen._generate_findings_html([host])
+    assert "Evidence" in html_out
+    assert "login anonymous" in html_out

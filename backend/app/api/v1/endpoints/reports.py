@@ -774,6 +774,7 @@ class ReportGenerator:
             )
             .all()
         )
+        comments_by_finding = self._finding_comments([f.id for f in findings])
         out = [
             {
                 "id": f.id,
@@ -790,24 +791,58 @@ class ReportGenerator:
                 # here (cheap, harmless in JSON exports); the HTML/PDF report
                 # resolves it to embedded images, the other formats ignore it.
                 "evidence_annotation_id": f.evidence_annotation_id,
+                # The finding's own comment/evidence thread (repro steps,
+                # rationale, discussion the analyst added while refining it).
+                # Text rides into every format; screenshots are HTML/PDF-only.
+                "comments": comments_by_finding.get(f.id, []),
             }
             for f in findings
         ]
         out.sort(key=lambda x: self.SEVERITY_ORDER.get(x["severity"], 5))
         return out
 
+    def _finding_comments(self, finding_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+        """Map finding id → its comment thread (author + body, oldest-first) —
+        the discussion/repro/rationale analysts add on the Findings page.  This
+        is the textual half of "reports include evidence when attached to a
+        finding"; the image half is _finding_evidence_images."""
+        out: Dict[int, List[Dict[str, Any]]] = {}
+        ids = [fid for fid in finding_ids if fid]
+        if not ids:
+            return out
+        rows = (
+            self.db.query(models.Annotation)
+            .options(selectinload(models.Annotation.author))
+            .filter(models.Annotation.finding_id.in_(ids))
+            .order_by(models.Annotation.created_at.asc(), models.Annotation.id.asc())
+            .all()
+        )
+        for ann in rows:
+            author = None
+            if ann.author:
+                author = ann.author.full_name or ann.author.username
+            out.setdefault(ann.finding_id, []).append({
+                "author": author,
+                "body": ann.body or "",
+                "created_at": ann.created_at.isoformat() if ann.created_at else None,
+            })
+        return out
+
     # Total bytes of evidence images embedded into one report, so a project
     # with many large screenshots can't produce a runaway-sized PDF.
     _EVIDENCE_IMAGE_BUDGET = 20 * 1024 * 1024
 
-    def _evidence_images_by_root(self, root_ids: List[int]) -> Dict[int, List[Tuple[str, str]]]:
-        """Map note-thread-root id → [(data_uri, caption), …] of image
-        attachments on that thread (root + replies), read from disk and inlined
-        as base64 data URIs (WeasyPrint never fetches a resource — see the PDF
-        endpoint's deny-all fetcher).  Capped by ``_EVIDENCE_IMAGE_BUDGET``."""
+    def _finding_evidence_images(self, findings: List[Dict[str, Any]]) -> Dict[int, List[Tuple[str, str]]]:
+        """Map finding id → [(data_uri, caption), …] of image attachments that
+        are evidence for that finding, from BOTH sources: the promoted source-
+        note thread (``evidence_annotation_id`` root + replies) and the
+        finding's own comment thread (``annotations.finding_id``).  Images are
+        read from disk and inlined as base64 data URIs (WeasyPrint never fetches
+        a resource — see the PDF endpoint's deny-all fetcher).  One shared
+        ``_EVIDENCE_IMAGE_BUDGET`` across all findings so a screenshot-heavy
+        project can't produce a runaway-sized PDF."""
         out: Dict[int, List[Tuple[str, str]]] = {}
-        root_ids = [r for r in root_ids if r]
-        if not root_ids:
+        if not findings:
             return out
         base = Path(settings.UPLOAD_DIR) / "note_attachments"
         try:
@@ -815,12 +850,20 @@ class ReportGenerator:
         except OSError:
             return out
         used = 0
-        for root in root_ids:
-            ann_ids = [
-                r[0] for r in self.db.query(models.Annotation.id).filter(
-                    or_(models.Annotation.id == root, models.Annotation.thread_root_id == root)
-                ).all()
-            ]
+        for f in findings:
+            fid = f.get("id")
+            root = f.get("evidence_annotation_id")
+            # All annotation ids whose attachments count as this finding's
+            # evidence: the source-note thread (root + replies) and every
+            # comment on the finding itself.
+            ann_q = self.db.query(models.Annotation.id).filter(
+                or_(
+                    models.Annotation.finding_id == fid,
+                    models.Annotation.id == root,
+                    models.Annotation.thread_root_id == root,
+                ) if root else (models.Annotation.finding_id == fid)
+            )
+            ann_ids = [r[0] for r in ann_q.all()]
             if not ann_ids:
                 continue
             atts = (
@@ -848,7 +891,7 @@ class ReportGenerator:
                 b64 = base64.b64encode(data).decode("ascii")
                 uris.append((f"data:{att.content_type};base64,{b64}", att.filename))
             if uris:
-                out[root] = uris
+                out[fid] = uris
         return out
 
     def _generate_findings_html(self, hosts: List[models.Host]) -> str:
@@ -880,36 +923,43 @@ class ReportGenerator:
             f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
         )
 
-        # Evidence gallery — embedded screenshots attached to each finding's
-        # source note thread.  Only findings that actually have images appear.
-        images_by_root = self._evidence_images_by_root(
-            [f.get("evidence_annotation_id") for f in findings]
-        )
-        if not images_by_root:
-            return table
+        # Evidence section — per finding, the analyst's comment thread (repro
+        # steps / rationale / discussion) and embedded screenshots, from both
+        # the promoted source note and the finding's own thread.  Only findings
+        # that actually have comments or images appear.
+        images_by_finding = self._finding_evidence_images(findings)
         blocks = []
         for f in findings:
-            imgs = images_by_root.get(f.get("evidence_annotation_id"))
-            if not imgs:
+            fid = f.get("id")
+            comments = f.get("comments") or []
+            imgs = images_by_finding.get(fid)
+            if not comments and not imgs:
                 continue
-            thumbs = "".join(
-                f'<figure style="margin:0;max-width:280px;">'
-                f'<img src="{uri}" alt="{html.escape(cap)}" '
-                f'style="max-width:280px;max-height:280px;border:1px solid var(--border);border-radius:6px;" />'
-                f'<figcaption class="muted" style="font-size:0.8em;word-break:break-all;">{html.escape(cap)}</figcaption>'
-                f'</figure>'
-                for uri, cap in imgs
-            )
-            blocks.append(
-                f'<div style="margin-top:14px;">'
-                f'<p style="font-weight:600;margin:0 0 6px;">{html.escape(str(f["title"]))}</p>'
-                f'<div style="display:flex;flex-wrap:wrap;gap:10px;">{thumbs}</div>'
-                f'</div>'
-            )
+            parts = [f'<p style="font-weight:600;margin:0 0 6px;">{html.escape(str(f["title"]))}</p>']
+            for c in comments:
+                who = html.escape(str(c.get("author") or "—"))
+                body = html.escape(str(c.get("body") or "")).replace("\n", "<br/>")
+                parts.append(
+                    f'<div style="margin:0 0 8px;padding:6px 10px;border-left:3px solid var(--border);">'
+                    f'<span class="muted" style="font-size:0.8em;">{who}</span><br/>{body}</div>'
+                )
+            if imgs:
+                thumbs = "".join(
+                    f'<figure style="margin:0;max-width:280px;">'
+                    f'<img src="{uri}" alt="{html.escape(cap)}" '
+                    f'style="max-width:280px;max-height:280px;border:1px solid var(--border);border-radius:6px;" />'
+                    f'<figcaption class="muted" style="font-size:0.8em;word-break:break-all;">{html.escape(cap)}</figcaption>'
+                    f'</figure>'
+                    for uri, cap in imgs
+                )
+                parts.append(f'<div style="display:flex;flex-wrap:wrap;gap:10px;">{thumbs}</div>')
+            blocks.append(f'<div style="margin-top:14px;">{"".join(parts)}</div>')
+        if not blocks:
+            return table
         return (
             f"{table}"
             f'<h3 style="margin-top:20px;">Evidence</h3>'
-            f'<p class="muted">Screenshots attached to the findings\' source notes.</p>'
+            f'<p class="muted">Analyst comments and screenshots attached to each finding.</p>'
             f'{"".join(blocks)}'
         )
 
