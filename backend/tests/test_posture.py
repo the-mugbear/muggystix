@@ -30,7 +30,7 @@ def _finding(db, project_id, *, severity, status="open", owner_id=None, host=Non
 def test_empty_project_reads_needs_assessment(db_session, test_project):
     """Absence of findings is NOT health — a never-scanned estate must not read
     as 'no urgent signals'."""
-    out = compute_posture(db_session, test_project.id)
+    out = compute_posture(db_session, test_project.id, use_cache=False)
     assert out["label"] == "needs_assessment"
     assert any(p["kind"] == "onboard" for p in out["priorities"])
     assert out["headline"]["active_exposure"]["active_findings"] == 0
@@ -48,7 +48,7 @@ def test_unowned_critical_is_action_required(db_session, test_project):
     _finding(db_session, test_project.id, severity="critical", owner_id=None, host=host)
     db_session.commit()
 
-    out = compute_posture(db_session, test_project.id)
+    out = compute_posture(db_session, test_project.id, use_cache=False)
     assert out["label"] == "action_required"
     assert out["headline"]["active_exposure"]["by_severity"]["critical"] == 1
     assert out["headline"]["ownership"]["unowned"] == 1
@@ -68,7 +68,7 @@ def test_owned_reviewed_finding_no_urgent_signals(db_session, test_project, test
     _finding(db_session, test_project.id, severity="low", owner_id=test_user.id, host=host)
     db_session.commit()
 
-    out = compute_posture(db_session, test_project.id)
+    out = compute_posture(db_session, test_project.id, use_cache=False)
     assert out["label"] == "no_urgent_signals"
     assert out["headline"]["review_coverage"]["pct"] == 100
     assert out["headline"]["ownership"]["unowned"] == 0
@@ -88,14 +88,14 @@ def test_blocked_runs_count_only_latest_session_per_plan(db_session, test_projec
     db_session.add(ExecutionSession(test_plan_id=plan.id, status="active"))
     db_session.commit()
 
-    out = compute_posture(db_session, test_project.id)
+    out = compute_posture(db_session, test_project.id, use_cache=False)
     assert out["decisions"]["blocked_sessions"] == 0
     assert not any(p["kind"] == "blocked" for p in out["priorities"])
 
     # Now the LATEST session fails → it counts.
     db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
     db_session.commit()
-    out2 = compute_posture(db_session, test_project.id)
+    out2 = compute_posture(db_session, test_project.id, use_cache=False)
     assert out2["decisions"]["blocked_sessions"] == 1
 
 
@@ -103,7 +103,7 @@ def test_posture_response_contract(db_session, test_project):
     """Pin the response shape the frontend TypeScript depends on — renames
     (confirmed_exposure→active_exposure, analyst_active→non_scanner_active) have
     drifted from the manual TS interface before; this fails loudly on the next."""
-    out = compute_posture(db_session, test_project.id)
+    out = compute_posture(db_session, test_project.id, use_cache=False)
     assert set(out) >= {
         "label", "reasons", "headline", "priorities", "decisions",
         "sites", "systemic", "disposition", "evidence",

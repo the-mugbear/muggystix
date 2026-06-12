@@ -21,10 +21,14 @@ list can never disagree.
 """
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.db import models
 from app.db.models_findings import Finding
@@ -192,7 +196,41 @@ def _gather_signals(
     return signals
 
 
-def compute_posture(db: Session, project_id: int) -> Dict[str, Any]:
+# Per-worker best-effort cache. /posture composes a dozen project-wide scans
+# (see compute_posture body); it's a read-mostly manager dashboard polled every
+# few minutes, so a short TTL collapses "N concurrent refreshes each re-scan the
+# estate" to one computation per worker per window. NOT a watermark (posture's
+# inputs — scans, findings, host review, sites, agent sessions — are too many to
+# watermark cheaply); a small TTL bounds staleness regardless of which input
+# changed. Per-worker (no Redis); the few-seconds staleness is acceptable for
+# this surface. Benign races (two threads compute + both store) are harmless.
+_POSTURE_TTL_SECONDS = 30.0
+_POSTURE_CACHE_MAX = 256
+_POSTURE_CACHE: Dict[int, "tuple[float, Dict[str, Any]]"] = {}
+
+
+def compute_posture(db: Session, project_id: int, *, use_cache: bool = True) -> Dict[str, Any]:
+    now = time.monotonic()
+    if use_cache:
+        hit = _POSTURE_CACHE.get(project_id)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+    started = time.monotonic()
+    result = _compute_posture_uncached(db, project_id)
+    duration_ms = round((time.monotonic() - started) * 1000)
+    # B7 — timing on the hot composition so a perf regression is visible in prod
+    # without waiting for a user complaint.
+    logger.info(
+        "posture computed", extra={"project_id": project_id, "duration_ms": duration_ms},
+    )
+    if use_cache:
+        if len(_POSTURE_CACHE) >= _POSTURE_CACHE_MAX:
+            _POSTURE_CACHE.clear()  # crude bound; cache is best-effort
+        _POSTURE_CACHE[project_id] = (now + _POSTURE_TTL_SECONDS, result)
+    return result
+
+
+def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
     project_att = compute_project_attention(db, project_id)
     site_att = compute_site_attention(db, project_id)
     systemic = compute_systemic_insights(db, project_id)
