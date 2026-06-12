@@ -116,6 +116,13 @@ class SubnetLabelFilterItem(BaseModel):
     host_count: int = 0
 
 
+class SiteFilterItem(BaseModel):
+    """A site name (from Subnet.site) with its distinct in-scope host count,
+    for the Site filter combobox."""
+    name: str
+    host_count: int = 0
+
+
 class HostFilterDataResponse(BaseModel):
     common_ports: List[PortFilterItem]
     services: List[ServiceFilterItem]
@@ -129,6 +136,10 @@ class HostFilterDataResponse(BaseModel):
     tags: List[TagFilterItem] = []
     # v2.86.0: subnet labels with distinct-host counts.
     subnet_labels: List[SubnetLabelFilterItem] = []
+    # The endpoint built a `sites` list all along, but it was missing from this
+    # response_model so FastAPI silently stripped it — the Site filter dropdown
+    # rendered empty even with sites configured. Declared here so it ships.
+    sites: List[SiteFilterItem] = []
 
 class ConfidenceEntry(BaseModel):
     id: int
