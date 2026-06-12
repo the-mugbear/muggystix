@@ -126,3 +126,50 @@ def test_terminal_status_requires_justification(client, test_project):
         f"/api/v1/projects/{test_project.id}/findings/{fid2}/status",
         json={"status": "confirmed"},
     ).status_code == 200
+
+
+def test_finding_comment_thread_create_list_and_threading(client, test_project):
+    """A finding hosts its own comment/evidence thread: create a root comment,
+    reply to it (threaded), and list returns both oldest-first with the reply
+    pointing at the root."""
+    fid = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "SMB signing disabled", "severity": "high"},
+    ).json()["id"]
+    base = f"/api/v1/projects/{test_project.id}/findings/{fid}/notes"
+
+    root = client.post(base, json={"body": "Confirmed on DC01 — screenshot attached"})
+    assert root.status_code == 200, root.text
+    root_id = root.json()["id"]
+
+    reply = client.post(base, json={"body": "Repro: smbclient -L //10.0.0.5", "parent_id": root_id})
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["parent_id"] == root_id
+
+    listing = client.get(base)
+    assert listing.status_code == 200, listing.text
+    bodies = [n["body"] for n in listing.json()]
+    assert bodies == ["Confirmed on DC01 — screenshot attached", "Repro: smbclient -L //10.0.0.5"]
+
+
+def test_finding_comment_cross_finding_threading_rejected(client, test_project):
+    """A reply's parent_id must reference a comment on the SAME finding —
+    threading across findings is rejected (mirrors the host-note guard)."""
+    fid_a = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "A", "severity": "low"},
+    ).json()["id"]
+    fid_b = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "B", "severity": "low"},
+    ).json()["id"]
+    a_comment = client.post(
+        f"/api/v1/projects/{test_project.id}/findings/{fid_a}/notes",
+        json={"body": "on A"},
+    ).json()["id"]
+
+    bad = client.post(
+        f"/api/v1/projects/{test_project.id}/findings/{fid_b}/notes",
+        json={"body": "reply on B but parented to A", "parent_id": a_comment},
+    )
+    assert bad.status_code == 400, bad.text

@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import Annotation, Host, Scope
+from app.db.models import Annotation, Host, Scope, NoteStatus
 from app.db.models_findings import (
     Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
@@ -386,3 +386,48 @@ class FindingService:
         if host_id is not None:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
         return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
+
+    # ------------------------------------------------------------------
+    # Comment / evidence thread (notes targeting the finding itself)
+    # ------------------------------------------------------------------
+    # A Finding hosts its own annotation thread so an analyst can refine it with
+    # evidence (screenshots ride along via NoteAttachment) before it lands in a
+    # report.  Same Annotation machinery as host notes, just a different target
+    # column — finding_id instead of host_id.
+    def list_finding_notes(self, finding_id: int, limit: int = 100) -> List[Annotation]:
+        return (
+            self.db.query(Annotation)
+            .filter(Annotation.finding_id == finding_id)
+            .options(selectinload(Annotation.author))
+            .order_by(Annotation.created_at.asc())  # oldest-first reads as a thread
+            .limit(limit)
+            .all()
+        )
+
+    def create_finding_note(
+        self, *, finding_id: int, user_id: int, body: str,
+        parent_id: Optional[int] = None,
+    ) -> Annotation:
+        # Threading stays within one finding (mirrors the same-host guard on
+        # host notes): a reply's parent must be a note on THIS finding, else a
+        # status-change could notify across a project boundary.
+        parent = None
+        if parent_id is not None:
+            parent = (
+                self.db.query(Annotation)
+                .filter(Annotation.id == parent_id, Annotation.finding_id == finding_id)
+                .first()
+            )
+            if parent is None:
+                raise ValueError("parent_id must reference a comment on the same finding")
+        note = Annotation(
+            finding_id=finding_id, user_id=user_id, body=body,
+            status=NoteStatus.OPEN, parent_id=parent_id,
+        )
+        self.db.add(note)
+        self.db.flush()  # assign note.id before stamping thread_root_id
+        note.thread_root_id = (parent.thread_root_id or parent.id) if parent else note.id
+        self.db.commit()
+        self.db.refresh(note)
+        self.db.refresh(note, attribute_names=["author"])
+        return note

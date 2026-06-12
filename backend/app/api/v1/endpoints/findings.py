@@ -7,7 +7,7 @@ require analyst-or-better.
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
@@ -19,6 +19,11 @@ from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.services.finding_service import FindingService, validate_severity
+from app.services.host_serialization import _serialize_note
+from app.services.note_attachment_service import store_image_attachment
+from app.schemas.schemas import (
+    Annotation as AnnotationSchema, AnnotationCreate, NoteAttachmentOut,
+)
 from app.schemas.findings import (
     FindingResponse, FindingHostInfo, FindingListResponse,
     PromoteAnnotationRequest, PromoteVulnerabilityRequest,
@@ -281,3 +286,82 @@ def remove_finding_host(
     FindingService(db).remove_host(finding=finding, host_id=host_id)
     db.commit()
     return _serialize(_load(db, project, finding_id))
+
+
+# ---------------------------------------------------------------------------
+# Comment / evidence thread on a finding
+# ---------------------------------------------------------------------------
+# The notes→findings→reports flow: host notes capture issues, the finding is
+# reviewed/refined here with discussion + screenshots, then the report renders
+# that evidence.  Reuses the host-note Annotation machinery on a finding_id
+# target (see FindingService.{list,create}_finding_note).
+
+@router.get(
+    "/findings/{finding_id}/notes",
+    response_model=List[AnnotationSchema],
+    summary="List the comment/evidence thread on a finding (oldest-first)",
+)
+def list_finding_notes(
+    finding_id: int,
+    limit: int = Query(100, ge=1, le=300),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    _load(db, project, finding_id)  # 404s + enforces project scope
+    notes = FindingService(db).list_finding_notes(finding_id, limit=limit)
+    return [_serialize_note(n) for n in notes]
+
+
+@router.post(
+    "/findings/{finding_id}/notes",
+    response_model=AnnotationSchema,
+    summary="Add a comment to a finding's evidence thread",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def create_finding_note(
+    finding_id: int,
+    payload: AnnotationCreate,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    _load(db, project, finding_id)  # 404s + enforces project scope
+    try:
+        note = FindingService(db).create_finding_note(
+            finding_id=finding_id, user_id=current_user.id,
+            body=payload.body, parent_id=payload.parent_id,
+        )
+    except ValueError as exc:
+        # parent_id validation failure (cross-finding threading attempt).
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _serialize_note(note)
+
+
+@router.post(
+    "/findings/{finding_id}/notes/{note_id}/attachments",
+    response_model=NoteAttachmentOut,
+    summary="Attach an image/screenshot (evidence) to a finding comment",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def upload_finding_note_attachment(
+    finding_id: int,
+    note_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    # Scope the note to the finding + project so an attachment can't be hung
+    # off another project's note via a tampered path.
+    _load(db, project, finding_id)  # 404s + enforces project scope
+    note = (
+        db.query(Annotation)
+        .filter(Annotation.id == note_id, Annotation.finding_id == finding_id)
+        .first()
+    )
+    if not note:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return store_image_attachment(
+        db, note_id=note_id, project_id=project.id,
+        uploaded_by_id=current_user.id, file=file,
+    )
