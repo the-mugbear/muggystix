@@ -116,6 +116,53 @@ function toHslComponentsWithAlpha(input: string): string {
   return a >= 1 ? `${h} ${s}% ${l}%` : `${h} ${s}% ${l}% / ${a.toFixed(3)}`;
 }
 
+// ---------------------------------------------------------------------------
+// WCAG contrast — pick a black/white foreground per semantic background
+// ---------------------------------------------------------------------------
+//
+// The semantic backgrounds (success/warning/error/info) vary in luminance
+// across themes — a dark theme ships a bright lime success, a light theme a
+// deep green. A hardcoded white foreground fails AA (4.5:1) on the bright
+// ones (verified: ~1.3:1). Derive the foreground from the background's
+// relative luminance so filled badges/buttons stay legible in every theme.
+
+function _toRgb(input: string): { r: number; g: number; b: number } {
+  if (input.startsWith('#')) return parseHex(input);
+  if (input.startsWith('rgb')) {
+    const { r, g, b } = parseRgb(input);
+    return { r, g, b };
+  }
+  throw new Error(`unsupported color format: ${input}`);
+}
+
+function _linearize(channel: number): number {
+  const c = channel / 255;
+  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+/** WCAG relative luminance (0=black .. 1=white) of a #hex / rgb() color. */
+export function relativeLuminance(input: string): number {
+  const { r, g, b } = _toRgb(input);
+  return 0.2126 * _linearize(r) + 0.7152 * _linearize(g) + 0.0722 * _linearize(b);
+}
+
+/** WCAG contrast ratio (>= 1) between two relative luminances. */
+export function contrastRatio(l1: number, l2: number): number {
+  const hi = Math.max(l1, l2);
+  const lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/**
+ * shadcn HSL components for the higher-contrast of black/white foreground on
+ * `bg` — "0 0% 0%" (black) or "0 0% 100%" (white).
+ */
+export function foregroundComponentsFor(bg: string): string {
+  const l = relativeLuminance(bg);
+  // black foreground → contrast vs luminance 0; white → vs luminance 1.
+  return contrastRatio(l, 0) >= contrastRatio(l, 1) ? '0 0% 0%' : '0 0% 100%';
+}
+
 /**
  * Derive a tonally-shifted variant of an input color — used to give
  * surfaces like the sidebar a subtle distinction from the main page
@@ -168,8 +215,9 @@ function buildVarMap(t: ColorTokens): Record<string, string> {
     '--accent-foreground': toHslComponents(t.textPrimary),
 
     '--destructive': toHslComponents(t.error),
-    // White text on red works for every theme we ship.
-    '--destructive-foreground': '0 0% 100%',
+    // Foreground derived from the background's luminance (WCAG AA) — a hardcoded
+    // white failed on the brighter-red themes.
+    '--destructive-foreground': foregroundComponentsFor(t.error),
 
     '--border': toHslComponentsWithAlpha(t.divider),
     // --input must stay OPAQUE.  It's consumed via `hsl(var(--input) /
@@ -182,17 +230,14 @@ function buildVarMap(t: ColorTokens): Record<string, string> {
     '--ring': toHslComponents(t.primary),
 
     '--success': toHslComponents(t.success),
-    '--success-foreground': '0 0% 100%',
+    '--success-foreground': foregroundComponentsFor(t.success),
     '--warning': toHslComponents(t.warning),
-    // Theme-aware foreground: dark themes ship a light-orange warning
-    // (#FFBE5C-ish) that needs black text; light themes now ship a
-    // darker warning (#9A5C00) that needs white text. Picking the
-    // foreground per palette mode keeps badges + buttons legible
-    // either way and decouples the foreground from `--warning`'s
-    // luminance.
-    '--warning-foreground': t.mode === 'dark' ? '0 0% 0%' : '0 0% 100%',
+    // Luminance-derived (replaces the prior mode-based heuristic): a dark theme
+    // ships a light-orange warning (#FFBE5C, needs black) and a light theme a
+    // deep amber (#9A5C00, needs white) — the picker resolves both correctly.
+    '--warning-foreground': foregroundComponentsFor(t.warning),
     '--info': toHslComponents(t.info),
-    '--info-foreground': '0 0% 100%',
+    '--info-foreground': foregroundComponentsFor(t.info),
 
     // Sidebar / chrome.  Beta.3: tonally shifted away from the page
     // background — light themes get a subtly darker sidebar (gives

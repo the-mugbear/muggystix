@@ -196,16 +196,16 @@ def test_dispatch_drops_when_queue_full(db_session, webhook_cfg, monkeypatch):
     monkeypatch.setattr(webhook_dispatcher._QUEUE, "put_nowait", always_full)
 
     svc = WebhookDispatcher(db_session)
-    queued = svc.dispatch(
+    result = svc.dispatch(
         project_id=webhook_cfg.project_id,
         event="note_mention",
         title="overflow",
         body="queue is wedged",
     )
-    # ``queued`` returns len(targets) — even drops count toward it
-    # because the operator still configured the webhook; the drop is
-    # surfaced via the Notification, not the return value.
-    assert queued == 1
+    # The one target was dropped (queue full): it counts as dropped, NOT queued.
+    # (Previously dispatch returned len(targets), reporting the drop as a send.)
+    assert result.queued == 0
+    assert result.dropped == 1
     notifs = (
         db_session.query(Notification)
         .filter(Notification.source_id == webhook_cfg.id)

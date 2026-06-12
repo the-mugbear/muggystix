@@ -364,6 +364,13 @@ app.add_middleware(
 from app.services.agent_api_log_service import AgentApiCallLogger
 app.add_middleware(AgentApiCallLogger)
 
+# v2.177.0 (audit B5) — request-correlation id + per-request latency.  Added
+# LAST so it sits OUTERMOST: the id is set before the agent logger / exception
+# handler run, and the access-log line wraps the whole stack.  Pure ASGI so it
+# doesn't buffer (and thus can't break) the streaming CSV export.
+from app.core.request_context import RequestContextMiddleware
+app.add_middleware(RequestContextMiddleware)
+
 
 # v2.44.2 — global unhandled-exception handler.  FastAPI's default
 # behavior on an unhandled exception is to return a bare 500 with the
@@ -410,10 +417,13 @@ async def _log_and_sanitize_unhandled_exception(request: Request, exc: Exception
         request.state.unhandled_exception_class = exc.__class__.__name__
     except Exception:  # pragma: no cover — request.state should always be mutable
         pass
+    from app.core.request_context import get_request_id
+    request_id = get_request_id()
     logger.exception(
-        "Unhandled exception serving %s %s: %s",
+        "Unhandled exception serving %s %s (req=%s): %s",
         request.method,
         request.url.path,
+        request_id,
         exc,
     )
     return JSONResponse(
@@ -422,6 +432,9 @@ async def _log_and_sanitize_unhandled_exception(request: Request, exc: Exception
             "detail": "Internal server error",
             "error_class": exc.__class__.__name__,
             "path": request.url.path,
+            # Surfaced so a user/agent can quote it when reporting the failure;
+            # it joins the response to the traceback + access-log line.
+            "request_id": request_id,
         },
     )
 

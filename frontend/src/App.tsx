@@ -7,6 +7,7 @@ import { ProjectProvider } from './contexts/ProjectContext';
 import { ToastProvider } from './contexts/ToastContext';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
+import ErrorBoundary from './components/ErrorBoundary';
 import HubRedirect from './components/HubRedirect';
 import { ListPageSkeleton, DetailSkeleton, CardListSkeleton } from './components/PageSkeleton';
 import Login from './pages/Login';
@@ -136,6 +137,18 @@ const ExecutionDetail = lazy(() => import('./pages/ExecutionDetail'));
 const ExecutionsList = lazy(() => import('./pages/ExecutionsList'));
 const PlanCompare = lazy(() => import('./pages/PlanCompare'));
 
+// Route-level error boundary for the page area inside Layout. Keyed on
+// pathname so navigating to another page clears a page-specific crash, while a
+// crash itself keeps the Layout/sidebar/nav mounted instead of blanking the app.
+function RoutedErrorBoundary({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  return (
+    <ErrorBoundary key={location.pathname} scope="route">
+      {children}
+    </ErrorBoundary>
+  );
+}
+
 function App() {
   return (
     <CustomThemeProvider>
@@ -199,6 +212,7 @@ function App() {
                 <div className="flex w-full">
                   <Layout>
                     <Suspense fallback={<RouteSkeleton />}>
+                      <RoutedErrorBoundary>
                       <Routes>
                       {/* v3 alpha.11 — / and /dashboard both redirect
                           to /operations.  Dashboard.tsx absorbed:
@@ -604,6 +618,7 @@ function App() {
                         }
                       />
                     </Routes>
+                    </RoutedErrorBoundary>
                     </Suspense>
                   </Layout>
                   {/* VersionFooter removed per UX audit #12 —

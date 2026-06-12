@@ -36,10 +36,10 @@ def test_dispatch_routes_only_to_subscribed(db_session, test_project, monkeypatc
     dispatcher = wd.WebhookDispatcher(db_session)
 
     # host_assigned → "all" (empty=all) + "assign-only"; "disabled" excluded.
-    assert dispatcher.dispatch(project_id=test_project.id, event="host_assigned", title="t", body="b") == 2
+    assert dispatcher.dispatch(project_id=test_project.id, event="host_assigned", title="t", body="b").queued == 2
     # note_mention → only "all" (assign-only doesn't subscribe).
     captured.clear()
-    assert dispatcher.dispatch(project_id=test_project.id, event="note_mention", title="t") == 1
+    assert dispatcher.dispatch(project_id=test_project.id, event="note_mention", title="t").queued == 1
 
 
 def test_build_payload_is_slack_compatible():

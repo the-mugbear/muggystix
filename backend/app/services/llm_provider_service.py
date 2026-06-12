@@ -507,11 +507,29 @@ def chat_completion(
         temperature=temperature,
     )
 
-    with safe_http_client(
-        allow_private=adapter.allow_private, timeout=adapter.timeout_seconds,
-    ) as client:
-        r = client.post(url, headers=headers, json=body)
-        r.raise_for_status()
-        data = r.json()
+    try:
+        with safe_http_client(
+            allow_private=adapter.allow_private, timeout=adapter.timeout_seconds,
+        ) as client:
+            r = client.post(url, headers=headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as exc:
+        # Mirror test_connection: log the upstream body server-side (it may echo
+        # request metadata / auth) and raise the contract's RuntimeError with
+        # only the status code, never the raw provider body.
+        logger.warning(
+            "LLM chat_completion got HTTP %s: %s",
+            exc.response.status_code, exc.response.text[:500],
+        )
+        raise RuntimeError(
+            f"{provider.provider_type} provider returned HTTP {exc.response.status_code}."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"{provider.provider_type} request failed: {exc}") from exc
+    except ValueError as exc:  # non-JSON body from r.json()
+        raise RuntimeError(
+            f"{provider.provider_type} returned a non-JSON response."
+        ) from exc
 
     return {"content": adapter.parse_response(data), "raw": data}

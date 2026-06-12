@@ -41,7 +41,7 @@ type SortField = 'attention' | 'name' | 'hosts' | 'open_ports' | 'scans' | 'last
 
 // Worst-first severity rank for the default ordering — the most damning
 // projects float to the top without any filtering (focus, not a to-do list).
-const HEALTH_RANK: Record<string, number> = { critical: 0, warning: 1, stale: 2, healthy: 3 };
+const HEALTH_RANK: Record<string, number> = { critical: 0, warning: 1, stale: 2, healthy: 3, unknown: 4 };
 type SortDir = 'asc' | 'desc';
 
 type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'muted' | 'secondary' | 'outline';
@@ -69,10 +69,13 @@ const HEALTH_META: Record<string, { tone: Tone; label: string }> = {
   warning: { tone: 'warning', label: 'Warning' },
   stale: { tone: 'muted', label: 'Stale' },
   healthy: { tone: 'success', label: 'Healthy' },
+  // Fail NEUTRAL, not reassuring: a null/malformed/unrecognized health value
+  // must NOT render as green "Healthy" on a security dashboard.
+  unknown: { tone: 'muted', label: 'Health unavailable' },
 };
 
 const healthMeta = (health: string | null | undefined): { tone: Tone; label: string } =>
-  HEALTH_META[health ?? 'healthy'] ?? HEALTH_META.healthy;
+  HEALTH_META[health ?? 'unknown'] ?? HEALTH_META.unknown;
 
 // One-line explanation of WHAT drove the (single, worst-signal) health
 // rollup — surfaced as the Health badge's tooltip so "Critical" isn't an
@@ -90,8 +93,11 @@ const healthWhy = (card: ProjectCard): string => {
       return card.days_since_last_scan != null
         ? `No scan in ${card.days_since_last_scan} days`
         : 'No scans yet';
-    default:
+    case 'healthy':
       return 'No outstanding risk signals';
+    default:
+      // Null / malformed / unrecognized health — don't claim "no risk".
+      return 'Health data unavailable';
   }
 };
 

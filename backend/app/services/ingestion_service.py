@@ -219,8 +219,10 @@ class IngestionService:
                 db.execute(text("SELECT pg_notify('ingestion_jobs', :jid)"), {"jid": str(job_id)})
                 db.commit()
         except Exception:
-            # Notification is a performance hint, not required for correctness.
-            pass
+            # Notification is a performance hint, not required for correctness
+            # (the worker polls regardless) — so swallow, but log at DEBUG so a
+            # degraded DB here is visible in collect-logs.sh rather than silent.
+            logger.debug("pg_notify for ingestion job %s failed", job_id, exc_info=True)
 
     def cancel_job(self, job_id: int) -> bool:
         """Request cancellation of a running job.

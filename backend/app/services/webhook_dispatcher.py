@@ -39,7 +39,7 @@ import queue
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -275,6 +275,14 @@ def _deliver(url: str, secret: Optional[str], payload: dict) -> None:
         logger.warning("Webhook delivery to %s failed: %s", url, exc)
 
 
+class DispatchResult(NamedTuple):
+    """Outcome of a ``dispatch()`` call: how many deliveries were enqueued vs
+    dropped (queue full).  ``dropped > 0`` means the receiver(s) couldn't keep
+    up; each drop also raised a coalesced operator Notification."""
+    queued: int
+    dropped: int
+
+
 class WebhookDispatcher:
     def __init__(self, db: Session):
         self.db = db
@@ -287,13 +295,16 @@ class WebhookDispatcher:
         title: str,
         body: str = "",
         context: Optional[dict] = None,
-    ) -> int:
+    ) -> "DispatchResult":
         """Queue delivery to every enabled webhook subscribed to ``event``.
 
-        Returns the number of webhooks queued (0 if none).  Reads configs
-        on the caller's session, then hands each POST to the thread pool —
-        the worker threads do no DB work, so there's no cross-thread
-        session sharing.
+        Returns ``DispatchResult(queued, dropped)``.  Previously this returned
+        ``len(targets)`` — the number of webhooks it *intended* to send — so a
+        queue-full drop (still recorded as a user-visible Notification) was
+        reported to the caller as a successful send.  Returning the split lets
+        callers/tests observe loss.  Reads configs on the caller's session,
+        then hands each POST to the thread pool — the worker threads do no DB
+        work, so there's no cross-thread session sharing.
         """
         configs = (
             self.db.query(WebhookConfig)
@@ -302,16 +313,20 @@ class WebhookDispatcher:
         )
         targets = [c for c in configs if not c.events or event in c.events]
         if not targets:
-            return 0
+            return DispatchResult(queued=0, dropped=0)
         _ensure_workers()
         payload = build_payload(event, title, body, project_id, context)
+        queued = 0
+        dropped = 0
         for cfg in targets:
             secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
             try:
                 _QUEUE.put_nowait((cfg.url, secret, payload))
+                queued += 1
             except queue.Full:
                 _record_dropped_delivery(cfg, event, title)
-        return len(targets)
+                dropped += 1
+        return DispatchResult(queued=queued, dropped=dropped)
 
     def deliver_test(self, config: WebhookConfig) -> dict:
         """Synchronously deliver a test event and return the outcome —
@@ -339,6 +354,12 @@ def safe_dispatch(db: Session, **kwargs) -> None:
     or affect the response.  Swallow everything to the log.
     """
     try:
-        WebhookDispatcher(db).dispatch(**kwargs)
+        result = WebhookDispatcher(db).dispatch(**kwargs)
+        if result.dropped:
+            logger.warning(
+                "Webhook dispatch for event=%s dropped %d of %d deliveries "
+                "(receiver too slow / queue full)",
+                kwargs.get("event"), result.dropped, result.queued + result.dropped,
+            )
     except Exception:
         logger.warning("Webhook dispatch failed for event=%s", kwargs.get("event"), exc_info=True)
