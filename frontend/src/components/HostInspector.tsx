@@ -23,6 +23,9 @@ import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, type Severity } from '../utils/s
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Bookmark,
   BookmarkPlus,
   Ban,
@@ -301,6 +304,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [detailsAssignee, setDetailsAssignee] = useState<string>('none');
   const [detailsDue, setDetailsDue] = useState<string>('');
   const [detailsPinned, setDetailsPinned] = useState(false);
+  // Port-table sort by port number (null = scan order). Shared across the
+  // open/closed/filtered port tables so they stay consistent.
+  const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
   const [detailsSaving, setDetailsSaving] = useState(false);
   const [members, setMembers] = useState<ProjectMember[]>([]);
 
@@ -804,6 +810,24 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // returns (see note near noteThreadGroups) to keep the hook count stable.
   const closedPorts = host.ports.filter((port) => port.state === 'closed');
   const filteredPorts = host.ports.filter((port) => port.state === 'filtered');
+  const sortPorts = <T extends { port_number: number | null }>(arr: T[]): T[] => {
+    if (!portSortDir) return arr;
+    const s = [...arr].sort((a, b) => (a.port_number ?? 0) - (b.port_number ?? 0));
+    return portSortDir === 'desc' ? s.reverse() : s;
+  };
+  const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
+    <TableHead className={className}
+      aria-sort={portSortDir ? (portSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button"
+        onClick={() => setPortSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+        className="inline-flex items-center gap-xxs rounded text-inherit hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        Port
+        {portSortDir
+          ? (portSortDir === 'asc' ? <ArrowUp className="size-3" aria-hidden /> : <ArrowDown className="size-3" aria-hidden />)
+          : <ArrowUpDown className="size-3 opacity-40" aria-hidden />}
+      </button>
+    </TableHead>
+  );
   const followInfo = host.follow;
   const followSelectValue = followStatus || 'none';
   const followHelperText = followStatus
@@ -2134,8 +2158,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <Table className="table-fixed">
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-[10%]">Port</TableHead>
-                          <TableHead className="w-[10%]">Protocol</TableHead>
+                          <PortSortHead className="w-[10%]" />
+                          <TableHead className="w-[10%]">Proto</TableHead>
                           <TableHead className="w-[20%]">Service</TableHead>
                           <TableHead className="w-[35%]">Version</TableHead>
                           <TableHead className="w-[12%]">State</TableHead>
@@ -2143,7 +2167,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {openPorts.map((port) => {
+                        {sortPorts(openPorts).map((port) => {
                           const helpers = connectionHelpersByPort.get(port.id) ?? [];
                           return (
                             <TableRow key={port.id}>
@@ -2270,14 +2294,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <Table className="table-fixed">
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-[15%]">Port</TableHead>
-                          <TableHead className="w-[15%]">Protocol</TableHead>
+                          <PortSortHead className="w-[15%]" />
+                          <TableHead className="w-[15%]">Proto</TableHead>
                           <TableHead className="w-[45%]">Service</TableHead>
                           <TableHead className="w-[25%]">State</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {closedPorts.map((port) => (
+                        {sortPorts(closedPorts).map((port) => (
                           <TableRow key={port.id}>
                             <TableCell>{port.port_number}</TableCell>
                             <TableCell>{port.protocol}</TableCell>
@@ -2304,14 +2328,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <Table className="table-fixed">
                       <TableHeader>
                         <TableRow>
-                          <TableHead className="w-[15%]">Port</TableHead>
-                          <TableHead className="w-[15%]">Protocol</TableHead>
+                          <PortSortHead className="w-[15%]" />
+                          <TableHead className="w-[15%]">Proto</TableHead>
                           <TableHead className="w-[45%]">Service</TableHead>
                           <TableHead className="w-[25%]">State</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {filteredPorts.map((port) => (
+                        {sortPorts(filteredPorts).map((port) => (
                           <TableRow key={port.id}>
                             <TableCell>{port.port_number}</TableCell>
                             <TableCell>{port.protocol}</TableCell>
