@@ -14,7 +14,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
 import {
   getSubnetInsights,
@@ -28,6 +28,7 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
@@ -64,6 +65,21 @@ function medianAgeLabel(days: number | null): string {
   if (days === 0) return 'today';
   return `${days}d`;
 }
+
+// Plain-English "what is this metric and how is it derived?" help — every
+// ranking input is justified on an explicit (i), not left for the operator to
+// infer (this surface drives where they spend time).
+const InfoTip: React.FC<{ text: string }> = ({ text }) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button type="button" aria-label="How is this derived?"
+        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <Info className="size-3.5" aria-hidden />
+      </button>
+    </TooltipTrigger>
+    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
+  </Tooltip>
+);
 
 const SubnetInsights: React.FC = () => {
   const { currentProject } = useProject();
@@ -109,6 +125,7 @@ const SubnetInsights: React.FC = () => {
           <h1 className="text-page-title">Subnet Insights</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
             Which network ranges need attention — ranked worst-first.{' '}
+            <InfoTip text="Ranking: tier-weighted exposure first, then neglect + hygiene magnitude, then host count. Deliberately no single opaque score — each component below is shown so the order is explainable and auditable." />{' '}
             <strong className="text-foreground">Exposure</strong> is severity-weighted active
             findings (scaled by site criticality);{' '}
             <strong className="text-foreground">neglect</strong> is unowned/unreviewed/stale signals;{' '}
@@ -184,8 +201,16 @@ const SubnetInsights: React.FC = () => {
                         <TableHead className="w-[20%]">Subnet</TableHead>
                         <TableHead className="w-[14%]">Site</TableHead>
                         <TableHead className="w-[8%] text-right">Hosts</TableHead>
-                        <TableHead className="w-[16%]">Exposure</TableHead>
-                        <TableHead className="w-[18%]">Hygiene</TableHead>
+                        <TableHead className="w-[16%]">
+                          <span className="inline-flex items-center gap-xxs">Exposure
+                            <InfoTip text="Severity-weighted active findings (critical=10, high=5, medium=2, low=1, info=0) summed across the subnet's hosts, then scaled by the site's criticality tier (×2.0 tier-1 … ×0.5 tier-4). The primary ranking signal." />
+                          </span>
+                        </TableHead>
+                        <TableHead className="w-[18%]">
+                          <span className="inline-flex items-center gap-xxs">Hygiene
+                            <InfoTip text="Latent weaknesses on the subnet's hosts, independent of findings: end-of-life OS, expired/self-signed TLS certificates, weak or guest authentication (NetExec), and risky exposed services. A subnet with zero findings can still score badly here — absence of findings is not health." />
+                          </span>
+                        </TableHead>
                         <TableHead className="w-[24%]">Next action</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -329,7 +354,10 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
             <div className="grid gap-md py-xs md:grid-cols-3">
               {/* Exposure detail */}
               <div>
-                <p className="mb-xxs text-caption font-semibold text-muted-foreground">Exposure</p>
+                <p className="mb-xxs flex items-center gap-xxs text-caption font-semibold text-muted-foreground">
+                  Exposure
+                  <InfoTip text="Active findings on this subnet's hosts, counted by severity and weighted (critical=10 … low=1) × the site tier. This is the primary worst-first sort key." />
+                </p>
                 {s.exposure.active_findings === 0 ? (
                   <p className="text-caption text-muted-foreground">No active findings.</p>
                 ) : (
@@ -347,7 +375,10 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
 
               {/* Neglect detail */}
               <div>
-                <p className="mb-xxs text-caption font-semibold text-muted-foreground">Neglect</p>
+                <p className="mb-xxs flex items-center gap-xxs text-caption font-semibold text-muted-foreground">
+                  Neglect
+                  <InfoTip text="Under-management signals: active findings with no owner, hosts not yet marked Reviewed, and how stale the last scan is. The first tiebreaker after exposure in the ranking." />
+                </p>
                 <ul className="space-y-0.5 text-caption text-foreground">
                   <li>Unowned findings: <span className="font-medium">{s.neglect.unowned_active_findings}</span></li>
                   <li>Unreviewed hosts: <span className="font-medium">{s.neglect.unreviewed_hosts}</span></li>
@@ -358,7 +389,10 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
 
               {/* Hygiene detail */}
               <div>
-                <p className="mb-xxs text-caption font-semibold text-muted-foreground">Hygiene</p>
+                <p className="mb-xxs flex items-center gap-xxs text-caption font-semibold text-muted-foreground">
+                  Hygiene
+                  <InfoTip text="Latent weaknesses independent of findings — end-of-life OS, TLS certificate problems, weak/guest auth, and risky exposed services. Surfaced so a 'clean' (no-findings) subnet that's quietly rotten still ranks up." />
+                </p>
                 {s.hygiene.eol_os_detail.length > 0 && (
                   <div className="mb-xs">
                     <p className="text-caption text-muted-foreground">End-of-life OS</p>
