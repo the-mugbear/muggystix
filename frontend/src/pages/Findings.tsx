@@ -25,6 +25,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
+import SeverityBar from '../components/ui/SeverityBar';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
@@ -267,14 +268,8 @@ const Findings: React.FC = () => {
       {/* Severity rollup — "how bad is this scope" at a glance (respects the
           status/source filters, ignores severity + pagination). */}
       {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).some((s) => sevCounts[s]) && (
-        <div className="mb-md flex flex-wrap items-center gap-xs">
-          {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[])
-            .filter((s) => sevCounts[s])
-            .map((s) => (
-              <Badge key={s} variant={SEVERITY_VARIANT[s] as never}>
-                {sevCounts[s]} {s}
-              </Badge>
-            ))}
+        <div className="mb-md max-w-2xl">
+          <SeverityBar counts={sevCounts} variant="inline" />
         </div>
       )}
 

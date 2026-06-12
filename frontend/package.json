@@ -1,6 +1,6 @@
 {
   "name": "networkMapper-frontend",
-  "version": "5.92.0",
+  "version": "5.93.0",
   "private": true,
   "dependencies": {
     "@radix-ui/react-accordion": "1.2.2",

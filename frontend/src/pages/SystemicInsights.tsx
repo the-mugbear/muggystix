@@ -213,12 +213,13 @@ const SystemicInsights: React.FC = () => {
                         <Table className="table-fixed">
                           <TableHeader>
                             <TableRow>
-                              <TableHead className="w-[34%]">Condition</TableHead>
-                              <TableHead className="w-[12%] text-right">Hosts</TableHead>
-                              <TableHead className="w-[12%] text-right">Subnets</TableHead>
-                              <TableHead className="w-[12%] text-right">Sites</TableHead>
-                              <TableHead className="w-[14%] text-right">Score</TableHead>
-                              <TableHead className="w-[16%]">Scope</TableHead>
+                              <TableHead className="w-[26%]">Condition</TableHead>
+                              <TableHead className="w-[10%] text-right">Hosts</TableHead>
+                              <TableHead className="w-[9%] text-right">Subnets</TableHead>
+                              <TableHead className="w-[9%] text-right">Sites</TableHead>
+                              <TableHead className="w-[10%] text-right">Score</TableHead>
+                              <TableHead className="w-[12%]">Scope</TableHead>
+                              <TableHead className="w-[24%]">Recommended action</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -245,6 +246,10 @@ const SystemicInsights: React.FC = () => {
                                   {c.is_blind_spot
                                     ? <Badge variant="destructive">estate-wide</Badge>
                                     : <Badge variant="muted">localised</Badge>}
+                                </TableCell>
+                                <TableCell className="align-top text-caption text-foreground"
+                                  title={c.recommended_action ?? undefined}>
+                                  {safeFallback(c.recommended_action, '—')}
                                 </TableCell>
                               </TableRow>
                             ))}

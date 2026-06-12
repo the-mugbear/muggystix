@@ -19,7 +19,7 @@
  * sheet header therefore stay minimal.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { SEVERITY_RANK } from '../utils/severity';
+import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, type Severity } from '../utils/severity';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -138,17 +138,9 @@ const VULNERABILITY_PREVIEW_LIMIT = 10;
 
 const VULNERABILITY_SEVERITY_ORDER = SEVERITY_RANK;
 
-const severityBadgeVariant = (
-  severity: string | null | undefined,
-): 'severity-critical' | 'severity-high' | 'severity-medium' | 'severity-low' | 'muted' | 'outline' => {
-  const s = (severity ?? 'unknown').toLowerCase();
-  if (s === 'critical') return 'severity-critical';
-  if (s === 'high') return 'severity-high';
-  if (s === 'medium') return 'severity-medium';
-  if (s === 'low') return 'severity-low';
-  if (s === 'info') return 'muted';
-  return 'outline';
-};
+// Thin null-tolerant wrapper over the canonical severity→badge-variant map.
+const severityBadgeVariant = (severity: string | null | undefined): string =>
+  SEVERITY_BADGE_VARIANT[(severity ?? '').toLowerCase() as Severity] ?? 'outline';
 
 const FOLLOW_STATUS_META: Record<
   FollowStatus,
@@ -1839,7 +1831,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       promote/dismiss-to-finding actions (triage through the
                       spine rather than annotating the raw vuln). */}
                   <div className="flex shrink-0 flex-col items-end gap-xxs">
-                    <Badge variant={severityBadgeVariant(vuln.severity)}>
+                    <Badge variant={severityBadgeVariant(vuln.severity) as never}>
                       {(vuln.severity ?? 'unknown').toUpperCase()}
                     </Badge>
                     {vuln.exploitable && (

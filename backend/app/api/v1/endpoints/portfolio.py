@@ -212,7 +212,14 @@ def get_portfolio_dashboard(
         )
         .select_from(models.Host)
         .join(models.Host.vulnerabilities)
-        .filter(models.Host.project_id.in_(project_ids))
+        .filter(
+            models.Host.project_id.in_(project_ids),
+            # Only severities the rollup actually keeps — don't aggregate the
+            # info/unknown majority (the bulk of Nessus output) just to discard
+            # it in the loop below. Cost otherwise scales with org-wide vuln
+            # count, not visible projects, for admins.
+            func.lower(text("vulnerabilities.severity::text")).notin_(("info", "unknown")),
+        )
         .group_by(models.Host.project_id, text("2"))
         .all()
     )
