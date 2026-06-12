@@ -1155,6 +1155,33 @@ def get_hosts_by_scan_v2(
     return hosts
 
 
+def _host_assignees(db: Session, host_id: int) -> list:
+    """Assignees for a single host — the detail-endpoint equivalent of the
+    list endpoint's batched ``assignee_map``.  A ``HostFollow`` with a non-null
+    ``assigned_at`` means the host is assigned to that user."""
+    rows = (
+        db.query(
+            HostFollow.user_id,
+            HostFollow.assigned_at,
+            HostFollow.assigned_by_id,
+            User.username,
+            User.full_name,
+        )
+        .join(User, HostFollow.user_id == User.id)
+        .filter(HostFollow.host_id == host_id, HostFollow.assigned_at.isnot(None))
+        .all()
+    )
+    return [
+        {
+            "user_id": uid,
+            "name": full_name or username,
+            "assigned_at": assigned_at,
+            "assigned_by_id": assigned_by_id,
+        }
+        for uid, assigned_at, assigned_by_id, username, full_name in rows
+    ]
+
+
 @router.get("/{host_id:int}", response_model=HostSchema)
 def get_host_v2(
     host_id: int,
@@ -1224,6 +1251,10 @@ def get_host_v2(
         .filter(NetexecResult.host_id == host_id)
         .scalar()
     ) or 0
+    # Owner/assignee enrichment — the base detail serializer leaves this []
+    # (it needs a user join), so mirror the list endpoint here.  Without this
+    # the inspector can't show or manage the host's owner. (1.2b)
+    serialized["assignees"] = _host_assignees(db, host_id)
     return serialized
 
 

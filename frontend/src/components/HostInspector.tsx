@@ -1173,6 +1173,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               </div>
             )}
 
+            {host.assignees && host.assignees.length > 0 && (
+              <div className="flex flex-wrap items-center gap-xs">
+                <span className="text-caption text-muted-foreground">
+                  {host.assignees.length === 1 ? 'Owner:' : 'Owners:'}
+                </span>
+                {host.assignees.map((a) => (
+                  <Badge key={a.user_id} variant="outline" className="max-w-[14rem] truncate" title={a.name}>
+                    {a.name}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-xs">
               <Badge variant="success">{openPorts.length} open</Badge>
               {closedPorts.length > 0 && (
