@@ -219,9 +219,12 @@ def compute_posture(db: Session, project_id: int, *, use_cache: bool = True) -> 
     result = _compute_posture_uncached(db, project_id)
     duration_ms = round((time.monotonic() - started) * 1000)
     # B7 — timing on the hot composition so a perf regression is visible in prod
-    # without waiting for a user complaint.
+    # without waiting for a user complaint. Duration is in the message (this
+    # app's plain-text formatter doesn't render `extra`) AND in extra for any
+    # structured handler.
     logger.info(
-        "posture computed", extra={"project_id": project_id, "duration_ms": duration_ms},
+        "posture computed for project %s in %dms", project_id, duration_ms,
+        extra={"project_id": project_id, "duration_ms": duration_ms},
     )
     if use_cache:
         if len(_POSTURE_CACHE) >= _POSTURE_CACHE_MAX:
