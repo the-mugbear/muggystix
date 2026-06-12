@@ -200,14 +200,22 @@ print_info "Collecting service version metadata..."
     echo "=== SERVICE VERSION DETAILS ==="
 
     backend_container=""
-    frontend_container=""
     if compose_available; then
         backend_container=$(compose ps -q backend 2>/dev/null | head -n 1)
-        frontend_container=$(compose ps -q frontend 2>/dev/null | head -n 1)
     fi
 
     if [[ -n "$backend_container" ]]; then
-        echo "--- backend ---"
+        echo "--- deployed versions (backend root '/') ---"
+        # The backend root returns {version, frontend_version, instance_id} — the
+        # authoritative deployed-version signal for BOTH services.  The frontend
+        # is a minified Vite build (no grep-able REACT_APP_* strings, no
+        # build-info.json served), so the deployed frontend version is taken from
+        # the FRONTEND_VERSION build-arg the backend reports (which is what the
+        # app's VersionFooter renders).  The backend image ships curl (the
+        # Dockerfile HEALTHCHECK uses it).
+        compose exec -T backend curl -fsS http://localhost:8000/ 2>&1 || echo "backend root '/' unreachable"
+        echo
+        echo "--- backend settings ---"
         (compose exec -T backend python - <<'PY'
 from app.main import app
 try:
@@ -220,20 +228,10 @@ if settings is not None:
     print(f"nessus_commit_batch_size: {getattr(settings, 'NESSUS_COMMIT_BATCH_SIZE', 'unknown')}")
     print(f"nessus_plugin_output_max_chars: {getattr(settings, 'NESSUS_PLUGIN_OUTPUT_MAX_CHARS', 'unknown')}")
 PY
-        ) 2>&1 || echo "Unable to query backend version (container may be unhealthy)"
+        ) 2>&1 || echo "Unable to query backend settings (container may be unhealthy)"
     else
         echo "--- backend ---"
         echo "backend container not running"
-    fi
-
-    if [[ -n "$frontend_container" ]]; then
-        echo
-        echo "--- frontend ---"
-        (compose exec -T frontend sh -c 'grep -ao "REACT_APP_[A-Z_]*=[^\" ]*" /usr/share/nginx/html/assets/index-*.js 2>/dev/null | sort | uniq') 2>&1 || echo "Unable to extract frontend build metadata"
-    else
-        echo
-        echo "--- frontend ---"
-        echo "frontend container not running"
     fi
 } > "$LOG_DIR/service_versions.txt"
 
@@ -414,61 +412,73 @@ fi
 print_info "Performing application health checks..."
 {
     echo "=== APPLICATION HEALTH CHECKS ==="
-    
-    # Check if .env exists and get configured IP
-    if [[ -f ".env" ]]; then
-        CONFIGURED_IP=$(grep "^HOST_IP=" .env | cut -d'=' -f2)
-        echo "Configured IP: $CONFIGURED_IP"
-        
-        if [[ -n "$CONFIGURED_IP" ]]; then
-            echo ""
-            echo "Testing Backend API connectivity:"
-            if curl -k -s --max-time 10 "https://$CONFIGURED_IP:8000/health" > /dev/null; then
-                echo "✅ Backend API is responding"
-                echo "Backend API Response:"
-                curl -k -s --max-time 10 "https://$CONFIGURED_IP:8000/health" 2>/dev/null || echo "Failed to get response"
-            else
-                echo "❌ Backend API is not responding"
-            fi
+    # IMPORTANT: only nginx/frontend ports are published to the host (443 + 3000,
+    # both HTTPS).  backend (:8000) and db (:5432) are container-internal — they
+    # are reached from outside ONLY through the nginx proxy on 443, or via
+    # `compose exec`.  Curling :8000 from the host always fails on a HEALTHY
+    # deploy, which is why this section talks to nginx and probes the backend
+    # internally instead.
 
-            echo ""
-            echo "Testing Frontend connectivity:"
-            if curl -k -s --max-time 10 "https://$CONFIGURED_IP:3000" > /dev/null; then
-                echo "✅ Frontend is responding"
-            else
-                echo "❌ Frontend is not responding"
-            fi
+    CONFIGURED_IP=""
+    [[ -f ".env" ]] && CONFIGURED_IP=$(grep "^HOST_IP=" .env | cut -d'=' -f2)
+    BASE="https://${CONFIGURED_IP:-localhost}"   # 443 is the default HTTPS port
+    echo "Base URL (nginx on 443): $BASE"
+    [[ -z "$CONFIGURED_IP" ]] && echo "(no HOST_IP in .env — defaulting to localhost)"
 
-            echo ""
-            echo "Testing CORS preflight:"
-            HTTP_STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" -X OPTIONS \
-                -H "Origin: https://$CONFIGURED_IP:3000" \
-                -H "Access-Control-Request-Method: GET" \
-                -H "Access-Control-Request-Headers: Content-Type" \
-                --max-time 10 \
-                "https://$CONFIGURED_IP:8000/api/v1/dashboard/stats" 2>/dev/null || echo "000")
-            
-            if [[ "$HTTP_STATUS" == "200" ]]; then
-                echo "✅ CORS preflight successful"
-            else
-                echo "❌ CORS preflight failed (HTTP $HTTP_STATUS)"
-            fi
-        else
-            echo "No HOST_IP found in .env"
-        fi
-    else
-        echo "No .env file found"
-    fi
-    
     echo ""
-    echo "Port connectivity tests:"
-    for port in 3000 8000; do
-        if ss -tln | grep ":$port " > /dev/null 2>&1; then
+    echo "Nginx static health ($BASE/health):"
+    if curl -k -s --max-time 10 "$BASE/health" | grep -qi healthy; then
+        echo "✅ nginx /health responding (frontend container up)"
+    else
+        echo "❌ nginx /health not responding"
+    fi
+
+    echo ""
+    echo "Backend reachable through the nginx proxy ($BASE/openapi.json):"
+    PROXY_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" --max-time 15 "$BASE/openapi.json" 2>/dev/null || echo "000")
+    if [[ "$PROXY_CODE" == "200" ]]; then
+        echo "✅ backend reachable via proxy (HTTP 200)"
+    else
+        echo "❌ backend via proxy returned HTTP $PROXY_CODE (nginx up but backend unreachable?)"
+    fi
+
+    echo ""
+    echo "Backend DB-probe (internal — the REAL readiness check):"
+    if compose_available && [[ -n "$(compose ps -q backend 2>/dev/null)" ]]; then
+        # /health on the backend does a SELECT 1; 'database: ok' means the app
+        # can reach Postgres.  503 / unreachable = the actionable failure.
+        compose exec -T backend curl -fsS --max-time 10 http://localhost:8000/health 2>&1 \
+            || echo "❌ backend /health probe failed (DB unreachable, or backend unhealthy)"
+    else
+        echo "backend container not running — cannot run the internal DB probe"
+    fi
+
+    echo ""
+    echo "CORS preflight (OPTIONS via nginx → /api/v1/auth/login):"
+    # auth/login is an always-present, unauthenticated route; dashboard is now
+    # project-scoped (/api/v1/projects/{id}/dashboard/...) so the old
+    # /api/v1/dashboard/stats probe 404'd regardless.
+    CORS_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" -X OPTIONS \
+        -H "Origin: $BASE" \
+        -H "Access-Control-Request-Method: POST" \
+        -H "Access-Control-Request-Headers: Content-Type" \
+        --max-time 10 "$BASE/api/v1/auth/login" 2>/dev/null || echo "000")
+    if [[ "$CORS_CODE" == "200" || "$CORS_CODE" == "204" ]]; then
+        echo "✅ CORS preflight ok (HTTP $CORS_CODE)"
+    else
+        echo "❌ CORS preflight returned HTTP $CORS_CODE (check CORS_ORIGINS in .env)"
+    fi
+
+    echo ""
+    echo "Port connectivity (host-published ports only — 443/3000 are nginx):"
+    for port in 443 3000; do
+        if ss -tln 2>/dev/null | grep -q ":$port "; then
             echo "✅ Port $port is listening"
         else
             echo "❌ Port $port is not listening"
         fi
     done
+    echo "(backend :8000 and db :5432 are intentionally NOT host-published — internal only)"
 } > "$LOG_DIR/health_checks.txt"
 
 # Recent Git History
@@ -690,24 +700,9 @@ print_info "Creating troubleshooting summary..."
 # ------------------------------------------------------------------
 print_info "Anonymizing collected logs..."
 
-# Build a sed script that replaces:
-#   - IPv4 addresses (except 127.0.0.1 and 0.0.0.0 which are harmless)
-#   - IPv6 addresses (condensed and expanded forms)
-#   - SECRET_KEY / JWT_SECRET_KEY / PASSWORD values from env dumps
-ANON_SED='
-# Replace SECRET_KEY=<value> and similar secrets with redacted marker
-s/\(SECRET_KEY=\).*/\1[REDACTED]/g
-s/\(JWT_SECRET_KEY=\).*/\1[REDACTED]/g
-s/\(PASSWORD=\).*/\1[REDACTED]/g
-s/\(POSTGRES_PASSWORD=\).*/\1[REDACTED]/g
-s/\(DEFAULT_ADMIN_PASSWORD=\).*/\1[REDACTED]/g
-
-# Replace IPv4 addresses (preserve localhost and 0.0.0.0)
-s/127\.0\.0\.1/127.0.0.1/g
-s/0\.0\.0\.0/0.0.0.0/g
-'
-
-# Two-pass approach: first protect safe IPs, then replace all others
+# Anonymize each collected file in place: redact secrets from env dumps, then
+# replace IPv4/IPv6 addresses (preserving 127.0.0.1 and 0.0.0.0).
+# Two-pass approach: first protect safe IPs, then replace all others.
 for file in "$LOG_DIR"/*.txt; do
     [[ -f "$file" ]] || continue
 
