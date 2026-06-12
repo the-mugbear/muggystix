@@ -104,3 +104,31 @@ def test_eol_spanning_sites_is_blind_spot_weak_auth_is_not(db_session, test_proj
 def test_no_subnets_not_adopted(db_session, test_project):
     out = compute_systemic_insights(db_session, test_project.id)
     assert out == {"adopted": False}
+
+
+def test_host_inherits_site_from_labelled_parent_subnet(db_session, test_project):
+    """A host whose most-specific subnet is UNLABELLED but sits inside a
+    labelled parent inherits the parent's site — its subnet stays most-specific.
+    (Unifies the resolver with the attention model; review B1.)"""
+    from app.services.subnet_insight_service import resolve_host_locations
+
+    scope = Scope(project_id=test_project.id, name="scope")
+    db_session.add(scope)
+    site = Site(project_id=test_project.id, name="DC-East", criticality_tier=1)
+    db_session.add(site)
+    db_session.flush()
+    parent = Subnet(scope_id=scope.id, cidr="10.1.0.0/16", site="DC-East", site_id=site.id)
+    child = Subnet(scope_id=scope.id, cidr="10.1.2.0/24", site=None, site_id=None)
+    db_session.add_all([parent, child])
+    host = models.Host(project_id=test_project.id, ip_address="10.1.2.5", state="up")
+    db_session.add(host)
+    db_session.flush()
+    db_session.add(HostSubnetMapping(host_id=host.id, subnet_id=parent.id))
+    db_session.add(HostSubnetMapping(host_id=host.id, subnet_id=child.id))
+    db_session.commit()
+
+    loc = resolve_host_locations(db_session, test_project.id)[host.id]
+    assert loc["subnet_id"] == child.id        # most-specific subnet
+    assert loc["cidr"] == "10.1.2.0/24"
+    assert loc["site"] == "DC-East"            # inherited from the labelled /16
+    assert loc["site_id"] == site.id

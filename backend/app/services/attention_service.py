@@ -143,7 +143,10 @@ def _resolve_host_sites(db: Session, project_id: int) -> Dict[int, str]:
     """Map each host in the project to ONE site — the site of its most-specific
     (longest-prefix) matching subnet that carries a site.  Most-specific wins so
     a host inside both 10.0.0.0/8 (no site) and 10.1.2.0/24 ("DC-East") resolves
-    to DC-East and is never double-counted across sites."""
+    to DC-East and is never double-counted across sites.
+
+    Same inheritance rule as subnet_insight_service.resolve_host_locations —
+    keep the two in lockstep so every site-attribution surface agrees."""
     subnet_rows = (
         db.query(Subnet.id, Subnet.cidr, Subnet.site)
         .join(Scope, Subnet.scope_id == Scope.id)

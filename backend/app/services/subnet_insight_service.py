@@ -167,14 +167,18 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
 def resolve_host_locations(
     db: Session, project_id: int, subnet_meta: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Dict[int, Dict[str, Any]]:
-    """Map each host to its ONE most-specific (longest-prefix) subnet + site.
+    """Map each host to its ONE most-specific (longest-prefix) subnet, plus its
+    INHERITED site.
 
     Returns ``host_id -> {subnet_id, cidr, site, site_id, scope_name}`` for
-    every host that falls inside a scoped subnet.  Hosts not in any subnet are
-    absent (they are out of scope).  Most-specific-wins mirrors the site
-    attention model so a host inside both a /16 and a /24 resolves to the /24
-    and is never double-counted.  Reused by the report exporter to tag each
-    host entry with its site without duplicating the resolution rule.
+    every host that falls inside a scoped subnet (out-of-scope hosts are
+    absent).  The SUBNET is most-specific-wins (a host in both a /16 and a /24
+    resolves to the /24).  The SITE is inherited from the nearest *site-bearing*
+    subnet — a host in an unlabelled /24 inside a /16 labelled "DC-East" counts
+    under DC-East.  This matches the attention model's ``_resolve_host_sites``
+    so every site-attribution surface (attention, subnet/systemic insights,
+    posture, reports) agrees on which site a host belongs to.  Keep the two
+    functions' inheritance rule in lockstep.
     """
     if subnet_meta is None:
         subnet_meta = _load_subnet_meta(db, project_id)
@@ -191,6 +195,11 @@ def resolve_host_locations(
     )
     locations: Dict[int, Dict[str, Any]] = {}
     best_prefix: Dict[int, int] = {}
+    # Track the nearest site-bearing subnet per host separately from the nearest
+    # subnet overall, so an unlabelled most-specific subnet inherits the site of
+    # its labelled parent rather than reading as Unassigned.
+    best_site_prefix: Dict[int, int] = {}
+    host_site: Dict[int, tuple] = {}
     for host_id, sid in mappings:
         m = subnet_meta[sid]
         pfx = m["prefixlen"]
@@ -199,10 +208,19 @@ def resolve_host_locations(
             locations[host_id] = {
                 "subnet_id": sid,
                 "cidr": m["cidr"],
-                "site": m["site"],
-                "site_id": m["site_id"],
+                "site": None,        # filled from the nearest site-bearing subnet below
+                "site_id": None,
                 "scope_name": m["scope_name"],
             }
+        if (m.get("site") or "").strip() and (
+            host_id not in best_site_prefix or pfx > best_site_prefix[host_id]
+        ):
+            best_site_prefix[host_id] = pfx
+            host_site[host_id] = (m["site"], m["site_id"])
+    for host_id, loc in locations.items():
+        site, site_id = host_site.get(host_id, (None, None))
+        loc["site"] = site
+        loc["site_id"] = site_id
     return locations
 
 
