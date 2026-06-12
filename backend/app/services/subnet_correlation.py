@@ -1,14 +1,11 @@
-import ipaddress
 import logging
-import struct
-import socket
 import sys
-from typing import Dict, List, Set, Tuple
+from typing import List, Set, Tuple
 
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import text
 
 from app.db.models import Host, Scope, Subnet, HostSubnetMapping, HostScanHistory
+from app.services.ip_trie import IPTrie
 
 logger = logging.getLogger(__name__)
 
@@ -70,19 +67,25 @@ class SubnetCorrelationService:
         Core batch-correlation implementation.
 
         Strategy:
-        1. Load all subnets and pre-compute their integer ranges (network_int,
-           broadcast_int, subnet_id) once.
+        1. Load the in-scope subnets and build a radix trie (IPTrie) once —
+           O(subnets * prefix_len).
         2. Fetch only (host_id, ip_address) tuples — not full ORM objects.
-        3. Convert each IP to an integer once and test against ranges.
+        3. Look each host up in the trie — O(32) for IPv4 / O(128) for IPv6 —
+           collecting EVERY containing subnet (overlapping /24 + /16 both match).
         4. Bulk-delete old mappings and bulk-insert new ones.
 
-        For typical deployments with <1000 subnets this is O(hosts * subnets)
-        with pure integer comparisons in Python — faster in practice than the
-        trie approach because it avoids ipaddress object creation overhead and
-        keeps the inner loop in simple integer math.
+        This replaces the prior O(hosts * subnets) integer double-loop, which
+        ran inline on every scope mutation and was a real hazard on large,
+        many-subnet projects (30k hosts * 1k subnets = 30M comparisons per
+        edit).  The trie makes step 3 independent of the subnet count.
+
+        Correctness note: the trie matches by address family, so an IPv4 host
+        can no longer spuriously match an IPv6 ``::/0`` (the old raw-integer
+        comparison did — it compared a 32-bit int against 128-bit ranges).  For
+        same-family data the result set is identical.
         """
 
-        # 1. Load subnet ranges -----------------------------------------
+        # 1. Load in-scope subnets and build the trie -------------------
         subnet_query = self.db.query(Subnet)
         if project_id is not None:
             subnet_query = subnet_query.join(Scope, Subnet.scope_id == Scope.id).filter(Scope.project_id == project_id)
@@ -90,19 +93,9 @@ class SubnetCorrelationService:
         if not subnets:
             return 0
 
-        # Pre-compute (network_int, broadcast_int, subnet_id) for each subnet
-        ranges: List[Tuple[int, int, int]] = []
+        trie = IPTrie()
         for s in subnets:
-            try:
-                net = ipaddress.ip_network(s.cidr, strict=False)
-                net_int = int(net.network_address)
-                bcast_int = int(net.broadcast_address)
-                ranges.append((net_int, bcast_int, s.id))
-            except ValueError:
-                continue
-
-        if not ranges:
-            return 0
+            trie.add_subnet(s)  # invalid CIDRs are skipped (logged) internally
 
         # 2. Fetch lightweight (host_id, ip_address) tuples -------------
         if scan_id is not None:
@@ -120,16 +113,11 @@ class SubnetCorrelationService:
         if not rows:
             return 0
 
-        # 3. Match hosts to subnets using integer ranges ----------------
+        # 3. Match each host via the trie (all containing subnets) ------
         mapping_set: Set[Tuple[int, int]] = set()
-
         for host_id, ip_str in rows:
-            ip_int = _ip_to_int(ip_str)
-            if ip_int is None:
-                continue
-            for net_int, bcast_int, subnet_id in ranges:
-                if net_int <= ip_int <= bcast_int:
-                    mapping_set.add((host_id, subnet_id))
+            for subnet in trie.find_matching_subnets(ip_str):
+                mapping_set.add((host_id, subnet.id))
 
         # 4. Bulk delete + insert in a single transaction ---------------
         host_ids = [hid for hid, _ in rows]
@@ -167,17 +155,3 @@ class SubnetCorrelationService:
             len(mapping_set),
         )
         return len(mapping_set)
-
-
-def _ip_to_int(ip_str: str) -> int | None:
-    """Convert an IP address string to an integer.  ~10x faster than
-    ipaddress.ip_address() for the common IPv4 case."""
-    try:
-        return struct.unpack("!I", socket.inet_aton(ip_str))[0]
-    except OSError:
-        pass
-    # Fallback for IPv6
-    try:
-        return int(ipaddress.ip_address(ip_str))
-    except ValueError:
-        return None
