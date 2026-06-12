@@ -63,6 +63,10 @@ _AGENT_RATE_WINDOW_SECONDS = 60.0
 # ceiling.  Effective limit = max(db_count, in-process count).
 _AGENT_RECENT_CALLS: "Dict[int, Deque[float]]" = {}
 _AGENT_RECENT_CALLS_LOCK = threading.Lock()
+# Above this many tracked agents, opportunistically sweep out entries whose
+# rate window has fully drained (idle/dead agents), so the map stays bounded by
+# ACTIVE agents rather than every distinct agent seen since restart.
+_AGENT_RECENT_CALLS_SWEEP_AT = 1024
 
 
 def get_current_agent(
@@ -304,6 +308,18 @@ def check_agent_rate_limit(
                 _AGENT_RECENT_CALLS.pop(agent.id, None)
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
         dq.append(now_m)
+        # Bound the map: when it's grown large, drop other agents whose most
+        # recent call is older than the window (their deque would prune to
+        # empty) — they're idle/dead and only this agent's deque is pruned per
+        # call, so they'd otherwise linger until they call again (never, for a
+        # dead agent). Cheap: only runs past the threshold.
+        if len(_AGENT_RECENT_CALLS) > _AGENT_RECENT_CALLS_SWEEP_AT:
+            stale = [
+                aid for aid, d in _AGENT_RECENT_CALLS.items()
+                if aid != agent.id and (not d or d[-1] < window_start)
+            ]
+            for aid in stale:
+                _AGENT_RECENT_CALLS.pop(aid, None)
     return agent
 
 
