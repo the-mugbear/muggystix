@@ -47,12 +47,16 @@ export interface FindingListResponse {
   severity_counts?: Partial<Record<FindingSeverity, number>>;
 }
 
+export type FindingSortField = 'severity' | 'status' | 'title' | 'host_count' | 'source' | 'created_at';
+
 export interface FindingFilters {
   status?: FindingStatus;
   severity?: FindingSeverity;
   owner_id?: number;
   source?: FindingSource;
   host_id?: number;
+  sort?: FindingSortField;
+  dir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }

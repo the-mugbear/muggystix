@@ -77,6 +77,10 @@ def list_findings(
     owner_id: Optional[int] = Query(None),
     source: Optional[str] = Query(None),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
+    sort: Optional[str] = Query(
+        None, description="severity | status | title | host_count | source | created_at (default newest-first).",
+    ),
+    dir: Optional[str] = Query(None, pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -86,6 +90,7 @@ def list_findings(
     rows, total = svc.list_findings(
         project_id=project.id, status=status, severity=severity,
         owner_id=owner_id, source=source, host_id=host_id, limit=limit, offset=offset,
+        sort=sort, sort_dir=dir,
     )
     sev_counts = svc.severity_counts(
         project_id=project.id, status=status, owner_id=owner_id,

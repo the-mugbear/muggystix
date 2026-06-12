@@ -202,3 +202,25 @@ def test_finding_comment_evidence_reaches_report(client, db_session, test_projec
     html_out = gen._generate_findings_html([host])
     assert "Evidence" in html_out
     assert "login anonymous" in html_out
+
+
+def test_findings_sort_by_severity_rank(client, test_project):
+    """sort=severity orders by rank (critical-first), not alphabetically; the
+    default stays newest-first; dir=desc reverses to least-severe-first."""
+    for sev in ("low", "critical", "medium"):
+        client.post(f"/api/v1/projects/{test_project.id}/findings",
+                    json={"title": f"{sev} one", "severity": sev})
+    base = f"/api/v1/projects/{test_project.id}/findings"
+
+    asc = client.get(f"{base}?sort=severity")
+    assert asc.status_code == 200
+    sevs = [f["severity"] for f in asc.json()["items"]]
+    assert sevs == ["critical", "medium", "low"], sevs   # rank order, not a-z
+
+    desc = client.get(f"{base}?sort=severity&dir=desc")
+    assert [f["severity"] for f in desc.json()["items"]] == ["low", "medium", "critical"]
+
+    # Default ordering is unchanged (newest-first) and an unknown sort is ignored.
+    default = client.get(f"{base}?sort=bogus")
+    assert default.status_code == 200
+    assert len(default.json()["items"]) == 3

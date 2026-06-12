@@ -9,7 +9,7 @@ owner + the cross-host M2M.
 from typing import List, Optional, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, case, select, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host, Scope, NoteStatus
@@ -48,6 +48,51 @@ def _validate_status(status: str) -> str:
             detail=f"status must be one of {sorted(_VALID_STATUSES)}",
         )
     return status
+
+
+# --- Sortable list ordering --------------------------------------------------
+# Severity/status sort by their meaningful rank (critical-first, open-first),
+# not alphabetically. host_count is the per-finding blast radius via a
+# correlated subquery (no extra join/group on the main query).
+_SEVERITY_SORT = case(
+    (Finding.severity == "critical", 0), (Finding.severity == "high", 1),
+    (Finding.severity == "medium", 2), (Finding.severity == "low", 3),
+    (Finding.severity == "info", 4), else_=5,
+)
+_STATUS_SORT = case(
+    (Finding.status == "open", 0), (Finding.status == "confirmed", 1),
+    (Finding.status == "retest", 2), (Finding.status == "remediated", 3),
+    (Finding.status == "false_positive", 4), (Finding.status == "accepted_risk", 5),
+    else_=6,
+)
+_HOST_COUNT_SORT = (
+    select(func.count(FindingHost.id))
+    .where(FindingHost.finding_id == Finding.id)
+    .correlate(Finding).scalar_subquery()
+)
+_SORT_COLUMNS = {
+    "severity": _SEVERITY_SORT,
+    "status": _STATUS_SORT,
+    "title": Finding.title,
+    "host_count": _HOST_COUNT_SORT,
+    "source": Finding.source,
+    "created_at": Finding.created_at,
+}
+# Per-field default direction when the caller doesn't specify one (worst/most-
+# relevant first): newest, most-severe, biggest-blast-radius lead.
+_SORT_DEFAULT_DESC = {"created_at", "host_count"}
+
+
+def _finding_order(sort: Optional[str], sort_dir: Optional[str]):
+    col = _SORT_COLUMNS.get(sort or "")
+    if col is None:
+        return (Finding.created_at.desc(), Finding.id.desc())  # default: newest first
+    if sort_dir in ("asc", "desc"):
+        descending = sort_dir == "desc"
+    else:
+        descending = sort in _SORT_DEFAULT_DESC
+    direction = desc if descending else asc
+    return (direction(col), Finding.id.desc())
 
 
 def _first_body_line(body: Optional[str]) -> str:
@@ -335,6 +380,7 @@ class FindingService:
         status: Optional[str] = None, severity: Optional[str] = None,
         owner_id: Optional[int] = None, source: Optional[str] = None,
         host_id: Optional[int] = None, limit: int = 100, offset: int = 0,
+        sort: Optional[str] = None, sort_dir: Optional[str] = None,
     ):
         # Eager-load what _serialize touches (each finding's hosts + their
         # Host rows, and the owner) so a page of findings — amplified by the
@@ -358,10 +404,8 @@ class FindingService:
         if host_id is not None:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
         total = q.count()
-        rows = (
-            q.order_by(Finding.created_at.desc())
-            .offset(offset).limit(limit).all()
-        )
+        q = q.order_by(*_finding_order(sort, sort_dir))
+        rows = q.offset(offset).limit(limit).all()
         return rows, total
 
     def severity_counts(

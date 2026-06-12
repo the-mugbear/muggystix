@@ -9,11 +9,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 import {
   Finding,
   FindingFilters,
+  FindingSortField,
   FindingSeverity,
   FindingSource,
   FindingStatus,
@@ -81,6 +82,10 @@ const Findings: React.FC = () => {
   const [sourceFilter, setSourceFilter] = useState<FindingSource | 'all'>('all');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
+  // Column sort (server-side — sorting only the current page would mislead
+  // under pagination). null = backend default (newest-first).
+  const [sortBy, setSortBy] = useState<FindingSortField | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   // Bulk triage — selected finding ids on the current page.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkApplying, setBulkApplying] = useState(false);
@@ -98,8 +103,32 @@ const Findings: React.FC = () => {
     if (statusFilter !== 'all') f.status = statusFilter;
     if (severityFilter !== 'all') f.severity = severityFilter;
     if (sourceFilter !== 'all') f.source = sourceFilter;
+    if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
-  }, [statusFilter, severityFilter, sourceFilter, page, pageSize]);
+  }, [statusFilter, severityFilter, sourceFilter, page, pageSize, sortBy, sortDir]);
+
+  // Per-field default direction (worst/most-relevant first); a repeat click
+  // toggles. Mirrors the backend's per-field default.
+  const SORT_DEFAULT_DIR: Record<FindingSortField, 'asc' | 'desc'> = {
+    severity: 'asc', host_count: 'desc', title: 'asc', status: 'asc', source: 'asc', created_at: 'desc',
+  };
+  const handleSort = (field: FindingSortField) => {
+    if (sortBy === field) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(field); setSortDir(SORT_DEFAULT_DIR[field]); }
+    setPage(0);
+  };
+  const SortHead: React.FC<{ field: FindingSortField; label: string; className?: string }> = ({ field, label, className }) => (
+    <TableHead className={className}
+      aria-sort={sortBy === field ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" onClick={() => handleSort(field)}
+        className="inline-flex items-center gap-xxs rounded text-inherit hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {label}
+        {sortBy === field
+          ? (sortDir === 'asc' ? <ArrowUp className="size-3" aria-hidden /> : <ArrowDown className="size-3" aria-hidden />)
+          : <ArrowUpDown className="size-3 opacity-40" aria-hidden />}
+      </button>
+    </TableHead>
+  );
 
   const fetchFindings = useCallback(async () => {
     setLoading(true);
@@ -311,11 +340,11 @@ const Findings: React.FC = () => {
                     />
                   )}
                 </TableHead>
-                <TableHead className="w-28">Severity</TableHead>
-                <TableHead>Title</TableHead>
-                <TableHead className="w-32">Status</TableHead>
-                <TableHead className="w-24">Source</TableHead>
-                <TableHead className="w-48">Hosts</TableHead>
+                <SortHead field="severity" label="Severity" className="w-28" />
+                <SortHead field="title" label="Title" />
+                <SortHead field="status" label="Status" className="w-32" />
+                <SortHead field="source" label="Source" className="w-24" />
+                <SortHead field="host_count" label="Hosts" className="w-48" />
                 <TableHead className="w-40">Owner</TableHead>
               </TableRow>
             </TableHeader>
