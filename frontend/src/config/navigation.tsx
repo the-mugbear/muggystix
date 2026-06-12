@@ -19,6 +19,7 @@ import {
   Bot,
   Compass,
   Folder,
+  Gauge,
   KeyRound,
   MessageSquareHeart,
   Network as NetworkIcon,
@@ -48,6 +49,7 @@ export type NavRole = 'viewer' | 'analyst' | 'admin';
 export type HubId =
   | 'operations'
   | 'inventory'
+  | 'posture'
   | 'workflows'
   | 'collaboration'
   | 'settings';
@@ -102,6 +104,9 @@ export interface HubDef {
 export const HUB_DEFS: HubDef[] = [
   { id: 'operations', label: 'Operations', path: '/operations', requiredRole: 'viewer', Icon: Sparkles },
   { id: 'inventory', label: 'Inventory', path: '/inventory', requiredRole: 'viewer', Icon: ServerStackIcon, defaultChildPath: '/hosts' },
+  // Posture is a real landing page (/posture) like Operations — its hub path
+  // renders the roll-up directly, with Insights + Systemic as drill-down tabs.
+  { id: 'posture', label: 'Posture', path: '/posture', requiredRole: 'viewer', Icon: Gauge },
   { id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
   { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon },
@@ -146,16 +151,18 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'network-topology', path: '/network-topology', label: 'Topology', requiredRole: 'viewer', hub: 'inventory',
   },
+  // Posture hub — the analytical roll-up + its drill-downs. Tab order here is
+  // the strip order: Posture (landing) | Insights | Systemic.
   {
-    id: 'security-posture', path: '/posture', label: 'Posture', requiredRole: 'viewer', hub: 'inventory',
-    palette: { Icon: ShieldCheck, keywords: ['posture', 'security', 'manager', 'exposure', 'coverage', 'ownership', 'summary', 'dashboard'], order: 6.4 },
+    id: 'security-posture', path: '/posture', label: 'Posture', requiredRole: 'viewer', hub: 'posture',
+    palette: { Icon: Gauge, keywords: ['posture', 'security', 'manager', 'exposure', 'coverage', 'ownership', 'summary', 'dashboard'], order: 6.4 },
   },
   {
-    id: 'subnet-insights', path: '/insights', label: 'Insights', requiredRole: 'viewer', hub: 'inventory',
+    id: 'subnet-insights', path: '/insights', label: 'Insights', requiredRole: 'viewer', hub: 'posture',
     palette: { Icon: AlertHexIcon, keywords: ['subnet', 'hygiene', 'neglect', 'exposure', 'eol', 'attention'], order: 6.5 },
   },
   {
-    id: 'systemic-insights', path: '/insights/systemic', label: 'Systemic', requiredRole: 'viewer', hub: 'inventory',
+    id: 'systemic-insights', path: '/insights/systemic', label: 'Systemic', requiredRole: 'viewer', hub: 'posture',
     palette: { Icon: AlertHexIcon, keywords: ['systemic', 'blind spot', 'estate', 'outlier', 'vector', 'spread', 'diagnostic'], order: 6.6 },
   },
 
