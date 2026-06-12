@@ -4,11 +4,19 @@
 #
 # Produces a portable logical backup (pg_dump custom format) when the
 # database container is running, or a raw volume snapshot (tar) when
-# Postgres cannot start.  Backups land in ./backups/ (gitignored).
+# Postgres cannot start.
+#
+# Backups land OUTSIDE the project folder by default — in a sibling directory
+# "<project>-db-backups" next to the project root — so an in-place update that
+# replaces the folder's contents (download fresh source over the same path)
+# does NOT wipe your backups.  Override the location with BACKUP_DIR=/path.
+# (The DB itself lives in a Docker volume, which also survives a folder
+# replace; this just keeps the dump file safe too.)
 #
 # Usage:
-#   ./scripts/backup-db.sh            # auto: pg_dump if the db is up, else volume tar
-#   ./scripts/backup-db.sh --volume   # force a raw volume snapshot
+#   ./scripts/backup-db.sh                       # auto: pg_dump if db up, else volume tar
+#   ./scripts/backup-db.sh --volume              # force a raw volume snapshot
+#   BACKUP_DIR=/mnt/usb ./scripts/backup-db.sh   # custom destination
 #
 # A logical backup (.dump) is portable and supports cross-version
 # restore — the backend's boot-time `alembic upgrade head` migrates a
@@ -45,8 +53,11 @@ env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d'=' -f2-; }
 PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
 PG_DB="$(env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
 
-BACKUP_DIR="$PROJECT_ROOT/backups"
+# Default OUTSIDE the project root (sibling dir) so an in-place folder-content
+# replace doesn't wipe the dump.  Override with BACKUP_DIR=/path.
+BACKUP_DIR="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
 mkdir -p "$BACKUP_DIR"
+print_info "Backups → $BACKUP_DIR"
 TS="$(date +%Y%m%d-%H%M%S)"
 
 FORCE_VOLUME=0
