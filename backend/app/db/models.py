@@ -856,6 +856,10 @@ class Annotation(Base):
     scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=True, index=True)
     plan_id = Column(Integer, ForeignKey("test_plans.id", ondelete="CASCADE"), nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    # A finding's own comment/evidence thread (notes→findings→reports): a note
+    # can target a Finding directly, regardless of how the finding was created
+    # (note promote / vuln promote / manual).  Part of the exactly-one-target set.
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=True, index=True)
     # v2.86.2 — was nullable=False, no ondelete.  Flipped to nullable +
     # SET NULL so a deleted author leaves the note body behind as "by
     # deleted user" instead of either blocking the delete (NOT NULL
@@ -890,6 +894,9 @@ class Annotation(Base):
     scope = relationship("Scope")
     plan = relationship("TestPlan")
     project = relationship("Project")
+    # foreign_keys pinned: findings.evidence_annotation_id is a SECOND
+    # annotations<->findings path, so this join must be explicit.
+    finding = relationship("Finding", foreign_keys=[finding_id])
     # Findings promoted from this annotation thread — Finding.evidence_annotation_id
     # points at the thread ROOT. viewonly: the FK is owned on the Finding side;
     # this is just a read-back so the note UI can show a "promoted" badge +

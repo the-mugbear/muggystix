@@ -101,7 +101,9 @@ class Finding(Base):
     project = relationship("Project")
     owner = relationship("User", foreign_keys=[owner_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
-    evidence_annotation = relationship("Annotation")
+    # foreign_keys pinned: annotations.finding_id is a SECOND annotations<->
+    # findings path (a finding's own comment thread), so this must be explicit.
+    evidence_annotation = relationship("Annotation", foreign_keys=[evidence_annotation_id])
     hosts = relationship(
         "FindingHost", back_populates="finding", cascade="all, delete-orphan",
         lazy="selectin",
