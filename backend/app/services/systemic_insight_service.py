@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models import WebInterface
 from app.db.models_confidence import NetexecResult
-from app.db.models_vulnerability import Vulnerability
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.os_eol import match_eol_os
 from app.services.ports_of_interest import ports_by_number
 from app.services.subnet_insight_service import (
@@ -251,12 +251,22 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             blind_spots.append(row)
 
     # --- vuln monoculture: one plugin firing across many hosts/subnets ----
+    # Exclude info/unknown severity: scanners (esp. Nessus) emit dozens of
+    # informational plugins per host — service detection, OS fingerprint, SYN
+    # scanner, etc. — that fire on EVERY host.  Counted as "systemic conditions"
+    # they (a) bury the actionable signal under info noise and (b) are the bulk
+    # of the rows this scan transfers, which is the dominant cost at 40k+ hosts.
+    # Systemic analysis is about *actionable* weaknesses, so floor at low.
     plugin_hosts: Dict[str, Set[int]] = defaultdict(set)
     plugin_meta: Dict[str, tuple] = {}
     for hid, plugin_id, severity, title in (
         db.query(Vulnerability.host_id, Vulnerability.plugin_id, Vulnerability.severity, Vulnerability.title)
         .join(models.Host, Vulnerability.host_id == models.Host.id)
-        .filter(models.Host.project_id == project_id, Vulnerability.plugin_id.isnot(None))
+        .filter(
+            models.Host.project_id == project_id,
+            Vulnerability.plugin_id.isnot(None),
+            Vulnerability.severity.notin_([VulnerabilitySeverity.INFO, VulnerabilitySeverity.UNKNOWN]),
+        )
         .all()
     ):
         if hid in in_scope:
