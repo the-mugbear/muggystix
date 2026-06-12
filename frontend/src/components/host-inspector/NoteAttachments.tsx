@@ -12,13 +12,21 @@ import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
 
 interface NoteAttachmentsProps {
-  hostId: number;
+  /** Host that owns the note — used for the default (host-note) upload path. */
+  hostId?: number;
   noteId: number;
   attachments: NoteAttachment[];
   /** Analyst+ — gates the attach/delete affordances (display is always on). */
   canManage: boolean;
   /** Reload the notes thread after an upload/delete so the new state shows. */
   onChanged: () => void;
+  /**
+   * Override the upload call so the same component serves other annotation
+   * targets (e.g. a finding's comment thread). Defaults to the host-note
+   * endpoint via hostId. Delete + serve are attachment-id based, so they need
+   * no override.
+   */
+  uploadFn?: (file: File) => Promise<unknown>;
 }
 
 const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
@@ -30,7 +38,7 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  * needs the bearer token, so a bare <img src> wouldn't load) — mirrors how the
  * web-interface screenshots load.
  */
-const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attachments, canManage, onChanged }) => {
+const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attachments, canManage, onChanged, uploadFn }) => {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const createdUrls = useRef<string[]>([]);
@@ -73,7 +81,13 @@ const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attac
     if (!file) return;
     setUploading(true);
     try {
-      await uploadNoteAttachment(hostId, noteId, file);
+      if (uploadFn) {
+        await uploadFn(file);
+      } else if (hostId != null) {
+        await uploadNoteAttachment(hostId, noteId, file);
+      } else {
+        throw new Error('No upload target configured for this attachment.');
+      }
       onChanged();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not attach image.'));

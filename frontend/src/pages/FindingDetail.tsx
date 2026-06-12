@@ -26,6 +26,7 @@ import {
   getHostNotes,
 } from '../services/api';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
+import FindingCommentThread from '../components/FindingCommentThread';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
@@ -306,6 +307,8 @@ const FindingDetail: React.FC = () => {
         </Card>
       )}
 
+      <FindingCommentThread findingId={finding.id} canManage={canManage} />
+
       <Card className="mb-md">
         <CardHeader><CardTitle>Affected hosts ({finding.host_count})</CardTitle></CardHeader>
         <CardContent className="p-0">
@@ -384,7 +387,8 @@ const FindingDetail: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Mark {summaryPrompt ? STATUS_LABEL[summaryPrompt.status] : ''}</DialogTitle>
             <DialogDescription>
-              Optionally record why — this is kept on the finding's disposition history.
+              A justification is required for a terminal disposition — it's kept on the
+              finding's history and carried into the report.
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -396,21 +400,15 @@ const FindingDetail: React.FC = () => {
             aria-label="Disposition reason"
           />
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                const p = summaryPrompt;
-                setSummaryPrompt(null);
-                if (p) void applyStatus(p.status);
-              }}
-            >
-              Skip
+            <Button variant="outline" onClick={() => setSummaryPrompt(null)}>
+              Cancel
             </Button>
             <Button
+              disabled={!summaryText.trim()}
               onClick={() => {
                 const p = summaryPrompt;
                 setSummaryPrompt(null);
-                if (p) void applyStatus(p.status, summaryText.trim() || undefined);
+                if (p) void applyStatus(p.status, summaryText.trim());
               }}
             >
               Save

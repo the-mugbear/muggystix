@@ -471,8 +471,8 @@ const Findings: React.FC = () => {
             </DialogTitle>
             <DialogDescription>
               {summaryPrompt?.kind === 'bulk'
-                ? 'One reason is recorded on every selected finding’s disposition history.'
-                : 'Optionally record why — this is kept on the finding’s disposition history.'}
+                ? 'A justification is required — one reason is recorded on every selected finding’s history and carried into reports.'
+                : 'A justification is required for a terminal disposition — it’s kept on the finding’s history and carried into the report.'}
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -484,22 +484,14 @@ const Findings: React.FC = () => {
             aria-label="Disposition reason"
           />
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                const p = summaryPrompt;
-                setSummaryPrompt(null);
-                if (!p) return;
-                if (p.kind === 'single') void applyStatus(p.findingId, p.status, p.title);
-                else void runBulk(p.ids, p.status);
-              }}
-            >
-              Skip
+            <Button variant="outline" onClick={() => setSummaryPrompt(null)}>
+              Cancel
             </Button>
             <Button
+              disabled={!summaryText.trim()}
               onClick={() => {
                 const p = summaryPrompt;
-                const summary = summaryText.trim() || undefined;
+                const summary = summaryText.trim();
                 setSummaryPrompt(null);
                 if (!p) return;
                 if (p.kind === 'single') void applyStatus(p.findingId, p.status, p.title, summary);

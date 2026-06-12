@@ -3,6 +3,7 @@
  * triage, cross-host). Project-scoped via p().
  */
 import { api, p } from './client';
+import type { Annotation, NoteAttachment } from './hosts';
 
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type FindingStatus =
@@ -141,6 +142,42 @@ export const getFindingHistory = async (
   findingId: number,
 ): Promise<FindingStatusHistoryEntry[]> => {
   const response = await api.get<FindingStatusHistoryEntry[]>(`${p()}/findings/${findingId}/history`);
+  return response.data;
+};
+
+// --- Finding comment / evidence thread ---
+// A finding hosts its own annotation thread (the notes→findings→reports flow):
+// discussion + repro/rationale + screenshots, refined here before reports.
+
+export const getFindingNotes = async (findingId: number): Promise<Annotation[]> => {
+  const response = await api.get<Annotation[]>(`${p()}/findings/${findingId}/notes`);
+  return response.data;
+};
+
+export const createFindingNote = async (
+  findingId: number,
+  body: string,
+  parentId?: number | null,
+): Promise<Annotation> => {
+  const response = await api.post<Annotation>(`${p()}/findings/${findingId}/notes`, {
+    body,
+    parent_id: parentId ?? null,
+  });
+  return response.data;
+};
+
+export const uploadFindingNoteAttachment = async (
+  findingId: number,
+  noteId: number,
+  file: File,
+): Promise<NoteAttachment> => {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await api.post(
+    `${p()}/findings/${findingId}/notes/${noteId}/attachments`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  );
   return response.data;
 };
 
