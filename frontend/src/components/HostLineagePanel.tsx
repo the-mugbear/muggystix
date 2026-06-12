@@ -147,6 +147,7 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
                           <strong>#{r.session_id}</strong>
                           {r.scope_name && <> · scope {r.scope_name}</>}
                           {r.generated_by_model && <> · by {r.generated_by_model}</>}
+                          {r.started_by_username && <> · started by {r.started_by_username}</>}
                           {r.started_at && <> · {fmtAgo(r.started_at)}</>}
                         </>
                       }
@@ -215,6 +216,7 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
                             {e.finding_count > 0 &&
                               ` · ${e.finding_count} finding${e.finding_count === 1 ? '' : 's'}`}
                             {e.generated_by_model && ` · by ${e.generated_by_model}`}
+                            {e.started_by_username && ` · started by ${e.started_by_username}`}
                           </span>
                         </>
                       }

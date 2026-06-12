@@ -1156,6 +1156,23 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               )}
             </div>
 
+            {host.tags && host.tags.length > 0 && (
+              <div className="flex flex-wrap items-center gap-xs">
+                <span className="text-caption text-muted-foreground">Tags:</span>
+                {host.tags.map((tag) => (
+                  <Badge
+                    key={tag.id}
+                    variant="outline"
+                    className="max-w-[12rem] truncate"
+                    style={tag.color ? { borderColor: tag.color, color: tag.color } : undefined}
+                    title={tag.name}
+                  >
+                    {tag.name}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-xs">
               <Badge variant="success">{openPorts.length} open</Badge>
               {closedPorts.length > 0 && (
@@ -1360,6 +1377,17 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                                 Ingested:
                               </dt>
                               <dd className="tabular-nums">{formatDateTime(entry.discovered_at)}</dd>
+                            </>
+                          )}
+                          {entry.command_line && (
+                            <>
+                              <dt className="font-medium">Command:</dt>
+                              <dd
+                                className="min-w-0 truncate font-mono"
+                                title={entry.command_line}
+                              >
+                                {entry.command_line}
+                              </dd>
                             </>
                           )}
                         </dl>

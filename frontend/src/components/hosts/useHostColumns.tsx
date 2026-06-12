@@ -237,6 +237,14 @@ export const computeAttention = (
   if (high > 0) {
     reasons.push({ label: `${high} high`, tone: 'severity-high', detail: `${high} high-severity vulnerability${high === 1 ? '' : 'ies'}.` });
   }
+  const findings = host.finding_count ?? 0;
+  if (findings > 0) {
+    reasons.push({
+      label: `${findings} finding${findings === 1 ? '' : 's'}`,
+      tone: 'info',
+      detail: `${findings} promoted finding${findings === 1 ? '' : 's'} recorded on this host — triage has produced results here.`,
+    });
+  }
   if (isStaleHost(host.last_seen)) {
     reasons.push({ label: 'Stale', tone: 'muted', detail: 'Not seen in a scan for over 30 days — data may be out of date.' });
   }
