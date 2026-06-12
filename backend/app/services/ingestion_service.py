@@ -25,7 +25,10 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.parsers import content_detection as _cd  # v2.27.0 — content sniffers extracted
 from app.db.models import Host, HostScanHistory, IngestionJob
-from app.db.session import SessionLocal
+# Imported as a module (not `from … import SessionLocal`) so tests can rebind
+# app.db.session.SessionLocal onto the test engine and have these background
+# sessions land in the test DB — same pattern as agent_api_log_service.
+from app.db import session as _session_module
 from app.services.dns_service import DNSService
 from app.services.parse_error_service import log_parse_error
 
@@ -215,7 +218,7 @@ class IngestionService:
         """
         self._cancelled.discard(job_id)
         try:
-            with SessionLocal() as db:
+            with _session_module.SessionLocal() as db:
                 db.execute(text("SELECT pg_notify('ingestion_jobs', :jid)"), {"jid": str(job_id)})
                 db.commit()
         except Exception:
@@ -230,7 +233,7 @@ class IngestionService:
         Returns True if the job was in a cancellable state.
         """
         self._cancelled.add(job_id)
-        with SessionLocal() as db:
+        with _session_module.SessionLocal() as db:
             job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
             if not job:
                 return False
@@ -428,9 +431,10 @@ class IngestionService:
         poll iteration; cheap because the filter uses a partial index
         on ``status = 'processing'`` (see alembic migration).
         """
-        cutoff_seconds = settings.INGESTION_JOB_TIMEOUT * 3
+        cutoff_seconds = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=cutoff_seconds)
-        db = SessionLocal()
+        max_retries = settings.INGESTION_MAX_RETRIES
+        db = _session_module.SessionLocal()
         try:
             orphans = (
                 db.query(IngestionJob)
@@ -445,21 +449,44 @@ class IngestionService:
                 return 0
             now = datetime.now(timezone.utc)
             for job in orphans:
-                job.status = "failed"
-                job.error_message = (
-                    f"Orphaned — no heartbeat for >{cutoff_seconds}s; "
-                    "worker likely crashed. Re-upload to retry."
-                )
-                job.message = job.error_message
-                job.last_error = job.error_message
                 job.retry_count = (job.retry_count or 0) + 1
-                job.completed_at = now
-                logger.warning(
-                    "Reaped orphaned ingestion job %s (started_at=%s, last_heartbeat=%s)",
-                    job.id,
-                    job.started_at,
-                    job.last_heartbeat,
-                )
+                # Auto-requeue a transient crash (OOM/restart) so a flaky parse
+                # doesn't dead-end the upload — but only while we're under the
+                # retry cap AND the stored upload is still on disk (re-running
+                # without it just fails again at the FileNotFoundError guard).
+                file_present = bool(job.storage_path) and Path(job.storage_path).exists()
+                if job.retry_count <= max_retries and file_present:
+                    job.status = "queued"
+                    job.started_at = None
+                    job.last_heartbeat = None
+                    job.completed_at = None
+                    job.last_error = (
+                        f"Orphaned (no heartbeat >{int(cutoff_seconds)}s) — worker likely "
+                        "crashed; automatically re-queued."
+                    )
+                    job.message = f"Re-queued after orphan detection (attempt {job.retry_count}/{max_retries})."
+                    logger.warning(
+                        "Re-queued orphaned ingestion job %s (attempt %d/%d, started_at=%s, last_heartbeat=%s)",
+                        job.id, job.retry_count, max_retries, job.started_at, job.last_heartbeat,
+                    )
+                else:
+                    reason = (
+                        f"exceeded {max_retries} auto-retries"
+                        if job.retry_count > max_retries
+                        else "uploaded file no longer present"
+                    )
+                    job.status = "failed"
+                    job.error_message = (
+                        f"Orphaned — no heartbeat for >{int(cutoff_seconds)}s and {reason}; "
+                        "worker likely crashed. Re-upload to retry."
+                    )
+                    job.message = job.error_message
+                    job.last_error = job.error_message
+                    job.completed_at = now
+                    logger.warning(
+                        "Failed orphaned ingestion job %s (%s, retry_count=%d)",
+                        job.id, reason, job.retry_count,
+                    )
             db.commit()
             return len(orphans)
         except Exception:
@@ -478,7 +505,7 @@ class IngestionService:
         Returns ``True`` if a job was processed (success *or* failure),
         ``False`` if no queued job was available.
         """
-        db = SessionLocal()
+        db = _session_module.SessionLocal()
         try:
             row = db.execute(
                 text(
@@ -516,7 +543,7 @@ class IngestionService:
         return True
 
     def _run_job(self, job_id: int) -> None:
-        db = SessionLocal()
+        db = _session_module.SessionLocal()
         try:
             job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
             if not job:

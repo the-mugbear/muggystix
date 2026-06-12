@@ -140,6 +140,20 @@ class Settings:
 
     # Ingestion job timeout (seconds). Jobs exceeding this are marked failed.
     INGESTION_JOB_TIMEOUT: int = int(os.getenv("INGESTION_JOB_TIMEOUT", "1800"))  # 30 minutes
+    # How many times the orphan reaper will auto-requeue a job whose worker
+    # died mid-parse (transient OOM/restart) before giving up and failing it.
+    # The stored upload is reused, so this is a free retry — only crashes that
+    # recur past the cap need a human. 0 disables auto-requeue (fail on first
+    # orphan, the pre-v2.179 behavior).
+    INGESTION_MAX_RETRIES: int = int(os.getenv("INGESTION_MAX_RETRIES", "2"))
+    # Orphan detection window = this multiple of INGESTION_JOB_TIMEOUT of
+    # heartbeat silence before a 'processing' job is treated as a dead worker's
+    # leftover. A live parser heartbeats every few seconds, so even 1x is safe;
+    # 1.5x keeps a comfortable margin while surfacing stuck jobs far sooner than
+    # the prior 3x (which left a wedged upload invisible for ~90 min).
+    INGESTION_ORPHAN_CUTOFF_MULTIPLIER: float = float(
+        os.getenv("INGESTION_ORPHAN_CUTOFF_MULTIPLIER", "1.5")
+    )
 
     # Nessus ingestion tuning
     NESSUS_COMMIT_BATCH_SIZE: int = int(os.getenv("NESSUS_COMMIT_BATCH_SIZE", "50"))
