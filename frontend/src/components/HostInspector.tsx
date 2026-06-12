@@ -19,7 +19,7 @@
  * sheet header therefore stay minimal.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, type Severity } from '../utils/severity';
+import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } from '../utils/severity';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -969,119 +969,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         ) : null}
       </div>
 
-      {/* v4.55.0 — triage summary strip (UI/UX phase 2).  Compact
-          at-a-glance counts so the operator can size up the host
-          before the Host Overview card resolves below.  Each cell
-          self-suppresses when its count is 0 so a freshly-discovered
-          host doesn't render a row of zeros.  Phase 3 will add a DNS
-          evidence cell once the per-host DNS endpoint lands. */}
-      <div className="flex flex-wrap items-center gap-xs text-caption">
-        <button
-          type="button"
-          onClick={() => scrollToSection('host-detail-ports')}
-          className="inline-flex items-center gap-xxs rounded-control text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          aria-label={`Jump to Port Details (${openPorts.length} open)`}
-        >
-          <Network className="size-3.5" aria-hidden />
-          <strong className="text-foreground">{openPorts.length}</strong>
-          {` open port${openPorts.length === 1 ? '' : 's'}`}
-        </button>
-        {host.vulnerability_summary && host.vulnerability_summary.critical > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-vulnerabilities')}
-            className="rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            aria-label={`Jump to Vulnerabilities (${host.vulnerability_summary.critical} critical)`}
-          >
-            <Badge variant="severity-critical">
-              {host.vulnerability_summary.critical} critical
-            </Badge>
-          </button>
-        )}
-        {host.vulnerability_summary && host.vulnerability_summary.high > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-vulnerabilities')}
-            className="rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            aria-label={`Jump to Vulnerabilities (${host.vulnerability_summary.high} high)`}
-          >
-            <Badge variant="severity-high">{host.vulnerability_summary.high} high</Badge>
-          </button>
-        )}
-        {host.vulnerability_summary && host.vulnerability_summary.medium > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-vulnerabilities')}
-            className="rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            aria-label={`Jump to Vulnerabilities (${host.vulnerability_summary.medium} medium)`}
-          >
-            <Badge variant="severity-medium">
-              {host.vulnerability_summary.medium} medium
-            </Badge>
-          </button>
-        )}
-        {testPlanCounts.in_progress > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-proposed-tests')}
-            className="inline-flex items-center gap-xxs rounded-control text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <ClipboardList className="size-3.5" aria-hidden />
-            <strong className="text-foreground">{testPlanCounts.in_progress}</strong>
-            {' in progress'}
-          </button>
-        )}
-        {testPlanCounts.pending > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-proposed-tests')}
-            className="inline-flex items-center gap-xxs rounded-control text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <ClipboardList className="size-3.5" aria-hidden />
-            <strong className="text-foreground">{testPlanCounts.pending}</strong>
-            {' proposed'}
-          </button>
-        )}
-        {testPlanCounts.completed > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-proposed-tests')}
-            className="inline-flex items-center gap-xxs rounded-control text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <ClipboardList className="size-3.5" aria-hidden />
-            <strong className="text-foreground">{testPlanCounts.completed}</strong>
-            {' completed'}
-          </button>
-        )}
-        {(host.web_interface_count ?? 0) > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-web')}
-            className="inline-flex items-center gap-xxs rounded-control text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <ExternalLink className="size-3.5" aria-hidden />
-            <strong className="text-foreground">{host.web_interface_count}</strong>
-            {' web'}
-          </button>
-        )}
-        {notes.length > 0 && (
-          <button
-            type="button"
-            onClick={() => scrollToSection('host-detail-notes')}
-            className="inline-flex items-center gap-xxs rounded-control text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
-            <MessageSquare className="size-3.5" aria-hidden />
-            <strong className="text-foreground">{notes.length}</strong>
-            {` note${notes.length === 1 ? '' : 's'}`}
-          </button>
-        )}
-        {followInfo && (
-          <Badge variant={FOLLOW_STATUS_META[followInfo.status].badgeVariant}>
-            <Bookmark className="size-3" aria-hidden />
-            {FOLLOW_STATUS_META[followInfo.status].label}
-          </Badge>
-        )}
-      </div>
+      {host.hostname && (
+        <p className="-mt-sm truncate text-metadata text-muted-foreground" title={host.hostname}>
+          {host.hostname}
+        </p>
+      )}
 
       {webLinks.length > 1 && (
         <div className="flex flex-wrap gap-xs">
@@ -1104,150 +996,114 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       <Card>
         <CardContent className="grid gap-md pt-md md:grid-cols-12">
           <div className="space-y-sm md:col-span-7">
-            <div className="flex flex-wrap items-center gap-xs">
-              <Badge variant={stateBadgeVariant(host.state)}>{host.state || 'unknown'}</Badge>
-              {host.state_reason && (
-                <span
-                  className="truncate max-w-[10rem] text-caption text-muted-foreground"
-                  title={`State reason: ${host.state_reason}`}
-                >
-                  {host.state_reason}
-                </span>
-              )}
-              {host.hostname && (
-                <span className="truncate max-w-full text-metadata text-foreground/90 inline-block">
-                  {host.hostname}
-                </span>
-              )}
-              {host.os_name && (
-                <Badge
-                  variant="outline"
-                  className="max-w-[18rem] overflow-hidden"
-                  title={
-                    [host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · ') ||
-                    undefined
-                  }
-                >
-                  <Computer className="size-3" aria-hidden />
-                  <span className="truncate">
-                    {host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
-                      ? `${host.os_vendor} ${host.os_name}`
-                      : host.os_name}
-                  </span>
-                  {host.os_accuracy != null && host.os_accuracy !== '' && (
-                    <span className="ml-xxs text-caption opacity-70">
-                      {Number(host.os_accuracy)}%
+            {/* Identity — labelled key/value, not a badge soup. Colour is
+                reserved for genuine alerts (SMB disabled, unassigned owner). */}
+            <dl className="grid gap-x-lg gap-y-sm sm:grid-cols-2">
+              <div className="flex gap-sm">
+                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">State</dt>
+                <dd className="min-w-0 text-metadata">
+                  <span className="capitalize text-foreground">{host.state || 'unknown'}</span>
+                  {host.state_reason && (
+                    <span className="text-caption text-muted-foreground" title={`State reason: ${host.state_reason}`}> · {host.state_reason}</span>
+                  )}
+                </dd>
+              </div>
+              <div className="flex gap-sm">
+                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">OS</dt>
+                <dd className="min-w-0 truncate text-metadata text-foreground"
+                  title={[host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · ') || undefined}>
+                  {host.os_name ? (
+                    <>
+                      {host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
+                        ? `${host.os_vendor} ${host.os_name}`
+                        : host.os_name}
+                      {host.os_accuracy != null && host.os_accuracy !== '' && (
+                        <span className="text-caption text-muted-foreground"> · {Number(host.os_accuracy)}%</span>
+                      )}
+                    </>
+                  ) : <span className="text-muted-foreground">—</span>}
+                </dd>
+              </div>
+              <div className="flex gap-sm">
+                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">SMB</dt>
+                <dd className="min-w-0 text-metadata">
+                  {host.smb_signing === 'disabled' ? (
+                    <span className="inline-flex items-center gap-xxs font-medium text-destructive" title="SMB message signing disabled — NTLM relay-vulnerable">
+                      <AlertTriangle className="size-3.5" aria-hidden /> Signing disabled
                     </span>
-                  )}
-                </Badge>
-              )}
-              {/* SMB message-signing posture — promoted from raw NSE blobs to
-                  a queryable column.  'disabled' is the high-signal,
-                  relay-vulnerable case; surface it prominently so the analyst
-                  doesn't have to read smb-security-mode script text. */}
-              {host.smb_signing === 'disabled' && (
-                <Badge variant="destructive" title="SMB message signing disabled — NTLM relay-vulnerable">
-                  SMB signing: disabled
-                </Badge>
-              )}
-              {host.smb_signing === 'enabled' && (
-                <Badge
-                  variant="outline"
-                  className="border-warning/40 text-warning"
-                  title="SMB signing enabled but not required"
-                >
-                  SMB signing: enabled
-                </Badge>
-              )}
-              {host.smb_signing === 'required' && (
-                <Badge variant="outline" title="SMB signing required (enforced)">
-                  SMB signing: required
-                </Badge>
-              )}
-            </div>
-
-            {host.tags && host.tags.length > 0 && (
-              <div className="flex flex-wrap items-center gap-xs">
-                <span className="text-caption text-muted-foreground">Tags:</span>
-                {host.tags.map((tag) => (
-                  <Badge
-                    key={tag.id}
-                    variant="outline"
-                    className="max-w-[12rem] truncate"
-                    style={tag.color ? { borderColor: tag.color, color: tag.color } : undefined}
-                    title={tag.name}
-                  >
-                    {tag.name}
-                  </Badge>
-                ))}
+                  ) : host.smb_signing === 'enabled' ? (
+                    <span className="text-warning" title="SMB signing enabled but not required">Signing enabled (not required)</span>
+                  ) : host.smb_signing === 'required' ? (
+                    <span className="text-foreground">Signing required</span>
+                  ) : <span className="text-muted-foreground">—</span>}
+                </dd>
               </div>
-            )}
-
-            {host.assignees && host.assignees.length > 0 && (
-              <div className="flex flex-wrap items-center gap-xs">
-                <span className="text-caption text-muted-foreground">
-                  {host.assignees.length === 1 ? 'Owner:' : 'Owners:'}
-                </span>
-                {host.assignees.map((a) => (
-                  <Badge key={a.user_id} variant="outline" className="max-w-[14rem] truncate" title={a.name}>
-                    {a.name}
-                  </Badge>
-                ))}
+              <div className="flex gap-sm">
+                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Owner</dt>
+                <dd className="min-w-0 truncate text-metadata">
+                  {host.assignees && host.assignees.length > 0 ? (
+                    <span className="text-foreground" title={host.assignees.map((a) => a.name).join(', ')}>
+                      {host.assignees.map((a) => a.name).join(', ')}
+                    </span>
+                  ) : <span className="text-warning">unassigned</span>}
+                </dd>
               </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-xs">
-              <Badge variant="success">{openPorts.length} open</Badge>
-              {closedPorts.length > 0 && (
-                <Badge variant="outline" className="border-destructive/40 text-destructive">
-                  {closedPorts.length} closed
-                </Badge>
-              )}
-              {filteredPorts.length > 0 && (
-                <Badge variant="outline" className="border-warning/40 text-warning">
-                  {filteredPorts.length} filtered
-                </Badge>
-              )}
-              <button
-                type="button"
-                onClick={() => scrollToSection('host-detail-ports')}
-                className="text-caption text-muted-foreground transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                aria-label={`Jump to Port Details (${host.ports.length} total)`}
-              >
-                {host.ports.length} total port{host.ports.length === 1 ? '' : 's'}
-              </button>
-            </div>
-
-            {host.vulnerability_summary &&
-              host.vulnerability_summary.total_vulnerabilities > 0 && (
-                <div className="flex flex-wrap items-center gap-xs">
-                  {host.vulnerability_summary.critical > 0 && (
-                    <Badge variant="severity-critical">
-                      {host.vulnerability_summary.critical} critical
-                    </Badge>
-                  )}
-                  {host.vulnerability_summary.high > 0 && (
-                    <Badge variant="severity-high">{host.vulnerability_summary.high} high</Badge>
-                  )}
-                  {host.vulnerability_summary.medium > 0 && (
-                    <Badge variant="severity-medium">{host.vulnerability_summary.medium} medium</Badge>
-                  )}
-                  {host.vulnerability_summary.low > 0 && (
-                    <Badge variant="severity-low">{host.vulnerability_summary.low} low</Badge>
-                  )}
-                  {host.vulnerability_summary.info > 0 && (
-                    <Badge variant="muted">{host.vulnerability_summary.info} info</Badge>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => scrollToSection('host-detail-vulnerabilities')}
-                    className="text-caption text-muted-foreground transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    aria-label={`Jump to Vulnerabilities (${host.vulnerability_summary.total_vulnerabilities} total)`}
-                  >
-                    {host.vulnerability_summary.total_vulnerabilities} total
-                  </button>
+              {host.tags && host.tags.length > 0 && (
+                <div className="flex gap-sm sm:col-span-2">
+                  <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Tags</dt>
+                  <dd className="flex min-w-0 flex-wrap gap-xxs">
+                    {host.tags.map((tag) => (
+                      <span key={tag.id} className="rounded-chip border border-border px-xs text-caption text-foreground"
+                        style={tag.color ? { borderColor: tag.color, color: tag.color } : undefined} title={tag.name}>
+                        {tag.name}
+                      </span>
+                    ))}
+                  </dd>
                 </div>
               )}
+            </dl>
+
+            {/* At a glance — actionable counts as quiet linked stats. Severity
+                numbers carry colour (genuine alerts); the rest stay muted. */}
+            <div className="flex flex-wrap items-center gap-x-md gap-y-xs border-t border-border pt-sm text-caption text-muted-foreground">
+              <button type="button" onClick={() => scrollToSection('host-detail-ports')}
+                className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <strong className="text-foreground">{openPorts.length}</strong> open
+                <span className="opacity-70"> / {host.ports.length} ports</span>
+              </button>
+              {host.vulnerability_summary && host.vulnerability_summary.total_vulnerabilities > 0 && (
+                <button type="button" onClick={() => scrollToSection('host-detail-vulnerabilities')}
+                  className="inline-flex items-center gap-sm rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {(['critical', 'high', 'medium', 'low', 'info'] as const)
+                    .filter((k) => (host.vulnerability_summary?.[k] ?? 0) > 0)
+                    .map((k) => (
+                      <span key={k}>
+                        <strong style={{ color: SEVERITY_HSL[k] }}>{host.vulnerability_summary?.[k]}</strong>{' '}{k}
+                      </span>
+                    ))}
+                </button>
+              )}
+              {(host.web_interface_count ?? 0) > 0 && (
+                <button type="button" onClick={() => scrollToSection('host-detail-web')}
+                  className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <strong className="text-foreground">{host.web_interface_count}</strong> web
+                </button>
+              )}
+              {notes.length > 0 && (
+                <button type="button" onClick={() => scrollToSection('host-detail-notes')}
+                  className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <strong className="text-foreground">{notes.length}</strong> note{notes.length === 1 ? '' : 's'}
+                </button>
+              )}
+              {(testPlanCounts.in_progress + testPlanCounts.pending + testPlanCounts.completed) > 0 && (
+                <button type="button" onClick={() => scrollToSection('host-detail-proposed-tests')}
+                  className="inline-flex items-center gap-xxs rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <ClipboardList className="size-3.5" aria-hidden />
+                  <strong className="text-foreground">{testPlanCounts.in_progress}</strong> in progress
+                  {testPlanCounts.pending > 0 && <> · <strong className="text-foreground">{testPlanCounts.pending}</strong> proposed</>}
+                </button>
+              )}
+            </div>
 
             <div className="flex flex-wrap items-center gap-sm pt-xxs">
               <div className="flex items-center gap-xs">
