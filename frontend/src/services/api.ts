@@ -418,7 +418,13 @@ export const generateHostsReport = async (
   const response = await api.get(`${p()}/reports/hosts/${format}?${queryParams}`, {
     responseType: 'blob'
   });
-  
+
+  // The backend caps a report at REPORT_MAX_HOSTS and flags a partial result
+  // with X-Report-Truncated. Surface it so a partial export isn't mistaken for
+  // a complete one (the client-side overCap estimate can disagree with the
+  // server's actual cap, or the data can change during generation).
+  const truncated = String(response.headers['x-report-truncated'] ?? '').toLowerCase() === 'true';
+
   // Create download
   const blob = new Blob([response.data]);
   const url = window.URL.createObjectURL(blob);
@@ -432,8 +438,8 @@ export const generateHostsReport = async (
   a.click();
   window.URL.revokeObjectURL(url);
   document.body.removeChild(a);
-  
-  return response.data;
+
+  return { truncated };
 };
 
 // Tool Ready Output API

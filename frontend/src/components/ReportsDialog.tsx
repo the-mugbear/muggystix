@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Code,
   Download,
@@ -104,6 +104,17 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // button spins and the rest disable.
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Set when the server reports it capped the export (X-Report-Truncated): the
+  // file still downloaded, so we keep the dialog open and warn rather than close.
+  const [truncated, setTruncated] = useState(false);
+
+  // Clear a prior partial-export warning whenever the dialog is reopened.
+  useEffect(() => {
+    if (open) {
+      setTruncated(false);
+      setError(null);
+    }
+  }, [open]);
 
   const allowedFormats = HUMAN_FORMATS[reportType];
 
@@ -118,9 +129,15 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   const runExport = async (fmt: HumanFormat | StructuredFormat, type?: ReportType) => {
     setBusy(fmt);
     setError(null);
+    setTruncated(false);
     try {
-      await generateHostsReport(fmt, filters, type);
-      onClose();
+      const { truncated: wasTruncated } = await generateHostsReport(fmt, filters, type);
+      if (wasTruncated) {
+        // Partial export — keep the dialog open so the warning is unmissable.
+        setTruncated(true);
+      } else {
+        onClose();
+      }
     } catch (err) {
       setError(`Failed to generate report: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -176,6 +193,17 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         {error && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {truncated && (
+          <Alert variant="warning">
+            <AlertDescription>
+              The report downloaded, but the server capped it at the first{' '}
+              {REPORT_HOST_CAP.toLocaleString()} hosts — it is <strong>incomplete</strong>. Narrow
+              your filters to capture everything, or use the <strong>CSV</strong> inventory which
+              streams the full set.
+            </AlertDescription>
           </Alert>
         )}
 
