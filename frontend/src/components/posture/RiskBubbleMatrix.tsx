@@ -16,9 +16,10 @@ import React, { useState } from 'react';
 import type { PostureSite } from '../../services/api';
 import { tierHsl, TIER_LABEL } from './postureTheme';
 
-const W = 760;
-const H = 380;
-const PAD = { l: 48, r: 18, t: 18, b: 40 };
+// Wide aspect so a full-width hero card doesn't render an over-tall chart.
+const W = 1200;
+const H = 420;
+const PAD = { l: 52, r: 20, t: 20, b: 42 };
 
 interface Plotted {
   site: PostureSite;
@@ -55,7 +56,7 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
 
   const xOf = (reviewPct: number) => PAD.l + (reviewPct / 100) * (W - PAD.l - PAD.r);
   const yOf = (perHost: number) => (H - PAD.b) - (perHost / maxPerHost) * (H - PAD.t - PAD.b);
-  const rOf = (hosts: number) => 6 + Math.sqrt(hosts / maxHosts) * 28;
+  const rOf = (hosts: number) => 9 + Math.sqrt(hosts / maxHosts) * 40;
 
   const points: Plotted[] = plottable.map((s) => {
     const reviewed = s.host_count - s.neglect.unreviewed_hosts;
@@ -82,7 +83,8 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
 
   return (
     <div className="w-full">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full"
+        style={{ maxHeight: 460 }} preserveAspectRatio="xMidYMid meet" role="img"
         aria-label="Bubble matrix of sites by review coverage and exposure density">
         <defs>
           <linearGradient id="danger-zone" x1="0" y1="0" x2="1" y2="1">

@@ -7,7 +7,7 @@ ownership), and the agent workflow (pending approvals, blocked runs) — into a
 single snapshot a manager can read in ten seconds:
 
   * a deterministic posture LABEL (no synthetic 0–100 score) + its top reasons,
-  * headline measures (confirmed exposure, review coverage, ownership, systemic),
+  * headline measures (active exposure, review coverage, ownership, systemic),
   * a ranked decision list (management priorities),
   * the site/systemic/disposition breakdowns the page visualises.
 
@@ -30,16 +30,16 @@ from app.db import models
 from app.db.models_findings import Finding
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import (
-    TestPlan, TestPlanStatus, TestPlanEntry, ExecutionSession,
-    ExecutionSessionStatus, TestExecutionResult, TestExecutionStatus,
+    TestPlan, TestPlanStatus, TestPlanEntry,
+    TestExecutionResult, TestExecutionStatus,
 )
+from app.services.agent_session_metrics import blocked_exec_session_counts
 from app.services.attention_service import (
     compute_project_attention, compute_site_attention,
 )
 from app.services.systemic_insight_service import compute_systemic_insights
 
 _ACTIVE = ("open", "confirmed", "retest")
-_SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 # Review-coverage floor below which the estate reads as under-assessed.
 _REVIEW_FLOOR = 0.5
 # Site criticality tiers that escalate a critical finding to "action required".
@@ -255,34 +255,10 @@ def compute_posture(db: Session, project_id: int) -> Dict[str, Any]:
         .scalar()
         or 0
     )
-    # Blocked runs — only the LATEST execution session per plan counts (id is
-    # monotonic). Starting a replacement run deliberately leaves the prior one
-    # paused/abandoned, so counting every historical session left a permanent
-    # "blocked" flag on a normal workflow (mirrors the portfolio fix). Sessions
-    # scope to a project through their test plan.
-    latest_exec_subq = (
-        db.query(
-            ExecutionSession.test_plan_id.label("plan_id"),
-            func.max(ExecutionSession.id).label("max_id"),
-        )
-        .group_by(ExecutionSession.test_plan_id)
-        .subquery()
-    )
-    blocked_sessions = (
-        db.query(func.count(ExecutionSession.id))
-        .join(latest_exec_subq, ExecutionSession.id == latest_exec_subq.c.max_id)
-        .join(TestPlan, ExecutionSession.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlan.project_id == project_id,
-            ExecutionSession.status.in_([
-                ExecutionSessionStatus.FAILED.value,
-                ExecutionSessionStatus.ABANDONED.value,
-                ExecutionSessionStatus.PAUSED.value,
-            ]),
-        )
-        .scalar()
-        or 0
-    )
+    # Blocked runs — only the LATEST execution session per plan, in a blocked
+    # state (paused / failed; NOT abandoned, which is deliberately closed).
+    # Shared helper so Posture and Portfolio agree on the invariant.
+    blocked_sessions = blocked_exec_session_counts(db, [project_id]).get(project_id, 0)
 
     signals = _gather_signals(
         db, project_id, project_att=project_att, site_att=site_att, systemic=systemic,
@@ -372,7 +348,10 @@ def compute_posture(db: Session, project_id: int) -> Dict[str, Any]:
             "by_status": by_status,
             "by_status_severity": by_status_severity,
             "active_total": active,
+            # Split by SOURCE/provenance, not disposition — non_scanner = note +
+            # manual + execution sources (a curated-by-a-human origin), which is
+            # independent of whether each is status=confirmed.
             "scanner_active": int(scanner_active),
-            "analyst_active": max(0, active - int(scanner_active)),
+            "non_scanner_active": max(0, active - int(scanner_active)),
         },
     }

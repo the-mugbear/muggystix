@@ -22,6 +22,7 @@ from app.db.models_project import Project, ProjectMembership
 from app.db.models_agent import (
     TestPlan, TestPlanEntry, ExecutionSession, ReconSession,
 )
+from app.services.agent_session_metrics import blocked_exec_session_counts
 from app.api.v1.endpoints.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -265,30 +266,10 @@ def get_portfolio_dashboard(
         .group_by(TestPlan.project_id)
         .all()
     )
-    # Review #6 — only the LATEST execution session per plan counts as
-    # "blocked".  Starting a replacement execution deliberately pauses the
-    # prior one, so counting every historical paused/failed session left a
-    # permanent "Blocked run" flag on normal workflow.  Latest = max(id)
-    # per plan (id is monotonic).
-    latest_exec_subq = (
-        db.query(
-            ExecutionSession.test_plan_id.label("plan_id"),
-            func.max(ExecutionSession.id).label("max_id"),
-        )
-        .group_by(ExecutionSession.test_plan_id)
-        .subquery()
-    )
-    blocked_exec_counts = dict(
-        db.query(TestPlan.project_id, func.count(ExecutionSession.id))
-        .join(latest_exec_subq, ExecutionSession.id == latest_exec_subq.c.max_id)
-        .join(TestPlan, ExecutionSession.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlan.project_id.in_(project_ids),
-            ExecutionSession.status.in_(("paused", "failed")),
-        )
-        .group_by(TestPlan.project_id)
-        .all()
-    )
+    # Only the LATEST execution session per plan counts as "blocked" (paused /
+    # failed) — shared with Security Posture so the two surfaces agree on the
+    # invariant.  See agent_session_metrics for the rationale.
+    blocked_exec_counts = blocked_exec_session_counts(db, project_ids)
     active_recon_counts = dict(
         db.query(ReconSession.project_id, func.count(ReconSession.id))
         .filter(

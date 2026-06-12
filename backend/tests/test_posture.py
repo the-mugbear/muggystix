@@ -97,3 +97,23 @@ def test_blocked_runs_count_only_latest_session_per_plan(db_session, test_projec
     db_session.commit()
     out2 = compute_posture(db_session, test_project.id)
     assert out2["decisions"]["blocked_sessions"] == 1
+
+
+def test_posture_response_contract(db_session, test_project):
+    """Pin the response shape the frontend TypeScript depends on — renames
+    (confirmed_exposure→active_exposure, analyst_active→non_scanner_active) have
+    drifted from the manual TS interface before; this fails loudly on the next."""
+    out = compute_posture(db_session, test_project.id)
+    assert set(out) >= {
+        "label", "reasons", "headline", "priorities", "decisions",
+        "sites", "systemic", "disposition", "evidence",
+    }
+    assert set(out["headline"]) >= {
+        "active_exposure", "review_coverage", "ownership", "systemic", "detected_exposure",
+    }
+    assert "adopted" in out["headline"]["systemic"]
+    assert set(out["disposition"]) >= {"scanner_active", "non_scanner_active", "by_status"}
+    assert set(out["decisions"]) >= {"pending_approvals", "blocked_sessions"}
+    assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
+    for p in out["priorities"]:
+        assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}

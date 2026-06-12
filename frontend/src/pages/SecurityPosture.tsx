@@ -120,14 +120,17 @@ const SecurityPosture: React.FC = () => {
           <PostureLabelBanner data={data} />
           <HeadlineMeasures data={data} />
 
-          <div className="grid items-start gap-md lg:grid-cols-[1.4fr_1fr]">
-            <RiskConcentration data={data} />
-            <ManagementPriorities priorities={data.priorities} decisions={data.decisions} />
-          </div>
+          {/* The matrix is the hero — full width so it breathes. */}
+          <RiskConcentration data={data} />
 
-          <div className="grid gap-md lg:grid-cols-2">
-            <SystemicWeaknesses data={data} />
-            <FindingDisposition data={data} />
+          {/* Priorities beside the systemic + disposition stack (their combined
+              height balances the tall priorities list). */}
+          <div className="grid items-start gap-md lg:grid-cols-2">
+            <ManagementPriorities priorities={data.priorities} decisions={data.decisions} />
+            <div className="space-y-md">
+              <SystemicWeaknesses data={data} />
+              <FindingDisposition data={data} />
+            </div>
           </div>
 
           <SitesRequiringAttention data={data} />
@@ -436,18 +439,19 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-md">
-        {/* Active source split — analyst-sourced vs scanner, never summed.
-            (Source ≠ confirmation status — these are how a finding originated.) */}
+        {/* Active split by SOURCE/origin, not disposition — never summed.
+            (How a finding originated, independent of its confirmation status.) */}
         <div className="grid grid-cols-2 gap-sm">
           <div className="rounded-control border border-border p-sm">
-            <p className="text-page-title font-bold tabular-nums text-foreground">{d.analyst_active}</p>
-            <p className="text-caption text-muted-foreground">analyst-sourced active</p>
+            <p className="text-page-title font-bold tabular-nums text-foreground">{d.non_scanner_active}</p>
+            <p className="text-caption text-muted-foreground">non-scanner active</p>
           </div>
           <div className="rounded-control border border-dashed border-border p-sm">
             <p className="text-page-title font-bold tabular-nums text-muted-foreground">{d.scanner_active}</p>
             <p className="text-caption text-muted-foreground">scanner-sourced active</p>
           </div>
         </div>
+        <p className="text-caption text-muted-foreground">By origin (note / manual / execution vs scanner) — not confirmation status.</p>
 
         <DispositionPipeline byStatus={d.by_status} byStatusSeverity={d.by_status_severity} />
       </CardContent>

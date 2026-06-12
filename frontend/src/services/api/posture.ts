@@ -73,7 +73,7 @@ export interface PostureResponse {
     by_status_severity: Record<string, Partial<SeverityCounts>>;
     active_total: number;
     scanner_active: number;
-    analyst_active: number;
+    non_scanner_active: number;
   };
   evidence: { scan_count: number; scan_staleness_days: number | null };
 }

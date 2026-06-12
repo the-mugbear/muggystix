@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
 from app.db.models import FollowStatus, HostFollow, HostSubnetMapping, Scan, Scope, Site, Subnet
@@ -190,7 +190,13 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
     # Site metadata catalog, loaded up front so configured sites with ZERO
     # discovered hosts still surface — a site with an expected host count but
     # none found is the strongest coverage failure, not something to hide.
-    sites_by_name = {s.name: s for s in db.query(Site).filter(Site.project_id == project_id).all()}
+    # selectinload(owner) so the per-site owner_name read below doesn't N+1 a
+    # query per owned site.
+    sites_by_name = {
+        s.name: s for s in db.query(Site)
+        .options(selectinload(Site.owner))
+        .filter(Site.project_id == project_id).all()
+    }
     if not host_to_site and not sites_by_name:
         return {"adopted": False, "sites": []}
 
