@@ -1,0 +1,177 @@
+/**
+ * SeverityBar — the one shared severity-distribution rail, replacing the dated
+ * thin-bar-plus-legend charts scattered across the app. Three variants:
+ *
+ *   summary  — 24px rail + a count·% summary row, interactive (hover/focus a
+ *              severity emphasises its segment + row item and dims the rest).
+ *              For page-level distributions (e.g. /operations exposure).
+ *   inline   — 12px rail + a dot/count legend. For inside cards.
+ *   compact  — ~10px rail, optional adjacent total, no legend. For table cells.
+ *
+ * Fixed order critical→high→medium→low→info; canonical theme tokens; outer
+ * edges rounded (not every segment); 1px separators; in-segment counts only
+ * when a segment is wide enough to hold them. No gradient/glow — the semantic
+ * colours are already strong. Zero categories read as quiet text, never a
+ * coloured sliver.
+ */
+import React, { useEffect, useId, useState } from 'react';
+
+import {
+  type Severity, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HSL, severityTotal,
+} from '../../utils/severity';
+
+type Variant = 'summary' | 'inline' | 'compact';
+
+interface SeverityBarProps {
+  counts: Partial<Record<Severity, number>>;
+  variant?: Variant;
+  /** Override the denominator (else the sum of counts). */
+  total?: number;
+  /** compact only — render the total next to the rail. */
+  showTotal?: boolean;
+  className?: string;
+  ariaLabel?: string;
+}
+
+const HEIGHTS: Record<Variant, number> = { summary: 24, inline: 12, compact: 10 };
+// Min share before a count is drawn INSIDE its segment (else it'd clip).
+const IN_SEGMENT_MIN = 0.12;
+
+function useReveal(): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setOn(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  return on;
+}
+
+const SeverityBar: React.FC<SeverityBarProps> = ({
+  counts, variant = 'inline', total, showTotal, className, ariaLabel,
+}) => {
+  const revealed = useReveal();
+  const [active, setActive] = useState<Severity | null>(null);
+  const titleId = useId();
+
+  const present = SEVERITY_ORDER.filter((k) => (counts[k] ?? 0) > 0);
+  const sum = severityTotal(counts);
+  const denom = total ?? sum;
+  const height = HEIGHTS[variant];
+  const label = ariaLabel
+    ?? (present.length
+      ? present.map((k) => `${counts[k]} ${SEVERITY_LABEL[k]}`).join(', ')
+      : 'no data');
+
+  const rail = (
+    <div
+      className="flex w-full overflow-hidden rounded-full bg-muted"
+      style={{ height }}
+      role="img"
+      aria-label={label}
+      aria-describedby={variant === 'summary' ? titleId : undefined}
+    >
+      {sum === 0 ? null : present.map((k, i) => {
+        const n = counts[k] ?? 0;
+        const share = n / sum;
+        const dim = active != null && active !== k;
+        const showCount = variant === 'summary' && share >= IN_SEGMENT_MIN;
+        return (
+          <div
+            key={k}
+            onMouseEnter={variant === 'summary' ? () => setActive(k) : undefined}
+            onMouseLeave={variant === 'summary' ? () => setActive(null) : undefined}
+            title={`${SEVERITY_LABEL[k]}: ${n.toLocaleString()}`}
+            className={`flex items-center justify-center ${i > 0 ? 'border-l border-background' : ''}`}
+            style={{
+              width: `${(revealed ? share : 0) * 100}%`,
+              background: SEVERITY_HSL[k],
+              opacity: dim ? 0.4 : 1,
+              transition: 'width 600ms cubic-bezier(0.22,1,0.36,1), opacity 150ms',
+            }}
+          >
+            {showCount && (
+              <span className="truncate px-1 text-[0.7rem] font-semibold text-white"
+                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
+                {n.toLocaleString()}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  // --- compact: rail + optional adjacent total ---------------------------
+  if (variant === 'compact') {
+    if (!showTotal) return <div className={className}>{rail}</div>;
+    return (
+      <div className={`flex items-center gap-xs ${className ?? ''}`}>
+        <div className="min-w-0 flex-1">{rail}</div>
+        <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
+          {denom.toLocaleString()}
+        </span>
+      </div>
+    );
+  }
+
+  // --- inline: rail + dot/count legend -----------------------------------
+  if (variant === 'inline') {
+    return (
+      <div className={className}>
+        {rail}
+        <div className="mt-xs flex flex-wrap gap-x-md gap-y-xxs">
+          {present.length === 0 ? (
+            <span className="text-caption text-muted-foreground">No findings</span>
+          ) : present.map((k) => (
+            <span key={k} className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
+              <span className="size-2 rounded-full" style={{ background: SEVERITY_HSL[k] }} aria-hidden />
+              {counts[k]?.toLocaleString()} {SEVERITY_LABEL[k]}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // --- summary: rail + interactive count·% row ---------------------------
+  return (
+    <div className={className}>
+      {rail}
+      <div id={titleId} className="mt-sm grid grid-cols-2 gap-x-md gap-y-xs sm:grid-cols-3 lg:grid-cols-5">
+        {SEVERITY_ORDER.map((k) => {
+          const n = counts[k] ?? 0;
+          const pct = denom > 0 ? Math.round((n / denom) * 100) : 0;
+          const zero = n === 0;
+          const dim = active != null && active !== k;
+          return (
+            <button
+              type="button"
+              key={k}
+              onMouseEnter={() => setActive(k)}
+              onMouseLeave={() => setActive(null)}
+              onFocus={() => setActive(k)}
+              onBlur={() => setActive(null)}
+              className="flex flex-col items-start rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              style={{ opacity: dim ? 0.45 : 1, transition: 'opacity 150ms' }}
+            >
+              <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
+                <span className="size-2 rounded-full" aria-hidden
+                  style={{ background: zero ? 'hsl(var(--muted-foreground) / 0.4)' : SEVERITY_HSL[k] }} />
+                {SEVERITY_LABEL[k]}
+              </span>
+              {zero ? (
+                <span className="text-metadata text-muted-foreground/60">0</span>
+              ) : (
+                <span className="text-metadata font-semibold tabular-nums text-foreground">
+                  {n.toLocaleString()} <span className="font-normal text-muted-foreground">· {pct}%</span>
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+export default SeverityBar;

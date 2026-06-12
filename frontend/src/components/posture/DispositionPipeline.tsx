@@ -8,7 +8,7 @@
 import React, { useEffect, useState } from 'react';
 
 import type { SeverityCounts } from '../../services/api';
-import { SeverityStack } from './PostureCharts';
+import SeverityBar from '../ui/SeverityBar';
 import {
   STATUS_HSL, STATUS_LABEL, ACTIVE_STATUSES, RESOLVED_STATUSES,
 } from './postureTheme';
@@ -71,7 +71,7 @@ const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus, byS
       <span className="w-32 shrink-0 truncate text-caption font-medium capitalize text-foreground">
         {STATUS_LABEL[hover] ?? hover} · {byStatus[hover]}
       </span>
-      <div className="min-w-0 flex-1"><SeverityStack counts={byStatusSeverity[hover] ?? {}} height={10} /></div>
+      <div className="min-w-0 flex-1"><SeverityBar counts={byStatusSeverity[hover] ?? {}} variant="compact" /></div>
     </div>
   ) : (
     <p className="text-caption text-muted-foreground">Hover a segment for its severity split.</p>

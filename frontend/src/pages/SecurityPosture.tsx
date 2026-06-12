@@ -13,8 +13,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Clock, Loader2, RefreshCw, ShieldAlert,
-  ShieldCheck, Telescope, Layers,
+  AlertTriangle, ArrowUpRight, Clock, Eye, Loader2, RefreshCw, ShieldAlert,
+  ShieldCheck, Telescope, Layers, UserCheck,
 } from 'lucide-react';
 
 import {
@@ -30,11 +30,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
-import { ArcGauge, SeverityStack, PrevalenceBar } from '../components/posture/PostureCharts';
+import { Meter, PrevalenceBar } from '../components/posture/PostureCharts';
+import SeverityBar from '../components/ui/SeverityBar';
 import RiskBubbleMatrix from '../components/posture/RiskBubbleMatrix';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
 import {
-  SEVERITY_HSL, SEVERITY_LABEL, LABEL_TONE, PRIORITY_KIND, tierHsl, TIER_LABEL,
+  SEVERITY_HSL, LABEL_TONE, PRIORITY_KIND, tierHsl, TIER_LABEL,
 } from '../components/posture/postureTheme';
 
 const LABEL_ICON = {
@@ -174,102 +175,104 @@ const PostureLabelBanner: React.FC<{ data: PostureResponse }> = ({ data }) => {
 // ---------------------------------------------------------------------------
 // Headline measures — four cards, each with a micro-visual.
 // ---------------------------------------------------------------------------
+// One consistent stat-card shell so the row reads as a set: label + icon, a
+// big number, a thin supporting visual, then a caption. (Replaces the mixed
+// donut-gauge / stacked-bar cards that looked off against each other.)
+const StatCard: React.FC<{
+  label: string;
+  icon: React.ReactNode;
+  value: React.ReactNode;
+  visual?: React.ReactNode;
+  children?: React.ReactNode;
+}> = ({ label, icon, value, visual, children }) => (
+  <Card>
+    <CardContent className="flex h-full flex-col gap-sm p-md">
+      <div className="flex items-center justify-between gap-xs">
+        <span className="text-caption text-muted-foreground">{label}</span>
+        <span className="text-muted-foreground" aria-hidden>{icon}</span>
+      </div>
+      <p className="text-page-title font-bold tabular-nums leading-none text-foreground">{value}</p>
+      <div className="flex h-6 items-center">{visual}</div>
+      <div className="mt-auto">{children}</div>
+    </CardContent>
+  </Card>
+);
+
 const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const h = data.headline;
   const ownPct = h.ownership.pct;
+  const conditions = data.systemic.conditions;
   return (
     <div className="grid gap-md sm:grid-cols-2 xl:grid-cols-4">
       {/* Active findings (curated) */}
-      <Card>
-        <CardContent className="space-y-sm p-md">
-          <div className="flex items-baseline justify-between gap-xs">
-            <span className="text-caption text-muted-foreground">Active findings</span>
-            <ShieldAlert className="size-4 text-muted-foreground" aria-hidden />
-          </div>
-          <p className="text-page-title font-bold tabular-nums text-foreground">
-            {h.active_exposure.active_findings}
-          </p>
-          <SeverityStack counts={h.active_exposure.by_severity} showLegend />
-          <p className="text-caption text-muted-foreground">
-            curated · open, confirmed or retest ·{' '}
-            <span title="Scanner-detected vulnerabilities — raw, not analyst-curated. Shown separately, never summed with curated findings.">
-              {h.detected_exposure.vuln_count} scanner-detected
-            </span>
-          </p>
-        </CardContent>
-      </Card>
+      <StatCard
+        label="Active findings"
+        icon={<ShieldAlert className="size-4" />}
+        value={h.active_exposure.active_findings}
+        visual={<SeverityBar counts={h.active_exposure.by_severity} variant="compact" />}
+      >
+        <p className="text-caption text-muted-foreground">
+          curated · open / confirmed / retest ·{' '}
+          <span title="Scanner-detected vulnerabilities — raw, not analyst-curated. Shown separately, never summed.">
+            {h.detected_exposure.vuln_count.toLocaleString()} scanner-detected
+          </span>
+        </p>
+      </StatCard>
 
       {/* Assessment coverage */}
-      <Card>
-        <CardContent className="flex items-center gap-md p-md">
-          <ArcGauge pct={h.review_coverage.pct} color="hsl(var(--info))" label="reviewed" />
-          <div className="min-w-0 space-y-xxs">
-            <p className="text-caption text-muted-foreground">Assessment coverage</p>
-            <p className="text-body font-semibold text-foreground">
-              {h.review_coverage.reviewed} / {h.review_coverage.total}
-            </p>
-            <p className="text-caption text-muted-foreground">hosts reviewed</p>
-            <p className="text-caption text-muted-foreground">
-              {h.review_coverage.validated_hosts} validated by a test
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+      <StatCard
+        label="Assessment coverage"
+        icon={<Eye className="size-4" />}
+        value={h.review_coverage.pct == null ? '—' : `${h.review_coverage.pct}%`}
+        visual={<Meter pct={h.review_coverage.pct} color="hsl(var(--info))" />}
+      >
+        <p className="text-caption text-muted-foreground">
+          {h.review_coverage.reviewed.toLocaleString()} / {h.review_coverage.total.toLocaleString()} hosts reviewed
+          {' · '}{h.review_coverage.validated_hosts.toLocaleString()} validated
+        </p>
+      </StatCard>
 
       {/* Ownership */}
-      <Card>
-        <CardContent className="flex items-center gap-md p-md">
-          <ArcGauge
-            pct={ownPct}
-            color={ownPct != null && ownPct < 60 ? 'hsl(var(--warning))' : 'hsl(var(--success))'}
-            label="owned"
-          />
-          <div className="min-w-0 space-y-xxs">
-            <p className="text-caption text-muted-foreground">Ownership</p>
-            <p className="text-body font-semibold text-foreground">
-              {h.ownership.owned} / {h.ownership.total}
-            </p>
-            <p className="text-caption text-muted-foreground">active findings owned</p>
-            {h.ownership.unowned > 0 && (
-              <Badge variant="warning" className="mt-xxs">{h.ownership.unowned} unowned</Badge>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      <StatCard
+        label="Ownership"
+        icon={<UserCheck className="size-4" />}
+        value={ownPct == null ? '—' : `${ownPct}%`}
+        visual={<Meter pct={ownPct} color={ownPct != null && ownPct < 60 ? 'hsl(var(--warning))' : 'hsl(var(--success))'} />}
+      >
+        <p className="text-caption text-muted-foreground">
+          {h.ownership.owned} owned
+          {h.ownership.unowned > 0 && <span className="text-warning"> · {h.ownership.unowned} unowned</span>}
+        </p>
+      </StatCard>
 
       {/* Systemic weaknesses */}
-      <Card>
-        <CardContent className="space-y-sm p-md">
-          <div className="flex items-baseline justify-between gap-xs">
-            <span className="text-caption text-muted-foreground">Systemic weaknesses</span>
-            <Layers className="size-4 text-muted-foreground" aria-hidden />
+      <StatCard
+        label="Systemic weaknesses"
+        icon={<Layers className="size-4" />}
+        value={h.systemic.adopted ? h.systemic.blind_spot_count : '—'}
+        visual={h.systemic.adopted ? (
+          <div className="flex flex-wrap items-center gap-1">
+            {conditions.length === 0
+              ? <span className="text-caption text-muted-foreground">no recurring conditions</span>
+              : conditions.slice(0, 10).map((c) => (
+                <span key={c.key} className="size-2.5 rounded-full"
+                  title={`${c.label} — ${Math.round(c.host_fraction * 100)}% of hosts`}
+                  style={{ background: c.is_blind_spot ? 'hsl(var(--destructive))' : 'hsl(var(--warning))' }} />
+              ))}
           </div>
-          {!h.systemic.adopted ? (
-            <>
-              <p className="text-page-title font-bold tabular-nums text-muted-foreground">—</p>
-              <p className="text-caption text-warning">
-                Not assessed — needs scoped subnets.
-              </p>
-              <Link to="/scopes" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
-                Manage scopes <ArrowUpRight className="size-3" aria-hidden />
-              </Link>
-            </>
-          ) : (
-            <>
-              <p className="text-page-title font-bold tabular-nums text-foreground">
-                {h.systemic.blind_spot_count}
-              </p>
-              <p className="text-caption text-muted-foreground">
-                estate blind spots · {h.systemic.condition_count} recurring condition
-                {h.systemic.condition_count === 1 ? '' : 's'}
-              </p>
-              <Link to="/insights/systemic" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
-                Investigate <ArrowUpRight className="size-3" aria-hidden />
-              </Link>
-            </>
-          )}
-        </CardContent>
-      </Card>
+        ) : <span className="text-caption text-warning">Not assessed</span>}
+      >
+        {h.systemic.adopted ? (
+          <Link to="/insights/systemic" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
+            estate blind spots · {h.systemic.condition_count} condition{h.systemic.condition_count === 1 ? '' : 's'}
+            <ArrowUpRight className="size-3" aria-hidden />
+          </Link>
+        ) : (
+          <Link to="/scopes" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
+            Needs scoped subnets <ArrowUpRight className="size-3" aria-hidden />
+          </Link>
+        )}
+      </StatCard>
     </div>
   );
 };
@@ -510,7 +513,7 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
                           <span className="w-8 shrink-0 text-caption tabular-nums text-foreground">
                             {s.exposure.active_findings}
                           </span>
-                          <div className="min-w-0 flex-1"><SeverityStack counts={s.exposure.by_severity} height={10} /></div>
+                          <div className="min-w-0 flex-1"><SeverityBar counts={s.exposure.by_severity} variant="compact" /></div>
                         </div>
                       )}
                     </TableCell>

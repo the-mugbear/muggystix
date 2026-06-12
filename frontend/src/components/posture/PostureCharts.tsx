@@ -1,18 +1,18 @@
 /**
- * Reusable SVG visual primitives for the Security Posture page. All theme-aware
- * (hsl(var(--token))), all with a gentle mount animation (managers read these
- * once — a half-second reveal makes the snapshot feel alive without implying a
- * time series). No external charting dependency.
+ * Small SVG/CSS visual primitives for the Security Posture page. Theme-aware
+ * (hsl(var(--token))), gentle mount animation. No external charting dependency.
+ *
+ * Severity distributions now use the shared <SeverityBar> (components/ui);
+ * single-value percentages use <Meter>; systemic prevalence uses <PrevalenceBar>.
+ * (The donut ArcGauge was removed — the design deliberately avoids donut charts;
+ * a labelled horizontal meter reads faster and lines up with the other cards.)
  */
 import React, { useEffect, useState } from 'react';
 
-import type { Severity } from '../../services/api';
-import { SEVERITY_HSL, SEVERITY_ORDER, SEVERITY_LABEL } from './postureTheme';
-
-/** Animate a value from 0 → target on mount (eased by CSS transition on the
- *  consuming element; this just flips the value after first paint). */
-function useReveal<T>(target: T, zero: T): T {
-  const [v, setV] = useState<T>(zero);
+/** Animate a number from 0 → target on mount (eased by the consumer's CSS
+ *  transition; this flips the value after first paint). */
+function useReveal(target: number): number {
+  const [v, setV] = useState(0);
   useEffect(() => {
     const id = requestAnimationFrame(() => setV(target));
     return () => cancelAnimationFrame(id);
@@ -21,114 +21,32 @@ function useReveal<T>(target: T, zero: T): T {
 }
 
 // ---------------------------------------------------------------------------
-// ArcGauge — a donut ring with a centred percentage. Used for coverage +
-// ownership. Colour is passed by the caller (severity/health tone).
+// Meter — a single-value horizontal progress bar with a track. Used for the
+// coverage + ownership headline measures (replaces the donut gauges).
 // ---------------------------------------------------------------------------
-interface ArcGaugeProps {
-  pct: number | null;          // 0..100, or null → "Unknown"
+interface MeterProps {
+  pct: number | null;          // 0..100, or null → empty track ("Unknown")
   color: string;               // hsl(...)
-  size?: number;
-  label?: string;              // tiny caption under the number
-  centerTop?: string;          // small line above the big number
-}
-
-export const ArcGauge: React.FC<ArcGaugeProps> = ({
-  pct, color, size = 104, label, centerTop,
-}) => {
-  const stroke = 9;
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const safe = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-  const shown = useReveal(safe, 0);
-  const offset = c - (shown / 100) * c;
-  const gid = `arc-${Math.round(r)}-${color.replace(/\W/g, '')}`;
-
-  return (
-    <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90" role="img"
-        aria-label={pct == null ? `${label ?? 'value'}: unknown` : `${label ?? 'value'}: ${safe}%`}>
-        <defs>
-          <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={0.65} />
-            <stop offset="100%" stopColor={color} stopOpacity={1} />
-          </linearGradient>
-        </defs>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke="hsl(var(--muted))" strokeWidth={stroke} />
-        {pct != null && (
-          <circle
-            cx={size / 2} cy={size / 2} r={r} fill="none"
-            stroke={`url(#${gid})`} strokeWidth={stroke} strokeLinecap="round"
-            strokeDasharray={c} strokeDashoffset={offset}
-            style={{ transition: 'stroke-dashoffset 700ms cubic-bezier(0.22,1,0.36,1)' }}
-          />
-        )}
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        {centerTop && <span className="text-[0.6rem] uppercase tracking-wide text-muted-foreground">{centerTop}</span>}
-        <span className="text-xl font-semibold tabular-nums text-foreground">
-          {pct == null ? '—' : `${safe}%`}
-        </span>
-        {label && <span className="text-[0.6rem] text-muted-foreground">{label}</span>}
-      </div>
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// SeverityStack — one horizontal bar split into severity segments. Used for the
-// confirmed-exposure headline + per-site exposure.
-// ---------------------------------------------------------------------------
-interface SeverityStackProps {
-  counts: Partial<Record<Severity, number>>;
   height?: number;
-  showLegend?: boolean;
 }
 
-export const SeverityStack: React.FC<SeverityStackProps> = ({ counts, height = 12, showLegend }) => {
-  const total = SEVERITY_ORDER.reduce((s, k) => s + (counts[k] ?? 0), 0);
-  const reveal = useReveal(1, 0);
+export const Meter: React.FC<MeterProps> = ({ pct, color, height = 8 }) => {
+  const safe = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const shown = useReveal(safe);
   return (
-    <div className="w-full">
-      <div
-        className="flex w-full overflow-hidden rounded-full bg-muted"
-        style={{ height }}
-        role="img"
-        aria-label={SEVERITY_ORDER.filter((k) => counts[k]).map((k) => `${counts[k]} ${k}`).join(', ') || 'no findings'}
-      >
-        {total === 0 ? null : SEVERITY_ORDER.map((k) => {
-          const n = counts[k] ?? 0;
-          if (!n) return null;
-          return (
-            <div
-              key={k}
-              title={`${n} ${SEVERITY_LABEL[k]}`}
-              style={{
-                width: `${(reveal * n / total) * 100}%`,
-                background: SEVERITY_HSL[k],
-                transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
-              }}
-            />
-          );
-        })}
-      </div>
-      {showLegend && (
-        <div className="mt-xs flex flex-wrap gap-x-md gap-y-xxs">
-          {SEVERITY_ORDER.filter((k) => counts[k]).map((k) => (
-            <span key={k} className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
-              <span className="size-2 rounded-full" style={{ background: SEVERITY_HSL[k] }} aria-hidden />
-              {counts[k]} {SEVERITY_LABEL[k]}
-            </span>
-          ))}
-        </div>
-      )}
+    <div className="w-full rounded-full bg-muted" style={{ height }}
+      role="img" aria-label={pct == null ? 'unknown' : `${safe}%`}>
+      <div className="h-full rounded-full"
+        style={{
+          width: `${shown}%`, background: color,
+          transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
+        }} />
     </div>
   );
 };
 
 // ---------------------------------------------------------------------------
-// PrevalenceBar — a labelled horizontal bar for "% of hosts affected". Used by
-// the systemic-weaknesses panel.
+// PrevalenceBar — "% of hosts affected", for the systemic-weaknesses panel.
 // ---------------------------------------------------------------------------
 interface PrevalenceBarProps {
   fraction: number;            // 0..1
@@ -138,19 +56,14 @@ interface PrevalenceBarProps {
 
 export const PrevalenceBar: React.FC<PrevalenceBarProps> = ({ fraction, color, height = 8 }) => {
   const pct = Math.max(0, Math.min(100, fraction * 100));
-  const shown = useReveal(pct, 0);
+  const shown = useReveal(pct);
   return (
     <div className="w-full rounded-full bg-muted" style={{ height }} aria-hidden>
-      <div
-        className="h-full rounded-full"
+      <div className="h-full rounded-full"
         style={{
-          width: `${shown}%`,
-          background: `linear-gradient(90deg, ${color} , ${color})`,
-          boxShadow: `0 0 10px ${color}`,
-          opacity: 0.92,
+          width: `${shown}%`, background: color, opacity: 0.92,
           transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
-        }}
-      />
+        }} />
     </div>
   );
 };

@@ -3,22 +3,12 @@
  * to a theme CSS variable (hsl(var(--token))) so the SVG visuals track the
  * active light/dark theme automatically — no hard-coded hex.
  */
-import type { PostureLabel, Severity } from '../../services/api';
+import type { PostureLabel } from '../../services/api';
+import type { Severity } from '../../utils/severity';
 
-/** Severity → theme token (matches the Badge severity variants). */
-export const SEVERITY_HSL: Record<Severity, string> = {
-  critical: 'hsl(var(--destructive))',
-  high: 'hsl(var(--warning))',
-  medium: 'hsl(var(--info))',
-  low: 'hsl(var(--success))',
-  info: 'hsl(var(--muted-foreground))',
-};
-
-export const SEVERITY_ORDER: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
-
-export const SEVERITY_LABEL: Record<Severity, string> = {
-  critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Info',
-};
+// Severity vocabulary is canonical in utils/severity — re-exported here so
+// existing posture imports keep working off the one source of truth.
+export { SEVERITY_HSL, SEVERITY_ORDER, SEVERITY_LABEL } from '../../utils/severity';
 
 /** Site criticality tier → colour (tier 1 = hottest). */
 export function tierHsl(tier: number | null): string {

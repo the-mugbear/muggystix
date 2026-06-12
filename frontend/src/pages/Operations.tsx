@@ -28,6 +28,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import SeverityBar from '../components/ui/SeverityBar';
 import { cn } from '../utils/cn';
 
 type ScopeView = 'all' | 'mine';
@@ -90,18 +91,6 @@ const kindLabel = (kind: string): string => {
 // buckets and it can't introduce horizontal overflow.
 // ---------------------------------------------------------------------------
 
-const SEVERITY_SEGMENTS: Array<{
-  key: 'critical' | 'high' | 'medium' | 'low' | 'info';
-  label: string;
-  color: string;
-}> = [
-  { key: 'critical', label: 'Critical', color: 'bg-destructive' },
-  { key: 'high', label: 'High', color: 'bg-warning' },
-  { key: 'medium', label: 'Medium', color: 'bg-info' },
-  { key: 'low', label: 'Low', color: 'bg-success' },
-  { key: 'info', label: 'Info', color: 'bg-muted-foreground/40' },
-];
-
 // RV-UI — "Security snapshot" (exposure/findings) and "Project coverage"
 // (pipeline progress) answered different questions but both described
 // overall project state and both led with a redundant Hosts tile.  Merged
@@ -148,7 +137,7 @@ const ProjectStateCard: React.FC<{
         {stats && (
           <div className="mb-md">
             <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Exposure</h3>
-            <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-6">
+            <div className="mb-md grid grid-cols-3 gap-sm">
               <CoverageStatTile
                 label="Hosts"
                 value={stats.total_hosts.toLocaleString()}
@@ -167,56 +156,25 @@ const ProjectStateCard: React.FC<{
                 label="Hosts with vulns"
                 value={(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()}
               />
-              <CoverageStatTile label="Critical" value={(vuln?.critical ?? 0).toLocaleString()} />
-              <CoverageStatTile label="High" value={(vuln?.high ?? 0).toLocaleString()} />
-              <CoverageStatTile
-                label="Vulnerabilities"
-                value={(vuln?.total_vulnerabilities ?? 0).toLocaleString()}
-                hint={
-                  'Total raw vulnerability records from scanners (Nessus/OpenVAS). ' +
-                  'Distinct from "Findings" — the curated, analyst-promoted items on ' +
-                  'the Findings page.'
-                }
-              />
             </div>
 
             {vuln && sevTotal > 0 ? (
               <div>
-                <div
-                  className="mb-xs flex h-3 w-full overflow-hidden rounded-full bg-muted/40"
-                  role="img"
-                  aria-label="Vulnerability severity distribution"
-                >
-                  {SEVERITY_SEGMENTS.map((seg) => {
-                    const count = vuln[seg.key];
-                    if (count <= 0) return null;
-                    return (
-                      <div
-                        key={seg.key}
-                        className={seg.color}
-                        style={{ width: `${(count / sevTotal) * 100}%` }}
-                        title={`${seg.label}: ${count.toLocaleString()}`}
-                      />
-                    );
-                  })}
+                <div className="mb-xs flex flex-wrap items-baseline justify-between gap-x-md gap-y-xxs">
+                  <span className="text-metadata font-medium text-foreground">
+                    Share of scanner-detected vulnerabilities
+                  </span>
+                  <span className="text-caption text-muted-foreground tabular-nums">
+                    {(vuln.total_vulnerabilities ?? sevTotal).toLocaleString()} total ·{' '}
+                    {(vuln.hosts_with_vulnerabilities ?? 0).toLocaleString()} hosts affected
+                  </span>
                 </div>
-                <div className="flex flex-wrap gap-x-md gap-y-xxs">
-                  {SEVERITY_SEGMENTS.map((seg) => (
-                    <span
-                      key={seg.key}
-                      className="inline-flex items-center gap-xxs text-caption text-muted-foreground"
-                    >
-                      <span
-                        className={cn('inline-block size-2 rounded-full', seg.color)}
-                        aria-hidden
-                      />
-                      {seg.label}{' '}
-                      <span className="font-medium text-foreground">
-                        {vuln[seg.key].toLocaleString()}
-                      </span>
-                    </span>
-                  ))}
-                </div>
+                <SeverityBar
+                  variant="summary"
+                  counts={vuln}
+                  total={sevTotal}
+                  ariaLabel="Share of scanner-detected vulnerabilities by severity"
+                />
               </div>
             ) : (
               <p className="text-metadata text-muted-foreground">
