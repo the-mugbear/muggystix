@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 from app.db import session as _session_module
 from app.db.models_project import Notification, WebhookConfig
 from app.services.llm_provider_service import decrypt_secret
-from app.services.url_validator import safe_http_client
+from app.services.url_validator import safe_request
 
 logger = logging.getLogger(__name__)
 
@@ -262,8 +262,13 @@ def _post(url: str, secret: Optional[str], payload: dict) -> httpx.Response:
     # metadata / link-local addresses and refuses redirects to private
     # IPs — closing the one egress that previously used raw httpx.post
     # and bypassed url_validator entirely.
-    with safe_http_client(allow_private=True, timeout=_TIMEOUT_SECONDS) as client:
-        return client.post(url, content=body, headers=headers)
+    # safe_request streams + size-caps the response (a hostile receiver could
+    # otherwise return a huge body httpx would buffer); a ResponseTooLarge or
+    # transport error propagates to _deliver/send_test, which already log it.
+    return safe_request(
+        "POST", url, allow_private=True, timeout=_TIMEOUT_SECONDS,
+        content=body, headers=headers,
+    )
 
 
 def _deliver(url: str, secret: Optional[str], payload: dict) -> None:

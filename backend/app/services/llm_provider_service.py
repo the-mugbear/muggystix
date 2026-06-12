@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models_llm import LLMProvider, LLMProviderType
-from app.services.url_validator import safe_http_client
+from app.services.url_validator import safe_request, ResponseTooLarge
 
 logger = logging.getLogger(__name__)
 
@@ -258,47 +258,48 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
     allow_private = ptype == LLMProviderType.OLLAMA.value
 
     try:
-        with safe_http_client(allow_private=allow_private, timeout=15.0) as client:
-            if ptype == LLMProviderType.OPENAI.value or ptype == LLMProviderType.OPENAI_COMPATIBLE.value:
-                url = (provider.base_url or "https://api.openai.com").rstrip("/") + "/v1/models"
-                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-                r = client.get(url, headers=headers)
-                r.raise_for_status()
-                return {"ok": True, "detail": "Model list fetched successfully."}
-            if ptype == LLMProviderType.ANTHROPIC.value:
-                url = (provider.base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages"
-                headers = {
-                    "x-api-key": api_key or "",
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                }
-                body = {
-                    "model": provider.model_id or "claude-haiku-4-5-20251001",
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "hi"}],
-                }
-                r = client.post(url, headers=headers, json=body)
-                r.raise_for_status()
-                return {"ok": True, "detail": "Anthropic endpoint responded."}
-            if ptype == LLMProviderType.AZURE_OPENAI.value:
-                if not provider.base_url:
-                    return {"ok": False, "detail": "Azure OpenAI requires a base URL."}
-                url = provider.base_url.rstrip("/") + "/openai/models?api-version=2024-02-01"
-                headers = {"api-key": api_key or ""}
-                r = client.get(url, headers=headers)
-                r.raise_for_status()
-                return {"ok": True, "detail": "Azure OpenAI deployment reachable."}
-            if ptype == LLMProviderType.OLLAMA.value:
-                base = provider.base_url or "http://localhost:11434"
-                url = base.rstrip("/") + "/api/tags"
-                r = client.get(url)
-                r.raise_for_status()
-                tags = r.json().get("models", [])
-                return {
-                    "ok": True,
-                    "detail": f"Ollama reachable — {len(tags)} local model(s) loaded.",
-                }
-            return {"ok": False, "detail": f"Unknown provider type: {ptype}"}
+        if ptype == LLMProviderType.OPENAI.value or ptype == LLMProviderType.OPENAI_COMPATIBLE.value:
+            url = (provider.base_url or "https://api.openai.com").rstrip("/") + "/v1/models"
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, headers=headers)
+            r.raise_for_status()
+            return {"ok": True, "detail": "Model list fetched successfully."}
+        if ptype == LLMProviderType.ANTHROPIC.value:
+            url = (provider.base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages"
+            headers = {
+                "x-api-key": api_key or "",
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            body = {
+                "model": provider.model_id or "claude-haiku-4-5-20251001",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+            r = safe_request("POST", url, allow_private=allow_private, timeout=15.0, headers=headers, json=body)
+            r.raise_for_status()
+            return {"ok": True, "detail": "Anthropic endpoint responded."}
+        if ptype == LLMProviderType.AZURE_OPENAI.value:
+            if not provider.base_url:
+                return {"ok": False, "detail": "Azure OpenAI requires a base URL."}
+            url = provider.base_url.rstrip("/") + "/openai/models?api-version=2024-02-01"
+            headers = {"api-key": api_key or ""}
+            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, headers=headers)
+            r.raise_for_status()
+            return {"ok": True, "detail": "Azure OpenAI deployment reachable."}
+        if ptype == LLMProviderType.OLLAMA.value:
+            base = provider.base_url or "http://localhost:11434"
+            url = base.rstrip("/") + "/api/tags"
+            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0)
+            r.raise_for_status()
+            tags = r.json().get("models", [])
+            return {
+                "ok": True,
+                "detail": f"Ollama reachable — {len(tags)} local model(s) loaded.",
+            }
+        return {"ok": False, "detail": f"Unknown provider type: {ptype}"}
+    except ResponseTooLarge:
+        return {"ok": False, "detail": "Provider returned an oversized response."}
     except httpx.HTTPStatusError as exc:
         # Log the upstream response body server-side rather than reflecting
         # it to the API caller — some provider error bodies echo request
@@ -508,12 +509,19 @@ def chat_completion(
     )
 
     try:
-        with safe_http_client(
+        r = safe_request(
+            "POST", url,
             allow_private=adapter.allow_private, timeout=adapter.timeout_seconds,
-        ) as client:
-            r = client.post(url, headers=headers, json=body)
-            r.raise_for_status()
-            data = r.json()
+            headers=headers, json=body,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except ResponseTooLarge as exc:
+        # Must precede the ValueError clause (ResponseTooLarge subclasses it).
+        logger.warning("LLM chat_completion response too large: %s", exc)
+        raise RuntimeError(
+            f"{provider.provider_type} returned an oversized response."
+        ) from exc
     except httpx.HTTPStatusError as exc:
         # Mirror test_connection: log the upstream body server-side (it may echo
         # request metadata / auth) and raise the contract's RuntimeError with

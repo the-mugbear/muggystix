@@ -291,3 +291,56 @@ def safe_http_client(
         follow_redirects=False,  # redirects can land on a private IP — refuse them
         verify=verify,
     )
+
+
+class ResponseTooLarge(ValueError):
+    """An outbound response body exceeded the configured byte cap."""
+
+
+def safe_request(
+    method: str,
+    url: str,
+    *,
+    allow_private: bool = False,
+    timeout: float = 15.0,
+    verify: bool = True,
+    max_bytes: int | None = None,
+    **kwargs,
+):
+    """Perform a single SSRF-safe request and return a fully-read
+    ``httpx.Response``, capping the body at ``max_bytes``.
+
+    The shared egress helper for every outbound call (LLM providers, scanner
+    integrations, webhooks).  It reuses ``safe_http_client`` (so the
+    DNS-rebinding pin + no-redirect policy still apply), but STREAMS the
+    response and stops at the cap — a plain ``client.get(...).json()`` buffers
+    the entire body into RAM first, which a hostile/broken endpoint can abuse.
+
+    Raises :class:`ResponseTooLarge` (a ``ValueError``) if the body exceeds the
+    cap; otherwise the returned response behaves like a normal buffered one
+    (``.json()`` / ``.text`` / ``.status_code`` / ``.raise_for_status()``).
+    """
+    import httpx
+    from app.core.config import settings
+
+    cap = settings.MAX_OUTBOUND_RESPONSE_BYTES if max_bytes is None else max_bytes
+    with safe_http_client(allow_private=allow_private, timeout=timeout, verify=verify) as client:
+        request = client.build_request(method, url, **kwargs)
+        response = client.send(request, stream=True)
+        try:
+            total = 0
+            chunks = []
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > cap:
+                    raise ResponseTooLarge(
+                        f"Response from {response.url.host} exceeded the "
+                        f"{cap}-byte cap"
+                    )
+                chunks.append(chunk)
+            # Populate _content so the closed response still serves
+            # .json()/.text/.content — same mechanism as Response.read().
+            response._content = b"".join(chunks)
+        finally:
+            response.close()
+        return response

@@ -41,7 +41,8 @@ import httpx
 from app.services.url_validator import (
     is_integration_private_allowed,
     require_public_http_url,
-    safe_http_client,
+    safe_request,
+    ResponseTooLarge,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,10 +165,11 @@ def _test_nessus(
     headers = {"X-ApiKeys": f"accessKey={access_key}; secretKey={secret_key}"}
     target = f"{base_url.rstrip('/')}/server/properties"
     try:
-        with safe_http_client(
-            allow_private=True, timeout=10.0, verify=False,
-        ) as client:
-            resp = client.get(target, headers=headers)
+        resp = safe_request(
+            "GET", target, allow_private=True, timeout=10.0, verify=False, headers=headers,
+        )
+    except ResponseTooLarge:
+        return {"ok": False, "message": "Nessus returned an oversized response."}
     except httpx.ConnectError as exc:
         return {"ok": False, "message": f"Could not connect to Nessus: {exc}"}
     except httpx.TimeoutException:
@@ -216,10 +218,9 @@ def _test_ollama(base_url: str) -> dict:
     """Hit ``/api/version`` — no auth, fastest possible round-trip."""
     target = f"{base_url.rstrip('/')}/api/version"
     try:
-        with safe_http_client(
-            allow_private=True, timeout=5.0, verify=False,
-        ) as client:
-            resp = client.get(target)
+        resp = safe_request("GET", target, allow_private=True, timeout=5.0, verify=False)
+    except ResponseTooLarge:
+        return {"ok": False, "message": "Ollama returned an oversized response."}
     except httpx.ConnectError as exc:
         return {"ok": False, "message": f"Could not connect to Ollama: {exc}"}
     except httpx.TimeoutException:

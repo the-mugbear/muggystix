@@ -155,6 +155,15 @@ class Settings:
         os.getenv("INGESTION_ORPHAN_CUTOFF_MULTIPLIER", "1.5")
     )
 
+    # Hard cap on the body size of any outbound HTTP response (LLM providers,
+    # scanner integrations, webhooks) before it is buffered into memory.  A
+    # hostile or misconfigured endpoint can otherwise return an arbitrarily
+    # large body and balloon backend RAM via ``.json()``/``.text``.  10 MiB is
+    # far above any legitimate probe/completion/webhook-ack response.
+    MAX_OUTBOUND_RESPONSE_BYTES: int = int(
+        os.getenv("MAX_OUTBOUND_RESPONSE_BYTES", str(10 * 1024 * 1024))
+    )
+
     # Nessus ingestion tuning
     NESSUS_COMMIT_BATCH_SIZE: int = int(os.getenv("NESSUS_COMMIT_BATCH_SIZE", "50"))
     NESSUS_PLUGIN_OUTPUT_MAX_CHARS: int = int(
