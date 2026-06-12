@@ -22,6 +22,14 @@ from app.services.status_history_service import record_status_transition
 
 _VALID_SEVERITIES = {s.value for s in FindingSeverity}
 _VALID_STATUSES = {s.value for s in FindingStatus}
+# Final dispositions that an analyst must justify when setting (the rationale is
+# recorded in the status-history summary).  Working states (open/confirmed/
+# retest) don't require one.
+_TERMINAL_STATUSES = {
+    FindingStatus.FALSE_POSITIVE.value,
+    FindingStatus.ACCEPTED_RISK.value,
+    FindingStatus.REMEDIATED.value,
+}
 
 
 def validate_severity(severity: str) -> str:
@@ -291,6 +299,14 @@ class FindingService:
     ) -> Finding:
         _validate_status(status)
         if status != finding.status:
+            # Terminal determinations must be justified — the rationale lives in
+            # the status-history summary (surfaced by the history endpoint and
+            # the report).
+            if status in _TERMINAL_STATUSES and not (summary and summary.strip()):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"A justification is required to set a finding to '{status}'.",
+                )
             old = finding.status
             finding.status = status
             record_status_transition(

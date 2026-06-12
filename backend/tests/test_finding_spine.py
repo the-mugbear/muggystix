@@ -97,3 +97,32 @@ def test_finding_status_transition_records_one_history_row(client, db_session, t
     # create writes the initial open row; then confirmed + remediated = 3.
     rows = db_session.query(FindingStatusHistory).filter_by(finding_id=fid).count()
     assert rows == 3
+
+
+def test_terminal_status_requires_justification(client, test_project):
+    """A terminal determination (false_positive/accepted_risk/remediated) needs
+    a justification summary; working states (confirmed) do not."""
+    fid = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "dispute", "severity": "high"},
+    ).json()["id"]
+    url = f"/api/v1/projects/{test_project.id}/findings/{fid}/status"
+
+    for terminal in ("false_positive", "accepted_risk", "remediated"):
+        r = client.post(url, json={"status": terminal})
+        assert r.status_code == 422, f"{terminal}: {r.text}"
+        assert "justification" in r.text.lower()
+
+    # With a justification it succeeds.
+    ok = client.post(url, json={"status": "false_positive", "summary": "duplicate of FND-12"})
+    assert ok.status_code == 200, ok.text
+
+    # Working states (confirmed) don't require one.
+    fid2 = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "real", "severity": "high"},
+    ).json()["id"]
+    assert client.post(
+        f"/api/v1/projects/{test_project.id}/findings/{fid2}/status",
+        json={"status": "confirmed"},
+    ).status_code == 200
