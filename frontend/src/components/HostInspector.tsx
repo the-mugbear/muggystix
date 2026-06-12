@@ -19,6 +19,7 @@
  * sheet header therefore stay minimal.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { SEVERITY_RANK } from '../utils/severity';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -135,14 +136,7 @@ const FOLLOW_STATUS_ORDER: FollowStatus[] = ['in_review', 'reviewed'];
 
 const VULNERABILITY_PREVIEW_LIMIT = 10;
 
-const VULNERABILITY_SEVERITY_ORDER: Record<string, number> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-  info: 4,
-  unknown: 5,
-};
+const VULNERABILITY_SEVERITY_ORDER = SEVERITY_RANK;
 
 const severityBadgeVariant = (
   severity: string | null | undefined,

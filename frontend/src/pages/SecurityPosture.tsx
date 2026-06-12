@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Clock, Eye, Loader2, RefreshCw, ShieldAlert,
+  AlertTriangle, ArrowUpRight, Clock, Eye, Info, Loader2, RefreshCw, ShieldAlert,
   ShieldCheck, Telescope, Layers, UserCheck,
 } from 'lucide-react';
 
@@ -27,6 +27,7 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
@@ -47,6 +48,21 @@ const LABEL_ICON = {
 const SevDot: React.FC<{ severity: Severity }> = ({ severity }) => (
   <span className="inline-block size-2.5 shrink-0 rounded-full"
     style={{ background: SEVERITY_HSL[severity] }} aria-hidden />
+);
+
+// Plain-English "what is this / how it's derived" help — this is a management
+// surface, so every metric explains itself on an explicit (i), not by making
+// the operator guess. (Distinct from hiding the DATA behind hover.)
+const InfoTip: React.FC<{ text: string }> = ({ text }) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button type="button" aria-label="What is this and how is it derived?"
+        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <Info className="size-3.5" aria-hidden />
+      </button>
+    </TooltipTrigger>
+    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
+  </Tooltip>
 );
 
 // Evidence currency — how fresh the snapshot is. Stale/absent scans are
@@ -153,7 +169,10 @@ const PostureLabelBanner: React.FC<{ data: PostureResponse }> = ({ data }) => {
         <div className="flex items-center gap-sm">
           <Icon className={`size-7 shrink-0 ${tone.textClass}`} aria-hidden />
           <div>
-            <p className="text-caption uppercase tracking-wide text-muted-foreground">Posture</p>
+            <p className="flex items-center gap-xxs text-caption uppercase tracking-wide text-muted-foreground">
+              Posture
+              <InfoTip text="A deterministic label, not a score. Action required = any unowned critical/high finding, estate blind spot, hot tier-1/2 site, or blocked run. Needs assessment = low review coverage, pending approvals, or untriaged scan data. Otherwise No urgent signals. The lines on the right are the top contributing reasons." />
+            </p>
             <p className={`text-subheading font-bold ${tone.textClass}`}>{tone.text}</p>
           </div>
         </div>
@@ -182,13 +201,16 @@ const StatCard: React.FC<{
   label: string;
   icon: React.ReactNode;
   value: React.ReactNode;
+  info: string;
   visual?: React.ReactNode;
   children?: React.ReactNode;
-}> = ({ label, icon, value, visual, children }) => (
+}> = ({ label, icon, value, info, visual, children }) => (
   <Card>
     <CardContent className="flex h-full flex-col gap-sm p-md">
       <div className="flex items-center justify-between gap-xs">
-        <span className="text-caption text-muted-foreground">{label}</span>
+        <span className="flex items-center gap-xxs text-caption text-muted-foreground">
+          {label} <InfoTip text={info} />
+        </span>
         <span className="text-muted-foreground" aria-hidden>{icon}</span>
       </div>
       <p className="text-page-title font-bold tabular-nums leading-none text-foreground">{value}</p>
@@ -209,6 +231,7 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
         label="Active findings"
         icon={<ShieldAlert className="size-4" />}
         value={h.active_exposure.active_findings}
+        info="Curated findings still open, confirmed, or in retest — issues an analyst has accepted as real. Excludes resolved (remediated / false-positive / accepted-risk) and raw scanner detections (counted separately below)."
         visual={<SeverityBar counts={h.active_exposure.by_severity} variant="compact" />}
       >
         <p className="text-caption text-muted-foreground">
@@ -224,6 +247,7 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
         label="Assessment coverage"
         icon={<Eye className="size-4" />}
         value={h.review_coverage.pct == null ? '—' : `${h.review_coverage.pct}%`}
+        info="Share of discovered hosts an analyst has marked Reviewed — derived as reviewed ÷ total hosts. 'Validated' counts hosts with a completed test (a stronger signal than review)."
         visual={<Meter pct={h.review_coverage.pct} color="hsl(var(--info))" />}
       >
         <p className="text-caption text-muted-foreground">
@@ -237,6 +261,7 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
         label="Ownership"
         icon={<UserCheck className="size-4" />}
         value={ownPct == null ? '—' : `${ownPct}%`}
+        info="Share of active findings with an assigned owner — derived as owned ÷ active findings. Unowned findings have nobody accountable to drive them to closure."
         visual={<Meter pct={ownPct} color={ownPct != null && ownPct < 60 ? 'hsl(var(--warning))' : 'hsl(var(--success))'} />}
       >
         <p className="text-caption text-muted-foreground">
@@ -250,6 +275,7 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
         label="Systemic weaknesses"
         icon={<Layers className="size-4" />}
         value={h.systemic.adopted ? h.systemic.blind_spot_count : '—'}
+        info="Weaknesses that recur estate-wide (e.g. SMB signing disabled on many hosts). Counted as 'blind spots' when one condition spans a meaningful share of hosts AND most sites. Derived from the systemic-insights analysis; needs scoped subnets to assess."
         visual={h.systemic.adopted ? (
           <div className="flex flex-wrap items-center gap-1">
             {conditions.length === 0
@@ -286,7 +312,10 @@ const RiskConcentration: React.FC<{ data: PostureResponse }> = ({ data }) => {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Where risk concentrates</CardTitle>
+        <CardTitle className="flex items-center gap-xs">
+          Where risk concentrates
+          <InfoTip text="Each bubble is a site. X = % of its hosts reviewed; Y = finding incidences per host (each affected host counts); bubble size = host count; colour = criticality tier. The shaded top-left is the danger zone — under-reviewed AND high-exposure." />
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {!adopted ? (
@@ -321,7 +350,10 @@ const ManagementPriorities: React.FC<{
   <Card>
     <CardHeader>
       <CardTitle className="flex items-center justify-between gap-xs">
-        <span>Management priorities</span>
+        <span className="flex items-center gap-xs">
+          Management priorities
+          <InfoTip text="The ranked next decisions, worst-first. Combines unowned critical/high findings, estate blind spots, hot tier-1/2 sites, blocked runs, low review coverage, untriaged scan data, and pending approvals — the same signals that set the posture label above." />
+        </span>
         {(decisions.pending_approvals > 0 || decisions.blocked_sessions > 0) && (
           <span className="flex gap-xxs">
             {decisions.pending_approvals > 0 && (
@@ -388,7 +420,10 @@ const SystemicWeaknesses: React.FC<{ data: PostureResponse }> = ({ data }) => {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-xs">
-          <span>Systemic weaknesses</span>
+          <span className="flex items-center gap-xs">
+            Systemic weaknesses
+            <InfoTip text="How widely each recurring weakness spreads — % of in-scope hosts affected, plus how many subnets and sites it touches. An 'estate blind spot' spans most of the estate, pointing at a process gap rather than a one-off." />
+          </span>
           <Link to="/insights/systemic" className="text-caption text-info hover:underline">All →</Link>
         </CardTitle>
       </CardHeader>
@@ -437,7 +472,10 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center justify-between gap-xs">
-          <span>Finding disposition</span>
+          <span className="flex items-center gap-xs">
+            Finding disposition
+            <InfoTip text="Where curated findings sit in their lifecycle. Active = open / confirmed / retest; Resolved = remediated / false-positive / accepted-risk. The two figures above split active findings by ORIGIN (analyst-raised vs scanner-sourced), which is independent of status." />
+          </span>
           <Link to="/findings" className="text-caption text-info hover:underline">Findings →</Link>
         </CardTitle>
       </CardHeader>
@@ -456,7 +494,7 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
         </div>
         <p className="text-caption text-muted-foreground">By origin (note / manual / execution vs scanner) — not confirmation status.</p>
 
-        <DispositionPipeline byStatus={d.by_status} byStatusSeverity={d.by_status_severity} />
+        <DispositionPipeline byStatus={d.by_status} />
       </CardContent>
     </Card>
   );
@@ -470,7 +508,10 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Sites requiring attention</CardTitle>
+        <CardTitle className="flex items-center gap-xs">
+          Sites requiring attention
+          <InfoTip text="Configured sites worst-first by tier-weighted exposure (severity-weighted active findings scaled by site criticality) and neglect. 'Reviewed' is the % of the site's hosts marked Reviewed. Sites with zero discovered hosts are included — absence of results is not safety." />
+        </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
         <div className="overflow-x-auto">

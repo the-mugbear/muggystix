@@ -8,6 +8,7 @@
  * reports, and notifications link a finding to.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, Loader2, Trash2 } from 'lucide-react';
 
@@ -48,10 +49,7 @@ import {
 import { safeFallback } from '../utils/uiStyles';
 import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 
-const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
-  critical: 'severity-critical', high: 'severity-high', medium: 'severity-medium',
-  low: 'severity-low', info: 'muted',
-};
+const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 // Severity is an editable attribute (not a lifecycle transition, so it isn't
 // in the status history) — surfaced here so a mis-set severity from
 // promotion (e.g. medium that should be low) can be reclassified in place.

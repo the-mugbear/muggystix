@@ -19,7 +19,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, RefreshCw, ShieldAlert, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Loader2, RefreshCw, ShieldAlert, AlertTriangle, ShieldCheck, Info } from 'lucide-react';
 
 import {
   getSystemicInsights,
@@ -33,9 +33,24 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
+
+// Plain-English "how is this derived?" help — systemic analysis is the least
+// self-evident view, so each tier explains its method on an explicit (i).
+const InfoTip: React.FC<{ text: string }> = ({ text }) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button type="button" aria-label="How is this derived?"
+        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <Info className="size-3.5" aria-hidden />
+      </button>
+    </TooltipTrigger>
+    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
+  </Tooltip>
+);
 
 type BadgeVariant =
   | 'default' | 'secondary' | 'destructive' | 'success'
@@ -140,8 +155,11 @@ const SystemicInsights: React.FC = () => {
       ) : (
         <>
           {estate && (
-            <div className="flex flex-wrap gap-x-lg gap-y-xs text-caption text-muted-foreground">
-              <span>Hosts in scope: <span className="font-medium text-foreground">{estate.hosts_in_scope}</span></span>
+            <div className="flex flex-wrap items-center gap-x-lg gap-y-xs text-caption text-muted-foreground">
+              <span className="inline-flex items-center gap-xxs">
+                Hosts in scope: <span className="font-medium text-foreground">{estate.hosts_in_scope}</span>
+                <InfoTip text="Only hosts that resolve to a scoped subnet are analysed — systemic spread is measured against this denominator, not every host in the project. Define scopes/subnets to bring more hosts in scope." />
+              </span>
               <span>Subnets: <span className="font-medium text-foreground">{estate.subnets}</span></span>
               <span>Sites: <span className="font-medium text-foreground">{estate.sites}</span></span>
               <span>Estate blind spots: <span className="font-medium text-foreground">{estate.blind_spot_count}</span></span>
@@ -165,6 +183,7 @@ const SystemicInsights: React.FC = () => {
                 <div className="flex items-center gap-xs">
                   <AlertTriangle className="size-4 text-warning" aria-hidden />
                   <h2 className="text-subheading font-semibold text-foreground">Estate blind spots</h2>
+                  <InfoTip text="A weakness becomes a blind spot when it affects a meaningful share of in-scope hosts AND spans most of the estate's sites (or the whole estate in a single-site project). Derived from the systemic analysis — the spread is the diagnosis, not the raw count." />
                   <span className="text-caption text-muted-foreground">
                     weaknesses spanning most of the estate — likely an org-level gap
                   </span>
@@ -184,7 +203,10 @@ const SystemicInsights: React.FC = () => {
               {/* Systemic conditions (full list, incl. those not estate-wide) */}
               {conditions.length > 0 && (
                 <section className="space-y-sm">
-                  <h2 className="text-subheading font-semibold text-foreground">Systemic conditions</h2>
+                  <div className="flex items-center gap-xs">
+                    <h2 className="text-subheading font-semibold text-foreground">Systemic conditions</h2>
+                    <InfoTip text="Every recurring weakness and how far it spreads. Hosts = affected in-scope hosts (and their % of the estate); Subnets / Sites = distinct segments touched; Score = severity weight × affected hosts × (1 + subnets + sites). 'Estate-wide' marks the blind spots above." />
+                  </div>
                   <Card>
                     <CardContent className="p-0">
                       <div className="overflow-x-auto">
@@ -237,7 +259,10 @@ const SystemicInsights: React.FC = () => {
               {/* Tier 2 — segment outliers */}
               {outliers.length > 0 && (
                 <section className="space-y-sm">
-                  <h2 className="text-subheading font-semibold text-foreground">Segment outliers</h2>
+                  <div className="flex items-center gap-xs">
+                    <h2 className="text-subheading font-semibold text-foreground">Segment outliers</h2>
+                    <InfoTip text="Subnets whose issue density (condition-incidences ÷ hosts) is at least 2× the estate-wide median density. Derived per subnet, then compared to the median — surfaces anomalously-bad ranges, not just the largest ones." />
+                  </div>
                   <p className="text-caption text-muted-foreground">
                     Subnets whose issue density (issues per host) is well above the estate's own
                     median — anomalies, not just the biggest ranges.
@@ -294,7 +319,10 @@ const SystemicInsights: React.FC = () => {
               {/* Tier 3 — diagnostic profiles */}
               {profiles.length > 0 && (
                 <section className="space-y-sm">
-                  <h2 className="text-subheading font-semibold text-foreground">Diagnostic profiles</h2>
+                  <div className="flex items-center gap-xs">
+                    <h2 className="text-subheading font-semibold text-foreground">Diagnostic profiles</h2>
+                    <InfoTip text="Which conditions co-occur within each subnet, mapped to a likely management root cause — e.g. EOL OS + missing patches → patch-gap; expired/self-signed TLS → no-PKI; weak/guest auth → cred-hygiene. A hypothesis from the co-occurrence pattern, not a verdict." />
+                  </div>
                   <p className="text-caption text-muted-foreground">
                     Per-subnet co-occurrence signature → a likely management root cause.
                   </p>

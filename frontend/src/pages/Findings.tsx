@@ -7,6 +7,7 @@
  * up" lands on.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
 import { Loader2, AlertTriangle } from 'lucide-react';
 
@@ -57,13 +58,7 @@ import {
 import { safeFallback } from '../utils/uiStyles';
 import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 
-const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
-  critical: 'severity-critical',
-  high: 'severity-high',
-  medium: 'severity-medium',
-  low: 'severity-low',
-  info: 'muted',
-};
+const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
 type SummaryPrompt =
   | { kind: 'single'; findingId: number; status: FindingStatus; title: string }

@@ -12,6 +12,7 @@
  * (loading / error / not-adopted / empty) renders a safe fallback.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
@@ -52,10 +53,7 @@ const ACTION_TONE: Record<string, BadgeVariant> = {
   ok: 'success',
 };
 
-const SEVERITY_VARIANT: Record<string, string> = {
-  critical: 'severity-critical', high: 'severity-high', medium: 'severity-medium',
-  low: 'severity-low', info: 'muted',
-};
+const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
 function tierTone(tier: number): BadgeVariant {
   if (tier <= 1) return 'destructive';

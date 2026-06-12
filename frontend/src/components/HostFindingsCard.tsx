@@ -7,6 +7,7 @@
  * changes (the inspector bumps it after a promote).
  */
 import React, { useCallback, useEffect, useState } from 'react';
+import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { useNavigate } from 'react-router-dom';
 import { AlertHexIcon } from './AppIcons';
 
@@ -32,13 +33,7 @@ import {
   SelectValue,
 } from './ui/select';
 
-const SEVERITY_VARIANT: Record<FindingSeverity, string> = {
-  critical: 'severity-critical',
-  high: 'severity-high',
-  medium: 'severity-medium',
-  low: 'severity-low',
-  info: 'muted',
-};
+const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
 const STATUS_LABEL: Record<FindingStatus, string> = {
   open: 'Open',

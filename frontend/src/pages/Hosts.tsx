@@ -191,11 +191,15 @@ const stateBadgeClass = (state: string | null): string => {
   }
 };
 
+// Mirrors the canonical severity tokens (utils/severity SEVERITY_HSL):
+// critical=destructive, high=warning, medium=info, low=success, info=muted.
+// (Previously medium read amber and low read blue — off from every other
+// severity surface in the app.)
 const severityChipClasses: Record<'critical' | 'high' | 'medium' | 'low' | 'info', string> = {
   critical: 'bg-destructive text-destructive-foreground',
   high: 'bg-warning text-warning-foreground',
-  medium: 'bg-warning/70 text-warning-foreground',
-  low: 'bg-info text-info-foreground',
+  medium: 'bg-info text-info-foreground',
+  low: 'bg-success text-success-foreground',
   info: 'bg-muted text-muted-foreground',
 };
 
