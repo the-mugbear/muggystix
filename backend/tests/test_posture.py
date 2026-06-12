@@ -33,7 +33,12 @@ def test_empty_project_reads_needs_assessment(db_session, test_project):
     out = compute_posture(db_session, test_project.id)
     assert out["label"] == "needs_assessment"
     assert any(p["kind"] == "onboard" for p in out["priorities"])
-    assert out["headline"]["confirmed_exposure"]["active_findings"] == 0
+    assert out["headline"]["active_exposure"]["active_findings"] == 0
+    # Evidence currency is always present (even with no scans).
+    assert "scan_staleness_days" in out["evidence"]
+    # Systemic carries an adoption flag so the UI can distinguish
+    # "can't assess" from "assessed, nothing found".
+    assert "adopted" in out["headline"]["systemic"]
 
 
 def test_unowned_critical_is_action_required(db_session, test_project):
@@ -45,7 +50,7 @@ def test_unowned_critical_is_action_required(db_session, test_project):
 
     out = compute_posture(db_session, test_project.id)
     assert out["label"] == "action_required"
-    assert out["headline"]["confirmed_exposure"]["by_severity"]["critical"] == 1
+    assert out["headline"]["active_exposure"]["by_severity"]["critical"] == 1
     assert out["headline"]["ownership"]["unowned"] == 1
     # The label, reasons, and priorities share one pass — the ownership signal
     # is both the top reason and the top priority.
@@ -67,3 +72,28 @@ def test_owned_reviewed_finding_no_urgent_signals(db_session, test_project, test
     assert out["label"] == "no_urgent_signals"
     assert out["headline"]["review_coverage"]["pct"] == 100
     assert out["headline"]["ownership"]["unowned"] == 0
+
+
+def test_blocked_runs_count_only_latest_session_per_plan(db_session, test_project):
+    """A superseded failed session (a newer run was started) must NOT leave a
+    permanent 'blocked' flag — only the latest session per plan counts."""
+    from app.db.models_agent import TestPlan, ExecutionSession
+
+    plan = TestPlan(project_id=test_project.id, title="plan")
+    db_session.add(plan)
+    db_session.flush()
+    # Older session failed; a newer session is active → the plan is progressing.
+    db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
+    db_session.flush()
+    db_session.add(ExecutionSession(test_plan_id=plan.id, status="active"))
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id)
+    assert out["decisions"]["blocked_sessions"] == 0
+    assert not any(p["kind"] == "blocked" for p in out["priorities"])
+
+    # Now the LATEST session fails → it counts.
+    db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
+    db_session.commit()
+    out2 = compute_posture(db_session, test_project.id)
+    assert out2["decisions"]["blocked_sessions"] == 1

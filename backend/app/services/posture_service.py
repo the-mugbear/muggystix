@@ -131,7 +131,7 @@ def _gather_signals(
                     kind="site", title=f"{s['site']} — {crit} critical",
                     blast_radius=f"Tier {tier} site · {s['host_count']} hosts · {s['exposure']['active_findings']} active findings",
                     action=s["recommended_action"]["text"],
-                    severity="critical", owner=None, link="/insights",
+                    severity="critical", owner=s.get("owner_name"), link="/insights",
                 ))
 
     # D. Blocked agent runs — failed/abandoned execution sessions (action).
@@ -185,7 +185,7 @@ def _gather_signals(
                     f"{s['site']}: {gap} of {s['expected_host_count']} expected hosts not found",
                     kind="coverage", title=f"{s['site']} — coverage gap",
                     blast_radius=f"{gap} expected hosts undiscovered", action="Extend recon to close the gap",
-                    severity="medium", owner=None, link="/insights",
+                    severity="medium", owner=s.get("owner_name"), link="/insights",
                 ))
 
     signals.sort(key=lambda s: -s["score"])
@@ -255,14 +255,29 @@ def compute_posture(db: Session, project_id: int) -> Dict[str, Any]:
         .scalar()
         or 0
     )
-    # Execution sessions scope to a project through their test plan.
+    # Blocked runs — only the LATEST execution session per plan counts (id is
+    # monotonic). Starting a replacement run deliberately leaves the prior one
+    # paused/abandoned, so counting every historical session left a permanent
+    # "blocked" flag on a normal workflow (mirrors the portfolio fix). Sessions
+    # scope to a project through their test plan.
+    latest_exec_subq = (
+        db.query(
+            ExecutionSession.test_plan_id.label("plan_id"),
+            func.max(ExecutionSession.id).label("max_id"),
+        )
+        .group_by(ExecutionSession.test_plan_id)
+        .subquery()
+    )
     blocked_sessions = (
         db.query(func.count(ExecutionSession.id))
+        .join(latest_exec_subq, ExecutionSession.id == latest_exec_subq.c.max_id)
         .join(TestPlan, ExecutionSession.test_plan_id == TestPlan.id)
         .filter(
             TestPlan.project_id == project_id,
             ExecutionSession.status.in_([
-                ExecutionSessionStatus.FAILED.value, ExecutionSessionStatus.ABANDONED.value,
+                ExecutionSessionStatus.FAILED.value,
+                ExecutionSessionStatus.ABANDONED.value,
+                ExecutionSessionStatus.PAUSED.value,
             ]),
         )
         .scalar()
@@ -311,7 +326,9 @@ def compute_posture(db: Session, project_id: int) -> Dict[str, Any]:
         "label": label,
         "reasons": reasons,
         "headline": {
-            "confirmed_exposure": {
+            # Active CURATED findings (status in open/confirmed/retest) — not a
+            # claim that each is "confirmed" (that's one specific status).
+            "active_exposure": {
                 "active_findings": active,
                 "by_severity": project_att["exposure"]["by_severity"],
             },
@@ -325,10 +342,19 @@ def compute_posture(db: Session, project_id: int) -> Dict[str, Any]:
                 "pct": round(owned / active * 100) if active else None,
             },
             "systemic": {
+                # adopted=False means systemic posture CAN'T be assessed (no
+                # scoped subnets) — distinct from "assessed, nothing found".
+                "adopted": systemic.get("adopted", False),
                 "blind_spot_count": systemic.get("estate", {}).get("blind_spot_count", 0),
                 "condition_count": len(systemic.get("conditions", [])),
             },
             "detected_exposure": {"vuln_count": int(detected_vulns)},
+        },
+        # Evidence currency — how fresh the snapshot is. Absence of recent scans
+        # is itself a posture signal (the data may be stale).
+        "evidence": {
+            "scan_count": project_att["neglect"]["scan_count"],
+            "scan_staleness_days": project_att["neglect"]["scan_staleness_days"],
         },
         "priorities": [s["priority"] | {"score": s["score"]} for s in signals[:8]],
         "decisions": {

@@ -42,9 +42,14 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
   const plottable = sites.filter((s) => s.host_count > 0);
   const zeroHost = sites.filter((s) => s.host_count === 0 && !s.unassigned);
 
+  // Per-host density uses finding-HOST incidences (each affected host counts),
+  // not distinct findings — a finding spanning 100 hosts must not read as
+  // 0.01/host. Falls back to active_findings if incidences are absent.
+  const incidencesOf = (s: PostureSite) =>
+    s.exposure.finding_host_incidences ?? s.exposure.active_findings;
   const maxPerHost = Math.max(
     0.5,
-    ...plottable.map((s) => s.exposure.active_findings / Math.max(1, s.host_count)),
+    ...plottable.map((s) => incidencesOf(s) / Math.max(1, s.host_count)),
   );
   const maxHosts = Math.max(1, ...plottable.map((s) => s.host_count));
 
@@ -55,7 +60,7 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
   const points: Plotted[] = plottable.map((s) => {
     const reviewed = s.host_count - s.neglect.unreviewed_hosts;
     const reviewPct = s.host_count > 0 ? (reviewed / s.host_count) * 100 : 0;
-    const perHost = s.exposure.active_findings / Math.max(1, s.host_count);
+    const perHost = incidencesOf(s) / Math.max(1, s.host_count);
     return {
       site: s,
       key: s.unassigned ? '__unassigned__' : (s.site ?? `site-${s.site_id}`),
@@ -111,7 +116,7 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
           className="fill-muted-foreground" fontSize={11}>Hosts reviewed →</text>
         <text x={14} y={(PAD.t + H - PAD.b) / 2} textAnchor="middle"
           transform={`rotate(-90 14 ${(PAD.t + H - PAD.b) / 2})`}
-          className="fill-muted-foreground" fontSize={11}>Active findings / host ↑</text>
+          className="fill-muted-foreground" fontSize={11}>Finding incidence / host ↑</text>
 
         {/* Bubbles */}
         {points.map((p) => {
@@ -160,7 +165,7 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
                 {tier ? TIER_LABEL[tier] ?? `Tier ${tier}` : 'Unassigned'} · {p.site.host_count} hosts
               </text>
               <text x={tx + 12} y={ty + 54} className="fill-foreground" fontSize={10}>
-                {Math.round(p.reviewPct)}% reviewed · {p.perHost.toFixed(1)} findings/host
+                {Math.round(p.reviewPct)}% reviewed · {p.perHost.toFixed(1)} incidence/host
               </text>
               <text x={tx + 12} y={ty + 71} className="fill-foreground" fontSize={10}>
                 {p.site.exposure.active_findings} active ({p.site.exposure.by_severity.critical} crit)

@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Loader2, RefreshCw, Search, ShieldAlert,
+  AlertTriangle, ArrowUpRight, Clock, Loader2, RefreshCw, ShieldAlert,
   ShieldCheck, Telescope, Layers,
 } from 'lucide-react';
 
@@ -32,6 +32,7 @@ import {
 } from '../components/ui/table';
 import { ArcGauge, SeverityStack, PrevalenceBar } from '../components/posture/PostureCharts';
 import RiskBubbleMatrix from '../components/posture/RiskBubbleMatrix';
+import DispositionPipeline from '../components/posture/DispositionPipeline';
 import {
   SEVERITY_HSL, SEVERITY_LABEL, LABEL_TONE, PRIORITY_KIND, tierHsl, TIER_LABEL,
 } from '../components/posture/postureTheme';
@@ -46,6 +47,24 @@ const SevDot: React.FC<{ severity: Severity }> = ({ severity }) => (
   <span className="inline-block size-2.5 shrink-0 rounded-full"
     style={{ background: SEVERITY_HSL[severity] }} aria-hidden />
 );
+
+// Evidence currency — how fresh the snapshot is. Stale/absent scans are
+// themselves a posture signal, so this rides next to the headline.
+const EvidenceCurrency: React.FC<{ evidence: PostureResponse['evidence'] }> = ({ evidence }) => {
+  const days = evidence.scan_staleness_days;
+  const text = evidence.scan_count === 0
+    ? 'No scans yet'
+    : days == null ? `${evidence.scan_count} scans`
+      : days === 0 ? `${evidence.scan_count} scans · last today`
+        : `${evidence.scan_count} scans · last ${days}d ago`;
+  const stale = days != null && days >= 14;
+  return (
+    <span className={`inline-flex items-center gap-xxs text-caption ${stale || evidence.scan_count === 0 ? 'text-warning' : 'text-muted-foreground'}`}
+      title="Evidence currency — how fresh this snapshot is">
+      <Clock className="size-3" aria-hidden /> {text}
+    </span>
+  );
+};
 
 const SecurityPosture: React.FC = () => {
   const { currentProject } = useProject();
@@ -73,9 +92,12 @@ const SecurityPosture: React.FC = () => {
             the next decision. Every number is explainable and links to the detail.
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-          <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-        </Button>
+        <div className="flex flex-col items-end gap-xs">
+          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+          </Button>
+          {data && <EvidenceCurrency evidence={data.evidence} />}
+        </div>
       </div>
 
       {loading && !data ? (
@@ -98,7 +120,7 @@ const SecurityPosture: React.FC = () => {
           <PostureLabelBanner data={data} />
           <HeadlineMeasures data={data} />
 
-          <div className="grid gap-md lg:grid-cols-[1.4fr_1fr]">
+          <div className="grid items-start gap-md lg:grid-cols-[1.4fr_1fr]">
             <RiskConcentration data={data} />
             <ManagementPriorities priorities={data.priorities} decisions={data.decisions} />
           </div>
@@ -154,20 +176,20 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const ownPct = h.ownership.pct;
   return (
     <div className="grid gap-md sm:grid-cols-2 xl:grid-cols-4">
-      {/* Confirmed exposure */}
+      {/* Active findings (curated) */}
       <Card>
         <CardContent className="space-y-sm p-md">
           <div className="flex items-baseline justify-between gap-xs">
-            <span className="text-caption text-muted-foreground">Confirmed exposure</span>
+            <span className="text-caption text-muted-foreground">Active findings</span>
             <ShieldAlert className="size-4 text-muted-foreground" aria-hidden />
           </div>
           <p className="text-page-title font-bold tabular-nums text-foreground">
-            {h.confirmed_exposure.active_findings}
+            {h.active_exposure.active_findings}
           </p>
-          <SeverityStack counts={h.confirmed_exposure.by_severity} showLegend />
+          <SeverityStack counts={h.active_exposure.by_severity} showLegend />
           <p className="text-caption text-muted-foreground">
-            active curated findings ·{' '}
-            <span title="Scanner-detected vulnerabilities — not analyst-confirmed">
+            curated · open, confirmed or retest ·{' '}
+            <span title="Scanner-detected vulnerabilities — raw, not analyst-curated. Shown separately, never summed with curated findings.">
               {h.detected_exposure.vuln_count} scanner-detected
             </span>
           </p>
@@ -219,16 +241,30 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
             <span className="text-caption text-muted-foreground">Systemic weaknesses</span>
             <Layers className="size-4 text-muted-foreground" aria-hidden />
           </div>
-          <p className="text-page-title font-bold tabular-nums text-foreground">
-            {h.systemic.blind_spot_count}
-          </p>
-          <p className="text-caption text-muted-foreground">
-            estate blind spots · {h.systemic.condition_count} recurring condition
-            {h.systemic.condition_count === 1 ? '' : 's'}
-          </p>
-          <Link to="/insights/systemic" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
-            Investigate <ArrowUpRight className="size-3" aria-hidden />
-          </Link>
+          {!h.systemic.adopted ? (
+            <>
+              <p className="text-page-title font-bold tabular-nums text-muted-foreground">—</p>
+              <p className="text-caption text-warning">
+                Not assessed — needs scoped subnets.
+              </p>
+              <Link to="/scopes" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
+                Manage scopes <ArrowUpRight className="size-3" aria-hidden />
+              </Link>
+            </>
+          ) : (
+            <>
+              <p className="text-page-title font-bold tabular-nums text-foreground">
+                {h.systemic.blind_spot_count}
+              </p>
+              <p className="text-caption text-muted-foreground">
+                estate blind spots · {h.systemic.condition_count} recurring condition
+                {h.systemic.condition_count === 1 ? '' : 's'}
+              </p>
+              <Link to="/insights/systemic" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
+                Investigate <ArrowUpRight className="size-3" aria-hidden />
+              </Link>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -314,6 +350,7 @@ const ManagementPriorities: React.FC<{
                   </div>
                   <p className="mt-xxs truncate text-caption text-muted-foreground" title={p.blast_radius}>
                     {p.blast_radius}
+                    {p.owner && <span className="text-foreground"> · owner {p.owner}</span>}
                   </p>
                   <p className="mt-xxs truncate text-caption text-foreground" title={p.action}>
                     → {p.action}
@@ -350,9 +387,14 @@ const SystemicWeaknesses: React.FC<{ data: PostureResponse }> = ({ data }) => {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-md">
-        {!data.systemic.adopted || conditions.length === 0 ? (
+        {!data.systemic.adopted ? (
+          <p className="text-caption text-warning">
+            Systemic posture can't be assessed yet — no scoped subnets.{' '}
+            <Link to="/scopes" className="text-info hover:underline">Manage scopes</Link>.
+          </p>
+        ) : conditions.length === 0 ? (
           <p className="text-caption text-muted-foreground">
-            No weakness recurs widely enough across the estate to read as systemic.
+            Assessed — no weakness recurs widely enough across the estate to read as systemic.
           </p>
         ) : conditions.map((c) => {
           const color = c.is_blind_spot ? 'hsl(var(--destructive))' : 'hsl(var(--warning))';
@@ -385,9 +427,6 @@ const SystemicWeaknesses: React.FC<{ data: PostureResponse }> = ({ data }) => {
 // ---------------------------------------------------------------------------
 const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const d = data.disposition;
-  const STATUS_ORDER = ['open', 'confirmed', 'retest', 'remediated', 'false_positive', 'accepted_risk'];
-  const statuses = STATUS_ORDER.filter((s) => d.by_status[s]);
-  const maxStatus = Math.max(1, ...statuses.map((s) => d.by_status[s]));
   return (
     <Card>
       <CardHeader>
@@ -397,11 +436,12 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-md">
-        {/* Active source split — analyst-confirmed vs scanner, never summed. */}
+        {/* Active source split — analyst-sourced vs scanner, never summed.
+            (Source ≠ confirmation status — these are how a finding originated.) */}
         <div className="grid grid-cols-2 gap-sm">
           <div className="rounded-control border border-border p-sm">
             <p className="text-page-title font-bold tabular-nums text-foreground">{d.analyst_active}</p>
-            <p className="text-caption text-muted-foreground">analyst-confirmed active</p>
+            <p className="text-caption text-muted-foreground">analyst-sourced active</p>
           </div>
           <div className="rounded-control border border-dashed border-border p-sm">
             <p className="text-page-title font-bold tabular-nums text-muted-foreground">{d.scanner_active}</p>
@@ -409,28 +449,7 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
           </div>
         </div>
 
-        {statuses.length === 0 ? (
-          <p className="text-caption text-muted-foreground">No findings recorded yet.</p>
-        ) : (
-          <div className="space-y-xs">
-            {statuses.map((s) => {
-              const sev = d.by_status_severity[s] ?? {};
-              return (
-                <div key={s} className="flex items-center gap-sm">
-                  <span className="w-28 shrink-0 truncate text-caption capitalize text-muted-foreground">
-                    {s.replace('_', ' ')}
-                  </span>
-                  <div className="flex-1" style={{ maxWidth: `${(d.by_status[s] / maxStatus) * 100}%` }}>
-                    <SeverityStack counts={sev} height={14} />
-                  </div>
-                  <span className="w-8 shrink-0 text-right text-caption tabular-nums text-foreground">
-                    {d.by_status[s]}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <DispositionPipeline byStatus={d.by_status} byStatusSeverity={d.by_status_severity} />
       </CardContent>
     </Card>
   );
@@ -451,12 +470,13 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[20%]">Site</TableHead>
-                <TableHead className="w-[12%]">Tier</TableHead>
-                <TableHead className="w-[8%] text-right">Hosts</TableHead>
-                <TableHead className="w-[22%]">Confirmed exposure</TableHead>
-                <TableHead className="w-[12%] text-right">Reviewed</TableHead>
-                <TableHead className="w-[26%]">Recommended action</TableHead>
+                <TableHead className="w-[17%]">Site</TableHead>
+                <TableHead className="w-[11%]">Tier</TableHead>
+                <TableHead className="w-[7%] text-right">Hosts</TableHead>
+                <TableHead className="w-[19%]">Active exposure</TableHead>
+                <TableHead className="w-[10%] text-right">Reviewed</TableHead>
+                <TableHead className="w-[14%]">Owner</TableHead>
+                <TableHead className="w-[22%]">Recommended action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -498,6 +518,12 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
                           {reviewPct}%
                         </span>
                       )}
+                    </TableCell>
+                    <TableCell className="truncate text-caption"
+                      title={s.owner_name ?? undefined}>
+                      {s.owner_name
+                        ? <span className="text-foreground">{s.owner_name}</span>
+                        : <span className="text-warning">unassigned</span>}
                     </TableCell>
                     <TableCell className="truncate text-caption text-muted-foreground"
                       title={s.recommended_action.text}>

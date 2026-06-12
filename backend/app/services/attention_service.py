@@ -224,9 +224,16 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
     )
     finding_sites: Dict[int, set] = defaultdict(set)
     finding_meta: Dict[int, tuple] = {}
+    # Finding-HOST incidences per site: each (finding, host) link is one
+    # incidence, so a single finding spanning 100 hosts in a site contributes
+    # 100 — the honest input for a per-host exposure density (distinct-finding
+    # counts divided by hosts understate estate-wide findings).
+    site_incidences: Dict[str, int] = defaultdict(int)
     for host_id, fid, sev, owner in rows:
-        finding_sites[fid].add(host_to_site.get(host_id, _UNASSIGNED))
+        site = host_to_site.get(host_id, _UNASSIGNED)
+        finding_sites[fid].add(site)
         finding_meta[fid] = (sev, owner)
+        site_incidences[site] += 1
 
     site_sev: Dict[str, Dict[str, int]] = defaultdict(
         lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
@@ -251,6 +258,9 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
         site_obj = None if is_unassigned else sites_by_name.get(site)
         tier = site_obj.criticality_tier if site_obj else 3
         expected = site_obj.expected_host_count if site_obj else None
+        owner_name = None
+        if site_obj and site_obj.owner:
+            owner_name = site_obj.owner.full_name or site_obj.owner.username
         # Coverage gap = expected − discovered (only when expected is set) —
         # a neglect signal: a site with far fewer hosts than expected is
         # under-scanned, not "clean".
@@ -277,6 +287,7 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
             "site_id": site_obj.id if site_obj else None,
             "unassigned": is_unassigned,
             "criticality_tier": None if is_unassigned else tier,
+            "owner_name": owner_name,
             "host_count": len(host_ids),
             "expected_host_count": expected,
             "coverage_gap": coverage_gap,
@@ -284,6 +295,7 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
                 "raw_score": exposure_raw,
                 "weighted_score": weighted,
                 "active_findings": active,
+                "finding_host_incidences": site_incidences.get(site, 0),
                 "by_severity": by_sev,
             },
             "neglect": {"unowned_active_findings": unowned, "unreviewed_hosts": unreviewed},

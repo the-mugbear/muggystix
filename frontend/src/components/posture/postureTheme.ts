@@ -61,6 +61,29 @@ export const LABEL_TONE: Record<PostureLabel, LabelTone> = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Finding lifecycle — status → colour + label, split into active vs resolved
+// for the disposition pipeline. Colours are meaningful: open = needs attention
+// (amber), confirmed = real (red), retest = in verification (blue), remediated
+// = fixed (green), false-positive / accepted-risk = closed-out (muted).
+// ---------------------------------------------------------------------------
+export const STATUS_HSL: Record<string, string> = {
+  open: 'hsl(var(--warning))',
+  confirmed: 'hsl(var(--destructive))',
+  retest: 'hsl(var(--info))',
+  remediated: 'hsl(var(--success))',
+  false_positive: 'hsl(var(--muted-foreground))',
+  accepted_risk: 'hsl(var(--muted-foreground))',
+};
+
+export const STATUS_LABEL: Record<string, string> = {
+  open: 'Open', confirmed: 'Confirmed', retest: 'Retest',
+  remediated: 'Remediated', false_positive: 'False positive', accepted_risk: 'Accepted risk',
+};
+
+export const ACTIVE_STATUSES = ['open', 'confirmed', 'retest'];
+export const RESOLVED_STATUSES = ['remediated', 'false_positive', 'accepted_risk'];
+
 /** Priority-row kind → short label + tone for the chip. */
 export const PRIORITY_KIND: Record<string, { label: string; severity: Severity }> = {
   ownership: { label: 'Ownership', severity: 'high' },

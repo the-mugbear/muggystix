@@ -26,10 +26,10 @@ export interface PriorityItem {
 }
 
 export interface PostureHeadline {
-  confirmed_exposure: { active_findings: number; by_severity: SeverityCounts };
+  active_exposure: { active_findings: number; by_severity: SeverityCounts };
   review_coverage: { reviewed: number; total: number; pct: number | null; validated_hosts: number };
   ownership: { owned: number; unowned: number; total: number; pct: number | null };
-  systemic: { blind_spot_count: number; condition_count: number };
+  systemic: { adopted: boolean; blind_spot_count: number; condition_count: number };
   detected_exposure: { vuln_count: number };
 }
 
@@ -37,6 +37,7 @@ export interface PostureSiteExposure {
   raw_score: number;
   weighted_score: number;
   active_findings: number;
+  finding_host_incidences: number;
   by_severity: SeverityCounts;
 }
 
@@ -45,6 +46,7 @@ export interface PostureSite {
   site_id: number | null;
   unassigned: boolean;
   criticality_tier: number | null;
+  owner_name: string | null;
   host_count: number;
   expected_host_count: number | null;
   coverage_gap: number | null;
@@ -73,6 +75,7 @@ export interface PostureResponse {
     scanner_active: number;
     analyst_active: number;
   };
+  evidence: { scan_count: number; scan_staleness_days: number | null };
 }
 
 export const getPosture = async (): Promise<PostureResponse> => {
