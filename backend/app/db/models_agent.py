@@ -406,7 +406,12 @@ class TestExecutionStatus(str, enum.Enum):
     NOT_APPLICABLE = "not_applicable"
 
 
-class FindingSeverity(str, enum.Enum):
+# The severity vocabulary for a TestExecutionResult — DISTINCT from the Finding
+# spine's FindingSeverity (models_findings): an execution result can be
+# informational with NO severity ("none"), whereas a Finding always has one.
+# Renamed off the old "FindingSeverity" name (which collided with the spine
+# enum) so the two domains can't be imported by mistake.
+class ExecutionResultSeverity(str, enum.Enum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -690,7 +695,7 @@ class TestExecutionResult(Base):
     command_run = Column(Text)          # actual command (may differ from proposed)
     raw_output = Column(Text)           # capped to TEST_OUTPUT_MAX_BYTES
     findings_summary = Column(Text)
-    severity = Column(String(20))       # FindingSeverity value or null
+    severity = Column(String(20))       # ExecutionResultSeverity value or null
     is_finding = Column(Boolean, nullable=False, default=False)
 
     executed_at = Column(DateTime(timezone=True))

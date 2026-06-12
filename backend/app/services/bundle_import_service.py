@@ -40,7 +40,7 @@ from app.core.config import settings
 from app.db.models_agent import (
     AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
     ExecutionSession, ExecutionSessionStatus, ExecutionSessionMode,
-    FindingSeverity, HostSanityCheck, ImportedResultFile,
+    ExecutionResultSeverity, HostSanityCheck, ImportedResultFile,
     SanityCheckMethod, TestEntryStatus,
     TestExecutionResult, TestExecutionStatus,
     TestPlan, TestPlanEntry,
@@ -48,7 +48,7 @@ from app.db.models_agent import (
 
 
 ALLOWED_RESULT_STATUSES = {s.value for s in TestExecutionStatus}
-ALLOWED_SEVERITIES = {s.value for s in FindingSeverity} | {None, "", "null"}
+ALLOWED_SEVERITIES = {s.value for s in ExecutionResultSeverity} | {None, "", "null"}
 ALLOWED_SANITY_METHODS = {m.value for m in SanityCheckMethod}
 
 
