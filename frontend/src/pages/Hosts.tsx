@@ -1672,6 +1672,12 @@ export default function Hosts() {
   // re-running their effects.  One stable reference per filter/page change.
   const exportQueryContext = useMemo(buildHostQueryContext, [buildHostQueryContext]);
 
+  // After a failed refetch we keep the previous rows visible (to preserve scroll
+  // position), but they may no longer match the active filters/query — so mark
+  // them stale and pause actions that would act on possibly-mismatched rows
+  // (bulk operations + export) until a fetch succeeds.
+  const showingStaleResults = error !== null && hosts.length > 0;
+
   if (loading && !hosts.length && !hasFetchedOnceRef.current) {
     return <ListPageSkeleton titleWidth={180} actionCount={3} tableProps={{ rows: 10, columns: 6 }} />;
   }
@@ -1724,7 +1730,7 @@ export default function Hosts() {
         <div className="flex flex-col gap-xs sm:flex-row sm:items-center">
           <Button
             onClick={() => setToolReadyDialogOpen(true)}
-            disabled={loading || totalHosts === 0}
+            disabled={loading || totalHosts === 0 || showingStaleResults}
           >
             <Code className="size-4" aria-hidden />
             Tool Ready Output
@@ -1732,7 +1738,7 @@ export default function Hosts() {
           <Button
             variant="outline"
             onClick={() => setReportsDialogOpen(true)}
-            disabled={loading || totalHosts === 0}
+            disabled={loading || totalHosts === 0 || showingStaleResults}
           >
             <Download className="size-4" aria-hidden />
             Export Report
@@ -2057,7 +2063,16 @@ export default function Hosts() {
 
       {error && (
         <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
+            <span>
+              {error}
+              {showingStaleResults &&
+                ' Showing previous results — they may not match the current filters; bulk actions and export are paused until a refresh succeeds.'}
+            </span>
+            <Button variant="outline" size="sm" onClick={() => fetchHosts()}>
+              Retry
+            </Button>
+          </AlertDescription>
         </Alert>
       )}
 
@@ -2107,8 +2122,10 @@ export default function Hosts() {
         </div>
       ) : (
         <>
-          {/* Bulk-action bar — shown once one or more rows are selected. */}
-          {selectedIds.length > 0 && (
+          {/* Bulk-action bar — shown once one or more rows are selected.
+              Hidden while results are stale (a failed refetch): acting on rows
+              that may not match the active query is the trap this guards. */}
+          {selectedIds.length > 0 && !showingStaleResults && (
             <HostBulkBar
               selectedIds={selectedIds}
               selectedIps={selectedIps}
@@ -2123,8 +2140,13 @@ export default function Hosts() {
             />
           )}
           {/* Host table — sole renderer (desktop-only product; horizontal
-              scroll handles narrow widths, no separate mobile card view). */}
-          <div>
+              scroll handles narrow widths, no separate mobile card view).
+              Dimmed (not interaction-blocked) while stale: drill-down into a
+              single host is harmless + refetches, only bulk/export are paused. */}
+          <div
+            className={cn(showingStaleResults && 'opacity-60 transition-opacity')}
+            aria-busy={showingStaleResults || undefined}
+          >
             <DataTableShell<Host>
               table={table}
               onRowClick={(host) => openInspector(host.id)}
