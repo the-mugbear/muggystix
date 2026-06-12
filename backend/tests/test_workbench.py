@@ -79,9 +79,10 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     finally:
         event.remove(Engine, "after_cursor_execute", _count)
 
-    # Bound is a regression guard, not a target — currently ~12; flag a
-    # fan-out blow-up (e.g. an N+1 creeping into a section).
-    assert counter["n"] <= 16, f"workbench issued {counter['n']} SQL statements"
+    # Bound is a regression guard, not a target — currently ~17 (the
+    # recent_notes section added one SELECT); flag a fan-out blow-up (e.g. an
+    # N+1 creeping into a section).
+    assert counter["n"] <= 20, f"workbench issued {counter['n']} SQL statements"
 
 
 def test_workbench_returns_all_sections(client, test_project):
@@ -159,3 +160,20 @@ def test_seen_is_idempotent_one_row(client, db_session, test_project):
         .all()
     )
     assert len(rows) == 1
+
+
+def test_workbench_returns_my_recent_authored_notes(client, db_session, test_project, test_user):
+    """recent_notes surfaces the caller's latest authored notes (distinct from
+    my_notes, the assigned-work queue)."""
+    host = _make_host(db_session, test_project.id, "10.7.7.7")
+    db_session.add(models.Annotation(
+        host_id=host.id, user_id=test_user.id, body="my latest investigation note",
+    ))
+    db_session.commit()
+
+    resp = client.get(_url(test_project.id))
+    assert resp.status_code == 200
+    recent = resp.json()["recent_notes"]["items"]
+    assert recent, "expected the authored note in recent_notes"
+    assert recent[0]["host_ip"] == "10.7.7.7"
+    assert recent[0]["body_preview"].startswith("my latest investigation")

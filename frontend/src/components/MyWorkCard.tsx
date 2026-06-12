@@ -214,7 +214,10 @@ export interface MyWorkCardProps {
   onRetry: () => void;
 }
 
-const PREVIEW = 14;
+// Lowered from 14: the card is now the focused action queue (recent-notes
+// activity moved to its own card) and shares a row with it, so a tighter
+// default preview keeps it scannable; "Show more" reveals the rest.
+const PREVIEW = 8;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   queue, tasks, notes, findings, loading, error, onRetry,

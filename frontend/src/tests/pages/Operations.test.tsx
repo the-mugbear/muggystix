@@ -197,13 +197,13 @@ describe('Operations page', () => {
     expect(screen.getByText(/42 hosts discovered/)).toBeInTheDocument();
   });
 
-  it('surfaces a pending-review plan in the Needs Attention queue', async () => {
+  it('surfaces a pending-review plan in the Pending approvals queue', async () => {
     renderPage();
     await waitFor(() => {
-      // Target the section heading specifically: AttentionCard (now rendered,
-      // since getProjectAttention/getSiteAttention are mocked) also renders a
-      // "Needs attention" label as a <p>, so a bare getByText is ambiguous.
-      expect(screen.getByRole('heading', { name: 'Needs attention' })).toBeInTheDocument();
+      // The pending-plans section heading (renamed from the ambiguous "Needs
+      // attention" — the exposure/neglect AttentionCard was removed from
+      // Operations in favour of a link to /insights).
+      expect(screen.getByRole('heading', { name: 'Pending approvals' })).toBeInTheDocument();
     });
     expect(screen.getByText('1 pending review')).toBeInTheDocument();
     expect(screen.getByText(/Pending plan/)).toBeInTheDocument();

@@ -199,6 +199,19 @@ export interface MyNotesResponse {
   overdue_count: number;
 }
 
+export interface MyRecentNoteItem {
+  note_id: number;
+  host_id: number | null;
+  host_ip: string | null;
+  body_preview: string;
+  note_type: string | null;
+  created_at: string | null;
+}
+
+export interface MyRecentNotesResponse {
+  items: MyRecentNoteItem[];
+}
+
 export interface MyFindingItem {
   finding_id: number;
   title: string;
@@ -233,6 +246,7 @@ export interface WorkbenchResponse {
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
   my_notes: MyNotesResponse;
+  recent_notes: MyRecentNotesResponse;
   my_findings: MyFindingsResponse;
   team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;

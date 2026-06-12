@@ -7,6 +7,7 @@ import {
   DashboardStats,
   ProjectCoverageResponse,
   ScopeCoverageRow,
+  MyRecentNotesResponse,
   SinceLastVisit,
   StalenessResponse,
   TestPlanSummary,
@@ -22,7 +23,6 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import MyWorkCard from '../components/MyWorkCard';
-import AttentionCard from '../components/AttentionCard';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -140,8 +140,9 @@ const ProjectStateCard: React.FC<{
       <CardContent className="p-md">
         <h2 className="text-subheading font-semibold">Project state</h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          Exposure (findings from vulnerability scanners) and assessment coverage
-          (pipeline progress) at a glance.
+          Exposure (vulnerabilities from scanners) and assessment coverage
+          (pipeline progress) at a glance. "Findings" (promoted, curated) live on
+          the Findings page — these are the raw scanner counts.
         </p>
 
         {stats && (
@@ -169,8 +170,13 @@ const ProjectStateCard: React.FC<{
               <CoverageStatTile label="Critical" value={(vuln?.critical ?? 0).toLocaleString()} />
               <CoverageStatTile label="High" value={(vuln?.high ?? 0).toLocaleString()} />
               <CoverageStatTile
-                label="Findings"
+                label="Vulnerabilities"
                 value={(vuln?.total_vulnerabilities ?? 0).toLocaleString()}
+                hint={
+                  'Total raw vulnerability records from scanners (Nessus/OpenVAS). ' +
+                  'Distinct from "Findings" — the curated, analyst-promoted items on ' +
+                  'the Findings page.'
+                }
               />
             </div>
 
@@ -214,7 +220,7 @@ const ProjectStateCard: React.FC<{
               </div>
             ) : (
               <p className="text-metadata text-muted-foreground">
-                No vulnerabilities detected yet — upload a Nessus or OpenVAS scan to populate findings.
+                No vulnerabilities detected yet — upload a Nessus or OpenVAS scan to populate this.
               </p>
             )}
           </div>
@@ -402,6 +408,78 @@ const ScopeCoverageRowDisplay: React.FC<{ row: ScopeCoverageRow }> = ({ row }) =
 // Needs-attention section
 // ---------------------------------------------------------------------------
 
+// Relative "time ago" for the Recent notes strip.
+function fmtNoteAgo(iso: string | null): string {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const mins = Math.floor((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
+}
+
+// "What was I just doing?" — the caller's latest authored notes, separate from
+// the My-work action queue. Answers the "latest work" question directly.
+const RecentNotesCard: React.FC<{
+  notes: MyRecentNotesResponse | null;
+  loading: boolean;
+}> = ({ notes, loading }) => {
+  const navigate = useNavigate();
+  const items = notes?.items ?? [];
+  return (
+    <Card className="h-full">
+      <CardContent className="p-md">
+        <p className="text-subheading font-semibold text-foreground">Recent notes</p>
+        <p className="mb-sm text-caption text-muted-foreground">
+          Your latest notes — pick up where you left off.
+        </p>
+        {loading && !notes ? (
+          <div className="flex items-center gap-xs" role="status" aria-live="polite">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
+            <p className="text-metadata text-muted-foreground">Loading…</p>
+          </div>
+        ) : items.length === 0 ? (
+          <p className="text-metadata text-muted-foreground">
+            No notes yet — add one from a host to track what you've looked at.
+          </p>
+        ) : (
+          <ul className="flex flex-col">
+            {items.map((n) => (
+              <li key={n.note_id}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate(n.host_id ? `/hosts/${n.host_id}#note-${n.note_id}` : '/operations')
+                  }
+                  className="flex w-full items-center gap-xs rounded-control px-xs py-xxs text-left hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {n.host_ip && (
+                    <span className="shrink-0 font-mono text-metadata font-medium text-foreground">
+                      {n.host_ip}
+                    </span>
+                  )}
+                  {n.note_type && n.note_type !== 'observation' && (
+                    <Badge variant="secondary">{n.note_type}</Badge>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
+                    {n.body_preview || '(no text)'}
+                  </span>
+                  <span className="shrink-0 text-caption text-muted-foreground">
+                    {fmtNoteAgo(n.created_at)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 const NeedsAttentionSection: React.FC<{
   pendingPlans: TestPlanSummary[] | null;
   loading: boolean;
@@ -428,10 +506,10 @@ const NeedsAttentionSection: React.FC<{
   return (
     <Card className="mb-md">
       <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">Needs attention</h2>
+        <h2 className="text-subheading font-semibold">Pending approvals</h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          Project-wide queue of items that need a human decision. Independent of the Mine / All
-          toggle — exceptions affect everyone.
+          Agent-drafted test plans awaiting a human approve/reject decision. Project-wide —
+          independent of the Mine / All toggle.
         </p>
 
         {!hasAny && (
@@ -1037,7 +1115,10 @@ const Operations: React.FC = () => {
               owns, so there's a single queue to work rather than two cards
               to reconcile.  Both arrays come from the single /workbench
               fetch; the merge + ranking is in MyWorkCard. */}
-          <div className="mb-md">
+          {/* Personal surface: the action queue (what needs doing) beside the
+              recent-notes strip (what I was just doing). Two distinct questions,
+              two cards — the prior single merged card tried to be both. */}
+          <div className="mb-md grid gap-md lg:grid-cols-2">
             <MyWorkCard
               queue={workbench?.my_queue ?? null}
               tasks={workbench?.my_tasks ?? null}
@@ -1047,13 +1128,28 @@ const Operations: React.FC = () => {
               error={workbenchError}
               onRetry={reload}
             />
+            <RecentNotesCard
+              notes={workbench?.recent_notes ?? null}
+              loading={workbenchLoading}
+            />
           </div>
-          {/* Project "needs help" model — exposure + neglect + next action
-              (site-metrics arc P1). Sits between the personal resume queue
-              and the unowned-work pool. */}
-          <div className="mb-md">
-            <AttentionCard />
-          </div>
+          {/* Exposure + neglect analytics live on the Insights pages now (per-
+              subnet hygiene + cross-sectional hotspots), which do it deeper than
+              the old inline AttentionCard. Link out instead of duplicating. */}
+          <Card className="mb-md">
+            <CardContent className="flex flex-wrap items-center justify-between gap-sm p-md">
+              <div className="min-w-0">
+                <p className="text-subheading font-semibold text-foreground">Exposure &amp; neglect insights</p>
+                <p className="text-caption text-muted-foreground">
+                  Per-subnet hygiene (EOL OS, TLS, weak auth, risky services) and cross-sectional hotspots.
+                </p>
+              </div>
+              <Button variant="outline" onClick={() => navigate('/insights')}>
+                Open Insights
+                <SquareArrowOutUpRight className="size-3.5" aria-hidden />
+              </Button>
+            </CardContent>
+          </Card>
           {pendingError && (
             <Alert variant="warning" className="mb-md">
               <AlertDescription className="flex items-center justify-between gap-md">

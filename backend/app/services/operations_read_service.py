@@ -556,6 +556,60 @@ def compute_my_assigned_notes(
 
 
 # ---------------------------------------------------------------------------
+# My Recent Notes — the caller's latest authored notes ("what was I just doing?")
+# ---------------------------------------------------------------------------
+
+class MyRecentNoteItem(BaseModel):
+    """One note the caller recently authored — host-targeted, newest first."""
+    note_id: int
+    host_id: Optional[int] = None
+    host_ip: Optional[str] = None
+    body_preview: str
+    note_type: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class MyRecentNotesResponse(BaseModel):
+    items: List[MyRecentNoteItem] = Field(default_factory=list)
+
+
+def compute_my_recent_notes(
+    db: Session, current_user: User, project: Project, limit: int = 8,
+) -> MyRecentNotesResponse:
+    """The caller's most recently authored notes in this project — a "what was
+    I just working on?" view, independent of assignment/status/resolution.
+
+    Distinct from ``compute_my_assigned_notes`` (the work *queue*): this is the
+    analyst's latest *activity*, so it includes thread replies and resolved
+    notes, ordered newest-first by authorship time.  Host-targeted only (the
+    dominant case); ``user_id`` is the author column.
+    """
+    rows = (
+        db.query(Annotation, models.Host)
+        .join(models.Host, Annotation.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id == project.id,
+            Annotation.user_id == current_user.id,
+        )
+        .order_by(desc(Annotation.created_at))
+        .limit(limit)
+        .all()
+    )
+    items = [
+        MyRecentNoteItem(
+            note_id=note.id,
+            host_id=host.id,
+            host_ip=host.ip_address,
+            body_preview=(note.body or "").strip().splitlines()[0][:120] if (note.body or "").strip() else "",
+            note_type=note.note_type,
+            created_at=note.created_at,
+        )
+        for note, host in rows
+    ]
+    return MyRecentNotesResponse(items=items)
+
+
+# ---------------------------------------------------------------------------
 # My Findings — active findings the caller owns
 # ---------------------------------------------------------------------------
 
