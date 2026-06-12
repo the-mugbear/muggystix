@@ -1123,7 +1123,6 @@ const Operations: React.FC = () => {
               queue={workbench?.my_queue ?? null}
               tasks={workbench?.my_tasks ?? null}
               notes={workbench?.my_notes ?? null}
-              findings={workbench?.my_findings ?? null}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}
@@ -1133,23 +1132,9 @@ const Operations: React.FC = () => {
               loading={workbenchLoading}
             />
           </div>
-          {/* Exposure + neglect analytics live on the Insights pages now (per-
-              subnet hygiene + cross-sectional hotspots), which do it deeper than
-              the old inline AttentionCard. Link out instead of duplicating. */}
-          <Card className="mb-md">
-            <CardContent className="flex flex-wrap items-center justify-between gap-sm p-md">
-              <div className="min-w-0">
-                <p className="text-subheading font-semibold text-foreground">Exposure &amp; neglect insights</p>
-                <p className="text-caption text-muted-foreground">
-                  Per-subnet hygiene (EOL OS, TLS, weak auth, risky services) and cross-sectional hotspots.
-                </p>
-              </div>
-              <Button variant="outline" onClick={() => navigate('/insights')}>
-                Open Insights
-                <SquareArrowOutUpRight className="size-3.5" aria-hidden />
-              </Button>
-            </CardContent>
-          </Card>
+          {/* Exposure + neglect analytics live on the Insights pages (per-subnet
+              hygiene + by-site rollup + cross-sectional hotspots) — reachable
+              from the nav, not duplicated here. */}
           {pendingError && (
             <Alert variant="warning" className="mb-md">
               <AlertDescription className="flex items-center justify-between gap-md">

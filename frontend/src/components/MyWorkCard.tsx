@@ -4,22 +4,24 @@
  * one-line-per-row worklist, ordered worst-first:
  *   - Overdue      = assigned notes past their due date
  *   - Handoffs     = note threads of type 'handoff' assigned to the caller
- *   - Findings     = active findings the caller owns
  *   - Assigned     = assigned notes + test-plan steps assigned to the caller
  *   - In review    = hosts the caller marked In Review (+ in-review steps)
  *   - Triage       = unassigned critical/high test-plan steps
  *
+ * This is the host/investigation resume queue. Owned *findings* are NOT here —
+ * they're a different artifact with their own home (the Findings page); mixing
+ * them into the day-to-day host worklist muddied what this card is for.
+ *
  * P0 (resume pass): every row deep-links to its EXACT artifact — a note to
  * its thread anchor (/hosts/:id#note-:id), a plan step to its entry
- * (/test-plans/:plan#entry-:entry), a finding to its evidence thread — so
- * the analyst lands where they left off, not on a generic host page.
+ * (/test-plans/:plan#entry-:entry) — so the analyst lands where they left off,
+ * not on a generic host page.
  */
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   ClipboardList,
-  Flag,
   Loader2,
   MessageSquare,
   RefreshCw,
@@ -27,7 +29,6 @@ import {
 } from 'lucide-react';
 import type {
   MyAttentionResponse,
-  MyFindingsResponse,
   MyNotesResponse,
   MyTaskReason,
   MyTasksResponse,
@@ -40,15 +41,14 @@ import { cn } from '../utils/cn';
 
 type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
 
-type GroupKey = 'overdue' | 'handoff' | 'finding' | 'assigned' | 'in_review' | 'triage';
+type GroupKey = 'overdue' | 'handoff' | 'assigned' | 'in_review' | 'triage';
 
 const GROUP_META: Record<GroupKey, { label: string; rank: number; tone: BadgeTone }> = {
   overdue: { label: 'Overdue', rank: 0, tone: 'destructive' },
   handoff: { label: 'Handoffs', rank: 1, tone: 'info' },
-  finding: { label: 'Findings you own', rank: 2, tone: 'warning' },
-  assigned: { label: 'Assigned', rank: 3, tone: 'info' },
-  in_review: { label: 'In review', rank: 4, tone: 'muted' },
-  triage: { label: 'Triage', rank: 5, tone: 'warning' },
+  assigned: { label: 'Assigned', rank: 2, tone: 'info' },
+  in_review: { label: 'In review', rank: 3, tone: 'muted' },
+  triage: { label: 'Triage', rank: 4, tone: 'warning' },
 };
 const GROUP_ORDER = (Object.keys(GROUP_META) as GroupKey[]).sort(
   (a, b) => GROUP_META[a].rank - GROUP_META[b].rank,
@@ -103,7 +103,6 @@ function buildItems(
   queue: MyAttentionResponse | null,
   tasks: MyTasksResponse | null,
   notes: MyNotesResponse | null,
-  findings: MyFindingsResponse | null,
 ): WorkItem[] {
   const items: WorkItem[] = [];
 
@@ -127,25 +126,6 @@ function buildItems(
         : { label: fmtAgo(tsOf(n.updated_at)), tone: null },
       priorityRank: 2,
       tsEpoch: tsOf(n.due_at) || tsOf(n.updated_at),
-    });
-  }
-
-  // Findings the caller owns — link to evidence thread when present.
-  for (const f of findings?.items ?? []) {
-    items.push({
-      key: `finding-${f.finding_id}`,
-      group: 'finding',
-      Icon: Flag,
-      to: f.evidence_annotation_id && f.host_id
-        ? `/hosts/${f.host_id}#note-${f.evidence_annotation_id}`
-        : '/findings',
-      primary: f.title,
-      primaryMono: false,
-      chip: { label: f.severity, tone: sevTone(f.severity) },
-      meta: f.host_count > 0 ? `${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${f.status}` : f.status,
-      right: { label: fmtAgo(tsOf(f.updated_at)), tone: null },
-      priorityRank: PRIORITY_RANK[f.severity] ?? 5,
-      tsEpoch: tsOf(f.updated_at),
     });
   }
 
@@ -208,7 +188,6 @@ export interface MyWorkCardProps {
   queue: MyAttentionResponse | null;
   tasks: MyTasksResponse | null;
   notes: MyNotesResponse | null;
-  findings: MyFindingsResponse | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
@@ -220,21 +199,21 @@ export interface MyWorkCardProps {
 const PREVIEW = 8;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
-  queue, tasks, notes, findings, loading, error, onRetry,
+  queue, tasks, notes, loading, error, onRetry,
 }) => {
   const navigate = useNavigate();
   const [expanded, setExpanded] = React.useState(false);
 
   const items = React.useMemo(
-    () => buildItems(queue, tasks, notes, findings),
-    [queue, tasks, notes, findings],
+    () => buildItems(queue, tasks, notes),
+    [queue, tasks, notes],
   );
   const shown = expanded ? items : items.slice(0, PREVIEW);
 
   // Authoritative server totals (the merged list is capped at the per-source
   // fetch limits, so it must NOT stand in for the totals).
   const totalCount =
-    (notes?.total_open ?? 0) + (findings?.total_open ?? 0) +
+    (notes?.total_open ?? 0) +
     (queue?.in_review_count ?? 0) + (tasks?.total_open ?? 0);
   const overdue = notes?.overdue_count ?? 0;
 
@@ -273,8 +252,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           <Alert variant="info">
             <AlertDescription>
               Nothing in your queue. Work shows here when you're <strong>assigned a note</strong>,
-              {' '}<strong>own a finding</strong>, mark a host <strong>In Review</strong>, or a
-              test-plan step is assigned to you.
+              {' '}mark a host <strong>In Review</strong>, or a test-plan step is assigned to you.
             </AlertDescription>
           </Alert>
         ) : (

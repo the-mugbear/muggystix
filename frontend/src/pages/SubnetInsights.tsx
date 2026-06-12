@@ -17,8 +17,10 @@ import { ChevronDown, ChevronRight, Loader2, RefreshCw, ShieldAlert } from 'luci
 
 import {
   getSubnetInsights,
+  getSiteAttention,
   type SubnetInsight,
   type SubnetInsightsResponse,
+  type SiteAttention,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
@@ -84,6 +86,14 @@ const SubnetInsights: React.FC = () => {
       .catch((e) => setError(formatApiError(e, 'Could not load subnet insights.')))
       .finally(() => setLoading(false));
   }, [offset]);
+
+  // By-site rollup (worst-first) — relocated from the removed Operations
+  // AttentionCard. Isolated fetch so a site-attention failure can't break the
+  // subnet table.
+  const [siteData, setSiteData] = useState<SiteAttention | null>(null);
+  useEffect(() => {
+    getSiteAttention().then(setSiteData).catch(() => setSiteData(null));
+  }, [currentProject?.id]);
 
   // Reset to the first page when the project changes.
   useEffect(() => { setOffset(0); }, [currentProject?.id]);
@@ -164,6 +174,53 @@ const SubnetInsights: React.FC = () => {
               <span>Cert issues: <span className="font-medium text-foreground">{totals.cert_issue_hosts}</span></span>
               <span>Weak auth: <span className="font-medium text-foreground">{totals.weak_auth_hosts}</span></span>
             </div>
+          )}
+
+          {/* By-site rollup — worst-first across the estate. Only when the
+              project has organised subnets into sites; otherwise the per-subnet
+              table below is the whole story. */}
+          {siteData?.adopted && siteData.sites.length > 0 && (
+            <Card>
+              <CardContent className="p-md">
+                <p className="text-subheading font-semibold text-foreground">By site</p>
+                <p className="mb-sm text-caption text-muted-foreground">
+                  Sites worst-first by tier-weighted exposure — where to focus across the estate.
+                </p>
+                <div className="flex flex-col gap-xxs">
+                  {siteData.sites.slice(0, 8).map((s) => (
+                    <div
+                      key={s.site ?? '__unassigned__'}
+                      className="flex flex-wrap items-center gap-xs border-b border-border pb-xxs last:border-0"
+                    >
+                      {!s.unassigned && s.criticality_tier != null && (
+                        <Badge
+                          variant={tierTone(s.criticality_tier)}
+                          title={`Criticality tier ${s.criticality_tier} (1 = most critical)`}
+                        >
+                          T{s.criticality_tier}
+                        </Badge>
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-metadata font-medium text-foreground">
+                        {s.unassigned ? <span className="italic text-muted-foreground">Unassigned</span> : s.site}
+                      </span>
+                      <span className="shrink-0 text-caption text-muted-foreground">
+                        {s.host_count}h{s.coverage_gap ? ` (−${s.coverage_gap})` : ''}
+                      </span>
+                      {(['critical', 'high'] as const)
+                        .filter((sev) => s.exposure.by_severity[sev] > 0)
+                        .map((sev) => (
+                          <Badge key={sev} variant={SEVERITY_VARIANT[sev] as never}>
+                            {s.exposure.by_severity[sev]} {sev}
+                          </Badge>
+                        ))}
+                      <span className="min-w-0 truncate text-caption text-muted-foreground">
+                        {s.recommended_action.text}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
           )}
 
           {subnets.length === 0 ? (
