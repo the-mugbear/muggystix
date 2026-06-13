@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.115.0 / frontend 5.25.1 (2026-06-07)
+> **Last verified against:** backend 2.201.0 (2026-06-13)
 
 Base path: `/api/v1`
 
@@ -76,9 +76,11 @@ The `require_plan_scope` dependency validates the key, loads the bound agent + p
 ```
 /api/v1
 ├── /auth                     # login, logout, profile, sessions, change-password
+│   └── /auth/2fa/*           # TOTP setup/enable/disable + recovery codes
 ├── /users                    # admin CRUD
 │   └── /users/directory      # minimal picker — open to any authenticated user
 ├── /audit                    # admin: audit log browsing
+├── /system/queue-metrics     # admin: durable job-queue operational metrics
 ├── /projects                 # project list, create, update, delete
 │   ├── /{id}/members         # project membership (admin or project-admin)
 │   └── /{id}/...             # PROJECT-SCOPED SUBTREE — see §4
@@ -199,6 +201,24 @@ Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — se
 | GET | `/references/preflight-script` | Returns `scripts/preflight.sh` (text/x-shellscript) — the recon-workflow environment probe agents run to check which tools the host has. Supports `--json`, `--strict`, `--help`. |
 | GET | `/references/tool-readiness` | **Authenticated** — the agent tool catalog checked against the current user's most recent environment probe: per-tool `installed`/`missing`/`warn`/`unknown` status + install hints. Returns `has_probe: false` (all `unknown`) when the user hasn't probed yet. Powers the ToolReference page's Host Readiness panel. |
 
+### 3.10 Two-factor auth (TOTP)
+
+Self-service TOTP enrollment, sharing the `/auth` prefix (no password-change gate).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/auth/2fa/status` | Whether 2FA is enabled for the current user. |
+| POST | `/auth/2fa/setup` | Begin enrollment — returns the secret + provisioning URI. |
+| POST | `/auth/2fa/enable` | Confirm a TOTP code to turn 2FA on; returns recovery codes. |
+| POST | `/auth/2fa/recovery-codes` | Regenerate recovery codes. |
+| POST | `/auth/2fa/disable` | Turn 2FA off. |
+
+### 3.11 System metrics (admin)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/system/queue-metrics` | Deployment-wide durable job-queue operational metrics (ingestion + report queues): depth, in-flight, failed, oldest-pending age. Admin only. |
+
 ---
 
 ## 4. Project-scoped endpoints (`/api/v1/projects/{project_id}/...`)
@@ -276,18 +296,19 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | GET | `/dashboard/my-tasks?limit=15` | Per-user open tasks. |
 | GET | `/dashboard/new-scans-since` | Recent scans since user's last visit. |
 
-### 4.5 Risk
+### 4.5 Findings
+
+Project-level finding records (the SPINE entity that correlates vulnerabilities across hosts). Mounted at the project root, so paths read `/projects/{id}/findings...`.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/risk/hosts/{host_id}/assess-risk` | Trigger fresh risk assessment. |
-| GET | `/risk/hosts/{host_id}/risk-assessment` | Current risk assessment. |
-| DELETE | `/risk/hosts/{host_id}/risk-assessment` | Clear the assessment. |
-| GET | `/risk/hosts/{host_id}/vulnerabilities` | Host's vulnerability list. |
-| GET | `/risk/hosts/{host_id}/security-findings` | Non-vuln security findings. |
-| GET | `/risk/hosts/high-risk` | Hosts with highest risk scores. |
-| GET | `/risk/hosts/risk-summary` | Aggregate risk stats. |
-| GET | `/risk/vulnerability-stats` | Vuln counts by severity. |
+| GET | `/findings` | List findings. Filterable. |
+| GET | `/findings/{finding_id}` | Finding detail. |
+| POST | `/findings` | Create a finding. |
+| PATCH | `/findings/{finding_id}` | Update metadata. |
+| POST | `/findings/{finding_id}/status` | Transition disposition (terminal determinations require a justification). |
+| POST | `/findings/{finding_id}/hosts` | Attach a host to the finding. |
+| DELETE | `/findings/{finding_id}/hosts/{host_id}` | Detach a host. |
 
 ### 4.6 Scopes & subnets
 
@@ -313,7 +334,22 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | GET | `/export/scope/{scope_id}?format_type=csv|html|json|pdf` | Hosts + ports within a scope. |
 | GET | `/export/scan/{scan_id}?format_type=...` | Scan-level export. |
 | GET | `/export/out-of-scope` | Out-of-scope host export. |
-| GET | `/reports/hosts/csv\|html\|json` | Host listing exports. |
+| GET | `/reports/hosts/csv` | Host listing as CSV. |
+| GET | `/reports/hosts/html` | Host listing as HTML. |
+
+JSON host export is **not** a `/reports/hosts/*` path — use `/export/...` or `/hosts/tool-ready/{format}`.
+
+#### Reports jobs (async — the comprehensive/heavy formats)
+
+Since v2.196.0 the heavy report formats (PDF, JSON, ZIP bundles, large host-centric dossiers) run on a dedicated report-worker container, mirroring the ingestion pipeline. Submit a job and poll, rather than blocking the request.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/reports/jobs` | Queue a report job. Returns **202** with the queued `ReportJob`. |
+| GET | `/reports/jobs` | List recent report jobs for the project. |
+| GET | `/reports/jobs/{job_id}` | Job detail (status, progress, error). |
+| GET | `/reports/jobs/{job_id}/download` | Stream the finished artifact (only once `status=complete`). |
+| POST | `/reports/jobs/{job_id}/dismiss` | Hide a finished/failed job from the report-jobs tray. |
 
 ### 4.8 DNS
 
@@ -354,6 +390,7 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | GET | `/test-plans/{plan_id}` | Plan detail with entries. |
 | POST | `/test-plans/{plan_id}/approve` | Transition draft → approved. Analyst+. |
 | POST | `/test-plans/{plan_id}/reject` | Reject with reason. |
+| POST | `/test-plans/{plan_id}/archive` | Abandon (archive) a plan. |
 | PATCH | `/test-plans/{plan_id}` | Update title/description. |
 | PATCH | `/test-plans/{plan_id}/entries/{entry_id}` | Update an entry (status, rationale, findings, notes). Supports `expected_updated_at` for optimistic locking. |
 | GET | `/test-plans/{plan_id}/progress` | Progress rollup. |
@@ -361,8 +398,9 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | DELETE | `/test-plans/{plan_id}` | Delete. Only allowed if no execution sessions exist. |
 | POST | `/test-plans/{plan_id}/execute` | Mint a plan-scoped execution API key and return instructions. |
 | POST | `/test-plans/{plan_id}/rotate-key` | **v2.19.0** — Mint a fresh per-plan agent key and revoke the prior ones. For the case where the original 24h key expired but the user wants to keep working on the same plan. |
-| GET | `/test-plans/{plan_id}/report?format_type=html\|pdf\|json\|csv` | Download an execution report from the latest (or a specified) session. `raw_output` trimmed to 16 KB per test result. |
-| POST | `/test-plans/{plan_id}/bundle` | Export a plan as an offline zip bundle. Creates an `ExecutionSession` in exported mode and transitions the plan to `in_progress`. Returns the zip bytes + `bundle_id` + `execution_session_id`. |
+| GET | `/test-plans/{plan_id}/entries/{entry_id}/execution-results` | Per-entry test execution results + sanity checks for the latest (or a specified `session_id`) session. |
+| GET | `/test-plans/{plan_id}/execution-report?format_type=html\|pdf\|json\|csv` | Download an execution report from the latest (or a specified) session. `raw_output` trimmed to 16 KB per test result. |
+| POST | `/test-plans/{plan_id}/export-bundle` | Export an approved plan as an offline zip bundle. Creates an `ExecutionSession` in exported mode and transitions the plan to `in_progress`. Returns the zip bytes + `bundle_id` + `execution_session_id`. |
 | POST | `/test-plans/{plan_id}/import-results` | Import a results file from a terminal-run agent. JSON-depth-guarded, idempotent, cross-plan-safe. |
 | GET | `/test-plans/{plan_id}/api-activity` | **v2.24.0** — JWT-authenticated read of the agent API call log scoped to this plan. Filters: `method`, `status_min`, `status_max`, `host_id`, `target_ip`, `since`, `until`, `limit`, `offset`. Returns `{total, items[]}`. See §6.7. |
 
@@ -373,11 +411,35 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | POST | `/scopes/{scope_id}/recon/start` | Mint a scope-bound `reconnaissance` API key and create an active `ReconSession`. Returns instructions + plaintext key shown exactly once. |
 | GET | `/recon-sessions/{recon_session_id}/api-activity` | **v2.24.0** — JWT-authenticated read of the agent API call log scoped to this recon session. Same filter shape as the plan variant above. |
 
+### 4.13 Other project-scoped routers
+
+These mount under `/projects/{project_id}/...` alongside the above. Most are dashboard/analytics or host-management surfaces driving specific UI pages; see `/docs` for the per-route field shapes.
+
+| Base path | Purpose |
+|---|---|
+| `/posture` | Security Posture roll-up (label + headline + priorities + breakdowns) — the manager-facing summary composing attention + systemic + finding disposition. |
+| `/insights/subnets` | Per-subnet insights (exposure + neglect + hygiene, worst-first). |
+| `/insights/systemic` | Systemic insights (estate blind spots, segment outliers, diagnostic profiles). |
+| `/attention` | Project "needs help" attention model (the site-metrics arc). |
+| `/sites` | Site entity management (tier / owner / coverage). |
+| `/coverage` | Project coverage summary (drives v3 Operations). |
+| `/workbench` | Batched Operations workbench + since-last-visit cursor. |
+| `/webhooks` | Per-project outbound webhook subscriptions + delivery records. |
+| `/hosts/tags` | Project tag catalog with host counts (`host_tags`). |
+| `/hosts/bulk/*` | Bulk host operations — e.g. `POST /hosts/bulk/follow` (`host_bulk`). |
+| `/hosts/views`, `/hosts/views/{id}/promote` | Saved Hosts-page filter/view state per user (`host_filter_views`). |
+| `/hosts/query/schema`, `/hosts/query/validate`, `/hosts/query/history` | Boolean query-DSL catalogue, validate/match-count preview, and per-user query history (`host_queries`). |
+| `/scopes/subnet-labels`, `/scopes/subnets/{id}/labels` | Subnet labelling (`subnet_labels`; mounted before `scopes` so the static prefix wins route resolution). |
+| `/agent-sessions`, `/agent-sessions/by-model-tool` | Unified agent-session timeline across workflows, plus by-(model, tool) aggregates (drives the v3 UI). |
+| `/execution-sessions/{id}` | JWT-facing execution-session lookup by id (permalink for `/executions/:sessionId`). |
+
 ---
 
 ## 5. Agent API (`/api/v1/agent/*`) — X-API-Key auth
 
 All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the request headers. Project scope is implicit from the key. Plan-scoped keys are additionally restricted to their bound `plan_id`.
+
+The surface spans **four** workflows, each with its own scope and Swagger tag: **plan-generation** (`agent-plan-generation`), **execution** (`agent-execution`), **reconnaissance** (`agent-recon`), and **assist** (`agent-assist`). A key minted for one workflow is rejected on the others' endpoints (403).
 
 ### 5.1 Project context (global-scope keys only)
 
@@ -447,11 +509,13 @@ For "ask questions about this project" agents that shouldn't trigger the plan-ap
 |---|---|---|
 | POST | `/agent/assist/sessions/{session_id}/environment` | Per-session environment probe, same shape as execution/recon. |
 | GET | `/agent/assist/context` | Project + assist-session context. |
-| GET | `/agent/assist/hosts` | Paginated, filterable host list (read-only). |
+| GET | `/agent/assist/hosts` | Paginated, filterable host list (read-only). Accepts the discrete filters AND a `q=` boolean query DSL — see below. |
 | GET | `/agent/assist/hosts/{host_id}` | Host detail with ports, services, vulns. |
 | GET | `/agent/assist/scopes` | Scope list. |
 | GET | `/agent/assist/scans` | Scan list. |
 | GET | `/agent/assist/session` | Current assist-session metadata. |
+
+**`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `has:`, `follow:`, `assigned:`), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). It is ANDed with the discrete filter params. `follow:` and `assigned:` resolve against the **operator who started the (read-only) session** — so `follow:in_review` means "hosts that operator has in review" and `assigned:me` resolves to that same user. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); if the session has no bound operator, `follow:`/`assigned:` predicates also return 400. Backed by `host_query_dsl.parse_query` / `evaluate`.
 
 The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt (shown once); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists recent sessions.
 
@@ -539,7 +603,7 @@ The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/sta
 
 `api_key` is the plaintext, shown exactly once — the caller must display/copy it before dismissing the response. The hash lives in `agent_api_keys`; subsequent recovery is not possible.
 
-### 6.4 `POST /projects/{id}/test-plans/{plan_id}/bundle` (response)
+### 6.4 `POST /projects/{id}/test-plans/{plan_id}/export-bundle` (response)
 
 ```
 Content-Type: application/zip
@@ -766,10 +830,10 @@ Callers should be aware of these enforced constraints — they're documented her
 - **Upload flow is async.** `POST /upload/` returns a queued `IngestionJob` — poll `GET /upload/jobs/{id}` for status. Don't expect a parsed scan in the upload response.
 - **API keys are shown once.** Every `/generate`, `/execute`, and `/agents/{id}/rotate-key` response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `agent_api_keys`.
 - **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than 3× `INGESTION_JOB_TIMEOUT` are transitioned to `failed` by the worker's reaper loop (~1 min cadence). Users see a clear "worker likely crashed" message in the UI with `retry_count` incremented.
-- **Workflow-scoped AGENTS.md.** Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution` or `reconnaissance`) to get the workflow-sliced subset. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
+- **Workflow-scoped AGENTS.md.** Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution`, `reconnaissance`, or `assist`) to get the workflow-sliced subset. The `workflow` enum now carries `assist` as a fourth value. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
 - **Health probes.** `GET /health` on the backend; `/health.html` on the nginx frontend.
 - **Version visibility.** `GET /` returns `{message, version, frontend_version, cors_origins}`. Every UI page renders the VersionFooter in the bottom-right. Backend and frontend stay in lockstep per-release; always update both.
 
 ---
 
-This document reflects the v2.115.0 state of the API. Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.
+This document reflects the v2.201.0 state of the API. Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.

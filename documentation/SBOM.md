@@ -1,6 +1,6 @@
 # Software Bill of Materials (SBOM)
 
-> **Last verified against:** backend 2.115.0 / frontend 5.25.1 (2026-06-07)
+> **Last verified against:** backend 2.201.0 / frontend 5.106.0 (2026-06-13)
 
 BlueStick exposes its **live** dependency tree at `/reference/sbom` in the running application (route `frontend/src/pages/SbomReference.tsx`, backend `GET /api/v1/references/sbom`). That page reflects whatever the deployed build's `requirements.txt` and `frontend/package-lock.json` actually resolved to — there is no checked-in static list to drift.
 

@@ -1,7 +1,7 @@
 # UI Style Guide
 
 > **Stack:** Tailwind v4 + Radix UI (shadcn-style primitives) + lucide-react + Sonner
-> **Last verified against:** frontend 5.25.1 (2026-06-07) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
+> **Last verified against:** frontend 5.106.0 (2026-06-13) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
 
 ## Purpose
 This guide defines UI rules for BlueStick so feature work, bug fixes, and LLM-assisted changes preserve layout integrity, readability, and predictable behavior under real application data.
@@ -87,7 +87,7 @@ Use Tailwind utility classes directly — they map to the rules above:
 <p className="break-words">{vuln.description}</p>
 ```
 
-For backwards-compatible use in components that still take `sx` (none should, post-alpha.22), the shared utility constants in `src/utils/uiStyles.ts` (`singleLineEllipsisSx`, `twoLineClampSx`, `wrappingTokenSx`) are still exported but should be considered deprecated — prefer the Tailwind class above.
+Use the Tailwind classes above directly. The old `sx`-style constants (`singleLineEllipsisSx`, `twoLineClampSx`, `wrappingTokenSx`, `wrappingChipSx`) were **removed in alpha.22** — `src/utils/uiStyles.ts` now exports only `safeFallback` (null/empty handling) and `stickyBelowChrome` (a sticky-offset style object).
 
 ### 5. Null and Empty Values
 - Never render raw `null`, `undefined`, or empty placeholders from the backend.

@@ -1,6 +1,6 @@
 # BlueStick Architecture
 
-> **Last verified against:** backend 2.115.0 / frontend 5.25.1 (2026-06-07)
+> **Last verified against:** backend 2.201.0 / frontend 5.106.0 (2026-06-13)
 
 BlueStick is a multi-user, multi-project pentest-operations platform that ingests scanner output, deduplicates hosts, correlates them to project scopes, enriches findings with vulnerability data, and drives agent-assisted test-plan generation and execution. This document is the canonical architecture reference — update it when domains, endpoints, or workflows change materially.
 
@@ -8,7 +8,7 @@ BlueStick is a multi-user, multi-project pentest-operations platform that ingest
 
 ## 1. System topology
 
-Four containers, one Docker network:
+Five containers, one Docker network:
 
 ```
 ┌──────────────────────┐   HTTPS 443      ┌────────────────────────────────┐
@@ -30,25 +30,28 @@ Four containers, one Docker network:
            │                                   ┌──────────────────────────┐
            │                                   │  PostgreSQL 16           │
            │                                   │  (networkmapper-db-1)    │
-           │                                   └──────────┬───────────────┘
-           │                                              ▲
-           │                                              │ LISTEN ingestion_jobs
-           │                                   ┌──────────┴───────────────┐
-           │                                   │  Worker (python -m       │
-           │                                   │  app.worker)             │
-           │                                   │  - ingestion + orphan    │
-           │                                   │    reaper                │
-           │                                   └──────────────────────────┘
-           ▼
+           │                                   └────┬──────────────┬──────┘
+           │                                        ▲              ▲
+           │                       LISTEN           │              │  LISTEN
+           │                       ingestion_jobs   │              │  report_jobs
+           │                          ┌─────────────┴───┐   ┌──────┴─────────────┐
+           │                          │  Worker         │   │  Report-worker     │
+           │                          │  (python -m     │   │  (python -m        │
+           │                          │  app.worker)    │   │  app.report_worker)│
+           │                          │  - ingestion +  │   │  - async PDF/JSON/ │
+           │                          │    orphan reaper│   │    zip generation  │
+           │                          └─────────────────┘   └────────────────────┘
+           ▼               (both share app/worker_loop.py: LISTEN/poll/reap/heartbeat)
   Browser (React + Tailwind v4 + Radix, Chart.js, react-router)
 ```
 
 - **Frontend container** (`networkmapper-frontend-1`) runs Nginx to terminate TLS, serve the Vite build, and reverse-proxy `/api/*` to the backend. The SPA is built on Tailwind v4 + Radix (shadcn-style primitives) + Sonner + lucide-react — Material UI was fully removed in the v4 frontend line (the app is now on the v5 line).
 - **Backend container** (`networkmapper-backend-1`) runs `uvicorn app.main:app` with multiple workers. Exposes `/api/v1` and `/health`.
 - **Worker container** (`networkmapper-worker-1`) runs `python -m app.worker` — a single long-lived process that LISTENs on the Postgres channel `ingestion_jobs`, polls for queued work with `SELECT … FOR UPDATE SKIP LOCKED`, processes each job through the parser pipeline, and reaps orphaned jobs whose heartbeat has gone stale. The backend writes upload files to a shared volume; the worker reads from the same path.
-- **Database container** (`networkmapper-db-1`) runs PostgreSQL 16 with a persistent volume for data. Schema is owned by **Alembic** — `alembic upgrade head` runs on every backend boot before the app serves traffic. The previous startup-DDL compatibility path (`Base.metadata.create_all` plus a hand-rolled migration list in `app/db/init.py`, and `_ensure_schema` calls in services) has been retired; `app/db/init.py` now does nothing but bring the database up to the Alembic head (serialized across the API + worker processes). The model is the schema, and Alembic enforces it. Migrations live in `backend/alembic/versions/`, baseline at `b46cd59c17f5_baseline_schema`.
+- **Report-worker container** (`networkmapper-report-worker-1`) runs `python -m app.report_worker` (v2.196.0) — a sibling of the ingestion worker that LISTENs on the `report_jobs` channel and generates heavy report formats (PDF, JSON, zip bundles) off the request path. Both workers share the same LISTEN/poll/reconnect/heartbeat/reaper machinery in **`app/worker_loop.py`** (`run_listen_loop`, `install_signal_handlers`, `write_heartbeat`); each entry point only supplies its channel name and per-job processing callback. The report-worker has its own heartbeat-freshness healthcheck (own heartbeat path, reuses `WORKER_HEARTBEAT_TIMEOUT`) and a `mem_limit` sized for an in-memory build of a capped report. The async report pipeline is covered in §8.
+- **Database container** (`networkmapper-db-1`) runs PostgreSQL 16 with a persistent volume for data. Schema is owned by **Alembic** — `alembic upgrade head` runs on every backend boot before the app serves traffic. The previous startup-DDL compatibility path (`Base.metadata.create_all` plus a hand-rolled migration list in `app/db/init.py`, and `_ensure_schema` calls in services) has been retired; `app/db/init.py` now does nothing but bring the database up to the Alembic head (serialized across the API + worker processes). The model is the schema, and Alembic enforces it. Migrations live in `backend/alembic/versions/` (~71 revisions), baseline at `b46cd59c17f5_baseline_schema`, current head `c3a9d1f80b27_job_queue_claim_indexes`. Trust `alembic heads` / the `versions/` dir over any chain quoted in prose.
 
-A single `docker-compose.yml` wires all four. `scripts/deploy.sh` is the unified entry point (first-time SSL setup, rebuild, nuclear cleanup, status).
+A single `docker-compose.yml` wires all five. `scripts/deploy.sh` is the unified entry point (first-time SSL setup, rebuild, nuclear cleanup, status).
 
 ---
 
@@ -62,6 +65,7 @@ BlueStick has **two parallel authentication systems** because it serves two very
 - `POST /api/v1/auth/login` returns a JWT signed with `settings.SECRET_KEY`. Sessions are tracked in `user_sessions` so tokens can be revoked server-side.
 - A default admin account (`admin` / `admin`) is seeded on first boot with `must_change_password=True`; the forced-change flow gates every JWT-bearing request behind `require_password_changed` until the user rotates the password.
 - RBAC checks are enforced in endpoint dependencies via `require_role(...)` and the project-scoped `require_project_role(...)`.
+- **Two-factor (TOTP)** — users can enrol an authenticator app via `/api/v1/auth/2fa/*` (`two_factor.py`): `setup` returns the provisioning secret/QR, `enable` verifies a code and returns one-time recovery codes, `disable` / `recovery-codes` manage the rest. TOTP secret + recovery state live on the `users` row; login challenges the second factor when 2FA is enabled.
 
 ### 2.2 Agent API keys (non-human agents)
 
@@ -84,6 +88,9 @@ Portfolio-level endpoints (`/api/v1/portfolio/dashboard`) are global — they re
 backend/app/
 ├── main.py                   # app factory, startup hooks, _seed_default_admin, _ensure_default_project
 ├── worker.py                 # ingestion worker entry point (python -m app.worker)
+├── report_worker.py          # report worker entry point (python -m app.report_worker)
+├── worker_loop.py            # shared LISTEN/poll/reconnect/heartbeat/reaper loop
+│                             # used by both workers (run_listen_loop, write_heartbeat)
 ├── core/
 │   ├── config.py             # settings (SECRET_KEY, CREDENTIAL_ENCRYPTION_KEY, DB URL, timeouts)
 │   └── security.py           # password hashing, JWT mint/verify, audit logging
@@ -91,8 +98,10 @@ backend/app/
 │   ├── api.py                # router registration — two tiers: top-level + /projects/{id}
 │   └── endpoints/
 │       ├── auth.py           # login, logout, change-password, sessions, profile
+│       ├── two_factor.py     # /auth/2fa/* — TOTP enrol/enable/disable + recovery codes
 │       ├── users.py          # admin CRUD + /users/directory (picker — open to any user)
 │       ├── audit.py          # admin audit log browsing
+│       ├── system_metrics.py # admin GET /system/queue-metrics (both job queues)
 │       ├── projects.py       # project CRUD + membership (add/remove/role)
 │       ├── notifications.py  # read/unread, mark-seen
 │       ├── portfolio.py      # cross-project dashboard
@@ -108,39 +117,44 @@ backend/app/
 │       ├── agent_activity.py      # JWT — human-facing read of the agent API call log
 │       ├── agent_common.py        # shared helpers for the agent routers
 │       ├── agent_schemas.py       # Pydantic models for the agent surface
-│       └── (project-scoped) upload, scans, hosts (+ host_follow, host_notes,
+│       └── (project-scoped) upload, scans, hosts (+ host_follow, annotations/notes,
 │                             host_tags, host_bulk, host_filter_views, host_queries),
 │                             webhooks, dashboard, workbench, scopes (+ subnet_labels),
-│                             export, dns, parse_errors, reports, risk, coverage,
+│                             sites, insights, posture, export, dns, parse_errors,
+│                             reports, coverage,
 │                             agents, test_plans (+ test_plan_bundles), assist,
 │                             recon_sessions, execution_sessions, activity
 ├── db/
 │   ├── session.py            # SessionLocal + engine
 │   ├── init.py               # startup: runs `alembic upgrade head`, serialized
 │   │                         # across API + worker (no more create_all/ALTER DDL)
-│   ├── models.py             # core (Host, Port, Scan, IngestionJob)
-│   ├── models_project.py     # Project, ProjectMembership
-│   ├── models_auth.py        # User, UserRole, UserSession, AuditLog
+│   ├── models.py             # core (Host, Port, Scan, IngestionJob, ReportJob,
+│   │                         # Site, Annotation + AnnotationStatusHistory,
+│   │                         # NoteAttachment, host follow/tags/filter-views/queries)
+│   ├── models_findings.py    # Finding spine — canonical correlated-finding layer
+│   │                         # (Finding, FindingHost, FindingStatusHistory) that
+│   │                         # powers reports / posture / finding-comments
+│   ├── models_project.py     # Project, ProjectMembership, WebhookConfig
+│   ├── models_auth.py        # User, UserRole, UserSession, AuditLog (+ TOTP fields)
 │   ├── models_agent.py       # Agent, AgentApiKey, TestPlan, TestPlanEntry,
 │   │                         # ExecutionSession, TestExecutionResult,
 │   │                         # HostSanityCheck, AgentFeedback, ImportedResultFile
 │   ├── models_llm.py         # LLMProvider (Fernet-encrypted api_key)
 │   ├── models_integrations.py# IntegrationCredential (Fernet-encrypted secrets)
-│   ├── models_risk.py        # risk scoring + ports-of-interest tables
 │   ├── models_vulnerability.py # Vulnerability, VulnerabilitySource, CVE
-│   ├── models_confidence.py  # per-attribute confidence + conflict tracking
-│   └── models_unified.py     # unified derived views (dashboard)
+│   └── models_confidence.py  # per-attribute confidence + conflict tracking
 ├── services/
-│   ├── ingestion_service.py  # upload write, magic-byte validation, worker loop
-│   │                         # (parser dispatch, retry_count/last_error, orphan reaper)
+│   ├── ingestion_service.py  # upload write, magic-byte validation, per-job parser
+│   │                         # dispatch + retry_count/last_error (the LISTEN/poll/
+│   │                         # reaper loop itself lives in worker_loop.py)
+│   ├── report_job_service.py # report_jobs queue (enqueue/claim/heartbeat/complete)
+│   ├── report_generator.py   # builds PDF/JSON/HTML/zip report artifacts
+│   ├── queue_metrics_service.py # operational metrics for both durable job queues
 │   ├── host_deduplication_service.py
 │   ├── subnet_correlation.py # host ↔ subnet mapping (ip_trie for speed)
 │   ├── ip_trie.py
 │   ├── vulnerability_service.py
-│   ├── vulnerability_db_service.py
-│   ├── cve_correlation_service.py
 │   ├── confidence_service.py
-│   ├── risk_assessment_service.py
 │   ├── risk_insight_service.py
 │   ├── ports_of_interest.py
 │   ├── host_follow_service.py
@@ -175,10 +189,20 @@ backend/app/
 │   └── parser_utils.py (shared ensure_scan/extract_first_ip helpers)
 └── schemas/
     ├── schemas.py           # primary Pydantic request/response models
-    └── risk_schemas.py      # risk-assessment specific shapes
+    ├── findings.py          # Finding-spine request/response shapes
+    ├── test_plan_schemas.py # test-plan / entry / proposed-test shapes
+    └── pagination.py        # shared paginated-response envelope
 ```
 
 Routers stay thin — business logic lives in `services/`. Parsers only normalize external formats to the canonical host/port/vulnerability representation; they never touch HTTP concerns.
+
+**Subsystems a new dev should know about (where they live):**
+
+- **Finding spine** — `db/models_findings.py` (`Finding`, `FindingHost`, `FindingStatusHistory`) is the canonical correlated-finding layer that de-duplicates raw vulnerabilities into one record per finding-across-hosts. Reports, the posture dashboard, and finding-comments all read this spine rather than raw `vulnerabilities`. Schemas in `schemas/findings.py`.
+- **Sites** — `Site` (`db/models.py`) is a project-scoped grouping of subnets/hosts with tiered weighting; managed via `endpoints/sites.py` and feeds per-site attention rollups.
+- **Posture + Insights** — `endpoints/posture.py` is the manager-facing security-posture rollup; `endpoints/insights.py` is the per-subnet exposure/neglect/hygiene lens. Both are read-only analytics over the existing host/finding data.
+- **Webhooks** — `WebhookConfig` (`db/models_project.py`) + `endpoints/webhooks.py` manage per-project outbound notification hooks (egress goes through the SSRF-safe HTTP client).
+- **Annotations (notes) + attachments** — the note system is `Annotation` (+ `AnnotationStatusHistory`) in `db/models.py` with generalized targets (host, finding, etc. — see `finding_id`); file attachments live in `NoteAttachment` and are purged on note delete.
 
 ---
 
@@ -198,13 +222,13 @@ Uploads flow through an asynchronous worker so the request path never blocks on 
 5. **Terminal state.** Success → `status='completed'`, `scan_id` set, `tool_name` set. Parse failure → `status='failed'`, `retry_count++`, `last_error` populated with a trimmed traceback or the user message. Unexpected exception → same, but with a `traceback` last_error.
 6. **Orphan reaping.** Every ~12 idle ticks (~1 min), the worker runs `reap_orphaned_jobs()` — transitions any `processing` job whose heartbeat is older than 3× `INGESTION_JOB_TIMEOUT` to `failed` with a clear "worker crashed" message and bumps `retry_count`. Closes the gap when a worker dies mid-parse.
 
-Parsed hosts flow through `host_deduplication_service` (dedupe by IP within project), `subnet_correlation` (bind hosts to scopes via an IP trie), and `vulnerability_service` / `cve_correlation_service` (enrichment). `risk_insight_service` and `ports_of_interest` compute the derived tables that power the dashboard.
+Parsed hosts flow through `host_deduplication_service` (dedupe by IP within project), `subnet_correlation` (bind hosts to scopes via an IP trie), and `vulnerability_service` (enrichment). `risk_insight_service` and `ports_of_interest` compute the derived tables that power the dashboard.
 
 ---
 
 ## 5. Test plan + agent workflow
 
-The test plan system is the operational backbone for agent-assisted pentesting. It has three modes:
+The test plan system is the operational backbone for agent-assisted pentesting. The `/api/v1/agent/*` surface is split into per-workflow routers — `agent_browse` (shared reads), `agent_test_plans`, `agent_execution`, `agent_recon`, and `agent_assist` — covering **four agent workflows** (plan generation, execution, reconnaissance, assist) on top of a shared read/browse surface:
 
 ### 5.1 Plan generation (Workflow A)
 
@@ -279,7 +303,7 @@ Security work landed across v2.9.5, v2.9.7, and v2.9.8. The below is the current
 - **JSON depth-bomb guard** — `bundle_import_service._assert_json_depth_ok()` scans uploaded results files byte-by-byte before `json.loads`, rejecting anything nested deeper than 20 levels. Legitimate results rarely exceed 5–6. Handles string literals and escape sequences to avoid false positives.
 - **Prompt sanitization** — `frontend/src/utils/promptSanitizer.ts` and `backend/app/services/prompt_sanitizer.py` are a **matched pair**. Both strip `X-API-Key: nm_agent_...` lines, redact credential bullets (Access key / Secret key / Password / Username / API key / PDCP token / Secret), and catch bare `nm_agent_` tokens of 20+ chars. The `/llm-providers/{id}/complete` endpoint calls the server sanitizer before forwarding so a caller bypassing the frontend can't deliberately leak. Changing bullet labels in `agent_prompt_service._integration_block` requires updating **both** sanitizers in lockstep.
 - **File upload validation** — `ingestion_service` enforces a max chunk-by-chunk size during streaming, slugifies filenames, and runs a magic-byte check after write (`.xml`/`.nessus` must start with `<`, `.json` with `{` or `[`, `.gnmap` with `#` or `Host:`, text files must not contain NUL bytes).
-- **Pydantic `max_length` caps** on high-risk write schemas: HostNote body 16 KB, SubnetBase.description 1 KB, ScopeBase.name 256, UserPlanCreate.title 200, EntryCreate.rationale 4 KB, EntryUpdate.findings 16 KB, RejectRequest.reason 2 KB.
+- **Pydantic `max_length` caps** on high-risk write schemas: AnnotationBase.body 16 KB, SubnetBase.description 1 KB, ScopeBase.name 256, UserPlanCreate.title 200, EntryCreate.rationale 4 KB, EntryUpdate.findings 16 KB, RejectRequest.reason 2 KB.
 - **Execution report raw_output** is trimmed to 16 KB per test result in the rendered view (JSON/HTML/CSV/PDF). The full dump remains in the DB.
 - **CORS** — origins restricted to configured values (`settings.CORS_ORIGINS`); never `*`. Deploy script regenerates `.env` with the detected host IP.
 - **HTTPS** — production deployments terminate TLS at the Nginx frontend container using self-signed certs by default (`scripts/deploy.sh` generates them during first-time setup). Security headers are set in `ssl-nginx.conf`.
@@ -346,9 +370,11 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 
 ## 8. Observability, operations, and recovery
 
-- **Structured logs** — backend + worker log to stdout via `logging.basicConfig`. `scripts/collect-logs.sh` bundles backend/worker/db/nginx logs plus auth audit events for support cases.
+- **Structured logs** — backend + workers log to stdout via `logging.basicConfig`. `scripts/collect-logs.sh` bundles backend/worker/db/nginx logs plus auth audit events for support cases.
 - **Audit trail** — `audit_logs` captures login/logout, password change, role change, session revoke, upload, scan delete, and other security-relevant events with user_id + IP + user agent.
-- **Health checks** — `/health` (backend), `/health.html` (frontend nginx), `pg_isready` (db), `/proc`-grep (worker).
+- **Health checks** — `/health` (backend), `/health.html` (frontend nginx), `pg_isready` (db), heartbeat-freshness checks (both workers — each rewrites its own heartbeat file every loop, so a wedged worker goes stale → unhealthy).
+- **Async report pipeline** — heavy report formats (PDF, JSON, zip bundles) are generated off the request path. The API enqueues a `report_jobs` row (`ReportJobService`), the **report-worker** claims it via `SELECT … FOR UPDATE SKIP LOCKED`, builds the artifact with `report_generator.py`, and writes it to the shared `uploads/report_artifacts` volume; the UI polls job status and downloads the finished file. Mirrors the ingestion pipeline (same `worker_loop.py`, same orphan-reaping semantics). See §1 for the container.
+- **Queue metrics** — admin-only `GET /api/v1/system/queue-metrics` (`system_metrics.py` → `queue_metrics_service.py`) reports depth/in-flight/failure counts for **both** durable job queues (`ingestion_jobs` + `report_jobs`) so operators can see backlog and stuck work at a glance.
 - **Parse errors** — `parse_errors` has a dedicated browse page with `user_message` strings tuned for operators. Linked to `ingestion_jobs` via FK so the UI can show "this scan failed — see error #42".
 - **Dead-letter columns** — `ingestion_jobs.retry_count` + `ingestion_jobs.last_error` surface in the `IngestionJobSchema` so the UI can highlight jobs that crashed repeatedly. `ingestion_jobs.skipped_count` + `parser_warnings` (v2.22.0) carry per-job parser quality stats (how many records were dropped, what malformed), persisted from `parser.last_parse_stats` after each successful parse.
 - **Orphan reaping** — covered in §4; this is the recovery path when a worker segfaults or the container is killed mid-parse.
@@ -366,7 +392,7 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 
 **Adding a new agent workflow.**
 1. Decide the scope: does the agent need project-level access or plan-level access? Which fields must its API key bind to?
-2. Add the endpoint to the right per-workflow module under `backend/app/api/v1/endpoints/` (`agent_browse.py`, `agent_test_plans.py`, `agent_execution.py`, `agent_recon.py`, or a new one mounted in `api.py`). Use the matching dependency: `require_plan_scope` for plan-scoped, `require_recon_scope` for scope-bound, `deny_scoped_keys` for project-global.
+2. Add the endpoint to the right per-workflow module under `backend/app/api/v1/endpoints/` (`agent_browse.py`, `agent_test_plans.py`, `agent_execution.py`, `agent_recon.py`, `agent_assist.py`, or a new one mounted in `api.py`). Use the matching dependency: `require_plan_scope` for plan-scoped, `require_recon_scope` for scope-bound, `require_assist_scope` for read-only assist, `deny_scoped_keys` for project-global.
 3. Tag new AGENTS.md sections with the workflow name so they appear in the sliced response; update the prompt builder in `agent_prompt_service.py` **and bump `PROMPT_VERSION`** so agents on the old prompt can detect they're stale.
 4. Add contract tests to `backend/tests/` that exercise the new endpoint against a fixture plan. The agent API call log middleware will capture the new endpoint automatically — extend the `_collect_referenced_ids` helper if the call carries host/entry references the parser doesn't already pick up.
 
@@ -395,7 +421,7 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 Single entry point: `./scripts/deploy.sh`. Options:
 
 1. **Start / rebuild** — builds and starts containers using the current `.env`.
-2. **First-time setup** — auto-detects host IP, generates `.env` from `.env.example`, generates SSL certs, starts all four containers. Creates a default `admin` user on first boot. The password is taken from `DEFAULT_ADMIN_PASSWORD` if set; otherwise a cryptographically random URL-safe password is generated (v2.90.3), printed once to backend boot stdout, and written to `/app/uploads/initial-admin-password.txt` for retrieval. `must_change_password=True` is set on the row so first login forces a rotation regardless of source.
+2. **First-time setup** — auto-detects host IP, generates `.env` from `.env.example`, generates SSL certs, starts all five containers. Creates a default `admin` user on first boot. The password is taken from `DEFAULT_ADMIN_PASSWORD` if set; otherwise a cryptographically random URL-safe password is generated (v2.90.3), printed once to backend boot stdout, and written to `/app/uploads/initial-admin-password.txt` for retrieval. `must_change_password=True` is set on the row so first login forces a rotation regardless of source.
 3. **Reconfigure IP** — regenerates `.env` + SSL certs for a new host IP.
 4. **Nuclear clean** — removes all Docker data (containers, volumes, network) and rebuilds from scratch. Destructive.
 5. **Security status** — reports SSL state and whether the database port is exposed.
@@ -408,8 +434,8 @@ Auxiliary scripts:
 - `scripts/transfer-images.sh` — export/import container images for offline or air-gapped moves.
 - `scripts/generate-ssl-cert.sh` / `generate-ssl-cert-simple.sh` — SSL certificate helpers (also invoked by `deploy.sh` during first-time setup).
 
-**Scaling.** The stateless backend and frontend containers can run multiple replicas; the worker is currently a single long-lived process and should not be replicated as-is (the `FOR UPDATE SKIP LOCKED` pattern is safe for multi-worker but the orphan reaper logic assumes one reaper). Postgres needs external strategies (managed service, read replicas) for anything beyond single-host deployments. There is no background job scheduler beyond the worker — scheduled maintenance (re-correlation, vuln refresh) is currently triggered on-demand.
+**Scaling.** The stateless backend and frontend containers can run multiple replicas; the ingestion and report workers are each currently a single long-lived process and should not be replicated as-is (the `FOR UPDATE SKIP LOCKED` claim is safe for multiple workers, but the orphan-reaper logic assumes one reaper per queue). Postgres needs external strategies (managed service, read replicas) for anything beyond single-host deployments. There is no background job scheduler beyond the two workers — scheduled maintenance (re-correlation, vuln refresh, agent-API-log purge) is currently triggered on-demand.
 
 ---
 
-This document reflects the v2.115.0 / 5.25.1 state of the system. When a domain, endpoint, or workflow changes, update the relevant section here and bump the version stamp at the top so future maintainers have an accurate map.
+This document reflects the backend 2.201.0 / frontend 5.106.0 (2026-06-13) state of the system. When a domain, endpoint, or workflow changes, update the relevant section here and bump the version stamp at the top so future maintainers have an accurate map.

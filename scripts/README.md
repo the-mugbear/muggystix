@@ -6,16 +6,18 @@ This directory contains utility scripts for deployment and maintenance.
 
 ### Deployment Scripts
 
-- **`deploy.sh`** - **Main deployment script** with all deployment options
-  - Local development deployment
-  - Network production deployment
-  - Test instance deployment
-  - Nuclear clean rebuild
+- **`deploy.sh`** - **Main deployment script**; interactive menu with five options:
+  1. Start / Rebuild
+  2. First-time setup (generate `.env` + SSL certs + start)
+  3. Reconfigure IP address
+  4. Nuclear clean (destroy ALL data and rebuild)
+  5. Security status check
 
 ### Maintenance Scripts
 
 - **`collect-logs.sh`** - Comprehensive log collection with authentication debugging
 - **`status.sh`** - Quick status check for all instances
+- **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so Posture/Insights/Findings are evaluable on a fresh install. Runs inside the backend container.
 - **`transfer-images.sh`** - Export/import container images for offline or air-gapped moves
 - **`preflight.sh`** - Environment probe helper used by the agentic recon workflow
 - **`generate-ssl-cert.sh`** / **`generate-ssl-cert-simple.sh`** - SSL certificate generators (also invoked by `deploy.sh` during first-time setup)
@@ -45,34 +47,30 @@ A default admin account is **created automatically** on first application boot w
 
 ### Default Admin Credentials
 
-On first startup, the backend logs will display the generated admin credentials:
+On first startup, when `DEFAULT_ADMIN_PASSWORD` is unset, the backend generates a secure random password and **writes it to a file** (it is **not** logged):
 
 ```
-============================================================
-DEFAULT ADMIN ACCOUNT CREATED
-  Username: admin
-  Password: <randomly generated>
-  *** CHANGE THIS PASSWORD IMMEDIATELY ***
-============================================================
+./uploads/initial-admin-password.txt   (mode 0600)
 ```
+
+Read it there, log in as `admin`, and change it immediately. Startup **fails closed** if that volume isn't writable — set `DEFAULT_ADMIN_PASSWORD` (or fix the `uploads` volume) rather than ending up with an unrecoverable admin. The file is removed once the password is changed.
+
+> **2FA:** `REQUIRE_2FA` defaults to `true`, so the first login walks the admin through TOTP enrolment. Set `REQUIRE_2FA=false` in `.env` to make it opt-in.
 
 ### Controlling Default Admin via Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DEFAULT_ADMIN_USERNAME` | `admin` | Initial admin username |
-| `DEFAULT_ADMIN_EMAIL` | `admin@networkmapper.local` | Initial admin email |
-| `DEFAULT_ADMIN_PASSWORD` | *(random)* | Initial admin password |
-
-If `DEFAULT_ADMIN_PASSWORD` is not set, a secure random password is generated and logged to stdout on first boot.
+| `DEFAULT_ADMIN_PASSWORD` | *(random → `uploads/initial-admin-password.txt`)* | Initial admin password |
 
 ### Creating Additional Users
 
 Use the admin web UI at **System Settings** or the API:
 
 ```bash
-# Via API (requires admin JWT token)
-curl -X POST https://localhost:8000/api/v1/auth/register \
+# Via API (requires admin JWT token; nginx proxies /api on :443)
+curl -k -X POST https://localhost/api/v1/auth/register \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"username": "analyst1", "email": "analyst@example.com", "password": "SecurePass123!"}'
@@ -80,9 +78,11 @@ curl -X POST https://localhost:8000/api/v1/auth/register \
 
 ## User Roles
 
+Roles are assigned **per project** (a user can be analyst on one project, viewer on another):
+
 - **ADMIN**: Full system access, user management, configuration
-- **ANALYST**: Risk assessments, detailed analysis, report generation
-- **AUDITOR**: Read access + export capabilities for compliance
+- **ANALYST**: Scope management, scan upload, test-plan approval, notes, starting agent sessions
+- **AUDITOR**: Read-only access with audit-log visibility
 - **VIEWER**: Read-only access to scan results and dashboards
 
 ## Password Requirements
@@ -101,7 +101,8 @@ Passwords must meet these criteria:
 # Check container status
 docker compose ps
 
-# Check logs (admin password is printed here on first boot)
+# Check logs (note: the initial admin password is NOT here — it's in
+# ./uploads/initial-admin-password.txt)
 docker compose logs backend
 
 # Force restart
