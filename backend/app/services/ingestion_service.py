@@ -576,8 +576,28 @@ class IngestionService:
             result = self._process_job(db, job)
             job = db.get(IngestionJob, job_id)  # Refresh job state
             if result:
-                job.status = "completed"
-                job.completed_at = datetime.now(timezone.utc)
+                # Cancellation wins (code-review Critical 2): cancel_job runs in
+                # the API process, so the in-proc _cancelled set isn't visible
+                # here — it flips the row to 'failed' in the DB.  Transition
+                # processing→completed ATOMICALLY; a zero-row update means the job
+                # was cancelled (or reaped) and must NOT be resurrected as
+                # completed, even though the parser's data committed.
+                _claimed = db.execute(
+                    text(
+                        "UPDATE ingestion_jobs SET status='completed', completed_at=:ts "
+                        "WHERE id=:jid AND status='processing'"
+                    ),
+                    {"ts": datetime.now(timezone.utc), "jid": job_id},
+                ).rowcount
+                if not _claimed:
+                    logger.info(
+                        "Ingestion job %s no longer 'processing' (cancelled) — not "
+                        "marking completed",
+                        job_id,
+                    )
+                    db.commit()
+                    return
+                db.refresh(job)
                 job.scan_id = result.get("scan_id")
                 job.tool_name = result.get("tool_name")
                 job.message = result.get("message")

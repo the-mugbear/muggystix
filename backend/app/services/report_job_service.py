@@ -135,7 +135,7 @@ class ReportJobService:
 
     def _run_job(self, job_id: int) -> None:
         # Lazy import — ReportGenerator pulls in the whole report/insight stack.
-        from app.api.v1.endpoints.reports import ReportGenerator
+        from app.services.report_generator import ReportGenerator
 
         db = _session_module.SessionLocal()
         try:

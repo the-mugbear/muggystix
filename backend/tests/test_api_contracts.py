@@ -201,17 +201,25 @@ class TestExportEndpoints:
         response = client.get(f"/api/v1/projects/{test_project.id}/export/scope/999")
         assert response.status_code == 404
 
-    def test_hosts_agent_package_format(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/reports/hosts/agent-package")
-        assert response.status_code == 200
-        assert "application/zip" in response.headers["content-type"]
-        assert "content-disposition" in response.headers
+    # The heavy formats are async jobs now (v2.196.0): the inline GET routes were
+    # removed — enqueue via POST /reports/jobs and poll/download.
+    def test_hosts_agent_package_enqueues(self, client, test_project):
+        response = client.post(
+            f"/api/v1/projects/{test_project.id}/reports/jobs",
+            params={"format": "agent-package"},
+        )
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["format"] == "agent-package"
 
-    def test_hosts_markdown_bundle_format(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/reports/hosts/markdown-bundle")
-        assert response.status_code == 200
-        assert "application/zip" in response.headers["content-type"]
-        assert "content-disposition" in response.headers
+    def test_hosts_markdown_bundle_enqueues(self, client, test_project):
+        response = client.post(
+            f"/api/v1/projects/{test_project.id}/reports/jobs",
+            params={"format": "markdown-bundle"},
+        )
+        assert response.status_code == 202, response.text
+        assert response.json()["format"] == "markdown-bundle"
 
 
 # ================================================================== #
