@@ -16,6 +16,7 @@ from app.db import models
 from app.db.models_agent import Agent, TestPlanEntry
 from app.api.deps import check_agent_rate_limit, deny_scoped_keys, require_plan_scope
 from app.services.test_plan_service import TestPlanService
+from app.services.agent_prompt_history import PROMPT_VERSION
 
 from app.api.v1.endpoints.agent_schemas import (
     VulnCounts, VulnBrief, PortTuple, CandidateHost, PlanningContext,
@@ -454,6 +455,7 @@ def get_planning_context(
         plan=plan_resp.model_dump(mode="json"),
         filter_criteria=plan.filter_criteria,
         agent_name=agent.name,
+        prompt_version=PROMPT_VERSION,
         selection_policy=(
             "Create entries for all hosts with critical or high vulnerabilities. "
             "Include hosts with medium vulnerabilities if they expose multiple "

@@ -13,6 +13,7 @@ same "things-agents-curl-once" surface, not because of route prefix.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,7 @@ from app.core.config import settings
 from app.db.models_auth import User
 from app.db.session import get_db
 from app.services.agents_guide_service import slice_agents_md
+from app.services.agent_prompt_history import PROMPT_VERSION
 
 router = APIRouter()
 
@@ -207,6 +209,20 @@ async def agents_guide(request: Request, workflow: Optional[str] = None):
         raise HTTPException(status_code=404, detail="AGENTS.md not found")
 
     content = slice_agents_md(content, workflow)
+
+    # Stamp the served guide with the LIVE prompt version (the same
+    # PROMPT_VERSION the agent's prompt embeds).  The static file carries a
+    # hand-written value; overwriting it with ground truth guarantees the
+    # guide and the prompt always report the same contract version, so an
+    # agent can tell "guide vs prompt compatible?" by string equality
+    # instead of comparing two unrelated numbers (the backend platform
+    # version is only a freshness stamp).  See feedback #8 (recon, 1.35.0).
+    content = re.sub(
+        r"(\*\*Prompt version:\*\*\s*)\S+",
+        lambda m: f"{m.group(1)}{PROMPT_VERSION}",
+        content,
+        count=1,
+    )
 
     # Substitute the default localhost base URL with the actual origin so
     # the agent's curl examples target this deployment instead of the

@@ -21,6 +21,25 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.38.0",
+        "app_version": "2.202.0",
+        "summary": (
+            "Version-compatibility clarity (from recon feedback #8). An agent "
+            "couldn't tell whether the agents-guide it fetched matched the "
+            "prompt it was given, because the guide's header carried the "
+            "platform version (e.g. 2.201.0) while the prompt carried "
+            "PROMPT_VERSION (e.g. 1.37.0) — two unrelated numbering schemes. "
+            "Now: (1) GET /agents-guide stamps the served guide with the LIVE "
+            "PROMPT_VERSION, so the guide and the prompt always report the same "
+            "compatibility number; (2) AGENTS.md gained a 'Version & "
+            "compatibility' note saying the Prompt version is the only number "
+            "that matters and the backend stamp is just freshness; (3) all four "
+            "/context responses (plan, execution, recon, assist) now carry "
+            "`prompt_version` so the agent can verify mid-session without "
+            "re-parsing the guide. No endpoint removed; additive field."
+        ),
+    },
+    {
         "version": "1.37.0",
         "app_version": "2.201.0",
         "summary": (

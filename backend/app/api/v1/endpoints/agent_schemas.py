@@ -149,6 +149,7 @@ class PlanningContext(BaseModel):
     plan: dict = Field(..., description="Current TestPlan state — id, title, description, status, version, filter_criteria. Echo the id back when posting entries.")
     filter_criteria: Optional[dict] = Field(None, description="The host filters the user picked at plan-generation time. `candidate_hosts` is already pre-filtered by these — do not re-apply them.")
     agent_name: str = Field(..., description="The provisioned agent's display name. Must appear in the `🤖 Agent-generated — {agent_name}` attribution prefix on the plan description.")
+    prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
     selection_policy: str = Field(..., description="Human-readable rubric describing how `meets_policy` was computed. Quote it in the plan description to justify entry selection.")
     summary: dict = Field(..., description="Aggregate counts: `total_hosts`, `matching_filter`, `meets_policy_count`, plus vuln severity rollups. Report this to the user as the first thing after fetching context.")
     candidate_hosts: List[CandidateHost] = Field(..., description="Per-host candidate details. Already filtered by `filter_criteria`; apply the selection policy on top.")
@@ -423,6 +424,7 @@ class ExecutionContextResponse(BaseModel):
     plan: dict
     session_id: int
     agent_name: str
+    prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
     hosts: List[ExecutionHostContext] = Field(default_factory=list)
     # v2.23.0 — echo back what the agent reported via the probe endpoint.
     # None means no probe has been recorded for this session yet; the
@@ -746,6 +748,7 @@ class ReconContextResponse(BaseModel):
     recon_session_id: int
     scope_id: int
     scope_name: str
+    prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
     # v2.45.4 — `scope_cidrs` is now a BOUNDED sample, not necessarily
     # the full list.  A scope with thousands of CIDRs would otherwise
     # bloat every /recon/context response (and the agent's context

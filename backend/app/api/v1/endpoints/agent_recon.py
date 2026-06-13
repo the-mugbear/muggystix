@@ -30,6 +30,7 @@ from app.api.v1.endpoints.agent_schemas import (
     EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
 )
 from app.api.v1.endpoints.agent_common import _scoped_host_ids_subq
+from app.services.agent_prompt_history import PROMPT_VERSION
 # v2.27.0 — recon-context helpers extracted to two focused service modules.
 # The endpoint handlers in this file call into them via these aliases so
 # the route file stays focused on HTTP / auth / response shaping.
@@ -235,6 +236,7 @@ def get_recon_context(
         recon_session_id=session.id,
         scope_id=scope.id,
         scope_name=scope.name,
+        prompt_version=PROMPT_VERSION,
         scope_cidrs=scope_cidrs_field,
         scope_cidrs_total=scope_cidrs_total,
         subnets_truncated=subnets_truncated,

@@ -51,6 +51,7 @@ from app.api.v1.endpoints.agent_common import (
     _batch_host_enrichment,
 )
 from app.services.agent_environment_probe_service import apply_environment_probe
+from app.services.agent_prompt_history import PROMPT_VERSION
 
 router = APIRouter()
 
@@ -247,6 +248,7 @@ def get_assist_context(
     )
 
     return {
+        "prompt_version": PROMPT_VERSION,
         "session": {
             "id": session.id,
             "purpose": session.purpose,

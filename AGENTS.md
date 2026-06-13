@@ -1,6 +1,8 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Version:** 2.201.0 | **Updated:** 2026-06-13
+**Prompt version:** 1.38.0 · **Verified against:** backend 2.201.0 (2026-06-13)
+
+> **Version & compatibility (read this).** The number that matters for compatibility is the **Prompt version** above — when this guide is fetched from `/api/v1/agents-guide`, that value is stamped **live** from the running deployment, and it is the **same** `prompt_version` carried in the instructions block you were given (and echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed. If they **differ**, the deployment changed mid-session: **re-fetch this guide** and prefer it. The "Verified against backend X" is only a freshness stamp — **ignore the backend/platform version for compatibility**; it is a different numbering scheme and is not expected to equal the Prompt version.
 
 You are an AI assistant (Claude Code, Codex, ChatGPT, etc.) assigned to a workflow in BlueStick. This file is the entire surface you are authorized to use. Follow it literally — the surrounding scaffolding (human approval, per-session key scope, audit trail) depends on you behaving as described.
 
@@ -439,7 +441,10 @@ When you see it:
 # 1. Orient yourself — get the scope's CIDRs, size analysis, recommended sequence, tool catalog
 GET /agent/recon/context
 # → { recon_session_id, scope_id, scope_cidrs, scope_size, recommended_sequence,
-#     known_host_summary, tool_catalog, session_status, started_at }
+#     known_host_summary, tool_catalog, session_status, started_at, prompt_version }
+#   prompt_version = the live PROMPT_VERSION this deployment runs; compare it to
+#   the prompt_version in your instructions block — a mismatch means the
+#   deployment changed mid-session, so re-fetch the agents-guide.
 
 # 2. Pick a tool from the catalog (or adapt), propose command, get user approval, run locally
 #    IMPORTANT: use machine-readable output flags so BlueStick can parse the file.

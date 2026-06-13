@@ -209,6 +209,20 @@ def _actual_agent_routes() -> set[tuple[str, str]]:
     return out
 
 
+def test_served_guide_is_stamped_with_live_prompt_version(client):
+    """GET /agents-guide must stamp the served guide with the LIVE
+    PROMPT_VERSION, so the guide and the agent's prompt always report the same
+    compatibility number (feedback #8: the guide carried the platform version
+    while the prompt carried PROMPT_VERSION — two unrelated schemes)."""
+    from app.services.agent_prompt_history import PROMPT_VERSION
+
+    resp = client.get("/api/v1/agents-guide?workflow=reconnaissance")
+    assert resp.status_code == 200, resp.text
+    assert f"**Prompt version:** {PROMPT_VERSION}" in resp.text, (
+        "served guide must carry the live PROMPT_VERSION in its header"
+    )
+
+
 def test_documented_agent_endpoints_exist_as_routes():
     documented = _documented_agent_endpoints(_load_agents_md())
     # Guard against a silent regex/format break that would make this pass

@@ -25,6 +25,7 @@ from app.core.config import settings as _settings
 from app.core.security import log_audit_event
 from app.api.deps import require_plan_scope, check_agent_rate_limit
 from app.services.test_plan_service import TestPlanService
+from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.agent_environment_probe_service import apply_environment_probe
 
 from app.api.v1.endpoints.agent_schemas import (
@@ -396,6 +397,7 @@ def get_execution_context(
         plan=plan_dict,
         session_id=session.id,
         agent_name=agent.name,
+        prompt_version=PROMPT_VERSION,
         hosts=result_hosts,
         # v2.23.0 — echo the per-session environment probe.  None until
         # the agent posts /execution-sessions/{id}/environment.

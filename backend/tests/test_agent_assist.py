@@ -272,3 +272,16 @@ def test_assist_hosts_q_dsl_malformed_is_400(client, test_project):
     headers = _auth_headers(body["api_key"])
     resp = client.get("/api/v1/agent/assist/hosts?q=port:notaport", headers=headers)
     assert resp.status_code == 400, resp.text
+
+
+def test_assist_context_carries_live_prompt_version(client, test_project):
+    """The /context response carries the live PROMPT_VERSION so the agent can
+    verify mid-session that the deployment still matches its prompt (feedback
+    #8). Mirrors the recon/execution/plan context responses."""
+    from app.services.agent_prompt_history import PROMPT_VERSION
+
+    body = _start_session(client, test_project.id)
+    headers = _auth_headers(body["api_key"])
+    ctx = client.get("/api/v1/agent/assist/context", headers=headers)
+    assert ctx.status_code == 200, ctx.text
+    assert ctx.json()["prompt_version"] == PROMPT_VERSION
