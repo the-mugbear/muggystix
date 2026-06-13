@@ -5,6 +5,7 @@ Agent records results as it works through an approved plan with
 per-test human approval.  Split out of agent_api.py.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Dict
 
@@ -25,6 +26,7 @@ from app.core.config import settings as _settings
 from app.core.security import log_audit_event
 from app.api.deps import require_plan_scope, check_agent_rate_limit
 from app.services.test_plan_service import TestPlanService
+from app.services.notification_service import NotificationService
 from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.agent_environment_probe_service import apply_environment_probe
 
@@ -36,6 +38,8 @@ from app.api.v1.endpoints.agent_schemas import (
     ExecutionSessionCompleteRequest, ExecutionSessionCompleteResponse,
 )
 from app.api.v1.endpoints.agent_common import _plan_response
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -108,6 +112,15 @@ def submit_test_plan(
         plan = svc.submit_plan(plan, "agent", agent.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    # Nudge the human approvers — submission is the one human gate in the agent
+    # loop. Best-effort: a notification failure must never fail the submission.
+    try:
+        NotificationService(db).notify_plan_proposed(plan, agent.project_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("Failed to notify approvers for proposed plan %s", plan.id, exc_info=True)
 
     return _plan_response(plan, db)
 

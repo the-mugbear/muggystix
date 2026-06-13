@@ -255,6 +255,42 @@ class IngestionService:
             db.commit()
             return True
 
+    def requeue_job(self, job_id: int) -> str:
+        """Re-queue a FAILED job whose uploaded file is still on disk.
+
+        Mirrors the orphan reaper's requeue (``reap_orphaned_jobs``): a parse
+        that failed for a transient reason (a DB blip, a since-fixed parser
+        bug) can be retried without forcing the operator to locate and
+        re-upload the original — often multi-GB — scan file, which is still
+        on disk because only *successful* parses unlink it.
+
+        Returns ``"requeued"`` on success, or a reason code (``"not_failed"``
+        / ``"file_missing"`` / ``"not_found"``) so the endpoint can surface a
+        precise error.
+        """
+        self._cancelled.discard(job_id)
+        with _session_module.SessionLocal() as db:
+            job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
+            if not job:
+                return "not_found"
+            if job.status != "failed":
+                return "not_failed"
+            if not (job.storage_path and Path(job.storage_path).exists()):
+                return "file_missing"
+            job.retry_count = (job.retry_count or 0) + 1
+            job.status = "queued"
+            job.started_at = None
+            job.last_heartbeat = None
+            job.completed_at = None
+            job.error_message = None
+            job.last_error = None
+            job.message = f"Re-queued by user (attempt {job.retry_count})."
+            db.commit()
+            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
+        # Wake the worker immediately (same pg_notify hint as the upload path).
+        self.enqueue_job(job_id)
+        return "requeued"
+
     def update_heartbeat(self, db: Session, job_id: int, progress: Optional[str] = None) -> None:
         """Update heartbeat timestamp and optional progress text.
 

@@ -773,25 +773,6 @@ class SubnetFileUploadResponse(BaseModel):
     subnets_added: int
     filename: str
 
-class EyewitnessResultBase(BaseModel):
-    url: str
-    protocol: Optional[str] = None
-    port: Optional[int] = None
-    ip_address: Optional[str] = None
-    title: Optional[str] = None
-    server_header: Optional[str] = None
-    content_length: Optional[int] = None
-    screenshot_path: Optional[str] = None
-    response_code: Optional[int] = None
-    page_text: Optional[str] = None
-
-class EyewitnessResult(EyewitnessResultBase):
-    id: int
-    scan_id: int
-    created_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
-
 class DNSRecordBase(BaseModel):
     domain: str
     record_type: str

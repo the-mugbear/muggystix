@@ -23,14 +23,21 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   getScans,
   deleteScan,
+  getScanDeletionImpact,
   uploadFile,
   getIngestionJob,
   getRecentIngestionJobs,
   dismissIngestionJob,
   cancelIngestionJob,
+  retryIngestionJob,
   getScanCommandExplanation,
 } from '../services/api';
-import type { Scan, IngestionJob, CommandExplanation } from '../services/api';
+import type {
+  Scan,
+  IngestionJob,
+  CommandExplanation,
+  ScanDeletionImpact,
+} from '../services/api';
 import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
@@ -153,6 +160,9 @@ export default function Scans() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [scanToDelete, setScanToDelete] = useState<Scan | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deletionImpact, setDeletionImpact] = useState<ScanDeletionImpact | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState(false);
 
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -690,7 +700,22 @@ export default function Scans() {
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
   const handleDeleteClick = (scan: Scan) => {
     setScanToDelete(scan);
+    setDeletionImpact(null);
+    setImpactError(false);
+    setImpactLoading(true);
     setDeleteDialogOpen(true);
+    // Fetch the real impact so the modal can detail exactly what's removed.
+    // Hosts are deduplicated across scans, so this is rarely a blanket wipe.
+    getScanDeletionImpact(scan.id)
+      .then((impact) => {
+        // Ignore a stale response if the user already targeted another scan.
+        setScanToDelete((current) => {
+          if (current && current.id === impact.scan_id) setDeletionImpact(impact);
+          return current;
+        });
+      })
+      .catch(() => setImpactError(true))
+      .finally(() => setImpactLoading(false));
   };
   const handleDeleteConfirm = async () => {
     if (!scanToDelete || deleteLoading) return;
@@ -701,6 +726,7 @@ export default function Scans() {
       toast.success(`Scan "${scanToDelete.filename}" deleted.`);
       setDeleteDialogOpen(false);
       setScanToDelete(null);
+      setDeletionImpact(null);
     } catch (err) {
       // Pre-audit shape silently swallowed failures and closed the
       // dialog, leaving the row in the list while the user believed
@@ -1224,6 +1250,26 @@ export default function Scans() {
                                 aria-label={`Cancel ingestion for ${job.original_filename}`}
                               >
                                 Cancel
+                              </Button>
+                            )}
+                            {isFailure && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={async () => {
+                                  try {
+                                    await retryIngestionJob(job.id);
+                                    toast.info('Re-queued for parsing');
+                                    await fetchRecentJobs();
+                                  } catch (err) {
+                                    // 409 when the upload was already cleaned
+                                    // up — the message tells the user to re-upload.
+                                    toast.error(formatApiError(err, 'Could not retry ingestion'));
+                                  }
+                                }}
+                                aria-label={`Retry failed ingestion for ${job.original_filename}`}
+                              >
+                                Retry
                               </Button>
                             )}
                             {isFailure && (
@@ -1806,9 +1852,107 @@ export default function Scans() {
             <DialogTitle>Delete Scan</DialogTitle>
           </DialogHeader>
           <p className="text-metadata">
-            Are you sure you want to delete the scan &quot;{scanToDelete?.filename}&quot;? This
-            action cannot be undone.
+            Delete the scan{' '}
+            <span className="font-medium break-words">
+              &quot;{scanToDelete?.filename}&quot;
+            </span>
+            ? This action cannot be undone.
           </p>
+
+          {/* What gets removed. Hosts are deduplicated across scans, so this
+              is usually NOT a blanket wipe — only hosts seen by no other scan
+              are deleted; shared hosts are kept. The modal tells the truth via
+              a backend-computed impact preview. */}
+          {impactLoading ? (
+            <div className="mt-3 flex items-center gap-2 text-metadata text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              Calculating exactly what will be removed…
+            </div>
+          ) : impactError ? (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-metadata text-muted-foreground">
+              <AlertCircle className="size-4 mt-0.5 shrink-0" aria-hidden />
+              <span>
+                Couldn&apos;t load the removal summary. The scan and any hosts
+                seen <em>only</em> by it will still be removed if you continue.
+              </span>
+            </div>
+          ) : deletionImpact ? (
+            <div className="mt-3 rounded-md border border-border p-3">
+              <div className="text-metadata font-medium mb-2">
+                This will permanently remove:
+              </div>
+              <ul className="space-y-1.5 text-metadata">
+                <li className="flex items-center gap-2">
+                  <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                  This scan record and its scan history
+                </li>
+                <li className="flex items-baseline gap-2">
+                  <Trash2 className="size-3.5 shrink-0 text-destructive self-center" aria-hidden />
+                  <span>
+                    <span className="font-medium">{deletionImpact.hosts_removed.toLocaleString()}</span>{' '}
+                    {deletionImpact.hosts_removed === 1 ? 'host' : 'hosts'} seen only by this scan
+                    {deletionImpact.sample_removed_ips.length > 0 && (
+                      <span className="block text-muted-foreground break-words">
+                        {deletionImpact.sample_removed_ips.join(', ')}
+                        {deletionImpact.hosts_removed > deletionImpact.sample_removed_ips.length &&
+                          `, +${(
+                            deletionImpact.hosts_removed - deletionImpact.sample_removed_ips.length
+                          ).toLocaleString()} more`}
+                      </span>
+                    )}
+                  </span>
+                </li>
+                {deletionImpact.ports_removed > 0 && (
+                  <li className="flex items-center gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <span>
+                      <span className="font-medium">{deletionImpact.ports_removed.toLocaleString()}</span>{' '}
+                      open {deletionImpact.ports_removed === 1 ? 'port' : 'ports'} on those hosts
+                    </span>
+                  </li>
+                )}
+                {deletionImpact.vulnerabilities_removed > 0 && (
+                  <li className="flex items-center gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <span>
+                      <span className="font-medium">
+                        {deletionImpact.vulnerabilities_removed.toLocaleString()}
+                      </span>{' '}
+                      {deletionImpact.vulnerabilities_removed === 1
+                        ? 'vulnerability'
+                        : 'vulnerabilities'}{' '}
+                      recorded by this scan
+                    </span>
+                  </li>
+                )}
+                {deletionImpact.web_interfaces_removed > 0 && (
+                  <li className="flex items-center gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <span>
+                      <span className="font-medium">
+                        {deletionImpact.web_interfaces_removed.toLocaleString()}
+                      </span>{' '}
+                      web {deletionImpact.web_interfaces_removed === 1 ? 'interface' : 'interfaces'}{' '}
+                      from this scan
+                    </span>
+                  </li>
+                )}
+              </ul>
+              {deletionImpact.hosts_kept > 0 && (
+                <div className="mt-2.5 flex items-start gap-2 border-t border-border pt-2.5 text-metadata text-muted-foreground">
+                  <CheckCircle2 className="size-3.5 mt-0.5 shrink-0 text-emerald-600" aria-hidden />
+                  <span>
+                    <span className="font-medium text-foreground">
+                      {deletionImpact.hosts_kept.toLocaleString()}
+                    </span>{' '}
+                    {deletionImpact.hosts_kept === 1 ? 'host is' : 'hosts are'} also in other scans
+                    and will be kept — their data is preserved.
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : null}
+
           <DialogFooter>
             <Button
               variant="outline"

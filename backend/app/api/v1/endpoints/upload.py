@@ -143,6 +143,58 @@ def cancel_ingestion_job(
     return {"job_id": job.id, "status": job.status, "message": "Job cancelled"}
 
 
+@router.post(
+    "/jobs/{job_id}/retry",
+    response_model=CancelJobResponse,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    responses={
+        401: {"description": "Not authenticated"},
+        403: {"description": "Not authorized for this job"},
+        404: {"description": "Job not found"},
+        409: {"description": "Job cannot be retried in its current state"},
+    },
+    summary="Retry a failed ingestion job (analyst)",
+)
+def retry_ingestion_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Re-queue a failed ingestion job whose uploaded file is still on disk.
+
+    The file is retained on failure (only successful parses delete it), and
+    the worker's orphan reaper already knows how to re-queue, so this just
+    exposes that path to the operator: retry a transient failure without
+    re-uploading a large scan file. Owner or admin only; analyst role.
+    """
+    job = db.query(IngestionJob).filter(
+        IngestionJob.id == job_id,
+        IngestionJob.project_id == project.id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Ingestion job not found")
+    _require_job_access(job, current_user)
+    if job.status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only failed jobs can be retried (current status: {job.status!r})",
+        )
+
+    result = ingestion_service.requeue_job(job_id)
+    if result == "file_missing":
+        raise HTTPException(
+            status_code=409,
+            detail="The uploaded file is no longer on disk — please re-upload to retry.",
+        )
+    if result != "requeued":
+        # not_failed / not_found — lost a race with the reaper or another retry.
+        raise HTTPException(status_code=409, detail="Job could not be retried in its current state")
+    # requeue_job committed status='queued' in its own session; report that
+    # directly rather than re-reading the request session's stale cached row.
+    return {"job_id": job_id, "status": "queued", "message": "Job re-queued"}
+
+
 @router.get(
     "/jobs/{job_id}",
     response_model=IngestionJobSchema,

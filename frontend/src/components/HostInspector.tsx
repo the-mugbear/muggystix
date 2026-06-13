@@ -1261,11 +1261,29 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                           {entry.command_line && (
                             <>
                               <dt className="font-medium">Command:</dt>
-                              <dd
-                                className="min-w-0 truncate font-mono"
-                                title={entry.command_line}
-                              >
-                                {entry.command_line}
+                              <dd className="flex min-w-0 items-center gap-1">
+                                <span className="min-w-0 truncate font-mono" title={entry.command_line}>
+                                  {entry.command_line}
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                                  aria-label="Copy scan command to clipboard"
+                                  title="Copy command"
+                                  onClick={() => {
+                                    navigator.clipboard
+                                      .writeText(entry.command_line as string)
+                                      .then(
+                                        () => toast.info('Command copied', { autoHideMs: 1500 }),
+                                        () => {
+                                          /* clipboard denied */
+                                        },
+                                      );
+                                  }}
+                                >
+                                  <Copy className="size-3.5" aria-hidden />
+                                </Button>
                               </dd>
                             </>
                           )}

@@ -77,6 +77,29 @@ export const deleteScan = async (scanId: number) => {
   return response.data;
 };
 
+/**
+ * What a scan delete actually removes. Hosts are deduplicated per-IP-per-
+ * project, so deleting a scan only removes hosts seen by NO other scan
+ * ("removed"); hosts shared with other scans are kept and re-pointed.
+ */
+export interface ScanDeletionImpact {
+  scan_id: number;
+  filename: string;
+  hosts_removed: number;
+  hosts_kept: number;
+  sample_removed_ips: string[];
+  ports_removed: number;
+  vulnerabilities_removed: number;
+  web_interfaces_removed: number;
+}
+
+export const getScanDeletionImpact = async (
+  scanId: number,
+): Promise<ScanDeletionImpact> => {
+  const response = await api.get(`${p()}/scans/${scanId}/deletion-impact`);
+  return response.data;
+};
+
 // --- Scan-diff (attack-surface delta between two scans) ---
 
 export interface ScanDiffSide {

@@ -12,7 +12,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from app.db.models_project import Notification, NoteMention, Project, ProjectMembership
+from app.db.models_project import (
+    Notification, NoteMention, Project, ProjectMembership, ProjectRole,
+)
 from app.db.models_auth import User
 from app.db.models import Annotation
 
@@ -182,6 +184,39 @@ class NotificationService:
         )
         self.db.add(notification)
         return notification
+
+    def notify_plan_proposed(self, plan, project_id: int) -> List[Notification]:
+        """Notify project members who can approve plans (admin/analyst role)
+        that an agent submitted a TestPlan for review.
+
+        Plan submission is the one human gate in the agent loop and previously
+        had no nudge — approvers had to poll the Test Plans page to notice work
+        waiting for them.  The actor is an agent (no User), so ``actor_id`` is
+        left null.  Best-effort: callers wrap this so a notification failure
+        never blocks the submission itself.
+        """
+        approver_ids = [
+            m.user_id for m in self.db.query(ProjectMembership)
+            .filter(
+                ProjectMembership.project_id == project_id,
+                ProjectMembership.role.in_([ProjectRole.ADMIN.value, ProjectRole.ANALYST.value]),
+            ).all()
+        ]
+        notifications = []
+        for uid in approver_ids:
+            notification = Notification(
+                user_id=uid,
+                project_id=project_id,
+                type="plan_proposed",
+                title=f"Test plan \"{plan.title}\" awaiting approval",
+                body="An agent submitted a test plan for your review.",
+                source_type="test_plan",
+                source_id=plan.id,
+                actor_id=None,
+            )
+            self.db.add(notification)
+            notifications.append(notification)
+        return notifications
 
     def notify_host_assignment(
         self,

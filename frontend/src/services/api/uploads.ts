@@ -179,6 +179,16 @@ export const cancelIngestionJob = async (
   return response.data;
 };
 
+// Retry a FAILED ingestion job whose uploaded file is still on disk
+// (POST /upload/jobs/{id}/retry) — re-queues without re-uploading. Backend
+// 409s if the job isn't failed or the file was already cleaned up.
+export const retryIngestionJob = async (
+  jobId: number,
+): Promise<{ job_id: number; status: string; message: string }> => {
+  const response = await api.post(`${p()}/upload/jobs/${jobId}/retry`);
+  return response.data;
+};
+
 
 // Ingestion Results API
 export interface IngestionResultItem {

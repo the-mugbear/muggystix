@@ -15,7 +15,6 @@ from app.schemas.schemas import (
     ScanSummary,
     ScanPortBreakdown,
     ScanVulnerabilitySummary,
-    EyewitnessResult,
     OutOfScopeHost,
     DNSRecord,
 )
@@ -43,6 +42,29 @@ class MessageResponse(BaseModel):
 class DeleteScanResponse(BaseModel):
     message: str
     hosts_removed: int = Field(..., ge=0, description="Number of orphaned hosts removed")
+
+
+class ScanDeletionImpact(BaseModel):
+    """Preview of exactly what deleting a scan removes.
+
+    Because hosts are deduplicated per-IP-per-project (one Host row shared
+    across every scan that observed the IP), deleting a scan does NOT delete
+    all the hosts it touched — only those seen by no other scan ("orphans").
+    Hosts also seen by other scans survive; their provenance is re-pointed.
+    This preview lets the delete modal tell the truth instead of implying a
+    blanket wipe.
+    """
+
+    scan_id: int
+    filename: str
+    hosts_removed: int = Field(..., ge=0, description="Hosts seen ONLY by this scan; deleted")
+    hosts_kept: int = Field(..., ge=0, description="Hosts also seen by other scans; kept, re-pointed")
+    sample_removed_ips: List[str] = Field(
+        default_factory=list, description="Up to 10 IPs of the hosts that will be removed"
+    )
+    ports_removed: int = Field(..., ge=0, description="Open ports on the removed (orphan) hosts")
+    vulnerabilities_removed: int = Field(..., ge=0, description="Vulnerabilities recorded by this scan")
+    web_interfaces_removed: int = Field(..., ge=0, description="Web interfaces/screenshots from this scan")
 
 
 class CountResponse(BaseModel):
@@ -737,6 +759,86 @@ def get_scan(
     scan.open_ports = int(port_row[1] or 0)
     return scan
 
+@router.get(
+    "/{scan_id}/deletion-impact",
+    response_model=ScanDeletionImpact,
+    responses={**_ADMIN_RESPONSES, 404: {"description": "Scan not found"}},
+    dependencies=[Depends(require_project_role(ProjectRole.ADMIN))],
+    summary="Preview what deleting a scan removes (admin)",
+)
+def get_scan_deletion_impact(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Compute exactly what `DELETE /scans/{scan_id}` would remove, without
+    deleting anything. Powers the delete-confirmation modal.
+
+    Mirrors the delete endpoint's orphan rule: a host is removed only if this
+    scan is the *only* scan that ever observed it. Vulnerabilities and web
+    interfaces are scan-scoped (FK ``ON DELETE CASCADE`` on ``scan_id``), so
+    their counts key off ``scan_id`` directly; ports are host-owned, so only
+    ports on orphan hosts are removed.
+    """
+    scan = db.query(models.Scan).filter(
+        models.Scan.id == scan_id,
+        models.Scan.project_id == project.id,
+    ).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    # Orphan host ids + their IPs — same NOT EXISTS rule the delete uses.
+    orphan_rows = db.execute(
+        text("""
+            SELECT h.host_id, hv.ip_address
+            FROM host_scan_history h
+            JOIN hosts_v2 hv ON hv.id = h.host_id
+            WHERE h.scan_id = :scan_id
+              AND NOT EXISTS (
+                  SELECT 1 FROM host_scan_history h2
+                  WHERE h2.host_id = h.host_id AND h2.scan_id != :scan_id
+              )
+            ORDER BY hv.ip_address
+        """),
+        {"scan_id": scan_id},
+    ).fetchall()
+    orphan_host_ids = [r[0] for r in orphan_rows]
+    sample_removed_ips = [str(r[1]) for r in orphan_rows[:10] if r[1] is not None]
+
+    # Total distinct hosts this scan observed — the rest (non-orphans) are kept.
+    hosts_observed = db.execute(
+        text("SELECT COUNT(DISTINCT host_id) FROM host_scan_history WHERE scan_id = :scan_id"),
+        {"scan_id": scan_id},
+    ).scalar() or 0
+
+    ports_removed = 0
+    if orphan_host_ids:
+        ports_removed = db.execute(
+            text("SELECT COUNT(*) FROM ports_v2 WHERE host_id = ANY(:ids)"),
+            {"ids": orphan_host_ids},
+        ).scalar() or 0
+
+    vulnerabilities_removed = db.execute(
+        text("SELECT COUNT(*) FROM vulnerabilities WHERE scan_id = :scan_id"),
+        {"scan_id": scan_id},
+    ).scalar() or 0
+    web_interfaces_removed = db.execute(
+        text("SELECT COUNT(*) FROM web_interfaces WHERE scan_id = :scan_id"),
+        {"scan_id": scan_id},
+    ).scalar() or 0
+
+    return ScanDeletionImpact(
+        scan_id=scan_id,
+        filename=scan.filename,
+        hosts_removed=len(orphan_host_ids),
+        hosts_kept=max(0, hosts_observed - len(orphan_host_ids)),
+        sample_removed_ips=sample_removed_ips,
+        ports_removed=ports_removed,
+        vulnerabilities_removed=vulnerabilities_removed,
+        web_interfaces_removed=web_interfaces_removed,
+    )
+
+
 @router.delete(
     "/{scan_id}",
     response_model=DeleteScanResponse,
@@ -860,30 +962,6 @@ def delete_scan(
         db.rollback()
         logger.exception("Failed to delete scan %s", scan_id)
         raise HTTPException(status_code=500, detail="Error deleting scan")
-
-@router.get("/{scan_id}/eyewitness", response_model=List[EyewitnessResult])
-def get_scan_eyewitness_results(
-    scan_id: int,
-    # v2.86.4 — pagination caps added.
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get Eyewitness results for a specific scan with pagination"""
-    scan = db.query(models.Scan).filter(
-        models.Scan.id == scan_id,
-        models.Scan.project_id == project.id,
-    ).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    results = db.query(models.EyewitnessResult).filter(
-        models.EyewitnessResult.scan_id == scan_id
-    ).order_by(models.EyewitnessResult.ip_address, models.EyewitnessResult.port)\
-     .offset(skip).limit(limit).all()
-
-    return results
 
 @router.get("/{scan_id}/dns-records", response_model=Paginated[DNSRecord])
 def get_scan_dns_records(
@@ -1037,30 +1115,6 @@ def get_scan_hosts_count(
         query = query.filter(models.Host.state == state)
 
     count = query.count()
-    return {"total": count}
-
-@router.get(
-    "/{scan_id}/eyewitness/count",
-    response_model=CountResponse,
-    responses={**_AUTH_RESPONSES, 404: {"description": "Scan not found"}},
-    summary="Count Eyewitness results in scan",
-)
-def get_scan_eyewitness_count(
-    scan_id: int,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get total count of Eyewitness results for a scan (for pagination)."""
-    scan = db.query(models.Scan).filter(
-        models.Scan.id == scan_id,
-        models.Scan.project_id == project.id,
-    ).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    count = db.query(models.EyewitnessResult).filter(
-        models.EyewitnessResult.scan_id == scan_id
-    ).count()
     return {"total": count}
 
 @router.get(

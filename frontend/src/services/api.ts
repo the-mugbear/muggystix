@@ -54,22 +54,6 @@ export * from './api/sites';
 export * from './api/test-plans';
 export * from './api/uploads';
 
-export interface EyewitnessResult {
-  id: number;
-  scan_id: number;
-  url: string;
-  protocol: string | null;
-  port: number | null;
-  ip_address: string | null;
-  title: string | null;
-  server_header: string | null;
-  content_length: number | null;
-  screenshot_path: string | null;
-  response_code: number | null;
-  page_text: string | null;
-  created_at: string;
-}
-
 export interface DNSRecord {
   id: number;
   domain: string;
