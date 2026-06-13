@@ -48,7 +48,12 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.parser_utils import correlate_scan, record_hosts_in_scan
+from app.parsers.parser_utils import (
+    correlate_scan,
+    record_hosts_in_scan,
+    resolve_host_cached,
+    resolve_port_cached,
+)
 from app.parsers.streaming_json import iter_json_records
 
 logger = logging.getLogger(__name__)
@@ -95,9 +100,15 @@ class WhatwebParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
+        # Per-file host/port resolution caches — collapse the per-record Host
+        # and Port lookups (many records share a host) to a dict hit.
+        self._host_cache: dict = {}
+        self._port_cache: dict = {}
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
+        self._host_cache.clear()
+        self._port_cache.clear()
         start = time.time()
         logger.info("Starting whatweb parse of %s", filename)
 
@@ -194,39 +205,14 @@ class WhatwebParser:
         port = self._port_from_url(url)
         protocol = self._scheme_from_url(url)
 
-        # Resolve host_id by IP within the project; create on demand
-        # (whatweb hit it, so it's real) — mirrors the httpx parser.
-        host_row = (
-            self.db.query(models.Host)
-            .filter(
-                models.Host.ip_address == ip,
-                models.Host.project_id == self._project_id,
-            )
-            .first()
+        # Resolve host (create on demand — whatweb hit it, it's real) and port,
+        # both cached per-file.  Mirrors the httpx parser via the shared helper.
+        host_row = resolve_host_cached(
+            self.db, self._project_id, ip, self._host_cache, hostname=hostname,
         )
-        if host_row is None:
-            host_row = models.Host(
-                ip_address=ip,
-                hostname=hostname,
-                state="up",
-                project_id=self._project_id,
-            )
-            self.db.add(host_row)
-            self.db.flush()
-        elif hostname and not host_row.hostname:
-            host_row.hostname = hostname
-
-        port_row = None
-        if host_row and port:
-            port_row = (
-                self.db.query(models.Port)
-                .filter(
-                    models.Port.host_id == host_row.id,
-                    models.Port.port_number == port,
-                    models.Port.protocol == "tcp",
-                )
-                .first()
-            )
+        port_row = resolve_port_cached(
+            self.db, host_row, port, self._port_cache,
+        )
 
         technologies = self._extract_technologies(plugins)
         title = self._plugin_first_string(plugins, "Title")

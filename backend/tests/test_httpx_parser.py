@@ -960,3 +960,43 @@ class TestScreenshotEndpoint:
         # Either "invalid" (traversal caught) or "missing on disk"
         # (resolved but file not present) — both are safe.
         assert resp.status_code == 404
+
+
+def test_httpx_caches_host_lookups_across_records(db_session, test_project, tmp_path):
+    """All records sharing one host trigger a single host-by-IP lookup, not one
+    per record — the per-file resolve_host_cached memoization (v2.195.0)."""
+    from sqlalchemy import event
+    from app.db import models
+    from app.parsers.httpx_parser import HttpxParser
+
+    records = [
+        {
+            "url": f"https://10.77.0.5:{p}/", "host": "10.77.0.5", "host_ip": "10.77.0.5",
+            "scheme": "https", "port": str(p), "status_code": 200,
+        }
+        for p in (443, 8443, 9000, 10000)
+    ]
+    path = tmp_path / "httpx_same_host.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+    host_ip_selects: list[str] = []
+
+    def _count(conn, cursor, statement, params, context, executemany):
+        s = statement.lower()
+        if s.startswith("select") and "hosts_v2" in s and "ip_address =" in s:
+            host_ip_selects.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        HttpxParser(db_session).parse_file(str(path), path.name, project_id=test_project.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+    assert len(host_ip_selects) == 1, f"expected 1 cached host lookup, got {len(host_ip_selects)}"
+    assert (
+        db_session.query(models.Host)
+        .filter(models.Host.ip_address == "10.77.0.5", models.Host.project_id == test_project.id)
+        .count()
+        == 1
+    )

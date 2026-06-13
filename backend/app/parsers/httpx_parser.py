@@ -45,7 +45,12 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.parser_utils import correlate_scan, record_hosts_in_scan
+from app.parsers.parser_utils import (
+    correlate_scan,
+    record_hosts_in_scan,
+    resolve_host_cached,
+    resolve_port_cached,
+)
 from app.parsers.streaming_json import iter_json_records
 
 logger = logging.getLogger(__name__)
@@ -104,9 +109,15 @@ class HttpxParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
+        # Per-file host/port resolution caches — collapse the per-record Host
+        # and Port lookups (many records share a host) to a dict hit.
+        self._host_cache: dict = {}
+        self._port_cache: dict = {}
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
+        self._host_cache.clear()
+        self._port_cache.clear()
         start = time.time()
         logger.info("Starting httpx parse of %s", filename)
 
@@ -221,43 +232,15 @@ class HttpxParser:
         port = self._coerce_int(record.get("port")) or self._port_from_url(url)
         protocol = (record.get("scheme") or "").lower() or self._scheme_from_url(url)
 
-        # Resolve host_id from hosts_v2 by IP within the project.
-        host_row = (
-            self.db.query(models.Host)
-            .filter(
-                models.Host.ip_address == ip,
-                models.Host.project_id == self._project_id,
-            )
-            .first()
+        # Resolve host (create on demand — httpx hit it, it's real) and port,
+        # both cached per-file.  Enriches a missing hostname on a cache/db hit
+        # from the value httpx learned (TLS cert SAN, ``input``, etc.).
+        host_row = resolve_host_cached(
+            self.db, self._project_id, ip, self._host_cache, hostname=hostname,
         )
-        # Create the host if the scope has open subnets but the host
-        # wasn't previously discovered — httpx hit it, it's real.
-        if host_row is None:
-            host_row = models.Host(
-                ip_address=ip,
-                hostname=hostname,
-                state="up",
-                project_id=self._project_id,
-            )
-            self.db.add(host_row)
-            self.db.flush()
-        elif hostname and not host_row.hostname:
-            # Enrich existing host with the hostname we learned from
-            # httpx (TLS cert SAN, ``input``, etc.) if we don't already
-            # have one.
-            host_row.hostname = hostname
-
-        port_row = None
-        if host_row and port:
-            port_row = (
-                self.db.query(models.Port)
-                .filter(
-                    models.Port.host_id == host_row.id,
-                    models.Port.port_number == port,
-                    models.Port.protocol == "tcp",
-                )
-                .first()
-            )
+        port_row = resolve_port_cached(
+            self.db, host_row, port, self._port_cache,
+        )
 
         # Flatten technologies for chip rendering.
         tech_raw = record.get("tech") or record.get("technologies") or []

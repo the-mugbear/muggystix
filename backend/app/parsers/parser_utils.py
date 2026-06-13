@@ -306,3 +306,81 @@ def upsert_vulnerability(
     db.add(vulnerability)
     db.flush()
     return vulnerability
+
+
+# --- Shared web-parser host/port resolution (cached) ---------------------
+#
+# The web parsers (eyewitness / httpx / whatweb) each resolve a record's Host
+# and Port by query before writing a WebInterface row.  A scan file holds many
+# records that share the same host (and port), so doing that per-record is an
+# N+1.  These helpers memoize the lookups in caches the parser owns for the
+# duration of one file parse, collapsing repeats to a dict hit.  eyewitness had
+# its own copy of this; these are the single shared version.
+
+
+def resolve_host_cached(
+    db: Session,
+    project_id: Optional[int],
+    ip: str,
+    host_cache: Dict[str, Any],
+    *,
+    hostname: Optional[str] = None,
+    create: bool = True,
+) -> Optional[models.Host]:
+    """Look up (or create) a ``Host`` by ``(ip, project)``, memoized in
+    ``host_cache`` (``ip -> Host``).  On a cache hit, still enrich a missing
+    ``hostname`` if one was newly learned — matches the per-record behaviour the
+    web parsers relied on.  ``create=True`` inserts + flushes a missing host
+    (the web tool observed it, so it's real)."""
+    if ip in host_cache:
+        host = host_cache[ip]
+        if host is not None and hostname and not host.hostname:
+            host.hostname = hostname
+        return host
+
+    host = (
+        db.query(models.Host)
+        .filter(models.Host.ip_address == ip, models.Host.project_id == project_id)
+        .first()
+    )
+    if host is None and create:
+        host = models.Host(
+            ip_address=ip, hostname=hostname, state="up", project_id=project_id,
+        )
+        db.add(host)
+        db.flush()
+    elif host is not None and hostname and not host.hostname:
+        host.hostname = hostname
+
+    host_cache[ip] = host
+    return host
+
+
+def resolve_port_cached(
+    db: Session,
+    host: Optional[models.Host],
+    port: Optional[int],
+    port_cache: Dict[Tuple[int, int], Any],
+    *,
+    protocol: str = "tcp",
+) -> Optional[models.Port]:
+    """Look up a ``Port`` by ``(host_id, port_number, protocol)``, memoized in
+    ``port_cache`` (``(host_id, port) -> Port|None``).  Misses are cached too —
+    the web parsers never create Port rows, so an absent port stays absent for
+    the file."""
+    if not (host and port):
+        return None
+    key = (host.id, port)
+    if key in port_cache:
+        return port_cache[key]
+    port_row = (
+        db.query(models.Port)
+        .filter(
+            models.Port.host_id == host.id,
+            models.Port.port_number == port,
+            models.Port.protocol == protocol,
+        )
+        .first()
+    )
+    port_cache[key] = port_row
+    return port_row
