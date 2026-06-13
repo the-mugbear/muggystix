@@ -44,6 +44,8 @@ from app.api.v1.endpoints import (
     # v2.56.0 — SOC-correlation activity surface.  Cross-project by
     # design; auth scoping is per-call via ProjectMembership.
     activity,
+    # Durable job-queue operational metrics (admin-only, deployment-wide).
+    system_metrics,
 )
 from app.api.v1.endpoints.auth import require_password_changed
 
@@ -70,6 +72,8 @@ api_router.include_router(portfolio.router, prefix="/portfolio", tags=["portfoli
 # "what was running across MY projects at time X" — see
 # activity.py for the auth-scoping rationale.
 api_router.include_router(activity.router, prefix="/activity", tags=["activity"],
+                          dependencies=[Depends(require_password_changed)])
+api_router.include_router(system_metrics.router, prefix="/system", tags=["system"],
                           dependencies=[Depends(require_password_changed)])
 # Agent API uses its own API-key auth (not JWT), so it's exempt from
 # the password-change gate — that dependency requires a JWT user.  Each
