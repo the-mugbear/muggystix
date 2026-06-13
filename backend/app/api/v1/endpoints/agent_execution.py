@@ -1273,6 +1273,23 @@ def complete_execution_session(
     db.commit()
     db.refresh(session)
 
+    # Nudge the plan stewards when the agent has worked through every entry —
+    # the session-complete path knows entries_remaining == 0 but (by design)
+    # won't auto-close the plan, so signal that it's ready. Best-effort; only
+    # while the plan is still open, so re-running a finished plan doesn't spam.
+    if (
+        session.status == ExecutionSessionStatus.COMPLETED.value
+        and entries_remaining == 0
+        and entries_total > 0
+        and plan.status in ("approved", "in_progress")
+    ):
+        try:
+            NotificationService(db).notify_plan_ready_to_close(plan, agent.project_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning("Failed to notify plan-ready-to-close for plan %s", plan.id, exc_info=True)
+
     return ExecutionSessionCompleteResponse(
         session_id=session.id,
         test_plan_id=plan.id,

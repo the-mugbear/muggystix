@@ -1011,17 +1011,34 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               <div className="flex gap-sm">
                 <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">OS</dt>
                 <dd className="min-w-0 truncate text-metadata text-foreground"
-                  title={[host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · ') || undefined}>
-                  {host.os_name ? (
-                    <>
-                      {host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
-                        ? `${host.os_vendor} ${host.os_name}`
-                        : host.os_name}
-                      {host.os_accuracy != null && host.os_accuracy !== '' && (
-                        <span className="text-caption text-muted-foreground"> · {Number(host.os_accuracy)}%</span>
-                      )}
-                    </>
-                  ) : <span className="text-muted-foreground">—</span>}
+                  title={[
+                    [host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · '),
+                    host.os_accuracy != null && host.os_accuracy !== '' && Number(host.os_accuracy) < 70
+                      ? `Low-confidence OS guess (${Number(host.os_accuracy)}% match)`
+                      : '',
+                  ].filter(Boolean).join(' — ') || undefined}>
+                  {host.os_name ? (() => {
+                    // De-weight a low-confidence guess so a 60% match doesn't read
+                    // as authoritatively as a 98% one.
+                    const acc = host.os_accuracy != null && host.os_accuracy !== ''
+                      ? Number(host.os_accuracy) : null;
+                    const tentative = acc != null && acc < 70;
+                    const label = host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
+                      ? `${host.os_vendor} ${host.os_name}`
+                      : host.os_name;
+                    return (
+                      <>
+                        <span className={tentative ? 'italic text-muted-foreground' : undefined}>
+                          {tentative ? `~${label}` : label}
+                        </span>
+                        {acc != null && (
+                          <span className={tentative ? 'text-caption text-amber-600' : 'text-caption text-muted-foreground'}>
+                            {' · '}{acc}%
+                          </span>
+                        )}
+                      </>
+                    );
+                  })() : <span className="text-muted-foreground">—</span>}
                 </dd>
               </div>
               <div className="flex gap-sm">

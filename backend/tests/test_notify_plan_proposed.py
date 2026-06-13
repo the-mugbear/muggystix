@@ -69,3 +69,24 @@ def test_no_approvers_yields_no_notifications(db_session, test_project, test_age
 
     created = NotificationService(db_session).notify_plan_proposed(plan, pid)
     assert created == []
+
+
+def test_notify_plan_ready_to_close(db_session, test_project, test_agent):
+    pid = test_project.id
+    analyst = _user(db_session, "closer-analyst", 120)
+    viewer = _user(db_session, "closer-viewer", 121)
+    _member(db_session, pid, analyst.id, ProjectRole.ANALYST.value)
+    _member(db_session, pid, viewer.id, ProjectRole.VIEWER.value)
+    plan = TestPlan(project_id=pid, agent_id=test_agent.id, title="DC sweep", status="in_progress")
+    db_session.add(plan)
+    db_session.flush()
+
+    created = NotificationService(db_session).notify_plan_ready_to_close(plan, pid)
+    db_session.commit()
+
+    assert {n.user_id for n in created} == {analyst.id}  # viewer excluded
+    rows = db_session.query(Notification).filter(
+        Notification.type == "plan_ready", Notification.source_id == plan.id,
+    ).all()
+    assert len(rows) == 1
+    assert "DC sweep" in rows[0].title and "ready to close" in rows[0].title

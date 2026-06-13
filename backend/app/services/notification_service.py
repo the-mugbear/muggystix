@@ -15,7 +15,7 @@ from sqlalchemy import func
 from app.db.models_project import (
     Notification, NoteMention, Project, ProjectMembership, ProjectRole,
 )
-from app.db.models_auth import User
+from app.db.models_auth import User, UserRole
 from app.db.models import Annotation
 
 logger = logging.getLogger(__name__)
@@ -185,38 +185,97 @@ class NotificationService:
         self.db.add(notification)
         return notification
 
-    def notify_plan_proposed(self, plan, project_id: int) -> List[Notification]:
-        """Notify project members who can approve plans (admin/analyst role)
-        that an agent submitted a TestPlan for review.
-
-        Plan submission is the one human gate in the agent loop and previously
-        had no nudge — approvers had to poll the Test Plans page to notice work
-        waiting for them.  The actor is an agent (no User), so ``actor_id`` is
-        left null.  Best-effort: callers wrap this so a notification failure
-        never blocks the submission itself.
-        """
-        approver_ids = [
+    def _plan_steward_ids(self, project_id: int) -> List[int]:
+        """User ids of project members who can approve/close plans (admin or
+        analyst role) — the recipients for plan-lifecycle nudges."""
+        return [
             m.user_id for m in self.db.query(ProjectMembership)
             .filter(
                 ProjectMembership.project_id == project_id,
                 ProjectMembership.role.in_([ProjectRole.ADMIN.value, ProjectRole.ANALYST.value]),
             ).all()
         ]
+
+    def _notify_plan_stewards(
+        self, plan, project_id: int, ntype: str, title: str, body: str,
+    ) -> List[Notification]:
         notifications = []
-        for uid in approver_ids:
+        for uid in self._plan_steward_ids(project_id):
             notification = Notification(
                 user_id=uid,
                 project_id=project_id,
-                type="plan_proposed",
-                title=f"Test plan \"{plan.title}\" awaiting approval",
-                body="An agent submitted a test plan for your review.",
+                type=ntype,
+                title=title,
+                body=body,
                 source_type="test_plan",
                 source_id=plan.id,
+                actor_id=None,  # agent actor, no User
+            )
+            self.db.add(notification)
+            notifications.append(notification)
+        return notifications
+
+    def notify_queue_unhealthy(self, queue_name: str, failed_count: int) -> List[Notification]:
+        """Alert global admins that the job reaper PERMANENTLY failed jobs it
+        couldn't recover (retry cap exceeded or the uploaded file went missing).
+
+        This is the actionable tail of the silent-worker incident: routine
+        crash-requeues self-heal and stay quiet, but a permanent failure needs a
+        human.  Deployment-wide (``project_id`` null, ``type='system'``); fired
+        once per reap cycle, and a failed job leaves the reaper's scan set so it
+        never re-alerts.  Best-effort — the caller wraps it.
+        """
+        admin_ids = [
+            r[0] for r in self.db.query(User.id)
+            .filter(User.role == UserRole.ADMIN, User.is_active.is_(True)).all()
+        ]
+        notifications = []
+        for uid in admin_ids:
+            notification = Notification(
+                user_id=uid,
+                project_id=None,
+                type="system",
+                title=f"{queue_name} queue: {failed_count} job(s) could not be recovered",
+                body=(
+                    "The reaper permanently failed these jobs (retry cap exceeded "
+                    "or the uploaded file is missing). Check the failed queue."
+                ),
+                source_type="ingestion_jobs",
+                source_id=None,
                 actor_id=None,
             )
             self.db.add(notification)
             notifications.append(notification)
         return notifications
+
+    def notify_plan_proposed(self, plan, project_id: int) -> List[Notification]:
+        """Notify plan stewards (admin/analyst) that an agent submitted a
+        TestPlan for review.
+
+        Plan submission is the one human gate in the agent loop and previously
+        had no nudge — approvers had to poll the Test Plans page to notice work
+        waiting for them.  Best-effort: callers wrap this so a notification
+        failure never blocks the submission itself.
+        """
+        return self._notify_plan_stewards(
+            plan, project_id, "plan_proposed",
+            f"Test plan \"{plan.title}\" awaiting approval",
+            "An agent submitted a test plan for your review.",
+        )
+
+    def notify_plan_ready_to_close(self, plan, project_id: int) -> List[Notification]:
+        """Notify plan stewards that every entry on a plan has been executed —
+        the plan is ready to be closed.
+
+        The session-complete path knows ``entries_remaining == 0`` but
+        deliberately does NOT auto-transition the plan (plans outlive sessions),
+        so this is a nudge, not an auto-close.  Best-effort.
+        """
+        return self._notify_plan_stewards(
+            plan, project_id, "plan_ready",
+            f"Test plan \"{plan.title}\" is ready to close",
+            "All entries on this plan have been executed.",
+        )
 
     def notify_host_assignment(
         self,

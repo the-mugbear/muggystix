@@ -494,6 +494,7 @@ class IngestionService:
             if not orphans:
                 return 0
             now = datetime.now(timezone.utc)
+            permanently_failed = 0
             for job in orphans:
                 job.retry_count = (job.retry_count or 0) + 1
                 # Auto-requeue a transient crash (OOM/restart) so a flaky parse
@@ -516,6 +517,7 @@ class IngestionService:
                         job.id, job.retry_count, max_retries, job.started_at, job.last_heartbeat,
                     )
                 else:
+                    permanently_failed += 1
                     reason = (
                         f"exceeded {max_retries} auto-retries"
                         if job.retry_count > max_retries
@@ -534,6 +536,18 @@ class IngestionService:
                         job.id, reason, job.retry_count,
                     )
             db.commit()
+            # Alert admins about jobs the reaper could NOT recover (over retry
+            # cap / file gone). Routine crash-requeues stay quiet; only the
+            # actionable permanent failures notify. Best-effort — never let a
+            # notification error roll back the reap that just succeeded.
+            if permanently_failed:
+                try:
+                    from app.services.notification_service import NotificationService
+                    NotificationService(db).notify_queue_unhealthy("Ingestion", permanently_failed)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    logger.warning("Failed to emit queue-health alert", exc_info=True)
             return len(orphans)
         except Exception:
             db.rollback()
