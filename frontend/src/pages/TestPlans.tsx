@@ -4,8 +4,6 @@ import {
   ArrowLeftRight,
   Bot,
   Check,
-  ChevronDown,
-  ChevronUp,
   Copy,
   Info,
   Loader2,
@@ -198,7 +196,6 @@ const TestPlans: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('');
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   // FRX·H4: client-side search over title + author username.  300ms
   // debounce so very fast typing doesn't thrash the filter loop.
@@ -297,15 +294,6 @@ const TestPlans: React.FC = () => {
   useEffect(() => {
     loadPlans();
   }, [loadPlans, currentProject?.id]);
-
-  const toggleExpand = (id: number) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
 
   const toggleSelect = (id: number) => {
     setSelectedIds((curr) => {
@@ -628,35 +616,17 @@ const TestPlans: React.FC = () => {
           {/* Mobile cards */}
           <div className="flex flex-col gap-xs md:hidden">
             {filteredPlans.map((plan) => {
-              const isExpanded = expandedIds.has(plan.id);
               const strippedDesc = plan.description ? stripAttribution(plan.description) : '';
               return (
                 <Card key={plan.id}>
-                  <CardContent
-                    className="cursor-pointer p-sm"
-                    onClick={() => toggleExpand(plan.id)}
-                  >
+                  <CardContent className="p-sm">
                     <div className="flex items-start gap-xs">
                       <Checkbox
                         checked={selectedIds.includes(plan.id)}
                         onCheckedChange={() => toggleSelect(plan.id)}
-                        onClick={(e) => e.stopPropagation()}
                         aria-label={`Select plan ${plan.id} for comparison`}
                         className="mt-xxs"
                       />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={isExpanded ? 'Collapse test plan' : 'Expand test plan'}
-                        aria-expanded={isExpanded}
-                        className="-ml-xxs -mt-xxs"
-                      >
-                        {isExpanded ? (
-                          <ChevronUp className="size-4" aria-hidden />
-                        ) : (
-                          <ChevronDown className="size-4" aria-hidden />
-                        )}
-                      </Button>
                       <div className="min-w-0 flex-1">
                         <div className="mb-xs flex flex-wrap items-center gap-xs">
                           <Badge variant={planStatusTone(plan.status)}>
@@ -689,44 +659,17 @@ const TestPlans: React.FC = () => {
                             />
                           </div>
                         </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="mt-xs self-start"
+                          onClick={() => navigate(`/test-plans/${plan.id}`)}
+                        >
+                          View Details
+                          <SquareArrowOutUpRight className="size-3" aria-hidden />
+                        </Button>
                       </div>
                     </div>
-                    {isExpanded && (
-                      <div className="mt-sm">
-                        {plan.rejection_reason && (
-                          <Alert variant="destructive" className="mb-xs">
-                            <AlertDescription className="break-words">
-                              <strong>{plan.status === 'archived' ? 'Abandon reason:' : 'Rejection reason:'}</strong>{' '}
-                              {plan.rejection_reason}
-                            </AlertDescription>
-                          </Alert>
-                        )}
-                        <div className="flex flex-col gap-xs">
-                          {plan.agent_name && plan.created_by_username && (
-                            <p className="break-words text-caption text-muted-foreground">
-                              Agent: {plan.agent_name} via {plan.created_by_username}
-                            </p>
-                          )}
-                          {plan.approved_at && (
-                            <p className="text-caption text-muted-foreground">
-                              Approved {formatDate(plan.approved_at)}
-                            </p>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="self-start"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              navigate(`/test-plans/${plan.id}`);
-                            }}
-                          >
-                            View Details
-                            <SquareArrowOutUpRight className="size-3" aria-hidden />
-                          </Button>
-                        </div>
-                      </div>
-                    )}
                   </CardContent>
                 </Card>
               );
@@ -742,7 +685,6 @@ const TestPlans: React.FC = () => {
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-12" />
-                        <TableHead className="w-10" />
                         <TableHead className="w-[26%]">Title</TableHead>
                         <TableHead className="w-[10%]">Status</TableHead>
                         <TableHead className="w-[14%]">Author</TableHead>
@@ -753,18 +695,11 @@ const TestPlans: React.FC = () => {
                     </TableHeader>
                     <TableBody>
                       {filteredPlans.map((plan) => {
-                        const isExpanded = expandedIds.has(plan.id);
                         const strippedDesc = plan.description
                           ? stripAttribution(plan.description)
                           : '';
                         return (
-                          <React.Fragment key={plan.id}>
-                            {/* v2.43.0 — UX review #2: dropped role="link"/
-                                tabIndex/whole-row onClick.  Expand is now
-                                driven exclusively by the chevron button
-                                (which already existed but was decorative);
-                                checkbox selection lives in its own cell. */}
-                            <NavigableTableRow selected={selectedIds.includes(plan.id)}>
+                            <NavigableTableRow key={plan.id} selected={selectedIds.includes(plan.id)}>
                               <TableCell className="w-12">
                                 <Checkbox
                                   checked={selectedIds.includes(plan.id)}
@@ -772,26 +707,9 @@ const TestPlans: React.FC = () => {
                                   aria-label={`Select plan ${plan.id} for comparison`}
                                 />
                               </TableCell>
-                              <TableCell>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => toggleExpand(plan.id)}
-                                  aria-label={isExpanded ? 'Collapse test plan' : 'Expand test plan'}
-                                  aria-expanded={isExpanded}
-                                >
-                                  {isExpanded ? (
-                                    <ChevronUp className="size-4" aria-hidden />
-                                  ) : (
-                                    <ChevronDown className="size-4" aria-hidden />
-                                  )}
-                                </Button>
-                              </TableCell>
-                              {/* Direct link to detail — matches the recon
-                                  and execution workflow lists (NavigableTableCell),
-                                  so the title is a real <Link> (open-in-new-tab,
-                                  keyboard) instead of plain text gated behind the
-                                  disclosure chevron. */}
+                              {/* Title links to detail — flat row matching the
+                                  recon + execution workflow lists (no inline
+                                  expand). */}
                               <NavigableTableCell
                                 to={`/test-plans/${plan.id}`}
                                 ariaLabel={`Open plan #${plan.id}: ${plan.title}`}
@@ -846,51 +764,6 @@ const TestPlans: React.FC = () => {
                                 </Tooltip>
                               </TableCell>
                             </NavigableTableRow>
-
-                            {isExpanded && (
-                              <TableRow>
-                                <TableCell colSpan={8} className="bg-accent p-md">
-                                  {strippedDesc && (
-                                    <p className="mb-xs whitespace-pre-wrap break-words text-metadata text-muted-foreground">
-                                      {strippedDesc}
-                                    </p>
-                                  )}
-                                  {plan.rejection_reason && (
-                                    <Alert variant="destructive" className="mb-xs">
-                                      <AlertDescription className="break-words">
-                                        <strong>Rejection reason:</strong> {plan.rejection_reason}
-                                      </AlertDescription>
-                                    </Alert>
-                                  )}
-                                  <div className="flex flex-wrap items-center gap-xs">
-                                    <span className="text-caption text-muted-foreground">
-                                      v{plan.version}
-                                    </span>
-                                    <span className="text-caption text-muted-foreground">
-                                      {plan.entry_count} {plan.entry_count === 1 ? 'entry' : 'entries'}
-                                    </span>
-                                    {plan.approved_at && (
-                                      <span className="text-caption text-muted-foreground">
-                                        Approved {formatDate(plan.approved_at)}
-                                      </span>
-                                    )}
-                                    <div className="flex-1" />
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        navigate(`/test-plans/${plan.id}`);
-                                      }}
-                                    >
-                                      View Details
-                                      <SquareArrowOutUpRight className="size-3" aria-hidden />
-                                    </Button>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            )}
-                          </React.Fragment>
                         );
                       })}
                     </TableBody>
