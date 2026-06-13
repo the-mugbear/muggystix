@@ -45,12 +45,12 @@ interface ReportsDialogProps {
 }
 
 type ReportType = 'inventory' | 'comprehensive';
-type HumanFormat = 'pdf' | 'html' | 'csv' | 'json';
+type HumanFormat = 'html' | 'csv' | 'json';
 type StructuredFormat = 'markdown-bundle' | 'agent-package';
 
 // Keep in sync with the backend REPORT_MAX_HOSTS. The CSV inventory streams the
-// full set; every other format (HTML streamed, and the async PDF/JSON/.zip
-// bundles generated on the report worker) caps here.
+// full set; every other format (HTML streamed, and the async JSON/.zip bundles
+// generated on the report worker) caps here.
 const REPORT_HOST_CAP = 50000;
 
 const REPORT_TYPES: Array<{ value: ReportType; label: string; description: string }> = [
@@ -70,13 +70,13 @@ const REPORT_TYPES: Array<{ value: ReportType; label: string; description: strin
 
 // Allowed output formats per report type.
 const HUMAN_FORMATS: Record<ReportType, Array<{ value: HumanFormat; label: string; Icon: typeof Globe }>> = {
+  // PDF removed in v5.103.1 — the screen-oriented dossier HTML rendered slowly and
+  // degraded in WeasyPrint; the interactive HTML report is the functional handover.
   comprehensive: [
-    { value: 'pdf', label: 'PDF', Icon: FileDown },
     { value: 'html', label: 'HTML', Icon: Globe },
     { value: 'json', label: 'JSON', Icon: Code },
   ],
   inventory: [
-    { value: 'pdf', label: 'PDF', Icon: FileDown },
     { value: 'html', label: 'HTML', Icon: Globe },
     { value: 'csv', label: 'CSV', Icon: TableIcon },
   ],
@@ -106,7 +106,7 @@ const STRUCTURED_FORMATS: Array<{
 
 const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, totalHosts }) => {
   const [reportType, setReportType] = useState<ReportType>('comprehensive');
-  const [format, setFormat] = useState<HumanFormat>('pdf');
+  const [format, setFormat] = useState<HumanFormat>('html');
   // Tracks which action is in flight ('pdf', 'agent-package', …) so only that
   // button spins and the rest disable.
   const [busy, setBusy] = useState<string | null>(null);
@@ -252,7 +252,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
           {overCap && (
             <Alert variant="warning">
               <AlertDescription>
-                Your filters match {totalHosts.toLocaleString()} hosts. PDF, HTML, JSON and the
+                Your filters match {totalHosts.toLocaleString()} hosts. HTML, JSON and the
                 .zip bundles include the first {REPORT_HOST_CAP.toLocaleString()} — narrow your
                 filters to capture everything, or use the <strong>CSV</strong> inventory which
                 streams the full set.
@@ -260,7 +260,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             </Alert>
           )}
           <p className="text-caption text-muted-foreground">
-            PDF, JSON and the .zip bundles are generated in the background and download
+            JSON and the .zip bundles are generated in the background and download
             automatically when ready — large reports may take a moment.
           </p>
           {activeFilters.length > 0 && (

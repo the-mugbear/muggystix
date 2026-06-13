@@ -110,7 +110,9 @@ const SystemicInsights: React.FC = () => {
         <div className="min-w-0">
           <h1 className="text-page-title">Systemic Insights</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Which weaknesses recur across the estate — and how widely they spread. A weakness on one
+            Which weaknesses recur across the{' '}
+            <strong className="text-foreground">estate</strong> — every in-scope host across all
+            sites and subnets in this project — and how widely they spread. A weakness on one
             host is incidental;{' '}
             <strong className="text-foreground">the same weakness across many subnets and sites</strong>{' '}
             is a process failure, and one spanning essentially the whole estate points at an

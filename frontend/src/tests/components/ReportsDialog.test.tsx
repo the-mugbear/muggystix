@@ -16,35 +16,32 @@ describe('ReportsDialog — async report jobs', () => {
     vi.clearAllMocks();
   });
 
-  it('enqueues a job for a heavy format and downloads on completion', async () => {
+  it('enqueues a job for a heavy (zip) format and downloads on completion', async () => {
     (api.enqueueReportJob as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 7, status: 'completed', format: 'pdf', truncated: false,
+      id: 7, status: 'completed', format: 'markdown-bundle', truncated: false,
     });
     (api.downloadReportJob as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ truncated: false });
     const onClose = vi.fn();
 
     render(<ReportsDialog open onClose={onClose} filters={{ state: 'up' }} totalHosts={10} />);
-    // Default format is PDF — the heavy (async) path.
-    fireEvent.click(screen.getByRole('button', { name: /generate pdf/i }));
+    // The markdown-bundle button takes the async path.
+    fireEvent.click(screen.getByRole('button', { name: /markdown bundle/i }));
 
-    await waitFor(() =>
-      expect(api.enqueueReportJob).toHaveBeenCalledWith('pdf', { state: 'up' }, 'comprehensive'),
-    );
+    await waitFor(() => expect(api.enqueueReportJob).toHaveBeenCalled());
+    expect(api.enqueueReportJob).toHaveBeenCalledWith('markdown-bundle', { state: 'up' }, undefined);
     await waitFor(() => expect(api.downloadReportJob).toHaveBeenCalledWith(7));
-    // Sync path must NOT be used for PDF.
     expect(api.generateHostsReport).not.toHaveBeenCalled();
-    // A complete download closes the dialog.
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
   it('surfaces a failed report job', async () => {
     (api.enqueueReportJob as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 8, status: 'failed', format: 'pdf', truncated: false, error_message: 'render exploded',
+      id: 8, status: 'failed', format: 'agent-package', truncated: false, error_message: 'render exploded',
     });
     const onClose = vi.fn();
 
     render(<ReportsDialog open onClose={onClose} filters={{}} totalHosts={5} />);
-    fireEvent.click(screen.getByRole('button', { name: /generate pdf/i }));
+    fireEvent.click(screen.getByRole('button', { name: /agent dataset/i }));
 
     await waitFor(() => expect(screen.getByText(/render exploded/i)).toBeInTheDocument());
     expect(api.downloadReportJob).not.toHaveBeenCalled();

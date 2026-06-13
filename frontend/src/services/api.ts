@@ -449,7 +449,7 @@ export const generateHostsReport = async (
 // These build the whole document in memory, so they run on a dedicated report
 // worker: enqueue a job, poll its status, then download the artifact.
 
-export type AsyncReportFormat = 'pdf' | 'json' | 'agent-package' | 'markdown-bundle';
+export type AsyncReportFormat = 'json' | 'agent-package' | 'markdown-bundle';
 
 export interface ReportJob {
   id: number;

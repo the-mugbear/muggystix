@@ -2492,7 +2492,9 @@ def generate_hosts_html_report(
 # synchronously (memory-safe) and are NOT enqueued.
 # ---------------------------------------------------------------------------
 
-_ASYNC_FORMAT_PATTERN = "^(pdf|json|agent-package|markdown-bundle)$"
+# PDF removed in v2.196.1 (slow + degraded WeasyPrint render of the screen-oriented
+# dossier HTML; the interactive HTML report is the functional handover).
+_ASYNC_FORMAT_PATTERN = "^(json|agent-package|markdown-bundle)$"
 
 
 @router.post("/jobs", response_model=ReportJobSchema, status_code=202)

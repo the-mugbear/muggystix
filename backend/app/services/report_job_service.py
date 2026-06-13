@@ -36,7 +36,11 @@ logger = logging.getLogger(__name__)
 
 # The formats that run async on the report worker (CSV + HTML stream synchronously
 # on the API and are NOT enqueued here).
-ASYNC_REPORT_FORMATS = ("pdf", "json", "agent-package", "markdown-bundle")
+# PDF was removed in v2.196.1 — the host-dossier HTML is screen-oriented (gradients,
+# sticky, flex, collapsible), so WeasyPrint rendered it slowly (~160s/400 hosts) and
+# degraded; the interactive HTML report is the functional handover. Re-adding PDF
+# means restoring the "pdf" branch in _render + this tuple + the endpoint pattern.
+ASYNC_REPORT_FORMATS = ("json", "agent-package", "markdown-bundle")
 
 _REAP_MAX_RETRIES = 2
 
@@ -196,25 +200,6 @@ class ReportJobService:
         self, gen, fmt: str, hosts, filters: Dict[str, Any], report_type: str,
     ) -> Tuple[bytes, str, str]:
         """Generate one format → (bytes, media_type, file extension)."""
-        if fmt == "pdf":
-            html = gen.generate_html_report(hosts, filters, report_type, for_pdf=True)
-            try:
-                # OSError (not just ImportError) when the native Pango/Cairo libs
-                # are missing — weasyprint dlopen's them at import time.
-                from weasyprint import HTML
-            except (ImportError, OSError) as exc:
-                raise RuntimeError(
-                    "PDF export unavailable: the server's PDF rendering libraries are not installed."
-                ) from exc
-
-            def _deny_all_fetcher(url, *args, **kwargs):
-                # Untrusted scan data flows into this HTML — WeasyPrint must never
-                # fetch a remote URL or read a local file. The template is
-                # self-contained (inline CSS), so this should never fire.
-                raise ValueError(f"External resource blocked in PDF report: {url}")
-
-            return HTML(string=html, url_fetcher=_deny_all_fetcher).write_pdf(), "application/pdf", "pdf"
-
         if fmt == "json":
             payload = gen.generate_json_report(hosts, report_type)
             return json.dumps(payload, indent=2).encode("utf-8"), "application/json", "json"

@@ -66,7 +66,7 @@ def test_sync_report_threads_full_filter_context(fmt, client, test_project, monk
     _assert_full_context(captured)
 
 
-@pytest.mark.parametrize("fmt", ["pdf", "json", "agent-package", "markdown-bundle"])
+@pytest.mark.parametrize("fmt", ["json", "agent-package", "markdown-bundle"])
 def test_async_report_job_stores_full_filter_context(fmt, client, db_session, test_project):
     """The heavy formats enqueue a job; the full filter context must be stored on
     the job so the worker replays the same predicates a generated report can't

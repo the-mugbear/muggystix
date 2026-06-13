@@ -28,7 +28,7 @@ def _make_host(db, project_id, ip="10.0.0.5"):
     return host
 
 
-@pytest.mark.parametrize("fmt", ["json", "agent-package", "markdown-bundle", "pdf"])
+@pytest.mark.parametrize("fmt", ["json", "agent-package", "markdown-bundle"])
 def test_report_job_generates_artifact(fmt, db_session, test_project, test_user):
     _make_host(db_session, test_project.id)
     db_session.commit()
@@ -61,8 +61,6 @@ def test_report_job_generates_artifact(fmt, db_session, test_project, test_user)
             assert {"manifest.json", "hosts.ndjson", "findings.json"}.issubset(names)
         else:
             assert {"report.md", "vulnerabilities.csv", "canonical_findings.csv"}.issubset(names)
-    elif fmt == "pdf":
-        assert data[:5] == b"%PDF-"
 
     # Clean up the artifact this test wrote.
     service._remove_artifact(done)
@@ -92,7 +90,7 @@ def test_report_reaper_requeues_stalled_job(db_session, test_project):
     # A processing job whose heartbeat is well past the timeout is stalled.
     stale = datetime.now(timezone.utc) - timedelta(hours=2)
     job = ReportJob(
-        project_id=test_project.id, format="pdf", report_type="comprehensive",
+        project_id=test_project.id, format="json", report_type="comprehensive",
         filters={}, status="processing", started_at=stale, last_heartbeat=stale,
     )
     db_session.add(job)
