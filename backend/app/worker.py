@@ -31,7 +31,34 @@ logger = logging.getLogger("app.worker")
 # How long to wait (seconds) between polls when no PG notification arrives.
 POLL_INTERVAL = float(os.getenv("WORKER_POLL_INTERVAL", "5"))
 
+# Liveness file the container healthcheck reads.  The previous healthcheck only
+# grep'd /proc for the process, so a worker whose loop had wedged or crashed but
+# whose process was still alive read "healthy" (the failure mode behind the
+# 24h-silent-worker incident).  The main loop rewrites this file every cycle, so
+# a stalled loop lets it go stale and the healthcheck flips unhealthy.
+# Container-local (not the uploads volume): the healthcheck runs inside the
+# container, /tmp is always writable by the worker's non-root user, and the
+# file needn't persist across restarts.  Keep in sync with the docker-compose
+# worker healthcheck (same WORKER_HEARTBEAT_PATH default).
+HEARTBEAT_PATH = os.getenv("WORKER_HEARTBEAT_PATH", "/tmp/bluestick_worker_heartbeat")
+
 _shutdown = False
+
+
+def _write_heartbeat() -> None:
+    """Rewrite the liveness file (mtime is what the healthcheck checks).
+
+    Called from the MAIN loop, not a daemon thread — a thread would keep
+    ticking even if the loop wedged, defeating the point.  Written between
+    jobs and after each job; a single job that legitimately runs longer than
+    the healthcheck timeout will briefly read stale, but an unhealthy worker
+    is only *surfaced*, never restarted (Docker restarts on process exit), so
+    that window is visible, not disruptive — mirrors the API /health design."""
+    try:
+        with open(HEARTBEAT_PATH, "w") as fh:
+            fh.write(str(time.time()))
+    except OSError as exc:
+        logger.warning("Could not write worker heartbeat to %s: %s", HEARTBEAT_PATH, exc)
 
 
 def _handle_signal(signum: int, _frame: object) -> None:
@@ -84,6 +111,9 @@ def _listen_loop(service: IngestionService) -> None:
 
             reap_tick = 0
             while not _shutdown:
+                # Liveness: the loop is cycling.  Refreshed again after each job
+                # so a backlog drain keeps the heartbeat fresh between jobs.
+                _write_heartbeat()
                 # Process any queued jobs first (there may be several).
                 while not _shutdown:
                     try:
@@ -91,6 +121,7 @@ def _listen_loop(service: IngestionService) -> None:
                     except Exception:
                         logger.exception("Unexpected error in poll_and_run_one")
                         did_work = False
+                    _write_heartbeat()
                     if not did_work:
                         break
 
@@ -212,6 +243,11 @@ def _restore_app_logging() -> None:
 def main() -> None:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    # Write an initial heartbeat before migrations so the file exists from the
+    # start (the healthcheck's start_period covers the migration window); if
+    # migrations themselves hang, the heartbeat goes stale and that shows.
+    _write_heartbeat()
 
     # Ensure DB schema is up-to-date (same migrations the API runs on boot).
     from app.db.init import initialize_database

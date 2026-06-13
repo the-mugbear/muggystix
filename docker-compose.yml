@@ -81,7 +81,7 @@ services:
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       SSL_ENABLED: ${SSL_MODE:-false}
-      APP_VERSION: ${APP_VERSION:-2.193.0}
+      APP_VERSION: ${APP_VERSION:-2.194.0}
       FRONTEND_VERSION: ${FRONTEND_VERSION:-5.101.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
@@ -128,19 +128,27 @@ services:
     # Override the default Uvicorn CMD — run the ingestion worker instead.
     command: ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue 2>/dev/null; python -m app.worker"]
     # The worker doesn't run an HTTP server, so override the Dockerfile's
-    # curl-based healthcheck with a process-alive check via /proc.
+    # curl-based healthcheck.  v2.194.0 — heartbeat-freshness instead of a
+    # /proc grep: the worker rewrites .worker_heartbeat each loop cycle, so a
+    # wedged or crashed-but-process-alive loop (which /proc grep read as
+    # healthy — the 24h-silent-worker failure mode) lets it go stale and flips
+    # unhealthy.  A live process is implied (a dead one can't refresh it).
+    # WORKER_HEARTBEAT_TIMEOUT (default 180s) tolerates a long single job;
+    # raise it if you ingest very large files.  Heartbeat path is container-
+    # local (/tmp), writable by the worker's non-root user, and matches the
+    # worker's WORKER_HEARTBEAT_PATH default.
     healthcheck:
-      test: ["CMD-SHELL", "grep -q app.worker /proc/*/cmdline 2>/dev/null"]
+      test: ["CMD-SHELL", "python -c \"import os,time,sys; p=os.getenv('WORKER_HEARTBEAT_PATH','/tmp/bluestick_worker_heartbeat'); sys.exit(0 if os.path.exists(p) and (time.time()-os.path.getmtime(p)) < float(os.getenv('WORKER_HEARTBEAT_TIMEOUT','180')) else 1)\""]
       interval: 30s
       timeout: 10s
-      start_period: 30s
+      start_period: 60s
       retries: 3
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.193.0}
+      APP_VERSION: ${APP_VERSION:-2.194.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -159,7 +167,7 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.193.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.194.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right VersionFooter.  Keep in
