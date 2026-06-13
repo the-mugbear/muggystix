@@ -369,9 +369,22 @@ export default function Hosts() {
   // admins too, but the per-project role isn't surfaced here, so we gate the
   // UI on global admin (the common case) — non-admins simply don't see it.
   const canSetProjectDefault = hasPermission('admin');
-  // Name of the project-default view auto-applied this visit (drives the chip);
-  // null when none applied.
+  // Name of the project-default view currently applied (drives the banner);
+  // null when none.  Persisted to session storage so the banner survives a page
+  // refresh (the restored filters ARE the default) — without it an analyst on a
+  // restored session saw a filtered list with no hint a default was hiding hosts.
   const [appliedProjectDefault, setAppliedProjectDefault] = useState<string | null>(null);
+  // Set the banner AND persist it (or clear both). The init effect restores it.
+  const setProjectDefaultBanner = (name: string | null) => {
+    setAppliedProjectDefault(name);
+    try {
+      const key = projectScopedKey('projectDefaultName');
+      if (name) sessionStorage.setItem(key, name);
+      else sessionStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  };
   const [hosts, setHosts] = useState<Host[]>([]);
   const [totalHosts, setTotalHosts] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -882,6 +895,19 @@ export default function Hosts() {
       if (restored) setSortBy(restored);
     }
 
+    // Re-show the "project default applied" banner after a refresh: the restored
+    // filters ARE the default, so set skipActiveClearRef so the filters-change
+    // effect doesn't clear it on this (non-user) restore.
+    try {
+      const restoredDefault = sessionStorage.getItem(projectScopedKey('projectDefaultName'));
+      if (restoredDefault && Object.keys(initialFilters).length > 0) {
+        skipActiveClearRef.current = true;
+        setAppliedProjectDefault(restoredDefault);
+      }
+    } catch {
+      /* ignore */
+    }
+
     setFilters(initialFilters);
     setIsInitialized(true);
   }, [isInitialized, location.search]);
@@ -960,7 +986,7 @@ export default function Hosts() {
     // so the "project default applied" chip would be stale — drop it. The
     // quiet path IS the auto-apply, which sets the chip itself afterwards.
     if (!opts?.quiet) {
-      setAppliedProjectDefault(null);
+      setProjectDefaultBanner(null);
       toast.info(`Applied view "${view.name}"`, { autoHideMs: 2000 });
     }
   }, [toast]);
@@ -1021,7 +1047,7 @@ export default function Hosts() {
       .then((view) => {
         if (view && view.filter_json) {
           applyViewFilters(view, { quiet: true });
-          setAppliedProjectDefault(view.name);
+          setProjectDefaultBanner(view.name);
         }
       })
       .catch(() => { /* non-fatal */ });
@@ -1029,7 +1055,7 @@ export default function Hosts() {
   }, [isInitialized]);
 
   const dismissProjectDefault = () => {
-    setAppliedProjectDefault(null);
+    setProjectDefaultBanner(null);
     clearAllFilters();
     try {
       sessionStorage.setItem(projectScopedKey('projectDefaultDismissed'), '1');
@@ -1044,7 +1070,7 @@ export default function Hosts() {
     setActiveViewId(null);
     // A manual filter edit means the auto-applied project default no longer
     // describes what's shown — clear the chip so it can't go stale.
-    setAppliedProjectDefault(null);
+    setProjectDefaultBanner(null);
   }, [filters]);
 
   useEffect(() => {
