@@ -1,6 +1,6 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Version:** 2.200.0 | **Updated:** 2026-06-13
+**Version:** 2.201.0 | **Updated:** 2026-06-13
 
 You are an AI assistant (Claude Code, Codex, ChatGPT, etc.) assigned to a workflow in BlueStick. This file is the entire surface you are authorized to use. Follow it literally — the surrounding scaffolding (human approval, per-session key scope, audit trail) depends on you behaving as described.
 
@@ -1236,7 +1236,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 |---|---|
 | `POST /agent/assist/sessions/{session_id}/environment` | Probe (MANDATORY first step; same body shape as recon/execution) |
 | `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
-| `GET  /agent/assist/hosts` | List hosts; filters mirror the `/hosts` UI: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
+| `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `has:`, **`follow:`**, **`assigned:`** combined with `AND`/`OR`/`NOT` and parentheses. `follow:`/`assigned:` resolve against the operator who started the session — so `q=follow:in_review` answers "hosts I have in review" and `q=assigned:me` "hosts assigned to me". `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
 | `GET  /agent/assist/hosts/{host_id}` | One host with its FULL open-port list (can be large for hosts with many ports — prefer `open_port_count` from the list for triage). |
 | `GET  /agent/assist/scopes` | Scope CIDR lists — **each scope capped at 100 subnets, silently (no truncation flag)**. If a scope may have more, tell the operator the list is partial; full enumeration needs a recon session. |
 | `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
@@ -1247,8 +1247,10 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 1. **Environment probe first.** Same shape as recon/execution.  Less critical (your commands are API calls, not shell invocations) but recorded for audit symmetry.  Don't skip it.
 2. **Fetch `/agent/assist/context`.**  This grounds you — but it's a HEADLINE summary: the scope list is capped at 50 (check `scopes_truncated`), and recent scans/recon at 5 each. Read `totals` for real counts and use the dedicated list endpoints for full enumeration. Don't answer "how many scopes/scans/hosts does this project have" from the truncated lists. Anchor every response in something you actually read.
 3. **Answer the operator's question** using the filter vocabulary above.  Examples:
-   - "Which hosts have FTP open?" → `GET /agent/assist/hosts?ports=21` (or `services=ftp`).
-   - "What critical findings landed this week?" → `GET /agent/assist/hosts?has_critical_vulns=true` + `GET /agent/assist/scans?limit=20` to correlate.
+   - "Which hosts have FTP open?" → `GET /agent/assist/hosts?ports=21` (or `services=ftp`, or `q=port:21`).
+   - "Which hosts do I have in review?" → `GET /agent/assist/hosts?q=follow:in_review` (resolves to the session operator). "Assigned to me?" → `q=assigned:me`.
+   - "What's exposed to Log4Shell?" → `GET /agent/assist/hosts?q=cve:CVE-2021-44228 OR vuln:"log4j"`.
+   - "What critical findings landed this week?" → `GET /agent/assist/hosts?has_critical_vulns=true` (or `q=has:critical`) + `GET /agent/assist/scans?limit=20` to correlate.
    - "Summarize scope X" → `GET /agent/assist/scopes` to confirm CIDR list + `GET /agent/assist/hosts?subnets=...` for the host count and posture.
 4. **Cite what you read — and page before you count.**  Every claim maps back to a specific endpoint + filter you called. A count is only valid from a *fully paged* result: `/agent/assist/hosts` returns at most `limit` rows with no total, so a single response of 500 rows is **not** "500 hosts" — keep requesting with `offset += limit` until a page comes back short (< `limit`). Say "12 hosts (per `/agent/assist/hosts?ports=21`, fully paged)" — not "around a dozen," and never a one-page count on a project that may have thousands of hosts.
 5. **Flag uncertainty.**  If the data is ambiguous (e.g. the host has port 21 open but no service name), say so.  Don't infer.

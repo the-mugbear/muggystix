@@ -88,12 +88,15 @@ Endpoints under `/api/v1/agent/*` use a project-scoped, time-limited
 X-API-Key: nm_agent_abc123...
 ```
 
-Keys are issued via `POST /test-plans/generate`, default to a 24-hour
-TTL (configurable via `AGENT_KEY_TTL_HOURS`), and are scoped to one
-project + one agent identity. The agent surface is intentionally
-narrow: it can read project context (hosts, scans, vulns) and create /
-populate / submit a single test plan, but it cannot manage users,
-projects, or other plans. See AGENTS.md for the full integration guide.
+Keys are minted by an operator UI action — **Generate with AI** (plan
+generation), **Execute with AI** (plan execution), **Start Agentic Recon**
+(reconnaissance), or **Start AI Assist** (read-only query) — and each is
+bound to exactly one workflow: one plan (plan-gen / execution), one scope
+(recon), or one assist session. Default TTL is 24h
+(`AGENT_KEY_TTL_HOURS`); assist keys are shorter-lived (4h). The surface
+is intentionally narrow — it cannot manage users, projects, or other
+plans, and cross-workflow calls return 403. See AGENTS.md for the full
+integration guide.
 
 ## Role hierarchy
 
@@ -122,12 +125,10 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
 3. **Discover data** — `GET /projects/{id}/dashboard/stats` for an overview,
    `GET /projects/{id}/scans/` to list ingested scans.
 4. **Query hosts** — `GET /projects/{id}/hosts/` with filters (ports, services,
-   OS, risk score, vulnerability severity, follow status, etc.).
+   OS, vulnerability severity, follow status, tags, etc.) or the boolean query DSL.
 5. **Drill down** — `GET /projects/{id}/hosts/{host_id}` for full host detail
    including ports, scripts, notes, and vulnerabilities.
-6. **Assess risk** — `POST /projects/{id}/risk/hosts/{host_id}/assess-risk` to
-   trigger analysis.
-7. **Export** — `GET /projects/{id}/export/scope/{scope_id}?format_type=json` or
+6. **Export** — `GET /projects/{id}/export/scope/{scope_id}?format_type=json` or
    `GET /projects/{id}/hosts/tool-ready/{format}` for tool-compatible output.
 
 ### Personal review queue (JWT)
@@ -142,7 +143,7 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
 
 ### AI agent workflows (API key)
 
-The `/agent/*` surface supports **three** workflows, each with its own
+The `/agent/*` surface supports **four** workflows, each with its own
 scope-bound key and its own tag below:
 
 #### Plan generation — tag `agent-plan-generation`
@@ -182,10 +183,21 @@ scope-bound key and its own tag below:
 4. **Agent polls and reads progress** — `GET .../jobs/{id}`, `GET .../summary`.
 5. **Agent closes the session** — `POST .../complete`.
 
-Agent keys are project-scoped, time-limited (default 24h, `AGENT_KEY_TTL_HOURS`),
-and bound to **either** one plan (plan-gen/execution) **or** one scope (recon).
-Cross-workflow calls return 403. The `agent-browse` tag below documents the
-read-only host/scope/dashboard surface shared by all three workflows.
+#### Interactive assist — tag `agent-assist`
+
+1. **Operator starts an assist session** from the UI — backend mints a
+   **read-only**, project-scoped key (4h TTL).
+2. **Agent queries project state** to answer ad-hoc questions —
+   `GET /agent/assist/context` for a headline summary, then
+   `GET /agent/assist/hosts` (Hosts-page filter vocabulary),
+   `GET .../scopes`, `GET .../scans`. No scanning, no plan creation, no
+   writes — every write endpoint returns 403.
+
+Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`;
+assist keys 4h), and bound to **one** plan (plan-gen/execution), **one** scope
+(recon), or **one** assist session. Cross-workflow calls return 403. The
+`agent-browse` tag below documents the read-only host/scope/dashboard surface
+shared by the plan, execution, and recon workflows.
 
 ## Error conventions
 
@@ -251,10 +263,6 @@ _OPENAPI_TAGS = [
         "description": "Generate filtered host reports in CSV, HTML, or JSON. Supports the same filter parameters as the hosts endpoint. Max 10,000 hosts per report.",
     },
     {
-        "name": "risk",
-        "description": "Security risk assessment — trigger analysis, view risk scores, vulnerabilities, security findings, and recommendations per host.",
-    },
-    {
         "name": "audit",
         "description": "Audit trail logging and retrieval. Admin-only for log queries and statistics.",
     },
@@ -284,7 +292,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-browse",
-        "description": "Read-only browse surface shared by all three agent workflows: hosts, scans, scopes, dashboard, notes, follows. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
+        "description": "Read-only browse surface shared by the plan, execution, and recon agent workflows: hosts, scans, scopes, dashboard, notes, follows. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project. (The assist workflow has its own read-only surface — see `agent-assist`.)",
     },
     {
         "name": "agent-plan-generation",
@@ -297,6 +305,10 @@ _OPENAPI_TAGS = [
     {
         "name": "agent-recon",
         "description": "Agent-driven reconnaissance against a scope: read context, upload scanner output, poll the parse job, read the rolling summary, then complete the session.  **Sequence:** `GET /agent/recon/context` → `POST /agent/recon/upload` → `GET .../jobs/{id}` → `GET .../summary` → `POST .../complete`. The key is bound to one scope; calls to plan endpoints return 403.",
+    },
+    {
+        "name": "agent-assist",
+        "description": "Read-only interactive query surface for an assist agent: project context, host inventory (Hosts-page filter vocabulary), scopes, and scans. Authenticated via `X-API-Key`; project-scoped; every write endpoint returns 403. Lets an operator's AI of choice answer ad-hoc questions about project data without minting a plan or scope key.",
     },
     {
         "name": "agent-feedback",

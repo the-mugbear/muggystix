@@ -316,26 +316,48 @@ def list_assist_hosts(
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "Boolean query DSL — the SAME vocabulary as the Hosts page. "
+            "Fields: port, os, service, subnet, tag, label, site, cve, vuln, "
+            "header, webtitle, tech, note, scan, has:, follow:, assigned:. "
+            "Combine with AND / OR / NOT and parentheses; comma = OR within a "
+            "field, a repeated field = AND. ANDs with the discrete filters "
+            "above. follow: and assigned: resolve against the operator who "
+            "started this (read-only) assist session — e.g. "
+            "'follow:in_review' = hosts you have in review, 'assigned:me'. "
+            "A malformed query returns 400."
+        ),
+    ),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(require_assist_scope),
     db: Session = Depends(get_db),
 ):
-    """Project-scoped host list with the same filter vocabulary as
-    /agent/hosts.  Returns HostBrief (id, ip, hostname, state, OS,
+    """Project-scoped host list with the same filter vocabulary as the
+    human Hosts page.  Returns HostBrief (id, ip, hostname, state, OS,
     open-port count, vuln summary) — single round-trip surface for
     "which hosts match $criteria?" questions.
 
-    No scope sub-filtering (assist sessions are project-wide), so
-    the recon-only ``scoped_host_ids_subq`` path is skipped.  The
-    handler still honours ``subnets=`` so an agent can narrow to a
-    specific CIDR via the filter rather than relying on a separate
-    scope binding.
+    Two filter surfaces, ANDed together:
+    - the discrete params (``state``/``ports``/``services``/…), and
+    - ``q``, the full boolean query DSL.  ``q`` is what lets an assist
+      agent express the rich, operator-relative questions — "hosts I have
+      in review" (``follow:in_review``), "assigned to me" (``assigned:me``),
+      "Log4Shell-exposed" (``cve:CVE-2021-44228 OR vuln:\\"log4j\\"``) —
+      that the discrete params can't.  It runs the identical engine the
+      Hosts page uses; ``follow:``/``assigned:`` resolve against the
+      session's operator (``started_by``).  This stays read-only: the DSL
+      only *filters*, it never mutates follow/assignment state.
+
+    No scope sub-filtering (assist sessions are project-wide), so the
+    recon-only ``scoped_host_ids_subq`` path is skipped.
     """
     session = _load_assist_session(db, request)
-    q = db.query(models.Host).filter(models.Host.project_id == session.project_id)
-    q = _apply_agent_host_filters(
-        q,
+    query = db.query(models.Host).filter(models.Host.project_id == session.project_id)
+    query = _apply_agent_host_filters(
+        query,
         db,
         project_id=session.project_id,
         state=state,
@@ -346,7 +368,25 @@ def list_assist_hosts(
         has_high_vulns=has_high_vulns,
         search=search,
     )
-    hosts = q.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
+    if q:
+        # Boolean DSL — same parser/evaluator as the human Hosts page,
+        # bound to the session operator so follow:/assigned: are answerable.
+        # Lazy import keeps the module-load graph acyclic.  A malformed
+        # query is a clean 400, not a 500.
+        from app.services.host_query_dsl import BuildCtx, DSLError, evaluate, parse_query
+        operator = session.started_by
+        if operator is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Assist session has no operator bound; cannot evaluate follow:/assigned: predicates.",
+            )
+        try:
+            query = query.filter(
+                evaluate(parse_query(q), BuildCtx(db, operator, session.project_id))
+            )
+        except DSLError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid query: {exc}")
+    hosts = query.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
     if not hosts:
         return []
     host_ids = [h.id for h in hosts]

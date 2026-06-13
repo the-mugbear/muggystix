@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.37.0",
+        "app_version": "2.201.0",
+        "summary": (
+            "Assist agents can now run the FULL Hosts query DSL via "
+            "`GET /agent/assist/hosts?q=...` — the same parser/evaluator the "
+            "human Hosts page uses. This closes the headline assist gap: "
+            "`follow:` and `assigned:` resolve against the operator who started "
+            "the session, so an assist agent can finally answer 'which hosts do "
+            "I have in review?' (`q=follow:in_review`) and 'assigned to me?' "
+            "(`q=assigned:me`), plus the whole boolean surface (cve:, vuln:, "
+            "tag:, label:, site:, note:, has:, AND/OR/NOT, …) that the narrow "
+            "discrete filters couldn't express. Still strictly read-only — the "
+            "DSL only filters, never mutates. Malformed `q` is a 400. AGENTS.md "
+            "assist endpoint table + operating examples updated."
+        ),
+    },
+    {
         "version": "1.36.0",
         "app_version": "2.200.0",
         "summary": (

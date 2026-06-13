@@ -219,3 +219,56 @@ def test_assist_session_listing_includes_started_session(client, test_project):
     assert len(matching) == 1
     assert matching[0]["purpose"] == "Listing smoke test"
     assert matching[0]["status"] == "active"
+
+
+def test_assist_hosts_q_dsl_follow_resolves_to_operator(
+    client, test_project, test_user, db_session
+):
+    """The headline gap-closer: ``/agent/assist/hosts?q=`` runs the full
+    Hosts query DSL, and ``follow:`` resolves against the session operator —
+    so an assist agent can answer "show me the hosts I have in review"
+    (which the discrete filters could not express)."""
+    from app.db.models import Host, HostFollow, FollowStatus
+
+    reviewing = Host(
+        project_id=test_project.id, ip_address="10.50.0.1", state="up",
+        first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+    )
+    other = Host(
+        project_id=test_project.id, ip_address="10.50.0.2", state="up",
+        first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+    )
+    db_session.add_all([reviewing, other])
+    db_session.commit()
+    db_session.refresh(reviewing)
+
+    # The operator (the user the client authenticates as, == session.started_by)
+    # has exactly one host in review.
+    db_session.add(
+        HostFollow(host_id=reviewing.id, user_id=test_user.id, status=FollowStatus.IN_REVIEW)
+    )
+    db_session.commit()
+
+    body = _start_session(client, test_project.id)
+    headers = _auth_headers(body["api_key"])
+
+    in_review = client.get(
+        "/api/v1/agent/assist/hosts?q=follow:in_review", headers=headers
+    )
+    assert in_review.status_code == 200, in_review.text
+    assert {h["ip_address"] for h in in_review.json()} == {"10.50.0.1"}
+
+    # The operator has nothing marked reviewed → empty, not an error.
+    reviewed = client.get(
+        "/api/v1/agent/assist/hosts?q=follow:reviewed", headers=headers
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json() == []
+
+
+def test_assist_hosts_q_dsl_malformed_is_400(client, test_project):
+    """A malformed DSL query is a clean 400 (DSLError), not a 500."""
+    body = _start_session(client, test_project.id)
+    headers = _auth_headers(body["api_key"])
+    resp = client.get("/api/v1/agent/assist/hosts?q=port:notaport", headers=headers)
+    assert resp.status_code == 400, resp.text

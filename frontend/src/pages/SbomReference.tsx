@@ -1,5 +1,14 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Search, Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  Search,
+  Download,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
+} from 'lucide-react';
 import { getSbom, SbomResponse, SbomComponent } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { CardListSkeleton } from '../components/PageSkeleton';
@@ -8,7 +17,6 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Switch } from '../components/ui/switch';
 import { Card, CardContent } from '../components/ui/card';
 import {
   Select,
@@ -28,6 +36,14 @@ import {
 import { cn } from '../utils/cn';
 
 type LayerFilter = 'all' | 'backend' | 'frontend';
+type SourceFilter = 'all' | 'direct' | 'transitive';
+
+// Columns the user can sort by.  `source` sorts on the direct/transitive
+// classification; everything else is the obvious field.
+type SortKey = 'name' | 'version' | 'ecosystem' | 'layer' | 'source' | 'license';
+type SortDir = 'asc' | 'desc';
+
+const NO_LICENSE = '__none__';
 
 const SbomReference: React.FC = () => {
   const [data, setData] = useState<SbomResponse | null>(null);
@@ -35,11 +51,16 @@ const SbomReference: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
-  const [directOnly, setDirectOnly] = useState(false);
   const [layer, setLayer] = useState<LayerFilter>('all');
+  const [source, setSource] = useState<SourceFilter>('all');
+  const [license, setLicense] = useState<string>('all');
+
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
 
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(50);
+  const [showProvenance, setShowProvenance] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,21 +82,96 @@ const SbomReference: React.FC = () => {
     };
   }, []);
 
+  // Distinct licenses present in the build, for the license filter dropdown.
+  // Null/empty licenses collapse into a single "unspecified" bucket so a
+  // user can filter for "what don't we have license data on?".
+  const licenseOptions = useMemo<{ value: string; label: string; count: number }[]>(() => {
+    if (!data) return [];
+    const counts = new Map<string, number>();
+    for (const c of data.components) {
+      const key = c.license && c.license.trim() ? c.license.trim() : NO_LICENSE;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const entries = Array.from(counts.entries())
+      .map(([value, count]) => ({
+        value,
+        label: value === NO_LICENSE ? 'Unspecified' : value,
+        count,
+      }))
+      .sort((a, b) => {
+        // Unspecified sinks to the bottom; otherwise alphabetical.
+        if (a.value === NO_LICENSE) return 1;
+        if (b.value === NO_LICENSE) return -1;
+        return a.label.localeCompare(b.label);
+      });
+    return entries;
+  }, [data]);
+
   const filtered = useMemo<SbomComponent[]>(() => {
     if (!data) return [];
     const q = search.trim().toLowerCase();
-    return data.components.filter((c) => {
+    const rows = data.components.filter((c) => {
       if (layer !== 'all' && c.application_layer !== layer) return false;
-      if (directOnly && !c.direct) return false;
+      if (source === 'direct' && !c.direct) return false;
+      if (source === 'transitive' && c.direct) return false;
+      if (license !== 'all') {
+        const key = c.license && c.license.trim() ? c.license.trim() : NO_LICENSE;
+        if (key !== license) return false;
+      }
       if (q && !c.name.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [data, search, directOnly, layer]);
 
-  // Drop back to page 0 whenever filters narrow the result set.
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const cmp = (a: SbomComponent, b: SbomComponent): number => {
+      switch (sortKey) {
+        case 'name':
+          return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        case 'version':
+          return a.version.localeCompare(b.version, undefined, { numeric: true, sensitivity: 'base' });
+        case 'ecosystem':
+          return a.ecosystem.localeCompare(b.ecosystem);
+        case 'layer':
+          return a.application_layer.localeCompare(b.application_layer);
+        case 'source':
+          // direct < transitive in ascending order.
+          return (a.direct ? 0 : 1) - (b.direct ? 0 : 1);
+        case 'license': {
+          // Unspecified always sorts last regardless of direction, so it
+          // doesn't crowd the top when sorting descending.
+          const al = a.license?.trim() ?? '';
+          const bl = b.license?.trim() ?? '';
+          if (!al && !bl) return 0;
+          if (!al) return 1 * dir; // keep "last" intent stable below
+          if (!bl) return -1 * dir;
+          return al.localeCompare(bl, undefined, { sensitivity: 'base' });
+        }
+        default:
+          return 0;
+      }
+    };
+
+    // Stable sort with name as the tiebreaker so equal keys stay readable.
+    return [...rows].sort((a, b) => {
+      const primary = cmp(a, b) * dir;
+      if (primary !== 0) return primary;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+  }, [data, search, layer, source, license, sortKey, sortDir]);
+
+  // Drop back to page 0 whenever filters/sort narrow or reorder the set.
   useEffect(() => {
     setPage(0);
-  }, [search, directOnly, layer]);
+  }, [search, layer, source, license, sortKey, sortDir]);
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
 
   const handleDownload = () => {
     if (!data) return;
@@ -128,8 +224,8 @@ const SbomReference: React.FC = () => {
         </AlertDescription>
       </Alert>
 
-      {/* Build identity + download. */}
-      <div className="mb-md flex flex-wrap items-center gap-md">
+      {/* Build identity + provenance disclosure + download. */}
+      <div className="mb-sm flex flex-wrap items-center gap-md">
         <p className="text-caption text-muted-foreground">
           App version <strong className="text-foreground">{data.app_version}</strong>{' '}
           · Generated{' '}
@@ -142,6 +238,64 @@ const SbomReference: React.FC = () => {
             <Download className="size-4" aria-hidden /> Download JSON
           </Button>
         </div>
+      </div>
+
+      {/* "How this is generated" — answers "can I trust this isn't stale?".
+          Collapsed by default to keep the page calm; the build-identity line
+          above already shows the live version + timestamp at a glance. */}
+      <div className="mb-md rounded-panel border border-border bg-card">
+        <button
+          type="button"
+          onClick={() => setShowProvenance((v) => !v)}
+          aria-expanded={showProvenance}
+          className={cn(
+            'flex w-full items-center justify-between gap-sm px-md py-sm text-left',
+            'text-metadata font-medium text-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-panel',
+          )}
+        >
+          <span>How is this list generated? (and why it isn't stale)</span>
+          <ChevronDown
+            className={cn(
+              'size-4 shrink-0 text-muted-foreground transition-transform duration-base ease-standard',
+              showProvenance && 'rotate-180',
+            )}
+            aria-hidden
+          />
+        </button>
+        {showProvenance && (
+          <div className="space-y-sm border-t border-border px-md py-sm text-metadata text-muted-foreground">
+            <p>
+              This is a <strong className="text-foreground">live snapshot of the running build</strong>,
+              not a checked-in file that can drift. The backend computes it on request from the
+              resolved dependency trees actually installed in this deployment:
+            </p>
+            <ul className="ml-lg list-disc space-y-xxs marker:text-muted-foreground">
+              <li>
+                <strong className="text-foreground">Backend (Python)</strong> — walks the installed
+                virtualenv via <code className="font-mono text-caption">importlib.metadata</code>, so
+                every transitive dependency is visible at the exact version that's deployed. Each
+                distribution is cross-referenced against{' '}
+                <code className="font-mono text-caption">requirements.txt</code> to set the{' '}
+                <em>direct</em> flag.
+              </li>
+              <li>
+                <strong className="text-foreground">Frontend (npm)</strong> — read from the resolved{' '}
+                <code className="font-mono text-caption">package-lock.json</code> lockfile (not the
+                looser <code className="font-mono text-caption">package.json</code>). A package is{' '}
+                <em>direct</em> iff it appears in the root manifest's dependency sets.
+              </li>
+            </ul>
+            <p>
+              The result is cached keyed by the two manifest files' modification times and the app
+              version, so it <strong className="text-foreground">recomputes automatically</strong>{' '}
+              whenever a dependency changes or a new version deploys — no restart, no manual refresh.
+              The <strong className="text-foreground">Generated</strong> timestamp and{' '}
+              <strong className="text-foreground">App version</strong> above are from that live
+              computation; if they match the build you're running, the list is current.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Summary cards. */}
@@ -161,7 +315,7 @@ const SbomReference: React.FC = () => {
       </div>
 
       {/* Filters. */}
-      <div className="mb-md flex flex-wrap items-center gap-md">
+      <div className="mb-md flex flex-wrap items-end gap-md">
         <div className="relative min-w-60 flex-1 sm:flex-initial">
           <Search
             className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -177,37 +331,39 @@ const SbomReference: React.FC = () => {
           />
         </div>
 
-        <div
-          role="group"
-          aria-label="Filter by application layer"
-          className="inline-flex rounded-control border border-border bg-card p-xxs"
-        >
-          {(['all', 'backend', 'frontend'] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => setLayer(v)}
-              aria-pressed={layer === v}
-              className={cn(
-                'rounded-control px-sm py-xxs text-metadata font-medium capitalize transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                layer === v
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-              )}
-            >
-              {v}
-            </button>
-          ))}
-        </div>
+        <FilterSegment
+          label="Layer"
+          ariaLabel="Filter by application layer"
+          value={layer}
+          options={['all', 'backend', 'frontend'] as const}
+          onChange={setLayer}
+        />
 
-        <div className="flex items-center gap-xs">
-          <Switch
-            id="sbom-direct-only"
-            checked={directOnly}
-            onCheckedChange={(v) => setDirectOnly(Boolean(v))}
-          />
-          <Label htmlFor="sbom-direct-only">Direct only</Label>
+        <FilterSegment
+          label="Source"
+          ariaLabel="Filter by source (direct or transitive)"
+          value={source}
+          options={['all', 'direct', 'transitive'] as const}
+          onChange={setSource}
+        />
+
+        <div className="flex flex-col gap-xxs">
+          <Label htmlFor="sbom-license" className="text-caption text-muted-foreground">
+            License
+          </Label>
+          <Select value={license} onValueChange={setLicense}>
+            <SelectTrigger id="sbom-license" className="w-52">
+              <SelectValue placeholder="All licenses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All licenses</SelectItem>
+              {licenseOptions.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label} ({opt.count})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <p className="ml-auto text-caption text-muted-foreground">
@@ -221,12 +377,12 @@ const SbomReference: React.FC = () => {
           <Table className="min-w-[920px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[24%]">Name</TableHead>
-                <TableHead className="w-[12%]">Version</TableHead>
-                <TableHead className="w-[10%]">Ecosystem</TableHead>
-                <TableHead className="w-[12%]">Layer</TableHead>
-                <TableHead className="w-[10%]">Source</TableHead>
-                <TableHead className="w-[12%]">License</TableHead>
+                <SortableHead className="w-[24%]" label="Name" sortKey="name" active={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableHead className="w-[12%]" label="Version" sortKey="version" active={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableHead className="w-[10%]" label="Ecosystem" sortKey="ecosystem" active={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableHead className="w-[12%]" label="Layer" sortKey="layer" active={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableHead className="w-[10%]" label="Source" sortKey="source" active={sortKey} dir={sortDir} onSort={toggleSort} />
+                <SortableHead className="w-[12%]" label="License" sortKey="license" active={sortKey} dir={sortDir} onSort={toggleSort} />
                 <TableHead className="w-[20%]">Provenance</TableHead>
               </TableRow>
             </TableHeader>
@@ -327,6 +483,86 @@ const SbomReference: React.FC = () => {
         </div>
       </div>
     </div>
+  );
+};
+
+/** Segmented control for the small fixed-option filters (layer, source). */
+function FilterSegment<T extends string>({
+  label,
+  ariaLabel,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: T;
+  options: readonly T[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-xxs">
+      <span className="text-caption text-muted-foreground">{label}</span>
+      <div
+        role="group"
+        aria-label={ariaLabel}
+        className="inline-flex rounded-control border border-border bg-card p-xxs"
+      >
+        {options.map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => onChange(v)}
+            aria-pressed={value === v}
+            className={cn(
+              'rounded-control px-sm py-xxs text-metadata font-medium capitalize transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              value === v
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            )}
+          >
+            {v}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** A clickable column header that toggles sort on its key. */
+const SortableHead: React.FC<{
+  label: string;
+  sortKey: SortKey;
+  active: SortKey;
+  dir: SortDir;
+  onSort: (key: SortKey) => void;
+  className?: string;
+}> = ({ label, sortKey, active, dir, onSort, className }) => {
+  const isActive = active === sortKey;
+  return (
+    <TableHead className={className} aria-sort={isActive ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          'group inline-flex items-center gap-xxs rounded-control text-left',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+        )}
+      >
+        {label}
+        {isActive ? (
+          dir === 'asc' ? (
+            <ArrowUp className="size-3" aria-hidden />
+          ) : (
+            <ArrowDown className="size-3" aria-hidden />
+          )
+        ) : (
+          <ChevronsUpDown className="size-3 opacity-0 transition-opacity group-hover:opacity-60" aria-hidden />
+        )}
+      </button>
+    </TableHead>
   );
 };
 
