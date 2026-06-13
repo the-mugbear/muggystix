@@ -33,6 +33,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -52,6 +53,11 @@ from app.services.attention_service import (
     _SEVERITY_WEIGHT,
     _STALE_DAYS,
     _TIER_WEIGHT,
+)
+from app.services.cert_fields import (
+    parse_cert_not_after,
+    derive_cert_fields,
+    cert_issue_from_columns,
 )
 from app.services.os_eol import match_eol_os
 from app.services.ports_of_interest import ports_by_number
@@ -73,42 +79,20 @@ def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+# Cert parsing/verdict now live in the shared ``cert_fields`` module (the same
+# implementation the parsers use to populate the promoted columns).  These thin
+# delegators keep the blob -> verdict convenience the unit tests exercise.
 def _parse_cert_dt(value: Any) -> Optional[datetime]:
-    """Best-effort parse of a certificate ``not_after`` string across tools."""
-    if not value:
-        return None
-    s = str(value).strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
-        dt = None
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%b %d %H:%M:%S %Y %Z", "%Y-%m-%d"):
-            try:
-                dt = datetime.strptime(s, fmt)
-                break
-            except ValueError:
-                continue
-        if dt is None:
-            return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    """Deprecated alias — see ``cert_fields.parse_cert_not_after``."""
+    return parse_cert_not_after(value)
 
 
 def _cert_issue(tls_info: Any, now: datetime) -> Optional[str]:
-    """Return 'expired' / 'self-signed' if this cert is a hygiene concern, else None.
-
-    Keys vary by tool (httpx uses ``*_dn``; the model comment uses the bare
-    names), so we probe the common variants.
-    """
-    if not isinstance(tls_info, dict):
-        return None
-    not_after = _parse_cert_dt(tls_info.get("not_after"))
-    if not_after is not None and not_after < now:
-        return "expired"
-    issuer = tls_info.get("issuer_dn") or tls_info.get("issuer")
-    subject = tls_info.get("subject_dn") or tls_info.get("subject") or tls_info.get("subject_cn")
-    if issuer and subject and str(issuer) == str(subject):
-        return "self-signed"
-    return None
+    """Blob -> 'expired'/'self-signed'/None.  Hot read paths use the promoted
+    ``cert_not_after``/``cert_self_signed`` columns via ``cert_issue_from_columns``;
+    this stays for the parse-from-blob convenience (and its tests)."""
+    not_after, self_signed = derive_cert_fields(tls_info)
+    return cert_issue_from_columns(not_after, self_signed, now)
 
 
 def _is_weak_user(username: Optional[str]) -> bool:
@@ -322,16 +306,22 @@ def compute_subnet_insights(
     # source), so reading all history would let a cert that was expired in an
     # old scan keep the host flagged after a later clean re-observation.
     # Reduce to the latest observation per (host, interface) before judging.
-    cert_latest: Dict[tuple, tuple] = {}  # (host_id, url) -> (last_seen, tls_info)
-    for host_id, url, tls_info, last_seen in (
+    # Read the promoted cert columns (parsed once at ingest) instead of the
+    # tls_info blob — no per-row JSON parse / date guessing at request time.
+    cert_latest: Dict[tuple, tuple] = {}  # (host_id, url) -> (last_seen, not_after, self_signed)
+    for host_id, url, not_after, self_signed, last_seen in (
         db.query(
             WebInterface.host_id, WebInterface.url,
-            WebInterface.tls_info, WebInterface.last_seen,
+            WebInterface.cert_not_after, WebInterface.cert_self_signed,
+            WebInterface.last_seen,
         )
         .filter(
             WebInterface.project_id == project_id,
             WebInterface.host_id.isnot(None),
-            WebInterface.tls_info.isnot(None),
+            or_(
+                WebInterface.cert_not_after.isnot(None),
+                WebInterface.cert_self_signed.isnot(None),
+            ),
         )
         .all()
     ):
@@ -341,10 +331,10 @@ def compute_subnet_insights(
         key = (host_id, url)
         prev = cert_latest.get(key)
         if prev is None or ls >= prev[0]:
-            cert_latest[key] = (ls, tls_info)
+            cert_latest[key] = (ls, not_after, self_signed)
     cert_issue_hosts: Dict[int, set] = defaultdict(set)
-    for (host_id, _url), (_ls, tls_info) in cert_latest.items():
-        if _cert_issue(tls_info, now):
+    for (host_id, _url), (_ls, not_after, self_signed) in cert_latest.items():
+        if cert_issue_from_columns(not_after, self_signed, now):
             cert_issue_hosts[host_to_subnet[host_id]].add(host_id)
 
     # --- Hygiene: weak / guest authentication, CURRENT only ---------------

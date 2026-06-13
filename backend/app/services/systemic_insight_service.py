@@ -36,6 +36,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -44,9 +45,9 @@ from app.db.models_confidence import NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.os_eol import match_eol_os
 from app.services.ports_of_interest import ports_by_number
+from app.services.cert_fields import cert_issue_from_columns
 from app.services.subnet_insight_service import (
     _EPOCH,
-    _cert_issue,
     _is_weak_user,
     _load_subnet_meta,
     _normalize_dt,
@@ -168,12 +169,19 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     # TLS: latest observation per (host, url), then judge — mirrors the subnet
     # service so a stale expired cert can't outlive a clean re-observation.
     cert_latest: Dict[tuple, tuple] = {}
-    for hid, url, tls_info, last_seen in (
-        db.query(WebInterface.host_id, WebInterface.url, WebInterface.tls_info, WebInterface.last_seen)
+    for hid, url, not_after, self_signed, last_seen in (
+        db.query(
+            WebInterface.host_id, WebInterface.url,
+            WebInterface.cert_not_after, WebInterface.cert_self_signed,
+            WebInterface.last_seen,
+        )
         .filter(
             WebInterface.project_id == project_id,
             WebInterface.host_id.isnot(None),
-            WebInterface.tls_info.isnot(None),
+            or_(
+                WebInterface.cert_not_after.isnot(None),
+                WebInterface.cert_self_signed.isnot(None),
+            ),
         )
         .all()
     ):
@@ -182,9 +190,9 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         ls = _normalize_dt(last_seen) or _EPOCH
         prev = cert_latest.get((hid, url))
         if prev is None or ls >= prev[0]:
-            cert_latest[(hid, url)] = (ls, tls_info)
-    for (hid, _url), (_ls, tls_info) in cert_latest.items():
-        if _cert_issue(tls_info, now):
+            cert_latest[(hid, url)] = (ls, not_after, self_signed)
+    for (hid, _url), (_ls, not_after, self_signed) in cert_latest.items():
+        if cert_issue_from_columns(not_after, self_signed, now):
             affected["tls_hygiene"].add(hid)
 
     # Weak auth: latest netexec observation per (host, proto, port).

@@ -205,6 +205,7 @@ interface TlsSummary {
   version: string | null;
   issuer: string | null;
   expiry: string | null;
+  daysToExpiry: number | null; // computed from not_after; null if unparseable
   sanCount: number;
   flags: string[]; // self-signed / expired / mismatched
 }
@@ -217,12 +218,28 @@ const summarizeTls = (tls: Record<string, unknown> | null | undefined): TlsSumma
   if (tls.expired === true) flags.push('expired');
   if (tls.mismatched === true) flags.push('hostname mismatch');
   if (tls.wildcard_certificate === true) flags.push('wildcard');
+  const expiry = tlsStr(tls, 'not_after');
+  // Derive expiry status from the date itself — httpx doesn't reliably set the
+  // `expired` boolean, so a cert past (or near) not_after would otherwise look
+  // identical to one valid for years.
+  let daysToExpiry: number | null = null;
+  if (expiry) {
+    const t = Date.parse(expiry);
+    if (!Number.isNaN(t)) daysToExpiry = Math.floor((t - Date.now()) / 86_400_000);
+  }
+  // The date-derived "expired" badge already conveys this, so drop the tool's
+  // duplicate 'expired' flag when we could read the date.
+  const dedupedFlags =
+    daysToExpiry != null && daysToExpiry < 0
+      ? flags.filter((f) => f !== 'expired')
+      : flags;
   const summary: TlsSummary = {
     version: tlsStr(tls, 'tls_version', 'version'),
     issuer: tlsStr(tls, 'issuer_cn', 'issuer_org', 'issuer_dn'),
-    expiry: tlsStr(tls, 'not_after'),
+    expiry,
+    daysToExpiry,
     sanCount: Array.isArray(sans) ? sans.length : 0,
-    flags,
+    flags: dedupedFlags,
   };
   // Nothing worth a line if every field came back empty.
   if (!summary.version && !summary.issuer && !summary.expiry && summary.sanCount === 0 && flags.length === 0) {
@@ -308,9 +325,22 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
               </span>
             )}
             {tls.expiry && (
-              <span className="text-caption text-muted-foreground">
-                expires {tls.expiry.slice(0, 10)}
-              </span>
+              tls.daysToExpiry != null && tls.daysToExpiry < 0 ? (
+                <Badge variant="destructive" className="text-caption">
+                  expired {tls.expiry.slice(0, 10)}
+                </Badge>
+              ) : tls.daysToExpiry != null && tls.daysToExpiry <= 30 ? (
+                <Badge
+                  variant="outline"
+                  className="border-amber-500 text-caption text-amber-600"
+                >
+                  expires in {tls.daysToExpiry}d
+                </Badge>
+              ) : (
+                <span className="text-caption text-muted-foreground">
+                  expires {tls.expiry.slice(0, 10)}
+                </span>
+              )
             )}
             {tls.sanCount > 0 && (
               <span className="text-caption text-muted-foreground">

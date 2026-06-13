@@ -422,7 +422,13 @@ class WebInterface(Base):
     # preserved in raw.  Null when the tool didn't report any.
     technologies = Column(JSON)
     favicon_hash = Column(String(64), index=True)  # mmh3 hash; indexed for cross-host clustering
-    tls_info = Column(JSON)  # {issuer, subject, not_after, sni, ...}
+    tls_info = Column(JSON)  # raw blob: {issuer, subject, not_after, sni, ...}
+    # Promoted cert predicates (v2.205.0) — parsed once at ingest from tls_info
+    # so "expired"/"self-signed" are typed, indexable columns instead of a
+    # per-row JSON full-scan + 5-format date guess on every insight read. See
+    # app/services/cert_fields.derive_cert_fields. tls_info stays the raw blob.
+    cert_not_after = Column(DateTime(timezone=True), index=True)
+    cert_self_signed = Column(Boolean, index=True)  # None = unknown (no issuer/subject)
 
     # EyeWitness extras (null for httpx).
     screenshot_path = Column(String)  # relative path under uploads/web_screenshots/{scan_id}/
