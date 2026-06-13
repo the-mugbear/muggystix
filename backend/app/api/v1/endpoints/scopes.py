@@ -857,9 +857,12 @@ def add_subnets(
     for row in created:
         db.refresh(row)
 
-    # Re-correlate so hosts already in the database get mapped to the
-    # new subnets.  This matches the behaviour of file-based upload.
-    SubnetCorrelationService(db).correlate_all_hosts_to_subnets(project_id=project.id)
+    # Correlate only the newly added subnets so hosts already in the database
+    # get mapped to them — O(hosts × new subnets), touching only these subnets'
+    # mapping rows instead of rewriting the whole project's mapping table.
+    svc = SubnetCorrelationService(db)
+    for row in created:
+        svc.correlate_subnet(row.id)
 
     return created
 
@@ -925,13 +928,10 @@ def update_subnet(
     db.refresh(subnet)
 
     if cidr_changed:
-        # Drop stale mappings on the edited subnet; correlator recomputes
-        # them from scratch for this subnet's new CIDR.
-        db.query(HostSubnetMapping).filter(HostSubnetMapping.subnet_id == subnet_id).delete(
-            synchronize_session=False
-        )
-        db.commit()
-        SubnetCorrelationService(db).correlate_all_hosts_to_subnets(project_id=project.id)
+        # Recompute only this subnet's mappings for its new CIDR — replaces the
+        # old whole-project re-correlate. correlate_subnet does the scoped
+        # delete + insert (a CIDR change can drop hosts that no longer match).
+        SubnetCorrelationService(db).correlate_subnet(subnet_id)
 
     return subnet
 

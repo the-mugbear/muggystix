@@ -110,3 +110,57 @@ def test_correlation_is_idempotent_and_drops_stale_mappings(db_session, test_pro
         .all()
     )
     assert {r.subnet_id for r in rows} == {subnets["10.0.0.0/24"]}
+
+
+def test_correlate_subnet_adds_only_its_own_mappings(db_session, test_project):
+    """correlate_subnet maps project hosts to ONE subnet without disturbing
+    mappings to other subnets (the incremental path for a single-subnet add)."""
+    subnets = _scope_with_subnets(db_session, test_project.id, ["10.0.0.0/24", "192.168.1.0/24"])
+    h_a = _host(db_session, test_project.id, "10.0.0.5")
+    h_b = _host(db_session, test_project.id, "192.168.1.10")
+    db_session.commit()
+    svc = SubnetCorrelationService(db_session)
+    svc.correlate_all_hosts_to_subnets(project_id=test_project.id)
+
+    # Add a NEW overlapping /16 and correlate ONLY it.
+    new_sub = models.Subnet(
+        scope_id=db_session.query(models.Subnet).get(subnets["10.0.0.0/24"]).scope_id,
+        cidr="10.0.0.0/16",
+    )
+    db_session.add(new_sub)
+    db_session.flush()
+    db_session.commit()
+
+    n = svc.correlate_subnet(new_sub.id)
+    assert n == 1  # only h_a falls in 10.0.0.0/16
+
+    db_session.expire_all()
+    a_subs = {r.subnet_id for r in db_session.query(models.HostSubnetMapping).filter_by(host_id=h_a.id)}
+    b_subs = {r.subnet_id for r in db_session.query(models.HostSubnetMapping).filter_by(host_id=h_b.id)}
+    # h_a keeps its /24 AND gains the new /16; h_b's mapping is untouched.
+    assert a_subs == {subnets["10.0.0.0/24"], new_sub.id}
+    assert b_subs == {subnets["192.168.1.0/24"]}
+
+
+def test_correlate_subnet_cidr_change_drops_only_its_stale_mappings(db_session, test_project):
+    """A CIDR edit recomputes just that subnet's mappings (drops hosts that no
+    longer match) and leaves every other subnet's mappings alone."""
+    subnets = _scope_with_subnets(db_session, test_project.id, ["10.0.0.0/24", "192.168.1.0/24"])
+    h_a = _host(db_session, test_project.id, "10.0.0.5")
+    h_b = _host(db_session, test_project.id, "192.168.1.10")
+    db_session.commit()
+    svc = SubnetCorrelationService(db_session)
+    svc.correlate_all_hosts_to_subnets(project_id=test_project.id)
+
+    # Move the 10.0.0.0/24 subnet off h_a, then re-correlate just it.
+    db_session.query(models.Subnet).filter_by(id=subnets["10.0.0.0/24"]).update(
+        {"cidr": "172.16.9.0/24"}
+    )
+    db_session.commit()
+    svc.correlate_subnet(subnets["10.0.0.0/24"])
+
+    db_session.expire_all()
+    a_subs = {r.subnet_id for r in db_session.query(models.HostSubnetMapping).filter_by(host_id=h_a.id)}
+    b_subs = {r.subnet_id for r in db_session.query(models.HostSubnetMapping).filter_by(host_id=h_b.id)}
+    assert a_subs == set()                              # no longer matches the moved subnet
+    assert b_subs == {subnets["192.168.1.0/24"]}        # untouched
