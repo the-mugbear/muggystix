@@ -1,26 +1,19 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Check, ChevronDown, Folder, Settings } from 'lucide-react';
+import { Check, ChevronDown, Folder } from 'lucide-react';
 import { useProject } from '../contexts/ProjectContext';
-import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../utils/cn';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 
 const ProjectSelector: React.FC = () => {
-  const navigate = useNavigate();
+  // Project settings/members live in the Settings hub (sidebar → Settings →
+  // Project); the selector is for switching projects only, so it no longer
+  // duplicates that link (FRX dedup — was two paths to /project-settings).
   const { projects, currentProject, selectProject, isLoading } = useProject();
-  // /project-settings requires the analyst role (see App.tsx route guard
-  // and the Layout nav entry).  Gate the "Manage" item to the same bar so
-  // the selector never offers a route the user would be bounced out of.
-  const { hasPermission } = useAuth();
-  const canManageProject = hasPermission('analyst');
 
   if (isLoading) {
     return (
@@ -85,22 +78,6 @@ const ProjectSelector: React.FC = () => {
               </DropdownMenuItem>
             );
           })}
-          {canManageProject && <DropdownMenuSeparator />}
-          {canManageProject && (
-            // FRX·H6: section header + Settings icon so the action is
-            // visually distinct from the project list, and no longer
-            // wears `text-primary` (which competed with the active-
-            // project check for emphasis).
-            <DropdownMenuLabel className="text-micro uppercase tracking-wider text-muted-foreground">
-              Manage
-            </DropdownMenuLabel>
-          )}
-          {canManageProject && (
-            <DropdownMenuItem onSelect={() => navigate('/project-settings')}>
-              <Settings className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-              <span>Project Settings &amp; Members</span>
-            </DropdownMenuItem>
-          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
