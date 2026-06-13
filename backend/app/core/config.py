@@ -100,6 +100,12 @@ class Settings:
     # of silently dropping rows.  The streaming CSV inventory ignores this and
     # exports the full filtered set.
     REPORT_MAX_HOSTS: int = int(os.getenv("REPORT_MAX_HOSTS", "50000"))
+    # Lower cap for the *in-memory* report formats (PDF, JSON, the zip bundles)
+    # which build the whole document in worker memory at once — a full per-host
+    # dossier is far heavier than an inventory row, so a few concurrent large
+    # exports could OOM the API worker.  The streamed HTML uses REPORT_MAX_HOSTS
+    # and the streamed CSV ignores the cap entirely.
+    REPORT_MAX_INMEMORY_HOSTS: int = int(os.getenv("REPORT_MAX_INMEMORY_HOSTS", "2000"))
     # Chunk size for the streaming CSV inventory cursor (hosts hydrated +
     # serialized per batch, bounding peak memory regardless of total rows).
     REPORT_STREAM_CHUNK: int = int(os.getenv("REPORT_STREAM_CHUNK", "500"))

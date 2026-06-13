@@ -42,9 +42,15 @@ type ReportType = 'inventory' | 'comprehensive';
 type HumanFormat = 'pdf' | 'html' | 'csv' | 'json';
 type StructuredFormat = 'markdown-bundle' | 'agent-package';
 
-// Keep in sync with REPORT_MAX_HOSTS (default). Flat CSV streams the full
-// set; the document formats (PDF/HTML/JSON) build in memory and cap here.
+// Keep in sync with the backend caps. The CSV inventory streams the full set;
+// HTML streams dossiers chunk-by-chunk up to REPORT_HOST_CAP; the in-memory
+// formats (PDF, JSON, the .zip bundles) build the whole document in worker
+// memory and cap lower at REPORT_INMEMORY_CAP (REPORT_MAX_INMEMORY_HOSTS).
 const REPORT_HOST_CAP = 50000;
+const REPORT_INMEMORY_CAP = 2000;
+// Above this, warn that the in-memory formats build the whole report
+// server-side and steer large exports to CSV/HTML.
+const MEMORY_SOFT_THRESHOLD = 500;
 
 const REPORT_TYPES: Array<{ value: ReportType; label: string; description: string }> = [
   {
@@ -87,7 +93,7 @@ const STRUCTURED_FORMATS: Array<{
     value: 'markdown-bundle',
     label: 'Markdown bundle (.zip)',
     Icon: FileText,
-    description: 'Human-readable report.md + companion hosts/findings/scans CSVs.',
+    description: 'Human-readable report.md + companion CSVs (hosts, vulnerabilities, canonical findings, execution findings, notes, scans).',
   },
   {
     value: 'agent-package',
@@ -178,6 +184,11 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   }, [filters]);
 
   const overCap = totalHosts > REPORT_HOST_CAP;
+  // The in-memory formats (PDF/JSON/.zip bundles) cap lower and build the whole
+  // document server-side; warn before a large export so a partial isn't a
+  // surprise and the user can pick a streamed format instead.
+  const overInMemoryCap = totalHosts > REPORT_INMEMORY_CAP;
+  const heavyMemoryAdvisory = totalHosts > MEMORY_SOFT_THRESHOLD;
   const isBusy = busy !== null;
 
   return (
@@ -199,10 +210,9 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         {truncated && (
           <Alert variant="warning">
             <AlertDescription>
-              The report downloaded, but the server capped it at the first{' '}
-              {REPORT_HOST_CAP.toLocaleString()} hosts — it is <strong>incomplete</strong>. Narrow
-              your filters to capture everything, or use the <strong>CSV</strong> inventory which
-              streams the full set.
+              The report downloaded, but the server capped it — it is{' '}
+              <strong>incomplete</strong>. Narrow your filters to capture everything, or use the{' '}
+              <strong>CSV</strong> inventory which streams the full set.
             </AlertDescription>
           </Alert>
         )}
@@ -212,12 +222,26 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             Based on your current filters this covers <strong>{totalHosts.toLocaleString()}</strong> host
             {totalHosts === 1 ? '' : 's'}.
           </p>
-          {overCap && (
+          {overInMemoryCap && (
             <Alert variant="warning">
               <AlertDescription>
-                Your filters match {totalHosts.toLocaleString()} hosts. PDF, HTML and JSON reports include
-                the first {REPORT_HOST_CAP.toLocaleString()} — narrow your filters to capture everything, or
-                use the <strong>CSV</strong> inventory which streams the full set.
+                Your filters match {totalHosts.toLocaleString()} hosts.{' '}
+                <strong>PDF, JSON, and the .zip bundles</strong> build the whole report in server
+                memory and include only the first {REPORT_INMEMORY_CAP.toLocaleString()}.{' '}
+                {overCap
+                  ? `HTML streams up to ${REPORT_HOST_CAP.toLocaleString()};`
+                  : 'HTML streams the full set;'}{' '}
+                the <strong>CSV</strong> inventory streams every host. Prefer those, or narrow your
+                filters.
+              </AlertDescription>
+            </Alert>
+          )}
+          {!overInMemoryCap && heavyMemoryAdvisory && (
+            <Alert variant="info">
+              <AlertDescription>
+                For {totalHosts.toLocaleString()} hosts, PDF / JSON / .zip exports build the whole
+                document in server memory. The <strong>HTML</strong> and <strong>CSV</strong> exports
+                stream and stay light for large sets.
               </AlertDescription>
             </Alert>
           )}

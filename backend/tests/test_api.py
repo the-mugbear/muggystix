@@ -288,7 +288,13 @@ class TestHostsAPI:
 
         bundle = zipfile.ZipFile(io.BytesIO(response.content))
         names = set(bundle.namelist())
-        assert {"report.md", "hosts.csv", "findings.csv", "scans.csv"}.issubset(names)
+        # findings.csv was renamed to vulnerabilities.csv (it's scanner vulns),
+        # and the dossier correlation CSVs were added.
+        assert {
+            "report.md", "hosts.csv", "vulnerabilities.csv",
+            "canonical_findings.csv", "execution_findings.csv", "notes.csv", "scans.csv",
+        }.issubset(names)
+        assert "findings.csv" not in names
 
         report_md = bundle.read("report.md").decode()
         # v2.65.0 — was "NetworkMapper Host Report" before the

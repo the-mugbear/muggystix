@@ -18,6 +18,8 @@ from app.services.host_serialization import _serialize_follow, _serialize_note  
 from app.api.v1.endpoints.hosts import _build_filtered_host_query, HostFilterParams
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
+from app.db.models_findings import Finding, FindingHost, FindingHostStatus
+from app.db.models_agent import TestPlan, TestPlanEntry, TestExecutionResult
 import base64
 import io
 import csv
@@ -76,9 +78,13 @@ class ReportGenerator:
         # capped report is never mistaken for a complete one.
         self.report_truncated = False
 
-    # Maximum number of hosts an in-memory report (PDF/HTML/JSON, zips) can
-    # include to prevent OOM.  Configurable; the streaming CSV ignores it.
+    # Maximum number of hosts the streamed HTML report can include — high,
+    # because the dossier streams chunk-by-chunk so peak memory is bounded.
+    # Configurable; the streaming CSV ignores it.
     MAX_REPORT_HOSTS = settings.REPORT_MAX_HOSTS
+    # Lower cap for the formats that materialise the whole document in memory
+    # (PDF/JSON/zip bundles) — see config for the rationale.
+    MAX_INMEMORY_REPORT_HOSTS = settings.REPORT_MAX_INMEMORY_HOSTS
 
     # --- Site / subnet enrichment (shared across formats) -----------------
 
@@ -100,8 +106,14 @@ class ReportGenerator:
         loc = self._host_locations().get(host_id)
         return (loc.get("cidr") or "") if loc else ""
 
-    def get_hosts_for_report(self, filters: Dict[str, Any]) -> List[models.Host]:
-        """Get hosts based on filter parameters (capped at MAX_REPORT_HOSTS).
+    def get_hosts_for_report(self, filters: Dict[str, Any], cap: Optional[int] = None) -> List[models.Host]:
+        """Get hosts based on filter parameters (capped at ``cap``, default
+        MAX_REPORT_HOSTS).
+
+        ``cap`` lets each format pick its own ceiling — the in-memory formats
+        (PDF/JSON/zip bundles) pass ``MAX_INMEMORY_REPORT_HOSTS`` so a heavy
+        full-dossier export can't OOM the worker, while the streamed HTML uses
+        the high default.  ``report_truncated`` reflects whichever cap applied.
 
         ``filters`` must be ``build_filtered_host_query`` kwargs — every report
         route now derives it from ``HostFilterParams.as_builder_kwargs()`` and
@@ -110,6 +122,7 @@ class ReportGenerator:
         visible list).  Splatting (not per-key ``.get()``) is what guarantees
         no drift.
         """
+        cap = cap or self.MAX_REPORT_HOSTS
         query = _build_filtered_host_query(
             self.db,
             self.current_user,
@@ -127,11 +140,11 @@ class ReportGenerator:
             selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
             # Fetch one past the cap so we can detect (and surface) truncation
             # without a separate COUNT.
-        ).distinct().limit(self.MAX_REPORT_HOSTS + 1)
+        ).distinct().limit(cap + 1)
 
         rows = query.all()
-        self.report_truncated = len(rows) > self.MAX_REPORT_HOSTS
-        return rows[: self.MAX_REPORT_HOSTS]
+        self.report_truncated = len(rows) > cap
+        return rows[:cap]
 
     def _filtered_host_id_query(self, filters: Dict[str, Any]):
         """Just the matching host ids, ordered — the cheap driver for the
@@ -212,8 +225,52 @@ class ReportGenerator:
         'OS Name', 'OS Family', 'OS Type', 'OS Accuracy', 'SMB Signing',
         'Open Ports', 'Total Ports', 'Services',
         'Critical', 'High', 'Medium', 'Low',
+        # Triaged-record columns (the dossier rolled up to counts) so the
+        # inventory can be filtered/sorted on what was actually concluded, not
+        # just raw scan vulns: active canonical findings, critical findings,
+        # execution findings, open notes, and scanner vulns not yet triaged.
+        'Active Findings', 'Critical Findings', 'Execution Findings',
+        'Open Notes', 'Untriaged Vulns',
         'Tags', 'Notes', 'Last Seen', 'Scan File', 'Scan Date',
     ]
+
+    def _inventory_finding_counts(self, host_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """``host_id -> {active, critical, exec, promoted_vuln_ids}`` via batched
+        GROUP-BY queries — the counts the streaming inventory CSV needs without
+        building a full dossier record per row."""
+        out: Dict[int, Dict[str, Any]] = {}
+        if not host_ids:
+            return out
+
+        def _slot(hid: int) -> Dict[str, Any]:
+            return out.setdefault(hid, {"active": 0, "critical": 0, "exec": 0, "promoted_vuln_ids": set()})
+
+        for chunk in _id_chunks(host_ids):
+            for host_id, severity, source, vuln_id, host_status in (
+                self.db.query(
+                    FindingHost.host_id, Finding.severity, Finding.source,
+                    Finding.vuln_id, FindingHost.host_status,
+                )
+                .join(Finding, FindingHost.finding_id == Finding.id)
+                .filter(FindingHost.host_id.in_(chunk), Finding.project_id == self.project_id)
+                .all()
+            ):
+                d = _slot(host_id)
+                if host_status != FindingHostStatus.REMEDIATED.value:
+                    d["active"] += 1
+                if severity == "critical":
+                    d["critical"] += 1
+                if source == "scanner" and vuln_id:
+                    d["promoted_vuln_ids"].add(vuln_id)
+            for host_id, count in (
+                self.db.query(TestPlanEntry.host_id, func.count(TestExecutionResult.id))
+                .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
+                .filter(TestPlanEntry.host_id.in_(chunk), TestExecutionResult.is_finding.is_(True))
+                .group_by(TestPlanEntry.host_id)
+                .all()
+            ):
+                _slot(host_id)["exec"] = count
+        return out
 
     def generate_csv_report(self, hosts: List[models.Host]) -> str:
         """Generate the Host Inventory CSV — header + a flat, queryable row per
@@ -234,6 +291,7 @@ class ReportGenerator:
         streaming path yields per chunk."""
         output = io.StringIO()
         writer = csv.writer(output)
+        finding_counts = self._inventory_finding_counts([h.id for h in hosts])
         for host in hosts:
             open_ports = [p for p in (host.ports or []) if p.state == 'open']
             total_ports = len(host.ports or [])
@@ -263,6 +321,13 @@ class ReportGenerator:
             vc = self._host_vuln_counts(host)
             last_seen_str = host.last_seen.strftime('%Y-%m-%d %H:%M:%S') if host.last_seen else ''
 
+            fc = finding_counts.get(host.id, {})
+            open_notes = sum(
+                1 for n in (host.notes or [])
+                if enum_value(getattr(n, 'status', None)) not in ('resolved',)
+            )
+            untriaged_vulns = max(0, len(host.vulnerabilities or []) - len(fc.get('promoted_vuln_ids', ())))
+
             _safe_csv_row(writer, [
                 host.ip_address,
                 host.hostname or '',
@@ -281,6 +346,11 @@ class ReportGenerator:
                 vc['high'],
                 vc['medium'],
                 vc['low'],
+                fc.get('active', 0),
+                fc.get('critical', 0),
+                fc.get('exec', 0),
+                open_notes,
+                untriaged_vulns,
                 self._host_tags(host),
                 len(host.notes or []),
                 last_seen_str,
@@ -292,54 +362,152 @@ class ReportGenerator:
     
     def generate_html_report(
         self, hosts: List[models.Host], filters: Dict[str, Any],
-        report_type: str = "comprehensive",
+        report_type: str = "comprehensive", for_pdf: bool = False,
     ) -> str:
-        """Generate the HTML host report.
+        """Build the full HTML host report as one string — used by the PDF
+        route (WeasyPrint needs the whole document at once).  The ``/hosts/html``
+        route streams dossier-by-dossier via ``iter_html_report`` instead.
 
-        ``report_type``:
-          * ``"comprehensive"`` (default) — the full security report: summary +
-            metrics + exposure charts + **Findings** + **Site/Subnet Hotspots** +
-            the host table.  The artifact a security review hands over.
-          * ``"inventory"`` — the concise "these hosts are problematic" list:
-            summary + metrics + exposure + host table only (no project-wide
-            findings/hotspots roll-ups).
+        ``report_type``: ``"comprehensive"`` (summary + metrics + exposure +
+        Findings index + Site/Subnet Hotspots + per-host dossiers) or
+        ``"inventory"`` (the same minus the project-wide findings/hotspots
+        roll-ups).  ``for_pdf`` renders each dossier's ``<details>`` blocks
+        expanded so collapsed content isn't dropped from the PDF.
         """
         is_comprehensive = report_type != "inventory"
-        # Calculate summary statistics
-        total_hosts = len(hosts)
-        hosts_up = len([h for h in hosts if h.state == 'up'])
-        total_open_ports = sum(len([p for p in (h.ports or []) if p.state == 'open']) for h in hosts)
-        
-        # Get most common services
-        service_count = {}
-        for host in hosts:
-            for port in (host.ports or []):
-                if port.state == 'open' and port.service_name:
-                    service_count[port.service_name] = service_count.get(port.service_name, 0) + 1
-        
-        top_services = sorted(service_count.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        # Get OS distribution
-        os_count = {}
-        for host in hosts:
-            if host.os_name:
-                os_count[host.os_name] = os_count.get(host.os_name, 0) + 1
-        
-        top_os = sorted(os_count.items(), key=lambda x: x[1], reverse=True)[:10]
-        
+        context = self._build_export_context(hosts)
+        records = [self._build_host_export_record(host, context, {}) for host in hosts]
+        stats = self._stats_from_records(records)
+        findings = self._findings_for_report(hosts) if is_comprehensive else []
+        parts = [self._html_open(stats, filters, report_type, findings)]
+        for record in records:
+            parts.append(self._render_host_dossier(record, for_pdf=for_pdf))
+        parts.append(self._html_tail())
+        return "".join(parts)
+
+    def resolve_html_host_ids(self, filters: Dict[str, Any]) -> List[int]:
+        """Resolve the capped, id-ordered host id list for the streamed HTML and
+        set ``report_truncated`` — called by the endpoint BEFORE streaming so the
+        ``X-Report-Truncated`` header is accurate (StreamingResponse flushes
+        headers before the body)."""
+        all_ids = [row[0] for row in self._filtered_host_id_query(filters).all()]
+        self.report_truncated = len(all_ids) > self.MAX_REPORT_HOSTS
+        return all_ids[: self.MAX_REPORT_HOSTS]
+
+    def iter_html_report(self, host_ids: List[int], report_type: str = "comprehensive",
+                         filters: Optional[Dict[str, Any]] = None):
+        """Stream the HTML host report dossier-by-dossier over a chunked cursor,
+        so peak memory ≈ one chunk (not the whole capped host set).  Header +
+        findings index first, then host dossiers in id-ordered chunks, then the
+        footer + scripts.  ``host_ids`` is the pre-resolved capped list from
+        ``resolve_html_host_ids`` (which also set ``report_truncated``)."""
+        is_comprehensive = report_type != "inventory"
+        stats = self._html_summary_stats(host_ids)
+        findings = self._findings_for_report_ids(host_ids) if is_comprehensive else []
+        yield self._html_open(stats, filters or {}, report_type, findings)
+
+        chunk_size = settings.REPORT_STREAM_CHUNK
+        for start in range(0, len(host_ids), chunk_size):
+            chunk_ids = host_ids[start:start + chunk_size]
+            hosts = (
+                self.db.query(models.Host)
+                .filter(models.Host.id.in_(chunk_ids))
+                .options(
+                    selectinload(models.Host.ports).selectinload(models.Port.scripts),
+                    selectinload(models.Host.host_scripts),
+                    selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
+                    selectinload(models.Host.last_updated_scan),
+                    selectinload(models.Host.notes).selectinload(models.Annotation.author),
+                    selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
+                    selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
+                )
+                .all()
+            )
+            order = {hid: i for i, hid in enumerate(chunk_ids)}
+            hosts.sort(key=lambda h: order.get(h.id, 0))
+            context = self._build_export_context(hosts)
+            buf = [self._render_host_dossier(self._build_host_export_record(host, context, {}), for_pdf=False)
+                   for host in hosts]
+            yield "".join(buf)
+            # Drop the chunk's ORM objects so peak memory stays ~one chunk.
+            self.db.expunge_all()
+
+        yield self._html_tail()
+
+    def _stats_from_records(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Summary aggregates for the non-streaming (PDF) path, from the records
+        already in hand."""
+        services: Dict[str, int] = {}
+        os_counter: Dict[str, int] = {}
+        open_ports = 0
+        for record in records:
+            for port in record["ports"]:
+                if port.get("state") == "open":
+                    open_ports += 1
+                    name = (port.get("service") or {}).get("name")
+                    if name:
+                        services[name] = services.get(name, 0) + 1
+            os_name = (record["os"] or {}).get("name")
+            if os_name:
+                os_counter[os_name] = os_counter.get(os_name, 0) + 1
+        return {
+            "total_hosts": len(records),
+            "hosts_up": sum(1 for r in records if r["identity"].get("state") == "up"),
+            "open_ports": open_ports,
+            "unique_services": len(services),
+            "top_services": sorted(services.items(), key=lambda x: x[1], reverse=True)[:10],
+            "top_os": sorted(os_counter.items(), key=lambda x: x[1], reverse=True)[:10],
+        }
+
+    def _html_summary_stats(self, host_ids: List[int]) -> Dict[str, Any]:
+        """Same summary aggregates for the streamed path, computed with
+        scalar-column queries (chunked) instead of holding the host graph."""
+        stats = {
+            "total_hosts": len(host_ids), "hosts_up": 0, "open_ports": 0,
+            "unique_services": 0, "top_services": [], "top_os": [],
+        }
+        if not host_ids:
+            return stats
+        services: Dict[str, int] = {}
+        os_counter: Dict[str, int] = {}
+        for chunk in _id_chunks(host_ids):
+            for state, os_name in (
+                self.db.query(models.Host.state, models.Host.os_name)
+                .filter(models.Host.id.in_(chunk)).all()
+            ):
+                if state == "up":
+                    stats["hosts_up"] += 1
+                if os_name:
+                    os_counter[os_name] = os_counter.get(os_name, 0) + 1
+            for (svc_name,) in (
+                self.db.query(models.Port.service_name)
+                .filter(models.Port.host_id.in_(chunk), models.Port.state == "open").all()
+            ):
+                stats["open_ports"] += 1
+                if svc_name:
+                    services[svc_name] = services.get(svc_name, 0) + 1
+        stats["unique_services"] = len(services)
+        stats["top_services"] = sorted(services.items(), key=lambda x: x[1], reverse=True)[:10]
+        stats["top_os"] = sorted(os_counter.items(), key=lambda x: x[1], reverse=True)[:10]
+        return stats
+
+    def _html_open(
+        self, stats: Dict[str, Any], filters: Dict[str, Any],
+        report_type: str, findings: List[Dict[str, Any]],
+    ) -> str:
+        """Everything from <!DOCTYPE> through the opening of the host-dossier
+        container — shared by the streaming and non-streaming HTML builders.
+        ``_html_tail`` closes it."""
+        is_comprehensive = report_type != "inventory"
         css = ReportTemplates.get_css_styles()
-        scripts = ReportTemplates.get_interactive_scripts()
         generated_at = datetime.now(timezone.utc).isoformat()
         backend_version = settings.APP_VERSION
         frontend_version = settings.FRONTEND_VERSION
-        max_service_value = max(dict(top_services).values()) if top_services else 1
-        max_os_value = max(dict(top_os).values()) if top_os else 1
+        top_services = stats["top_services"]
+        top_os = stats["top_os"]
+        max_service_value = max((v for _, v in top_services), default=1)
+        max_os_value = max((v for _, v in top_os), default=1)
 
-        # Comprehensive-only sections.  Computed here (not inline in the main
-        # f-string) so the inventory variant can omit them entirely — and so
-        # the per-finding "Evidence" gallery (screenshots attached to notes/
-        # findings) can later slot into the Findings section without touching
-        # the page skeleton.
         if is_comprehensive:
             hotspots_nav = '<a href="#hotspots">Hotspots</a>'
             findings_nav = '<a href="#findings">Findings</a>'
@@ -353,30 +521,29 @@ class ReportGenerator:
     </div>"""
             findings_section = f"""
     <div class="section" id="findings">
-        <div class="section-header">Findings</div>
+        <div class="section-header">Findings index</div>
         <div class="section-content">
-            {self._generate_findings_html(hosts)}
+            <p class="muted">Triaged findings across the included hosts. Each finding links to every affected host's dossier below; each dossier links back here.</p>
+            {self._html_findings_index(findings)}
         </div>
     </div>"""
         else:
             hotspots_nav = findings_nav = ""
             hotspots_section = findings_section = ""
 
-        # Loud truncation banner — a capped report must never read as complete.
         if self.report_truncated:
+            included = stats["total_hosts"]
             truncation_banner = (
                 '<div class="section" style="border-left:4px solid #c0392b;background:#fdecea;'
                 'padding:12px 16px;margin:0 0 16px;color:#7b241c;">'
                 f'<strong>⚠ Report truncated.</strong> Your filters matched more than '
-                f'{self.MAX_REPORT_HOSTS:,} hosts; this report includes only the first '
-                f'{self.MAX_REPORT_HOSTS:,}. Narrow the filters, or use the CSV inventory export '
-                '(it streams the full set).</div>'
+                f'{included:,} hosts; this report includes only the first {included:,}. '
+                'Narrow the filters, or use the CSV inventory export (it streams the full set).</div>'
             )
         else:
             truncation_banner = ""
 
-        html_content = f"""
-<!DOCTYPE html>
+        return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -384,87 +551,18 @@ class ReportGenerator:
     <title>BlueStick Host Report</title>
     {css}
     <style>
-        .charts {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 20px;
-            margin-top: 10px;
-        }}
-
-        .chart-card {{
-            background: var(--bg-panel-soft);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 12px 28px rgba(0,0,0,0.20);
-        }}
-
-        .chart-title {{
-            margin-bottom: 15px;
-            font-size: 1.1em;
-            font-weight: 600;
-            color: var(--text);
-        }}
-
-        .bar {{
-            display: flex;
-            align-items: center;
-            margin-bottom: 8px;
-            gap: 12px;
-        }}
-
-        .bar-label {{
-            flex: 0 0 120px;
-            font-size: 0.85em;
-            color: var(--muted);
-        }}
-
-        .bar-fill {{
-            flex: 1;
-            height: 10px;
-            border-radius: 999px;
-            background: #0b1118;
-            position: relative;
-            overflow: hidden;
-            border: 1px solid var(--border);
-        }}
-
-        .bar-fill::after {{
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            height: 100%;
-            width: var(--bar-width, 0%);
-            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-warm) 100%);
-        }}
-
-        .bar-value {{
-            flex: 0 0 40px;
-            font-size: 0.85em;
-            text-align: right;
-            color: var(--muted);
-        }}
-
-        .filters-list {{
-            margin-top: 10px;
-            color: var(--muted);
-            font-size: 0.9em;
-        }}
-
-        .filters-list strong {{
-            color: var(--text);
-        }}
-
-        td.up {{
-            color: var(--success);
-            font-weight: 600;
-        }}
-
-        td.down {{
-            color: var(--danger);
-            font-weight: 600;
-        }}
+        .charts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; margin-top: 10px; }}
+        .chart-card {{ background: var(--bg-panel-soft); border: 1px solid var(--border); border-radius: 8px; padding: 20px; box-shadow: 0 12px 28px rgba(0,0,0,0.20); }}
+        .chart-title {{ margin-bottom: 15px; font-size: 1.1em; font-weight: 600; color: var(--text); }}
+        .bar {{ display: flex; align-items: center; margin-bottom: 8px; gap: 12px; }}
+        .bar-label {{ flex: 0 0 120px; font-size: 0.85em; color: var(--muted); }}
+        .bar-fill {{ flex: 1; height: 10px; border-radius: 999px; background: #0b1118; position: relative; overflow: hidden; border: 1px solid var(--border); }}
+        .bar-fill::after {{ content: ''; position: absolute; top: 0; left: 0; height: 100%; width: var(--bar-width, 0%); background: linear-gradient(135deg, var(--accent) 0%, var(--accent-warm) 100%); }}
+        .bar-value {{ flex: 0 0 40px; font-size: 0.85em; text-align: right; color: var(--muted); }}
+        .filters-list {{ margin-top: 10px; color: var(--muted); font-size: 0.9em; }}
+        .filters-list strong {{ color: var(--text); }}
+        td.up {{ color: var(--success); font-weight: 600; }}
+        td.down {{ color: var(--danger); font-weight: 600; }}
     </style>
 </head>
 <body>
@@ -472,7 +570,7 @@ class ReportGenerator:
         <div class="metadata">
             <div>
                 <div class="report-title">BlueStick Host Report</div>
-                <div class="report-subtitle">Detailed inventory of discovered hosts</div>
+                <div class="report-subtitle">Host-centric security dossiers</div>
                 <div class="version-tag">Backend v{backend_version} | Frontend v{frontend_version}</div>
             </div>
             <div>
@@ -488,26 +586,26 @@ class ReportGenerator:
         <a href="#exposure">Exposure Highlights</a>
         {hotspots_nav}
         {findings_nav}
-        <a href="#hosts">Host Details</a>
+        <a href="#hosts">Host Dossiers</a>
     </nav>
 
     {truncation_banner}
 
     <div class="executive-summary" id="summary">
         <h3>Executive Summary</h3>
-        <p><strong>Scope:</strong> This report summarizes {total_hosts} discovered hosts filtered by the selected criteria. The dataset contains {hosts_up} hosts currently marked as up and {total_open_ports} detected open ports across the sample.</p>
-        <p><strong>Service Exposure:</strong> We identified {len(service_count)} unique services. Review the Top Services panel below to focus on the most prevalent protocols.</p>
-        <p><strong>Usage:</strong> Utilize the interactive filters beneath each table to refine results or sort by any column to prioritize follow-up actions.</p>
+        <p><strong>Scope:</strong> This report summarizes {stats['total_hosts']} discovered hosts filtered by the selected criteria. The dataset contains {stats['hosts_up']} hosts currently marked as up and {stats['open_ports']} detected open ports across the sample.</p>
+        <p><strong>Service Exposure:</strong> We identified {stats['unique_services']} unique services. Review the Top Services panel below to focus on the most prevalent protocols.</p>
+        <p><strong>Usage:</strong> Search the host dossiers below by IP, hostname, CVE, finding, note, or service. Each dossier consolidates everything known about one host.</p>
     </div>
 
     <div class="section" id="metrics">
         <div class="section-header">Key Metrics</div>
         <div class="section-content">
             <div class="stats-grid">
-                <div class="stat-card"><div class="stat-value">{total_hosts}</div><div class="stat-label">Total Hosts</div></div>
-                <div class="stat-card"><div class="stat-value">{hosts_up}</div><div class="stat-label">Hosts Up</div></div>
-                <div class="stat-card"><div class="stat-value">{total_open_ports}</div><div class="stat-label">Open Ports</div></div>
-                <div class="stat-card"><div class="stat-value">{len(service_count)}</div><div class="stat-label">Unique Services</div></div>
+                <div class="stat-card"><div class="stat-value">{stats['total_hosts']}</div><div class="stat-label">Total Hosts</div></div>
+                <div class="stat-card"><div class="stat-value">{stats['hosts_up']}</div><div class="stat-label">Hosts Up</div></div>
+                <div class="stat-card"><div class="stat-value">{stats['open_ports']}</div><div class="stat-label">Open Ports</div></div>
+                <div class="stat-card"><div class="stat-value">{stats['unique_services']}</div><div class="stat-label">Unique Services</div></div>
             </div>
             <div class="filters-list">{self._format_filters_html(filters)}</div>
         </div>
@@ -533,32 +631,22 @@ class ReportGenerator:
     {findings_section}
 
     <div class="section" id="hosts">
-        <div class="section-header">Host Details</div>
+        <div class="section-header">Host Dossiers</div>
         <div class="section-content">
-            <div class="interactive-table-wrapper">
-                <div class="table-controls">
-                    <input type="text" class="table-search" placeholder="Filter hosts..." aria-label="Filter host rows">
-                    <span class="table-hint">Click column headers to sort</span>
-                </div>
-                <table class="interactive-table">
-                    <thead>
-                        <tr>
-                            <th>IP Address</th>
-                            <th>Hostname</th>
-                            <th>State</th>
-                            <th>Site</th>
-                            <th>Subnet</th>
-                            <th>OS</th>
-                            <th>Open Ports</th>
-                            <th>Services</th>
-                            <th>Scan</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {self._generate_host_rows_html(hosts)}
-                    </tbody>
-                </table>
+            <div class="dossier-controls">
+                <input type="text" id="host-search" class="dossier-search" placeholder="Search hosts — IP, hostname, CVE, finding, note, service…" aria-label="Search host dossiers">
+                <span id="host-search-count" class="table-hint"></span>
+                <button type="button" id="host-search-prev" class="dossier-nav-btn" aria-label="Previous match">↑</button>
+                <button type="button" id="host-search-next" class="dossier-nav-btn" aria-label="Next match">↓</button>
             </div>
+            <div class="host-dossiers">"""
+
+    def _html_tail(self) -> str:
+        """Close the dossier container + host section, then footer + scripts."""
+        scripts = ReportTemplates.get_interactive_scripts()
+        backend_version = settings.APP_VERSION
+        frontend_version = settings.FRONTEND_VERSION
+        return f"""</div>
         </div>
     </div>
 
@@ -571,7 +659,6 @@ class ReportGenerator:
     {scripts}
 </body>
 </html>"""
-        return html_content
 
     def _resolve_scan_info(self, host: models.Host) -> Dict[str, Any]:
         """Determine the most relevant scan metadata for a host."""
@@ -637,45 +724,191 @@ class ReportGenerator:
 
         return ''.join(bars)
     
-    def _generate_host_rows_html(self, hosts: List[models.Host]) -> str:
-        """Generate HTML table rows for hosts"""
-        rows = []
-        for host in hosts:
-            open_ports = [p for p in (host.ports or []) if p.state == 'open']
-            services = list(set([p.service_name for p in open_ports if p.service_name]))
-            
-            open_ports_str = ', '.join([f"{p.port_number}" for p in open_ports[:10]])
-            if len(open_ports) > 10:
-                open_ports_str += f' (+{len(open_ports) - 10})'
-            
-            services_str = ', '.join(services[:5])
-            if len(services) > 5:
-                services_str += f' (+{len(services) - 5})'
+    @staticmethod
+    def _dossier_block(title: str, count: int, body: str, det: str) -> str:
+        return (
+            f'<details class="dossier-block"{det}><summary>{title} '
+            f'<span class="dcount">{count}</span></summary>'
+            f'<div class="dossier-block-body">{body}</div></details>'
+        )
 
-            state_class = 'up' if host.state == 'up' else 'down'
+    def _render_host_dossier(self, record: Dict[str, Any], for_pdf: bool = False) -> str:
+        """One host's consolidated dossier section: a summary header + collapsible
+        blocks for canonical findings, untriaged scanner observations, execution
+        findings, tester summaries, notes, and ports.  Anchored ``#host-{id}`` and
+        carrying a lowercased ``data-search`` blob (IP/hostname/site/subnet/CVE/
+        finding title/note text/service) for the report-wide host search.
+        ``for_pdf`` expands every block so collapsed content isn't dropped."""
+        e = html.escape
+        nl = chr(10)
+        host_id = record["host_id"]
+        ident = record["identity"]
+        ip = ident.get("ip_address") or ""
+        hostname = ident.get("hostname") or ""
+        state = ident.get("state") or "unknown"
+        scope = record["scope"]
+        site = scope.get("site") or "—"
+        subnets = ", ".join(s.get("cidr") for s in (scope.get("subnets") or []) if s.get("cidr")) or "—"
+        os_name = (record["os"] or {}).get("name") or "—"
+        summary = record["dossier_summary"]
+        canonical = record["canonical_findings"]
+        untriaged = record["untriaged_vulnerabilities"]
+        execf = record["execution_findings"]
+        tester = record["tester_summaries"]
+        notes = record["analyst_context"]["notes"]
+        ports = record["ports"]
+        det = " open" if for_pdf else ""
 
-            scan_info = self._resolve_scan_info(host)
-            scan = scan_info.get('scan')
-            scan_label = html.escape(getattr(scan, 'filename', '') or '')
+        # Searchable blob — one lowercased attribute the JS search matches on.
+        terms = [ip, hostname, site, subnets, os_name]
+        for cf in canonical:
+            terms.append(cf.get("title") or "")
+            terms.append((cf.get("source_detail") or {}).get("cve_id") or "")
+        for v in untriaged:
+            terms += [v.get("title") or "", v.get("cve_id") or ""]
+        for n in notes:
+            terms.append(n.get("body") or "")
+        for p in ports:
+            terms.append((p.get("service") or {}).get("name") or "")
+        search_blob = e(" ".join(t for t in terms if t).lower())
 
-            site_label = html.escape(self._host_site(host.id) or '—')
-            subnet_label = html.escape(self._host_subnet(host.id) or '—')
+        fbs = summary["findings_by_severity"]
+        finding_chips = " ".join(
+            f'<span class="dsev dsev-{e(sev)}">{n} {e(sev)}</span>'
+            for sev, n in sorted(fbs.items(), key=lambda kv: self.SEVERITY_ORDER.get(kv[0], 5))
+        ) or '<span class="muted">none</span>'
+        vbs = summary["vulns_by_severity"]
+        vuln_line = " · ".join(f"{vbs.get(k, 0)} {k}" for k in ("critical", "high", "medium", "low", "info") if vbs.get(k)) or "none"
 
-            rows.append(f"""
-                <tr class="host-row">
-                    <td>{html.escape(host.ip_address)}</td>
-                    <td>{html.escape(host.hostname or '')}</td>
-                    <td class="{state_class}">{html.escape(host.state or '')}</td>
-                    <td>{site_label}</td>
-                    <td>{subnet_label}</td>
-                    <td>{html.escape(host.os_name or '')}</td>
-                    <td class="port-list">{html.escape(open_ports_str)}</td>
-                    <td class="service-list">{html.escape(services_str)}</td>
-                    <td>{scan_label}</td>
-                </tr>
-            """)
-        
-        return ''.join(rows)
+        head = (
+            '<div class="dossier-head">'
+            f'<div class="dossier-id"><a href="#host-{host_id}" class="anchor-self">#</a> {e(ip)}'
+            + (f' <span class="dossier-host">{e(hostname)}</span>' if hostname else '')
+            + '</div>'
+            '<dl class="dossier-meta">'
+            f'<div><dt>State</dt><dd class="state-{e(state.lower())}">{e(state)}</dd></div>'
+            f'<div><dt>Site</dt><dd>{e(site)}</dd></div>'
+            f'<div><dt>Subnet</dt><dd>{e(subnets)}</dd></div>'
+            f'<div><dt>OS</dt><dd>{e(os_name)}</dd></div>'
+            '</dl>'
+            '<div class="dossier-glance">'
+            f'<span>Findings <strong>{summary["active_findings"]}</strong>/{summary["total_findings"]}: {finding_chips}</span>'
+            f'<span>Vulns: {e(vuln_line)} · untriaged {summary["untriaged_vulns"]}</span>'
+            f'<span>Exec {summary["execution_findings"]} · Tester {summary["tester_summaries"]} · Notes {summary["open_notes"]}/{summary["total_notes"]}</span>'
+            '</div>'
+            '</div>'
+        )
+
+        blocks: List[str] = []
+
+        if canonical:
+            items = []
+            for cf in canonical:
+                d = cf.get("source_detail") or {}
+                if d.get("kind") == "scanner":
+                    extra = " · ".join(filter(None, [
+                        f"CVE {e(d['cve_id'])}" if d.get("cve_id") else "",
+                        f"port {d['port_number']}/{e(d.get('protocol') or '')}" if d.get("port_number") else "",
+                        e((d.get("solution") or "")[:200]) if d.get("solution") else "",
+                    ]))
+                elif d.get("kind") == "execution":
+                    extra = " · ".join(filter(None, [
+                        f"cmd <code>{e((d.get('command') or '')[:160])}</code>" if d.get("command") else "",
+                        e((d.get("findings_summary") or "")[:200]) if d.get("findings_summary") else "",
+                    ]))
+                elif d.get("kind") == "note":
+                    extra = e((d.get("body") or "")[:240])
+                else:
+                    extra = ""
+                comments_html = "".join(
+                    f'<div class="dcomment"><span class="muted">{e(str(c.get("author") or "—"))}</span> '
+                    f'{e(str(c.get("body") or "")).replace(nl, "<br/>")}</div>'
+                    for c in (cf.get("comments") or [])
+                )
+                items.append(
+                    '<div class="dfinding"><div class="dfinding-head">'
+                    f'<span class="dsev dsev-{e(cf["severity"])}">{e(cf["severity"])}</span> '
+                    f'<a href="#finding-{cf["finding_id"]}" class="dfinding-title">{e(cf.get("title") or "untitled")}</a> '
+                    f'<span class="dpill">{e(cf.get("host_status") or "open")}</span> '
+                    f'<span class="muted">{e(cf.get("source") or "")}'
+                    + (f' · {e(cf["owner"])}' if cf.get("owner") else "")
+                    + '</span></div>'
+                    + (f'<div class="dfinding-detail">{extra}</div>' if extra else "")
+                    + comments_html
+                    + '</div>'
+                )
+            blocks.append(self._dossier_block("Canonical findings", len(canonical), "".join(items), det))
+
+        if untriaged:
+            rows = "".join(
+                f'<tr><td><span class="dsev dsev-{e(v.get("severity") or "unknown")}">{e(v.get("severity") or "unknown")}</span></td>'
+                f'<td>{e(v.get("title") or "")}</td><td>{e(v.get("cve_id") or "")}</td>'
+                f'<td>{e(str(v.get("port_number") or ""))}/{e(v.get("protocol") or "")}</td>'
+                f'<td>{e(v.get("service_name") or "")}</td></tr>'
+                for v in untriaged
+            )
+            table = (
+                '<table class="data-table"><thead><tr><th>Severity</th><th>Title</th><th>CVE</th><th>Port</th><th>Service</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table>'
+                '<p class="muted">Scanner observations not yet promoted to a canonical finding on this host.</p>'
+            )
+            blocks.append(self._dossier_block("Untriaged scanner observations", len(untriaged), table, det))
+
+        if execf:
+            items = []
+            for x in execf:
+                items.append(
+                    '<div class="dfinding"><div class="dfinding-head">'
+                    f'<span class="dsev dsev-{e(x.get("severity") or "info")}">{e(x.get("severity") or "—")}</span> '
+                    f'<strong>{e(x.get("plan_title") or "")}</strong> '
+                    f'<span class="muted">{e(x.get("test_phase") or "")}</span> '
+                    + ('<span class="dpill">promoted</span>' if x.get("promoted") else "")
+                    + '</div>'
+                    + (f'<div class="dfinding-detail">cmd <code>{e((x.get("command") or "")[:160])}</code></div>' if x.get("command") else "")
+                    + (f'<div class="dfinding-detail">{e((x.get("findings_summary") or "")[:300])}</div>' if x.get("findings_summary") else "")
+                    + '</div>'
+                )
+            blocks.append(self._dossier_block("Execution findings", len(execf), "".join(items), det))
+
+        if tester:
+            items = "".join(
+                '<div class="dfinding"><div class="dfinding-head">'
+                f'<strong>{e(t.get("plan_title") or "")}</strong> '
+                f'<span class="muted">{e(t.get("test_phase") or "")} · {e(str(t.get("status") or ""))}</span></div>'
+                f'<div class="dfinding-detail">{e(t.get("findings") or "").replace(nl, "<br/>")}</div></div>'
+                for t in tester
+            )
+            blocks.append(self._dossier_block("Tester summaries", len(tester), items, det))
+
+        if notes:
+            items = "".join(
+                '<div class="dnote"><div class="dfinding-head">'
+                f'<span class="dpill">{e(str(n.get("status") or ""))}</span> '
+                f'<span class="muted">{e(str(n.get("note_type") or n.get("type") or ""))}</span></div>'
+                f'<div class="dfinding-detail">{e(str(n.get("body") or "")).replace(nl, "<br/>")}</div></div>'
+                for n in notes
+            )
+            blocks.append(self._dossier_block("Notes", len(notes), items, det))
+
+        if ports:
+            open_count = sum(1 for p in ports if p.get("state") == "open")
+            rows = "".join(
+                f'<tr><td>{e(str(p.get("port_number") or ""))}</td><td>{e(p.get("protocol") or "")}</td>'
+                f'<td>{e(p.get("state") or "")}</td><td>{e((p.get("service") or {}).get("name") or "")}</td>'
+                f'<td>{e((p.get("service") or {}).get("product") or "")}</td>'
+                f'<td>{e((p.get("service") or {}).get("version") or "")}</td></tr>'
+                for p in sorted(ports, key=lambda x: (x.get("port_number") or 0, x.get("protocol") or ""))
+            )
+            table = (
+                '<table class="data-table"><thead><tr><th>Port</th><th>Proto</th><th>State</th><th>Service</th><th>Product</th><th>Version</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table>'
+            )
+            blocks.append(self._dossier_block("Ports &amp; services", open_count, table, det))
+
+        return (
+            f'<section class="host-dossier" id="host-{host_id}" data-search="{search_blob}">'
+            f'{head}{"".join(blocks)}</section>'
+        )
 
     def generate_json_report(
         self, hosts: List[models.Host], report_type: str = "comprehensive",
@@ -683,6 +916,12 @@ class ReportGenerator:
         """Generate JSON host report.  ``report_type='inventory'`` omits the
         project-wide findings + hotspots roll-ups (host records are unchanged)."""
         is_comprehensive = report_type != "inventory"
+        # Host-centric schema: each host record carries its correlated dossier
+        # (canonical findings + resolved source, untriaged scanner observations,
+        # execution findings, tester summaries, notes, ports) via the shared
+        # export record — the same object the bundle/agent-package emit.
+        context = self._build_export_context(hosts)
+        records = [self._build_host_export_record(host, context, {}) for host in hosts]
         report_data = {
             "generated_at": datetime.now().isoformat(),
             "report_type": "comprehensive" if is_comprehensive else "inventory",
@@ -692,76 +931,31 @@ class ReportGenerator:
                 "hosts_down": len([h for h in hosts if h.state == 'down']),
                 "total_open_ports": sum(len([p for p in (h.ports or []) if p.state == 'open']) for h in hosts),
                 # True when the filter matched more than the in-memory cap and
-                # this payload was truncated to ``cap`` hosts (use the CSV
-                # inventory for the complete set).
+                # this payload was truncated (use the CSV inventory for the
+                # complete set).
                 "truncated": self.report_truncated,
-                "host_cap": self.MAX_REPORT_HOSTS,
+                "host_cap": self.MAX_INMEMORY_REPORT_HOSTS,
             },
-            "hosts": []
+            "hosts": records,
         }
-        
-        for host in hosts:
-            location = self._host_locations().get(host.id)
-            host_data = {
-                "id": host.id,
-                "ip_address": host.ip_address,
-                "hostname": host.hostname,
-                "state": host.state,
-                "location": {
-                    "site": location.get("site") if location else None,
-                    "subnet": location.get("cidr") if location else None,
-                    "scope_name": location.get("scope_name") if location else None,
-                    "in_scope": location is not None,
-                },
-                "os_info": {
-                    "name": host.os_name,
-                    "family": host.os_family,
-                    "type": host.os_type,
-                    "vendor": host.os_vendor,
-                    "accuracy": host.os_accuracy
-                },
-                "ports": [],
-                "scan_info": {}
-            }
-
-            scan_info = self._resolve_scan_info(host)
-            scan = scan_info.get('scan')
-            discovered_at = scan_info.get('discovered_at')
-            host_data["scan_info"] = {
-                "filename": getattr(scan, 'filename', None),
-                "scan_date": scan.created_at.isoformat() if scan and getattr(scan, 'created_at', None) else None,
-                "discovered_at": discovered_at.isoformat() if discovered_at else None,
-            }
-            
-            for port in (host.ports or []):
-                port_data = {
-                    "port_number": port.port_number,
-                    "protocol": port.protocol,
-                    "state": port.state,
-                    "service": {
-                        "name": port.service_name,
-                        "product": port.service_product,
-                        "version": port.service_version
-                    }
-                }
-                host_data["ports"].append(port_data)
-            
-            report_data["hosts"].append(host_data)
-
         if is_comprehensive:
             report_data["findings"] = self._findings_for_report(hosts)
             report_data["hotspots"] = self._build_hotspots()
         return report_data
 
     def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
-        """Findings affecting the report's hosts, severity-ordered — the
-        triaged record that rolls up across hosts (note promotions, scanner
-        promotions, execution results). Included in every export format so a
-        report carries the analyst's conclusions, not just raw scan data."""
-        from app.db.models_findings import Finding, FindingHost
-        host_ids = [h.id for h in hosts]
+        """Findings affecting the report's hosts (thin wrapper over the
+        ids-based core so the streamed HTML can drive it without host objects)."""
+        return self._findings_for_report_ids([h.id for h in hosts])
+
+    def _findings_for_report_ids(self, host_ids: List[int]) -> List[Dict[str, Any]]:
+        """Findings affecting ``host_ids``, severity-ordered — the triaged record
+        that rolls up across hosts (note promotions, scanner promotions,
+        execution results). Included in every export format so a report carries
+        the analyst's conclusions, not just raw scan data."""
         if not host_ids:
             return []
+        host_id_set = set(host_ids)
         findings = (
             self.db.query(Finding)
             .options(
@@ -785,6 +979,13 @@ class ReportGenerator:
                 "owner": (f.owner.full_name or f.owner.username) if f.owner else None,
                 "host_count": len(f.hosts),
                 "affected_hosts": [fh.host.ip_address for fh in f.hosts if fh.host],
+                # In-report affected hosts (ip + id) so the HTML index can link
+                # each finding to the dossiers that actually appear below.
+                "affected": [
+                    {"ip": fh.host.ip_address, "host_id": fh.host_id}
+                    for fh in f.hosts
+                    if fh.host and fh.host_id in host_id_set
+                ],
                 "vuln_id": f.vuln_id,
                 # The note thread this finding was promoted from — its image
                 # attachments are the finding's visual evidence.  Just the int
@@ -827,6 +1028,223 @@ class ReportGenerator:
                 "created_at": ann.created_at.isoformat() if ann.created_at else None,
             })
         return out
+
+    # --- Per-host correlation (the dossier sources) -----------------------
+    #
+    # Three host-keyed maps, each built from a fixed number of batched queries
+    # (no N+1) so they're viable for a chunk of hosts at a time in the streamed
+    # HTML and for the capped in-memory formats: canonical findings (with the
+    # per-host FindingHost.host_status + resolved source row), execution
+    # findings (TestExecutionResult.is_finding, reached via its TestPlanEntry),
+    # and tester summaries (TestPlanEntry.findings).
+
+    def _canonical_findings_by_host(
+        self, host_ids: List[int]
+    ) -> Tuple[Dict[int, List[Dict[str, Any]]], Dict[int, set], set]:
+        """``host_id -> [canonical finding dicts]`` with per-host status and the
+        resolved source row, plus ``(per-host promoted vuln-id set, global
+        promoted exec-result-id set)`` so the dossier can label scanner vulns /
+        execution results already represented by a canonical finding.
+
+        Queries: 1 (FindingHost⨝Finding) + ≤1 each to resolve the scanner /
+        execution / note source rows + 1 (finding comment threads)."""
+        empty: Tuple[Dict[int, List[Dict[str, Any]]], Dict[int, set], set] = ({}, {}, set())
+        if not host_ids:
+            return empty
+        fh_rows = (
+            self.db.query(FindingHost)
+            .join(Finding, FindingHost.finding_id == Finding.id)
+            .options(selectinload(FindingHost.finding).selectinload(Finding.owner))
+            .filter(
+                FindingHost.host_id.in_(host_ids),
+                Finding.project_id == self.project_id,
+            )
+            .all()
+        )
+        if not fh_rows:
+            return empty
+        finding_list = list({fh.finding_id: fh.finding for fh in fh_rows if fh.finding}.values())
+
+        vuln_ids = {f.vuln_id for f in finding_list if f.source == "scanner" and f.vuln_id}
+        exec_ids = {f.exec_result_id for f in finding_list if f.source == "execution" and f.exec_result_id}
+        note_ids = {f.evidence_annotation_id for f in finding_list if f.source == "note" and f.evidence_annotation_id}
+
+        vuln_map: Dict[int, Vulnerability] = {}
+        if vuln_ids:
+            for v in (
+                self.db.query(Vulnerability).options(selectinload(Vulnerability.port))
+                .filter(Vulnerability.id.in_(vuln_ids)).all()
+            ):
+                vuln_map[v.id] = v
+        exec_map: Dict[int, TestExecutionResult] = {}
+        if exec_ids:
+            for r in self.db.query(TestExecutionResult).filter(TestExecutionResult.id.in_(exec_ids)).all():
+                exec_map[r.id] = r
+        note_map: Dict[int, models.Annotation] = {}
+        if note_ids:
+            for a in self.db.query(models.Annotation).filter(models.Annotation.id.in_(note_ids)).all():
+                note_map[a.id] = a
+
+        comments_by_finding = self._finding_comments([f.id for f in finding_list])
+
+        # Per-finding dict (shared across the hosts a finding affects), minus
+        # the per-host status which is grafted on below.
+        base: Dict[int, Dict[str, Any]] = {}
+        for f in finding_list:
+            detail: Optional[Dict[str, Any]] = None
+            if f.source == "scanner" and f.vuln_id in vuln_map:
+                v = vuln_map[f.vuln_id]
+                detail = {
+                    "kind": "scanner",
+                    "cve_id": v.cve_id,
+                    "description": v.description,
+                    "solution": v.solution,
+                    "cvss_score": v.cvss_score,
+                    "severity": enum_value(v.severity),
+                    "port_number": v.port.port_number if v.port else None,
+                    "protocol": v.port.protocol if v.port else None,
+                    "service_name": v.port.service_name if v.port else None,
+                }
+            elif f.source == "execution" and f.exec_result_id in exec_map:
+                r = exec_map[f.exec_result_id]
+                detail = {
+                    "kind": "execution",
+                    "command": r.command_run,
+                    "findings_summary": r.findings_summary,
+                    "severity": r.severity,
+                    "status": r.status,
+                }
+            elif f.source == "note" and f.evidence_annotation_id in note_map:
+                a = note_map[f.evidence_annotation_id]
+                detail = {
+                    "kind": "note",
+                    "body": a.body or "",
+                    "status": enum_value(getattr(a, "status", None)),
+                }
+            base[f.id] = {
+                "finding_id": f.id,
+                "title": f.title,
+                "severity": f.severity,
+                "status": f.status,
+                "source": f.source,
+                "owner": (f.owner.full_name or f.owner.username) if f.owner else None,
+                "vuln_id": f.vuln_id,
+                "exec_result_id": f.exec_result_id,
+                "source_detail": detail,
+                "comments": comments_by_finding.get(f.id, []),
+            }
+
+        by_host: Dict[int, List[Dict[str, Any]]] = {}
+        promoted_vuln_ids: Dict[int, set] = {}
+        promoted_exec_ids: set = {
+            f.exec_result_id for f in finding_list if f.source == "execution" and f.exec_result_id
+        }
+        for fh in fh_rows:
+            if not fh.finding:
+                continue
+            rec = dict(base[fh.finding_id])
+            rec["host_status"] = fh.host_status
+            by_host.setdefault(fh.host_id, []).append(rec)
+            if fh.finding.source == "scanner" and fh.finding.vuln_id:
+                promoted_vuln_ids.setdefault(fh.host_id, set()).add(fh.finding.vuln_id)
+        for recs in by_host.values():
+            recs.sort(key=lambda r: self.SEVERITY_ORDER.get(r["severity"], 5))
+        return by_host, promoted_vuln_ids, promoted_exec_ids
+
+    def _execution_findings_by_host(
+        self, host_ids: List[int], promoted_exec_ids: set
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """``host_id -> [execution findings]`` — every ``TestExecutionResult``
+        flagged ``is_finding`` for the host (reached via its ``TestPlanEntry``),
+        marked ``promoted`` when already represented by a canonical finding."""
+        out: Dict[int, List[Dict[str, Any]]] = {}
+        if not host_ids:
+            return out
+        rows = (
+            self.db.query(
+                TestExecutionResult,
+                TestPlanEntry.host_id,
+                TestPlanEntry.test_phase,
+                TestPlan.title,
+            )
+            .join(TestPlanEntry, TestExecutionResult.entry_id == TestPlanEntry.id)
+            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+            .filter(
+                TestPlanEntry.host_id.in_(host_ids),
+                TestExecutionResult.is_finding.is_(True),
+            )
+            .all()
+        )
+        for r, host_id, phase, plan_title in rows:
+            out.setdefault(host_id, []).append({
+                "exec_result_id": r.id,
+                "plan_title": plan_title,
+                "test_phase": phase,
+                "severity": r.severity,
+                "status": r.status,
+                "command": r.command_run,
+                "findings_summary": r.findings_summary,
+                "promoted": r.id in promoted_exec_ids,
+                "executed_at": self._iso(r.executed_at),
+            })
+        return out
+
+    def _tester_summaries_by_host(self, host_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+        """``host_id -> [tester summaries]`` — the analyst's per-host
+        ``TestPlanEntry.findings`` narrative (skipping empty ones)."""
+        out: Dict[int, List[Dict[str, Any]]] = {}
+        if not host_ids:
+            return out
+        rows = (
+            self.db.query(TestPlanEntry, TestPlan.title)
+            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+            .filter(
+                TestPlanEntry.host_id.in_(host_ids),
+                TestPlanEntry.findings.isnot(None),
+                func.length(func.trim(TestPlanEntry.findings)) > 0,
+            )
+            .all()
+        )
+        for entry, plan_title in rows:
+            out.setdefault(entry.host_id, []).append({
+                "plan_title": plan_title,
+                "test_phase": entry.test_phase,
+                "status": entry.status,
+                "findings": entry.findings,
+            })
+        return out
+
+    @staticmethod
+    def _dossier_summary(
+        canonical_findings: List[Dict[str, Any]],
+        vuln_summary: Dict[str, int],
+        untriaged_count: int,
+        execution_findings: List[Dict[str, Any]],
+        tester_summaries: List[Dict[str, Any]],
+        notes: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Per-host roll-up for the dossier header.  Finding severities (5-key
+        vocab) are kept SEPARATE from vulnerability severities (6-key incl
+        unknown) — the two vocabularies are intentionally distinct and must not
+        be merged."""
+        findings_by_severity: Dict[str, int] = {}
+        active = 0
+        for cf in canonical_findings:
+            findings_by_severity[cf["severity"]] = findings_by_severity.get(cf["severity"], 0) + 1
+            if cf.get("host_status") != FindingHostStatus.REMEDIATED.value:
+                active += 1
+        open_notes = sum(1 for n in notes if (n.get("status") or "") not in ("resolved",))
+        return {
+            "active_findings": active,
+            "total_findings": len(canonical_findings),
+            "findings_by_severity": findings_by_severity,
+            "vulns_by_severity": vuln_summary,
+            "untriaged_vulns": untriaged_count,
+            "execution_findings": len(execution_findings),
+            "tester_summaries": len(tester_summaries),
+            "open_notes": open_notes,
+            "total_notes": len(notes),
+        }
 
     # Total bytes of evidence images embedded into one report, so a project
     # with many large screenshots can't produce a runaway-sized PDF.
@@ -894,26 +1312,33 @@ class ReportGenerator:
                 out[fid] = uris
         return out
 
-    def _generate_findings_html(self, hosts: List[models.Host]) -> str:
-        """Findings table + an Evidence gallery (embedded screenshots) for the
-        HTML/PDF report (severity-ordered)."""
-        findings = self._findings_for_report(hosts)
+    def _html_findings_index(self, findings: List[Dict[str, Any]]) -> str:
+        """The findings index: a severity-ordered table where each finding is
+        anchored ``#finding-{id}`` and its affected in-report hosts link to the
+        matching ``#host-{id}`` dossiers (which link back here).  Followed by an
+        Evidence gallery (comment threads + embedded screenshots)."""
         if not findings:
             return '<p class="muted">No findings recorded for these hosts.</p>'
         rows = []
         for f in findings:
-            affected = f["affected_hosts"]
-            hosts_str = ", ".join(affected[:5])
-            if len(affected) > 5:
-                hosts_str += f" (+{len(affected) - 5} more)"
+            affected = f.get("affected") or []
+            links = ", ".join(
+                f'<a href="#host-{a["host_id"]}">{html.escape(str(a["ip"]))}</a>'
+                for a in affected[:8]
+            )
+            extra = f.get("host_count", len(affected)) - min(len(affected), 8)
+            if extra > 0:
+                links += f" (+{extra} more)"
+            if not links:
+                links = '<span class="muted">—</span>'
             rows.append(
-                "<tr>"
-                f"<td>{html.escape(str(f['severity']))}</td>"
+                f'<tr id="finding-{f["id"]}">'
+                f'<td><span class="dsev dsev-{html.escape(str(f["severity"]))}">{html.escape(str(f["severity"]))}</span></td>'
                 f"<td>{html.escape(str(f['title']))}</td>"
                 f"<td>{html.escape(str(f['status']))}</td>"
                 f"<td>{html.escape(str(f['source']))}</td>"
                 f"<td>{html.escape(str(f['owner'] or '—'))}</td>"
-                f"<td>{html.escape(hosts_str)}</td>"
+                f"<td>{links}</td>"
                 "</tr>"
             )
         table = (
@@ -1134,6 +1559,10 @@ class ReportGenerator:
             bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
             ndjson_lines = "\n".join(json.dumps(host, separators=(",", ":")) for host in dataset["hosts"])
             bundle.writestr("hosts.ndjson", f"{ndjson_lines}\n" if ndjson_lines else "")
+            # The canonical findings collection — counted in the manifest but
+            # previously never written.  Each host record carries its
+            # ``canonical_findings`` with finding ids that cross-reference here.
+            bundle.writestr("findings.json", json.dumps(dataset["findings"], indent=2, default=str))
             for artifact_path, content in artifacts.items():
                 bundle.writestr(artifact_path, content)
 
@@ -1148,7 +1577,12 @@ class ReportGenerator:
             bundle.writestr("report.md", self._generate_markdown_report(dataset))
             bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
             bundle.writestr("hosts.csv", self._generate_hosts_csv(dataset["hosts"]))
-            bundle.writestr("findings.csv", self._generate_findings_csv(dataset["hosts"]))
+            # vulnerabilities.csv (was misleadingly "findings.csv" — these are
+            # scanner vulns), plus the correlation CSVs the dossier surfaces.
+            bundle.writestr("vulnerabilities.csv", self._generate_vulnerabilities_csv(dataset["hosts"]))
+            bundle.writestr("canonical_findings.csv", self._generate_canonical_findings_csv(dataset["findings"]))
+            bundle.writestr("execution_findings.csv", self._generate_execution_findings_csv(dataset["hosts"]))
+            bundle.writestr("notes.csv", self._generate_notes_csv(dataset["hosts"]))
             bundle.writestr("scans.csv", self._generate_scans_csv(dataset["scans"]))
             for artifact_path, content in artifacts.items():
                 bundle.writestr(artifact_path, content)
@@ -1327,6 +1761,13 @@ class ReportGenerator:
                 for scan in scan_rows
             }
 
+        # Per-host dossier correlation (canonical findings + their resolved
+        # sources, execution findings, tester summaries) — batched, so a chunk
+        # of hosts at a time stays viable in the streamed HTML.
+        canonical_by_host, promoted_vuln_ids, promoted_exec_ids = self._canonical_findings_by_host(host_ids)
+        execution_findings_map = self._execution_findings_by_host(host_ids, promoted_exec_ids)
+        tester_summaries_map = self._tester_summaries_by_host(host_ids)
+
         return {
             "follow_map": follow_map,
             "subnet_map": subnet_map,
@@ -1335,6 +1776,10 @@ class ReportGenerator:
             "host_conflicts_map": host_conflicts_map,
             "port_conflicts_map": port_conflicts_map,
             "scans": scans,
+            "canonical_findings_map": canonical_by_host,
+            "promoted_vuln_ids_map": promoted_vuln_ids,
+            "execution_findings_map": execution_findings_map,
+            "tester_summaries_map": tester_summaries_map,
         }
 
     def _build_host_export_record(self, host: models.Host, context: Dict[str, Any], artifacts: Dict[str, str]) -> Dict[str, Any]:
@@ -1368,6 +1813,17 @@ class ReportGenerator:
         subnet_entries = context["subnet_map"].get(host.id, [])
         primary_site = self._primary_site(subnet_entries)
         follow_record = context["follow_map"].get(host.id)
+
+        # Dossier correlation for this host (defaults make the record valid even
+        # for a context built without the finding maps — e.g. a future caller).
+        canonical_findings = context.get("canonical_findings_map", {}).get(host.id, [])
+        execution_findings = context.get("execution_findings_map", {}).get(host.id, [])
+        tester_summaries = context.get("tester_summaries_map", {}).get(host.id, [])
+        promoted_vuln_ids = context.get("promoted_vuln_ids_map", {}).get(host.id, set())
+        untriaged_vulnerabilities = [
+            v for v in vulnerabilities if v.get("id") not in promoted_vuln_ids
+        ]
+        vuln_summary = self._build_vulnerability_summary(vulnerabilities)
 
         return {
             "host_id": host.id,
@@ -1412,7 +1868,17 @@ class ReportGenerator:
                 )
             ],
             "vulnerabilities": vulnerabilities,
-            "vulnerability_summary": self._build_vulnerability_summary(vulnerabilities),
+            "vulnerability_summary": vuln_summary,
+            # Untriaged = scanner vulns not yet promoted to a canonical finding
+            # on this host (labelled "scanner observation" in the dossier).
+            "untriaged_vulnerabilities": untriaged_vulnerabilities,
+            "canonical_findings": canonical_findings,
+            "execution_findings": execution_findings,
+            "tester_summaries": tester_summaries,
+            "dossier_summary": self._dossier_summary(
+                canonical_findings, vuln_summary, len(untriaged_vulnerabilities),
+                execution_findings, tester_summaries, notes,
+            ),
             "analyst_context": {
                 "follow_status": getattr(follow_record.status, "value", None) if follow_record else None,
                 "follow": _serialize_follow(follow_record).model_dump(mode="json") if follow_record else None,
@@ -1698,6 +2164,33 @@ class ReportGenerator:
             if not host["vulnerabilities"]:
                 lines.append("|  | No recorded vulnerabilities |  |  |  |  |  |")
 
+            if host.get("canonical_findings"):
+                lines.extend(["", "#### Canonical Findings",
+                              "| Severity | Title | Status | Source | Owner |",
+                              "|---|---|---|---|---|"])
+                for cf in host["canonical_findings"]:
+                    lines.append(
+                        f"| {cf.get('severity') or ''} | {(cf.get('title') or '').replace('|', '/')} | "
+                        f"{cf.get('host_status') or ''} | {cf.get('source') or ''} | {cf.get('owner') or ''} |"
+                    )
+
+            if host.get("execution_findings"):
+                lines.extend(["", "#### Execution Findings"])
+                for x in host["execution_findings"]:
+                    promoted = " (promoted)" if x.get("promoted") else ""
+                    lines.append(
+                        f"- [{x.get('severity') or '—'}] {x.get('plan_title') or ''} / "
+                        f"{x.get('test_phase') or ''}{promoted}: {(x.get('findings_summary') or '').strip()}"
+                    )
+
+            if host.get("tester_summaries"):
+                lines.extend(["", "#### Tester Summaries"])
+                for t in host["tester_summaries"]:
+                    lines.append(
+                        f"- {t.get('plan_title') or ''} ({t.get('test_phase') or ''}, "
+                        f"{t.get('status') or ''}): {(t.get('findings') or '').strip()}"
+                    )
+
             lines.extend(["", "#### Analyst Context"])
             lines.append(f"- Follow status: {host['analyst_context'].get('follow_status') or 'none'}")
             if host["analyst_context"]["notes"]:
@@ -1753,7 +2246,10 @@ class ReportGenerator:
             ])
         return output.getvalue()
 
-    def _generate_findings_csv(self, hosts: List[Dict[str, Any]]) -> str:
+    def _generate_vulnerabilities_csv(self, hosts: List[Dict[str, Any]]) -> str:
+        """Scanner vulnerabilities, one row per host×vuln.  (Renamed from the
+        misleading ``findings.csv`` — these are raw scanner observations, not
+        the triaged canonical findings, which live in canonical_findings.csv.)"""
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["IP Address", "Hostname", "Severity", "Title", "CVE", "CVSS", "Port", "Service", "Source", "Recommendation"])
@@ -1770,6 +2266,63 @@ class ReportGenerator:
                     vulnerability.get("service_name") or "",
                     vulnerability.get("source") or "",
                     vulnerability.get("solution") or "",
+                ])
+        return output.getvalue()
+
+    def _generate_canonical_findings_csv(self, findings: List[Dict[str, Any]]) -> str:
+        """The triaged canonical findings (one row per finding) — severity,
+        status, source, owner, and the affected host IPs."""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Finding ID", "Severity", "Title", "Status", "Source", "Owner", "Host Count", "Affected Hosts"])
+        for f in findings:
+            _safe_csv_row(writer, [
+                f.get("id"),
+                f.get("severity") or "",
+                f.get("title") or "",
+                f.get("status") or "",
+                f.get("source") or "",
+                f.get("owner") or "",
+                f.get("host_count") or 0,
+                ", ".join(f.get("affected_hosts") or []),
+            ])
+        return output.getvalue()
+
+    def _generate_execution_findings_csv(self, hosts: List[Dict[str, Any]]) -> str:
+        """Execution findings (``TestExecutionResult.is_finding``), one row per
+        host×result, with the plan, phase, severity, and whether it was promoted
+        to a canonical finding."""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["IP Address", "Hostname", "Plan", "Phase", "Severity", "Promoted", "Command", "Summary"])
+        for host in hosts:
+            for x in host.get("execution_findings") or []:
+                _safe_csv_row(writer, [
+                    host["identity"]["ip_address"],
+                    host["identity"].get("hostname") or "",
+                    x.get("plan_title") or "",
+                    x.get("test_phase") or "",
+                    x.get("severity") or "",
+                    "yes" if x.get("promoted") else "no",
+                    x.get("command") or "",
+                    x.get("findings_summary") or "",
+                ])
+        return output.getvalue()
+
+    def _generate_notes_csv(self, hosts: List[Dict[str, Any]]) -> str:
+        """Host notes, one row per note — type, status, author, and body."""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["IP Address", "Hostname", "Type", "Status", "Author", "Body"])
+        for host in hosts:
+            for note in host["analyst_context"].get("notes") or []:
+                _safe_csv_row(writer, [
+                    host["identity"]["ip_address"],
+                    host["identity"].get("hostname") or "",
+                    note.get("note_type") or note.get("type") or "",
+                    note.get("status") or "",
+                    note.get("author") or note.get("created_by") or "",
+                    note.get("body") or "",
                 ])
         return output.getvalue()
 
@@ -1913,13 +2466,14 @@ def generate_hosts_html_report(
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    hosts = generator.get_hosts_for_report(filter_kwargs)
-    html_content = generator.generate_html_report(hosts, filter_kwargs, report_type)
-
+    # Stream the dossiers chunk-by-chunk so peak memory ≈ one chunk even at the
+    # high cap.  Resolve ids + truncation first: the StreamingResponse flushes
+    # headers (incl. X-Report-Truncated) before the body.
+    host_ids = generator.resolve_html_host_ids(filter_kwargs)
     filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
 
-    return Response(
-        content=html_content,
+    return StreamingResponse(
+        generator.iter_html_report(host_ids, report_type, filter_kwargs),
         media_type="text/html",
         headers={
             "Content-Disposition": f"attachment; filename={filename}",
@@ -1952,8 +2506,10 @@ def generate_hosts_pdf_report(
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    hosts = generator.get_hosts_for_report(filter_kwargs)
-    html_content = generator.generate_html_report(hosts, filter_kwargs, report_type)
+    # PDF can't stream through WeasyPrint, so it builds the whole document in
+    # memory — use the lower in-memory cap and render dossier blocks expanded.
+    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
+    html_content = generator.generate_html_report(hosts, filter_kwargs, report_type, for_pdf=True)
 
     try:
         # OSError (not just ImportError) when the native Pango/Cairo/GObject
@@ -2006,7 +2562,8 @@ def generate_hosts_json_report(
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    hosts = generator.get_hosts_for_report(filter_kwargs)
+    # JSON serialises the whole payload in memory → lower in-memory cap.
+    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
     report_data = generator.generate_json_report(hosts, report_type)
 
     filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -2037,7 +2594,8 @@ def generate_hosts_agent_package_report(
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    hosts = generator.get_hosts_for_report(filter_kwargs)
+    # In-memory ZIP build → lower cap.
+    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
     package_content = generator.generate_agent_package(hosts, filter_kwargs)
 
     filename = f"networkmapper_agent_package_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
@@ -2064,7 +2622,8 @@ def generate_hosts_markdown_bundle_report(
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    hosts = generator.get_hosts_for_report(filter_kwargs)
+    # In-memory ZIP build → lower cap.
+    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
     bundle_content = generator.generate_markdown_bundle(hosts, filter_kwargs)
 
     filename = f"networkmapper_markdown_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"

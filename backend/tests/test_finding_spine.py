@@ -199,7 +199,7 @@ def test_finding_comment_evidence_reaches_report(client, db_session, test_projec
     target = next(f for f in data if f["id"] == fid)
     assert any("anonymous" in c["body"].lower() for c in target["comments"])
 
-    html_out = gen._generate_findings_html([host])
+    html_out = gen._html_findings_index(gen._findings_for_report([host]))
     assert "Evidence" in html_out
     assert "login anonymous" in html_out
 

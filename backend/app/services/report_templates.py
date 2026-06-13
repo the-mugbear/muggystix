@@ -542,6 +542,89 @@ class ReportTemplates:
                 .metadata { flex-direction: column; align-items: flex-start; }
                 .logo { float: none; margin: 10px 0; }
             }
+
+            /* ---- Host dossiers (the host-centric report body) ------------- */
+            .dossier-controls {
+                position: sticky; top: 0; z-index: 5;
+                display: flex; align-items: center; gap: 10px;
+                padding: 10px 0; margin-bottom: 12px;
+                background: var(--bg); border-bottom: 1px solid var(--border);
+            }
+            .dossier-search {
+                flex: 1; min-width: 0; padding: 9px 12px;
+                background: var(--bg-panel); color: var(--text);
+                border: 1px solid var(--border); border-radius: 8px; font-size: 0.95em;
+            }
+            .dossier-search:focus { outline: none; border-color: var(--accent); }
+            .dossier-nav-btn {
+                flex: 0 0 auto; padding: 8px 12px; cursor: pointer;
+                background: var(--bg-panel-soft); color: var(--text);
+                border: 1px solid var(--border); border-radius: 8px;
+            }
+            .dossier-nav-btn:hover { border-color: var(--accent); }
+
+            .host-dossiers { display: flex; flex-direction: column; gap: 16px; }
+            .host-dossier {
+                border: 1px solid var(--border); border-radius: 10px;
+                background: var(--bg-panel); padding: 16px; scroll-margin-top: 70px;
+            }
+            .dossier-flash { box-shadow: 0 0 0 2px var(--accent); }
+            .dossier-head { display: flex; flex-direction: column; gap: 8px; }
+            .dossier-id { font-size: 1.25em; font-weight: 700; color: var(--text); word-break: break-all; }
+            .dossier-id .anchor-self { color: var(--subtle); text-decoration: none; margin-right: 4px; }
+            .dossier-host { font-size: 0.7em; font-weight: 500; color: var(--muted); }
+            .dossier-meta { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0; }
+            .dossier-meta div { display: flex; gap: 6px; align-items: baseline; }
+            .dossier-meta dt { color: var(--subtle); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; margin: 0; }
+            .dossier-meta dd { margin: 0; color: var(--text); font-size: 0.9em; }
+            .dossier-meta dd.state-up { color: var(--success); font-weight: 600; }
+            .dossier-meta dd.state-down { color: var(--danger); font-weight: 600; }
+            .dossier-glance { display: flex; flex-direction: column; gap: 3px; font-size: 0.85em; color: var(--muted); }
+            .dossier-glance strong { color: var(--text); }
+
+            .dossier-block { margin-top: 12px; border-top: 1px solid var(--border); }
+            .dossier-block > summary {
+                cursor: pointer; padding: 8px 0; font-weight: 600; color: var(--text);
+                list-style: none; display: flex; align-items: center; gap: 8px;
+            }
+            .dossier-block > summary::-webkit-details-marker { display: none; }
+            .dossier-block > summary::before { content: '▸'; color: var(--subtle); }
+            .dossier-block[open] > summary::before { content: '▾'; }
+            .dossier-block-body { padding: 4px 0 10px; }
+            .dcount {
+                font-size: 0.78em; color: var(--muted); background: var(--bg-panel-soft);
+                border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+            }
+            .dfinding, .dnote { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+            .dfinding:last-child, .dnote:last-child { border-bottom: none; }
+            .dfinding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+            .dfinding-title { color: var(--accent-strong); text-decoration: none; font-weight: 600; }
+            .dfinding-title:hover { text-decoration: underline; }
+            .dfinding-detail { margin-top: 4px; color: var(--muted); font-size: 0.88em; word-break: break-word; }
+            .dfinding-detail code { background: var(--bg); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+            .dcomment { margin-top: 6px; padding-left: 10px; border-left: 3px solid var(--border); font-size: 0.85em; color: var(--muted); }
+            .dpill {
+                font-size: 0.75em; color: var(--text); background: var(--bg-panel-soft);
+                border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+            }
+            .dsev {
+                font-size: 0.75em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+                color: #0d1117; border-radius: 4px; padding: 1px 6px;
+            }
+            .dsev-critical { background: #ff6b7a; }
+            .dsev-high { background: #f5894b; }
+            .dsev-medium { background: #f7c948; }
+            .dsev-low { background: #4fd1c5; }
+            .dsev-info { background: #7d8a99; }
+            .dsev-unknown, .dsev-none { background: #5a6776; color: #edf2f7; }
+
+            @media print {
+                .dossier-controls { display: none !important; }
+                .host-dossier { break-inside: avoid; }
+                /* WeasyPrint renders <details> bodies only when open — the
+                   renderer also emits <details open>, this is belt-and-braces. */
+                details.dossier-block > .dossier-block-body { display: block !important; }
+            }
         </style>
         """
 
@@ -658,10 +741,75 @@ class ReportTemplates:
                     }
                 };
 
+                // Report-wide host search over the dossiers: matches each host's
+                // pre-built data-search blob (IP/hostname/site/subnet/CVE/finding
+                // title/note text/service), auto-expands the sub-blocks of a
+                // match, counts results, and Enter / the arrow buttons step
+                // through matches.
+                const initializeDossierSearch = () => {
+                    const input = document.getElementById('host-search');
+                    const container = document.querySelector('.host-dossiers');
+                    if (!input || !container) {
+                        return;
+                    }
+                    const sections = Array.from(container.querySelectorAll('.host-dossier'));
+                    const countEl = document.getElementById('host-search-count');
+                    let matches = sections.slice();
+                    let cursor = -1;
+
+                    const apply = (raw) => {
+                        const query = (raw || '').trim().toLowerCase();
+                        matches = [];
+                        sections.forEach((sec) => {
+                            const blob = sec.getAttribute('data-search') || '';
+                            const hit = !query || blob.indexOf(query) !== -1;
+                            sec.style.display = hit ? '' : 'none';
+                            if (hit) {
+                                matches.push(sec);
+                                if (query) {
+                                    sec.querySelectorAll('details.dossier-block').forEach((d) => { d.open = true; });
+                                }
+                            }
+                        });
+                        cursor = -1;
+                        if (countEl) {
+                            countEl.textContent = query
+                                ? (matches.length + ' / ' + sections.length + ' hosts')
+                                : (sections.length + ' hosts');
+                        }
+                    };
+
+                    const jump = (delta) => {
+                        if (!matches.length) {
+                            return;
+                        }
+                        cursor = (cursor + delta + matches.length) % matches.length;
+                        const target = matches[cursor];
+                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        target.classList.add('dossier-flash');
+                        setTimeout(() => target.classList.remove('dossier-flash'), 1200);
+                    };
+
+                    input.addEventListener('input', (e) => apply(e.target.value));
+                    input.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            jump(e.shiftKey ? -1 : 1);
+                        }
+                    });
+                    const next = document.getElementById('host-search-next');
+                    const prev = document.getElementById('host-search-prev');
+                    if (next) next.addEventListener('click', () => jump(1));
+                    if (prev) prev.addEventListener('click', () => jump(-1));
+                    apply('');
+                };
+
+                const initializeAll = () => { initializeTables(); initializeDossierSearch(); };
+
                 if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', initializeTables);
+                    document.addEventListener('DOMContentLoaded', initializeAll);
                 } else {
-                    initializeTables();
+                    initializeAll();
                 }
             })();
         </script>

@@ -224,26 +224,24 @@ class TestHostHtmlReportNav:
     sorting + filtering.
     """
 
-    def test_host_report_includes_nav_with_matching_anchors(self):
-        # Stub a minimal Host model instance — only the attributes the
-        # generator reads.  We deliberately use MagicMock with explicit
-        # attribute assignment (not spec=) so the generator's getattr
-        # access doesn't trip the spec.
-        port = MagicMock(
-            state='open', service_name='http', port_number=80, protocol='tcp'
-        )
-        host = MagicMock(state='up', os_name='Linux', ports=[port])
-
-        # Late import — keeps top-of-file imports independent of the
-        # FastAPI endpoint module's transitive imports.
+    def test_host_report_includes_nav_with_matching_anchors(self, db_session, test_project):
+        # The host-dossier report builds its correlated record from the DB, so
+        # this needs a real session + host (not a MagicMock).
+        from app.db import models
         from app.api.v1.endpoints.reports import ReportGenerator
 
-        gen = ReportGenerator(db=MagicMock(), current_user=MagicMock(), project_id=1)
+        host = models.Host(project_id=test_project.id, ip_address="10.20.0.9", state="up", os_name="Linux")
+        db_session.add(host)
+        db_session.flush()
+
+        # current_user.id must be a real int — the export context queries
+        # HostFollow.user_id == current_user.id.
+        gen = ReportGenerator(db=db_session, current_user=MagicMock(id=1), project_id=test_project.id)
         html = gen.generate_html_report([host], filters={})
 
         # Sticky nav present.
         assert 'class="report-nav"' in html
-        # The section ids the dark-mode rework introduced.
+        # The section ids the host-dossier rework uses.
         for expected in ('summary', 'metrics', 'exposure', 'hosts'):
             assert f'id="{expected}"' in html, f"section id='{expected}' missing"
         # Every nav href="#X" has a matching id="X" in the document.
@@ -251,9 +249,9 @@ class TestHostHtmlReportNav:
             assert f'id="{anchor}"' in html, (
                 f"host-report nav anchor #{anchor} has no matching section id"
             )
-        # The host table is wrapped in the interactive-table-wrapper so
-        # the shared script can wire up filter + sort.
-        assert 'interactive-table-wrapper' in html
+        # The host renders as a dossier section anchored #host-{id}.
+        assert f'id="host-{host.id}"' in html
+        assert 'host-dossiers' in html
 
 
 class TestDetailsAnchorPlacement:

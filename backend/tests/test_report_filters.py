@@ -20,7 +20,7 @@ from app.api.v1.endpoints import reports as reports_mod
 def test_report_threads_full_filter_context(fmt, client, test_project, monkeypatch):
     captured = {}
 
-    def spy(self, filters):
+    def spy(self, filters, cap=None):
         captured.clear()
         captured.update(filters)
         return []  # empty host set — generators handle it; we only assert filters
