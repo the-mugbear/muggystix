@@ -45,6 +45,13 @@ export interface IngestionJob {
   // v2.86.2 — operator-set dismissal marker; non-null means the user
   // acknowledged this failed row and it should drop out of the queue.
   dismissed_at?: string | null;
+  // Dead-letter / liveness columns (backend already returns these). retry_count
+  // shows how many times the job bounced before succeeding/failing; last_error
+  // is the most recent failure reason; last_heartbeat is the worker's last
+  // progress tick (stale while 'processing' ⇒ a stalled job).
+  retry_count?: number | null;
+  last_error?: string | null;
+  last_heartbeat?: string | null;
 }
 
 

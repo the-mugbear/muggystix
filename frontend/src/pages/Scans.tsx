@@ -1070,6 +1070,17 @@ export default function Scans() {
                       // actually shows how much was ingested.
                       : job.progress || job.message || '-';
 
+                    // Dead-letter / liveness signals (backend already returns
+                    // these). A job that bounced before settling carries a
+                    // retry_count; a 'processing' job whose worker heartbeat has
+                    // gone stale is wedged, not working.
+                    const retried = (job.retry_count ?? 0) > 0;
+                    const STALL_MS = 90_000;
+                    const isStalled =
+                      job.status === 'processing' &&
+                      !!job.last_heartbeat &&
+                      Date.now() - new Date(job.last_heartbeat).getTime() > STALL_MS;
+
                     return (
                       <React.Fragment key={job.id}>
                         <TableRow className={cn(job.status === 'completed' && 'opacity-75')}>
@@ -1115,6 +1126,15 @@ export default function Scans() {
                               )}
                               <span className="sr-only">{job.status}</span>
                             </span>
+                            {isStalled && (
+                              <Badge
+                                variant="outline"
+                                className="ml-xxs border-warning/40 text-warning"
+                                title="No worker progress in over 90s — the job may be stalled."
+                              >
+                                stalled?
+                              </Badge>
+                            )}
                           </TableCell>
                           <TableCell className="truncate" title={job.original_filename}>
                             {job.original_filename}
@@ -1130,6 +1150,15 @@ export default function Scans() {
                             >
                               {displayMessage}
                             </div>
+                            {retried && (
+                              <Badge
+                                variant="outline"
+                                className="mt-xxs border-warning/40 text-warning"
+                                title={job.last_error ? `Most recent failure: ${job.last_error}` : undefined}
+                              >
+                                retried {job.retry_count}×
+                              </Badge>
+                            )}
                             {job.parse_error_id && (
                               <button
                                 type="button"
@@ -1192,6 +1221,19 @@ export default function Scans() {
                               <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-card p-sm text-caption">
                                 {displayMessage}
                               </pre>
+                              {job.last_error && job.last_error !== displayMessage && (
+                                <>
+                                  <p className="mb-xxs mt-sm text-metadata font-semibold text-destructive">
+                                    Most recent failure
+                                    {retried
+                                      ? ` (after ${job.retry_count} ${job.retry_count === 1 ? 'retry' : 'retries'})`
+                                      : ''}
+                                  </p>
+                                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-card p-sm text-caption">
+                                    {job.last_error}
+                                  </pre>
+                                </>
+                              )}
                             </TableCell>
                           </TableRow>
                         )}
