@@ -461,6 +461,13 @@ class MasscanParser:
                 f":svc_{idx}, :scan_id, TRUE)"
             )
 
+        # service_name merge MIRRORS the canonical rule in
+        # host_deduplication_service.should_replace_service.  Masscan's bulk path
+        # carries only a name (no confidence), so the rule reduces to
+        # empty-or-longer-wins: take the new name only when we have nothing yet,
+        # or it's non-empty and more specific (longer).  The old
+        # COALESCE(NULLIF(...)) was last-non-empty-wins, which let a masscan
+        # re-scan clobber a longer/better nmap service name. Keep in lockstep.
         sql = (
             "INSERT INTO ports_v2 "
             "(host_id, port_number, protocol, state, service_name, "
@@ -470,7 +477,12 @@ class MasscanParser:
             "state = EXCLUDED.state, last_seen = NOW(), "
             "last_updated_scan_id = EXCLUDED.last_updated_scan_id, "
             "is_active = TRUE, "
-            "service_name = COALESCE(NULLIF(EXCLUDED.service_name, ''), ports_v2.service_name) "
+            "service_name = CASE "
+            "WHEN COALESCE(ports_v2.service_name, '') = '' THEN EXCLUDED.service_name "
+            "WHEN NULLIF(EXCLUDED.service_name, '') IS NOT NULL "
+            "AND length(EXCLUDED.service_name) > length(ports_v2.service_name) "
+            "THEN EXCLUDED.service_name "
+            "ELSE ports_v2.service_name END "
             "RETURNING id, host_id, port_number, protocol"
         )
         result = self.db.execute(text(sql), params)

@@ -22,6 +22,31 @@ logger = logging.getLogger(__name__)
 TModel = TypeVar("TModel")
 
 
+def should_replace_service(
+    existing_name: Optional[str],
+    existing_conf: Optional[int],
+    new_name: Optional[str],
+    new_conf: Optional[int],
+) -> bool:
+    """Canonical port service-info merge rule: should the NEW scan's service
+    info replace what's already stored?
+
+    True when we have nothing yet, the new scan is more confident, or the new
+    name is non-empty and more specific (longer).  This is the single source of
+    truth for service-name conflict resolution.
+
+    The masscan bulk-SQL path (``masscan_parser._upsert_ports_chunk``) carries
+    only a service name (no confidence), so it mirrors the reduced form of this
+    rule — empty-or-longer-wins — in a CASE expression.  Keep the two in
+    lockstep; ``test_masscan_service_merge`` pins masscan's SQL to this rule.
+    """
+    return (
+        not existing_name
+        or (new_conf or 0) > (existing_conf or 0)
+        or (bool(new_name) and len(new_name) > len(existing_name or ""))
+    )
+
+
 class HostDeduplicationService:
     """Service to manage host deduplication and merging across scans"""
     
@@ -466,15 +491,14 @@ class HostDeduplicationService:
             port.reason = port_data.get('reason')
             port.is_active = (new_state in ['open', 'filtered'])
         
-        # Update service info if new scan has better information
+        # Update service info if new scan has better information — the single
+        # canonical rule (mirrored by masscan's bulk SQL); see should_replace_service.
         new_service_name = port_data.get('service_name')
         new_service_conf = port_data.get('service_conf', 0)
-        
-        # Use service info with higher confidence or if we don't have any
-        if (not port.service_name or 
-            new_service_conf > (port.service_conf or 0) or
-            (new_service_name and len(new_service_name) > len(port.service_name or ''))):
-            
+
+        if should_replace_service(
+            port.service_name, port.service_conf, new_service_name, new_service_conf
+        ):
             port.service_name = new_service_name
             port.service_product = port_data.get('service_product')
             port.service_version = port_data.get('service_version')
