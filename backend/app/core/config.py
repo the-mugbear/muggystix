@@ -130,6 +130,20 @@ class Settings:
         "INGESTION_STORAGE_DIR",
         os.path.join(os.getcwd(), "uploads", "ingestion_queue")
     )
+    # Where the async report worker writes generated artifacts (PDF/JSON/zip).
+    # A sibling of the ingestion queue under uploads so the same volume + perms
+    # apply; the report worker mkdir's it world-writable like ingestion_queue.
+    REPORT_STORAGE_DIR: str = os.getenv(
+        "REPORT_STORAGE_DIR",
+        os.path.join(os.getcwd(), "uploads", "report_artifacts")
+    )
+    # How long a completed report artifact is kept before the report worker's
+    # cleanup pass deletes it (and its job row).
+    REPORT_ARTIFACT_TTL_HOURS: int = int(os.getenv("REPORT_ARTIFACT_TTL_HOURS", "24"))
+    # A report job stuck in 'processing' longer than this (no heartbeat) is
+    # re-queued/failed by the reaper. Generous — must exceed the worst-case
+    # render time for a capped report so a still-rendering job isn't re-queued.
+    REPORT_JOB_TIMEOUT_SECONDS: int = int(os.getenv("REPORT_JOB_TIMEOUT_SECONDS", "900"))
     # v2.91.1 (code review NEW F) — INGESTION_WORKERS setting removed.
     # It was read nowhere in the codebase, but operators saw the env
     # var documented and reasonably assumed setting it would scale

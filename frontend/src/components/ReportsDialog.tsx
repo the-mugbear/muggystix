@@ -10,7 +10,13 @@ import {
   ServerCog,
   Table as TableIcon,
 } from 'lucide-react';
-import { generateHostsReport } from '../services/api';
+import {
+  generateHostsReport,
+  enqueueReportJob,
+  getReportJob,
+  downloadReportJob,
+  type AsyncReportFormat,
+} from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -42,15 +48,10 @@ type ReportType = 'inventory' | 'comprehensive';
 type HumanFormat = 'pdf' | 'html' | 'csv' | 'json';
 type StructuredFormat = 'markdown-bundle' | 'agent-package';
 
-// Keep in sync with the backend caps. The CSV inventory streams the full set;
-// HTML streams dossiers chunk-by-chunk up to REPORT_HOST_CAP; the in-memory
-// formats (PDF, JSON, the .zip bundles) build the whole document in worker
-// memory and cap lower at REPORT_INMEMORY_CAP (REPORT_MAX_INMEMORY_HOSTS).
+// Keep in sync with the backend REPORT_MAX_HOSTS. The CSV inventory streams the
+// full set; every other format (HTML streamed, and the async PDF/JSON/.zip
+// bundles generated on the report worker) caps here.
 const REPORT_HOST_CAP = 50000;
-const REPORT_INMEMORY_CAP = 2000;
-// Above this, warn that the in-memory formats build the whole report
-// server-side and steer large exports to CSV/HTML.
-const MEMORY_SOFT_THRESHOLD = 500;
 
 const REPORT_TYPES: Array<{ value: ReportType; label: string; description: string }> = [
   {
@@ -132,17 +133,46 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
     }
   };
 
+  // After a download, surface a partial-export warning (keep the dialog open) or
+  // close on a complete one.
+  const settleDownload = (wasTruncated: boolean) => {
+    if (wasTruncated) {
+      setTruncated(true);
+    } else {
+      onClose();
+    }
+  };
+
   const runExport = async (fmt: HumanFormat | StructuredFormat, type?: ReportType) => {
     setBusy(fmt);
     setError(null);
     setTruncated(false);
     try {
-      const { truncated: wasTruncated } = await generateHostsReport(fmt, filters, type);
-      if (wasTruncated) {
-        // Partial export — keep the dialog open so the warning is unmissable.
-        setTruncated(true);
+      // CSV + HTML stream synchronously from the API and download directly.
+      if (fmt === 'csv' || fmt === 'html') {
+        const { truncated: wasTruncated } = await generateHostsReport(fmt, filters, type);
+        settleDownload(wasTruncated);
+        return;
+      }
+
+      // Heavy formats run on the report worker: enqueue → poll → download.
+      let job = await enqueueReportJob(fmt as AsyncReportFormat, filters, type);
+      // Cap the wait at the server-side report timeout (~15 min) so a wedged
+      // job doesn't poll forever.
+      const maxAttempts = 450; // 450 × 2s = 15 min
+      let attempts = 0;
+      while ((job.status === 'queued' || job.status === 'processing') && attempts < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 2000));
+        attempts += 1;
+        job = await getReportJob(job.id);
+      }
+      if (job.status === 'completed') {
+        const { truncated: wasTruncated } = await downloadReportJob(job.id);
+        settleDownload(wasTruncated);
+      } else if (job.status === 'failed') {
+        setError(`Report generation failed: ${job.error_message || job.last_error || 'unknown error'}`);
       } else {
-        onClose();
+        setError('Report is taking longer than expected — it may still finish; try again shortly.');
       }
     } catch (err) {
       setError(`Failed to generate report: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -183,12 +213,9 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
     return out;
   }, [filters]);
 
+  // Every format except the streamed CSV caps at REPORT_HOST_CAP (the heavy
+  // formats now generate on the report worker, so they get the full cap back).
   const overCap = totalHosts > REPORT_HOST_CAP;
-  // The in-memory formats (PDF/JSON/.zip bundles) cap lower and build the whole
-  // document server-side; warn before a large export so a partial isn't a
-  // surprise and the user can pick a streamed format instead.
-  const overInMemoryCap = totalHosts > REPORT_INMEMORY_CAP;
-  const heavyMemoryAdvisory = totalHosts > MEMORY_SOFT_THRESHOLD;
   const isBusy = busy !== null;
 
   return (
@@ -222,29 +249,20 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             Based on your current filters this covers <strong>{totalHosts.toLocaleString()}</strong> host
             {totalHosts === 1 ? '' : 's'}.
           </p>
-          {overInMemoryCap && (
+          {overCap && (
             <Alert variant="warning">
               <AlertDescription>
-                Your filters match {totalHosts.toLocaleString()} hosts.{' '}
-                <strong>PDF, JSON, and the .zip bundles</strong> build the whole report in server
-                memory and include only the first {REPORT_INMEMORY_CAP.toLocaleString()}.{' '}
-                {overCap
-                  ? `HTML streams up to ${REPORT_HOST_CAP.toLocaleString()};`
-                  : 'HTML streams the full set;'}{' '}
-                the <strong>CSV</strong> inventory streams every host. Prefer those, or narrow your
-                filters.
+                Your filters match {totalHosts.toLocaleString()} hosts. PDF, HTML, JSON and the
+                .zip bundles include the first {REPORT_HOST_CAP.toLocaleString()} — narrow your
+                filters to capture everything, or use the <strong>CSV</strong> inventory which
+                streams the full set.
               </AlertDescription>
             </Alert>
           )}
-          {!overInMemoryCap && heavyMemoryAdvisory && (
-            <Alert variant="info">
-              <AlertDescription>
-                For {totalHosts.toLocaleString()} hosts, PDF / JSON / .zip exports build the whole
-                document in server memory. The <strong>HTML</strong> and <strong>CSV</strong> exports
-                stream and stay light for large sets.
-              </AlertDescription>
-            </Alert>
-          )}
+          <p className="text-caption text-muted-foreground">
+            PDF, JSON and the .zip bundles are generated in the background and download
+            automatically when ready — large reports may take a moment.
+          </p>
           {activeFilters.length > 0 && (
             <div className="space-y-xxs">
               <p className="text-caption font-semibold text-muted-foreground">

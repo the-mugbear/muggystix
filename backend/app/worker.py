@@ -7,18 +7,19 @@ time, ensuring serial parsing without deadlocks on the host deduplication
 service's row-level locks.  It listens on the ``ingestion_jobs`` PG
 notification channel so it wakes up immediately when a new upload arrives
 instead of waiting for the next poll interval.
+
+The LISTEN/poll/reconnect/heartbeat loop lives in ``app.worker_loop`` and is
+shared with the report worker (``app.report_worker``); this module only wires
+in the ingestion-specific pieces (the service, channel, and reaper).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import select
-import signal
 import sys
-import time
 
-from app.db.session import engine, SessionLocal
+from app import worker_loop
 from app.services.ingestion_service import IngestionService
 
 logging.basicConfig(
@@ -31,158 +32,10 @@ logger = logging.getLogger("app.worker")
 # How long to wait (seconds) between polls when no PG notification arrives.
 POLL_INTERVAL = float(os.getenv("WORKER_POLL_INTERVAL", "5"))
 
-# Liveness file the container healthcheck reads.  The previous healthcheck only
-# grep'd /proc for the process, so a worker whose loop had wedged or crashed but
-# whose process was still alive read "healthy" (the failure mode behind the
-# 24h-silent-worker incident).  The main loop rewrites this file every cycle, so
-# a stalled loop lets it go stale and the healthcheck flips unhealthy.
-# Container-local (not the uploads volume): the healthcheck runs inside the
-# container, /tmp is always writable by the worker's non-root user, and the
-# file needn't persist across restarts.  Keep in sync with the docker-compose
-# worker healthcheck (same WORKER_HEARTBEAT_PATH default).
+# Liveness file the container healthcheck reads — see worker_loop.write_heartbeat.
+# Container-local /tmp (the healthcheck runs in-container; /tmp is writable by the
+# non-root user). Keep in sync with the docker-compose worker healthcheck.
 HEARTBEAT_PATH = os.getenv("WORKER_HEARTBEAT_PATH", "/tmp/bluestick_worker_heartbeat")
-
-_shutdown = False
-
-
-def _write_heartbeat() -> None:
-    """Rewrite the liveness file (mtime is what the healthcheck checks).
-
-    Called from the MAIN loop, not a daemon thread — a thread would keep
-    ticking even if the loop wedged, defeating the point.  Written between
-    jobs and after each job; a single job that legitimately runs longer than
-    the healthcheck timeout will briefly read stale, but an unhealthy worker
-    is only *surfaced*, never restarted (Docker restarts on process exit), so
-    that window is visible, not disruptive — mirrors the API /health design."""
-    try:
-        with open(HEARTBEAT_PATH, "w") as fh:
-            fh.write(str(time.time()))
-    except OSError as exc:
-        logger.warning("Could not write worker heartbeat to %s: %s", HEARTBEAT_PATH, exc)
-
-
-def _handle_signal(signum: int, _frame: object) -> None:
-    global _shutdown
-    logger.info("Received signal %s — shutting down after current job", signum)
-    _shutdown = True
-
-
-# Reconnect backoff settings.  Exponential backoff capped so we don't
-# stall ingestion for minutes if Postgres has a brief blip.
-_RECONNECT_INITIAL_DELAY = 1.0
-_RECONNECT_MAX_DELAY = 30.0
-
-
-def _open_listen_connection():
-    """Open a fresh raw DB connection in LISTEN mode and return it.
-
-    Isolation level 0 = autocommit, which is required for LISTEN to
-    work without an explicit transaction.
-    """
-    raw_conn = engine.raw_connection()
-    raw_conn.set_isolation_level(0)
-    cur = raw_conn.cursor()
-    cur.execute("LISTEN ingestion_jobs")
-    return raw_conn
-
-
-def _listen_loop(service: IngestionService) -> None:
-    """Main worker loop: LISTEN for notifications, poll on timeout.
-
-    Wrapped in an outer reconnect loop so a Postgres restart, network
-    blip, or stale connection doesn't permanently kill the worker.
-    On any DB-related exception inside the inner loop we close the
-    bad connection, log, sleep with exponential backoff, and try
-    again.  Cooperative shutdown via _shutdown is honored at every
-    sleep checkpoint so SIGTERM still drains in <1s.
-    """
-    backoff = _RECONNECT_INITIAL_DELAY
-    while not _shutdown:
-        raw_conn = None
-        try:
-            raw_conn = _open_listen_connection()
-            logger.info(
-                "Ingestion worker connected — polling every %.0fs, listening for notifications",
-                POLL_INTERVAL,
-            )
-            # Reset backoff on every successful connect so transient
-            # blips don't permanently inflate the recovery delay.
-            backoff = _RECONNECT_INITIAL_DELAY
-
-            reap_tick = 0
-            while not _shutdown:
-                # Liveness: the loop is cycling.  Refreshed again after each job
-                # so a backlog drain keeps the heartbeat fresh between jobs.
-                _write_heartbeat()
-                # Process any queued jobs first (there may be several).
-                while not _shutdown:
-                    try:
-                        did_work = service.poll_and_run_one()
-                    except Exception:
-                        logger.exception("Unexpected error in poll_and_run_one")
-                        did_work = False
-                    _write_heartbeat()
-                    if not did_work:
-                        break
-
-                # Every ~12 idle ticks (~1 minute at the default 5s
-                # poll), sweep for orphaned 'processing' jobs that
-                # outlived their parser.  Cheap — indexed lookup with
-                # a time cutoff.  Runs on the same worker that would
-                # process new jobs so we don't need a second daemon.
-                reap_tick = (reap_tick + 1) % 12
-                if reap_tick == 0:
-                    try:
-                        reaped = service.reap_orphaned_jobs()
-                        if reaped:
-                            logger.info("Orphan reaper cleaned up %d stuck job(s)", reaped)
-                    except Exception:
-                        logger.exception("Unexpected error in orphan reaper")
-
-                if _shutdown:
-                    break
-
-                # Wait for a PG notification or timeout.  select.select
-                # raises OSError if the socket is dead, which we let
-                # bubble out to the reconnect handler below.
-                if select.select([raw_conn], [], [], POLL_INTERVAL) == ([], [], []):
-                    # Timeout — no notification; loop will poll again.
-                    pass
-                else:
-                    # Drain all pending notifications.  raw_conn.poll()
-                    # raises psycopg2.OperationalError if the
-                    # connection has been closed by the server.
-                    raw_conn.poll()
-                    while raw_conn.notifies:
-                        raw_conn.notifies.pop(0)
-
-        except Exception as exc:
-            # Catches:
-            #   - psycopg2.OperationalError (server closed conn)
-            #   - select.error / OSError (socket died)
-            #   - SQLAlchemy DBAPIError surfaced from raw connection
-            # Anything that means "reconnect or die" lands here.
-            logger.error(
-                "Ingestion worker DB connection lost (%s: %s) — reconnecting in %.1fs",
-                type(exc).__name__, exc, backoff,
-            )
-        finally:
-            if raw_conn is not None:
-                try:
-                    raw_conn.close()
-                except Exception:
-                    pass
-
-        if _shutdown:
-            break
-
-        # Sleep in 1s slices so SIGTERM still drains promptly.
-        slept = 0.0
-        while slept < backoff and not _shutdown:
-            time.sleep(min(1.0, backoff - slept))
-            slept += 1.0
-
-        backoff = min(backoff * 2.0, _RECONNECT_MAX_DELAY)
 
 
 def _restore_app_logging() -> None:
@@ -241,13 +94,7 @@ def _restore_app_logging() -> None:
 
 
 def main() -> None:
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
-
-    # Write an initial heartbeat before migrations so the file exists from the
-    # start (the healthcheck's start_period covers the migration window); if
-    # migrations themselves hang, the heartbeat goes stale and that shows.
-    _write_heartbeat()
+    worker_loop.install_signal_handlers(logger)
 
     # Ensure DB schema is up-to-date (same migrations the API runs on boot).
     from app.db.init import initialize_database
@@ -260,7 +107,20 @@ def main() -> None:
     _restore_app_logging()
 
     service = IngestionService()
-    _listen_loop(service)
+
+    def _reap() -> None:
+        reaped = service.reap_orphaned_jobs()
+        if reaped:
+            logger.info("Orphan reaper cleaned up %d stuck job(s)", reaped)
+
+    worker_loop.run_listen_loop(
+        channel="ingestion_jobs",
+        poll_one=service.poll_and_run_one,
+        heartbeat_path=HEARTBEAT_PATH,
+        logger=logger,
+        poll_interval=POLL_INTERVAL,
+        periodic=[_reap],
+    )
     logger.info("Ingestion worker stopped")
 
 

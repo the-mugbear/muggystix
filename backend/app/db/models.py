@@ -582,6 +582,60 @@ class IngestionJob(Base):
     parse_error = relationship("ParseError")
 
 
+class ReportJob(Base):
+    """An async report-generation job — the heavy export formats (PDF, JSON,
+    markdown-bundle, agent-package) build the whole document in memory, so they
+    run on a dedicated background worker instead of the API request thread.
+
+    Mirrors IngestionJob's queue lifecycle (queued → processing → completed /
+    failed) and dead-letter columns (retry_count / last_error / last_heartbeat)
+    so the report worker can reuse the same claim + reaper + heartbeat mechanics.
+    The generated artifact is written to disk (``result_path``); the download
+    endpoint streams it, and the worker's cleanup pass deletes it after
+    ``expires_at``.
+    """
+    __tablename__ = "report_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # What to generate.
+    format = Column(String(32), nullable=False)        # pdf | json | markdown-bundle | agent-package
+    report_type = Column(String(20), nullable=False, default="comprehensive")  # comprehensive | inventory
+    filters = Column(JSON, default=dict)               # build_filtered_host_query kwargs
+
+    status = Column(String, nullable=False, default="queued")  # queued, processing, completed, failed
+    message = Column(Text)
+    error_message = Column(Text)
+
+    # Result artifact (set on completion).
+    result_path = Column(String, nullable=True)
+    result_filename = Column(String, nullable=True)
+    media_type = Column(String, nullable=True)
+    file_size = Column(BigInteger, nullable=True)
+    # Mirrors X-Report-Truncated: the filter matched more than the host cap and
+    # this artifact is the capped subset.
+    truncated = Column(Boolean, nullable=False, default=False, server_default="false")
+
+    # Dead-letter / liveness (mirror IngestionJob).
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
+    last_error = Column(Text, nullable=True)
+    last_heartbeat = Column(DateTime(timezone=True))
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    # When the cleanup pass may delete the artifact + row.
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # Operator-set "seen it" marker for failed rows (mirror IngestionJob).
+    dismissed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_report_jobs_project_status", "project_id", "status", "created_at"),
+    )
+
+
 class FollowStatus(str, enum.Enum):
     WATCHING = "watching"
     IN_REVIEW = "in_review"

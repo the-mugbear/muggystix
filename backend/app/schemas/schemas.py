@@ -574,6 +574,33 @@ class IngestionJobSchema(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class ReportJobSchema(BaseModel):
+    """An async report-generation job (PDF/JSON/zip bundle) — status the dialog
+    polls, plus the artifact metadata once completed."""
+    id: int
+    project_id: int
+    format: str
+    report_type: str
+    status: str
+    message: Optional[str] = None
+    error_message: Optional[str] = None
+    result_filename: Optional[str] = None
+    media_type: Optional[str] = None
+    file_size: Optional[int] = None
+    truncated: bool = False
+    retry_count: Optional[int] = None
+    last_error: Optional[str] = None
+    last_heartbeat: Optional[datetime] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    dismissed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SubnetLabelInfo(BaseModel):
     """A project-scoped subnet label as it appears on a Subnet response (v2.86.0).
 

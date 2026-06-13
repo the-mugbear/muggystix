@@ -16,8 +16,10 @@ from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project
 from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
 from app.api.v1.endpoints.hosts import _build_filtered_host_query, HostFilterParams
-from app.db.models import HostFollow
+from app.db.models import HostFollow, ReportJob
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
+from app.services.report_job_service import ReportJobService
+from app.schemas.schemas import ReportJobSchema
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus
 from app.db.models_agent import TestPlan, TestPlanEntry, TestExecutionResult
 import base64
@@ -2482,153 +2484,126 @@ def generate_hosts_html_report(
     )
 
 
-@router.get("/hosts/pdf")
-def generate_hosts_pdf_report(
+# ---------------------------------------------------------------------------
+# Async report jobs.  The heavy in-memory formats (pdf / json / agent-package /
+# markdown-bundle) build the whole document in worker memory, so they run on the
+# dedicated report worker instead of this request thread: the dialog enqueues a
+# job, polls its status, then downloads the artifact.  CSV + HTML above stream
+# synchronously (memory-safe) and are NOT enqueued.
+# ---------------------------------------------------------------------------
+
+_ASYNC_FORMAT_PATTERN = "^(pdf|json|agent-package|markdown-bundle)$"
+
+
+@router.post("/jobs", response_model=ReportJobSchema, status_code=202)
+def enqueue_report_job(
+    format: str = Query(..., pattern=_ASYNC_FORMAT_PATTERN, description="Async export format."),
     filters: HostFilterParams = Depends(),
-    report_type: str = Query(
-        "comprehensive",
-        pattern="^(inventory|comprehensive)$",
-        description="'comprehensive' or 'inventory' — same content as the HTML report, rendered to PDF.",
-    ),
+    report_type: str = Query("comprehensive", pattern="^(inventory|comprehensive)$"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Generate a PDF host report (the HTML report rendered via WeasyPrint).
+    """Enqueue an async report-generation job (returns it in ``queued`` state).
 
-    The natural manager/handover artifact.  Renders the same HTML the /html
-    route produces, then converts to PDF.  A deny-all ``url_fetcher`` blocks
-    every external/file resource at render time: untrusted scan data flows
-    into this HTML, so WeasyPrint must never be allowed to fetch a remote URL
-    or read a local file an attacker-controlled value could point at (defence
-    in depth over the already-escaped template).
+    The same full filter context the visible /hosts list uses — derived from the
+    shared HostFilterParams so a report can never narrow to fewer filters — is
+    stored on the job and replayed on the worker.  Poll ``GET /reports/jobs/{id}``
+    and download via ``GET /reports/jobs/{id}/download`` once ``completed``.
     """
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
-
-    generator = ReportGenerator(db, current_user, project_id=project.id)
-    # PDF can't stream through WeasyPrint, so it builds the whole document in
-    # memory — use the lower in-memory cap and render dossier blocks expanded.
-    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
-    html_content = generator.generate_html_report(hosts, filter_kwargs, report_type, for_pdf=True)
-
-    try:
-        # OSError (not just ImportError) when the native Pango/Cairo/GObject
-        # libraries are missing — weasyprint dlopen's them at import time.
-        from weasyprint import HTML
-    except (ImportError, OSError) as exc:
-        logger.warning("PDF export unavailable — weasyprint failed to load: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail="PDF export is unavailable: the server's PDF rendering libraries are not installed.",
-        )
-
-    def _deny_all_fetcher(url, *args, **kwargs):
-        # Block every resource resolution — no remote URLs, no file:// reads.
-        # WeasyPrint treats any exception from the fetcher as an unfetchable
-        # resource; our template is self-contained (inline CSS) so this should
-        # never fire — it's a hard backstop against future template drift.
-        raise ValueError(f"External resource blocked in PDF report: {url}")
-
-    pdf_bytes = HTML(string=html_content, url_fetcher=_deny_all_fetcher).write_pdf()
-    filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "X-Report-Truncated": "true" if generator.report_truncated else "false",
-        },
+    service = ReportJobService()
+    job = service.create_job(
+        db,
+        project_id=project.id,
+        requested_by_id=current_user.id,
+        format=format,
+        report_type=report_type,
+        filters=filter_kwargs,
     )
+    service.enqueue_job(job.id)
+    return job
 
 
-@router.get("/hosts/json")
-def generate_hosts_json_report(
-    filters: HostFilterParams = Depends(),
-    report_type: str = Query(
-        "comprehensive",
-        pattern="^(inventory|comprehensive)$",
-        description="'comprehensive' (adds findings + hotspots roll-ups) or 'inventory' (host records only).",
-    ),
+@router.get("/jobs", response_model=List[ReportJobSchema])
+def list_report_jobs(
+    limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Generate JSON report of hosts based on filters"""
-    # The full filter context (incl. has_exploit_available, has_test_execution,
-    # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
-    # the shared HostFilterParams so reports can never narrow to fewer filters
-    # than the visible /hosts list.  None-stripped for the html/agent/markdown
-    # generators that display the applied filters.
-    filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
-
-    generator = ReportGenerator(db, current_user, project_id=project.id)
-    # JSON serialises the whole payload in memory → lower in-memory cap.
-    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
-    report_data = generator.generate_json_report(hosts, report_type)
-
-    filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-    return Response(
-        content=json.dumps(report_data, indent=2),
-        media_type="application/json",
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "X-Report-Truncated": "true" if generator.report_truncated else "false",
-        },
+    """Recent report jobs for this project (newest first), excluding dismissed."""
+    return (
+        db.query(ReportJob)
+        .filter(ReportJob.project_id == project.id, ReportJob.dismissed_at.is_(None))
+        .order_by(ReportJob.created_at.desc())
+        .limit(limit)
+        .all()
     )
 
 
-@router.get("/hosts/agent-package")
-def generate_hosts_agent_package_report(
-    filters: HostFilterParams = Depends(),
+@router.get("/jobs/{job_id}", response_model=ReportJobSchema)
+def get_report_job(
+    job_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Generate a ZIP package with host data optimized for agentic workflows."""
-    # The full filter context (incl. has_exploit_available, has_test_execution,
-    # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
-    # the shared HostFilterParams so reports can never narrow to fewer filters
-    # than the visible /hosts list.  None-stripped for the html/agent/markdown
-    # generators that display the applied filters.
-    filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
-
-    generator = ReportGenerator(db, current_user, project_id=project.id)
-    # In-memory ZIP build → lower cap.
-    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
-    package_content = generator.generate_agent_package(hosts, filter_kwargs)
-
-    filename = f"networkmapper_agent_package_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-    return Response(
-        content=package_content,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    job = (
+        db.query(ReportJob)
+        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
+        .first()
     )
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    return job
 
 
-@router.get("/hosts/markdown-bundle")
-def generate_hosts_markdown_bundle_report(
-    filters: HostFilterParams = Depends(),
+@router.get("/jobs/{job_id}/download")
+def download_report_job(
+    job_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Generate a ZIP bundle with a Markdown report and companion flat files."""
-    # The full filter context (incl. has_exploit_available, has_test_execution,
-    # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
-    # the shared HostFilterParams so reports can never narrow to fewer filters
-    # than the visible /hosts list.  None-stripped for the html/agent/markdown
-    # generators that display the applied filters.
-    filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
+    """Stream a completed report job's artifact."""
+    from fastapi.responses import FileResponse
 
-    generator = ReportGenerator(db, current_user, project_id=project.id)
-    # In-memory ZIP build → lower cap.
-    hosts = generator.get_hosts_for_report(filter_kwargs, cap=generator.MAX_INMEMORY_REPORT_HOSTS)
-    bundle_content = generator.generate_markdown_bundle(hosts, filter_kwargs)
-
-    filename = f"networkmapper_markdown_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-    return Response(
-        content=bundle_content,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    job = (
+        db.query(ReportJob)
+        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
+        .first()
     )
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    if job.status != "completed" or not job.result_path:
+        raise HTTPException(status_code=409, detail=f"Report is not ready (status: {job.status}).")
+    if not Path(job.result_path).is_file():
+        raise HTTPException(status_code=410, detail="Report artifact has expired or been removed.")
+    return FileResponse(
+        path=job.result_path,
+        media_type=job.media_type or "application/octet-stream",
+        filename=job.result_filename or f"report_{job.id}",
+        headers={"X-Report-Truncated": "true" if job.truncated else "false"},
+    )
+
+
+@router.post("/jobs/{job_id}/dismiss", response_model=ReportJobSchema)
+def dismiss_report_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Acknowledge a report job (drops it from the recent-jobs list)."""
+    job = (
+        db.query(ReportJob)
+        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    job.dismissed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(job)
+    return job

@@ -379,8 +379,10 @@ export const getScanCommandExplanation = async (scanId: number): Promise<Command
 // Parse Error API functions — only the singular fetch is wired up to
 // the UI today; the list/stats/update/delete wrappers were removed in
 // the cleanup pass after months of zero consumers.  Re-add when a
+// CSV + HTML stream synchronously from the API and download directly. The heavy
+// formats (pdf/json/zip bundles) are async report jobs — see enqueueReportJob.
 export const generateHostsReport = async (
-  format: 'csv' | 'html' | 'pdf' | 'json' | 'agent-package' | 'markdown-bundle',
+  format: 'csv' | 'html',
   filters: {
     scan_id?: number;
     state?: string;
@@ -411,7 +413,8 @@ export const generateHostsReport = async (
       queryParams.append(key, value.toString());
     }
   });
-  if (reportType && (format === 'html' || format === 'pdf' || format === 'json')) {
+  // CSV is always the inventory table; only HTML honours report_type.
+  if (reportType && format === 'html') {
     queryParams.append('report_type', reportType);
   }
 
@@ -432,7 +435,7 @@ export const generateHostsReport = async (
   a.href = url;
   const contentDisposition = response.headers['content-disposition'] as string | undefined;
   const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/i);
-  const fallbackExtension = format === 'agent-package' || format === 'markdown-bundle' ? 'zip' : format;
+  const fallbackExtension = format;
   a.download = filenameMatch?.[1] || `hosts_report_${new Date().toISOString().split('T')[0]}.${fallbackExtension}`;
   document.body.appendChild(a);
   a.click();
@@ -440,6 +443,76 @@ export const generateHostsReport = async (
   document.body.removeChild(a);
 
   return { truncated };
+};
+
+// --- Async report jobs (pdf / json / agent-package / markdown-bundle) --------
+// These build the whole document in memory, so they run on a dedicated report
+// worker: enqueue a job, poll its status, then download the artifact.
+
+export type AsyncReportFormat = 'pdf' | 'json' | 'agent-package' | 'markdown-bundle';
+
+export interface ReportJob {
+  id: number;
+  project_id: number;
+  format: string;
+  report_type: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  message?: string | null;
+  error_message?: string | null;
+  result_filename?: string | null;
+  media_type?: string | null;
+  file_size?: number | null;
+  truncated: boolean;
+  retry_count?: number | null;
+  last_error?: string | null;
+  last_heartbeat?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  expires_at?: string | null;
+  dismissed_at?: string | null;
+}
+
+export const enqueueReportJob = async (
+  format: AsyncReportFormat,
+  filters: Record<string, string | number | boolean | undefined>,
+  reportType?: 'inventory' | 'comprehensive',
+): Promise<ReportJob> => {
+  const query = new URLSearchParams();
+  query.set('format', format);
+  if (reportType) query.set('report_type', reportType);
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined) query.append(key, value.toString());
+  });
+  const response = await api.post(`${p()}/reports/jobs?${query}`);
+  return response.data as ReportJob;
+};
+
+export const getReportJob = async (jobId: number): Promise<ReportJob> => {
+  const response = await api.get(`${p()}/reports/jobs/${jobId}`);
+  return response.data as ReportJob;
+};
+
+export const downloadReportJob = async (jobId: number): Promise<{ truncated: boolean }> => {
+  const response = await api.get(`${p()}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
+  const truncated = String(response.headers['x-report-truncated'] ?? '').toLowerCase() === 'true';
+  const blob = new Blob([response.data]);
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const contentDisposition = response.headers['content-disposition'] as string | undefined;
+  const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/i);
+  a.download = filenameMatch?.[1] || `report_${jobId}`;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  return { truncated };
+};
+
+export const listReportJobs = async (limit = 20): Promise<ReportJob[]> => {
+  const response = await api.get(`${p()}/reports/jobs?limit=${limit}`);
+  return response.data as ReportJob[];
 };
 
 // Tool Ready Output API

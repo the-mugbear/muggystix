@@ -173,6 +173,8 @@ EXPECTED_ONDELETE = {
     ('recon_sessions', 'project_id'): 'CASCADE',
     ('recon_sessions', 'scope_id'): 'CASCADE',
     ('recon_sessions', 'started_by_id'): 'SET NULL',
+    ('report_jobs', 'project_id'): 'CASCADE',
+    ('report_jobs', 'requested_by_id'): 'SET NULL',
     ('scan_info', 'scan_id'): 'CASCADE',
     ('scans', 'project_id'): 'CASCADE',
     ('scans', 'uploaded_by_id'): 'SET NULL',

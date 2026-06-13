@@ -237,70 +237,34 @@ class TestHostsAPI:
         assert payload["total_notes"] == 1
         assert payload["notes"][0]["host_id"] == host.id
 
-    def test_generate_agent_package_report(self, client, db_session, sample_gnmap_data, temp_file, test_project):
-        """Agent package export should return a ZIP with the expected structured files."""
-        from app.parsers.gnmap_parser import GnmapParser
+    def test_enqueue_agent_package_report(self, client, test_project):
+        """Agent-package export enqueues an async report job (the generation +
+        ZIP contents are verified in test_report_jobs.py against the service)."""
+        resp = client.post(
+            f"/api/v1/projects/{test_project.id}/reports/jobs",
+            params={"format": "agent-package"},
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["status"] == "queued"
+        assert body["format"] == "agent-package"
 
-        parser = GnmapParser(db_session)
+    def test_enqueue_markdown_bundle_report(self, client, test_project):
+        """Markdown-bundle export enqueues an async report job."""
+        resp = client.post(
+            f"/api/v1/projects/{test_project.id}/reports/jobs",
+            params={"format": "markdown-bundle", "report_type": "comprehensive"},
+        )
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["format"] == "markdown-bundle"
 
-        with open(temp_file, 'w') as f:
-            f.write(sample_gnmap_data)
-
-        _scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
-        _scan.project_id = test_project.id
-        db_session.commit()
-
-        response = client.get(f"/api/v1/projects/{test_project.id}/reports/hosts/agent-package")
-        assert response.status_code == 200
-        assert "application/zip" in response.headers["content-type"]
-
-        bundle = zipfile.ZipFile(io.BytesIO(response.content))
-        names = set(bundle.namelist())
-        assert {"manifest.json", "schema.json", "scans.json", "hosts.ndjson"}.issubset(names)
-
-        manifest = json.loads(bundle.read("manifest.json"))
-        assert manifest["schema_version"] == "1.0"
-        assert manifest["counts"]["hosts"] == 2
-
-        host_lines = [line for line in bundle.read("hosts.ndjson").decode().splitlines() if line.strip()]
-        assert len(host_lines) == 2
-        first_host = json.loads(host_lines[0])
-        assert "identity" in first_host
-        assert "ports" in first_host
-        assert "vulnerabilities" in first_host
-
-    def test_generate_markdown_bundle_report(self, client, db_session, sample_gnmap_data, temp_file, test_project):
-        """Markdown bundle export should return a ZIP with report and companion files."""
-        from app.parsers.gnmap_parser import GnmapParser
-
-        parser = GnmapParser(db_session)
-
-        with open(temp_file, 'w') as f:
-            f.write(sample_gnmap_data)
-
-        _scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
-        _scan.project_id = test_project.id
-        db_session.commit()
-
-        response = client.get(f"/api/v1/projects/{test_project.id}/reports/hosts/markdown-bundle")
-        assert response.status_code == 200
-        assert "application/zip" in response.headers["content-type"]
-
-        bundle = zipfile.ZipFile(io.BytesIO(response.content))
-        names = set(bundle.namelist())
-        # findings.csv was renamed to vulnerabilities.csv (it's scanner vulns),
-        # and the dossier correlation CSVs were added.
-        assert {
-            "report.md", "hosts.csv", "vulnerabilities.csv",
-            "canonical_findings.csv", "execution_findings.csv", "notes.csv", "scans.csv",
-        }.issubset(names)
-        assert "findings.csv" not in names
-
-        report_md = bundle.read("report.md").decode()
-        # v2.65.0 — was "NetworkMapper Host Report" before the
-        # v2.58.0 BlueStick rename.
-        assert "# BlueStick Host Report" in report_md
-        assert "## Priority Hosts" in report_md
+    def test_enqueue_report_rejects_sync_format(self, client, test_project):
+        """csv/html are sync-streamed, not enqueueable — the job endpoint rejects them."""
+        resp = client.post(
+            f"/api/v1/projects/{test_project.id}/reports/jobs",
+            params={"format": "csv"},
+        )
+        assert resp.status_code == 422, resp.text
 
 
 class TestScansAPI:
