@@ -141,44 +141,22 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
 
 def _resolve_host_sites(db: Session, project_id: int) -> Dict[int, str]:
     """Map each host in the project to ONE site — the site of its most-specific
-    (longest-prefix) matching subnet that carries a site.  Most-specific wins so
-    a host inside both 10.0.0.0/8 (no site) and 10.1.2.0/24 ("DC-East") resolves
-    to DC-East and is never double-counted across sites.
+    (longest-prefix) matching subnet that carries a site, so a host inside both
+    10.0.0.0/8 (no site) and 10.1.2.0/24 ("DC-East") resolves to DC-East.
 
-    Same inheritance rule as subnet_insight_service.resolve_host_locations —
-    keep the two in lockstep so every site-attribution surface agrees."""
-    subnet_rows = (
-        db.query(Subnet.id, Subnet.cidr, Subnet.site)
-        .join(Scope, Subnet.scope_id == Scope.id)
-        .filter(Scope.project_id == project_id, Subnet.site.isnot(None), Subnet.site != "")
-        .all()
-    )
-    if not subnet_rows:
-        return {}
-    subnet_site: Dict[int, tuple] = {}
-    for sid, cidr, site in subnet_rows:
-        try:
-            prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
-        except ValueError:
-            prefixlen = 0
-        subnet_site[sid] = (prefixlen, site)
+    Thin projection over ``subnet_insight_service.resolve_host_locations`` — the
+    single implementation of the longest-prefix site-inheritance rule (it tracks
+    the nearest *site-bearing* subnet identically).  Previously this was a
+    hand-synced duplicate; routing through one function removes the drift risk.
+    The import is function-local to break the attention<->subnet_insight module
+    cycle (subnet_insight imports the weighting constants from this module)."""
+    from app.services.subnet_insight_service import resolve_host_locations
 
-    host_best: Dict[int, tuple] = {}  # host_id -> (prefixlen, site)
-    mappings = (
-        db.query(HostSubnetMapping.host_id, HostSubnetMapping.subnet_id)
-        .join(models.Host, HostSubnetMapping.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project_id,
-            HostSubnetMapping.subnet_id.in_(list(subnet_site.keys())),
-        )
-        .all()
-    )
-    for host_id, subnet_id in mappings:
-        prefixlen, site = subnet_site[subnet_id]
-        cur = host_best.get(host_id)
-        if cur is None or prefixlen > cur[0]:
-            host_best[host_id] = (prefixlen, site)
-    return {hid: v[1] for hid, v in host_best.items()}
+    return {
+        host_id: rec["site"]
+        for host_id, rec in resolve_host_locations(db, project_id).items()
+        if rec.get("site")
+    }
 
 
 def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
