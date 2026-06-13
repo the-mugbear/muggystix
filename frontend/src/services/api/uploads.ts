@@ -169,6 +169,16 @@ export const dismissIngestionJob = async (jobId: number): Promise<IngestionJob> 
   return response.data;
 };
 
+// Cancel a queued/processing ingestion job. Backend (POST /upload/jobs/{id}/cancel)
+// marks it failed and the worker's atomic completion guard won't resurrect it;
+// rejects already-terminal jobs (409) and non-owner/non-admin (403).
+export const cancelIngestionJob = async (
+  jobId: number,
+): Promise<{ job_id: number; status: string; message: string }> => {
+  const response = await api.post(`${p()}/upload/jobs/${jobId}/cancel`);
+  return response.data;
+};
+
 
 // Ingestion Results API
 export interface IngestionResultItem {

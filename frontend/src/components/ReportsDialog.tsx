@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertCircle,
   Code,
   Download,
   FileArchive,
@@ -15,7 +16,10 @@ import {
   enqueueReportJob,
   getReportJob,
   downloadReportJob,
+  listReportJobs,
+  dismissReportJob,
   type AsyncReportFormat,
+  type ReportJob,
 } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -114,14 +118,37 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // Set when the server reports it capped the export (X-Report-Truncated): the
   // file still downloaded, so we keep the dialog open and warn rather than close.
   const [truncated, setTruncated] = useState(false);
+  // Recent async report jobs — so navigating away / reopening doesn't strand a
+  // long-running or completed export; you can re-download from here.
+  const [recentJobs, setRecentJobs] = useState<ReportJob[]>([]);
 
-  // Clear a prior partial-export warning whenever the dialog is reopened.
+  const refreshRecentJobs = React.useCallback(async () => {
+    try {
+      setRecentJobs(await listReportJobs(10));
+    } catch {
+      /* non-fatal — the tray just stays as-is */
+    }
+  }, []);
+
+  // Clear a prior partial-export warning whenever the dialog is reopened, and
+  // load the recent-jobs tray.
   useEffect(() => {
     if (open) {
       setTruncated(false);
       setError(null);
+      refreshRecentJobs();
     }
-  }, [open]);
+  }, [open, refreshRecentJobs]);
+
+  // While the dialog is open and a job is still running, poll the tray so it
+  // advances queued → processing → completed without a manual refresh.
+  useEffect(() => {
+    if (!open) return;
+    const active = recentJobs.some((j) => j.status === 'queued' || j.status === 'processing');
+    if (!active) return;
+    const t = setInterval(refreshRecentJobs, 2500);
+    return () => clearInterval(t);
+  }, [open, recentJobs, refreshRecentJobs]);
 
   const allowedFormats = HUMAN_FORMATS[reportType];
 
@@ -157,6 +184,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
 
       // Heavy formats run on the report worker: enqueue → poll → download.
       let job = await enqueueReportJob(fmt as AsyncReportFormat, filters, type);
+      refreshRecentJobs(); // surface it in the tray immediately
       // Cap the wait at the server-side report timeout (~15 min) so a wedged
       // job doesn't poll forever.
       const maxAttempts = 450; // 450 × 2s = 15 min
@@ -166,6 +194,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         attempts += 1;
         job = await getReportJob(job.id);
       }
+      refreshRecentJobs();
       if (job.status === 'completed') {
         const { truncated: wasTruncated } = await downloadReportJob(job.id);
         settleDownload(wasTruncated);
@@ -370,6 +399,82 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             ))}
           </div>
         </div>
+
+        {/* Recent reports — async jobs persist on the worker, so navigating away
+            or reopening this dialog won't strand a long-running/completed export.
+            Re-download completed ones here. */}
+        {recentJobs.length > 0 && (
+          <div className="mt-xs border-t border-border pt-sm">
+            <p className="text-caption font-semibold text-muted-foreground">Recent reports</p>
+            <div className="mt-xxs space-y-xxs">
+              {recentJobs.map((job) => {
+                const running = job.status === 'queued' || job.status === 'processing';
+                return (
+                  <div
+                    key={job.id}
+                    className="flex items-center gap-xs rounded-control border border-border px-xs py-xxs text-caption"
+                  >
+                    {running ? (
+                      <Loader2 className="size-3.5 shrink-0 animate-spin text-info" aria-hidden />
+                    ) : job.status === 'completed' ? (
+                      <Download className="size-3.5 shrink-0 text-success" aria-hidden />
+                    ) : (
+                      <AlertCircle className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="font-medium">{job.format}</span>{' '}
+                      <span className="text-muted-foreground">· {job.report_type}</span>
+                      {job.status === 'failed' && (job.error_message || job.last_error) && (
+                        <span className="block truncate text-destructive">
+                          {job.error_message || job.last_error}
+                        </span>
+                      )}
+                    </span>
+                    <Badge
+                      variant={
+                        job.status === 'completed'
+                          ? 'success'
+                          : job.status === 'failed'
+                          ? 'destructive'
+                          : 'info'
+                      }
+                      className="shrink-0"
+                    >
+                      {job.status}
+                      {job.truncated ? ' · capped' : ''}
+                    </Badge>
+                    {job.status === 'completed' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0"
+                        onClick={() => downloadReportJob(job.id)}
+                      >
+                        Download
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 shrink-0"
+                      aria-label={`Dismiss report job ${job.id}`}
+                      onClick={async () => {
+                        try {
+                          await dismissReportJob(job.id);
+                          refreshRecentJobs();
+                        } catch {
+                          /* non-fatal */
+                        }
+                      }}
+                    >
+                      ✕
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

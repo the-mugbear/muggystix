@@ -9,6 +9,8 @@ vi.mock('../../services/api', () => ({
   enqueueReportJob: vi.fn(),
   getReportJob: vi.fn(),
   downloadReportJob: vi.fn(),
+  listReportJobs: vi.fn().mockResolvedValue([]),
+  dismissReportJob: vi.fn(),
 }));
 
 describe('ReportsDialog — async report jobs', () => {

@@ -515,6 +515,11 @@ export const listReportJobs = async (limit = 20): Promise<ReportJob[]> => {
   return response.data as ReportJob[];
 };
 
+export const dismissReportJob = async (jobId: number): Promise<ReportJob> => {
+  const response = await api.post(`${p()}/reports/jobs/${jobId}/dismiss`);
+  return response.data as ReportJob;
+};
+
 // Tool Ready Output API
 export const getToolReadyOutput = async (
   format: string,

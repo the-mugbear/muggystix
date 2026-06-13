@@ -27,12 +27,14 @@ import {
   getIngestionJob,
   getRecentIngestionJobs,
   dismissIngestionJob,
+  cancelIngestionJob,
   getScanCommandExplanation,
 } from '../services/api';
 import type { Scan, IngestionJob, CommandExplanation } from '../services/api';
 import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
+import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -144,6 +146,7 @@ const isMasscanScan = (scan: Scan) => (scan.tool_name || scan.scan_type || '').t
 export default function Scans() {
   const navigate = useNavigate();
   const toast = useToast();
+  const [confirmDialog, confirm] = useConfirm();
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -864,6 +867,7 @@ export default function Scans() {
 
   return (
     <div className="p-md md:p-lg">
+      {confirmDialog}
       <div className="mb-md flex flex-wrap items-start justify-between gap-sm">
         <div>
           <h1 className="text-page-title font-semibold">Scans</h1>
@@ -1193,6 +1197,35 @@ export default function Scans() {
                                 Preserves the failure for the audit
                                 trail (admins can re-surface dismissed
                                 rows via ?include_dismissed=true). */}
+                            {(job.status === 'queued' || job.status === 'processing') && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive"
+                                onClick={async () => {
+                                  const ok = await confirm({
+                                    title: 'Cancel ingestion',
+                                    body:
+                                      'Stop parsing this file? Any rows already imported are kept; '
+                                      + 'the job is marked failed. You can re-upload to retry.',
+                                    resourceName: job.original_filename,
+                                    severity: 'warning',
+                                    confirmLabel: 'Cancel job',
+                                  });
+                                  if (!ok) return;
+                                  try {
+                                    await cancelIngestionJob(job.id);
+                                    toast.info('Ingestion cancelled');
+                                    await fetchRecentJobs();
+                                  } catch (err) {
+                                    toast.error(formatApiError(err, 'Could not cancel ingestion'));
+                                  }
+                                }}
+                                aria-label={`Cancel ingestion for ${job.original_filename}`}
+                              >
+                                Cancel
+                              </Button>
+                            )}
                             {isFailure && (
                               <Button
                                 size="sm"
