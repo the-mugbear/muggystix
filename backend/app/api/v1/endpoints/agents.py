@@ -7,7 +7,7 @@ authenticate via API key and interact with project data programmatically.
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path
@@ -21,7 +21,6 @@ from app.db.models_project import Project
 from app.api.deps import get_current_project, is_project_admin, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
 from app.db.models_auth import User
-from app.core.config import settings as _settings
 from app.core.security import log_audit_event
 from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
 

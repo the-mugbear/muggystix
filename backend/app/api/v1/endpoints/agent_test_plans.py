@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db import models
-from app.db.models_agent import Agent, TestPlan, TestPlanEntry
+from app.db.models_agent import Agent, TestPlanEntry
 from app.api.deps import check_agent_rate_limit, deny_scoped_keys, require_plan_scope
 from app.services.test_plan_service import TestPlanService
 

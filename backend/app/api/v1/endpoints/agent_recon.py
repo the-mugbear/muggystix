@@ -12,7 +12,7 @@ auth layer.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile
 from sqlalchemy import func
@@ -24,8 +24,8 @@ from app.db.models_agent import Agent, ReconSession, ReconSessionStatus
 from app.api.deps import require_recon_scope
 
 from app.api.v1.endpoints.agent_schemas import (
-    KnownHostsProbeHelper, ReconContextResponse, ReconUploadResponse,
-    ReconJobStatus, ReconPortBrief, ReconHostBrief, WebTarget,
+    ReconContextResponse, ReconUploadResponse,
+    ReconJobStatus,
     ReconSummaryResponse, ReconCompleteRequest,
     EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
 )
@@ -42,7 +42,6 @@ from app.services.recon_summary_service import (
 )
 from app.services.recon_planning_service import (
     analyze_scope_size as _analyze_scope_size,
-    masscan_rate_for_bucket as _masscan_rate_for_bucket,
     build_tool_catalog as _build_tool_catalog,
     build_recommended_sequence as _build_recommended_sequence,
 )

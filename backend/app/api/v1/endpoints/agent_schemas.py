@@ -18,7 +18,7 @@ from app.db.models_agent import (
     TestExecutionStatus,
     TestPhase,
 )
-from app.schemas.schemas import ProposedTest, ProposedTestItem
+from app.schemas.schemas import ProposedTestItem
 
 # Use ORM enums directly — Pydantic accepts enum values in JSON and validates membership
 PriorityValue = TestEntryPriority

@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.36.0",
+        "app_version": "2.200.0",
+        "summary": (
+            "AGENTS.md accuracy pass — the guide had drifted from the API "
+            "across ~120 backend releases. Corrected: /agent/hosts filter list "
+            "(dropped the non-existent `min_risk_score`, documented the real "
+            "`has_exploit_available`); /agent/assist/hosts filter list (dropped "
+            "`min_risk_score`); /agent/recon/subnets pagination (actually "
+            "default 500 / max 2000, not 100/500); /agent/scans optional "
+            "filters (`tool`, `created_after`, `sort_by`, `sort_order`); and the "
+            "environment-aware blocked-step shape — the placeholder keeps the "
+            "original step `phase` (there is no `manual_action_required` phase "
+            "value), so agents must key on `blocked_reason`/null `tool`+`command`, "
+            "and `acceptable_fallbacks[]` is documented. No endpoint or behaviour "
+            "changes — documentation correctness only."
+        ),
+    },
+    {
         "version": "1.35.0",
         "app_version": "2.140.0",
         "summary": (

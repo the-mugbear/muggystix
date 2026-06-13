@@ -16,7 +16,7 @@ from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import ReconSession, TestPlan, TestPlanEntry
 from app.services.test_plan_service import TestPlanService
 
-from app.api.v1.endpoints.agent_schemas import HostBrief, PlanResponse, VulnCounts
+from app.api.v1.endpoints.agent_schemas import PlanResponse
 
 # Reuse canonical service-port mappings from the hosts endpoint
 from app.api.v1.endpoints.hosts import SERVICE_PORT_MAPPINGS as _SERVICE_PORT_MAP

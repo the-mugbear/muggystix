@@ -31,20 +31,17 @@ from app.db.models_agent import (
     AssistSession,
     AssistSessionStatus,
     ReconSession,
-    ReconSessionStatus,
 )
 from app.db.models_project import Project
 from app.api.deps import require_assist_scope
 
 from app.api.v1.endpoints.agent_schemas import (
-    AgentDashboard,
     EnvironmentProbeRequest,
     EnvironmentProbeResponse,
     EnvironmentSummary,
     HostBrief,
     HostDetail,
     PortBrief,
-    ProjectInfo,
     ScanBrief,
     ScopeBrief,
     VulnCounts,

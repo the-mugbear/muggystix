@@ -1,6 +1,6 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Version:** 2.79.0 | **Updated:** 2026-05-29
+**Version:** 2.200.0 | **Updated:** 2026-06-13
 
 You are an AI assistant (Claude Code, Codex, ChatGPT, etc.) assigned to a workflow in BlueStick. This file is the entire surface you are authorized to use. Follow it literally — the surrounding scaffolding (human approval, per-session key scope, audit trail) depends on you behaving as described.
 
@@ -640,16 +640,19 @@ When *both* the default tool and its fallback are missing/broken, the server emi
 
 ```json
 {
-  "step": 1, "phase": "manual_action_required",
+  "step": 1, "phase": "discovery",
   "tool": null,
   "command": null,
   "original_tool": "masscan",
   "fallback_tool": "rustscan",
   "blocked_reason": "neither_available",
+  "acceptable_fallbacks": [],
   "note": "BLOCKED: neither masscan (...) nor the documented fallback rustscan (...) is usable in this environment.  Install one before continuing — see the `install_hints` block on the catalog entry for either tool, or ask the user to install via their package manager.  Do NOT improvise an alternate tool without per-command approval.",
   "upload_after": false
 }
 ```
+
+> **Detect a blocked step by `blocked_reason`, not `phase`.** The placeholder keeps the *original* step's `phase` (`discovery`/`web`/…) — there is no `manual_action_required` phase value. The discriminator is `blocked_reason` being non-null (currently always `"neither_available"`) together with `tool: null` / `command: null`. When the rule declares pre-vetted alternatives they ride along in `acceptable_fallbacks[]` (each requiring explicit per-command approval).
 
 When the masscan→rustscan swap fires, the server also collapses the downstream standalone service-probe step (the one that would have used `live-hosts.txt`, which rustscan doesn't produce) into a synthesized web-fingerprint step matching the canonical `recommended_discovery=rustscan_nmap` shape (v2.41.1, review C-RR-2). The synthesized step carries `"synthesized_after": "masscan_to_rustscan_swap"` so the UI / agent can surface that derivation.
 
@@ -660,7 +663,7 @@ Current swaps:
 | `httpx` (web) | `eyewitness` | `tools_status[httpx].status` is `warn`/`missing`, or `tools_available.httpx === false` |
 | `masscan` (discovery on large scopes) | `rustscan` | same, for masscan — covers both missing-binary and no-raw-socket-privilege cases |
 
-When you call `/agent/recon/context` *before* posting the env probe, no adaptation happens (no signal to adapt on); subsequent calls after the probe lands return the adapted sequence. Surface `swap_reason` to the user during plan approval so they see which steps deviated from the canonical plan and why. If you see `manual_action_required`, **stop and report to the user** rather than improvising — the placeholder exists precisely so the agent doesn't try an alternate tool without explicit approval.
+When you call `/agent/recon/context` *before* posting the env probe, no adaptation happens (no signal to adapt on); subsequent calls after the probe lands return the adapted sequence. Surface `swap_reason` to the user during plan approval so they see which steps deviated from the canonical plan and why. If you see a blocked placeholder (`blocked_reason` set, `tool`/`command` null — see above), **stop and report to the user** rather than improvising — the placeholder exists precisely so the agent doesn't try an alternate tool without explicit approval.
 
 ### Known-hosts probe helper
 
@@ -856,7 +859,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/dashboard` | Host/port/scan/vuln counts (scope-filtered for recon keys) |
 | GET | `/agent/hosts` | List hosts — scope-filtered for recon keys. **Bare array, paginated (default 500, max 5000), no `has_more`/`total` — you MUST page; see Host list filters below** |
 | GET | `/agent/hosts/{id}` | Host detail with ports — 404 if host is not in your scope (recon keys) |
-| GET | `/agent/scans` | List scans — scope-filtered for recon keys. **Newest-first, default 100 / max 500, NO offset — scans past the newest 500 are not retrievable here (use `scans_ingested` in `/agent/recon/summary` for true per-session counts)** |
+| GET | `/agent/scans` | List scans — scope-filtered for recon keys. **Newest-first, default 100 / max 500, NO offset — scans past the newest 500 are not retrievable here (use `scans_ingested` in `/agent/recon/summary` for true per-session counts).** Optional filters: `tool`, `created_after`, `sort_by` (`created_at`\|`filename`\|`tool_name`), `sort_order` (`asc`\|`desc`) |
 | GET | `/agent/scopes` | List scopes |
 | POST | `/agent/hosts/{id}/notes` | Create a note on a host |
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
@@ -896,7 +899,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/agent/recon/context` | Scope CIDRs + known hosts + tool catalog |
-| GET | `/agent/recon/subnets` | Paginated subnet list for very large scopes (default 100, max 500 per page — see Recon workflow prose) |
+| GET | `/agent/recon/subnets` | Paginated subnet list for very large scopes (default 500, max 2000 per page — see Recon workflow prose) |
 | POST | `/agent/recon/sessions/{session_id}/environment` | Record this recon session's operator-environment probe (v2.23.0) |
 | POST | `/agent/recon/upload` | **Submit scanner output here** — multipart upload, any supported tool format |
 | GET | `/agent/recon/jobs/{id}` | Poll an upload's parse status |
@@ -913,7 +916,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 ### Host list filters (`GET /agent/hosts`)
 
-`state`, `ports` (comma-separated), `services` (comma-separated), `subnets` (CIDR), `has_critical_vulns`, `has_high_vulns`, `min_risk_score`, `search`, `not_in_plan_id` (exclude hosts already in a plan), `limit`, `offset`.
+`state`, `ports` (comma-separated), `services` (comma-separated), `subnets` (CIDR), `has_critical_vulns`, `has_high_vulns`, `has_exploit_available` (hosts with ≥1 vuln flagged exploitable by the Nessus parser), `search`, `not_in_plan_id` (exclude hosts already in a plan), `limit`, `offset`.
 
 Each host in the response includes `open_port_count` and `vuln_summary` (`{critical, high, medium, low}`) so you can prioritize without calling the detail endpoint.
 
@@ -1233,7 +1236,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 |---|---|
 | `POST /agent/assist/sessions/{session_id}/environment` | Probe (MANDATORY first step; same body shape as recon/execution) |
 | `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
-| `GET  /agent/assist/hosts` | List hosts; filters mirror the `/hosts` UI: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `min_risk_score`, `search`, `limit`, `offset`. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
+| `GET  /agent/assist/hosts` | List hosts; filters mirror the `/hosts` UI: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
 | `GET  /agent/assist/hosts/{host_id}` | One host with its FULL open-port list (can be large for hosts with many ports — prefer `open_port_count` from the list for triage). |
 | `GET  /agent/assist/scopes` | Scope CIDR lists — **each scope capped at 100 subnets, silently (no truncation flag)**. If a scope may have more, tell the operator the list is partial; full enumeration needs a recon session. |
 | `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
