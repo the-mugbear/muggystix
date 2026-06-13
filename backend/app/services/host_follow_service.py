@@ -342,8 +342,12 @@ class HostFollowService:
             raise NoteHasRepliesError(
                 "This note still has replies; delete or move them first."
             )
+        nid = note.id
         self.db.delete(note)
         self.db.commit()
+        # R6: the NoteAttachment rows cascaded with the note — drop their files too.
+        from app.services.note_attachment_service import purge_note_files
+        purge_note_files(nid)
 
     def get_dashboard_activity(self, user_id: int, limit: int = 5, project_id: int = None) -> Dict[str, object]:
         """Return recent note activity and follow counts for dashboard display,

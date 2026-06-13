@@ -9,6 +9,8 @@ being copied per endpoint.
 """
 import os
 import re
+import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -104,6 +106,71 @@ def store_image_attachment(
         uploaded_by_id=uploaded_by_id,
     )
     db.add(att)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # Don't leak the file we just wrote if the row didn't persist (R6 —
+        # commit-failure orphan).  The reconciler is the backstop; this is the
+        # immediate compensation.
+        db.rollback()
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     db.refresh(att)
     return att
+
+
+# --- File lifecycle (R6: don't orphan files on delete / failed commit) -------
+
+def _safe_note_dir(note_id: int) -> Optional[Path]:
+    """``note_attachments/{note_id}`` resolved + confined to the root (guards a
+    tampered note_id from escaping the attachments tree)."""
+    root = _attachments_root()
+    try:
+        d = (root / str(int(note_id)))
+        d.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None
+    return d
+
+
+def purge_note_files(note_id: int) -> None:
+    """Remove a note's on-disk attachment dir.  Call AFTER the note's rows are
+    deleted (the DB cascade drops the NoteAttachment rows; this drops the files
+    they pointed at)."""
+    d = _safe_note_dir(note_id)
+    if d and d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# Grace period so the reconciler never reaps a dir for an in-flight upload (the
+# dir exists between mkdir and the row commit).
+_RECONCILE_GRACE_SECONDS = 3600
+
+
+def reconcile_orphan_attachments(db: Session) -> int:
+    """Delete attachment dirs with no surviving NoteAttachment row — the backstop
+    for commit-failure orphans and any delete path that didn't clean its files.
+    Skips dirs younger than the grace window so in-flight uploads are safe."""
+    root = _attachments_root()
+    if not root.exists():
+        return 0
+    dirs = [c for c in root.iterdir() if c.is_dir() and c.name.isdigit()]
+    if not dirs:
+        return 0
+    existing = {r[0] for r in db.query(models.NoteAttachment.annotation_id).distinct().all()}
+    now = time.time()
+    removed = 0
+    for c in dirs:
+        if int(c.name) in existing:
+            continue
+        try:
+            if now - c.stat().st_mtime <= _RECONCILE_GRACE_SECONDS:
+                continue  # possibly an in-flight upload
+        except OSError:
+            continue
+        shutil.rmtree(c, ignore_errors=True)
+        removed += 1
+    return removed

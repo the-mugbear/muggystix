@@ -355,9 +355,22 @@ def delete_project(
             detail="Cannot delete the only project — create another first.",
         )
 
+    # R6: capture the project's attachment note-ids BEFORE the cascade deletes
+    # the NoteAttachment rows, then drop the on-disk files after the commit.
+    from app.db import models as _models
+    from app.services.note_attachment_service import purge_note_files
+    _attachment_note_ids = {
+        r[0]
+        for r in db.query(_models.NoteAttachment.annotation_id)
+        .filter(_models.NoteAttachment.project_id == project.id)
+        .all()
+    }
+    project_name = project.name
     db.delete(project)
     db.commit()
-    return {"message": f"Project '{project.name}' deleted"}
+    for _nid in _attachment_note_ids:
+        purge_note_files(_nid)
+    return {"message": f"Project '{project_name}' deleted"}
 
 
 # --- Membership Management ---

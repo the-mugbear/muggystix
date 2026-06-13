@@ -67,6 +67,17 @@ def main() -> None:
         removed = service.cleanup_expired()
         if removed:
             logger.info("Report cleanup removed %d expired artifact(s)", removed)
+        # R6 backstop: reap orphaned note-attachment files (commit-failure /
+        # missed deletes). Cheap — one query + a grace-windowed dir scan.
+        try:
+            from app.db.session import SessionLocal
+            from app.services.note_attachment_service import reconcile_orphan_attachments
+            with SessionLocal() as db:
+                orphans = reconcile_orphan_attachments(db)
+            if orphans:
+                logger.info("Reaped %d orphaned attachment dir(s)", orphans)
+        except Exception:
+            logger.exception("Attachment reconcile failed")
 
     worker_loop.run_listen_loop(
         channel="report_jobs",
