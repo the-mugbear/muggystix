@@ -114,7 +114,12 @@ const TestPlanActivityTab = lazy(() => import('./pages/test-plan/ActivityTab'));
 const TestPlanApiCallsTab = lazy(() => import('./pages/test-plan/ApiCallsTab'));
 const TestPlanDangerTab = lazy(() => import('./pages/test-plan/DangerTab'));
 const Reference = lazy(() => import('./pages/Reference'));
-const UserGuide = lazy(() => import('./pages/UserGuide'));
+// User Guide — multi-page under /reference/user-guide/* (see pages/userguide/).
+const GettingStartedGuide = lazy(() => import('./pages/userguide/GettingStartedGuide'));
+const DataGuide = lazy(() => import('./pages/userguide/DataGuide'));
+const TriageGuide = lazy(() => import('./pages/userguide/TriageGuide'));
+const AgentsGuide = lazy(() => import('./pages/userguide/AgentsGuide'));
+const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const LLMSettings = lazy(() => import('./pages/LLMSettings'));
@@ -614,7 +619,39 @@ function App() {
                         path="/reference/user-guide"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <UserGuide />
+                            <GettingStartedGuide />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/user-guide/data"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <DataGuide />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/user-guide/triage"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <TriageGuide />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/user-guide/agents"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <AgentsGuide />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/user-guide/admin"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <AdminGuide />
                           </ProtectedRoute>
                         }
                       />

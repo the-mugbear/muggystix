@@ -106,6 +106,12 @@ describe('navigation manifest', () => {
     '/default-credentials',
     '/tool-reference',
     '/reference/user-guide',
+    // User-guide sub-pages — reached via the in-page section tab strip, not the
+    // sidebar IA (the guide is one logical destination split for readability).
+    '/reference/user-guide/data',
+    '/reference/user-guide/triage',
+    '/reference/user-guide/agents',
+    '/reference/user-guide/admin',
     '/reference/sbom',
   ]);
 
