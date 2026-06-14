@@ -71,6 +71,21 @@ class CountResponse(BaseModel):
     total: int = Field(..., ge=0, description="Total count")
 
 
+class ScanInventorySummary(BaseModel):
+    """Filter-aware totals for the /scans page headline cards.
+
+    The list endpoint is paginated ("Load more"), so summing the loaded
+    page client-side under-reports once a project has more scans than one
+    page holds.  This carries the true totals across *all* scans matching
+    the active filters, independent of pagination.
+    """
+
+    total_scans: int = Field(..., ge=0, description="Scans matching the filters")
+    total_hosts: int = Field(..., ge=0, description="Sum of host observations across matching scans")
+    up_hosts: int = Field(..., ge=0, description="Sum of up-host observations across matching scans")
+    open_services: int = Field(..., ge=0, description="Sum of open ports across matching scans")
+
+
 class CommandArgument(BaseModel):
     arg: str
     description: str
@@ -159,6 +174,31 @@ _ADMIN_RESPONSES = {
     403: {"description": "Insufficient permissions — admin role required"},
 }
 
+def _apply_scan_inventory_filters(query, *, search, tool, created_after):
+    """Apply the /scans page's search / tool / date-range filters.
+
+    Shared by the list endpoint and the summary endpoint so the headline
+    totals can never drift from the rows the table shows.  Assumes
+    ``models.Scan`` is part of the query's FROM clause.
+    """
+    if search and search.strip():
+        needle = f"%{search.strip()}%"
+        query = query.filter(
+            (models.Scan.filename.ilike(needle))
+            | (models.Scan.tool_name.ilike(needle))
+            | (models.Scan.scan_type.ilike(needle))
+        )
+    if tool and tool.strip():
+        tool_lower = tool.strip().lower()
+        query = query.filter(
+            (func.lower(models.Scan.tool_name) == tool_lower)
+            | (func.lower(models.Scan.scan_type) == tool_lower)
+        )
+    if created_after is not None:
+        query = query.filter(models.Scan.created_at >= created_after)
+    return query
+
+
 @router.get("/", response_model=List[ScanSummary])
 def get_scans(
     # v2.86.4 — pagination caps added (was bare ``int = 100`` with no
@@ -227,28 +267,12 @@ def get_scans(
         .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
         .filter(models.Scan.project_id == project.id)
     )
-    if search and search.strip():
-        needle = f"%{search.strip()}%"
-        scans_query = scans_query.filter(
-            (models.Scan.filename.ilike(needle))
-            | (models.Scan.tool_name.ilike(needle))
-            | (models.Scan.scan_type.ilike(needle))
-        )
-    # v2.82.0 — tool filter, used by the /scans page's clickable
-    # tool-count chips ("NESSUS: 4" -> filter to nessus scans).
-    # Case-insensitive exact match on tool_name OR scan_type — the same
-    # OR the Scan Inventory chip-grouping uses (tool_name || scan_type
-    # || 'Other').  Server-side so projects with >100 scans still see
-    # complete results when filtered.
-    if tool and tool.strip():
-        tool_lower = tool.strip().lower()
-        scans_query = scans_query.filter(
-            (func.lower(models.Scan.tool_name) == tool_lower)
-            | (func.lower(models.Scan.scan_type) == tool_lower)
-        )
-    # v2.83.0 — date-range chip filter ("Last 7d" / "Last 30d" / "All").
-    if created_after is not None:
-        scans_query = scans_query.filter(models.Scan.created_at >= created_after)
+    # v2.82.0 tool filter / v2.83.0 date-range filter / search — all shared
+    # with the summary endpoint via _apply_scan_inventory_filters so the
+    # headline totals can't drift from the rows shown here.
+    scans_query = _apply_scan_inventory_filters(
+        scans_query, search=search, tool=tool, created_after=created_after
+    )
     scans_query = (
         scans_query
         .group_by(
@@ -396,6 +420,64 @@ def get_scans(
         ))
 
     return scan_summaries
+
+
+@router.get("/summary", response_model=ScanInventorySummary)
+def get_scans_summary(
+    search: Optional[str] = Query(None, max_length=200),
+    tool: Optional[str] = Query(None, max_length=64),
+    created_after: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Filter-aware totals for the /scans headline cards.
+
+    Mirrors the list endpoint's per-scan aggregates (total_hosts / up_hosts
+    via HostScanHistory; open_ports via Port->Host->HostScanHistory) but
+    summed across *every* scan matching the filters, not just the loaded
+    page — so the headline reflects reality regardless of pagination.
+    """
+    # Scan count + host observation sums in one pass over Scan -> history.
+    host_agg = (
+        db.query(
+            func.count(distinct(models.Scan.id)).label("total_scans"),
+            func.count(models.HostScanHistory.id).label("total_hosts"),
+            func.sum(
+                case((models.HostScanHistory.state_at_scan == "up", 1), else_=0)
+            ).label("up_hosts"),
+        )
+        .select_from(models.Scan)
+        .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
+        .filter(models.Scan.project_id == project.id)
+    )
+    host_agg = _apply_scan_inventory_filters(
+        host_agg, search=search, tool=tool, created_after=created_after
+    )
+    host_row = host_agg.one()
+
+    # Open services — count open ports across the (host, scan) observations
+    # of the matching scans.  Matches the list endpoint's per-scan open_ports
+    # summed client-side: each scan contributes the open ports on its hosts.
+    open_services_query = (
+        db.query(func.count(models.Port.id))
+        .select_from(models.Port)
+        .join(models.Host, models.Port.host_id == models.Host.id)
+        .join(models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id)
+        .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
+        .filter(models.Scan.project_id == project.id, models.Port.state == "open")
+    )
+    open_services_query = _apply_scan_inventory_filters(
+        open_services_query, search=search, tool=tool, created_after=created_after
+    )
+    open_services = open_services_query.scalar() or 0
+
+    return ScanInventorySummary(
+        total_scans=host_row.total_scans or 0,
+        total_hosts=host_row.total_hosts or 0,
+        up_hosts=host_row.up_hosts or 0,
+        open_services=open_services,
+    )
+
 
 @router.get("/out-of-scope", response_model=Paginated[OutOfScopeHost])
 def get_all_out_of_scope_hosts(

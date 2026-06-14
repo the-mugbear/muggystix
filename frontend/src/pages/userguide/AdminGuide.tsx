@@ -119,7 +119,7 @@ const sections: GuideSection[] = [
           <li><strong>Scope export</strong> — scope coverage data and per-subnet host lists.</li>
         </UnorderedList>
         <Para>
-          Heavy formats (large bundles, PDF/JSON) run as <strong>asynchronous report jobs</strong> on
+          Heavy formats (large bundles, JSON) run as <strong>asynchronous report jobs</strong> on
           a dedicated worker, so the UI never blocks. A reports tray shows recent jobs with live
           status and lets you re-download a completed report or dismiss it. Generated artifacts carry
           the build's <Mono>app_version</Mono> for provenance.

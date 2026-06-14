@@ -721,12 +721,12 @@ export const importTestPlanResults = async (
   return response.data;
 };
 
-export type ExecutionReportFormat = 'html' | 'pdf' | 'json' | 'csv';
+export type ExecutionReportFormat = 'html' | 'json' | 'csv';
 
 /**
  * Download a test-plan execution report. Triggers a browser file save via
- * an anchor element rather than loading the blob into React state — some
- * formats (PDF, HTML) can be large and are not meaningful to render inline.
+ * an anchor element rather than loading the blob into React state — the HTML
+ * report can be large and is not meaningful to render inline.
  */
 export const downloadExecutionReport = async (
   planId: number,

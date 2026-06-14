@@ -36,21 +36,19 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import WebInterface
-from app.db.models_confidence import NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.services.os_eol import match_eol_os
-from app.services.ports_of_interest import ports_by_number
-from app.services.cert_fields import cert_issue_from_columns
+from app.services.host_condition_sets import (
+    cert_issue_host_ids,
+    cleartext_host_ids,
+    eol_os_host_ids,
+    smb_unsigned_host_ids,
+    weak_auth_host_ids,
+)
 from app.services.subnet_insight_service import (
-    _EPOCH,
-    _is_weak_user,
     _load_subnet_meta,
-    _normalize_dt,
     resolve_host_locations,
 )
 
@@ -65,8 +63,6 @@ _BLINDSPOT_SITE_FRACTION = 0.6
 # one issue don't dominate).
 _OUTLIER_FACTOR = 2.0
 _OUTLIER_MIN_HOSTS = 3
-# Cleartext-credential ports (credentials observable on the wire).
-_CLEARTEXT_PORTS = {21, 23, 110, 143}
 
 
 # (key, label, vector, severity_weight, recommended_action) for the conditions
@@ -128,93 +124,28 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     total_subnets = len(subnet_hosts)
     total_sites = len({s for s in host_site.values() if s is not None})
 
-    # --- per-host os (for EOL) + smb signing posture ----------------------
-    host_os: Dict[int, Optional[str]] = {}
+    # --- per-host ip (for the example_ips evidence on each condition) -----
     host_ip: Dict[int, Optional[str]] = {}
-    host_smb: Dict[int, Optional[str]] = {}
-    for hid, os_name, ip, smb_signing in (
-        db.query(models.Host.id, models.Host.os_name, models.Host.ip_address, models.Host.smb_signing)
+    for hid, ip in (
+        db.query(models.Host.id, models.Host.ip_address)
         .filter(models.Host.project_id == project_id)
         .all()
     ):
         if hid in in_scope:
-            host_os[hid] = os_name
             host_ip[hid] = ip
-            host_smb[hid] = smb_signing
 
-    # --- condition → set(host_ids) ---------------------------------------
-    affected: Dict[str, Set[int]] = {k: set() for k, *_ in _CONDITIONS}
-
-    for hid, os_name in host_os.items():
-        if match_eol_os(os_name) is not None:
-            affected["eol_os"].add(hid)
-
-    for hid, sig in host_smb.items():
-        if sig == "disabled":
-            affected["smb_signing"].add(hid)
-
-    for hid, port_number in (
-        db.query(models.Port.host_id, models.Port.port_number)
-        .join(models.Host, models.Port.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project_id,
-            models.Port.state == "open",
-            models.Port.port_number.in_(_CLEARTEXT_PORTS),
-        )
-        .all()
-    ):
-        if hid in in_scope:
-            affected["cleartext_services"].add(hid)
-
-    # TLS: latest observation per (host, url), then judge — mirrors the subnet
-    # service so a stale expired cert can't outlive a clean re-observation.
-    cert_latest: Dict[tuple, tuple] = {}
-    for hid, url, not_after, self_signed, last_seen in (
-        db.query(
-            WebInterface.host_id, WebInterface.url,
-            WebInterface.cert_not_after, WebInterface.cert_self_signed,
-            WebInterface.last_seen,
-        )
-        .filter(
-            WebInterface.project_id == project_id,
-            WebInterface.host_id.isnot(None),
-            or_(
-                WebInterface.cert_not_after.isnot(None),
-                WebInterface.cert_self_signed.isnot(None),
-            ),
-        )
-        .all()
-    ):
-        if hid not in in_scope:
-            continue
-        ls = _normalize_dt(last_seen) or _EPOCH
-        prev = cert_latest.get((hid, url))
-        if prev is None or ls >= prev[0]:
-            cert_latest[(hid, url)] = (ls, not_after, self_signed)
-    for (hid, _url), (_ls, not_after, self_signed) in cert_latest.items():
-        if cert_issue_from_columns(not_after, self_signed, now):
-            affected["tls_hygiene"].add(hid)
-
-    # Weak auth: latest netexec observation per (host, proto, port).
-    nxc_latest: Dict[tuple, tuple] = {}
-    for hid, proto, port, auth_success, username, discovered_at in (
-        db.query(
-            NetexecResult.host_id, NetexecResult.protocol, NetexecResult.port,
-            NetexecResult.auth_success, NetexecResult.username, NetexecResult.discovered_at,
-        )
-        .join(models.Host, NetexecResult.host_id == models.Host.id)
-        .filter(models.Host.project_id == project_id)
-        .all()
-    ):
-        if hid not in in_scope:
-            continue
-        d = _normalize_dt(discovered_at) or _EPOCH
-        prev = nxc_latest.get((hid, proto, port))
-        if prev is None or d >= prev[0]:
-            nxc_latest[(hid, proto, port)] = (d, auth_success, username)
-    for (hid, _p, _pt), (_d, auth_success, username) in nxc_latest.items():
-        if auth_success and _is_weak_user(username):
-            affected["weak_auth"].add(hid)
+    # --- condition → set(host_ids), restricted to the in-scope estate -----
+    # The per-condition judgments (EOL regex, SMB posture, cleartext ports,
+    # latest-observation cert/auth) live in host_condition_sets so the /hosts
+    # DSL drill-down (has:eol / has:smb_unsigned / has:cleartext /
+    # has:cert_issue / has:weak_auth) resolves the SAME hosts this view counts.
+    affected: Dict[str, Set[int]] = {
+        "eol_os": eol_os_host_ids(db, project_id) & in_scope,
+        "smb_signing": smb_unsigned_host_ids(db, project_id) & in_scope,
+        "cleartext_services": cleartext_host_ids(db, project_id) & in_scope,
+        "tls_hygiene": cert_issue_host_ids(db, project_id, now) & in_scope,
+        "weak_auth": weak_auth_host_ids(db, project_id) & in_scope,
+    }
 
     # --- per-condition spread metrics ------------------------------------
     min_hosts = max(1, round(_SYSTEMIC_HOST_FRACTION * total_hosts))

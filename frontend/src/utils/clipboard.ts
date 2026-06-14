@@ -31,3 +31,20 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Trigger a client-side download of in-memory text (JSON / markdown export).
+ * Mirrors the blob-download the report endpoints use, for data already on the
+ * page that needs no server round-trip.
+ */
+export function downloadTextFile(filename: string, text: string, mime = 'text/plain'): void {
+  if (typeof document === 'undefined') return;
+  const url = window.URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+}

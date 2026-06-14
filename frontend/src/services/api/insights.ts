@@ -155,3 +155,58 @@ export const getSystemicInsights = async (): Promise<SystemicInsightsResponse> =
   const response = await api.get<SystemicInsightsResponse>(`${p()}/insights/systemic`);
   return response.data;
 };
+
+// --- Drill-down deep-links -------------------------------------------------
+// Turn an insight row into a /hosts query so an analyst can jump from a
+// finding straight to the hosts behind it.  The systemic condition keys map to
+// the matching `has:` DSL predicate (see host_query_dsl), which resolves the
+// SAME hosts the insight counts.  Shared-vulnerability blind spots (key
+// `vuln:<plugin_id>`) have no host-filter predicate, so they return null and
+// the caller renders no drill-down link.
+const CONDITION_DSL: Record<string, string> = {
+  eol_os: 'has:eol',
+  smb_signing: 'has:smb_unsigned',
+  weak_auth: 'has:weak_auth',
+  tls_hygiene: 'has:cert_issue',
+  cleartext_services: 'has:cleartext',
+};
+
+/** Whether a systemic condition key has a /hosts drill-down. */
+export const conditionHasDrilldown = (key: string): boolean => key in CONDITION_DSL;
+
+/**
+ * /hosts link for a systemic condition, optionally narrowed to one subnet.
+ * Returns null when the condition has no host-filter predicate.
+ */
+export const conditionHostsHref = (key: string, cidr?: string | null): string | null => {
+  const q = CONDITION_DSL[key];
+  if (!q) return null;
+  const params = new URLSearchParams();
+  if (cidr) params.set('subnets', cidr);
+  params.set('q', q);
+  return `/hosts?${params.toString()}`;
+};
+
+/** /hosts link filtered to a single subnet/CIDR. */
+export const subnetHostsHref = (cidr: string): string =>
+  `/hosts?subnets=${encodeURIComponent(cidr)}`;
+
+/**
+ * Download the lightweight executive systemic report (standalone HTML) — a
+ * self-contained file for sharing at a high-level meeting.  Fetched via the
+ * authed client (the endpoint needs the JWT) and saved as a blob, mirroring the
+ * host-report download.
+ */
+export const downloadSystemicReport = async (): Promise<void> => {
+  const response = await api.get(`${p()}/reports/systemic.html`, { responseType: 'blob' });
+  const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/html' }));
+  const a = document.createElement('a');
+  a.href = url;
+  const cd = response.headers['content-disposition'] as string | undefined;
+  const match = cd?.match(/filename="?([^"]+)"?/i);
+  a.download = match?.[1] || `systemic_insights_${new Date().toISOString().split('T')[0]}.html`;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+};

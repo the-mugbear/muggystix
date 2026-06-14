@@ -140,7 +140,7 @@ class ExportService:
         """Export a report for a test plan execution session.
 
         If ``session_id`` is None, the most-recently-started session for
-        the plan is used.  Supported formats: json, csv, html, pdf.
+        the plan is used.  Supported formats: json, csv, html.
         """
         from app.db.models_agent import (
             TestPlan, TestPlanEntry, ExecutionSession,
@@ -186,8 +186,6 @@ class ExportService:
             return self._format_csv_report(report_data)
         if fmt == 'html':
             return self._format_html_report(report_data)
-        if fmt == 'pdf':
-            return self._format_pdf_report(report_data)
         raise ValueError(f"Unsupported export format: {format_type}")
 
     def _gather_test_plan_execution_data(
@@ -371,30 +369,3 @@ class ExportService:
             'entries': entry_payloads,
         }
 
-    def _format_pdf_report(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Render the HTML report to PDF via WeasyPrint.
-
-        WeasyPrint is imported lazily so the rest of the export surface
-        keeps working even if the library (or its system deps) are absent
-        — callers get a clean 501 with the missing-dep message instead of
-        a module-load error at import time.
-        """
-        try:
-            from weasyprint import HTML
-        except Exception as exc:
-            raise RuntimeError(
-                "PDF export requires WeasyPrint. Install with `pip install "
-                "weasyprint` and ensure libpango/libcairo are available. "
-                f"Underlying error: {exc}"
-            )
-
-        html_content = ReportTemplates.generate_professional_html_report(data)
-        pdf_bytes = HTML(string=html_content).write_pdf()
-        return {
-            'content_type': 'application/pdf',
-            'data': pdf_bytes,
-            'filename': (
-                f"BlueStick_{data['report_type']}_"
-                f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.pdf"
-            ),
-        }

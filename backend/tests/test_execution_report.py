@@ -1,7 +1,7 @@
 """Smoke tests for ExportService.export_test_plan_execution_report.
 
-Covers the non-PDF formats (weasyprint requires system libs we
-don't want to pull into the test image).  Verifies:
+Covers the supported export formats (JSON / CSV / HTML — PDF export was
+removed).  Verifies:
 
   - JSON/CSV/HTML format dispatch
   - Empty session rejection

@@ -67,6 +67,36 @@ export const getScans = async (
   return response.data;
 };
 
+/**
+ * Filter-aware totals for the /scans headline cards. The list is paginated
+ * ("Load more"), so summing the loaded page under-reports once a project has
+ * more scans than one page holds — this carries the true totals across every
+ * scan matching the active filters.
+ */
+export interface ScanInventorySummary {
+  total_scans: number;
+  total_hosts: number;
+  up_hosts: number;
+  open_services: number;
+}
+
+export const getScansSummary = async (
+  options?: {
+    search?: string;
+    tool?: string;
+    createdAfter?: string;
+    signal?: AbortSignal;
+  },
+): Promise<ScanInventorySummary> => {
+  const { search, tool, createdAfter, signal } = options ?? {};
+  const params: Record<string, string> = {};
+  if (search) params.search = search;
+  if (tool) params.tool = tool;
+  if (createdAfter) params.created_after = createdAfter;
+  const response = await api.get(`${p()}/scans/summary`, { params, signal });
+  return response.data;
+};
+
 export const getScan = async (scanId: number) => {
   const response = await api.get(`${p()}/scans/${scanId}`);
   return response.data;

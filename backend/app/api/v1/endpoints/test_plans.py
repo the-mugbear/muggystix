@@ -2112,7 +2112,6 @@ _EXECUTION_REPORT_MEDIA_TYPES = {
     "json": "application/json",
     "csv": "text/csv",
     "html": "text/html",
-    "pdf": "application/pdf",
 }
 
 
@@ -2129,12 +2128,10 @@ _EXECUTION_REPORT_MEDIA_TYPES = {
                 "application/json": {},
                 "text/csv": {},
                 "text/html": {},
-                "application/pdf": {},
             },
         },
         400: {"description": "No execution sessions exist for this plan"},
         404: {"description": "Plan or session not found"},
-        501: {"description": "PDF export unavailable (WeasyPrint missing)"},
     },
 )
 def export_test_plan_execution_report(
@@ -2145,9 +2142,9 @@ def export_test_plan_execution_report(
     ),
     format_type: str = Query(
         default="html",
-        pattern="^(json|csv|html|pdf)$",
+        pattern="^(json|csv|html)$",
         alias="format",
-        description="Output format: json, csv, html, or pdf",
+        description="Output format: json, csv, or html",
     ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
@@ -2158,9 +2155,7 @@ def export_test_plan_execution_report(
     Pulls all per-test results, per-host sanity checks, and findings for
     the specified execution session (or the most recent one if omitted)
     and renders them via ``ExportService``.  The plan must belong to the
-    current project.  PDF rendering requires WeasyPrint on the backend
-    image; if unavailable the endpoint returns ``501`` with a diagnostic
-    message instead of crashing.
+    current project.
     """
     # Project scoping — make sure the plan actually belongs to this project
     # before handing it to ExportService.  ExportService doesn't re-check.
@@ -2184,10 +2179,6 @@ def export_test_plan_execution_report(
     except ValueError as exc:
         # Missing session / invalid format → 400
         raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        # WeasyPrint not installed → 501 so the frontend can surface the
-        # install instructions without the user seeing a stack trace.
-        raise HTTPException(status_code=501, detail=str(exc))
 
     media_type = _EXECUTION_REPORT_MEDIA_TYPES.get(format_type, "application/octet-stream")
     content = result['data']

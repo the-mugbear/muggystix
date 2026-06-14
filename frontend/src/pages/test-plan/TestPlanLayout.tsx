@@ -1590,7 +1590,6 @@ const TestPlanLayout: React.FC = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="html">HTML (viewable in browser)</SelectItem>
-                <SelectItem value="pdf">PDF (printable)</SelectItem>
                 <SelectItem value="json">JSON (structured data)</SelectItem>
                 <SelectItem value="csv">CSV (spreadsheet)</SelectItem>
               </SelectContent>

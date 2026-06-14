@@ -9,7 +9,7 @@ tech, assigned_to, q, and a has_* boolean) survive for every format.
 Two paths since reports went part-async (v2.196.0):
 - **csv / html** stream synchronously off the cheap id-only query — assert the
   context reaches ``_filtered_host_id_query``.
-- **pdf / json / agent-package / markdown-bundle** enqueue a report job — assert
+- **json / agent-package / markdown-bundle** enqueue a report job — assert
   the context is stored on the job (the report worker replays it).
 """
 

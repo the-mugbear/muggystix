@@ -364,7 +364,7 @@ export const getScanCommandExplanation = async (scanId: number): Promise<Command
 // the UI today; the list/stats/update/delete wrappers were removed in
 // the cleanup pass after months of zero consumers.  Re-add when a
 // CSV + HTML stream synchronously from the API and download directly. The heavy
-// formats (pdf/json/zip bundles) are async report jobs — see enqueueReportJob.
+// formats (json/zip bundles) are async report jobs — see enqueueReportJob.
 export const generateHostsReport = async (
   format: 'csv' | 'html',
   filters: {

@@ -1,9 +1,9 @@
-"""Report worker — generates async report jobs (PDF / JSON / zip bundles).
+"""Report worker — generates async report jobs (JSON / zip bundles).
 
 Run as:  ``python -m app.report_worker``
 
-A dedicated background worker so heavy report rendering (WeasyPrint PDF, large
-ZIP bundles) never competes with ingestion on the same process.  It claims
+A dedicated background worker so heavy report rendering (large ZIP bundles)
+never competes with ingestion on the same process.  It claims
 queued ``report_jobs`` via ``SELECT … FOR UPDATE SKIP LOCKED``, writes the
 artifact to the shared report-artifacts dir, and the backend's download endpoint
 streams it.  Shares the LISTEN/poll/reconnect/heartbeat loop with the ingestion

@@ -16,6 +16,7 @@ from app.schemas.schemas import Host
 from app.core.config import settings
 from app.services.report_templates import ReportTemplates
 from app.services.subnet_insight_service import resolve_host_locations, compute_subnet_insights
+from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.attention_service import compute_site_attention
 from app.services.host_serialization import _serialize_follow, _serialize_note
 from app.services.host_query import build_filtered_host_query as _build_filtered_host_query
@@ -68,6 +69,7 @@ class ReportGenerator:
         # though multiple format sections consume them.
         self._host_loc_cache: Optional[Dict[int, Dict[str, Any]]] = None
         self._hotspots_cache: Optional[Dict[str, Any]] = None
+        self._systemic_cache: Optional[Dict[str, Any]] = None
         # Set by get_hosts_for_report: True when the filter matched more than
         # MAX_REPORT_HOSTS and the in-memory report was capped.  Surfaced to
         # the user (HTML banner / JSON flag / X-Report-Truncated header) so a
@@ -358,17 +360,16 @@ class ReportGenerator:
     
     def generate_html_report(
         self, hosts: List[models.Host], filters: Dict[str, Any],
-        report_type: str = "comprehensive", for_pdf: bool = False,
+        report_type: str = "comprehensive",
     ) -> str:
-        """Build the full HTML host report as one string — used by the PDF
-        route (WeasyPrint needs the whole document at once).  The ``/hosts/html``
-        route streams dossier-by-dossier via ``iter_html_report`` instead.
+        """Build the full HTML host report as one string (non-streaming path).
+        The ``/hosts/html`` route streams dossier-by-dossier via
+        ``iter_html_report`` instead.
 
         ``report_type``: ``"comprehensive"`` (summary + metrics + exposure +
         Findings index + Site/Subnet Hotspots + per-host dossiers) or
         ``"inventory"`` (the same minus the project-wide findings/hotspots
-        roll-ups).  ``for_pdf`` renders each dossier's ``<details>`` blocks
-        expanded so collapsed content isn't dropped from the PDF.
+        roll-ups).
         """
         is_comprehensive = report_type != "inventory"
         context = self._build_export_context(hosts)
@@ -377,7 +378,7 @@ class ReportGenerator:
         findings = self._findings_for_report(hosts) if is_comprehensive else []
         parts = [self._html_open(stats, filters, report_type, findings)]
         for record in records:
-            parts.append(self._render_host_dossier(record, for_pdf=for_pdf))
+            parts.append(self._render_host_dossier(record))
         parts.append(self._html_tail())
         return "".join(parts)
 
@@ -422,7 +423,7 @@ class ReportGenerator:
             order = {hid: i for i, hid in enumerate(chunk_ids)}
             hosts.sort(key=lambda h: order.get(h.id, 0))
             context = self._build_export_context(hosts)
-            buf = [self._render_host_dossier(self._build_host_export_record(host, context, {}), for_pdf=False)
+            buf = [self._render_host_dossier(self._build_host_export_record(host, context, {}))
                    for host in hosts]
             yield "".join(buf)
             # Drop the chunk's ORM objects so peak memory stays ~one chunk.
@@ -431,7 +432,7 @@ class ReportGenerator:
         yield self._html_tail()
 
     def _stats_from_records(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Summary aggregates for the non-streaming (PDF) path, from the records
+        """Summary aggregates for the non-streaming HTML path, from the records
         already in hand."""
         services: Dict[str, int] = {}
         os_counter: Dict[str, int] = {}
@@ -506,6 +507,7 @@ class ReportGenerator:
 
         if is_comprehensive:
             hotspots_nav = '<a href="#hotspots">Hotspots</a>'
+            systemic_nav = '<a href="#systemic">Systemic</a>'
             findings_nav = '<a href="#findings">Findings</a>'
             hotspots_section = f"""
     <div class="section" id="hotspots">
@@ -513,6 +515,14 @@ class ReportGenerator:
         <div class="section-content">
             <p class="muted">Worst-first ranking of sites and subnets by exposure (severity-weighted active findings, scaled by site criticality), neglect, and hygiene (end-of-life OS, certificate issues, weak auth, risky services). Project-wide — not limited to the filtered hosts above.</p>
             {self._generate_hotspots_html()}
+        </div>
+    </div>"""
+            systemic_section = f"""
+    <div class="section" id="systemic">
+        <div class="section-header">Systemic Insights</div>
+        <div class="section-content">
+            <p class="muted">Which weaknesses recur across the in-scope estate and how widely they spread — the same weakness across many subnets and sites is a process failure, not an incident. Project-wide.</p>
+            {self._generate_systemic_html()}
         </div>
     </div>"""
             findings_section = f"""
@@ -524,8 +534,8 @@ class ReportGenerator:
         </div>
     </div>"""
         else:
-            hotspots_nav = findings_nav = ""
-            hotspots_section = findings_section = ""
+            hotspots_nav = systemic_nav = findings_nav = ""
+            hotspots_section = systemic_section = findings_section = ""
 
         if self.report_truncated:
             included = stats["total_hosts"]
@@ -581,6 +591,7 @@ class ReportGenerator:
         <a href="#metrics">Metrics</a>
         <a href="#exposure">Exposure Highlights</a>
         {hotspots_nav}
+        {systemic_nav}
         {findings_nav}
         <a href="#hosts">Host Dossiers</a>
     </nav>
@@ -624,6 +635,7 @@ class ReportGenerator:
     </div>
 
     {hotspots_section}
+    {systemic_section}
     {findings_section}
 
     <div class="section" id="hosts">
@@ -728,13 +740,12 @@ class ReportGenerator:
             f'<div class="dossier-block-body">{body}</div></details>'
         )
 
-    def _render_host_dossier(self, record: Dict[str, Any], for_pdf: bool = False) -> str:
+    def _render_host_dossier(self, record: Dict[str, Any]) -> str:
         """One host's consolidated dossier section: a summary header + collapsible
         blocks for canonical findings, untriaged scanner observations, execution
         findings, tester summaries, notes, and ports.  Anchored ``#host-{id}`` and
         carrying a lowercased ``data-search`` blob (IP/hostname/site/subnet/CVE/
-        finding title/note text/service) for the report-wide host search.
-        ``for_pdf`` expands every block so collapsed content isn't dropped."""
+        finding title/note text/service) for the report-wide host search."""
         e = html.escape
         nl = chr(10)
         host_id = record["host_id"]
@@ -753,7 +764,7 @@ class ReportGenerator:
         tester = record["tester_summaries"]
         notes = record["analyst_context"]["notes"]
         ports = record["ports"]
-        det = " open" if for_pdf else ""
+        det = ""
 
         # Searchable blob — one lowercased attribute the JS search matches on.
         terms = [ip, hostname, site, subnets, os_name]
@@ -937,6 +948,7 @@ class ReportGenerator:
         if is_comprehensive:
             report_data["findings"] = self._findings_for_report(hosts)
             report_data["hotspots"] = self._build_hotspots()
+            report_data["systemic"] = self._build_systemic()
         return report_data
 
     def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
@@ -1543,6 +1555,269 @@ class ReportGenerator:
 
         return lines
 
+    # --- Systemic insights (shared across formats) -----------------------
+
+    # Condition key -> the /hosts DSL drill-down query, so a reader of the
+    # report (HTML/markdown) can jump to the hosts behind a blind spot.  Mirrors
+    # conditionHostsHref on the frontend.  vuln:<plugin_id> has no predicate.
+    _SYSTEMIC_DRILLDOWN = {
+        "eol_os": "has:eol",
+        "smb_signing": "has:smb_unsigned",
+        "weak_auth": "has:weak_auth",
+        "tls_hygiene": "has:cert_issue",
+        "cleartext_services": "has:cleartext",
+    }
+
+    def _build_systemic(self) -> Dict[str, Any]:
+        """Cross-sectional systemic insights (estate blind spots / conditions /
+        segment outliers / diagnostic profiles), reusing the live service so the
+        report agrees with the /insights/systemic dashboard.  Cached for the
+        report's life."""
+        if self._systemic_cache is None:
+            if not self.project_id:
+                self._systemic_cache = {"adopted": False}
+            else:
+                self._systemic_cache = compute_systemic_insights(self.db, self.project_id)
+        return self._systemic_cache
+
+    def _generate_systemic_html(self) -> str:
+        """HTML fragment: estate blind spots + systemic conditions + segment
+        outliers + diagnostic profiles, worst-first."""
+        data = self._build_systemic()
+        if not data.get("adopted"):
+            return '<p class="muted">No scoped subnets — define a scope to surface systemic patterns across the estate.</p>'
+        blind = data.get("blind_spots") or []
+        conditions = data.get("conditions") or []
+        outliers = data.get("segment_outliers") or []
+        profiles = data.get("diagnostic_profiles") or []
+        if not blind and not conditions:
+            return '<p class="muted">No weakness recurs widely enough across the in-scope estate to suggest a systemic process failure.</p>'
+
+        parts: List[str] = []
+
+        if blind:
+            items = []
+            for b in blind:
+                pct = round((b.get("host_fraction") or 0) * 100)
+                items.append(
+                    "<li>"
+                    f"<strong>{html.escape(str(b.get('label', '')))}</strong>"
+                    f" — {b.get('affected_hosts', 0)} hosts ({pct}%), "
+                    f"{b.get('subnet_spread', 0)} subnets, {b.get('site_spread', 0)} sites. "
+                    f"{html.escape(str(b.get('recommended_action', '')))}"
+                    "</li>"
+                )
+            parts.append(
+                "<h4>Estate blind spots</h4>"
+                '<p class="muted">Weaknesses spanning most of the estate — likely an organisational gap.</p>'
+                f"<ul>{''.join(items)}</ul>"
+            )
+
+        if conditions:
+            rows = []
+            for c in conditions:
+                pct = round((c.get("host_fraction") or 0) * 100)
+                scope = "estate-wide" if c.get("is_blind_spot") else "localised"
+                rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(c.get('label', '')))}</td>"
+                    f"<td>{c.get('affected_hosts', 0)} ({pct}%)</td>"
+                    f"<td>{c.get('subnet_spread', 0)}</td>"
+                    f"<td>{c.get('site_spread', 0)}</td>"
+                    f"<td>{c.get('systemic_score', 0)}</td>"
+                    f"<td>{scope}</td>"
+                    f"<td>{html.escape(str(c.get('recommended_action', '')))}</td>"
+                    "</tr>"
+                )
+            parts.append(
+                "<h4>Systemic conditions</h4>"
+                '<table class="data-table"><thead><tr>'
+                "<th>Condition</th><th>Hosts</th><th>Subnets</th><th>Sites</th>"
+                "<th>Score</th><th>Scope</th><th>Recommended action</th>"
+                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+            )
+
+        if outliers:
+            rows = []
+            for o in outliers:
+                conds = ", ".join(o.get("conditions") or []) or "—"
+                rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(o.get('cidr', '')))}</td>"
+                    f"<td>{html.escape(str(o.get('site') or '—'))}</td>"
+                    f"<td>{o.get('host_count', 0)}</td>"
+                    f"<td>{o.get('times_median', 0)}× median</td>"
+                    f"<td>{html.escape(conds)}</td>"
+                    "</tr>"
+                )
+            parts.append(
+                "<h4>Segment outliers</h4>"
+                '<p class="muted">Subnets whose issue density is well above the estate median.</p>'
+                '<table class="data-table"><thead><tr>'
+                "<th>Subnet</th><th>Site</th><th>Hosts</th><th>Density</th><th>Conditions</th>"
+                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+            )
+
+        if profiles:
+            rows = []
+            for d in profiles:
+                conds = ", ".join(d.get("conditions") or []) or "—"
+                rc = d.get("root_cause") or {}
+                rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(str(d.get('cidr', '')))}</td>"
+                    f"<td>{html.escape(str(d.get('site') or '—'))}</td>"
+                    f"<td>{html.escape(conds)}</td>"
+                    f"<td>{html.escape(str(rc.get('kind', '')))}: {html.escape(str(rc.get('text', '')))}</td>"
+                    "</tr>"
+                )
+            parts.append(
+                "<h4>Diagnostic profiles</h4>"
+                '<p class="muted">Per-subnet co-occurrence signature → likely management root cause.</p>'
+                '<table class="data-table"><thead><tr>'
+                "<th>Subnet</th><th>Site</th><th>Conditions</th><th>Likely root cause</th>"
+                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+            )
+
+        return "".join(parts)
+
+    def _systemic_markdown_lines(self) -> List[str]:
+        """Markdown lines for the Systemic Insights section."""
+        data = self._build_systemic()
+        lines: List[str] = [
+            "## Systemic Insights",
+            "",
+            "Which weaknesses recur across the in-scope estate and how widely they"
+            " spread. A weakness on one host is incidental; the same weakness across"
+            " many subnets and sites is a process failure. Project-wide.",
+            "",
+        ]
+        if not data.get("adopted"):
+            lines += ["_No scoped subnets — define a scope to surface systemic patterns._", ""]
+            return lines
+        blind = data.get("blind_spots") or []
+        conditions = data.get("conditions") or []
+        outliers = data.get("segment_outliers") or []
+        profiles = data.get("diagnostic_profiles") or []
+        if not blind and not conditions:
+            lines += ["_No weakness recurs widely enough to suggest a systemic process failure._", ""]
+            return lines
+
+        if blind:
+            lines += ["### Estate blind spots", ""]
+            for b in blind:
+                pct = round((b.get("host_fraction") or 0) * 100)
+                lines.append(
+                    f"- **{b.get('label', '')}** — {b.get('affected_hosts', 0)} hosts "
+                    f"({pct}%), {b.get('subnet_spread', 0)} subnets, {b.get('site_spread', 0)} sites. "
+                    f"{b.get('recommended_action', '')}"
+                )
+            lines.append("")
+
+        if conditions:
+            lines += [
+                "### Systemic conditions",
+                "| Condition | Hosts | Subnets | Sites | Score | Scope | Action |",
+                "|---|---:|---:|---:|---:|---|---|",
+            ]
+            for c in conditions:
+                pct = round((c.get("host_fraction") or 0) * 100)
+                scope = "estate-wide" if c.get("is_blind_spot") else "localised"
+                action = (c.get("recommended_action") or "").replace("|", "/")
+                lines.append(
+                    f"| {str(c.get('label', '')).replace('|', '/')} | {c.get('affected_hosts', 0)} ({pct}%) | "
+                    f"{c.get('subnet_spread', 0)} | {c.get('site_spread', 0)} | {c.get('systemic_score', 0)} | "
+                    f"{scope} | {action} |"
+                )
+            lines.append("")
+
+        if outliers:
+            lines += [
+                "### Segment outliers",
+                "| Subnet | Site | Hosts | Density | Conditions |",
+                "|---|---|---:|---:|---|",
+            ]
+            for o in outliers:
+                conds = ", ".join(o.get("conditions") or []) or "—"
+                lines.append(
+                    f"| {o.get('cidr', '')} | {o.get('site') or '—'} | {o.get('host_count', 0)} | "
+                    f"{o.get('times_median', 0)}× median | {conds} |"
+                )
+            lines.append("")
+
+        if profiles:
+            lines += [
+                "### Diagnostic profiles",
+                "| Subnet | Site | Conditions | Likely root cause |",
+                "|---|---|---|---|",
+            ]
+            for d in profiles:
+                conds = ", ".join(d.get("conditions") or []) or "—"
+                rc = d.get("root_cause") or {}
+                rc_text = f"{rc.get('kind', '')}: {rc.get('text', '')}".replace("|", "/")
+                lines.append(f"| {d.get('cidr', '')} | {d.get('site') or '—'} | {conds} | {rc_text} |")
+            lines.append("")
+
+        return lines
+
+    def generate_systemic_executive_html(self) -> str:
+        """Standalone, lightweight executive systemic report — estate summary +
+        blind spots + conditions + outliers + profiles, plus the site/subnet
+        hotspots, and NO per-host dossiers.
+
+        Purpose-built as a self-contained HTML file for sharing at a high-level
+        meeting: the comprehensive host report is the wrong container for a
+        manager.  Bounded systemic payload, so it renders synchronously."""
+        data = self._build_systemic()
+        css = ReportTemplates.get_css_styles()
+        generated_at = datetime.now(timezone.utc)
+        estate = data.get("estate") or {}
+        if data.get("adopted"):
+            summary = (
+                f"<div class=\"stats-grid\">"
+                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('hosts_in_scope', 0)}</div><div class=\"stat-label\">Hosts in scope</div></div>"
+                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('subnets', 0)}</div><div class=\"stat-label\">Subnets</div></div>"
+                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('sites', 0)}</div><div class=\"stat-label\">Sites</div></div>"
+                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('blind_spot_count', 0)}</div><div class=\"stat-label\">Estate blind spots</div></div>"
+                f"</div>"
+            )
+        else:
+            summary = '<p class="muted">No scoped subnets yet.</p>'
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BlueStick Systemic Insights</title>
+    {css}
+</head>
+<body>
+    <div class="report-header">
+        <div class="metadata">
+            <div>
+                <div class="report-title">Systemic Insights</div>
+                <div class="report-subtitle">Estate-wide weakness patterns — executive summary</div>
+                <div class="version-tag">Backend v{settings.APP_VERSION} | Frontend v{settings.FRONTEND_VERSION}</div>
+            </div>
+            <div><strong>Generated:</strong> {generated_at.strftime('%B %d, %Y at %I:%M %p')} UTC</div>
+        </div>
+    </div>
+    <div class="section">
+        <div class="section-header">Estate</div>
+        <div class="section-content">{summary}</div>
+    </div>
+    <div class="section">
+        <div class="section-header">Systemic patterns</div>
+        <div class="section-content">{self._generate_systemic_html()}</div>
+    </div>
+    <div class="section">
+        <div class="section-header">Site &amp; Subnet Hotspots</div>
+        <div class="section-content">{self._generate_hotspots_html()}</div>
+    </div>
+</body>
+</html>"""
+
     def generate_agent_package(self, hosts: List[models.Host], filters: Dict[str, Any]) -> bytes:
         """Generate a ZIP package optimized for agentic workflows."""
         dataset, artifacts = self._build_export_dataset(hosts, filters)
@@ -1553,6 +1828,7 @@ class ReportGenerator:
             bundle.writestr("schema.json", json.dumps(self._build_schema_reference(), indent=2))
             bundle.writestr("scans.json", json.dumps(dataset["scans"], indent=2))
             bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
+            bundle.writestr("systemic.json", json.dumps(self._build_systemic(), indent=2, default=str))
             ndjson_lines = "\n".join(json.dumps(host, separators=(",", ":")) for host in dataset["hosts"])
             bundle.writestr("hosts.ndjson", f"{ndjson_lines}\n" if ndjson_lines else "")
             # The canonical findings collection — counted in the manifest but
@@ -1572,6 +1848,7 @@ class ReportGenerator:
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             bundle.writestr("report.md", self._generate_markdown_report(dataset))
             bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
+            bundle.writestr("systemic.json", json.dumps(self._build_systemic(), indent=2, default=str))
             bundle.writestr("hosts.csv", self._generate_hosts_csv(dataset["hosts"]))
             # vulnerabilities.csv (was misleadingly "findings.csv" — these are
             # scanner vulns), plus the correlation CSVs the dossier surfaces.
@@ -2119,6 +2396,8 @@ class ReportGenerator:
 
         lines.append("")
         lines.extend(self._hotspots_markdown_lines())
+        lines.append("")
+        lines.extend(self._systemic_markdown_lines())
 
         lines.extend(["", "## Host Details", ""])
         for host in hosts:

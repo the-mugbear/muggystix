@@ -14,14 +14,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Download, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
 import {
   getSubnetInsights,
+  conditionHostsHref,
+  subnetHostsHref,
   type SubnetInsight,
   type SubnetInsightsResponse,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
+import { useToast } from '../contexts/ToastContext';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -81,8 +85,37 @@ const InfoTip: React.FC<{ text: string }> = ({ text }) => (
   </Tooltip>
 );
 
+// Render the current page of subnet insights as a shareable Markdown table.
+function subnetsToMarkdown(data: SubnetInsightsResponse, projectName?: string): string {
+  const lines: string[] = [`# Subnet Insights${projectName ? ` — ${projectName}` : ''}`, ''];
+  if (!data.adopted) return [...lines, '_No scoped subnets yet._'].join('\n');
+  const t = data.totals;
+  if (t) {
+    lines.push(
+      `Subnets: ${t.subnet_count} · Hosts in scope: ${t.hosts_in_scope} · Active findings: ${t.active_findings} · ` +
+      `EOL OS: ${t.eol_os_hosts} · Cert issues: ${t.cert_issue_hosts} · Weak auth: ${t.weak_auth_hosts}`,
+      '',
+    );
+  }
+  lines.push(
+    `_Worst-first; showing ${data.subnets.length} of ${data.total} subnets._`, '',
+    '| Subnet | Site | Hosts | Exposure | EOL | Cert | Weak | Risky | Next action |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---|',
+  );
+  for (const s of data.subnets) {
+    const h = s.hygiene;
+    const action = (s.recommended_action?.text || '').replace(/\|/g, '/');
+    lines.push(
+      `| ${s.cidr} | ${s.site ?? '—'} | ${s.host_count} | ${s.exposure.weighted_score} | ` +
+      `${h.eol_os_hosts} | ${h.cert_issue_hosts} | ${h.weak_auth_hosts} | ${h.risky_service_hosts} | ${action} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
 const SubnetInsights: React.FC = () => {
   const { currentProject } = useProject();
+  const toast = useToast();
   const [data, setData] = useState<SubnetInsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +151,18 @@ const SubnetInsights: React.FC = () => {
   const totals = data?.totals;
   const subnets = useMemo(() => data?.subnets ?? [], [data]);
 
+  const handleCopyMarkdown = useCallback(async () => {
+    if (!data) return;
+    const ok = await copyToClipboard(subnetsToMarkdown(data, currentProject?.name));
+    toast[ok ? 'success' : 'error'](ok ? 'Subnet table copied as Markdown' : 'Could not copy to clipboard');
+  }, [data, currentProject?.name, toast]);
+
+  const handleDownloadJson = useCallback(() => {
+    if (!data) return;
+    downloadTextFile(`subnet_insights_${new Date().toISOString().split('T')[0]}.json`,
+      JSON.stringify(data, null, 2), 'application/json');
+  }, [data]);
+
   return (
     <div className="space-y-md p-md">
       <div className="flex flex-wrap items-start justify-between gap-sm">
@@ -135,9 +180,17 @@ const SubnetInsights: React.FC = () => {
             For the site-level rollup, see <Link to="/posture" className="text-info hover:underline">Security Posture</Link>.
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-          <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-        </Button>
+        <div className="flex flex-wrap items-center gap-xs">
+          <Button size="sm" variant="outline" onClick={handleCopyMarkdown} disabled={loading || !data?.adopted}>
+            <Copy className="size-3.5" aria-hidden /> Copy table
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleDownloadJson} disabled={loading || !data?.adopted}>
+            <Download className="size-3.5" aria-hidden /> JSON
+          </Button>
+          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+          </Button>
+        </div>
       </div>
 
       {loading && !data ? (
@@ -265,12 +318,25 @@ const SubnetInsights: React.FC = () => {
 
 const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => void }> = ({ s, open, onToggle }) => {
   const h = s.hygiene;
+  // Each hygiene badge drills into that subnet's hosts filtered to the
+  // condition — the analyst's "show me those N hosts" path.  Risky services
+  // have no `has:` predicate, so that badge lands on the subnet's hosts.
+  const hygieneBadge = (
+    key: string | null, variant: BadgeVariant, label: string, count: number, title: string,
+  ) => {
+    const href = key ? conditionHostsHref(key, s.cidr) : subnetHostsHref(s.cidr);
+    const badge = <Badge variant={variant} title={title}>{label} {count}</Badge>;
+    return href
+      ? <Link key={label} to={href} title={`${title} — view hosts`}
+          className="hover:opacity-80">{badge}</Link>
+      : badge;
+  };
   const hygieneBadges = (
     <div className="flex flex-wrap gap-xxs">
-      {h.eol_os_hosts > 0 && <Badge variant="destructive" title="Hosts on end-of-life OS">EOL {h.eol_os_hosts}</Badge>}
-      {h.weak_auth_hosts > 0 && <Badge variant="destructive" title="Hosts with weak/guest authentication">Weak {h.weak_auth_hosts}</Badge>}
-      {h.cert_issue_hosts > 0 && <Badge variant="warning" title="Hosts with expired/self-signed certs">Cert {h.cert_issue_hosts}</Badge>}
-      {h.risky_service_hosts > 0 && <Badge variant="muted" title="Hosts exposing risky services">Risky {h.risky_service_hosts}</Badge>}
+      {h.eol_os_hosts > 0 && hygieneBadge('eol_os', 'destructive', 'EOL', h.eol_os_hosts, 'Hosts on end-of-life OS')}
+      {h.weak_auth_hosts > 0 && hygieneBadge('weak_auth', 'destructive', 'Weak', h.weak_auth_hosts, 'Hosts with weak/guest authentication')}
+      {h.cert_issue_hosts > 0 && hygieneBadge('tls_hygiene', 'warning', 'Cert', h.cert_issue_hosts, 'Hosts with expired/self-signed certs')}
+      {h.risky_service_hosts > 0 && hygieneBadge(null, 'muted', 'Risky', h.risky_service_hosts, 'Hosts exposing risky services')}
       {h.eol_os_hosts + h.weak_auth_hosts + h.cert_issue_hosts + h.risky_service_hosts === 0 && (
         <span className="text-caption text-muted-foreground">—</span>
       )}
@@ -293,9 +359,10 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
         </TableCell>
         <TableCell className="align-top">
           <div className="min-w-0">
-            <span className="block truncate font-mono text-metadata font-medium text-foreground" title={s.cidr}>
+            <Link to={subnetHostsHref(s.cidr)} title={`View hosts in ${s.cidr}`}
+              className="block truncate font-mono text-metadata font-medium text-info hover:underline">
               {s.cidr}
-            </span>
+            </Link>
             <span className="block truncate text-caption text-muted-foreground" title={s.scope_name}>
               {safeFallback(s.scope_name, 'no scope')}
             </span>
@@ -399,7 +466,8 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
                     <ul className="space-y-0.5 text-caption text-foreground">
                       {s.hygiene.eol_os_detail.map((e) => (
                         <li key={e.host_id} className="truncate" title={`${e.ip_address ?? ''} — ${e.os_name ?? ''}`}>
-                          <span className="font-mono">{safeFallback(e.ip_address, '?')}</span>{' '}
+                          <Link to={`/hosts/${e.host_id}`} title="Open host"
+                            className="font-mono text-info hover:underline">{safeFallback(e.ip_address, '?')}</Link>{' '}
                           <span className="text-muted-foreground">{e.eol_label} (EOL {e.eol_date})</span>
                         </li>
                       ))}

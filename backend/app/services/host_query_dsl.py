@@ -340,18 +340,50 @@ class FieldSpec:
     value_source: str = "free"
     trgm: bool = False
     enum_values: List[str] = dc_field(default_factory=list)
+    # Human description of what the field matches and where the data comes
+    # from.  Single source of truth for ALL help surfaces (the command-bar
+    # syntax popover AND the user-guide field reference render this live via
+    # the schema endpoint, so they can never drift from the registry).
+    description: str = ""
+    # For enum fields whose values carry non-obvious meaning (``has:``),
+    # value -> one-line description.  Empty for self-evident enums.
+    enum_descriptions: dict = dc_field(default_factory=dict)
 
 
+# keyword -> (predicate builder, human description).  The description is the
+# single source of truth surfaced through the schema endpoint, so the command
+# bar and the user-guide reference describe each flag identically.
 _HAS_KEYWORDS = {
-    "web": lambda ctx: P.has_web_interface_predicate(ctx.db),
-    "notes": lambda ctx: P.has_notes_predicate(ctx.db, ctx.project_id),
-    "exploit": lambda ctx: P.has_exploit_predicate(ctx.db, ctx.project_id),
-    "tested": lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
-    "open_ports": lambda ctx: P.has_open_ports_predicate(ctx.db),
-    "critical": lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
-    "high": lambda ctx: P.severity_predicate(ctx.db, ["HIGH"], ctx.project_id),
-    "medium": lambda ctx: P.severity_predicate(ctx.db, ["MEDIUM"], ctx.project_id),
-    "low": lambda ctx: P.severity_predicate(ctx.db, ["LOW"], ctx.project_id),
+    "web": (lambda ctx: P.has_web_interface_predicate(ctx.db),
+            "Has a web interface (httpx / eyewitness)."),
+    "notes": (lambda ctx: P.has_notes_predicate(ctx.db, ctx.project_id),
+              "Has an analyst note (on the host or one of its ports)."),
+    "exploit": (lambda ctx: P.has_exploit_predicate(ctx.db, ctx.project_id),
+                "Has a finding flagged exploitable by Nessus."),
+    "tested": (lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
+               "Has had an agentic test executed against it."),
+    "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
+                   "Has at least one open port."),
+    "critical": (lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
+                 "Has a critical-severity finding."),
+    "high": (lambda ctx: P.severity_predicate(ctx.db, ["HIGH"], ctx.project_id),
+             "Has a high-severity finding."),
+    "medium": (lambda ctx: P.severity_predicate(ctx.db, ["MEDIUM"], ctx.project_id),
+               "Has a medium-severity finding."),
+    "low": (lambda ctx: P.severity_predicate(ctx.db, ["LOW"], ctx.project_id),
+            "Has a low-severity finding."),
+    # Systemic-weakness family — the drill-down targets for Systemic / Subnet
+    # Insights (these resolve the same hosts those views count).
+    "eol": (lambda ctx: P.eol_os_predicate(ctx.db, ctx.project_id),
+            "Runs an end-of-life operating system."),
+    "smb_unsigned": (lambda ctx: P.smb_unsigned_predicate(ctx.db, ctx.project_id),
+                     "SMB message signing disabled (NTLM-relay / lateral-movement exposure)."),
+    "weak_auth": (lambda ctx: P.weak_auth_predicate(ctx.db, ctx.project_id),
+                  "A guest / anonymous / null-session login succeeded (NetExec)."),
+    "cert_issue": (lambda ctx: P.cert_issue_predicate(ctx.db, ctx.project_id),
+                   "Latest TLS certificate is expired or self-signed."),
+    "cleartext": (lambda ctx: P.cleartext_predicate(ctx.db),
+                  "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),
 }
 
 _FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any"}
@@ -417,40 +449,63 @@ def _b_has(ctx: BuildCtx, values: List[str]) -> ColumnElement:
             raise DSLError(
                 f"Unknown has: value '{v}' (one of: {', '.join(sorted(_HAS_KEYWORDS))})"
             )
-        preds.append(_HAS_KEYWORDS[key](ctx))
+        builder, _desc = _HAS_KEYWORDS[key]
+        preds.append(builder(ctx))
     return or_(*preds)
 
 
 _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("state", lambda c, v: P.state_predicate(v), value_source="enum",
-              enum_values=["up", "down", "unknown"]),
-    FieldSpec("ip", lambda c, v: P.ip_predicate(v)),
-    FieldSpec("hostname", lambda c, v: P.hostname_predicate(v), aliases=["host"]),
-    FieldSpec("os", lambda c, v: P.os_predicate(v), value_source="os"),
-    FieldSpec("port", _b_port, value_source="port"),
+              enum_values=["up", "down", "unknown"],
+              description="Host up / down / unknown (any host/port scanner)."),
+    FieldSpec("ip", lambda c, v: P.ip_predicate(v),
+              description="Host IP address (substring match)."),
+    FieldSpec("hostname", lambda c, v: P.hostname_predicate(v), aliases=["host"],
+              description="Host name — nmap, DNS/PTR records, reverse lookups."),
+    FieldSpec("os", lambda c, v: P.os_predicate(v), value_source="os",
+              description="OS name or family — nmap OS detection (-O / -A)."),
+    FieldSpec("port", _b_port, value_source="port",
+              description="An open port number — nmap, masscan, naabu, rustscan."),
     FieldSpec("service", lambda c, v: P.service_predicate(c.db, v), aliases=["svc"],
-              value_source="service"),
+              value_source="service",
+              description="Service name on a port — nmap version detection (-sV)."),
     FieldSpec("portstate", lambda c, v: P.portstate_predicate(c.db, v), value_source="enum",
-              enum_values=["open", "closed", "filtered"]),
-    FieldSpec("subnet", _b_subnet, aliases=["cidr"], value_source="cidr"),
+              enum_values=["open", "closed", "filtered"],
+              description="Port state — open / closed / filtered."),
+    FieldSpec("subnet", _b_subnet, aliases=["cidr"], value_source="cidr",
+              description="Host IP within the CIDR — subnet correlation against scopes."),
     # RV-9 — trgm=True gives tech: the same MIN_TRGM_LEN guard as the other
     # ILIKE/trigram fields, so `tech:a` no longer forces a leading-wildcard
     # scan below the 3-char index threshold.
-    FieldSpec("tech", lambda c, v: P.tech_predicate(c.db, v), value_source="tech", trgm=True),
+    FieldSpec("tech", lambda c, v: P.tech_predicate(c.db, v), value_source="tech", trgm=True,
+              description="Detected web technology — httpx, whatweb, eyewitness."),
     FieldSpec("tag", lambda c, v: P.tag_predicate_by_name(c.db, v, c.project_id),
-              value_source="tag"),
+              value_source="tag",
+              description="Project host tag — applied by analysts (Hosts page)."),
     FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
-              value_source="label"),
-    FieldSpec("site", lambda c, v: P.site_predicate(c.db, v), value_source="site"),
-    FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES)),
-    FieldSpec("assigned", _b_assigned),
-    FieldSpec("scan", _b_scan, value_source="scan"),
-    FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS)),
-    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v, c.project_id), trgm=True),
-    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True),
-    FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True),
-    FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True),
-    FieldSpec("note", lambda c, v: P.note_predicate(c.db, v, c.project_id), trgm=True),
+              value_source="label",
+              description="Project subnet label — applied by analysts (Scopes)."),
+    FieldSpec("site", lambda c, v: P.site_predicate(c.db, v), value_source="site",
+              description="Site the host’s subnet belongs to."),
+    FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
+              description="Review state — in_review / reviewed / none / in_review_any."),
+    FieldSpec("assigned", _b_assigned,
+              description="Host assignment — “me”, “any”, or a user id."),
+    FieldSpec("scan", _b_scan, value_source="scan",
+              description="A scan that observed the host — by numeric id."),
+    FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS),
+              description="Derived boolean flag — takes one of the values below.",
+              enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),
+    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v, c.project_id), trgm=True,
+              description="A finding’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
+    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True,
+              description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
+    FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True,
+              description="HTTP Server response header — httpx."),
+    FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True,
+              description="Web page <title> — httpx, eyewitness."),
+    FieldSpec("note", lambda c, v: P.note_predicate(c.db, v, c.project_id), trgm=True,
+              description="Note / annotation body text — written by analysts."),
 ]
 
 # name/alias -> spec
@@ -568,6 +623,8 @@ def schema() -> dict:
             "value_source": spec.value_source,
             "trgm": spec.trgm,
             "enum_values": spec.enum_values,
+            "description": spec.description,
+            "enum_descriptions": spec.enum_descriptions,
         })
     return {"fields": fields, "examples": EXAMPLES}
 
@@ -580,4 +637,6 @@ EXAMPLES: List[dict] = [
     {"label": "Critical and exploitable", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},
     {"label": "nginx servers", "q": "header:nginx OR tech:nginx"},
+    {"label": "EOL OS, not yet reviewed", "q": "has:eol AND follow:none"},
+    {"label": "SMB signing disabled", "q": "has:smb_unsigned"},
 ]

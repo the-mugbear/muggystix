@@ -563,6 +563,11 @@ export interface HostQueryField {
   value_source: string;
   trgm: boolean;
   enum_values: string[];
+  // Help text from the DSL registry (single source of truth) — rendered by the
+  // command-bar syntax popover and the user-guide field reference.
+  description: string;
+  // For enum fields whose values carry meaning (`has:`), value -> description.
+  enum_descriptions: Record<string, string>;
 }
 
 export interface HostQueryExample {

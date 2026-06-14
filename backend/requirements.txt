@@ -19,11 +19,6 @@ typer==0.19.1
 passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 PyJWT==2.8.0
-weasyprint==62.3
-# WeasyPrint 62.3 targets the pydyf 0.10.x API; pip otherwise pulls a newer
-# pydyf (0.12+) whose changed transform() signature breaks PDF generation
-# with "'super' object has no attribute 'transform'".  Pin to keep them in step.
-pydyf==0.10.0
 cryptography>=41.0.0
 defusedxml==0.7.1
 ijson==3.3.0

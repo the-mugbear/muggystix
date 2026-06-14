@@ -45,33 +45,6 @@ function lastToken(text: string): { token: string; head: string } {
   return { token, head: text.slice(0, text.length - token.length) };
 }
 
-// Short, human descriptions for the syntax-help popover — keyed by the
-// server's field names (the field set itself comes live from the schema, so
-// no field can silently go missing; this only annotates them).
-const FIELD_DESCRIPTIONS: Record<string, string> = {
-  state: 'Host up / down / unknown',
-  ip: 'Host IP address',
-  hostname: 'Host name',
-  os: 'OS name (nmap detection)',
-  port: 'An open port number',
-  service: 'Service on an open port (nmap -sV)',
-  portstate: 'Port open / closed / filtered',
-  subnet: 'Host IP within a CIDR',
-  tech: 'Web technology (httpx / whatweb)',
-  tag: 'Project host tag',
-  label: 'Project subnet label',
-  site: 'Site of the host’s subnet',
-  follow: 'Review state (in_review / reviewed …)',
-  assigned: 'Assignment (“me” or a username)',
-  scan: 'A scan that observed the host',
-  has: 'Flags: web, notes, exploit, tested, critical …',
-  cve: 'Finding CVE id (Nessus / OpenVAS / Nikto)',
-  vuln: 'Finding title (Nessus / OpenVAS / Nikto)',
-  header: 'HTTP Server header (httpx)',
-  webtitle: 'Web page title (httpx / eyewitness)',
-  note: 'Note / annotation body text',
-};
-
 function buildSuggestions(
   draft: string,
   fields: HostQueryField[],
@@ -105,7 +78,11 @@ function buildSuggestions(
     .slice(0, 8)
     // Quote values with spaces/commas/quotes so e.g. "Windows Server 2019"
     // inserts as os:"Windows Server 2019", not os:Windows AND Server AND 2019.
-    .map((v) => ({ display: v, insert: `${spec.name}:${quote(v)}` }));
+    // Annotate enum values that carry meaning (has:) with their description.
+    .map((v) => ({
+      display: spec.enum_descriptions?.[v] ? `${v} — ${spec.enum_descriptions[v]}` : v,
+      insert: `${spec.name}:${quote(v)}`,
+    }));
 }
 
 /**
@@ -193,6 +170,17 @@ export default function HostCommandBar({
     setDraft((prev) => {
       const trimmed = prev.replace(/\s+$/, '');
       return `${trimmed}${trimmed ? ' ' : ''}${name}:`;
+    });
+    inputRef.current?.focus();
+  };
+
+  // Append a complete token (e.g. ``has:web``) to the draft — used by the
+  // syntax popover's enum-value rows.  Sets the draft (does not commit), like
+  // insertField.
+  const insertToken = (token: string) => {
+    setDraft((prev) => {
+      const trimmed = prev.replace(/\s+$/, '');
+      return `${trimmed}${trimmed ? ' ' : ''}${token}`;
     });
     inputRef.current?.focus();
   };
@@ -430,19 +418,36 @@ export default function HostCommandBar({
               </p>
               <div className="max-h-64 space-y-px overflow-y-auto">
                 {(schema?.fields ?? []).map((f) => (
-                  <button
-                    key={f.name}
-                    type="button"
-                    onClick={() => insertField(f.name)}
-                    className="flex w-full items-baseline gap-xs rounded px-xs py-xxs text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                    title={f.aliases.length ? `aliases: ${f.aliases.join(', ')}` : undefined}
-                  >
-                    <code className="shrink-0 font-mono text-caption text-foreground">{f.name}:</code>
-                    <span className="truncate text-caption text-muted-foreground">
-                      {FIELD_DESCRIPTIONS[f.name] ?? ''}
-                      {f.aliases.length ? ` · ${f.aliases.map((a) => `${a}:`).join(' ')}` : ''}
-                    </span>
-                  </button>
+                  <React.Fragment key={f.name}>
+                    <button
+                      type="button"
+                      onClick={() => insertField(f.name)}
+                      className="flex w-full items-baseline gap-xs rounded px-xs py-xxs text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                      title={f.aliases.length ? `aliases: ${f.aliases.join(', ')}` : undefined}
+                    >
+                      <code className="shrink-0 font-mono text-caption text-foreground">{f.name}:</code>
+                      <span className="truncate text-caption text-muted-foreground">
+                        {f.description}
+                        {f.aliases.length ? ` · ${f.aliases.map((a) => `${a}:`).join(' ')}` : ''}
+                      </span>
+                    </button>
+                    {/* Enum values that carry meaning (has:) — list each so the
+                        flag's purpose is discoverable; click to insert it. */}
+                    {Object.keys(f.enum_descriptions ?? {}).length > 0 &&
+                      f.enum_values.map((v) => (
+                        <button
+                          key={`${f.name}:${v}`}
+                          type="button"
+                          onClick={() => insertToken(`${f.name}:${v}`)}
+                          className="flex w-full items-baseline gap-xs rounded py-xxs pl-md pr-xs text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                        >
+                          <code className="shrink-0 font-mono text-caption text-muted-foreground">{f.name}:{v}</code>
+                          <span className="truncate text-caption text-muted-foreground">
+                            {f.enum_descriptions[v]}
+                          </span>
+                        </button>
+                      ))}
+                  </React.Fragment>
                 ))}
               </div>
             </PopoverContent>

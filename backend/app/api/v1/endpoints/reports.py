@@ -89,6 +89,29 @@ def generate_hosts_html_report(
     )
 
 
+@router.get("/systemic.html")
+def generate_systemic_executive_report(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Lightweight executive systemic report (standalone HTML).
+
+    The estate-wide systemic patterns + site/subnet hotspots only — no per-host
+    dossiers — as a self-contained HTML file for sharing at a high-level
+    meeting.  Project-wide (no host filters); the systemic payload is bounded,
+    so this renders synchronously rather than via the async report-job
+    pipeline."""
+    generator = ReportGenerator(db, current_user, project_id=project.id)
+    html_doc = generator.generate_systemic_executive_html()
+    filename = f"systemic_insights_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    return Response(
+        content=html_doc,
+        media_type="text/html",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Async report jobs.  The heavy in-memory formats (pdf / json / agent-package /
 # markdown-bundle) build the whole document in worker memory, so they run on the

@@ -111,7 +111,7 @@ const STRUCTURED_FORMATS: Array<{
 const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, totalHosts }) => {
   const [reportType, setReportType] = useState<ReportType>('comprehensive');
   const [format, setFormat] = useState<HumanFormat>('html');
-  // Tracks which action is in flight ('pdf', 'agent-package', …) so only that
+  // Tracks which action is in flight ('html', 'agent-package', …) so only that
   // button spins and the rest disable.
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

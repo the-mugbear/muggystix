@@ -45,6 +45,17 @@ from app.services.host_query_common import (  # noqa: F401  (re-exported on purp
     escape_like,
     parse_subnets,
 )
+# Shared condition logic — the SAME id-sets the systemic-insights view counts,
+# so the `has:eol`/`has:weak_auth`/`has:cert_issue` drill-downs land on exactly
+# the hosts behind a systemic blind-spot's headline number.  (Importing this
+# does not create a cycle: host_condition_sets -> subnet_insight_service, and
+# subnet_insight_service imports neither host_query nor this module.)
+from app.services.host_condition_sets import (
+    CLEARTEXT_PORTS,
+    cert_issue_host_ids,
+    eol_os_host_ids,
+    weak_auth_host_ids,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +234,61 @@ def header_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 def webtitle_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Host has a web interface whose page ``title`` matches any value."""
     return _web_text_predicate(db, models.WebInterface.title, values)
+
+
+# ---------------------------------------------------------------------------
+# Systemic-condition predicates (the `has:` weakness family)
+# ---------------------------------------------------------------------------
+#
+# These back the drill-down from Systemic / Subnet Insights: a blind-spot row
+# ("SMB signing disabled — 40 hosts") links to `/hosts?q=has:smb_unsigned`, and
+# this predicate must resolve those same 40 hosts.  SMB-signing and cleartext
+# are simple column/port conditions expressed directly in SQL here (index- and
+# NOT-friendly at scale); EOL OS, cert hygiene, and weak auth carry non-trivial
+# judgments (regex catalog, latest-observation-wins) that live once in
+# host_condition_sets and are pulled in as id-sets so the two surfaces agree.
+
+
+def smb_unsigned_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host whose recorded SMB-signing posture is ``disabled`` (project-scoped).
+
+    Expressed as an id-subquery rather than a bare ``Host.smb_signing ==
+    'disabled'`` so ``NOT has:smb_unsigned`` includes hosts whose signing
+    posture is unknown (NULL) instead of silently dropping them via the
+    NOT-IN/NULL footgun."""
+    _H = aliased(models.Host)
+    sub = db.query(_H.id).filter(
+        _H.project_id == project_id, _H.smb_signing == "disabled"
+    )
+    return models.Host.id.in_(sub)
+
+
+def cleartext_predicate(db: Session) -> ColumnElement:
+    """Host with at least one OPEN cleartext-credential port (Telnet/FTP/POP/IMAP).
+
+    Reuses ``port_match_subquery`` so port-in-set AND open are required on the
+    SAME Port row — matching the systemic ``cleartext_services`` condition."""
+    return models.Host.id.in_(
+        port_match_subquery(db, ports=sorted(CLEARTEXT_PORTS), require_open=True)
+    )
+
+
+def eol_os_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host running an end-of-life OS (per the shared EOL catalog)."""
+    ids = eol_os_host_ids(db, project_id)
+    return models.Host.id.in_(ids) if ids else false()
+
+
+def cert_issue_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host whose latest TLS cert observation is expired or self-signed."""
+    ids = cert_issue_host_ids(db, project_id)
+    return models.Host.id.in_(ids) if ids else false()
+
+
+def weak_auth_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host where a guest / anonymous / null-session login succeeded."""
+    ids = weak_auth_host_ids(db, project_id)
+    return models.Host.id.in_(ids) if ids else false()
 
 
 # ---------------------------------------------------------------------------

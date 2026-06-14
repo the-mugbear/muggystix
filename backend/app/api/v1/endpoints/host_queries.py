@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,6 +61,11 @@ class QueryFieldSchema(BaseModel):
     value_source: str
     trgm: bool
     enum_values: List[str]
+    # Human help text — the single source of truth lives in the DSL registry
+    # (host_query_dsl), so the command bar and user-guide reference render
+    # these live and never drift.
+    description: str = ""
+    enum_descriptions: Dict[str, str] = Field(default_factory=dict)
 
 
 class QueryExampleSchema(BaseModel):

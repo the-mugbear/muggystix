@@ -607,7 +607,7 @@ class ReportJob(Base):
     requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # What to generate.
-    format = Column(String(32), nullable=False)        # pdf | json | markdown-bundle | agent-package
+    format = Column(String(32), nullable=False)        # json | markdown-bundle | agent-package
     report_type = Column(String(20), nullable=False, default="comprehensive")  # comprehensive | inventory
     filters = Column(JSON, default=dict)               # build_filtered_host_query kwargs
 

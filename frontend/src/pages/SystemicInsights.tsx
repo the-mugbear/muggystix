@@ -19,14 +19,22 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, RefreshCw, ShieldAlert, AlertTriangle, ShieldCheck, Info } from 'lucide-react';
+import {
+  Loader2, RefreshCw, ShieldAlert, AlertTriangle, ShieldCheck, Info, ArrowRight,
+  Copy, Download, FileText,
+} from 'lucide-react';
 
 import {
   getSystemicInsights,
+  conditionHostsHref,
+  subnetHostsHref,
+  downloadSystemicReport,
   type SystemicInsightsResponse,
   type SystemicCondition,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
+import { useToast } from '../contexts/ToastContext';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -80,11 +88,100 @@ function conditionChip(key: string): string {
   return CONDITION_LABEL[key] ?? key;
 }
 
+// Condition chips for a subnet — each links to that subnet's hosts filtered to
+// the condition (the analyst's drill-down) when the condition has a /hosts
+// predicate; chips without one (shared-vuln) render plain.
+const ConditionChips: React.FC<{ keys: string[]; cidr: string }> = ({ keys, cidr }) => (
+  <div className="flex flex-wrap gap-xxs">
+    {keys.map((k) => {
+      const href = conditionHostsHref(k, cidr);
+      const label = conditionChip(k);
+      return href ? (
+        <Link key={k} to={href} title={`View ${cidr} hosts with ${label}`}>
+          <Badge variant="muted" className="cursor-pointer hover:bg-muted-foreground/20">{label}</Badge>
+        </Link>
+      ) : (
+        <Badge key={k} variant="muted">{label}</Badge>
+      );
+    })}
+  </div>
+);
+
+// Render the systemic response as a shareable Markdown summary (for pasting
+// into a ticket / Slack / email).  Mirrors the on-page sections.
+function systemicToMarkdown(data: SystemicInsightsResponse, projectName?: string): string {
+  const lines: string[] = [`# Systemic Insights${projectName ? ` — ${projectName}` : ''}`, ''];
+  if (!data.adopted) return [...lines, '_No scoped subnets yet._'].join('\n');
+  const e = data.estate;
+  if (e) {
+    lines.push(
+      `Hosts in scope: ${e.hosts_in_scope} · Subnets: ${e.subnets} · Sites: ${e.sites} · Estate blind spots: ${e.blind_spot_count}`,
+      '',
+    );
+  }
+  const blind = data.blind_spots ?? [];
+  if (blind.length) {
+    lines.push('## Estate blind spots', '');
+    for (const b of blind) {
+      lines.push(
+        `- **${b.label}** — ${b.affected_hosts} hosts (${Math.round(b.host_fraction * 100)}%), ` +
+        `${b.subnet_spread} subnets, ${b.site_spread} sites. ${b.recommended_action}`,
+      );
+    }
+    lines.push('');
+  }
+  const conditions = data.conditions ?? [];
+  if (conditions.length) {
+    lines.push('## Systemic conditions', '', '| Condition | Hosts | Subnets | Sites | Score | Scope |', '|---|---:|---:|---:|---:|---|');
+    for (const c of conditions) {
+      lines.push(
+        `| ${c.label.replace(/\|/g, '/')} | ${c.affected_hosts} (${Math.round(c.host_fraction * 100)}%) | ` +
+        `${c.subnet_spread} | ${c.site_spread} | ${c.systemic_score} | ${c.is_blind_spot ? 'estate-wide' : 'localised'} |`,
+      );
+    }
+    lines.push('');
+  }
+  const outliers = data.segment_outliers ?? [];
+  if (outliers.length) {
+    lines.push('## Segment outliers', '', '| Subnet | Site | Hosts | Density | Conditions |', '|---|---|---:|---:|---|');
+    for (const o of outliers) {
+      lines.push(`| ${o.cidr} | ${o.site ?? '—'} | ${o.host_count} | ${o.times_median}× median | ${(o.conditions || []).join(', ') || '—'} |`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 const SystemicInsights: React.FC = () => {
   const { currentProject } = useProject();
+  const toast = useToast();
   const [data, setData] = useState<SystemicInsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const handleCopyMarkdown = useCallback(async () => {
+    if (!data) return;
+    const ok = await copyToClipboard(systemicToMarkdown(data, currentProject?.name));
+    toast[ok ? 'success' : 'error'](ok ? 'Summary copied as Markdown' : 'Could not copy to clipboard');
+  }, [data, currentProject?.name, toast]);
+
+  const handleDownloadJson = useCallback(() => {
+    if (!data) return;
+    downloadTextFile(`systemic_insights_${new Date().toISOString().split('T')[0]}.json`,
+      JSON.stringify(data, null, 2), 'application/json');
+  }, [data]);
+
+  const handleExportReport = useCallback(async () => {
+    setExporting(true);
+    try {
+      await downloadSystemicReport();
+    } catch (e) {
+      toast.error(formatApiError(e, 'Could not export the report.'));
+    } finally {
+      setExporting(false);
+    }
+  }, [toast]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -120,9 +217,20 @@ const SystemicInsights: React.FC = () => {
             evidence-backed hypotheses, not verdicts — review the breakdown.
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-          <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-        </Button>
+        <div className="flex flex-wrap items-center gap-xs">
+          <Button size="sm" variant="outline" onClick={handleCopyMarkdown} disabled={loading || !data?.adopted}>
+            <Copy className="size-3.5" aria-hidden /> Copy summary
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleDownloadJson} disabled={loading || !data?.adopted}>
+            <Download className="size-3.5" aria-hidden /> JSON
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleExportReport} disabled={loading || exporting}>
+            <FileText className={`size-3.5 ${exporting ? 'animate-pulse' : ''}`} aria-hidden /> Export report
+          </Button>
+          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+          </Button>
+        </div>
       </div>
 
       {loading && !data ? (
@@ -236,7 +344,15 @@ const SystemicInsights: React.FC = () => {
                                   </span>
                                 </TableCell>
                                 <TableCell className="align-top text-right text-foreground">
-                                  {c.affected_hosts}
+                                  {(() => {
+                                    const href = conditionHostsHref(c.key);
+                                    return href ? (
+                                      <Link to={href} title="View these hosts"
+                                        className="font-medium text-info hover:underline">
+                                        {c.affected_hosts}
+                                      </Link>
+                                    ) : c.affected_hosts;
+                                  })()}
                                   <span className="ml-xxs text-caption text-muted-foreground">
                                     ({Math.round(c.host_fraction * 100)}%)
                                   </span>
@@ -291,9 +407,10 @@ const SystemicInsights: React.FC = () => {
                             {outliers.map((o) => (
                               <TableRow key={o.subnet_id}>
                                 <TableCell className="align-top">
-                                  <span className="block truncate font-mono text-metadata text-foreground" title={o.cidr}>
+                                  <Link to={subnetHostsHref(o.cidr)} title={`View hosts in ${o.cidr}`}
+                                    className="block truncate font-mono text-metadata text-info hover:underline" >
                                     {o.cidr}
-                                  </span>
+                                  </Link>
                                 </TableCell>
                                 <TableCell className="align-top">
                                   <span className="block truncate text-caption text-foreground" title={o.site ?? undefined}>
@@ -307,11 +424,7 @@ const SystemicInsights: React.FC = () => {
                                   </span>
                                 </TableCell>
                                 <TableCell className="align-top">
-                                  <div className="flex flex-wrap gap-xxs">
-                                    {o.conditions.map((k) => (
-                                      <Badge key={k} variant="muted">{conditionChip(k)}</Badge>
-                                    ))}
-                                  </div>
+                                  <ConditionChips keys={o.conditions} cidr={o.cidr} />
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -349,9 +462,10 @@ const SystemicInsights: React.FC = () => {
                             {profiles.map((d) => (
                               <TableRow key={d.subnet_id}>
                                 <TableCell className="align-top">
-                                  <span className="block truncate font-mono text-metadata text-foreground" title={d.cidr}>
+                                  <Link to={subnetHostsHref(d.cidr)} title={`View hosts in ${d.cidr}`}
+                                    className="block truncate font-mono text-metadata text-info hover:underline">
                                     {d.cidr}
-                                  </span>
+                                  </Link>
                                 </TableCell>
                                 <TableCell className="align-top">
                                   <span className="block truncate text-caption text-foreground" title={d.site ?? undefined}>
@@ -359,11 +473,7 @@ const SystemicInsights: React.FC = () => {
                                   </span>
                                 </TableCell>
                                 <TableCell className="align-top">
-                                  <div className="flex flex-wrap gap-xxs">
-                                    {d.conditions.map((k) => (
-                                      <Badge key={k} variant="muted">{conditionChip(k)}</Badge>
-                                    ))}
-                                  </div>
+                                  <ConditionChips keys={d.conditions} cidr={d.cidr} />
                                 </TableCell>
                                 <TableCell className="align-top">
                                   <div className="flex min-w-0 items-start gap-xxs">
@@ -394,6 +504,7 @@ const SystemicInsights: React.FC = () => {
 
 const BlindSpotCard: React.FC<{ c: SystemicCondition }> = ({ c }) => {
   const ips = c.example_ips.filter(Boolean) as string[];
+  const href = conditionHostsHref(c.key);
   return (
     <Card className="border-l-4 border-l-destructive">
       <CardContent className="space-y-xs p-md">
@@ -417,6 +528,12 @@ const BlindSpotCard: React.FC<{ c: SystemicCondition }> = ({ c }) => {
           </p>
         )}
         <p className="text-caption text-foreground">{c.recommended_action}</p>
+        {href && (
+          <Link to={href}
+            className="inline-flex items-center gap-xxs text-caption font-medium text-info hover:underline">
+            View affected hosts <ArrowRight className="size-3" aria-hidden />
+          </Link>
+        )}
       </CardContent>
     </Card>
   );

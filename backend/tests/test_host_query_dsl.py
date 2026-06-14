@@ -198,3 +198,20 @@ def test_schema_lists_fields_and_examples():
     # Every example must itself parse.
     for ex in s["examples"]:
         parse_query(ex["q"])
+
+
+def test_schema_carries_descriptions_for_all_help_surfaces():
+    """The schema is the single source of truth for help text — every field has
+    a description, and every ``has:`` keyword is described, so the command bar
+    and the user-guide reference render the same thing and can't drift."""
+    from app.services.host_query_dsl import _HAS_KEYWORDS
+
+    s = schema()
+    for f in s["fields"]:
+        assert f["description"], f"field {f['name']} is missing a description"
+    has = next(f for f in s["fields"] if f["name"] == "has")
+    # Every has: keyword the parser accepts must carry a human description,
+    # and the enum_values/enum_descriptions must agree with the registry.
+    assert set(has["enum_descriptions"]) == set(_HAS_KEYWORDS)
+    assert set(has["enum_values"]) == set(_HAS_KEYWORDS)
+    assert all(has["enum_descriptions"].values())

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ServerCog, SearchCode, ShieldAlert, Gauge, MessagesSquare } from 'lucide-react';
 import {
   Table,
@@ -9,6 +9,7 @@ import {
   TableRow,
 } from '../../components/ui/table';
 import { Alert, AlertDescription } from '../../components/ui/alert';
+import { getHostQuerySchema, type HostQuerySchema } from '../../services/api';
 import {
   UserGuideShell,
   GuidePage,
@@ -19,29 +20,79 @@ import {
   Mono,
 } from './UserGuideShell';
 
-const DSL_FIELDS: { f: string; ex: string; src: string }[] = [
-  { f: 'cve:', ex: 'cve:CVE-2021-44228', src: 'A finding’s CVE id (substring). Populated by Nessus, OpenVAS, Nikto.' },
-  { f: 'vuln:', ex: 'vuln:"log4j"', src: 'A finding’s title / plugin name. Nessus (plugin), OpenVAS (NVT), Nikto.' },
-  { f: 'has:', ex: 'has:critical', src: 'Derived boolean flags — see the list below the table.' },
-  { f: 'state:', ex: 'state:up', src: 'Host up / down / unknown. Any port/host scanner.' },
-  { f: 'ip:', ex: 'ip:10.0.0.5', src: 'Host IP address. Any scanner.' },
-  { f: 'hostname: (host:)', ex: 'hostname:dc01', src: 'Host name. nmap, DNS/PTR records, reverse lookups.' },
-  { f: 'os:', ex: 'os:Windows', src: 'OS name. nmap OS detection (-O / -A).' },
-  { f: 'port:', ex: 'port:445', src: 'An open port number. nmap, masscan, naabu, rustscan.' },
-  { f: 'service: (svc:)', ex: 'service:smb', src: 'Service name on an open port. nmap version detection (-sV).' },
-  { f: 'portstate:', ex: 'portstate:open', src: 'Port state — open / closed / filtered.' },
-  { f: 'subnet: (cidr:)', ex: 'subnet:10.0.0.0/24', src: 'Host IP within the CIDR. Subnet correlation against scopes.' },
-  { f: 'site:', ex: 'site:"London DC"', src: 'Site the host’s subnet belongs to. Assigned to subnets.' },
-  { f: 'tech:', ex: 'tech:nginx', src: 'Detected web technology. httpx, whatweb, eyewitness.' },
-  { f: 'header:', ex: 'header:Apache', src: 'HTTP Server response header. httpx.' },
-  { f: 'webtitle:', ex: 'webtitle:login', src: 'Web page <title>. httpx, eyewitness.' },
-  { f: 'tag:', ex: 'tag:owned', src: 'Project host tag. Applied by analysts (Hosts page).' },
-  { f: 'label:', ex: 'label:"PCI"', src: 'Project subnet label. Applied by analysts (Scopes).' },
-  { f: 'follow:', ex: 'follow:in_review', src: 'Review state — watching / in_review / reviewed / none / in_review_any. Set by analysts.' },
-  { f: 'assigned:', ex: 'assigned:me', src: 'Host assignment — "me" or a username.' },
-  { f: 'note:', ex: 'note:"false positive"', src: 'Note/annotation body text. Written by analysts.' },
-  { f: 'scan:', ex: 'scan:nmap_full', src: 'A scan that observed the host — by filename or id.' },
-];
+// Live field reference — fetched from the DSL schema endpoint so the guide can
+// never drift from the actual registry (the command bar's syntax popover reads
+// the same source).  The schema endpoint is project-scoped; on a brand-new
+// deployment with no project selected the fetch fails and we point the reader
+// at the in-page syntax help instead.
+const DslFieldReference: React.FC = () => {
+  const [schema, setSchema] = useState<HostQuerySchema | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getHostQuerySchema()
+      .then((s) => { if (active) setSchema(s); })
+      .catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, []);
+
+  if (failed) {
+    return (
+      <Para>
+        Select a project to load the live field list. Every field is also listed in
+        the Hosts query bar’s <strong>syntax help</strong> (the <Mono>?</Mono> button),
+        which reads the same source.
+      </Para>
+    );
+  }
+  if (!schema) return <Para>Loading field reference…</Para>;
+
+  const hasField = schema.fields.find((f) => f.name === 'has');
+
+  return (
+    <>
+      <Subhead>Fields &amp; where the data comes from</Subhead>
+      <div className="overflow-x-auto rounded-panel border border-border">
+        <Table className="min-w-[600px]">
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-1/4">Field</TableHead>
+              <TableHead>Matches — and where it’s populated from</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {schema.fields.map((f) => (
+              <TableRow key={f.name}>
+                <TableCell>
+                  <code className="font-mono text-caption">{f.name}:</code>
+                  {f.aliases.length > 0 && (
+                    <span className="ml-xxs text-caption text-muted-foreground">
+                      ({f.aliases.map((a) => `${a}:`).join(' ')})
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="text-body">{f.description}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {hasField && Object.keys(hasField.enum_descriptions).length > 0 && (
+        <>
+          <Subhead>has: flags</Subhead>
+          <UnorderedList>
+            {hasField.enum_values.map((v) => (
+              <li key={v}>
+                <Mono>has:{v}</Mono> — {hasField.enum_descriptions[v]}
+              </li>
+            ))}
+          </UnorderedList>
+        </>
+      )}
+    </>
+  );
+};
 
 const sections: GuideSection[] = [
   {
@@ -97,34 +148,7 @@ const sections: GuideSection[] = [
           <li><Mono>port:445 AND os:Windows AND label:"PCI"</Mono> — SMB-exposed Windows hosts in PCI subnets.</li>
           <li><Mono>service:http AND has:web AND NOT tag:reviewed</Mono> — un-reviewed web services.</li>
         </UnorderedList>
-        <Subhead>Fields &amp; where the data comes from</Subhead>
-        <div className="overflow-x-auto rounded-panel border border-border">
-          <Table className="min-w-[680px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-1/5">Field</TableHead>
-                <TableHead className="w-1/4">Example</TableHead>
-                <TableHead>Matches — and where it’s populated from</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {DSL_FIELDS.map((row) => (
-                <TableRow key={row.f}>
-                  <TableCell><code className="font-mono text-caption">{row.f}</code></TableCell>
-                  <TableCell><code className="font-mono text-caption break-words">{row.ex}</code></TableCell>
-                  <TableCell className="text-body">{row.src}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        <Subhead>has: flags</Subhead>
-        <Para>
-          <Mono>has:</Mono> takes one of: <Mono>web</Mono> (a web interface), <Mono>notes</Mono>,{' '}
-          <Mono>exploit</Mono> (a finding flagged exploitable by Nessus), <Mono>tested</Mono> (an
-          agentic test was executed), <Mono>open_ports</Mono>, and the severity flags{' '}
-          <Mono>critical</Mono> / <Mono>high</Mono> / <Mono>medium</Mono> / <Mono>low</Mono>.
-        </Para>
+        <DslFieldReference />
         <Alert className="mt-sm">
           <AlertDescription>
             This same query language is available to an <strong>AI Assist agent</strong> — so you can

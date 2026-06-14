@@ -22,6 +22,7 @@ import {
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
   getScans,
+  getScansSummary,
   deleteScan,
   getScanDeletionImpact,
   uploadFile,
@@ -34,6 +35,7 @@ import {
 } from '../services/api';
 import type {
   Scan,
+  ScanInventorySummary,
   IngestionJob,
   CommandExplanation,
   ScanDeletionImpact,
@@ -155,6 +157,9 @@ export default function Scans() {
   const toast = useToast();
   const [confirmDialog, confirm] = useConfirm();
   const [scans, setScans] = useState<Scan[]>([]);
+  // Filter-aware totals for the headline cards — fetched server-side so they
+  // reflect every matching scan, not just the loaded (paginated) page.
+  const [inventorySummary, setInventorySummary] = useState<ScanInventorySummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -284,20 +289,26 @@ export default function Scans() {
   }, []);
 
   const fetchScans = useCallback(async () => {
+    const filters = {
+      search: debouncedSearchText.trim() || undefined,
+      tool: toolFilter || undefined,
+      createdAfter: createdAfterIso,
+    };
     try {
-      const data = await getScans(0, SCAN_LIMIT, {
-        search: debouncedSearchText.trim() || undefined,
-        tool: toolFilter || undefined,
-        createdAfter: createdAfterIso,
-        sortBy,
-        sortOrder,
-      });
+      const data = await getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder });
       setScans(data);
       setHasMoreScans(data.length === SCAN_LIMIT);
     } catch (err) {
       console.error('Error fetching scans:', err);
     } finally {
       setLoading(false);
+    }
+    // Headline totals are filter-aware and independent of pagination, so a
+    // failure here must not block the table from rendering — fetch separately.
+    try {
+      setInventorySummary(await getScansSummary(filters));
+    } catch (err) {
+      console.error('Error fetching scan summary:', err);
     }
   }, [toolFilter, debouncedSearchText, createdAfterIso, sortBy, sortOrder]);
 
@@ -913,12 +924,21 @@ export default function Scans() {
 
       <div className="mb-md grid grid-cols-1 gap-sm sm:grid-cols-2 md:grid-cols-4">
         {[
-          { label: 'Scans', value: scans.length.toLocaleString() },
+          // Headline totals come from the filter-aware /scans/summary so they
+          // reflect every matching scan, not just the loaded page.  Fall back
+          // to the loaded-page sums if the summary fetch hasn't landed / failed.
+          {
+            label: 'Scans',
+            value: (inventorySummary?.total_scans ?? scans.length).toLocaleString(),
+          },
           {
             label: 'Hosts up',
-            value: `${scanSummary.upHosts.toLocaleString()} / ${scanSummary.totalHosts.toLocaleString()}`,
+            value: `${(inventorySummary?.up_hosts ?? scanSummary.upHosts).toLocaleString()} / ${(inventorySummary?.total_hosts ?? scanSummary.totalHosts).toLocaleString()}`,
           },
-          { label: 'Open services', value: scanSummary.openServices.toLocaleString() },
+          {
+            label: 'Open services',
+            value: (inventorySummary?.open_services ?? scanSummary.openServices).toLocaleString(),
+          },
           { label: 'Queue active', value: scanSummary.queuedOrProcessing.toLocaleString() },
         ].map((metric) => (
           <Card key={metric.label}>
