@@ -105,6 +105,7 @@ class NotificationService:
                 body=note.body[:200] if note.body else None,
                 source_type="note",
                 source_id=note.id,
+                host_id=note.host_id,
                 actor_id=actor.id,
             )
             self.db.add(notification)
@@ -157,6 +158,7 @@ class NotificationService:
                 body=f"@{actor.username} changed status from {old_status} to {new_status}",
                 source_type="note",
                 source_id=note.id,
+                host_id=note.host_id,
                 actor_id=actor.id,
             )
             self.db.add(notification)

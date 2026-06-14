@@ -16,6 +16,7 @@ export interface NotificationItem {
   body: string | null;
   source_type: string | null;
   source_id: number | null;
+  host_id: number | null;
   actor_id: number | null;
   actor_username: string | null;
   read_at: string | null;

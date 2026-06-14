@@ -217,3 +217,32 @@ def test_parse_mentions_empty_body_returns_empty():
     svc = NotificationService(db=None)
     assert svc.parse_mentions("", project_id=1) == []
     assert svc.parse_mentions("no mentions here", project_id=1) == []
+
+
+def test_mention_notification_carries_host_id(db_session, test_project):
+    """§21 — a mention notification records the host so the Activity mentions
+    panel can deep-link to /hosts/<host_id>#note-<note_id> instead of a dead
+    /hosts?note= link. (Both users are auto-id to avoid the test_user id=1
+    sequence collision.)"""
+    from app.db import models
+    from app.services.notification_service import NotificationService
+
+    author = _make_user(db_session, "noteauthor")
+    mentionee = _make_user(db_session, "mentionee")
+    _make_membership(db_session, test_project, mentionee)
+    host = models.Host(project_id=test_project.id, ip_address="10.4.0.9", state="up")
+    db_session.add(host)
+    db_session.flush()
+    note = models.Annotation(
+        host_id=host.id, user_id=author.id, body="@mentionee take a look", note_type="finding",
+    )
+    db_session.add(note)
+    db_session.flush()
+
+    created = NotificationService(db_session).process_note_mentions(note, actor=author, project=test_project)
+    db_session.flush()
+
+    assert len(created) == 1
+    assert created[0].host_id == host.id
+    assert created[0].source_type == "note"
+    assert created[0].source_id == note.id

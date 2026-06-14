@@ -87,6 +87,11 @@ class Notification(Base):
     body = Column(Text)
     source_type = Column(String(50))  # note, host, scan, project
     source_id = Column(Integer)       # polymorphic FK
+    # Host the notification points at (for note/host sources) so the Activity
+    # mentions panel can deep-link to /hosts/<host_id>#note-<source_id> instead
+    # of a dead /hosts?note= link. Plain int (no FK) — like source_id, it's a
+    # soft polymorphic reference, not a constraint.
+    host_id = Column(Integer, nullable=True, index=True)
     # v2.86.1 — ondelete=SET NULL so deleting the actor preserves the
     # notification (audit-trail) but nulls the actor link.  Without this,
     # deleting any user who has ever produced a notification fails with

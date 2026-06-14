@@ -7,6 +7,7 @@ import {
   NoteActivityAuthor,
   markActivitySeen,
   getNotifications,
+  markNotificationsRead,
   markAllNotificationsRead,
   NotificationItem,
 } from '../services/api';
@@ -94,6 +95,7 @@ const Activity: React.FC = () => {
   const [statusCounts, setStatusCounts] = useState({ open: 0, in_progress: 0, resolved: 0 });
   const [totalNotes, setTotalNotes] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   const [authorFilter, setAuthorFilter] = useState<string>('');
   const [authors, setAuthors] = useState<NoteActivityAuthor[]>([]);
@@ -112,28 +114,33 @@ const Activity: React.FC = () => {
     return () => clearTimeout(timer);
   }, [search]);
 
-  const fetchActivity = useCallback(async () => {
+  // Page through notes rather than capping at one 100-note fetch (which made
+  // the thread/host counts and the feed silently miss everything past 100).
+  const PAGE_SIZE = 100;
+  const fetchActivity = useCallback(async (skip = 0) => {
+    const append = skip > 0;
     try {
-      setLoading(true);
+      if (append) setLoadingMore(true); else setLoading(true);
       setFetchError(null);
-      const params: Record<string, string | number> = { limit: 100 };
+      const params: Record<string, string | number> = { limit: PAGE_SIZE, skip };
       if (statusFilter) params.status = statusFilter;
       if (authorFilter) params.author_id = Number(authorFilter);
       if (debouncedSearch) params.search = debouncedSearch;
       const data = await getNoteActivity(params);
-      setNotes(data.notes);
+      setNotes((prev) => (append ? [...prev, ...data.notes] : data.notes));
       setStatusCounts(data.status_counts);
       setTotalNotes(data.total_notes);
       if (data.authors) setAuthors(data.authors);
     } catch (err) {
       setFetchError(formatApiError(err, 'Failed to load activity.'));
     } finally {
-      setLoading(false);
+      if (append) setLoadingMore(false); else setLoading(false);
     }
   }, [statusFilter, authorFilter, debouncedSearch]);
 
+  // A filter change refetches from the first page (append=false replaces).
   useEffect(() => {
-    fetchActivity();
+    fetchActivity(0);
   }, [fetchActivity]);
 
   // FRX·H6: when the user arrived via the bell (?mentions=mine) and
@@ -151,39 +158,52 @@ const Activity: React.FC = () => {
   }, [mentionsFilter, unreadNotifications.length, mentionsDismissed]);
 
   useEffect(() => {
-    // Mount-only: parallelize the two reads (markActivitySeen +
-    // getNotifications), then mark-all-read.  Bell badge is cleared
-    // optimistically up-front via the custom event so Layout doesn't
-    // wait for the network round-trip (audit PRF·M7).
+    // Mount-only: mark the activity FEED seen (the "since last visit" cursor)
+    // and load the user's unread notifications for the Mentions panel.
+    //
+    // We deliberately do NOT mark notifications read just because the page
+    // opened (§21) — that silently cleared a user's mentions. Read-state is
+    // now durable: a mention is marked read only when its thread is opened or
+    // via the explicit "Mark all read" control, so it survives across visits.
     let cancelled = false;
-    window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
     Promise.all([
       markActivitySeen().catch(() => undefined),
       getNotifications(true, 50).catch(() => null),
     ])
-      .then(async ([, res]) => {
+      .then(([, res]) => {
         if (cancelled || !res) return;
-        // Snapshot unread notifications BEFORE marking them read so the
-        // "Your Mentions" panel still has something to render for this
-        // visit.
         setUnreadNotifications(res.notifications);
-        if (res.notifications.length > 0) {
-          await markAllNotificationsRead().catch(() => undefined);
-          // Re-fire so any late-arriving bell still updates.
-          window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
-        }
       })
-      // Defense-in-depth: every inner promise already has its own
-      // .catch(), but this outer catch covers anything thrown
-      // synchronously inside the .then() handler (a setState-during-
-      // unmount, a downstream call we don't yet wrap).  Logging is the
-      // upgrade — the missing handler produced silent unhandled
-      // rejections in the console instead of an attributed log line.
       .catch((err) => console.error('Activity initial-load handler threw:', err));
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // Mark one mention read (on open) or all of them — durable, per §21. Each
+  // dispatches the bell event so Layout refetches the true remaining count.
+  const dismissMention = useCallback(async (id: number) => {
+    setUnreadNotifications((prev) => prev.filter((n) => n.id !== id));
+    await markNotificationsRead([id]).catch(() => undefined);
+    window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
+  }, []);
+
+  const markAllMentionsRead = useCallback(async () => {
+    setUnreadNotifications([]);
+    await markAllNotificationsRead().catch(() => undefined);
+    window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
+  }, []);
+
+  // Open the source note of a mention: mark it read, then deep-link to the
+  // exact note on its host (host_id now rides on the notification).
+  const openMention = useCallback((n: NotificationItem) => {
+    void dismissMention(n.id);
+    if (n.host_id && n.source_id) {
+      navigate(`/hosts/${n.host_id}#note-${n.source_id}`);
+    } else if (n.host_id) {
+      navigate(`/hosts/${n.host_id}`);
+    }
+  }, [dismissMention, navigate]);
 
   const threadGroups = useMemo<NoteThreadGroup[]>(() => {
     const grouped = new Map<string, NoteActivityItem[]>();
@@ -230,8 +250,18 @@ const Activity: React.FC = () => {
         <div className="flex flex-wrap items-center gap-sm">
           <MessageSquare className="size-7 text-primary" aria-hidden />
           <h1 className="text-page-title">Collaboration</h1>
-          <Badge variant="outline">{totalNotes} notes</Badge>
-          <Badge variant="outline">{threadGroups.length} threads</Badge>
+          <Badge variant="outline">{totalNotes.toLocaleString()} notes</Badge>
+          {/* "in view" makes clear these describe the loaded subset, not the
+              full set — the thread/host grouping is computed client-side over
+              what's loaded so far. */}
+          {notes.length < totalNotes ? (
+            <span className="text-caption text-muted-foreground">
+              showing {notes.length.toLocaleString()} of {totalNotes.toLocaleString()}
+              {' · '}{threadGroups.length} thread{threadGroups.length === 1 ? '' : 's'} in view
+            </span>
+          ) : (
+            <Badge variant="outline">{threadGroups.length} threads</Badge>
+          )}
         </div>
       </div>
 
@@ -248,25 +278,22 @@ const Activity: React.FC = () => {
               <h2 className="text-subheading font-semibold">Your Mentions</h2>
               <Badge variant="info">{unreadNotifications.length}</Badge>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setMentionsDismissed(true)}>
-              Dismiss
-            </Button>
+            <div className="flex items-center gap-xs">
+              <Button variant="ghost" size="sm" onClick={() => void markAllMentionsRead()}>
+                Mark all read
+              </Button>
+              {/* Hide for this visit without marking read (read-state is durable). */}
+              <Button variant="ghost" size="sm" onClick={() => setMentionsDismissed(true)}>
+                Hide
+              </Button>
+            </div>
           </div>
           <ul className="flex flex-col gap-xs">
             {unreadNotifications.map((n) => (
               <li key={n.id}>
                 <button
                   type="button"
-                  onClick={() => {
-                    // Deep-link to the source note's host detail.  The
-                    // notes API doesn't yet support direct-anchor on
-                    // a specific note, but the host page surfaces all
-                    // notes by default, so navigating to the host
-                    // brings the thread into view.
-                    if (n.source_type === 'note' && n.source_id) {
-                      navigate(`/hosts?note=${n.source_id}`);
-                    }
-                  }}
+                  onClick={() => openMention(n)}
                   className={cn(
                     'flex w-full items-start gap-sm rounded-control border border-info/30 bg-card p-sm text-left',
                     'transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -458,7 +485,9 @@ const Activity: React.FC = () => {
                       </span>
                     </div>
                   </div>
-                  <Button onClick={() => navigate(`/hosts/${thread.hostId}`)}>Open Host</Button>
+                  <Button onClick={() => navigate(`/hosts/${thread.hostId}#note-${thread.threadRootId}`)}>
+                    Open thread
+                  </Button>
                 </div>
                 <p className="mb-sm text-metadata text-muted-foreground">
                   Latest update:{' '}
@@ -510,7 +539,7 @@ const Activity: React.FC = () => {
                     variant="outline"
                     size="sm"
                     className="mt-sm"
-                    onClick={() => navigate(`/hosts/${thread.hostId}`)}
+                    onClick={() => navigate(`/hosts/${thread.hostId}#note-${thread.threadRootId}`)}
                   >
                     View {thread.notes.length - 3} more in host thread
                   </Button>
@@ -518,7 +547,19 @@ const Activity: React.FC = () => {
               </CardContent>
             </Card>
           ))}
-          {loading && <InlineLoader label="Loading activity…" centered />}
+          {notes.length < totalNotes && (
+            <div className="flex justify-center pt-sm">
+              <Button
+                variant="outline"
+                onClick={() => fetchActivity(notes.length)}
+                disabled={loadingMore}
+              >
+                {loadingMore
+                  ? <InlineLoader label="Loading…" />
+                  : `Load more (${(totalNotes - notes.length).toLocaleString()} more)`}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
