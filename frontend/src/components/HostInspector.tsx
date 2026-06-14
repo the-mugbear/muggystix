@@ -459,6 +459,32 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const onHostLoadedRef = React.useRef(onHostLoaded);
   onHostLoadedRef.current = onHostLoaded;
 
+  // Deep-link to an exact note: when the URL carries #note-<id> (from the
+  // Activity feed / mentions / a finding's evidence link), scroll that note
+  // into view once the thread has rendered and flash a highlight. Runs once
+  // per hash so adding a note later doesn't re-trigger it.
+  //
+  // MUST live above the loading/!host early returns below — a hook placed
+  // after them runs only on some renders (React error #310).
+  const consumedNoteHashRef = React.useRef<string | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined' || notes.length === 0) return;
+    const hash = window.location.hash;
+    const match = hash.match(/^#note-(\d+)$/);
+    if (!match || consumedNoteHashRef.current === hash) return;
+    const el = document.getElementById(`note-${match[1]}`);
+    if (!el) return; // target not in this host's thread — leave the hash be
+    consumedNoteHashRef.current = hash;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control');
+      window.setTimeout(
+        () => el.classList.remove('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control'),
+        2400,
+      );
+    });
+  }, [notes]);
+
   const refetchTestPlanEntries = React.useCallback(async () => {
     const fetchId = fetchIdRef.current;
     setTestPlanError(false);
@@ -939,29 +965,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-
-  // Deep-link to an exact note: when the URL carries #note-<id> (from the
-  // Activity feed / mentions / a finding's evidence link), scroll that note
-  // into view once the thread has rendered and flash a highlight. Runs once
-  // per hash so adding a note later doesn't re-trigger it.
-  const consumedNoteHashRef = React.useRef<string | null>(null);
-  useEffect(() => {
-    if (typeof window === 'undefined' || notes.length === 0) return;
-    const hash = window.location.hash;
-    const match = hash.match(/^#note-(\d+)$/);
-    if (!match || consumedNoteHashRef.current === hash) return;
-    const el = document.getElementById(`note-${match[1]}`);
-    if (!el) return; // target not in this host's thread — leave the hash be
-    consumedNoteHashRef.current = hash;
-    requestAnimationFrame(() => {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.add('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control');
-      window.setTimeout(
-        () => el.classList.remove('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control'),
-        2400,
-      );
-    });
-  }, [notes]);
 
   const titleClasses = density === 'sheet' ? 'text-section-title' : 'text-page-title';
   const titleIconClass = density === 'sheet' ? 'size-5' : 'size-6';
