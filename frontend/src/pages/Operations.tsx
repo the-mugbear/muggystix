@@ -259,15 +259,16 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
       <CardContent className="p-md">
         <h2 className="text-subheading font-semibold">Scan freshness</h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          Scopes whose newest host observation is older than {data.stale_days} days — candidates for
-          a re-scan.
+          How recent each scope's scan evidence is — scopes whose hosts haven't been seen by a scan
+          in over {data.stale_days} days are due for a re-scan. This tracks the age of the data, not
+          the scope itself (scope definitions don't change).
         </p>
         <div className="mb-sm flex flex-wrap items-center gap-xs">
           <Badge variant={data.project_is_stale ? 'warning' : 'success'}>
             {data.latest_scan_at ? `Last scan ${data.days_since_last_scan}d ago` : 'No scans yet'}
           </Badge>
           <Badge variant={data.stale_scope_count > 0 ? 'warning' : 'outline'}>
-            {data.stale_scope_count} stale scope{data.stale_scope_count === 1 ? '' : 's'}
+            {data.stale_scope_count} due for re-scan
           </Badge>
         </div>
         {stale.length > 0 && (
@@ -277,7 +278,7 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
                 <p className="min-w-0 flex-1 truncate text-metadata">
                   <strong>{displayScopeName(s.scope_name)}</strong>{' '}
                   <span className="text-caption text-muted-foreground">
-                    {s.last_activity_at ? `last activity ${s.days_since}d ago` : 'no hosts discovered'}
+                    {s.last_activity_at ? `last seen by a scan ${s.days_since}d ago` : 'no hosts discovered'}
                   </span>
                 </p>
                 <Button size="sm" variant="ghost" onClick={() => navigate(`/scopes/${s.scope_id}`)}>
