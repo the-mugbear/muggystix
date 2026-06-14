@@ -189,11 +189,12 @@ const PortfolioHero: React.FC<{
             </div>
           </div>
 
-          {/* Aggregate scale */}
-          <div className="grid grid-cols-3 gap-sm">
+          {/* Aggregate scale — Hosts (scale) + Unreviewed (work to do). A raw
+              open-ports total is a vanity metric (no decision rides on it), so
+              it's dropped. */}
+          <div className="grid grid-cols-2 gap-sm">
             {[
               { label: 'Hosts', value: summary.total_hosts },
-              { label: 'Open ports', value: summary.total_open_ports },
               { label: 'Unreviewed', value: summary.total_unreviewed },
             ].map((s) => (
               <div key={s.label} className="flex flex-col justify-center rounded-control border border-border px-sm py-xs">
@@ -294,7 +295,6 @@ const ProjectTile: React.FC<{
         {/* Scale + freshness */}
         <div className="flex flex-wrap gap-x-md gap-y-xxs text-caption text-muted-foreground">
           <span>{card.host_count.toLocaleString()} hosts <span className="opacity-70">({card.up_host_count.toLocaleString()} up)</span></span>
-          <span>{card.open_port_count.toLocaleString()} ports</span>
           <span className={card.is_stale ? 'text-warning' : ''}>{freshness(card)}</span>
         </div>
 

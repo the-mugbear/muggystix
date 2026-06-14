@@ -138,7 +138,11 @@ const ProjectStateCard: React.FC<{
         {stats && (
           <div className="mb-md">
             <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Exposure</h3>
-            <div className="mb-md grid grid-cols-3 gap-sm">
+            {/* A raw open-ports total isn't a decision input on the "what
+                needs attention" surface — exposure reads better as hosts +
+                hosts-with-vulns + the severity bar. Per-host/per-scan open-port
+                counts (the useful, scoped form) live on Hosts + Scan detail. */}
+            <div className="mb-md grid grid-cols-2 gap-sm">
               <CoverageStatTile
                 label="Hosts"
                 value={stats.total_hosts.toLocaleString()}
@@ -153,8 +157,6 @@ const ProjectStateCard: React.FC<{
                   'For reachability, look at open ports / per-host detail.'
                 }
               />
-              <CoverageStatTile label="Open ports" value={stats.open_ports.toLocaleString()}
-                href={buildHostsUrl({ hasOpenPorts: true, sortBy: 'open_ports', sortOrder: 'desc' })} />
               <CoverageStatTile
                 label="Hosts with vulns"
                 value={(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()}
