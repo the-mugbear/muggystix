@@ -246,3 +246,101 @@ def test_mention_notification_carries_host_id(db_session, test_project):
     assert created[0].host_id == host.id
     assert created[0].source_type == "note"
     assert created[0].source_id == note.id
+
+
+def test_note_on_followed_host_notifies_reviewer_not_author(db_session, test_project):
+    """A note on a host someone is reviewing alerts the reviewer (not the
+    author); an already-@mentioned reviewer isn't pinged twice."""
+    from app.db import models
+    from app.db.models import HostFollow, FollowStatus
+    from app.services.notification_service import NotificationService
+
+    author = _make_user(db_session, "author3")
+    reviewer = _make_user(db_session, "reviewer3")
+    _make_membership(db_session, test_project, reviewer)
+    host = models.Host(project_id=test_project.id, ip_address="10.8.0.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    db_session.add(HostFollow(host_id=host.id, user_id=reviewer.id, status=FollowStatus.IN_REVIEW))
+    note = models.Annotation(host_id=host.id, user_id=author.id, body="plain note", note_type="finding")
+    db_session.add(note)
+    db_session.flush()
+
+    svc = NotificationService(db_session)
+    created = svc.notify_host_followers_of_note(note, author, test_project)
+    assert {n.user_id for n in created} == {reviewer.id}
+    assert created[0].type == "host_note"
+    assert created[0].host_id == host.id
+
+    # The author never notifies themselves even if they follow the host.
+    db_session.add(HostFollow(host_id=host.id, user_id=author.id, status=FollowStatus.REVIEWED))
+    db_session.flush()
+    again = svc.notify_host_followers_of_note(note, author, test_project)
+    assert author.id not in {n.user_id for n in again}
+
+    # A reviewer already @mentioned is excluded (no double ping).
+    excluded = svc.notify_host_followers_of_note(
+        note, author, test_project, exclude_user_ids={reviewer.id},
+    )
+    assert excluded == []
+
+
+def test_scan_update_notifies_reviewer_of_updated_host_only(db_session, test_project):
+    """A re-scan that UPDATES a followed host alerts its reviewer; a host the
+    scan CREATED does not (it's new, nobody was reviewing it yet), and the
+    uploader isn't alerted about their own scan."""
+    from app.db import models
+    from app.db.models import HostFollow, FollowStatus, HostScanHistory
+    from app.services.notification_service import NotificationService
+
+    uploader = _make_user(db_session, "uploader3")
+    reviewer = _make_user(db_session, "reviewer4")
+    scan = models.Scan(project_id=test_project.id, filename="rescan.xml", tool_name="nmap")
+    db_session.add(scan)
+    db_session.flush()
+    updated = models.Host(project_id=test_project.id, ip_address="10.8.0.2", state="up")
+    created_host = models.Host(project_id=test_project.id, ip_address="10.8.0.3", state="up")
+    db_session.add_all([updated, created_host])
+    db_session.flush()
+    db_session.add_all([
+        HostFollow(host_id=updated.id, user_id=reviewer.id, status=FollowStatus.IN_REVIEW),
+        HostFollow(host_id=created_host.id, user_id=reviewer.id, status=FollowStatus.REVIEWED),
+        HostScanHistory(host_id=updated.id, scan_id=scan.id, host_created=False),
+        HostScanHistory(host_id=created_host.id, scan_id=scan.id, host_created=True),
+    ])
+    db_session.flush()
+
+    created = NotificationService(db_session).notify_followers_of_scan_update(
+        scan_id=scan.id, actor_id=uploader.id,
+    )
+    assert len(created) == 1
+    n = created[0]
+    assert n.user_id == reviewer.id
+    assert n.type == "scan_update"
+    assert n.source_type == "scan" and n.source_id == scan.id
+    # Exactly one updated host → deep-linkable to it.
+    assert n.host_id == updated.id
+
+
+def test_scan_update_skips_when_only_follower_is_uploader(db_session, test_project):
+    from app.db import models
+    from app.db.models import HostFollow, FollowStatus, HostScanHistory
+    from app.services.notification_service import NotificationService
+
+    uploader = _make_user(db_session, "uploader4")
+    scan = models.Scan(project_id=test_project.id, filename="solo.xml", tool_name="nmap")
+    db_session.add(scan)
+    db_session.flush()
+    host = models.Host(project_id=test_project.id, ip_address="10.8.0.4", state="up")
+    db_session.add(host)
+    db_session.flush()
+    db_session.add_all([
+        HostFollow(host_id=host.id, user_id=uploader.id, status=FollowStatus.IN_REVIEW),
+        HostScanHistory(host_id=host.id, scan_id=scan.id, host_created=False),
+    ])
+    db_session.flush()
+
+    created = NotificationService(db_session).notify_followers_of_scan_update(
+        scan_id=scan.id, actor_id=uploader.id,
+    )
+    assert created == []

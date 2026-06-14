@@ -374,6 +374,12 @@ def create_host_note(
     try:
         notification_service = NotificationService(db)
         mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
+        # Also alert anyone reviewing this host (minus the author + anyone just
+        # @mentioned, so nobody's pinged twice) that a new note landed on it.
+        mentioned_ids = {n.user_id for n in mention_notifs}
+        notification_service.notify_host_followers_of_note(
+            note, current_user, project, exclude_user_ids=mentioned_ids,
+        )
         db.commit()
     except Exception as exc:
         logger.exception(

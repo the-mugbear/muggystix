@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, MessageSquare, AtSign, ArrowRight } from 'lucide-react';
+import { Search, MessageSquare, Bell, ArrowRight } from 'lucide-react';
 import {
   getNoteActivity,
   NoteActivityItem,
@@ -194,11 +194,14 @@ const Activity: React.FC = () => {
     window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
   }, []);
 
-  // Open the source note of a mention: mark it read, then deep-link to the
-  // exact note on its host (host_id now rides on the notification).
+  // Open a notification's source: mark it read, then deep-link by kind —
+  // a scan update → the scan's hosts; a note/mention → the exact note on its
+  // host; anything else with a host → the host.
   const openMention = useCallback((n: NotificationItem) => {
     void dismissMention(n.id);
-    if (n.host_id && n.source_id) {
+    if (n.source_type === 'scan' && n.source_id) {
+      navigate(`/hosts?scan_ids=${n.source_id}`);
+    } else if (n.source_type === 'note' && n.host_id && n.source_id) {
       navigate(`/hosts/${n.host_id}#note-${n.source_id}`);
     } else if (n.host_id) {
       navigate(`/hosts/${n.host_id}`);
@@ -274,8 +277,8 @@ const Activity: React.FC = () => {
         <div ref={mentionsPanelRef} className="mb-md rounded-panel border border-info/40 bg-info/10 p-md">
           <div className="mb-sm flex items-center justify-between gap-sm">
             <div className="flex items-center gap-xs">
-              <AtSign className="size-5 text-info" aria-hidden />
-              <h2 className="text-subheading font-semibold">Your Mentions</h2>
+              <Bell className="size-5 text-info" aria-hidden />
+              <h2 className="text-subheading font-semibold">Notifications</h2>
               <Badge variant="info">{unreadNotifications.length}</Badge>
             </div>
             <div className="flex items-center gap-xs">

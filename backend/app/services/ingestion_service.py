@@ -684,6 +684,7 @@ class IngestionService:
                 _tool_name = job.tool_name
                 _scan_id = job.scan_id
                 _skipped_count = job.skipped_count
+                _submitted_by_id = job.submitted_by_id
                 db.commit()
                 queue_age_s = (
                     (_started_at - _created_at).total_seconds()
@@ -701,6 +702,22 @@ class IngestionService:
                     f"{parse_s:.1f}" if parse_s is not None else "n/a",
                     _skipped_count,
                 )
+                # Best-effort: alert reviewers that hosts they're following got
+                # new scan data from this scan. The data already committed above,
+                # so a notification failure must never fail the ingest.
+                if _scan_id:
+                    try:
+                        from app.services.notification_service import NotificationService
+                        NotificationService(db).notify_followers_of_scan_update(
+                            scan_id=_scan_id, actor_id=_submitted_by_id,
+                        )
+                        db.commit()
+                    except Exception:
+                        logger.warning(
+                            "scan-update follower notify failed for scan %s",
+                            _scan_id, exc_info=True,
+                        )
+                        db.rollback()
         except ParseFailure as exc:
             db.rollback()
             job = db.get(IngestionJob, job_id)
