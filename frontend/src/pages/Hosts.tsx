@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Server,
   Shield,
+  SkipForward,
   SlidersHorizontal,
   StickyNote,
   Crosshair,
@@ -1297,20 +1298,78 @@ export default function Hosts() {
     });
   };
 
-  // Prev/next within the open side-sheet.  Stays within the currently-
-  // rendered page of hosts; the user can advance the page via the
-  // table's pagination if they want to keep going past the current
-  // window.  Keeps things simple — no extra fetch like the standalone
-  // page's `navigateToHost` does.
+  // Guided review queue (§6): the open side-sheet walks the WHOLE filtered
+  // result set, not just the loaded page.  At a page edge, stepping turns the
+  // page (which the list effect refetches) and `pendingInspectorEdgeRef` tells
+  // the post-load effect which host to open — so prev/next/next-unreviewed
+  // continue across pagination instead of dead-ending at the window.
   const inspectedIndex =
     inspectedHostId !== null ? hosts.findIndex((h) => h.id === inspectedHostId) : -1;
-  const hasInspectorPrev = inspectedIndex > 0;
-  const hasInspectorNext = inspectedIndex >= 0 && inspectedIndex < hosts.length - 1;
+  const lastPageIndex = Math.max(0, Math.ceil(totalHosts / rowsPerPage) - 1);
+  // Position within the full result set (queue progress), not just the page.
+  const inspectedAbsoluteIndex = inspectedIndex >= 0 ? page * rowsPerPage + inspectedIndex : -1;
+  const hasInspectorPrev = inspectedAbsoluteIndex > 0;
+  const hasInspectorNext =
+    inspectedAbsoluteIndex >= 0 && inspectedAbsoluteIndex < totalHosts - 1;
+  // What to open once the next page loads. A ref (not state) so turning the
+  // page doesn't add a render and the post-load effect reads the latest intent.
+  const pendingInspectorEdgeRef = useRef<null | 'first' | 'last' | 'first-unreviewed'>(null);
+  // A host still needs review unless a teammate marked it Reviewed.
+  const hostNeedsReview = (h: Host) => (h.follow?.status ?? 'none') !== 'reviewed';
+
   const stepInspector = (delta: 1 | -1) => {
     if (inspectedIndex < 0) return;
     const target = hosts[inspectedIndex + delta];
-    if (target) setInspectedHostId(target.id);
+    if (target) { setInspectedHostId(target.id); return; }
+    // Crossed the page boundary — turn the page and open its near edge.
+    if (delta === 1 && page < lastPageIndex) {
+      pendingInspectorEdgeRef.current = 'first';
+      setPage((p) => p + 1);
+    } else if (delta === -1 && page > 0) {
+      pendingInspectorEdgeRef.current = 'last';
+      setPage((p) => p - 1);
+    }
   };
+
+  // Jump to the next host that still needs review, scanning forward across
+  // pages and skipping ones already Reviewed.
+  const stepToNextUnreviewed = () => {
+    if (inspectedIndex < 0) return;
+    for (let i = inspectedIndex + 1; i < hosts.length; i += 1) {
+      if (hostNeedsReview(hosts[i])) { setInspectedHostId(hosts[i].id); return; }
+    }
+    if (page < lastPageIndex) {
+      pendingInspectorEdgeRef.current = 'first-unreviewed';
+      setPage((p) => p + 1);
+    } else {
+      toast.info('No more unreviewed hosts in this queue', { autoHideMs: 2000 });
+    }
+  };
+
+  // Consume a pending cross-page jump once the new page has loaded.
+  useEffect(() => {
+    const edge = pendingInspectorEdgeRef.current;
+    if (!edge || loading || hosts.length === 0) return;
+    if (edge === 'first') {
+      pendingInspectorEdgeRef.current = null;
+      setInspectedHostId(hosts[0].id);
+    } else if (edge === 'last') {
+      pendingInspectorEdgeRef.current = null;
+      setInspectedHostId(hosts[hosts.length - 1].id);
+    } else if (edge === 'first-unreviewed') {
+      const target = hosts.find(hostNeedsReview);
+      if (target) {
+        pendingInspectorEdgeRef.current = null;
+        setInspectedHostId(target.id);
+      } else if (page < lastPageIndex) {
+        setPage((p) => p + 1); // keep scanning forward
+      } else {
+        pendingInspectorEdgeRef.current = null;
+        toast.info('No more unreviewed hosts in this queue', { autoHideMs: 2000 });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosts, loading]);
 
   // A fresh result set (page turn) invalidates the row cursor.
   useEffect(() => {
@@ -1346,6 +1405,9 @@ export default function Hosts() {
         } else if (e.key === 'k') {
           e.preventDefault();
           stepInspector(-1);
+        } else if (e.key === 'n') {
+          e.preventDefault();
+          stepToNextUnreviewed();
         }
         return;
       }
@@ -1364,11 +1426,11 @@ export default function Hosts() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // openInspector/stepInspector are recreated each render but close over the
-    // same `hosts`/inspectedHostId we depend on, so re-attaching on those is
-    // enough to keep them fresh.
+    // The nav handlers are recreated each render but close over hosts /
+    // inspectedHostId / page / totalHosts; re-attaching on those keeps the
+    // cross-page queue stepping fresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hosts, inspectedHostId, loading, cursorIndex]);
+  }, [hosts, inspectedHostId, loading, cursorIndex, page, totalHosts, rowsPerPage]);
 
   const applyFollowUpdate = (hostId: number, followInfo: HostFollowInfo | null) => {
     setHosts((previous) =>
@@ -2312,9 +2374,9 @@ export default function Hosts() {
             <div className="flex items-center justify-between gap-sm pr-xl">
               <SideSheetTitle>
                 Host inspector
-                {inspectedHostId !== null && hosts.length > 0 && inspectedIndex >= 0 && (
+                {inspectedHostId !== null && totalHosts > 0 && inspectedAbsoluteIndex >= 0 && (
                   <span className="ml-xs text-caption font-normal text-muted-foreground">
-                    {inspectedIndex + 1} of {hosts.length} on this page
+                    {inspectedAbsoluteIndex + 1} of {totalHosts} in this queue
                   </span>
                 )}
               </SideSheetTitle>
@@ -2322,7 +2384,7 @@ export default function Hosts() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label="Previous host"
+                  aria-label="Previous host (k)"
                   disabled={!hasInspectorPrev}
                   onClick={() => stepInspector(-1)}
                 >
@@ -2331,11 +2393,24 @@ export default function Hosts() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label="Next host"
+                  aria-label="Next host (j)"
                   disabled={!hasInspectorNext}
                   onClick={() => stepInspector(1)}
                 >
                   <ChevronRight className="size-4" aria-hidden />
+                </Button>
+                {/* Walk the queue: jump to the next host still needing review,
+                    skipping Reviewed ones and crossing pages (key: n). */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label="Next unreviewed host (n)"
+                  title="Next host still needing review (n)"
+                  disabled={!hasInspectorNext}
+                  onClick={stepToNextUnreviewed}
+                >
+                  <SkipForward className="size-3.5" aria-hidden />
+                  Next unreviewed
                 </Button>
                 {inspectedHostId !== null && (
                   <Button

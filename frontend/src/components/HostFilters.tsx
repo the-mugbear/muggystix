@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
+  ClipboardCheck,
   Computer as ComputerIcon,
   Eye,
   FileText,
@@ -120,6 +121,13 @@ export const HOST_FILTER_PRESETS: Array<{
 }> = [
   // Workflow shortcuts (the old Quick views) come first because
   // these are the most common entry points operators reach for.
+  {
+    id: 'my_queue',
+    name: 'My review queue',
+    Icon: ClipboardCheck,
+    description: "Assigned to me and not yet reviewed — your queue to work through",
+    filters: { assignedToMe: true, followFilter: 'none' },
+  },
   {
     id: 'not_reviewed',
     name: 'Not Reviewed',

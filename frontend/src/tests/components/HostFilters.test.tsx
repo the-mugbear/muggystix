@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import HostFilters from '../../components/HostFilters';
 
@@ -50,5 +50,24 @@ describe('HostFilters layout', () => {
     for (const section of ['Workflow', 'Risk', 'Network exposure', 'Inventory & location', 'Discovery']) {
       expect(screen.getByText(section)).toBeInTheDocument();
     }
+  });
+
+  // §6 guided review queue — the one-click "My review queue" entry seeds the
+  // assigned-to-me + not-yet-reviewed filter the analyst works through.
+  it('offers a "My review queue" preset that filters to my unreviewed hosts', () => {
+    const onFiltersChange = vi.fn();
+    render(
+      <HostFilters
+        filters={{}}
+        onFiltersChange={onFiltersChange}
+        availableData={null}
+        optionsLoading={false}
+        notesToggleVisible
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /My review queue/i }));
+    expect(onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({ assignedToMe: true, followFilter: 'none' }),
+    );
   });
 });
