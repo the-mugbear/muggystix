@@ -323,6 +323,61 @@ check_ssl_status() {
 }
 
 # ------------------------------------------------------------------
+# Back up the environment-specific config (.env + ssl/) to the parent
+# folder.  Neither is in version control — .env holds secrets (SECRET_KEY,
+# DB creds) and ssl/ holds the TLS cert + private key — so a re-copy /
+# overwrite deploy (the air-gapped, no-GitHub workflow) would otherwise
+# lose them.  Stashing a copy OUTSIDE the project dir lets it survive
+# the directory being overwritten.
+# ------------------------------------------------------------------
+backup_config() {
+    print_header "Back up .env + SSL to the parent folder"
+
+    local parent stamp dest found
+    parent="$(dirname "$PROJECT_ROOT")"
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    dest="$parent/$(basename "$PROJECT_ROOT")-config-backup-$stamp"
+    found=0
+
+    mkdir -p "$dest"
+
+    if [[ -f ".env" ]]; then
+        cp -p .env "$dest/.env"
+        print_success "Backed up .env"
+        found=1
+    else
+        print_warning ".env not found — skipping"
+    fi
+
+    if [[ -d "ssl" ]]; then
+        cp -a ssl "$dest/ssl"
+        print_success "Backed up ssl/ (TLS cert + key)"
+        found=1
+    else
+        print_warning "ssl/ not found — skipping"
+    fi
+
+    if [[ "$found" -eq 0 ]]; then
+        rmdir "$dest" 2>/dev/null || true
+        print_error "Nothing to back up — no .env or ssl/ in $PROJECT_ROOT"
+        exit 1
+    fi
+
+    # The backup contains secrets (SECRET_KEY, DB password, TLS private
+    # key) — lock it down to the current user only.
+    chmod -R go-rwx "$dest" 2>/dev/null || true
+
+    echo ""
+    print_success "Config backed up to:"
+    echo "    $dest"
+    echo ""
+    print_info "To restore into a freshly-copied project directory, run from"
+    print_info "the project root:"
+    [[ -f "$dest/.env" ]] && echo "    cp -p \"$dest/.env\" ./.env"
+    [[ -d "$dest/ssl" ]] && echo "    cp -a \"$dest/ssl/.\" ./ssl/"
+}
+
+# ------------------------------------------------------------------
 # Main menu
 # ------------------------------------------------------------------
 echo "=============================================="
@@ -342,7 +397,10 @@ echo "4) Nuclear clean (destroy ALL data and rebuild)"
 echo ""
 echo "5) Security status check"
 echo ""
-echo "Enter your choice (1-5): "
+echo "6) Back up .env + SSL to the parent folder"
+echo "   Stash environment config outside the project dir before a re-copy deploy"
+echo ""
+echo "Enter your choice (1-6): "
 read -r DEPLOY_CHOICE
 
 case $DEPLOY_CHOICE in
@@ -538,8 +596,12 @@ case $DEPLOY_CHOICE in
         check_ssl_status
         ;;
 
+    6)
+        backup_config
+        ;;
+
     *)
-        print_error "Invalid choice. Please select 1-5."
+        print_error "Invalid choice. Please select 1-6."
         exit 1
         ;;
 esac
