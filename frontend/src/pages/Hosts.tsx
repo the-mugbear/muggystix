@@ -1314,8 +1314,13 @@ export default function Hosts() {
   // What to open once the next page loads. A ref (not state) so turning the
   // page doesn't add a render and the post-load effect reads the latest intent.
   const pendingInspectorEdgeRef = useRef<null | 'first' | 'last' | 'first-unreviewed'>(null);
-  // A host still needs review unless a teammate marked it Reviewed.
-  const hostNeedsReview = (h: Host) => (h.follow?.status ?? 'none') !== 'reviewed';
+  // "Unreviewed" = nobody has started it: skip both Reviewed AND In Review
+  // (a teammate is already on the in-review ones). Untouched / legacy-watching
+  // hosts are the queue targets.
+  const hostNeedsReview = (h: Host) => {
+    const status = h.follow?.status ?? 'none';
+    return status !== 'reviewed' && status !== 'in_review';
+  };
 
   const stepInspector = (delta: 1 | -1) => {
     if (inspectedIndex < 0) return;
