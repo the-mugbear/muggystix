@@ -15,6 +15,7 @@
  * coloured sliver.
  */
 import React, { useEffect, useId, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import {
   type Severity, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HSL, severityTotal,
@@ -31,6 +32,12 @@ interface SeverityBarProps {
   showTotal?: boolean;
   className?: string;
   ariaLabel?: string;
+  /**
+   * Make each severity a drill-down (§26): return the in-app URL the segment
+   * should open, or null for no link. When provided, rail segments and the
+   * summary-row items render as <Link>s; otherwise behaviour is unchanged.
+   */
+  segmentHref?: (severity: Severity) => string | null;
 }
 
 const HEIGHTS: Record<Variant, number> = { summary: 24, inline: 12, compact: 10 };
@@ -47,7 +54,7 @@ function useReveal(): boolean {
 }
 
 const SeverityBar: React.FC<SeverityBarProps> = ({
-  counts, variant = 'inline', total, showTotal, className, ariaLabel,
+  counts, variant = 'inline', total, showTotal, className, ariaLabel, segmentHref,
 }) => {
   const revealed = useReveal();
   const [active, setActive] = useState<Severity | null>(null);
@@ -75,26 +82,39 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
         const share = n / sum;
         const dim = active != null && active !== k;
         const showCount = variant === 'summary' && share >= IN_SEGMENT_MIN;
+        const href = segmentHref?.(k) ?? null;
+        const inner = showCount ? (
+          <span className="truncate px-1 text-[0.7rem] font-semibold text-white"
+            style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
+            {n.toLocaleString()}
+          </span>
+        ) : null;
+        const segStyle: React.CSSProperties = {
+          width: `${(revealed ? share : 0) * 100}%`,
+          background: SEVERITY_HSL[k],
+          opacity: dim ? 0.4 : 1,
+          transition: 'width 600ms cubic-bezier(0.22,1,0.36,1), opacity 150ms',
+        };
+        const segClass = `flex items-center justify-center ${i > 0 ? 'border-l border-background' : ''}`;
+        const hover = {
+          onMouseEnter: variant === 'summary' || href ? () => setActive(k) : undefined,
+          onMouseLeave: variant === 'summary' || href ? () => setActive(null) : undefined,
+        };
+        if (href) {
+          return (
+            <Link key={k} to={href} {...hover}
+              aria-label={`${n.toLocaleString()} ${SEVERITY_LABEL[k]} — view`}
+              title={`${SEVERITY_LABEL[k]}: ${n.toLocaleString()} — view`}
+              className={segClass} style={segStyle}>
+              {inner}
+            </Link>
+          );
+        }
         return (
-          <div
-            key={k}
-            onMouseEnter={variant === 'summary' ? () => setActive(k) : undefined}
-            onMouseLeave={variant === 'summary' ? () => setActive(null) : undefined}
+          <div key={k} {...hover}
             title={`${SEVERITY_LABEL[k]}: ${n.toLocaleString()}`}
-            className={`flex items-center justify-center ${i > 0 ? 'border-l border-background' : ''}`}
-            style={{
-              width: `${(revealed ? share : 0) * 100}%`,
-              background: SEVERITY_HSL[k],
-              opacity: dim ? 0.4 : 1,
-              transition: 'width 600ms cubic-bezier(0.22,1,0.36,1), opacity 150ms',
-            }}
-          >
-            {showCount && (
-              <span className="truncate px-1 text-[0.7rem] font-semibold text-white"
-                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
-                {n.toLocaleString()}
-              </span>
-            )}
+            className={segClass} style={segStyle}>
+            {inner}
           </div>
         );
       })}
@@ -143,17 +163,13 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
           const pct = denom > 0 ? Math.round((n / denom) * 100) : 0;
           const zero = n === 0;
           const dim = active != null && active !== k;
-          return (
-            <button
-              type="button"
-              key={k}
-              onMouseEnter={() => setActive(k)}
-              onMouseLeave={() => setActive(null)}
-              onFocus={() => setActive(k)}
-              onBlur={() => setActive(null)}
-              className="flex flex-col items-start rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              style={{ opacity: dim ? 0.45 : 1, transition: 'opacity 150ms' }}
-            >
+          // Only link a non-zero severity that has a destination (clicking a
+          // zero count would land on an empty filtered list).
+          const href = !zero ? segmentHref?.(k) ?? null : null;
+          const itemClass = 'flex flex-col items-start rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+          const itemStyle: React.CSSProperties = { opacity: dim ? 0.45 : 1, transition: 'opacity 150ms' };
+          const itemBody = (
+            <>
               <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
                 <span className="size-2 rounded-full" aria-hidden
                   style={{ background: zero ? 'hsl(var(--muted-foreground) / 0.4)' : SEVERITY_HSL[k] }} />
@@ -166,6 +182,26 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
                   {n.toLocaleString()} <span className="font-normal text-muted-foreground">· {pct}%</span>
                 </span>
               )}
+            </>
+          );
+          const hoverHandlers = {
+            onMouseEnter: () => setActive(k),
+            onMouseLeave: () => setActive(null),
+            onFocus: () => setActive(k),
+            onBlur: () => setActive(null),
+          };
+          if (href) {
+            return (
+              <Link key={k} to={href} {...hoverHandlers}
+                aria-label={`${n.toLocaleString()} ${SEVERITY_LABEL[k]} — view`}
+                className={`${itemClass} hover:underline`} style={itemStyle}>
+                {itemBody}
+              </Link>
+            );
+          }
+          return (
+            <button type="button" key={k} {...hoverHandlers} className={itemClass} style={itemStyle}>
+              {itemBody}
             </button>
           );
         })}

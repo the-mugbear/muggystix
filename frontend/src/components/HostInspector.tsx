@@ -56,6 +56,7 @@ import {
   deleteAnnotation,
   promoteAnnotation,
   promoteVulnerability,
+  previewPromoteVulnerability,
   recordHostView,
   getHostTestPlanEntries,
   updateTestPlanEntry,
@@ -74,6 +75,7 @@ import type {
   ProposedTestObject,
   HostFollowerEntry,
   FindingSeverity,
+  PromoteVulnerabilityPreview,
   ProjectMember,
 } from '../services/api';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
@@ -353,25 +355,60 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // row shows "Promoted" immediately (the host's vuln rows only carry the
   // authoritative finding_id on the next host load).
   const [promotedVulns, setPromotedVulns] = useState<Record<number, number>>({});
-  const handlePromoteVuln = async (vulnId: number, status: 'confirmed' | 'false_positive') => {
+  // §11 — triage a scanner vuln through a confirm step that previews the
+  // cross-host blast radius first (promotion attaches EVERY project host
+  // sharing the plugin_id — an icon-click used to do that silently).
+  const [triageVuln, setTriageVuln] = useState<
+    { id: number; title: string; intent: 'confirmed' | 'false_positive' } | null
+  >(null);
+  const [triagePreview, setTriagePreview] = useState<PromoteVulnerabilityPreview | null>(null);
+  const [triagePreviewLoading, setTriagePreviewLoading] = useState(false);
+  const [triageReason, setTriageReason] = useState('');
+
+  // Fetch the blast radius whenever a triage opens.
+  useEffect(() => {
+    if (!triageVuln) { setTriagePreview(null); return; }
+    let cancelled = false;
+    setTriagePreviewLoading(true);
+    setTriagePreview(null);
+    previewPromoteVulnerability(triageVuln.id)
+      .then((p) => { if (!cancelled) setTriagePreview(p); })
+      .catch(() => { /* dialog still works; just no preview */ })
+      .finally(() => { if (!cancelled) setTriagePreviewLoading(false); });
+    return () => { cancelled = true; };
+  }, [triageVuln]);
+
+  const handlePromoteVuln = async () => {
+    if (!triageVuln) return;
+    const { id: vulnId, intent } = triageVuln;
+    const reason = triageReason.trim();
     setVulnActionId(vulnId);
     try {
-      const finding = await promoteVulnerability(vulnId, { status });
+      const finding = await promoteVulnerability(vulnId, {
+        status: intent,
+        summary: reason || undefined,
+      });
       // Scanner findings span every host with the same plugin — report it.
       const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
       toast.success(
-        status === 'confirmed'
+        intent === 'confirmed'
           ? `Promoted to finding${span}: ${finding.title}`
           : `Dismissed as false positive${span}: ${finding.title}`,
         { autoHideMs: 3000 },
       );
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
       setFindingsRefresh((n) => n + 1);
+      setTriageVuln(null);
+      setTriageReason('');
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update vulnerability.'));
     } finally {
       setVulnActionId(null);
     }
+  };
+  const openTriage = (vulnId: number, title: string, intent: 'confirmed' | 'false_positive') => {
+    setTriageReason('');
+    setTriageVuln({ id: vulnId, title, intent });
   };
 
   const handlePromoteNote = async () => {
@@ -1490,6 +1527,88 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </CardContent>
       </Card>
 
+      {/* §11 — vuln triage confirm. Promotion fans out across every project
+          host sharing the plugin_id, so show that blast radius (and capture
+          a rationale, esp. for a false-positive dismissal) before committing. */}
+      <Dialog open={triageVuln !== null} onOpenChange={(v) => { if (!v) { setTriageVuln(null); setTriageReason(''); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {triageVuln?.intent === 'confirmed' ? 'Promote to finding' : 'Dismiss as false positive'}
+            </DialogTitle>
+            <DialogDescription className="break-words">
+              {triageVuln?.title}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-sm">
+            {/* Blast-radius preview */}
+            <div className="rounded-control border border-border bg-muted/30 p-sm text-caption">
+              {triagePreviewLoading ? (
+                <span className="flex items-center gap-xs text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden /> Checking affected hosts…
+                </span>
+              ) : triagePreview ? (
+                triagePreview.already_promoted ? (
+                  <span className="text-foreground">
+                    Already promoted — this will re-disposition the existing finding
+                    {triagePreview.finding_id != null ? ` (#${triagePreview.finding_id})` : ''}.
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-foreground">
+                      {triageVuln?.intent === 'confirmed' ? 'Creates one finding across ' : 'Records a finding across '}
+                      <strong>{triagePreview.affected_host_count}</strong>{' '}
+                      host{triagePreview.affected_host_count === 1 ? '' : 's'}
+                      {triagePreview.plugin_id ? ' sharing this plugin.' : ' (this host only).'}
+                    </span>
+                    {triagePreview.affected_host_sample.length > 0 && (
+                      <span className="mt-xxs block break-words text-muted-foreground">
+                        {triagePreview.affected_host_sample.join(', ')}
+                        {triagePreview.affected_host_count > triagePreview.affected_host_sample.length
+                          ? `, +${triagePreview.affected_host_count - triagePreview.affected_host_sample.length} more`
+                          : ''}
+                      </span>
+                    )}
+                  </>
+                )
+              ) : (
+                <span className="text-muted-foreground">Couldn't preview affected hosts — you can still proceed.</span>
+              )}
+            </div>
+
+            <div>
+              <Label htmlFor="vuln-triage-reason" className="text-caption">
+                Rationale{triageVuln?.intent === 'false_positive' ? '' : ' (optional)'}
+              </Label>
+              <Textarea
+                id="vuln-triage-reason"
+                rows={3}
+                placeholder={triageVuln?.intent === 'false_positive'
+                  ? 'e.g. scanner flagged the backported package, not the CVE'
+                  : 'Optional context recorded on the finding history'}
+                value={triageReason}
+                onChange={(e) => setTriageReason(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setTriageVuln(null); setTriageReason(''); }}>
+              Cancel
+            </Button>
+            <Button
+              variant={triageVuln?.intent === 'false_positive' ? 'destructive' : 'default'}
+              disabled={vulnActionId === triageVuln?.id
+                || (triageVuln?.intent === 'false_positive' && !triageReason.trim())}
+              onClick={() => void handlePromoteVuln()}
+            >
+              {triageVuln?.intent === 'confirmed' ? 'Promote' : 'Dismiss'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Promote-to-finding dialog (foundation 6b) — the bridge from a note
           thread (which stays as the finding's evidence) to a durable,
           roll-up-able record.  Severity is the one required input. */}
@@ -1765,7 +1884,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                               <Button
                                 variant="ghost" size="icon"
                                 disabled={vulnActionId === vuln.id}
-                                onClick={() => handlePromoteVuln(vuln.id, 'confirmed')}
+                                onClick={() => openTriage(vuln.id, title, 'confirmed')}
                                 aria-label={`Promote ${title} to a finding`}
                               >
                                 <Flag className="size-3.5" aria-hidden />
@@ -1778,7 +1897,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                               <Button
                                 variant="ghost" size="icon"
                                 disabled={vulnActionId === vuln.id}
-                                onClick={() => handlePromoteVuln(vuln.id, 'false_positive')}
+                                onClick={() => openTriage(vuln.id, title, 'false_positive')}
                                 aria-label={`Dismiss ${title} as a false positive`}
                               >
                                 <Ban className="size-3.5" aria-hidden />

@@ -8,7 +8,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 import {
@@ -18,6 +18,7 @@ import {
   FindingSeverity,
   FindingSource,
   FindingStatus,
+  FindingStatusQuery,
   listFindings,
   setFindingStatus,
 } from '../services/api';
@@ -58,7 +59,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
-import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
+import { STATUS_LABEL, TERMINAL_STATUSES, matchesStatusFilter } from '../utils/findingStatus';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
@@ -66,9 +67,12 @@ type SummaryPrompt =
   | { kind: 'single'; findingId: number; status: FindingStatus; title: string }
   | { kind: 'bulk'; status: FindingStatus; ids: number[] };
 
+type StatusFilterValue = FindingStatusQuery | 'all';
+type OwnerFilterValue = 'any' | 'me' | 'unowned';
+
 const Findings: React.FC = () => {
   const toast = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   // Viewers may read findings but not dispose/select; analyst+ may triage.
   const canManage = hasPermission('analyst');
   const [confirmDialog, confirm] = useConfirm();
@@ -77,9 +81,33 @@ const Findings: React.FC = () => {
   const [sevCounts, setSevCounts] = useState<Partial<Record<FindingSeverity, number>>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<FindingStatus | 'all'>('all');
-  const [severityFilter, setSeverityFilter] = useState<FindingSeverity | 'all'>('all');
-  const [sourceFilter, setSourceFilter] = useState<FindingSource | 'all'>('all');
+
+  // Filters are URL-backed so a dashboard drill-down (e.g. "active critical,
+  // unowned") is shareable/bookmarkable and the page restores it. Default
+  // status is 'active' — terminal findings shouldn't bury current work
+  // (§15). An absent param means the default, so a clean URL stays clean.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const statusFilter = (searchParams.get('status') as StatusFilterValue | null) ?? 'active';
+  const severityFilter = (searchParams.get('severity') as FindingSeverity | null) ?? 'all';
+  const sourceFilter = (searchParams.get('source') as FindingSource | null) ?? 'all';
+  const ownerFilter = (searchParams.get('owner') as OwnerFilterValue | null) ?? 'any';
+
+  const setFilterParam = useCallback(
+    (key: string, value: string, defaultValue: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === defaultValue) next.delete(key);
+        else next.set(key, value);
+        return next;
+      }, { replace: true });
+    },
+    [setSearchParams],
+  );
+  const setStatusFilter = (v: StatusFilterValue) => setFilterParam('status', v, 'active');
+  const setSeverityFilter = (v: FindingSeverity | 'all') => setFilterParam('severity', v, 'all');
+  const setSourceFilter = (v: FindingSource | 'all') => setFilterParam('source', v, 'all');
+  const setOwnerFilter = (v: OwnerFilterValue) => setFilterParam('owner', v, 'any');
+
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   // Column sort (server-side — sorting only the current page would mislead
@@ -92,20 +120,23 @@ const Findings: React.FC = () => {
   const [summaryPrompt, setSummaryPrompt] = useState<SummaryPrompt | null>(null);
   const [summaryText, setSummaryText] = useState('');
 
-  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || sourceFilter !== 'all';
+  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
+    || sourceFilter !== 'all' || ownerFilter !== 'any';
 
   // A filter change resets to the first page so we never sit on an
   // out-of-range page after the result set shrinks.
-  useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter]);
+  useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter, ownerFilter]);
 
   const filters = useMemo<FindingFilters>(() => {
     const f: FindingFilters = { limit: pageSize, offset: page * pageSize };
     if (statusFilter !== 'all') f.status = statusFilter;
     if (severityFilter !== 'all') f.severity = severityFilter;
     if (sourceFilter !== 'all') f.source = sourceFilter;
+    if (ownerFilter === 'unowned') f.unowned = true;
+    else if (ownerFilter === 'me' && user?.id != null) f.owner_id = user.id;
     if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
-  }, [statusFilter, severityFilter, sourceFilter, page, pageSize, sortBy, sortDir]);
+  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, user?.id, page, pageSize, sortBy, sortDir]);
 
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.
@@ -159,7 +190,7 @@ const Findings: React.FC = () => {
         prev
           // Drop a row that no longer matches the active status filter so the
           // filtered view stays truthful.
-          .filter((f) => f.id !== findingId || statusFilter === 'all' || updated.status === statusFilter)
+          .filter((f) => f.id !== findingId || matchesStatusFilter(updated.status, statusFilter))
           .map((f) => (f.id === findingId ? updated : f)),
       );
       const short = title.length > 40 ? `${title.slice(0, 40)}…` : title;
@@ -191,7 +222,7 @@ const Findings: React.FC = () => {
       setFindings((prev) =>
         prev
           // Drop rows that no longer match the active status filter.
-          .filter((f) => !updatedById.has(f.id) || statusFilter === 'all' || updatedById.get(f.id)!.status === statusFilter)
+          .filter((f) => !updatedById.has(f.id) || matchesStatusFilter(updatedById.get(f.id)!.status, statusFilter))
           .map((f) => updatedById.get(f.id) ?? f),
       );
       setSelected(new Set());
@@ -249,11 +280,13 @@ const Findings: React.FC = () => {
       <div className="mb-md flex flex-wrap items-end gap-sm">
         <div className="min-w-40">
           <Label htmlFor="findings-status">Status</Label>
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as FindingStatus | 'all')}>
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilterValue)}>
             <SelectTrigger id="findings-status">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="active">Active (open / confirmed / retest)</SelectItem>
+              <SelectItem value="resolved">Resolved (terminal)</SelectItem>
               <SelectItem value="all">All statuses</SelectItem>
               {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
                 <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
@@ -286,6 +319,19 @@ const Findings: React.FC = () => {
               {(['note', 'scanner', 'execution', 'manual'] as FindingSource[]).map((s) => (
                 <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="min-w-40">
+          <Label htmlFor="findings-owner">Owner</Label>
+          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v as OwnerFilterValue)}>
+            <SelectTrigger id="findings-owner">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Any owner</SelectItem>
+              <SelectItem value="me">Assigned to me</SelectItem>
+              <SelectItem value="unowned">Unowned</SelectItem>
             </SelectContent>
           </Select>
         </div>

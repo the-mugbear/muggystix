@@ -31,6 +31,28 @@ _TERMINAL_STATUSES = {
     FindingStatus.REMEDIATED.value,
 }
 
+# Status GROUPS the dashboards drill against. "active" is the working set an
+# analyst still owns; "resolved" is every terminal disposition. Passed as the
+# `status` filter value (status="active"/"resolved"); a real status filters
+# exactly. Kept here so posture's active counts and the Findings list it links
+# to share one definition.
+_ACTIVE_STATUSES = {
+    FindingStatus.OPEN.value,
+    FindingStatus.CONFIRMED.value,
+    FindingStatus.RETEST.value,
+}
+_STATUS_GROUPS = {"active": _ACTIVE_STATUSES, "resolved": _TERMINAL_STATUSES}
+
+
+def _apply_status_filter(query, status: Optional[str]):
+    """Apply a status filter that may be a real status OR a group keyword."""
+    if not status:
+        return query
+    group = _STATUS_GROUPS.get(status)
+    if group is not None:
+        return query.filter(Finding.status.in_(group))
+    return query.filter(Finding.status == status)
+
 
 def validate_severity(severity: str) -> str:
     if severity not in _VALID_SEVERITIES:
@@ -237,6 +259,7 @@ class FindingService:
         severity: Optional[str] = None,
         status: str = FindingStatus.CONFIRMED.value,
         owner_id: Optional[int] = None,
+        summary: Optional[str] = None,
     ) -> Finding:
         """Promote a scanner vulnerability into a Finding (references, never
         copies — Finding.vuln_id).  Severity defaults to the vuln's own
@@ -263,7 +286,7 @@ class FindingService:
             # honour the new status rather than silently returning stale.
             if status != existing.status:
                 self.set_status(finding=existing, status=status, actor_id=actor_id,
-                                summary="Re-dispositioned scanner finding")
+                                summary=summary or "Re-dispositioned scanner finding")
             return existing
 
         finding = Finding(
@@ -297,10 +320,55 @@ class FindingService:
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,
-            changed_by_id=actor_id, summary="Promoted from scanner vulnerability",
+            changed_by_id=actor_id,
+            summary=summary or "Promoted from scanner vulnerability",
         )
         self.db.flush()
         return finding
+
+    def preview_vulnerability_promotion(self, *, vuln, project_id: int) -> dict:
+        """Blast radius of promoting this vuln, WITHOUT mutating anything.
+
+        Promotion attaches every project host carrying the same plugin_id
+        (§11 — the cross-host fan-out an icon-click used to do silently), so
+        the UI shows the count + a sample before the analyst commits. Also
+        reports whether the vuln is already promoted (the call would be a
+        no-op / re-disposition).
+        """
+        from app.db.models_vulnerability import Vulnerability as _Vuln
+
+        existing = (
+            self.db.query(Finding)
+            .filter(Finding.vuln_id == vuln.id, Finding.source == FindingSource.SCANNER.value)
+            .first()
+        )
+        host_ids = [vuln.host_id] if vuln.host_id else []
+        if vuln.plugin_id:
+            sibling = (
+                self.db.query(_Vuln.host_id)
+                .join(Host, _Vuln.host_id == Host.id)
+                .filter(Host.project_id == project_id, _Vuln.plugin_id == vuln.plugin_id)
+                .distinct()
+            )
+            host_ids = list(dict.fromkeys(host_ids + [hid for (hid,) in sibling if hid is not None]))
+        sample = []
+        if host_ids:
+            sample = [
+                ip for (ip,) in (
+                    self.db.query(Host.ip_address)
+                    .filter(Host.id.in_(host_ids[:50]))
+                    .order_by(Host.ip_address)
+                    .limit(10)
+                    .all()
+                ) if ip
+            ]
+        return {
+            "plugin_id": vuln.plugin_id,
+            "affected_host_count": len(host_ids),
+            "affected_host_sample": sample,
+            "already_promoted": existing is not None,
+            "finding_id": existing.id if existing is not None else None,
+        }
 
     def create_finding(
         self,
@@ -379,7 +447,8 @@ class FindingService:
         self, *, project_id: int,
         status: Optional[str] = None, severity: Optional[str] = None,
         owner_id: Optional[int] = None, source: Optional[str] = None,
-        host_id: Optional[int] = None, limit: int = 100, offset: int = 0,
+        host_id: Optional[int] = None, unowned: bool = False,
+        limit: int = 100, offset: int = 0,
         sort: Optional[str] = None, sort_dir: Optional[str] = None,
     ):
         # Eager-load what _serialize touches (each finding's hosts + their
@@ -393,11 +462,12 @@ class FindingService:
             )
             .filter(Finding.project_id == project_id)
         )
-        if status:
-            q = q.filter(Finding.status == status)
+        q = _apply_status_filter(q, status)
         if severity:
             q = q.filter(Finding.severity == severity)
-        if owner_id is not None:
+        if unowned:
+            q = q.filter(Finding.owner_id.is_(None))
+        elif owner_id is not None:
             q = q.filter(Finding.owner_id == owner_id)
         if source:
             q = q.filter(Finding.source == source)
@@ -412,6 +482,7 @@ class FindingService:
         self, *, project_id: int,
         status: Optional[str] = None, owner_id: Optional[int] = None,
         source: Optional[str] = None, host_id: Optional[int] = None,
+        unowned: bool = False,
     ) -> dict:
         """Per-severity finding counts for the rollup header.  Respects every
         filter EXCEPT severity (the point is to show the full severity
@@ -421,9 +492,10 @@ class FindingService:
             self.db.query(Finding.severity, func.count(Finding.id))
             .filter(Finding.project_id == project_id)
         )
-        if status:
-            q = q.filter(Finding.status == status)
-        if owner_id is not None:
+        q = _apply_status_filter(q, status)
+        if unowned:
+            q = q.filter(Finding.owner_id.is_(None))
+        elif owner_id is not None:
             q = q.filter(Finding.owner_id == owner_id)
         if source:
             q = q.filter(Finding.source == source)

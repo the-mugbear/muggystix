@@ -7,6 +7,7 @@
  * removed). Severity lives in the "Active findings" headline card instead.
  */
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import {
   STATUS_HSL, STATUS_LABEL, ACTIVE_STATUSES, RESOLVED_STATUSES,
@@ -14,9 +15,11 @@ import {
 
 interface DispositionPipelineProps {
   byStatus: Record<string, number>;
+  /** Drill-down for a status segment/legend item (§26); null = no link. */
+  statusHref?: (status: string) => string | null;
 }
 
-const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus }) => {
+const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus, statusHref }) => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -38,23 +41,28 @@ const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus }) =
     const n = byStatus[status];
     const widthPct = mounted ? (n / total) * 100 : 0;
     const wide = (n / total) > 0.1;
-    return (
-      <div
-        key={status}
-        title={`${STATUS_LABEL[status] ?? status}: ${n}`}
-        className={`flex h-full items-center justify-center overflow-hidden ${isFirst ? 'rounded-l-full' : ''} ${isLast ? 'rounded-r-full' : ''}`}
-        style={{
-          width: `${widthPct}%`,
-          background: STATUS_HSL[status] ?? 'hsl(var(--muted))',
-          transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
-        }}
-      >
-        {wide && (
-          <span className="truncate px-xxs text-[0.65rem] font-semibold text-white"
-            style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
-            {n}
-          </span>
-        )}
+    const href = statusHref?.(status) ?? null;
+    const cls = `flex h-full items-center justify-center overflow-hidden ${isFirst ? 'rounded-l-full' : ''} ${isLast ? 'rounded-r-full' : ''}`;
+    const style: React.CSSProperties = {
+      width: `${widthPct}%`,
+      background: STATUS_HSL[status] ?? 'hsl(var(--muted))',
+      transition: 'width 700ms cubic-bezier(0.22,1,0.36,1)',
+    };
+    const inner = wide ? (
+      <span className="truncate px-xxs text-[0.65rem] font-semibold text-white"
+        style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
+        {n}
+      </span>
+    ) : null;
+    const label = `${STATUS_LABEL[status] ?? status}: ${n}`;
+    return href ? (
+      <Link key={status} to={href} title={`${label} — view`} aria-label={`${label} — view`}
+        className={cls} style={style}>
+        {inner}
+      </Link>
+    ) : (
+      <div key={status} title={label} className={cls} style={style}>
+        {inner}
       </div>
     );
   };
@@ -77,12 +85,25 @@ const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus }) =
 
       {/* Static legend with counts — everything visible, nothing hover-gated. */}
       <div className="flex flex-wrap gap-x-md gap-y-xxs">
-        {ordered.map((s) => (
-          <span key={s} className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
-            <span className="size-2 rounded-full" style={{ background: STATUS_HSL[s] }} aria-hidden />
-            <span className="font-medium text-foreground">{byStatus[s]}</span> {STATUS_LABEL[s] ?? s}
-          </span>
-        ))}
+        {ordered.map((s) => {
+          const href = statusHref?.(s) ?? null;
+          const body = (
+            <>
+              <span className="size-2 rounded-full" style={{ background: STATUS_HSL[s] }} aria-hidden />
+              <span className="font-medium text-foreground">{byStatus[s]}</span> {STATUS_LABEL[s] ?? s}
+            </>
+          );
+          return href ? (
+            <Link key={s} to={href}
+              className="inline-flex items-center gap-xxs text-caption text-muted-foreground hover:text-foreground hover:underline">
+              {body}
+            </Link>
+          ) : (
+            <span key={s} className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
+              {body}
+            </span>
+          );
+        })}
       </div>
     </div>
   );

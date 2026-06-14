@@ -71,6 +71,18 @@ class PromoteVulnerabilityRequest(BaseModel):
     # accepted_risk) to dismiss the vuln as a finding instead.
     status: Optional[str] = None
     owner_id: Optional[int] = None
+    # Optional triage rationale — recorded on the finding's disposition
+    # history (esp. for a false-positive/accepted-risk dismissal).
+    summary: Optional[str] = None
+
+
+class PromoteVulnerabilityPreview(BaseModel):
+    """Blast radius of a vuln promotion (read-only; §11)."""
+    plugin_id: Optional[str] = None
+    affected_host_count: int
+    affected_host_sample: List[str] = []
+    already_promoted: bool = False
+    finding_id: Optional[int] = None
 
 
 class FindingCreateRequest(BaseModel):

@@ -99,9 +99,23 @@ const freshness = (card: ProjectCard): string =>
 // Portfolio health band — the "how is my whole portfolio?" hero. A health
 // distribution rail + aggregate scale + clickable attention rollups.
 // ---------------------------------------------------------------------------
-const AttnTile: React.FC<{ label: string; value: number; tone: string; onClick?: () => void }> = ({
-  label, value, tone, onClick,
-}) => {
+// §26 — per-card predicates behind each attention rollup. The displayed count
+// and the filtered grid use the SAME condition so they reconcile.
+const ATTN_PREDICATE: Record<string, (p: ProjectCard) => boolean> = {
+  critical: (p) => p.vuln_summary.critical > 0,
+  stale: (p) => p.is_stale,
+  no_data: (p) => p.host_count === 0,
+  pending: (p) => p.pending_plan_reviews > 0,
+  blocked: (p) => p.blocked_sessions > 0,
+};
+const ATTN_FILTER_LABEL: Record<string, string> = {
+  critical: 'with critical', stale: 'stale', no_data: 'no data',
+  pending: 'pending approvals', blocked: 'blocked runs',
+};
+
+const AttnTile: React.FC<{
+  label: string; value: number; tone: string; onClick?: () => void; selected?: boolean;
+}> = ({ label, value, tone, onClick, selected }) => {
   const active = value > 0;
   const color = active ? TONE_HSL[tone] ?? TONE_HSL.muted : undefined;
   const inner = (
@@ -112,7 +126,13 @@ const AttnTile: React.FC<{ label: string; value: number; tone: string; onClick?:
   );
   const cls = 'flex min-w-24 flex-1 flex-col rounded-control border border-border px-sm py-xs text-left';
   return onClick && active
-    ? <button type="button" onClick={onClick} className={cn(cls, 'transition-colors hover:bg-accent')}>{inner}</button>
+    ? (
+      <button type="button" onClick={onClick} aria-pressed={selected}
+        className={cn(cls, 'transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          selected && 'border-primary bg-accent')}>
+        {inner}
+      </button>
+    )
     : <div className={cn(cls, !active && 'opacity-60')}>{inner}</div>;
 };
 
@@ -122,7 +142,11 @@ const PortfolioHero: React.FC<{
   isAdmin: boolean;
   onNeedsAttention: () => void;
   onNoAdmin: () => void;
-}> = ({ summary, projects, isAdmin, onNeedsAttention, onNoAdmin }) => {
+  attnFilter: string | null;
+  onAttn: (key: string) => void;
+  attentionOnly: boolean;
+  noAdminOnly: boolean;
+}> = ({ summary, projects, isAdmin, onNeedsAttention, onNoAdmin, attnFilter, onAttn, attentionOnly, noAdminOnly }) => {
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const p of projects) c[p.health] = (c[p.health] ?? 0) + 1;
@@ -180,16 +204,23 @@ const PortfolioHero: React.FC<{
           </div>
         </div>
 
-        {/* Attention rollups */}
+        {/* Attention rollups — each filters the project grid (§26). */}
         <div className="flex flex-wrap gap-sm">
-          <AttnTile label="Need attention" value={summary.projects_requiring_attention} tone="warning" onClick={onNeedsAttention} />
-          <AttnTile label="With critical" value={summary.projects_with_critical} tone="destructive" />
-          <AttnTile label="Stale" value={summary.stale_projects} tone="muted" />
-          <AttnTile label="No data" value={summary.projects_no_data} tone="muted" />
-          <AttnTile label="Pending approvals" value={summary.pending_approvals_total} tone="info" />
-          <AttnTile label="Blocked runs" value={summary.blocked_sessions_total} tone="destructive" />
+          <AttnTile label="Need attention" value={summary.projects_requiring_attention} tone="warning"
+            onClick={onNeedsAttention} selected={attentionOnly} />
+          <AttnTile label="With critical" value={summary.projects_with_critical} tone="destructive"
+            onClick={() => onAttn('critical')} selected={attnFilter === 'critical'} />
+          <AttnTile label="Stale" value={summary.stale_projects} tone="muted"
+            onClick={() => onAttn('stale')} selected={attnFilter === 'stale'} />
+          <AttnTile label="No data" value={summary.projects_no_data} tone="muted"
+            onClick={() => onAttn('no_data')} selected={attnFilter === 'no_data'} />
+          <AttnTile label="Pending approvals" value={summary.pending_approvals_total} tone="info"
+            onClick={() => onAttn('pending')} selected={attnFilter === 'pending'} />
+          <AttnTile label="Blocked runs" value={summary.blocked_sessions_total} tone="destructive"
+            onClick={() => onAttn('blocked')} selected={attnFilter === 'blocked'} />
           {isAdmin && (
-            <AttnTile label="No admin" value={summary.projects_without_admin} tone="destructive" onClick={onNoAdmin} />
+            <AttnTile label="No admin" value={summary.projects_without_admin} tone="destructive"
+              onClick={onNoAdmin} selected={noAdminOnly} />
           )}
         </div>
       </CardContent>
@@ -325,6 +356,17 @@ const PortfolioDashboard: React.FC = () => {
     else params.delete('no_admin');
     setSearchParams(params, { replace: true });
   };
+  // §26 — attention rollups filter the PORTFOLIO grid (cross-project totals
+  // must not silently land in one project's /hosts). Single-select toggle,
+  // URL-synced (?attn=critical|stale|no_data|pending|blocked) so a triage
+  // view is shareable.
+  const attnFilter = searchParams.get('attn');
+  const setAttnFilter = (key: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (attnFilter === key) params.delete('attn');
+    else params.set('attn', key);
+    setSearchParams(params, { replace: true });
+  };
 
   const reload = () => setReloadNonce((n) => n + 1);
 
@@ -353,6 +395,8 @@ const PortfolioDashboard: React.FC = () => {
     if (statusFilter) list = list.filter((p) => p.status === statusFilter);
     if (attentionOnly) list = list.filter((p) => p.attention_reasons.length > 0);
     if (noAdminOnly) list = list.filter((p) => !p.has_admin);
+    const attnPred = attnFilter ? ATTN_PREDICATE[attnFilter] : undefined;
+    if (attnPred) list = list.filter(attnPred);
     // Always worst-first — health severity, then critical findings, then the
     // number of attention signals, then name. The visual grid leads with the
     // most damning projects (focus, not a sortable to-do list).
@@ -365,7 +409,7 @@ const PortfolioDashboard: React.FC = () => {
       if (ar !== 0) return ar;
       return a.name.localeCompare(b.name);
     });
-  }, [data, statusFilter, attentionOnly, noAdminOnly]);
+  }, [data, statusFilter, attentionOnly, noAdminOnly, attnFilter]);
 
   const statusCounts = useMemo(() => {
     if (!data) return {};
@@ -470,8 +514,12 @@ const PortfolioDashboard: React.FC = () => {
         summary={summary}
         projects={data.projects}
         isAdmin={hasRole('admin')}
-        onNeedsAttention={() => setAttentionOnly(true)}
-        onNoAdmin={() => setNoAdminOnly(true)}
+        onNeedsAttention={() => setAttentionOnly(!attentionOnly)}
+        onNoAdmin={() => setNoAdminOnly(!noAdminOnly)}
+        attnFilter={attnFilter}
+        onAttn={setAttnFilter}
+        attentionOnly={attentionOnly}
+        noAdminOnly={noAdminOnly}
       />
 
       <div className="flex flex-wrap items-center justify-between gap-sm">
@@ -480,6 +528,7 @@ const PortfolioDashboard: React.FC = () => {
           {statusFilter ? ` · status "${statusFilter.replace('_', ' ')}"` : ''}
           {attentionOnly ? ' · needs attention' : ''}
           {noAdminOnly ? ' · no admin' : ''}
+          {attnFilter ? ` · ${ATTN_FILTER_LABEL[attnFilter] ?? attnFilter}` : ''}
         </p>
         <div className="flex flex-wrap items-center gap-sm">
           <Button size="sm" variant={attentionOnly ? 'default' : 'outline'}
@@ -517,6 +566,7 @@ const PortfolioDashboard: React.FC = () => {
             <p className="text-metadata text-muted-foreground">
               {noAdminOnly ? 'Every project has an admin. \U0001F389'
                 : attentionOnly ? 'No projects currently need attention. \U0001F389'
+                : attnFilter ? `No projects are ${ATTN_FILTER_LABEL[attnFilter] ?? attnFilter}.`
                 : statusFilter ? 'No projects match the selected filter.'
                 : 'No projects available.'}
             </p>
@@ -525,6 +575,8 @@ const PortfolioDashboard: React.FC = () => {
                 <Button size="sm" variant="outline" onClick={() => setNoAdminOnly(false)}>Show all projects</Button>
               ) : attentionOnly ? (
                 <Button size="sm" variant="outline" onClick={() => setAttentionOnly(false)}>Show all projects</Button>
+              ) : attnFilter ? (
+                <Button size="sm" variant="outline" onClick={() => setAttnFilter(attnFilter)}>Show all projects</Button>
               ) : statusFilter ? (
                 <Button size="sm" variant="outline" onClick={() => setStatusFilter('')}>Show all projects</Button>
               ) : (

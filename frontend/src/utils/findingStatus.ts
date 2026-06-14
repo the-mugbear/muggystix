@@ -27,3 +27,19 @@ export const TERMINAL_STATUSES = new Set<FindingStatus>([
   'accepted_risk',
   'remediated',
 ]);
+
+/**
+ * Does a finding's status satisfy a list-filter value? The filter may be a real
+ * status, the keyword 'all', or a group ('active' = working set / 'resolved' =
+ * terminal). Mirrors the backend's `_apply_status_filter` so a list row drops
+ * from view exactly when the server would have excluded it.
+ */
+export const matchesStatusFilter = (
+  status: FindingStatus,
+  filter: string,
+): boolean => {
+  if (filter === 'all') return true;
+  if (filter === 'active') return !TERMINAL_STATUSES.has(status);
+  if (filter === 'resolved') return TERMINAL_STATUSES.has(status);
+  return status === filter;
+};

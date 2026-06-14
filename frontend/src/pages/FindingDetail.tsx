@@ -18,6 +18,7 @@ import {
   FindingStatus,
   FindingStatusHistoryEntry,
   Annotation,
+  ProjectMember,
   getFinding,
   getFindingHistory,
   setFindingStatus,
@@ -25,6 +26,7 @@ import {
   removeFindingHost,
   addFindingHosts,
   getHostNotes,
+  listProjectMembers,
 } from '../services/api';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
@@ -60,13 +62,16 @@ const FindingDetail: React.FC = () => {
   const id = Number(findingId);
   const toast = useToast();
   const navigate = useNavigate();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   // Findings routes admit viewers (read-only); analyst+ may dispose/detach.
   // Gate the write affordances so viewers see history without 403-bait controls.
   const canManage = hasPermission('analyst');
   const [confirmDialog, confirm] = useConfirm();
 
   const [finding, setFinding] = useState<Finding | null>(null);
+  // Project roster for the owner picker — accountability for driving the
+  // finding to closure (distinct from a host's review analyst).
+  const [members, setMembers] = useState<ProjectMember[]>([]);
   const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +98,18 @@ const FindingDetail: React.FC = () => {
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Roster for the owner picker (analyst+ only — viewers can't reassign).
+  useEffect(() => {
+    if (!canManage) return;
+    let cancelled = false;
+    listProjectMembers()
+      .then((m) => { if (!cancelled) setMembers(m); })
+      .catch(() => { /* picker degrades to current owner only */ });
+    return () => { cancelled = true; };
+  }, [canManage]);
+
+  const memberLabel = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
   const evidenceHref = useMemo(() => {
     if (!finding || finding.source !== 'note' || !finding.evidence_annotation_id) return null;
@@ -168,6 +185,17 @@ const FindingDetail: React.FC = () => {
       toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update severity.'));
+    }
+  };
+
+  const handleOwner = async (ownerId: number | null) => {
+    if (!finding || ownerId === finding.owner_id) return;
+    try {
+      const updated = await updateFinding(finding.id, { owner_id: ownerId });
+      setFinding(updated);
+      toast.success(ownerId == null ? 'Owner cleared.' : `Owner set to ${updated.owner_name ?? 'user'}.`);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update owner.'));
     }
   };
 
@@ -263,7 +291,42 @@ const FindingDetail: React.FC = () => {
             <Badge variant="muted">{SEVERITY_LABEL[finding.severity]}</Badge>
           )}
         </div>
-        <span><span className="text-muted-foreground">Owner</span> {safeFallback(finding.owner_name, 'Unassigned')}</span>
+        <div className="flex items-center gap-xs">
+          <span className="text-muted-foreground">Owner</span>
+          {canManage ? (
+            <>
+              <Select
+                value={finding.owner_id != null ? String(finding.owner_id) : 'none'}
+                onValueChange={(v) => void handleOwner(v === 'none' ? null : Number(v))}
+              >
+                <SelectTrigger className="h-7 w-[11rem] text-caption" aria-label="Finding owner">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Unassigned</SelectItem>
+                  {/* Keep the current owner selectable even if they've since
+                      left the roster, so the control reflects reality. */}
+                  {finding.owner_id != null && !members.some((m) => m.user_id === finding.owner_id) && (
+                    <SelectItem value={String(finding.owner_id)}>
+                      {safeFallback(finding.owner_name, `User ${finding.owner_id}`)}
+                    </SelectItem>
+                  )}
+                  {members.map((m) => (
+                    <SelectItem key={m.user_id} value={String(m.user_id)}>{memberLabel(m)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {user?.id != null && finding.owner_id !== user.id && (
+                <Button variant="ghost" size="sm" className="h-7 px-xs text-caption"
+                  onClick={() => void handleOwner(user.id)}>
+                  Assign to me
+                </Button>
+              )}
+            </>
+          ) : (
+            <span>{safeFallback(finding.owner_name, 'Unassigned')}</span>
+          )}
+        </div>
         <span><span className="text-muted-foreground">Source</span> {finding.source}</span>
         {evidenceHref && (
           <Link to={evidenceHref} className="inline-flex items-center gap-xxs text-info hover:underline">

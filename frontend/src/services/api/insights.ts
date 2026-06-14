@@ -6,6 +6,7 @@
  * risky services) that surfaces "lack of IT management".  Worst-first.
  */
 import { api, p } from './client';
+import { buildHostsUrl } from '../../utils/drilldownLinks';
 
 export interface SeverityCounts {
   critical: number;
@@ -181,15 +182,11 @@ export const conditionHasDrilldown = (key: string): boolean => key in CONDITION_
 export const conditionHostsHref = (key: string, cidr?: string | null): string | null => {
   const q = CONDITION_DSL[key];
   if (!q) return null;
-  const params = new URLSearchParams();
-  if (cidr) params.set('subnets', cidr);
-  params.set('q', q);
-  return `/hosts?${params.toString()}`;
+  return buildHostsUrl({ q, subnets: cidr ?? undefined });
 };
 
 /** /hosts link filtered to a single subnet/CIDR. */
-export const subnetHostsHref = (cidr: string): string =>
-  `/hosts?subnets=${encodeURIComponent(cidr)}`;
+export const subnetHostsHref = (cidr: string): string => buildHostsUrl({ subnets: cidr });
 
 /**
  * Download the lightweight executive systemic report (standalone HTML) — a

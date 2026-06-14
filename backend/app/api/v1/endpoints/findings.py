@@ -26,7 +26,7 @@ from app.schemas.schemas import (
 )
 from app.schemas.findings import (
     FindingResponse, FindingHostInfo, FindingListResponse,
-    PromoteAnnotationRequest, PromoteVulnerabilityRequest,
+    PromoteAnnotationRequest, PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
 )
@@ -72,9 +72,12 @@ def _load(db: Session, project: Project, finding_id: int) -> Finding:
 
 @router.get("/findings", response_model=FindingListResponse)
 def list_findings(
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query(
+        None, description="A status, or a group: 'active' (open/confirmed/retest) | 'resolved' (terminal).",
+    ),
     severity: Optional[str] = Query(None),
     owner_id: Optional[int] = Query(None),
+    unowned: bool = Query(False, description="Only findings with no owner (overrides owner_id)."),
     source: Optional[str] = Query(None),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
     sort: Optional[str] = Query(
@@ -89,12 +92,12 @@ def list_findings(
     svc = FindingService(db)
     rows, total = svc.list_findings(
         project_id=project.id, status=status, severity=severity,
-        owner_id=owner_id, source=source, host_id=host_id, limit=limit, offset=offset,
-        sort=sort, sort_dir=dir,
+        owner_id=owner_id, unowned=unowned, source=source, host_id=host_id,
+        limit=limit, offset=offset, sort=sort, sort_dir=dir,
     )
     sev_counts = svc.severity_counts(
         project_id=project.id, status=status, owner_id=owner_id,
-        source=source, host_id=host_id,
+        unowned=unowned, source=source, host_id=host_id,
     )
     return FindingListResponse(
         items=[_serialize(f) for f in rows], total=total, severity_counts=sev_counts,
@@ -160,6 +163,31 @@ def promote_annotation(
     return _serialize(_load(db, project, finding.id))
 
 
+@router.get(
+    "/vulnerabilities/{vuln_id}/promote-preview",
+    response_model=PromoteVulnerabilityPreview,
+)
+def preview_promote_vulnerability(
+    vuln_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Preview a vuln promotion's blast radius before committing (§11): how
+    many project hosts share this plugin_id and so would be attached to the
+    one canonical finding, plus whether it's already promoted."""
+    vuln = (
+        db.query(Vulnerability)
+        .join(Host, Vulnerability.host_id == Host.id)
+        .filter(Vulnerability.id == vuln_id, Host.project_id == project.id)
+        .first()
+    )
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerability not found in this project")
+    return PromoteVulnerabilityPreview(
+        **FindingService(db).preview_vulnerability_promotion(vuln=vuln, project_id=project.id)
+    )
+
+
 @router.post(
     "/vulnerabilities/{vuln_id}/promote",
     response_model=FindingResponse, status_code=201,
@@ -190,7 +218,7 @@ def promote_vulnerability(
     finding = FindingService(db).promote_vulnerability(
         vuln=vuln, project_id=project.id, actor_id=current_user.id,
         severity=body.severity, status=body.status or FindingStatus.CONFIRMED.value,
-        owner_id=body.owner_id,
+        owner_id=body.owner_id, summary=body.summary,
     )
     db.commit()
     return _serialize(_load(db, project, finding.id))

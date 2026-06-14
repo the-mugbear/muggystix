@@ -11,7 +11,7 @@
  * (loading / error / empty) renders a safe fallback; no page-level overflow.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle, ArrowUpRight, Clock, Eye, Info, Loader2, RefreshCw, ShieldAlert,
   ShieldCheck, Telescope, Layers, UserCheck,
@@ -20,6 +20,8 @@ import {
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
+import { conditionHostsHref } from '../services/api/insights';
+import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
@@ -204,7 +206,10 @@ const StatCard: React.FC<{
   info: string;
   visual?: React.ReactNode;
   children?: React.ReactNode;
-}> = ({ label, icon, value, info, visual, children }) => (
+  /** Drill-down for the headline number (§26) — renders it as a link. */
+  to?: string;
+  toLabel?: string;
+}> = ({ label, icon, value, info, visual, children, to, toLabel }) => (
   <Card>
     <CardContent className="flex h-full flex-col gap-sm p-md">
       <div className="flex items-center justify-between gap-xs">
@@ -213,7 +218,14 @@ const StatCard: React.FC<{
         </span>
         <span className="text-muted-foreground" aria-hidden>{icon}</span>
       </div>
-      <p className="text-page-title font-bold tabular-nums leading-none text-foreground">{value}</p>
+      {to ? (
+        <Link to={to} aria-label={toLabel ?? `${label} — view`}
+          className="text-page-title font-bold tabular-nums leading-none text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded">
+          {value}
+        </Link>
+      ) : (
+        <p className="text-page-title font-bold tabular-nums leading-none text-foreground">{value}</p>
+      )}
       <div className="flex h-6 items-center">{visual}</div>
       <div className="mt-auto">{children}</div>
     </CardContent>
@@ -232,7 +244,10 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
         icon={<ShieldAlert className="size-4" />}
         value={h.active_exposure.active_findings}
         info="Curated findings still open, confirmed, or in retest — issues an analyst has accepted as real. Excludes resolved (remediated / false-positive / accepted-risk) and raw scanner detections (counted separately below)."
-        visual={<SeverityBar counts={h.active_exposure.by_severity} variant="compact" />}
+        to={buildFindingsUrl({ status: 'active' })}
+        toLabel={`${h.active_exposure.active_findings} active findings — view`}
+        visual={<SeverityBar counts={h.active_exposure.by_severity} variant="compact"
+          segmentHref={(sev) => buildFindingsUrl({ status: 'active', severity: sev })} />}
       >
         <p className="text-caption text-muted-foreground">
           curated · open / confirmed / retest ·{' '}
@@ -248,12 +263,19 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
         icon={<Eye className="size-4" />}
         value={h.review_coverage.pct == null ? '—' : `${h.review_coverage.pct}%`}
         info="Share of discovered hosts an analyst has marked Reviewed — derived as reviewed ÷ total hosts. 'Validated' counts hosts with a completed test (a stronger signal than review)."
+        to={reviewedHostsUrl(true)}
+        toLabel="Reviewed hosts — view"
         visual={<Meter pct={h.review_coverage.pct} color="hsl(var(--info))" />}
       >
         <p className="text-caption text-muted-foreground">
           {h.review_coverage.reviewed.toLocaleString()} / {h.review_coverage.total.toLocaleString()} hosts reviewed
           {' · '}{h.review_coverage.validated_hosts.toLocaleString()} validated
         </p>
+        {h.review_coverage.total - h.review_coverage.reviewed > 0 && (
+          <Link to={reviewedHostsUrl(false)} className="text-caption text-info hover:underline">
+            {(h.review_coverage.total - h.review_coverage.reviewed).toLocaleString()} unreviewed →
+          </Link>
+        )}
       </StatCard>
 
       {/* Ownership */}
@@ -266,7 +288,10 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
       >
         <p className="text-caption text-muted-foreground">
           {h.ownership.owned} owned
-          {h.ownership.unowned > 0 && <span className="text-warning"> · {h.ownership.unowned} unowned</span>}
+          {h.ownership.unowned > 0 && (
+            <Link to={buildFindingsUrl({ status: 'active', owner: 'unowned' })}
+              className="text-warning hover:underline"> · {h.ownership.unowned} unowned →</Link>
+          )}
         </p>
       </StatCard>
 
@@ -307,6 +332,7 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
 // Where risk concentrates — the bubble matrix (with fallbacks).
 // ---------------------------------------------------------------------------
 const RiskConcentration: React.FC<{ data: PostureResponse }> = ({ data }) => {
+  const navigate = useNavigate();
   const adopted = data.sites.adopted;
   const plottable = data.sites.items.filter((s) => s.host_count > 0);
   return (
@@ -333,7 +359,8 @@ const RiskConcentration: React.FC<{ data: PostureResponse }> = ({ data }) => {
             No discovered hosts in any configured site yet.
           </p>
         ) : (
-          <RiskBubbleMatrix sites={data.sites.items} />
+          <RiskBubbleMatrix sites={data.sites.items}
+            onSelectSite={(s) => { if (s.site) navigate(buildHostsUrl({ sites: s.site })); }} />
         )}
       </CardContent>
     </Card>
@@ -439,12 +466,21 @@ const SystemicWeaknesses: React.FC<{ data: PostureResponse }> = ({ data }) => {
           </p>
         ) : conditions.map((c) => {
           const color = c.is_blind_spot ? 'hsl(var(--destructive))' : 'hsl(var(--warning))';
+          // Shared-vuln blind spots (key vuln:<plugin_id>) have no host predicate.
+          const href = conditionHostsHref(c.key);
           return (
             <div key={c.key} className="space-y-xs">
               <div className="flex items-baseline justify-between gap-xs">
-                <span className="min-w-0 truncate text-metadata font-medium text-foreground" title={c.label}>
-                  {c.label}
-                </span>
+                {href ? (
+                  <Link to={href} className="min-w-0 truncate text-metadata font-medium text-info hover:underline"
+                    title={`${c.label} — view affected hosts`}>
+                    {c.label}
+                  </Link>
+                ) : (
+                  <span className="min-w-0 truncate text-metadata font-medium text-foreground" title={c.label}>
+                    {c.label}
+                  </span>
+                )}
                 <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
                   {c.affected_hosts} hosts ({Math.round(c.host_fraction * 100)}%)
                 </span>
@@ -483,18 +519,22 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
         {/* Active split by SOURCE/origin, not disposition — never summed.
             (How a finding originated, independent of its confirmation status.) */}
         <div className="grid grid-cols-2 gap-sm">
+          {/* No single "not scanner" predicate, so non-scanner stays passive —
+              a plausible-but-wrong drill-down is worse than none (§26). */}
           <div className="rounded-control border border-border p-sm">
             <p className="text-page-title font-bold tabular-nums text-foreground">{d.non_scanner_active}</p>
             <p className="text-caption text-muted-foreground">non-scanner active</p>
           </div>
-          <div className="rounded-control border border-dashed border-border p-sm">
+          <Link to={buildFindingsUrl({ status: 'active', source: 'scanner' })}
+            className="rounded-control border border-dashed border-border p-sm hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <p className="text-page-title font-bold tabular-nums text-muted-foreground">{d.scanner_active}</p>
-            <p className="text-caption text-muted-foreground">scanner-sourced active</p>
-          </div>
+            <p className="text-caption text-muted-foreground">scanner-sourced active →</p>
+          </Link>
         </div>
         <p className="text-caption text-muted-foreground">By origin (note / manual / execution vs scanner) — not confirmation status.</p>
 
-        <DispositionPipeline byStatus={d.by_status} />
+        <DispositionPipeline byStatus={d.by_status}
+          statusHref={(status) => buildFindingsUrl({ status: status as never })} />
       </CardContent>
     </Card>
   );
@@ -535,7 +575,14 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
                   <TableRow key={s.site_id ?? `unassigned-${i}`}>
                     <TableCell className="truncate font-medium text-foreground"
                       title={s.unassigned ? 'Unassigned' : (s.site ?? undefined)}>
-                      {s.unassigned ? <span className="italic text-muted-foreground">Unassigned</span> : safeFallback(s.site, '—')}
+                      {s.unassigned ? (
+                        <span className="italic text-muted-foreground">Unassigned</span>
+                      ) : s.site ? (
+                        <Link to={buildHostsUrl({ sites: s.site })} className="text-info hover:underline"
+                          title={`${s.site} — view hosts`}>
+                          {s.site}
+                        </Link>
+                      ) : '—'}
                     </TableCell>
                     <TableCell>
                       {s.criticality_tier ? (

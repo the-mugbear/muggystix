@@ -224,3 +224,84 @@ def test_findings_sort_by_severity_rank(client, test_project):
     default = client.get(f"{base}?sort=bogus")
     assert default.status_code == 200
     assert len(default.json()["items"]) == 3
+
+
+def test_findings_status_group_filter(client, test_project):
+    """status=active filters to the working set (open/confirmed/retest);
+    status=resolved to terminal dispositions — the groups the dashboards
+    drill against, kept in sync with the list."""
+    base = f"/api/v1/projects/{test_project.id}/findings"
+    # open (stays active)
+    client.post(base, json={"title": "still open", "severity": "low"})
+    # one we drive to a terminal (resolved) status
+    rid = client.post(base, json={"title": "fixed one", "severity": "high"}).json()["id"]
+    assert client.post(f"{base}/{rid}/status",
+                       json={"status": "remediated", "summary": "patched"}).status_code == 200
+
+    active = client.get(f"{base}?status=active").json()
+    assert [f["title"] for f in active["items"]] == ["still open"]
+    assert active["total"] == 1
+
+    resolved = client.get(f"{base}?status=resolved").json()
+    assert [f["title"] for f in resolved["items"]] == ["fixed one"]
+    assert resolved["total"] == 1
+
+
+def test_findings_unowned_filter(client, db_session, test_project, test_user):
+    """unowned=true returns only findings with no owner (and overrides
+    owner_id) — the ownership drill-down from posture."""
+    base = f"/api/v1/projects/{test_project.id}/findings"
+    owned = client.post(base, json={"title": "owned", "severity": "low",
+                                    "owner_id": test_user.id}).json()
+    client.post(base, json={"title": "nobody", "severity": "low"})
+    assert owned["owner_id"] == test_user.id
+
+    res = client.get(f"{base}?unowned=true").json()
+    assert [f["title"] for f in res["items"]] == ["nobody"]
+    # unowned overrides an owner_id passed alongside it.
+    res2 = client.get(f"{base}?unowned=true&owner_id={test_user.id}").json()
+    assert [f["title"] for f in res2["items"]] == ["nobody"]
+
+
+def test_vuln_promote_preview_blast_radius(client, db_session, test_project, test_user):
+    """The preview reports how many project hosts share the plugin_id (and so
+    would be attached on promote) WITHOUT mutating anything — the §11 guard
+    against a silent cross-host fan-out."""
+    from app.db.models import Scan
+    from app.db.models_vulnerability import (
+        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+    )
+    scan = Scan(project_id=test_project.id, filename="nessus.xml", tool_name="nessus")
+    db_session.add(scan)
+    db_session.flush()
+    h1 = _make_host(db_session, test_project.id, "10.20.0.1")
+    h2 = _make_host(db_session, test_project.id, "10.20.0.2")
+    vulns = []
+    for h in (h1, h2):
+        v = Vulnerability(
+            host_id=h.id, scan_id=scan.id, plugin_id="55555",
+            title="SMB signing not required",
+            severity=VulnerabilitySeverity.HIGH, source=VulnerabilitySource.NESSUS,
+        )
+        db_session.add(v)
+        vulns.append(v)
+    db_session.commit()
+
+    base = f"/api/v1/projects/{test_project.id}/vulnerabilities/{vulns[0].id}"
+    preview = client.get(f"{base}/promote-preview")
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["affected_host_count"] == 2   # both hosts share plugin 55555
+    assert body["already_promoted"] is False
+    assert "10.20.0.1" in body["affected_host_sample"]
+    # The preview is read-only — no finding was created.
+    assert db_session.query(Finding).filter_by(source="scanner").count() == 0
+
+    # After promoting, the preview reports it's already promoted.
+    promoted = client.post(f"{base}/promote",
+                           json={"vuln_id": vulns[0].id, "summary": "confirmed by hand"})
+    assert promoted.status_code == 201, promoted.text
+    assert promoted.json()["host_count"] == 2
+    again = client.get(f"{base}/promote-preview").json()
+    assert again["already_promoted"] is True
+    assert again["finding_id"] == promoted.json()["id"]

@@ -43,9 +43,14 @@ const worstSeverity = (s: PostureSite): Severity | null => {
 
 interface RiskBubbleMatrixProps {
   sites: PostureSite[];
+  /**
+   * Activate a bubble (§26) — click or keyboard. Given for navigable sites
+   * only; unassigned bubbles (no site filter) stay non-interactive.
+   */
+  onSelectSite?: (site: PostureSite) => void;
 }
 
-const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
+const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites, onSelectSite }) => {
   const [hover, setHover] = useState<string | null>(null);
   const [mode, setMode] = useState<ColourMode>('severity');
 
@@ -167,10 +172,20 @@ const RiskBubbleMatrix: React.FC<RiskBubbleMatrixProps> = ({ sites }) => {
         {/* Bubbles */}
         {points.map((p) => {
           const active = hover === p.key;
+          const navigable = !!onSelectSite && !p.site.unassigned;
           return (
             <g key={p.key}
               onMouseEnter={() => setHover(p.key)} onMouseLeave={() => setHover(null)}
-              style={{ cursor: 'pointer' }}>
+              onClick={navigable ? () => onSelectSite!(p.site) : undefined}
+              onKeyDown={navigable ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectSite!(p.site); }
+              } : undefined}
+              onFocus={navigable ? () => setHover(p.key) : undefined}
+              onBlur={navigable ? () => setHover(null) : undefined}
+              role={navigable ? 'button' : undefined}
+              tabIndex={navigable ? 0 : undefined}
+              aria-label={navigable ? `${p.name} — ${p.site.host_count} hosts, view hosts` : undefined}
+              style={{ cursor: navigable ? 'pointer' : 'default' }}>
               <circle
                 cx={p.cx} cy={p.cy} r={p.r}
                 fill={p.color} fillOpacity={active ? 0.5 : 0.32}

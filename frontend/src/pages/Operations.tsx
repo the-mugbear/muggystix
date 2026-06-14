@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Info, Loader2, MessageCircleQuestion, RefreshCw, Sparkles, SquareArrowOutUpRight, X } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
@@ -29,6 +29,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import SeverityBar from '../components/ui/SeverityBar';
+import { buildHostsUrl } from '../utils/drilldownLinks';
 import { cn } from '../utils/cn';
 
 type ScopeView = 'all' | 'mine';
@@ -141,6 +142,7 @@ const ProjectStateCard: React.FC<{
               <CoverageStatTile
                 label="Hosts"
                 value={stats.total_hosts.toLocaleString()}
+                href={buildHostsUrl({})}
                 subtle={`${stats.up_hosts.toLocaleString()} marked up`}
                 hint={
                   'Total distinct hosts in the project. "marked up" counts only hosts a scanner ' +
@@ -151,7 +153,8 @@ const ProjectStateCard: React.FC<{
                   'For reachability, look at open ports / per-host detail.'
                 }
               />
-              <CoverageStatTile label="Open ports" value={stats.open_ports.toLocaleString()} />
+              <CoverageStatTile label="Open ports" value={stats.open_ports.toLocaleString()}
+                href={buildHostsUrl({ hasOpenPorts: true, sortBy: 'open_ports', sortOrder: 'desc' })} />
               <CoverageStatTile
                 label="Hosts with vulns"
                 value={(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()}
@@ -174,6 +177,8 @@ const ProjectStateCard: React.FC<{
                   counts={vuln}
                   total={sevTotal}
                   ariaLabel="Share of scanner-detected vulnerabilities by severity"
+                  // info has no has_info_vulns host param — leave it passive.
+                  segmentHref={(sev) => (sev === 'info' ? null : buildHostsUrl({ severity: sev }))}
                 />
               </div>
             ) : (
@@ -203,6 +208,7 @@ const ProjectStateCard: React.FC<{
               <CoverageStatTile
                 label="With execution results"
                 value={coverage.hosts_with_execution_result.toLocaleString()}
+                href={buildHostsUrl({ hasTestExecution: true })}
                 subtle={
                   coverage.hosts_no_execution > 0
                     ? `${coverage.hosts_no_execution.toLocaleString()} not yet tested`
@@ -212,6 +218,7 @@ const ProjectStateCard: React.FC<{
               <CoverageStatTile
                 label="Outside scope"
                 value={coverage.hosts_outside_scope.toLocaleString()}
+                href={coverage.hosts_outside_scope > 0 ? buildHostsUrl({ outOfScopeOnly: true }) : undefined}
                 subtle={
                   coverage.total_scopes === 0
                     ? 'no scopes declared'
@@ -297,10 +304,19 @@ const CoverageStatTile: React.FC<{
   subtle?: string;
   /** Optional explainer rendered behind an info icon next to the label. */
   hint?: string;
-}> = ({ label, value, subtle, hint }) => (
+  /** Drill-down to the records this tile counts (§26) — makes the value a link. */
+  href?: string;
+}> = ({ label, value, subtle, hint, href }) => (
   <Card>
     <CardContent className="p-md text-center">
-      <p className="text-page-title font-semibold">{value}</p>
+      {href ? (
+        <Link to={href} aria-label={`${label} — view hosts`}
+          className="inline-block text-page-title font-semibold text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded">
+          {value}
+        </Link>
+      ) : (
+        <p className="text-page-title font-semibold">{value}</p>
+      )}
       <p className="flex items-center justify-center gap-xxs text-metadata text-muted-foreground">
         {label}
         {hint && (

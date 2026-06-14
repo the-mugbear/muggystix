@@ -49,10 +49,15 @@ export interface FindingListResponse {
 
 export type FindingSortField = 'severity' | 'status' | 'title' | 'host_count' | 'source' | 'created_at';
 
+/** A real status, or a server-side group: 'active' / 'resolved'. */
+export type FindingStatusQuery = FindingStatus | 'active' | 'resolved';
+
 export interface FindingFilters {
-  status?: FindingStatus;
+  status?: FindingStatusQuery;
   severity?: FindingSeverity;
   owner_id?: number;
+  /** Only findings with no owner (overrides owner_id server-side). */
+  unowned?: boolean;
   source?: FindingSource;
   host_id?: number;
   sort?: FindingSortField;
@@ -185,12 +190,31 @@ export const uploadFindingNoteAttachment = async (
   return response.data;
 };
 
+export interface PromoteVulnerabilityPreview {
+  plugin_id: string | null;
+  affected_host_count: number;
+  affected_host_sample: string[];
+  already_promoted: boolean;
+  finding_id: number | null;
+}
+
+// Blast radius of promoting a vuln (read-only) — how many project hosts share
+// the plugin_id and would be attached to the one finding (§11).
+export const previewPromoteVulnerability = async (
+  vulnId: number,
+): Promise<PromoteVulnerabilityPreview> => {
+  const response = await api.get<PromoteVulnerabilityPreview>(
+    `${p()}/vulnerabilities/${vulnId}/promote-preview`,
+  );
+  return response.data;
+};
+
 // Promote (or dismiss) a scanner vulnerability as a finding. Severity defaults
 // to the vuln's own; a terminal status (false_positive/accepted_risk)
 // dismisses it. Idempotent per vuln.
 export const promoteVulnerability = async (
   vulnId: number,
-  payload: { severity?: string; status?: FindingStatus; owner_id?: number } = {},
+  payload: { severity?: string; status?: FindingStatus; owner_id?: number; summary?: string } = {},
 ): Promise<Finding> => {
   const response = await api.post<Finding>(
     `${p()}/vulnerabilities/${vulnId}/promote`,
