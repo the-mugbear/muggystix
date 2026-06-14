@@ -173,7 +173,14 @@ class HostScanHistory(Base):
     state_at_scan = Column(String)
     hostname_at_scan = Column(String)
     os_info_updated = Column(Boolean, default=False)  # Whether this scan updated OS info
-    
+    # True iff this scan is the one that CREATED the host row (its first
+    # observation in the project); False when it re-observed an already-known
+    # host. Lets the /scans inventory report "what this scan introduced" —
+    # N new vs N updated — instead of a re-observation count that's already
+    # surfaced on the host pages. Set at ingest from the dedup create/update
+    # decision (the ground truth), so it doesn't need re-deriving.
+    host_created = Column(Boolean, nullable=False, server_default=text("false"), default=False)
+
     # Relationships
     host = relationship("Host", back_populates="scan_history")
     scan = relationship("Scan")

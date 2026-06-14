@@ -78,7 +78,6 @@ import {
 } from '../components/ui/accordion';
 import { cn } from '../utils/cn';
 
-type ChipTone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'secondary' | 'outline' | 'muted';
 
 // v4.60.0 — full list synced with documentation/UPLOAD_FORMATS.md.
 // Alphabetised within sections so operators can scan; recent
@@ -141,16 +140,6 @@ const formatDuration = (ms: number): string => {
   return `${seconds}s`;
 };
 
-const getStatusTone = (upHosts: number, totalHosts: number): ChipTone => {
-  if (totalHosts === 0) return 'muted';
-  const ratio = upHosts / totalHosts;
-  if (ratio > 0.8) return 'success';
-  if (ratio > 0.5) return 'warning';
-  return 'destructive';
-};
-
-const isNessusScan = (scan: Scan) => (scan.tool_name || scan.scan_type || '').toLowerCase().includes('nessus');
-const isMasscanScan = (scan: Scan) => (scan.tool_name || scan.scan_type || '').toLowerCase().includes('masscan');
 
 export default function Scans() {
   const navigate = useNavigate();
@@ -228,7 +217,7 @@ export default function Scans() {
     { label: 'Last 30d', days: 30 },
     { label: 'Last 90d', days: 90 },
   ];
-  type SortBy = 'created_at' | 'filename' | 'tool_name' | 'total_hosts';
+  type SortBy = 'created_at' | 'filename' | 'tool_name' | 'total_hosts' | 'new_hosts';
   type SortOrder = 'asc' | 'desc';
 
   const [urlParams, setUrlParams] = useSearchParams();
@@ -242,7 +231,7 @@ export default function Scans() {
   });
   const [sortBy, setSortBy] = useState<SortBy>(() => {
     const raw = urlParams.get('sort_by') as SortBy | null;
-    return raw && ['created_at', 'filename', 'tool_name', 'total_hosts'].includes(raw)
+    return raw && ['created_at', 'filename', 'tool_name', 'total_hosts', 'new_hosts'].includes(raw)
       ? raw
       : 'created_at';
   });
@@ -764,55 +753,10 @@ export default function Scans() {
   // than upload time.  See ActivityTimeline component for the
   // generalised lane-packing + bar-vs-dot rendering.
 
-  // Pre-v4.11.5 this returned per-scan-type "headline" badges (host%
-  // for default, open services for masscan, findings count for Nessus)
-  // that the Metrics column already conveyed.  Reduced to default/
-  // masscan null in 4.11.1; finishing the job here by dropping the
-  // Nessus branch too — critical/high/total are in metricBadges and
-  // re-rendering them in the Scan column was the same duplication
-  // pattern.  Kept for now as a no-op so the JSX call sites stay
-  // small and a future workflow that genuinely needs a Scan-column
-  // headline has somewhere to land.
+  // No-op headline slot in the Scan column. Per-scan-type "headline" badges
+  // were dropped as duplicative; kept as a no-op so the JSX call sites stay
+  // small and a future Scan-column headline has somewhere to land.
   const statusBadge = (_scan: Scan): React.ReactNode => null;
-
-  const metricBadges = (scan: Scan): React.ReactNode => {
-    if (isNessusScan(scan)) {
-      const s = scan.vulnerability_summary;
-      const total = s?.total ?? 0;
-      const crit = s?.critical ?? 0;
-      const high = s?.high ?? 0;
-      return (
-        <div className="flex flex-wrap gap-xxs">
-          <Badge variant={crit > 0 ? 'severity-critical' : 'outline'}>{crit} critical</Badge>
-          <Badge variant={high > 0 ? 'severity-high' : 'outline'}>{high} high</Badge>
-          <Badge variant={total > 0 ? 'info' : 'outline'}>{total} findings</Badge>
-        </div>
-      );
-    }
-    if (isMasscanScan(scan)) {
-      const tcp = scan.port_breakdown?.open_tcp_ports ?? scan.open_ports ?? 0;
-      const udp = scan.port_breakdown?.open_udp_ports ?? 0;
-      const unique = scan.port_breakdown?.unique_ports ?? 0;
-      return (
-        <div className="flex flex-wrap gap-xxs">
-          <Badge variant={tcp > 0 ? 'default' : 'outline'}>{tcp} TCP</Badge>
-          <Badge variant={udp > 0 ? 'secondary' : 'outline'}>{udp} UDP</Badge>
-          <Badge variant={unique > 0 ? 'info' : 'outline'}>{unique} unique</Badge>
-        </div>
-      );
-    }
-    // Default-scan metric is the port-up ratio in a single badge,
-    // parallel to the Hosts column's "up/total" shape.  The previous
-    // two-badge form ("{open} open" + "{total} ports") repeated the
-    // same dimension twice and made the cell busier than it needed.
-    const open = scan.open_ports || 0;
-    const total = scan.total_ports || 0;
-    return (
-      <Badge variant={open > 0 ? 'success' : 'outline'}>
-        {open}/{total} open
-      </Badge>
-    );
-  };
 
   const commandDetail = (scan: Scan) => {
     const explanation = commandCache[scan.id];
@@ -1539,13 +1483,23 @@ export default function Scans() {
                         </Button>
                       </div>
                     </div>
-                    <div className="flex flex-wrap gap-xxs">
-                      <Badge variant={scan.total_hosts > 0 ? 'success' : 'outline'}>
-                        {scan.total_hosts > 0 ? `${scan.total_hosts} host${scan.total_hosts === 1 ? '' : 's'}` : 'No hosts detected'}
-                      </Badge>
-                      {statusBadge(scan)}
-                    </div>
-                    {metricBadges(scan)}
+                    {/* What this scan introduced — new vs re-observed hosts. */}
+                    {scan.total_hosts === 0 ? (
+                      <p className="text-caption text-muted-foreground">No hosts detected</p>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-md text-metadata">
+                        <span title="Hosts this scan discovered for the first time">
+                          <span className="font-semibold tabular-nums text-success">
+                            {scan.new_hosts > 0 ? `+${scan.new_hosts}` : '0'}
+                          </span>{' '}
+                          <span className="text-muted-foreground">new</span>
+                        </span>
+                        <span title="Already-known hosts this scan re-observed and updated">
+                          <span className="font-semibold tabular-nums">{scan.updated_hosts}</span>{' '}
+                          <span className="text-muted-foreground">modified</span>
+                        </span>
+                      </div>
+                    )}
                     {hasCommand && (
                       <>
                         <Separator />
@@ -1581,8 +1535,10 @@ export default function Scans() {
                       {renderSortHeader('filename', 'Scan', 'w-[28%]')}
                       {renderSortHeader('created_at', 'Uploaded', 'w-[16%]')}
                       <TableHead className="w-[18%]">Window</TableHead>
-                      {renderSortHeader('total_hosts', 'Hosts', 'w-[12%]')}
-                      <TableHead className="w-[16%]">Metrics</TableHead>
+                      {renderSortHeader('new_hosts', 'New hosts', 'w-[14%]')}
+                      <TableHead className="w-[14%]" title="Already-known hosts this scan re-observed and updated">
+                        Modified
+                      </TableHead>
                       <TableHead className="w-[10%]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1645,15 +1601,28 @@ export default function Scans() {
                                 {formatDuration(windowInfo.durationMs)}
                               </p>
                             </TableCell>
-                            <TableCell>
-                              {/* Just the up/total ratio — the ratio
-                                  already conveys the total, so a separate
-                                  "N total" badge was redundant. */}
-                              <Badge variant={scan.up_hosts > 0 ? getStatusTone(scan.up_hosts, scan.total_hosts) : 'outline'}>
-                                {scan.up_hosts}/{scan.total_hosts} up
-                              </Badge>
+                            {/* What the scan INTRODUCED, not a re-observation
+                                count that's already on the host pages: hosts
+                                first discovered here vs already-known hosts it
+                                touched. */}
+                            <TableCell title="Hosts this scan discovered for the first time">
+                              {scan.total_hosts === 0 ? (
+                                <span className="text-caption text-muted-foreground">No hosts</span>
+                              ) : scan.new_hosts > 0 ? (
+                                <span className="tabular-nums font-semibold text-success">+{scan.new_hosts}</span>
+                              ) : (
+                                <span className="tabular-nums text-muted-foreground">0</span>
+                              )}
                             </TableCell>
-                            <TableCell>{metricBadges(scan)}</TableCell>
+                            <TableCell title="Already-known hosts this scan re-observed and updated">
+                              {scan.total_hosts === 0 ? (
+                                <span className="text-caption text-muted-foreground">—</span>
+                              ) : (
+                                <span className={`tabular-nums ${scan.updated_hosts > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                  {scan.updated_hosts}
+                                </span>
+                              )}
+                            </TableCell>
                             <TableCell>
                               <div className="flex flex-wrap items-center gap-xs">
                                 {scan.total_hosts > 0 && (

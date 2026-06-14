@@ -434,6 +434,11 @@ class ScanSummary(BaseModel):
     created_at: datetime
     total_hosts: int
     up_hosts: int
+    # What this scan introduced vs re-observed (host dedup is per-IP-per-project):
+    # new_hosts = hosts this scan first discovered; updated_hosts = already-known
+    # hosts it re-observed. new_hosts + updated_hosts == total_hosts.
+    new_hosts: int = 0
+    updated_hosts: int = 0
     total_ports: int
     open_ports: int
     command_line: Optional[str] = None

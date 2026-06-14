@@ -33,6 +33,9 @@ export interface Scan {
   created_at: string;
   total_hosts: number;
   up_hosts: number;
+  // What this scan introduced vs re-observed. new + updated == total_hosts.
+  new_hosts: number;
+  updated_hosts: number;
   total_ports: number;
   open_ports: number;
   command_line?: string | null;
@@ -51,7 +54,7 @@ export const getScans = async (
     search?: string;
     tool?: string;
     createdAfter?: string;
-    sortBy?: 'created_at' | 'filename' | 'tool_name' | 'file_size' | 'duration_seconds' | 'total_hosts';
+    sortBy?: 'created_at' | 'filename' | 'tool_name' | 'file_size' | 'duration_seconds' | 'total_hosts' | 'new_hosts';
     sortOrder?: 'asc' | 'desc';
     signal?: AbortSignal;
   },

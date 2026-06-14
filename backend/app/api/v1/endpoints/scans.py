@@ -231,11 +231,11 @@ def get_scans(
     ),
     sort_by: Optional[str] = Query(
         None,
-        pattern="^(created_at|filename|tool_name|total_hosts)$",
+        pattern="^(created_at|filename|tool_name|total_hosts|new_hosts)$",
         description=(
             "Sort column for the inventory.  Allowed: created_at "
-            "(default), filename, tool_name, total_hosts.  Drives the "
-            "sortable column headers on the /scans desktop table "
+            "(default), filename, tool_name, total_hosts, new_hosts.  Drives "
+            "the sortable column headers on the /scans desktop table "
             "(v2.83.0)."
         ),
     ),
@@ -261,7 +261,10 @@ def get_scans(
             models.Scan.version,
             models.Scan.uploaded_by_id,
             func.count(models.HostScanHistory.id).label('total_hosts'),
-            func.sum(case((models.HostScanHistory.state_at_scan == 'up', 1), else_=0)).label('up_hosts')
+            func.sum(case((models.HostScanHistory.state_at_scan == 'up', 1), else_=0)).label('up_hosts'),
+            # Hosts this scan first discovered (created the row) — the rest of
+            # its observed hosts were already known and got updated.
+            func.sum(case((models.HostScanHistory.host_created == True, 1), else_=0)).label('new_hosts'),  # noqa: E712
         )
         .select_from(models.Scan)
         .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
@@ -297,6 +300,7 @@ def get_scans(
         "filename": models.Scan.filename,
         "tool_name": models.Scan.tool_name,
         "total_hosts": func.count(models.HostScanHistory.id),
+        "new_hosts": func.sum(case((models.HostScanHistory.host_created == True, 1), else_=0)),  # noqa: E712
     }
     sort_column = _SORT_COLUMNS.get(sort_by or "created_at", models.Scan.created_at)
     order_direction = desc if (sort_order or "desc").lower() == "desc" else (lambda c: c)
@@ -412,6 +416,8 @@ def get_scans(
             version=result.version,
             total_hosts=result.total_hosts or 0,
             up_hosts=result.up_hosts or 0,
+            new_hosts=result.new_hosts or 0,
+            updated_hosts=(result.total_hosts or 0) - (result.new_hosts or 0),
             total_ports=port_stats.total_ports if port_stats and port_stats.total_ports else 0,
             open_ports=port_stats.open_ports if port_stats and port_stats.open_ports else 0,
             port_breakdown=port_breakdown,

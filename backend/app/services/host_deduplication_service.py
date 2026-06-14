@@ -526,6 +526,10 @@ class HostDeduplicationService:
             existing_history.state_at_scan = host_data.get('state')
             existing_history.hostname_at_scan = host_data.get('hostname')
             existing_history.os_info_updated = bool(host_data.get('os_name'))
+            # Never downgrade created→updated: if any record of this (host,
+            # scan) marked the scan as the creator, keep it.
+            if is_new:
+                existing_history.host_created = True
         else:
             # Create new history entry
             history = HostScanHistory(
@@ -533,7 +537,8 @@ class HostDeduplicationService:
                 scan_id=scan_id,
                 state_at_scan=host_data.get('state'),
                 hostname_at_scan=host_data.get('hostname'),
-                os_info_updated=bool(host_data.get('os_name'))  # True if this scan provided OS info
+                os_info_updated=bool(host_data.get('os_name')),  # True if this scan provided OS info
+                host_created=is_new,  # dedup create/update decision — ground truth
             )
             self.db.add(history)
     
