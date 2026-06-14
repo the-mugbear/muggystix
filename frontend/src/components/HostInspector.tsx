@@ -29,17 +29,21 @@ import {
   Bookmark,
   BookmarkPlus,
   Ban,
+  CheckCircle2,
   ClipboardList,
   Computer,
   Copy,
   ExternalLink,
+  Eye,
   Flag,
   Loader2,
   MessageSquare,
+  MoreHorizontal,
   Network,
   NotebookPen,
   RefreshCw,
   Reply,
+  RotateCcw,
   ShieldAlert,
   Terminal,
   Trash2,
@@ -77,6 +81,7 @@ import type {
   FindingSeverity,
   PromoteVulnerabilityPreview,
   ProjectMember,
+  ReviewConclusion,
 } from '../services/api';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
@@ -124,6 +129,12 @@ import {
   SelectValue,
 } from './ui/select';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+import {
   Table,
   TableBody,
   TableCell,
@@ -134,10 +145,18 @@ import {
 import { Textarea } from './ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
-// Selectable review stages, in order.  'watching' is retired (see
-// FOLLOW_STATUS_OPTIONS) — kept in FOLLOW_STATUS_META below for legacy
-// rows, but never offered as a choice.
-const FOLLOW_STATUS_ORDER: FollowStatus[] = ['in_review', 'reviewed'];
+// §9 review-completion outcomes — what "reviewed" actually concluded, recorded
+// when a reviewer marks a host done. Order = how they're offered in the dialog.
+const REVIEW_CONCLUSION_ORDER: ReviewConclusion[] = [
+  'no_issue', 'finding_created', 'needs_evidence', 'out_of_scope', 'duplicate',
+];
+const REVIEW_CONCLUSION_LABEL: Record<ReviewConclusion, string> = {
+  no_issue: 'No actionable issue',
+  finding_created: 'Finding created',
+  needs_evidence: 'Needs more evidence',
+  out_of_scope: 'Out of scope',
+  duplicate: 'Duplicate asset',
+};
 
 const VULNERABILITY_PREVIEW_LIMIT = 10;
 
@@ -249,6 +268,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [loading, setLoading] = useState(true);
   const [followStatus, setFollowStatus] = useState<FollowStatus | ''>('');
   const [followLoading, setFollowLoading] = useState(false);
+  // §9 review-completion dialog (opened by "Mark reviewed").
+  const [reviewCompletionOpen, setReviewCompletionOpen] = useState(false);
+  const [reviewConclusion, setReviewConclusion] = useState<ReviewConclusion>('no_issue');
+  const [reviewSummaryText, setReviewSummaryText] = useState('');
   const [notes, setNotes] = useState<Annotation[]>([]);
   // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
   // the conditional early returns (loading / !host) so the hook count is
@@ -581,7 +604,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       });
   }, [hostId, retryNonce]);
 
-  const updateFollow = async (status: FollowStatus | 'none') => {
+  const updateFollow = async (
+    status: FollowStatus | 'none',
+    review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
+  ) => {
     setFollowLoading(true);
     try {
       if (status === 'none') {
@@ -591,7 +617,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         onFollowChange?.(hostId, null);
         toast.info('Removed from your follow list', { autoHideMs: 2000 });
       } else {
-        const response = await followHost(hostId, status);
+        const response = await followHost(hostId, status, review);
         setFollowStatus(response.status);
         setHost((previous) => (previous ? { ...previous, follow: response } : previous));
         onFollowChange?.(hostId, response);
@@ -603,6 +629,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     } finally {
       setFollowLoading(false);
     }
+  };
+
+  const openReviewCompletion = () => {
+    setReviewConclusion('no_issue');
+    setReviewSummaryText('');
+    setReviewCompletionOpen(true);
+  };
+  const submitReviewCompletion = () => {
+    setReviewCompletionOpen(false);
+    void updateFollow('reviewed', {
+      review_conclusion: reviewConclusion,
+      review_summary: reviewSummaryText.trim() || undefined,
+    });
   };
 
   const handleEntryStatusChange = async (entry: HostTestPlanEntry, newStatus: string) => {
@@ -892,7 +931,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     </TableHead>
   );
   const followInfo = host.follow;
-  const followSelectValue = followStatus || 'none';
   const followHelperText = followStatus
     ? FOLLOW_STATUS_META[followStatus].description
     : 'Select a review status to keep track of this host.';
@@ -1209,6 +1247,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 >
                   {followStatus ? FOLLOW_STATUS_META[followStatus].label : 'Not reviewed'}
                 </Badge>
+                {followStatus === 'reviewed' && followInfo?.review_conclusion && (
+                  <span className="text-caption font-medium text-foreground"
+                    title={followInfo.review_summary ?? undefined}>
+                    {REVIEW_CONCLUSION_LABEL[followInfo.review_conclusion]
+                      ?? followInfo.review_conclusion}
+                  </span>
+                )}
                 {followInfo && (
                   <span className="text-caption text-muted-foreground">
                     Updated{' '}
@@ -1218,27 +1263,46 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   </span>
                 )}
               </div>
+              {/* §6/§9 — one state-aware review control (replaces the status
+                  dropdown): primary action for the common path + an overflow
+                  for the off-path transitions, so nothing the dropdown did is
+                  lost (mark-reviewed-direct, clear status). */}
               <div className="flex items-center gap-xs">
-                <Label htmlFor={`host-${hostId}-follow-status`} className="sr-only">
-                  Review status
-                </Label>
-                <Select
-                  value={followSelectValue}
-                  onValueChange={(value) => updateFollow(value as FollowStatus | 'none')}
-                  disabled={followLoading}
-                >
-                  <SelectTrigger id={`host-${hostId}-follow-status`} className="w-[12rem]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Not reviewed</SelectItem>
-                    {FOLLOW_STATUS_ORDER.map((status) => (
-                      <SelectItem key={status} value={status}>
-                        {FOLLOW_STATUS_META[status].label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {followStatus === 'reviewed' ? (
+                  <Button size="sm" variant="outline" disabled={followLoading}
+                    onClick={() => updateFollow('in_review')}>
+                    <RotateCcw className="size-3.5" aria-hidden /> Re-open review
+                  </Button>
+                ) : followStatus === 'in_review' ? (
+                  <Button size="sm" disabled={followLoading} onClick={openReviewCompletion}>
+                    <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
+                  </Button>
+                ) : (
+                  <Button size="sm" disabled={followLoading}
+                    onClick={() => updateFollow('in_review')}>
+                    <Eye className="size-3.5" aria-hidden /> Start review
+                  </Button>
+                )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="icon" variant="ghost" disabled={followLoading}
+                      aria-label="More review actions">
+                      <MoreHorizontal className="size-4" aria-hidden />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
+                      <DropdownMenuItem onClick={openReviewCompletion}>
+                        Mark reviewed…
+                      </DropdownMenuItem>
+                    )}
+                    {followStatus && (
+                      <DropdownMenuItem onClick={() => updateFollow('none')}>
+                        Clear review status
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
               <span className="text-caption text-muted-foreground">{followHelperText}</span>
             </div>
@@ -1552,6 +1616,49 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           )}
         </CardContent>
       </Card>
+
+      {/* §9 — review-completion dialog. Marking a host Reviewed records WHAT
+          the reviewer concluded so "reviewed" is an auditable outcome. */}
+      <Dialog open={reviewCompletionOpen} onOpenChange={(v) => { if (!v) setReviewCompletionOpen(false); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Complete review</DialogTitle>
+            <DialogDescription>
+              Record what this review concluded. It's kept on the host's review state and shown to
+              the team.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-sm">
+            <div>
+              <Label htmlFor="review-conclusion" className="text-caption">Conclusion</Label>
+              <Select value={reviewConclusion} onValueChange={(v) => setReviewConclusion(v as ReviewConclusion)}>
+                <SelectTrigger id="review-conclusion"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {REVIEW_CONCLUSION_ORDER.map((c) => (
+                    <SelectItem key={c} value={c}>{REVIEW_CONCLUSION_LABEL[c]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label htmlFor="review-summary" className="text-caption">Summary (optional)</Label>
+              <Textarea
+                id="review-summary"
+                rows={3}
+                placeholder="What you checked and why you concluded this…"
+                value={reviewSummaryText}
+                onChange={(e) => setReviewSummaryText(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReviewCompletionOpen(false)}>Cancel</Button>
+            <Button disabled={followLoading} onClick={submitReviewCompletion}>
+              <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* §11 — vuln triage confirm. Promotion fans out across every project
           host sharing the plugin_id, so show that blast radius (and capture

@@ -665,6 +665,13 @@ class HostFollow(Base):
     last_viewed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # Review completion (§9): when the reviewer marks this host Reviewed they
+    # record WHAT they concluded — so "reviewed" is an auditable outcome, not a
+    # bare bookmark. Carried on the reviewer's own follow row; cleared when the
+    # host leaves the reviewed state. Values: no_issue | finding_created |
+    # needs_evidence | out_of_scope | duplicate.
+    review_conclusion = Column(String(32), nullable=True)
+    review_summary = Column(Text, nullable=True)
 
     # Ownership / assignment (v2.71.0).  A non-null ``assigned_at`` on the
     # (host, user) row means "this host is assigned to ``user_id`` by

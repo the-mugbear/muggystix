@@ -42,7 +42,14 @@ class HostFollowService:
             .first()
         )
 
-    def set_follow_status(self, host_id: int, user_id: int, status: FollowStatus) -> HostFollow:
+    def set_follow_status(
+        self,
+        host_id: int,
+        user_id: int,
+        status: FollowStatus,
+        review_conclusion: Optional[str] = None,
+        review_summary: Optional[str] = None,
+    ) -> HostFollow:
         follow = self.get_follow(host_id, user_id)
         if follow:
             follow.status = status
@@ -58,6 +65,15 @@ class HostFollowService:
         if status_value in ("in_review", "reviewed") and follow.assigned_at is None:
             follow.assigned_at = func.now()
             follow.assigned_by_id = user_id
+        # Review conclusion (§9) only belongs on a Reviewed host; clear it when
+        # the host moves back to in_review/watching so a re-opened review doesn't
+        # carry a stale outcome.
+        if status_value == "reviewed":
+            follow.review_conclusion = review_conclusion
+            follow.review_summary = review_summary
+        else:
+            follow.review_conclusion = None
+            follow.review_summary = None
         self.db.commit()
         self.db.refresh(follow)
         return follow

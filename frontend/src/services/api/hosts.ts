@@ -156,11 +156,21 @@ export interface HostListResponse {
   vulnerability_error?: boolean;
 }
 
+/** §9 review-completion outcomes recorded when a host is marked Reviewed. */
+export type ReviewConclusion =
+  | 'no_issue'
+  | 'finding_created'
+  | 'needs_evidence'
+  | 'out_of_scope'
+  | 'duplicate';
+
 export interface HostFollowInfo {
   status: FollowStatus;
   last_viewed_at?: string | null;
   created_at: string;
   updated_at?: string | null;
+  review_conclusion?: ReviewConclusion | null;
+  review_summary?: string | null;
 }
 
 export interface Annotation {
@@ -353,8 +363,12 @@ export const getHostFollowers = async (hostId: number): Promise<HostFollowersRes
   return response.data;
 };
 
-export const followHost = async (hostId: number, status: FollowStatus): Promise<HostFollowInfo> => {
-  const response = await api.post(`${p()}/hosts/${hostId}/follow`, { status });
+export const followHost = async (
+  hostId: number,
+  status: FollowStatus,
+  review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
+): Promise<HostFollowInfo> => {
+  const response = await api.post(`${p()}/hosts/${hostId}/follow`, { status, ...review });
   return response.data;
 };
 

@@ -82,6 +82,9 @@ class HostFollowInfo(BaseModel):
     last_viewed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # §9 — the recorded review outcome (present only when status=reviewed).
+    review_conclusion: Optional[str] = None
+    review_summary: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -162,8 +165,23 @@ class NoteActivitySummary(BaseModel):
     recent_notes: List[NoteActivityEntry] = []
 
 
+REVIEW_CONCLUSIONS = {
+    "no_issue", "finding_created", "needs_evidence", "out_of_scope", "duplicate",
+}
+
+
 class HostFollowUpdate(BaseModel):
     status: FollowStatus
+    # §9 review completion — recorded when status=reviewed (ignored otherwise).
+    review_conclusion: Optional[str] = None
+    review_summary: Optional[str] = Field(None, max_length=4000)
+
+    @field_validator("review_conclusion")
+    @classmethod
+    def _valid_conclusion(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in REVIEW_CONCLUSIONS:
+            raise ValueError(f"review_conclusion must be one of {sorted(REVIEW_CONCLUSIONS)}")
+        return v
 
 
 class AnnotationCreate(AnnotationBase):

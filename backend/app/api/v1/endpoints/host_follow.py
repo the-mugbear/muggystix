@@ -42,7 +42,11 @@ def follow_host(
         raise HTTPException(status_code=404, detail="Host not found")
 
     follow_service = HostFollowService(db)
-    follow = follow_service.set_follow_status(host_id, current_user.id, payload.status)
+    follow = follow_service.set_follow_status(
+        host_id, current_user.id, payload.status,
+        review_conclusion=payload.review_conclusion,
+        review_summary=payload.review_summary,
+    )
     return _serialize_follow(follow)
 
 

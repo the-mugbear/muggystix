@@ -322,6 +322,33 @@ def test_scan_update_notifies_reviewer_of_updated_host_only(db_session, test_pro
     assert n.host_id == updated.id
 
 
+def test_review_conclusion_stored_on_reviewed_and_cleared_on_reopen(db_session, test_project):
+    """§9 — marking Reviewed records the conclusion + summary (and stamps the
+    reviewer's assignment); re-opening to In Review clears the stale outcome."""
+    from app.db import models
+    from app.db.models import FollowStatus
+    from app.services.host_follow_service import HostFollowService
+
+    user = _make_user(db_session, "rev5")
+    host = models.Host(project_id=test_project.id, ip_address="10.9.0.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+
+    svc = HostFollowService(db_session)
+    reviewed = svc.set_follow_status(
+        host.id, user.id, FollowStatus.REVIEWED,
+        review_conclusion="finding_created", review_summary="promoted a finding",
+    )
+    assert reviewed.status == FollowStatus.REVIEWED
+    assert reviewed.review_conclusion == "finding_created"
+    assert reviewed.review_summary == "promoted a finding"
+    assert reviewed.assigned_at is not None  # reviewing = it's mine
+
+    reopened = svc.set_follow_status(host.id, user.id, FollowStatus.IN_REVIEW)
+    assert reopened.review_conclusion is None
+    assert reopened.review_summary is None
+
+
 def test_scan_update_skips_when_only_follower_is_uploader(db_session, test_project):
     from app.db import models
     from app.db.models import HostFollow, FollowStatus, HostScanHistory

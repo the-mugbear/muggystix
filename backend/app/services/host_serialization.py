@@ -34,6 +34,8 @@ def _serialize_follow(follow: HostFollow) -> HostFollowInfo:
         last_viewed_at=follow.last_viewed_at,
         created_at=follow.created_at,
         updated_at=follow.updated_at,
+        review_conclusion=follow.review_conclusion,
+        review_summary=follow.review_summary,
     )
 
 
