@@ -113,13 +113,24 @@ def main() -> None:
         if reaped:
             logger.info("Orphan reaper cleaned up %d stuck job(s)", reaped)
 
+    def _check_backlog() -> None:
+        # B2-3 — proactive WARNING when the queue is steadily backing up
+        # (distinct from the reaper, which only sees wedged/failed jobs). One
+        # worker process, so no leader election; per-callback exceptions are
+        # isolated by run_listen_loop.
+        from app.db.session import SessionLocal
+        from app.services.queue_metrics_service import warn_if_ingestion_backlog_high
+
+        with SessionLocal() as db:
+            warn_if_ingestion_backlog_high(db)
+
     worker_loop.run_listen_loop(
         channel="ingestion_jobs",
         poll_one=service.poll_and_run_one,
         heartbeat_path=HEARTBEAT_PATH,
         logger=logger,
         poll_interval=POLL_INTERVAL,
-        periodic=[_reap],
+        periodic=[_reap, _check_backlog],
     )
     logger.info("Ingestion worker stopped")
 

@@ -18,7 +18,38 @@ import os
 import uuid
 from typing import Optional
 
+from sqlalchemy import text
+
 logger = logging.getLogger(__name__)
+
+
+# --- housekeeping leader election (B2-2) -----------------------------------
+#
+# The background loops below run in EVERY uvicorn worker (default 4).  Their
+# DELETEs are idempotent, so multiple workers firing the same pass is correct
+# but wasteful — 4x the purge query load at each interval.  A Postgres
+# advisory lock elects a single leader per pass: whoever grabs the lock does
+# the work, the rest skip.  Distinct bigint keys per loop; on non-Postgres
+# (dev/sqlite, single-process) the gate is a no-op and the loop just runs.
+
+_LEADER_LOCK_EXPIRED_SESSIONS = 0x42535F455850  # "BS_EXP"
+_LEADER_LOCK_AGENT_API_RETENTION = 0x42535F524554  # "BS_RET"
+
+
+def _try_housekeeping_leader(db, key: int) -> bool:
+    """True when this worker should run the pass — it acquired the advisory
+    lock, or we're not on Postgres.  The lock is session-scoped; release it
+    with ``_release_housekeeping_leader`` once the work is done."""
+    if db.bind.dialect.name != "postgresql":
+        return True
+    return bool(
+        db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}).scalar()
+    )
+
+
+def _release_housekeeping_leader(db, key: int) -> None:
+    if db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
 
 
 # --- expired-session cleanup loop ------------------------------------------
@@ -40,9 +71,14 @@ async def expired_session_cleanup_loop() -> None:
         try:
             await asyncio.sleep(EXPIRED_SESSION_CLEANUP_INTERVAL_SECONDS)
             with SessionLocal() as db:
-                reaped = cleanup_expired_sessions(db)
-            if reaped:
-                logger.info("Reaped %d expired user sessions", reaped)
+                if not _try_housekeeping_leader(db, _LEADER_LOCK_EXPIRED_SESSIONS):
+                    continue  # another worker is the leader this pass
+                try:
+                    reaped = cleanup_expired_sessions(db)
+                finally:
+                    _release_housekeeping_leader(db, _LEADER_LOCK_EXPIRED_SESSIONS)
+                if reaped:
+                    logger.info("Reaped %d expired user sessions", reaped)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -108,13 +144,18 @@ async def agent_api_call_retention_loop() -> None:
         try:
             await asyncio.sleep(AGENT_API_CALL_PURGE_INTERVAL_SECONDS)
             with SessionLocal() as db:
-                deleted = purge_older_than(db, days=retention_days)
-            if deleted:
-                logger.info(
-                    "Agent API call retention: purged %d rows older than %d days",
-                    deleted,
-                    retention_days,
-                )
+                if not _try_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION):
+                    continue  # another worker is the leader this pass
+                try:
+                    deleted = purge_older_than(db, days=retention_days)
+                finally:
+                    _release_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION)
+                if deleted:
+                    logger.info(
+                        "Agent API call retention: purged %d rows older than %d days",
+                        deleted,
+                        retention_days,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:

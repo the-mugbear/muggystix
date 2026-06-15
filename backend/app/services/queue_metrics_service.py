@@ -9,6 +9,7 @@ with SQL aggregates (no row materialisation) so it's cheap to poll.
 means "jobs the reaper will reclaim on its next pass" — i.e. a worker is
 wedged or gone, not just slow.
 """
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -17,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import models
+
+logger = logging.getLogger(__name__)
 
 
 def _queue_snapshot(db: Session, model, stale_cutoff_seconds: int) -> dict:
@@ -92,3 +95,62 @@ def queue_metrics(db: Session) -> dict:
             db, models.ReportJob, settings.REPORT_JOB_TIMEOUT_SECONDS
         ),
     }
+
+
+def warn_if_ingestion_backlog_high(db: Session) -> Optional[dict]:
+    """Log a WARNING when the ingestion queue is steadily backing up.
+
+    Distinct from the orphan reaper, which alerts on *wedged/failed* jobs: this
+    catches uploads arriving faster than the single worker drains, or a poison
+    job re-queuing — a queue that's deep or has been waiting a long time, with
+    no single job yet 'stale'.  Called from the worker's periodic hook (one
+    worker process, so no leader election needed).  Returns the triggering
+    snapshot dict when it warned, else None — handy for tests/observability.
+
+    Either threshold trips it; both at 0 disables (returns None without
+    querying).  Two cheap aggregates, no row materialisation.
+    """
+    depth_threshold = settings.INGESTION_BACKLOG_WARN_DEPTH
+    age_threshold = settings.INGESTION_BACKLOG_WARN_AGE_SECONDS
+    if depth_threshold <= 0 and age_threshold <= 0:
+        return None
+
+    now = datetime.now(timezone.utc)
+    queued = int(
+        db.query(func.count(models.IngestionJob.id))
+        .filter(models.IngestionJob.status == "queued")
+        .scalar()
+        or 0
+    )
+    oldest_created = (
+        db.query(func.min(models.IngestionJob.created_at))
+        .filter(models.IngestionJob.status == "queued")
+        .scalar()
+    )
+    oldest_age = (
+        max(0.0, (now - oldest_created).total_seconds()) if oldest_created else 0.0
+    )
+
+    depth_hit = depth_threshold > 0 and queued >= depth_threshold
+    age_hit = age_threshold > 0 and oldest_age >= age_threshold
+    if not (depth_hit and queued) and not (age_hit and queued):
+        # Never warn on an empty queue — a zero-depth queue with a stale
+        # oldest_age can't happen (no queued rows → oldest_age 0), but guard
+        # the depth=0 edge explicitly so a misconfigured threshold of 0-ish
+        # plus an empty queue stays silent.
+        return None
+
+    snapshot = {
+        "queued": queued,
+        "oldest_queued_age_seconds": round(oldest_age, 1),
+    }
+    logger.warning(
+        "Ingestion backlog high: %d job(s) queued, oldest waiting %.0fs "
+        "(thresholds: depth>=%s, age>=%ss). The worker is falling behind — "
+        "check worker health/throughput or scale ingestion.",
+        queued,
+        oldest_age,
+        depth_threshold or "off",
+        age_threshold or "off",
+    )
+    return snapshot

@@ -57,3 +57,58 @@ def test_queue_metrics_requires_admin(client, db_session, test_user):
     db_session.commit()
     resp = client.get("/api/v1/system/queue-metrics")
     assert resp.status_code == 403
+
+
+# --- Proactive backlog WARNING (review B2-3) --------------------------------
+
+def test_backlog_warning_trips_on_depth(db_session, test_project, monkeypatch):
+    from app.services import queue_metrics_service as qms
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_DEPTH", 2, raising=False)
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_AGE_SECONDS", 0, raising=False)
+
+    for _ in range(3):  # 3 queued >= depth threshold 2
+        _ingestion(db_session, test_project.id, status="queued")
+
+    snap = qms.warn_if_ingestion_backlog_high(db_session)
+    assert snap is not None and snap["queued"] == 3
+
+
+def test_backlog_warning_trips_on_age(db_session, test_project, monkeypatch):
+    from app.services import queue_metrics_service as qms
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_DEPTH", 0, raising=False)
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_AGE_SECONDS", 60, raising=False)
+
+    old = datetime.now(timezone.utc) - timedelta(seconds=600)
+    _ingestion(db_session, test_project.id, status="queued", created_at=old)
+
+    snap = qms.warn_if_ingestion_backlog_high(db_session)
+    assert snap is not None and snap["oldest_queued_age_seconds"] >= 600
+
+
+def test_backlog_warning_silent_when_below_threshold(db_session, test_project, monkeypatch):
+    from app.services import queue_metrics_service as qms
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_DEPTH", 10, raising=False)
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_AGE_SECONDS", 0, raising=False)
+
+    _ingestion(db_session, test_project.id, status="queued")  # 1 < 10
+    assert qms.warn_if_ingestion_backlog_high(db_session) is None
+
+
+def test_backlog_warning_silent_on_empty_queue(db_session, test_project, monkeypatch):
+    """A processing-but-not-queued job must not trip the backlog warning."""
+    from app.services import queue_metrics_service as qms
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_DEPTH", 1, raising=False)
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_AGE_SECONDS", 1, raising=False)
+
+    _ingestion(db_session, test_project.id, status="processing")  # not queued
+    assert qms.warn_if_ingestion_backlog_high(db_session) is None
+
+
+def test_backlog_warning_disabled_when_both_zero(db_session, test_project, monkeypatch):
+    from app.services import queue_metrics_service as qms
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_DEPTH", 0, raising=False)
+    monkeypatch.setattr(qms.settings, "INGESTION_BACKLOG_WARN_AGE_SECONDS", 0, raising=False)
+
+    for _ in range(5):
+        _ingestion(db_session, test_project.id, status="queued")
+    assert qms.warn_if_ingestion_backlog_high(db_session) is None

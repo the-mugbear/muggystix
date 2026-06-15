@@ -174,6 +174,18 @@ class Settings:
     INGESTION_ORPHAN_CUTOFF_MULTIPLIER: float = float(
         os.getenv("INGESTION_ORPHAN_CUTOFF_MULTIPLIER", "1.5")
     )
+    # Backlog WARNING thresholds (review B2-3).  The worker logs a WARNING on
+    # its periodic tick when the ingestion queue is backing up — uploads
+    # arriving faster than the single worker drains, or a poison job stuck
+    # re-queuing.  The orphan reaper already alerts on *wedged/failed* jobs;
+    # this catches the distinct "steadily falling behind" signal the reaper
+    # can't see.  Either threshold trips the warning; set both to 0 to disable.
+    INGESTION_BACKLOG_WARN_DEPTH: int = int(
+        os.getenv("INGESTION_BACKLOG_WARN_DEPTH", "25")
+    )
+    INGESTION_BACKLOG_WARN_AGE_SECONDS: int = int(
+        os.getenv("INGESTION_BACKLOG_WARN_AGE_SECONDS", "1800")  # 30 min waiting
+    )
 
     # Hard cap on the body size of any outbound HTTP response (LLM providers,
     # scanner integrations, webhooks) before it is buffered into memory.  A
