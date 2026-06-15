@@ -6,6 +6,9 @@ with a shorter/worse service name clobbered a longer/better one (e.g. an nmap
 host_deduplication_service.should_replace_service (empty-or-longer-wins). This
 pins the two in lockstep.
 """
+import json
+from collections import defaultdict
+
 import pytest
 
 from app.db import models
@@ -74,3 +77,46 @@ def test_masscan_merge_keeps_longer_name(db_session, test_project):
     # An empty name never clobbers.
     upsert(s1.id, "")
     assert svc_name() == "http-proxy-alt"
+
+
+# --- Memory backstop: collection flushes without losing data (review A-4) ----
+
+def test_collect_json_flushes_without_losing_data(db_session, tmp_path, monkeypatch):
+    """A pathological scan flushes the in-memory buffer mid-collection to bound
+    RAM.  masscan randomizes scan order, so an IP can reappear AFTER its first
+    window was flushed — this pins that no ports are lost and the split IP ends
+    up with ALL of them (the persist path upserts the re-seen host)."""
+    import app.parsers.masscan_parser as mp
+    monkeypatch.setattr(mp, "_COLLECT_FLUSH_IPS", 2)
+
+    entries = [
+        {"ip": "10.0.0.1", "ports": [{"port": 80, "proto": "tcp", "status": "open"}]},
+        {"ip": "10.0.0.2", "ports": [{"port": 22, "proto": "tcp", "status": "open"}]},
+        {"ip": "10.0.0.3", "ports": [{"port": 443, "proto": "tcp", "status": "open"}]},
+        # 10.0.0.1 reappears after the first window was already flushed+cleared.
+        {"ip": "10.0.0.1", "ports": [{"port": 8080, "proto": "tcp", "status": "open"}]},
+    ]
+    path = tmp_path / "scan.json"
+    path.write_text(json.dumps(entries))
+
+    parser = MasscanParser(db_session)
+    collected: dict = defaultdict(list)
+    flush_sizes = []
+
+    def flush(buf):
+        # Mimic _batch_persist: consume then drain the buffer in place.
+        flush_sizes.append(len(buf))
+        for ip, ports in buf.items():
+            collected[ip].extend(ports)
+        buf.clear()
+
+    residual = parser._collect_json(str(path), flush)
+    for ip, ports in residual.items():
+        collected[ip].extend(ports)
+
+    # The low threshold forced at least one mid-collection flush (not all-at-once).
+    assert flush_sizes, "expected a mid-collection flush at the low threshold"
+    # No data lost, and the split IP carries BOTH ports across the two windows.
+    assert {p["port_number"] for p in collected["10.0.0.1"]} == {80, 8080}
+    assert {p["port_number"] for p in collected["10.0.0.2"]} == {22}
+    assert {p["port_number"] for p in collected["10.0.0.3"]} == {443}

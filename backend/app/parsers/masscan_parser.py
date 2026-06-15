@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from lxml import etree
 
@@ -21,6 +21,18 @@ from app.db import models
 from app.parsers.parser_utils import correlate_scan
 
 logger = logging.getLogger(__name__)
+
+# Peak-memory backstop (review A-4).  The collectors group masscan's
+# RANDOMLY-ORDERED (ip, port) records into an in-memory {ip: [ports]} map so a
+# host's scattered ports collapse to a single upsert — that grouping is
+# load-bearing and must NOT be chunked away.  But a pathological multi-/16
+# sweep can buffer millions of port dicts at once and OOM the worker (which
+# then re-queues into the same OOM).  So we flush to the DB once this many
+# DISTINCT IPs are buffered.  Set deliberately HIGH: a normal scan (≤ a /16 =
+# 65k IPs) never reaches it, so it behaves exactly as before — full grouping,
+# one upsert per IP, exact counts.  Only a genuinely huge scan flushes, trading
+# some repeat host-upserts for bounded RAM.
+_COLLECT_FLUSH_IPS = 100_000
 
 
 class MasscanParser:
@@ -45,16 +57,31 @@ class MasscanParser:
             )
             suffix = Path(filename).suffix.lower()
 
-            # Phase 1: collect all host/port data from the file into memory
-            host_ports: Dict[str, List[Dict[str, Any]]] = {}
-            if suffix == ".xml":
-                host_ports = self._collect_xml(file_path, scan)
-            elif suffix == ".json":
-                host_ports = self._collect_json(file_path)
-            else:
-                host_ports = self._collect_list(file_path)
+            # Phase 1+2 interleaved: collect host/port data and persist it.
+            # The collector buffers into an {ip: [ports]} map and calls this
+            # sink whenever the buffer crosses _COLLECT_FLUSH_IPS distinct IPs
+            # (and once more for the residual), draining it to the DB so peak
+            # RAM stays bounded on huge scans (review A-4).  For a normal scan
+            # the threshold is never hit, so this fires exactly once on the
+            # full map — identical to the old collect-all-then-persist path.
+            counters = {"hosts": 0, "ips": 0}
 
-            if not host_ports:
+            def _flush(buf: Dict[str, List[Dict[str, Any]]]) -> None:
+                if not buf:
+                    return
+                counters["ips"] += len(buf)
+                counters["hosts"] += self._batch_persist(scan.id, buf)
+
+            if suffix == ".xml":
+                residual = self._collect_xml(file_path, scan, _flush)
+            elif suffix == ".json":
+                residual = self._collect_json(file_path, _flush)
+            else:
+                residual = self._collect_list(file_path, _flush)
+
+            _flush(residual)
+
+            if counters["hosts"] == 0:
                 # Fail closed — pre-v2.55.0 this path committed an
                 # empty scan and returned success, which let the
                 # dispatcher's unconditional masscan_list fallback (also
@@ -68,9 +95,8 @@ class MasscanParser:
                     f"file is empty or not masscan output."
                 )
 
-            # Phase 2: batch persist into the database
-            total_unique_ips = len(host_ports)
-            processed_hosts = self._batch_persist(scan.id, host_ports)
+            total_unique_ips = counters["ips"]
+            processed_hosts = counters["hosts"]
 
             # Commit parsed host data before correlation
             self.db.commit()
@@ -103,10 +129,25 @@ class MasscanParser:
     # Phase 1 — Collect data from file into {ip: [ports]} dict
     # ------------------------------------------------------------------
 
+    def _maybe_flush(
+        self,
+        host_ports: Dict[str, List[Dict[str, Any]]],
+        flush: Optional[Callable[[Dict[str, List[Dict[str, Any]]]], None]],
+    ) -> None:
+        """Drain ``host_ports`` to the DB once it buffers too many distinct IPs.
+
+        ``flush`` pops every entry, so on return the map is empty and the
+        collector keeps accumulating from where it left off.  No-op when no
+        sink is wired (e.g. a direct unit-test call) or the threshold isn't met.
+        """
+        if flush is not None and len(host_ports) >= _COLLECT_FLUSH_IPS:
+            flush(host_ports)
+
     def _collect_xml(
         self,
         file_path: str,
         scan: models.Scan,
+        flush: Optional[Callable[[Dict[str, List[Dict[str, Any]]]], None]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         host_ports: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
@@ -139,6 +180,7 @@ class MasscanParser:
                     if host_info:
                         host_ports[host_info["ip_address"]].extend(host_info["ports"])
                     clear_element(elem)
+                    self._maybe_flush(host_ports, flush)
                 elif event == "end" and tag == "finished":
                     end_time = self._parse_timestamp(elem.get("time"))
                     if end_time is None:
@@ -159,7 +201,11 @@ class MasscanParser:
 
         return dict(host_ports)
 
-    def _collect_json(self, file_path: str) -> Dict[str, List[Dict[str, Any]]]:
+    def _collect_json(
+        self,
+        file_path: str,
+        flush: Optional[Callable[[Dict[str, List[Dict[str, Any]]]], None]] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         host_ports: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for entry in self._iter_json_entries(file_path):
@@ -180,10 +226,17 @@ class MasscanParser:
                     "protocol": protocol,
                     "state": state,
                 })
+            # Flush at entry boundaries so an IP's ports from one record stay
+            # together in the same persist call.
+            self._maybe_flush(host_ports, flush)
 
         return dict(host_ports)
 
-    def _collect_list(self, file_path: str) -> Dict[str, List[Dict[str, Any]]]:
+    def _collect_list(
+        self,
+        file_path: str,
+        flush: Optional[Callable[[Dict[str, List[Dict[str, Any]]]], None]] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         host_ports: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         gnmap_lines_seen = 0
 
@@ -200,6 +253,7 @@ class MasscanParser:
                     if parsed:
                         ip_address, ports = parsed
                         host_ports[ip_address].extend(ports)
+                        self._maybe_flush(host_ports, flush)
                     continue
 
                 # Detect gnmap/greppable format lines that don't belong here
@@ -223,6 +277,7 @@ class MasscanParser:
                     "protocol": protocol,
                     "state": state,
                 })
+                self._maybe_flush(host_ports, flush)
 
         if gnmap_lines_seen > 0 and not host_ports:
             logger.warning(

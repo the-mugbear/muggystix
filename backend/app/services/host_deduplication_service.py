@@ -8,7 +8,7 @@ Implements conflict resolution and audit tracking for data changes.
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any, Type, TypeVar
+from typing import Dict, List, Optional, Tuple, Any
 from sqlalchemy.orm import Session, noload
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -17,9 +17,6 @@ from app.db import models
 from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortScanHistory
 
 logger = logging.getLogger(__name__)
-
-
-TModel = TypeVar("TModel")
 
 
 def should_replace_service(
@@ -52,7 +49,22 @@ class HostDeduplicationService:
     
     def __init__(self, db: Session):
         self.db = db
-    
+        # Intra-scan history dedup (review A-3).  A history row for a given
+        # (host_id/port_id, scan_id) may already have been added earlier in
+        # THIS parse but not yet flushed — and with autoflush=False a DB query
+        # won't see it.  We used to find it by linear-scanning ``db.new`` on
+        # every host AND every port, which is O(rows) per call → O(n²) over a
+        # re-scan where the create-path flush never fires and ``db.new`` grows
+        # unbounded.  These dicts make that lookup O(1).  Keyed by
+        # (id, scan_id); the value is the pending/added ORM row so a repeat
+        # within the scan updates it in place instead of inserting a duplicate
+        # (which would violate uq_host_scan / uq_port_scan).  Safe across the
+        # savepoint retries in find_or_create_*: history is only recorded AFTER
+        # the host/port INSERT savepoint has committed, so a cached row is
+        # never one that later gets rolled back.
+        self._pending_host_history: Dict[Tuple[int, int], HostScanHistory] = {}
+        self._pending_port_history: Dict[Tuple[int, int], PortScanHistory] = {}
+
     def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
         """
         Find existing host by IP (within the same project) or create new one.
@@ -514,13 +526,16 @@ class HostDeduplicationService:
     
     def _record_host_scan_history(self, host_id: int, scan_id: int, host_data: Dict[str, Any], is_new: bool = False):
         """Record that this scan discovered/updated this host"""
-        existing_history = self._find_pending_history(HostScanHistory, host_id=host_id, scan_id=scan_id)
+        key = (host_id, scan_id)
+        # Pending row added earlier in THIS parse (O(1)); else a row from a
+        # prior flush, found by the uq_host_scan index.
+        existing_history = self._pending_host_history.get(key)
         if existing_history is None:
             existing_history = self.db.query(HostScanHistory).filter(
                 HostScanHistory.host_id == host_id,
                 HostScanHistory.scan_id == scan_id
             ).first()
-        
+
         if existing_history:
             # Update existing history entry
             existing_history.state_at_scan = host_data.get('state')
@@ -541,17 +556,20 @@ class HostDeduplicationService:
                 host_created=is_new,  # dedup create/update decision — ground truth
             )
             self.db.add(history)
-    
+            self._pending_host_history[key] = history
+
     def _record_port_scan_history(self, port_id: int, scan_id: int, port_data: Dict[str, Any], is_new: bool = False):
         """Record port state at time of this scan"""
-        # Check if history entry already exists for this port+scan combination
-        existing_history = self._find_pending_history(PortScanHistory, port_id=port_id, scan_id=scan_id)
+        key = (port_id, scan_id)
+        # Pending row added earlier in THIS parse (O(1)); else a row from a
+        # prior flush, found by the uq_port_scan index.
+        existing_history = self._pending_port_history.get(key)
         if existing_history is None:
             existing_history = self.db.query(PortScanHistory).filter(
                 PortScanHistory.port_id == port_id,
                 PortScanHistory.scan_id == scan_id
             ).first()
-        
+
         service_info = {
             'service_name': port_data.get('service_name'),
             'service_product': port_data.get('service_product'),
@@ -560,7 +578,7 @@ class HostDeduplicationService:
             'service_method': port_data.get('service_method'),
             'service_conf': port_data.get('service_conf')
         }
-        
+
         if existing_history:
             # Update existing history entry
             existing_history.state_at_scan = port_data.get('state')
@@ -574,14 +592,8 @@ class HostDeduplicationService:
                 service_info=json.dumps(service_info) if any(service_info.values()) else None
             )
             self.db.add(history)
+            self._pending_port_history[key] = history
 
-    def _find_pending_history(self, model: Type[TModel], **attrs: Any) -> Optional[TModel]:
-        """Return a matching history row that hasn't been flushed yet."""
-        for pending in self.db.new:
-            if isinstance(pending, model) and all(getattr(pending, key, None) == value for key, value in attrs.items()):
-                return pending
-        return None
-    
     # NOTE (code review): the former ``update_scan_statistics`` was removed
     # here — it had no callers anywhere in the app, so Scan.new_hosts /
     # updated_hosts / ports_discovered were never populated by the dedup
