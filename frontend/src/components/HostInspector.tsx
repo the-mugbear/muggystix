@@ -946,6 +946,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   const toTimestamp = (value: string | null | undefined) =>
     value ? new Date(value).getTime() : 0;
+
+  // §9 — a Reviewed host has gone stale if a scan re-observed it AFTER the
+  // review (last_seen = newest observation; followInfo.updated_at = when the
+  // caller set Reviewed). Prompt a re-check rather than letting it silently age.
+  const reviewedAtTs = followStatus === 'reviewed' ? toTimestamp(followInfo?.updated_at) : 0;
+  const newEvidenceSinceReview = reviewedAtTs > 0 && toTimestamp(host.last_seen) > reviewedAtTs;
+  const daysSinceReview = newEvidenceSinceReview
+    ? Math.max(1, Math.round((toTimestamp(host.last_seen) - reviewedAtTs) / 86400000))
+    : 0;
+
   const sortedVulnerabilities = (host.vulnerabilities ?? []).slice().sort((a, b) => {
     const severityA = (a.severity ?? 'unknown').toLowerCase();
     const severityB = (b.severity ?? 'unknown').toLowerCase();
@@ -1261,6 +1271,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     {REVIEW_CONCLUSION_LABEL[followInfo.review_conclusion]
                       ?? followInfo.review_conclusion}
                   </span>
+                )}
+                {newEvidenceSinceReview && (
+                  <Badge variant="warning"
+                    title={`A scan re-observed this host ${daysSinceReview}d after you marked it Reviewed — re-open to re-check.`}>
+                    New evidence since review
+                  </Badge>
                 )}
                 {followInfo && (
                   <span className="text-caption text-muted-foreground">

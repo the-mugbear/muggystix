@@ -583,6 +583,22 @@ def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[
     return models.Host.id.in_(assigned)
 
 
+def stale_review_predicate(db: Session) -> ColumnElement:
+    """Hosts marked Reviewed (by anyone) that a scan has re-observed SINCE the
+    review — ``last_seen`` is later than the reviewed follow's timestamp, so the
+    review is stale and worth re-checking (§9 'new evidence since review').
+    A fresh follow row has updated_at=NULL (onupdate-only), so fall back to
+    created_at for the review time."""
+    hf = aliased(HostFollow)
+    review_ts = func.coalesce(hf.updated_at, hf.created_at)
+    return exists().where(
+        (hf.host_id == models.Host.id)
+        & (hf.status == FollowStatus.REVIEWED.value)
+        & (models.Host.last_seen.isnot(None))
+        & (models.Host.last_seen > review_ts)
+    )
+
+
 def scan_predicate(db: Session, scan_ids: Sequence[int], first_seen_only: bool = False) -> ColumnElement:
     """Host appears in any of the given scans; with ``first_seen_only`` the
     host must have been *first* discovered in one of them."""

@@ -137,3 +137,27 @@ def test_condition_sets_helpers_match_drilldown(db_session, test_project):
     assert HC.cleartext_host_ids(db_session, pid) == {s["clear"].id}
     assert HC.cert_issue_host_ids(db_session, pid) == {s["cert"].id}
     assert HC.weak_auth_host_ids(db_session, pid) == {s["weak"].id}
+
+
+def test_stale_review_matches_rescanned_after_review(client, db_session, test_project, test_user):
+    """has:stale_review (§9) — a Reviewed host re-observed by a scan AFTER the
+    review (last_seen > the reviewed follow's timestamp). Fresh reviews and
+    never-reviewed hosts are excluded."""
+    from app.db.models import HostFollow, FollowStatus
+    pid = test_project.id
+    now = datetime.now(timezone.utc)
+
+    stale = _host(db_session, pid, "10.5.0.1", last_seen=now)
+    db_session.add(HostFollow(
+        host_id=stale.id, user_id=test_user.id,
+        status=FollowStatus.REVIEWED, updated_at=now - timedelta(days=2),
+    ))
+    fresh = _host(db_session, pid, "10.5.0.2", last_seen=now - timedelta(days=5))
+    db_session.add(HostFollow(
+        host_id=fresh.id, user_id=test_user.id,
+        status=FollowStatus.REVIEWED, updated_at=now - timedelta(days=1),
+    ))
+    _host(db_session, pid, "10.5.0.3", last_seen=now)  # re-scanned but never reviewed
+    db_session.commit()
+
+    assert _ips(_q(client, pid, "has:stale_review")) == {"10.5.0.1"}

@@ -1,6 +1,6 @@
 {
-  "frontendVersion": "5.124.1",
-  "backendVersion": "2.221.0",
-  "buildTime": "2026-06-15T03:46:41.262Z",
-  "gitCommit": "dd09257d888731565792b264fa70c5f094a0c075"
+  "frontendVersion": "5.125.0",
+  "backendVersion": "2.222.0",
+  "buildTime": "2026-06-15T04:05:04.444Z",
+  "gitCommit": "5e341e0005b80e049af721bcf45d0ac1f7a0bd35"
 }

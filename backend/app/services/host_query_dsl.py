@@ -384,6 +384,8 @@ _HAS_KEYWORDS = {
                    "Latest TLS certificate is expired or self-signed."),
     "cleartext": (lambda ctx: P.cleartext_predicate(ctx.db),
                   "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),
+    "stale_review": (lambda ctx: P.stale_review_predicate(ctx.db),
+                     "Marked Reviewed, but re-scanned since the review (evidence changed)."),
 }
 
 _FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any"}
@@ -639,4 +641,5 @@ EXAMPLES: List[dict] = [
     {"label": "nginx servers", "q": "header:nginx OR tech:nginx"},
     {"label": "EOL OS, not yet reviewed", "q": "has:eol AND follow:none"},
     {"label": "SMB signing disabled", "q": "has:smb_unsigned"},
+    {"label": "Reviewed, evidence changed since", "q": "has:stale_review"},
 ]
