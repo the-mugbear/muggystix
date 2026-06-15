@@ -123,6 +123,11 @@ const ProjectStateCard: React.FC<{
   const sevTotal = vuln
     ? vuln.critical + vuln.high + vuln.medium + vuln.low + vuln.info
     : 0;
+  // Informational is excluded from the severity bar (it dwarfs real severities);
+  // the bar's denominator must be the non-info total so its segments fill the rail.
+  const actionableTotal = vuln
+    ? vuln.critical + vuln.high + vuln.medium + vuln.low
+    : 0;
   const busy = statsLoading || coverageLoading;
 
   return (
@@ -170,26 +175,32 @@ const ProjectStateCard: React.FC<{
               </span>
             </div>
 
-            {vuln && sevTotal > 0 ? (
+            {vuln && actionableTotal > 0 ? (
               <div>
                 <div className="mb-xs flex flex-wrap items-baseline justify-between gap-x-md gap-y-xxs">
                   <span className="text-metadata font-medium text-foreground">
                     Share of scanner-detected vulnerabilities
                   </span>
                   <span className="text-caption text-muted-foreground tabular-nums">
-                    {(vuln.total_vulnerabilities ?? sevTotal).toLocaleString()} total ·{' '}
+                    {actionableTotal.toLocaleString()} actionable ·{' '}
                     {(vuln.hosts_with_vulnerabilities ?? 0).toLocaleString()} hosts affected
                   </span>
                 </div>
                 <SeverityBar
                   variant="summary"
                   counts={vuln}
-                  total={sevTotal}
+                  total={actionableTotal}
                   ariaLabel="Share of scanner-detected vulnerabilities by severity"
-                  // info has no has_info_vulns host param — leave it passive.
+                  // SeverityBar never renders info, but the callback is typed
+                  // over all severities — guard so the type narrows to HostSeverity.
                   segmentHref={(sev) => (sev === 'info' ? null : buildHostsUrl({ severity: sev }))}
                 />
               </div>
+            ) : vuln && sevTotal > 0 ? (
+              <p className="text-metadata text-muted-foreground">
+                Only informational findings detected — no critical/high/medium/low
+                vulnerabilities to prioritise.
+              </p>
             ) : (
               <p className="text-metadata text-muted-foreground">
                 No vulnerabilities detected yet — upload a Nessus or OpenVAS scan to populate this.

@@ -37,7 +37,9 @@ const SITE_PALETTE = [
 type ColourMode = 'severity' | 'site';
 
 const worstSeverity = (s: PostureSite): Severity | null => {
-  for (const k of SEVERITY_ORDER) if ((s.exposure.by_severity[k] ?? 0) > 0) return k;
+  // Informational is excluded — a bubble coloured "info" is noise (every site
+  // has info findings); worst-severity means worst *actionable* severity.
+  for (const k of SEVERITY_ORDER) if (k !== 'info' && (s.exposure.by_severity[k] ?? 0) > 0) return k;
   return null;
 };
 

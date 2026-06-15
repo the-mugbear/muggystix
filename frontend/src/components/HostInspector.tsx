@@ -1207,18 +1207,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <strong className="text-foreground">{openPorts.length}</strong> open
                 <span className="opacity-70"> / {host.ports.length} ports</span>
               </button>
-              {host.vulnerability_summary && host.vulnerability_summary.total_vulnerabilities > 0 && (
-                <button type="button" onClick={() => scrollToSection('host-detail-vulnerabilities')}
-                  className="inline-flex items-center gap-sm rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  {(['critical', 'high', 'medium', 'low', 'info'] as const)
-                    .filter((k) => (host.vulnerability_summary?.[k] ?? 0) > 0)
-                    .map((k) => (
+              {host.vulnerability_summary && host.vulnerability_summary.total_vulnerabilities > 0 && (() => {
+                // Informational is excluded from the at-a-glance line — it dwarfs
+                // real severities. If a host has only info vulns, show a quiet count.
+                const sevs = (['critical', 'high', 'medium', 'low'] as const)
+                  .filter((k) => (host.vulnerability_summary?.[k] ?? 0) > 0);
+                return (
+                  <button type="button" onClick={() => scrollToSection('host-detail-vulnerabilities')}
+                    className="inline-flex items-center gap-sm rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                    {sevs.length === 0 ? (
+                      <span className="text-muted-foreground">
+                        <strong className="text-muted-foreground">{host.vulnerability_summary?.info ?? 0}</strong> informational
+                      </span>
+                    ) : sevs.map((k) => (
                       <span key={k}>
                         <strong style={{ color: SEVERITY_HSL[k] }}>{host.vulnerability_summary?.[k]}</strong>{' '}{k}
                       </span>
                     ))}
-                </button>
-              )}
+                  </button>
+                );
+              })()}
               {(host.web_interface_count ?? 0) > 0 && (
                 <button type="button" onClick={() => scrollToSection('host-detail-web')}
                   className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">

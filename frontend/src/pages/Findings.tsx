@@ -366,8 +366,9 @@ const Findings: React.FC = () => {
       </div>
 
       {/* Severity rollup — "how bad is this scope" at a glance (respects the
-          status/source filters, ignores severity + pagination). */}
-      {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).some((s) => sevCounts[s]) && (
+          status/source filters, ignores severity + pagination). Informational is
+          excluded from the bar, so gate on actionable severities too. */}
+      {(['critical', 'high', 'medium', 'low'] as FindingSeverity[]).some((s) => sevCounts[s]) && (
         <div className="mb-md max-w-2xl">
           <SeverityBar counts={sevCounts} variant="inline" />
         </div>

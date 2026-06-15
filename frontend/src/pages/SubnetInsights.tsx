@@ -427,17 +427,23 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
                 </p>
                 {s.exposure.active_findings === 0 ? (
                   <p className="text-caption text-muted-foreground">No active findings.</p>
-                ) : (
-                  <div className="flex flex-wrap gap-xxs">
-                    {(['critical', 'high', 'medium', 'low', 'info'] as const)
-                      .filter((sev) => s.exposure.by_severity[sev] > 0)
-                      .map((sev) => (
+                ) : (() => {
+                  // Informational excluded — it distorts the picture and isn't
+                  // actionable; show a quiet note if a subnet has only info.
+                  const sevs = (['critical', 'high', 'medium', 'low'] as const)
+                    .filter((sev) => s.exposure.by_severity[sev] > 0);
+                  return sevs.length === 0 ? (
+                    <p className="text-caption text-muted-foreground">Informational only.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-xxs">
+                      {sevs.map((sev) => (
                         <Badge key={sev} variant={SEVERITY_VARIANT[sev] as never}>
                           {s.exposure.by_severity[sev]} {sev}
                         </Badge>
                       ))}
-                  </div>
-                )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Neglect detail */}

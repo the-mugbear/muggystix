@@ -8,7 +8,8 @@
  *   inline   — 12px rail + a dot/count legend. For inside cards.
  *   compact  — ~10px rail, optional adjacent total, no legend. For table cells.
  *
- * Fixed order critical→high→medium→low→info; canonical theme tokens; outer
+ * Fixed order critical→high→medium→low (informational is excluded from every
+ * severity visual — see VISIBLE_SEVERITIES below); canonical theme tokens; outer
  * edges rounded (not every segment); 1px separators; in-segment counts only
  * when a segment is wide enough to hold them. No gradient/glow — the semantic
  * colours are already strong. Zero categories read as quiet text, never a
@@ -18,7 +19,7 @@ import React, { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
-  type Severity, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HSL, severityTotal,
+  type Severity, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HSL,
 } from '../../utils/severity';
 
 type Variant = 'summary' | 'inline' | 'compact';
@@ -40,6 +41,12 @@ interface SeverityBarProps {
   segmentHref?: (severity: Severity) => string | null;
 }
 
+// Severities rendered in every visual. Informational is deliberately omitted:
+// scanner "info" findings outnumber real ones by orders of magnitude and turn
+// any distribution into a wall of grey. Callers pass full counts (incl. info);
+// the bar simply never draws/counts it.
+const VISIBLE_SEVERITIES: Severity[] = SEVERITY_ORDER.filter((k) => k !== 'info');
+
 const HEIGHTS: Record<Variant, number> = { summary: 24, inline: 12, compact: 10 };
 // Min share before a count is drawn INSIDE its segment (else it'd clip).
 const IN_SEGMENT_MIN = 0.12;
@@ -60,8 +67,13 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
   const [active, setActive] = useState<Severity | null>(null);
   const titleId = useId();
 
-  const present = SEVERITY_ORDER.filter((k) => (counts[k] ?? 0) > 0);
-  const sum = severityTotal(counts);
+  // Informational severity is excluded from every severity VISUAL: scanner
+  // "info" findings vastly outnumber real ones and distort the distribution
+  // (a bar that's 95% grey info tells you nothing). The denominator is the
+  // non-info total so the shown segments fill the rail and percentages are of
+  // actionable findings. (Filters/counts elsewhere may still use info.)
+  const present = VISIBLE_SEVERITIES.filter((k) => (counts[k] ?? 0) > 0);
+  const sum = VISIBLE_SEVERITIES.reduce((acc, k) => acc + (counts[k] ?? 0), 0);
   const denom = total ?? sum;
   const height = HEIGHTS[variant];
   const label = ariaLabel
@@ -157,8 +169,8 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
   return (
     <div className={className}>
       {rail}
-      <div id={titleId} className="mt-sm grid grid-cols-2 gap-x-md gap-y-xs sm:grid-cols-3 lg:grid-cols-5">
-        {SEVERITY_ORDER.map((k) => {
+      <div id={titleId} className="mt-sm grid grid-cols-2 gap-x-md gap-y-xs sm:grid-cols-3 lg:grid-cols-4">
+        {VISIBLE_SEVERITIES.map((k) => {
           const n = counts[k] ?? 0;
           const pct = denom > 0 ? Math.round((n / denom) * 100) : 0;
           const zero = n === 0;
