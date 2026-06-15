@@ -256,3 +256,6 @@ all_container_logs.txt
 # in docker-compose.yml when test runs that also bind ./backend to /app.
 # Never the real file (real one lives at frontend/package-lock.json).
 /backend/frontend-package-lock.json
+
+# Oneoff planning docs
+suggestions.md.deploy-rollback-state

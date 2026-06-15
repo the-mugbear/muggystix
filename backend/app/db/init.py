@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
@@ -58,14 +60,52 @@ def _sync_schema_with_alembic() -> None:
     cfg.set_main_option("script_location", str(backend_root / "alembic"))
 
     tables = set(inspect(engine).get_table_names())
-    if "alembic_version" in tables:
-        command.upgrade(cfg, "head")
-    elif "users" in tables:
-        logger.info("Existing pre-Alembic schema detected — adopting it (stamp head)")
-        command.stamp(cfg, "head")
-    else:
-        logger.info("Empty database — building schema from Alembic head")
-        command.upgrade(cfg, "head")
+    try:
+        if "alembic_version" in tables:
+            command.upgrade(cfg, "head")
+        elif "users" in tables:
+            logger.info("Existing pre-Alembic schema detected — adopting it (stamp head)")
+            command.stamp(cfg, "head")
+        else:
+            logger.info("Empty database — building schema from Alembic head")
+            command.upgrade(cfg, "head")
+    except OperationalError:
+        # DB not ready (connection refused / still starting) — let the caller's
+        # retry loop handle it. NOT a migration defect.
+        raise
+    except Exception as exc:
+        # A genuine migration failure: a bad revision, or a migration that
+        # raised against real data (constraint violation, type mismatch). This
+        # is NOT transient — every boot crash-loops here until it's resolved.
+        # Surface ONE loud, actionable line instead of a buried Alembic
+        # traceback, then re-raise so the process still exits non-zero.  (B2-1)
+        #
+        # ``command.upgrade`` above ran Alembic's fileConfig, which disables
+        # existing loggers (the same damage _restore_app_logging undoes in the
+        # worker) — so by here our logger may be muted, and the process is
+        # about to crash before anything restores it.  Write straight to stderr
+        # so the message ALWAYS reaches ``docker compose logs``; also re-enable
+        # the logger and log through it for any handlers that survived.
+        msg = (
+            "DATABASE MIGRATION FAILED — schema left at revision %s (target: head). "
+            "This is a migration defect, not a transient DB-readiness error, so the "
+            "container will crash-loop until it is resolved. Recover by rolling back "
+            "to the previous build (scripts/deploy.sh -> 'Roll back to previous "
+            "build') and restoring the pre-deploy DB backup. Underlying error: %s"
+        ) % (_current_db_revision() or "unknown", exc)
+        print(f"CRITICAL: {msg}", file=sys.stderr, flush=True)
+        logger.disabled = False
+        logger.critical(msg)
+        raise
+
+
+def _current_db_revision() -> Optional[str]:
+    """Best-effort read of the DB's current Alembic revision, for diagnostics."""
+    try:
+        with engine.connect() as conn:
+            return conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:
+        return None
 
 
 def initialize_database() -> None:

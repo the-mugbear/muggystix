@@ -57,6 +57,19 @@ else
 fi
 
 # ------------------------------------------------------------------
+# Rollback support (B2-1)
+#
+# Option 1 rebuilds images in place (same tag), so a deploy whose boot
+# migration fails crash-loops with no prior image to revert to.  Before each
+# rebuild we (a) snapshot the running images to :rollback tags (cheap — a tag
+# is a ref, not a copy) and (b) take a pre-deploy DB backup, recording both in
+# a state file.  Option 7 re-points the snapshot tags and (prompted) restores
+# the backup.
+# ------------------------------------------------------------------
+ROLLBACK_STATE_FILE="$PROJECT_ROOT/.deploy-rollback-state"
+ROLLBACK_SERVICES="backend worker report-worker frontend"
+
+# ------------------------------------------------------------------
 # Preflight: required external commands.
 #
 # Without this check, missing tools surface only on the destructive
@@ -378,6 +391,147 @@ backup_config() {
 }
 
 # ------------------------------------------------------------------
+# Rollback helpers (B2-1)
+# ------------------------------------------------------------------
+
+# Snapshot the currently-running built images to :rollback tags and record the
+# original image ref per service, so option 7 can restore the prior build.
+# Best-effort: a first-ever deploy (no prior images) records nothing.
+snapshot_images_for_rollback() {
+    local tmp="${ROLLBACK_STATE_FILE}.tmp"
+    : > "$tmp"
+    local svc id ref count=0
+    for svc in $ROLLBACK_SERVICES; do
+        id="$($DC images -q "$svc" 2>/dev/null | head -1)"
+        if [[ -z "$id" ]]; then
+            continue
+        fi
+        # The compose image ref for this service — the non-rollback RepoTag.
+        ref="$(docker image inspect "$id" \
+            --format '{{range .RepoTags}}{{println .}}{{end}}' 2>/dev/null \
+            | grep -v '^bluestick-rollback-' | grep ':' | head -1)"
+        if [[ -z "$ref" ]]; then
+            continue
+        fi
+        if docker tag "$id" "bluestick-rollback-${svc}:previous" 2>/dev/null; then
+            echo "${svc}|${ref}" >> "$tmp"
+            count=$((count + 1))
+        fi
+    done
+    if [[ "$count" -gt 0 ]]; then
+        mv "$tmp" "$ROLLBACK_STATE_FILE"
+        print_info "Snapshotted $count image(s) for rollback (option 7 reverts them)."
+    else
+        rm -f "$tmp"
+    fi
+}
+
+# Take a pre-deploy DB backup and record its path in the state file so a
+# rollback can offer to restore the exact schema the old image expects.
+predeploy_db_backup() {
+    if [[ ! -x "scripts/backup-db.sh" ]]; then
+        print_warning "scripts/backup-db.sh not found — skipping pre-deploy DB backup."
+        return 0
+    fi
+    print_info "Taking a pre-deploy database backup..."
+    # Don't let a backup failure abort the deploy (set -e is on).
+    if ./scripts/backup-db.sh; then
+        local backup_dir dump
+        backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
+        dump="$(ls -t "$backup_dir"/nm-pgdump-*.dump 2>/dev/null | head -1)"
+        if [[ -n "$dump" ]]; then
+            echo "PREDEPLOY_DB_DUMP|${dump}" >> "$ROLLBACK_STATE_FILE"
+            print_info "Pre-deploy DB backup: $dump"
+        fi
+    else
+        print_warning "Pre-deploy DB backup failed — continuing, but rollback won't be able to restore the DB."
+    fi
+}
+
+# Probe /health INSIDE the backend container (it isn't port-exposed; only the
+# db/worker services have compose healthchecks). Returns 0 once the app serves
+# 200, i.e. migrations ran and uvicorn bound; 1 if it never comes up in time.
+wait_for_backend_healthy() {
+    local timeout="${1:-90}" elapsed=0
+    print_info "Waiting for the backend to become healthy (migrations + boot, up to ${timeout}s)..."
+    while [[ "$elapsed" -lt "$timeout" ]]; do
+        if $DC exec -T backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)" >/dev/null 2>&1; then
+            print_success "Backend is healthy (boot + migrations succeeded)."
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    return 1
+}
+
+# Re-point the :rollback image tags and (prompted) restore the pre-deploy DB
+# backup, then bring the stack back up WITHOUT rebuilding.
+rollback_to_previous() {
+    print_header "Roll Back to Previous Build"
+    if [[ ! -s "$ROLLBACK_STATE_FILE" ]]; then
+        print_error "No rollback snapshot found ($ROLLBACK_STATE_FILE)."
+        print_info "A snapshot is created automatically the next time you run option 1."
+        return 1
+    fi
+
+    local predeploy_dump="" reverted=0 line svc ref
+    while IFS='|' read -r svc ref; do
+        if [[ -z "$svc" ]]; then
+            continue
+        fi
+        if [[ "$svc" == "PREDEPLOY_DB_DUMP" ]]; then
+            predeploy_dump="$ref"
+            continue
+        fi
+        if docker image inspect "bluestick-rollback-${svc}:previous" >/dev/null 2>&1 && [[ -n "$ref" ]]; then
+            if docker tag "bluestick-rollback-${svc}:previous" "$ref" 2>/dev/null; then
+                print_info "Reverted ${svc} → ${ref}"
+                reverted=$((reverted + 1))
+            fi
+        else
+            print_warning "No snapshot image for ${svc}; leaving it as-is."
+        fi
+    done < "$ROLLBACK_STATE_FILE"
+
+    if [[ "$reverted" -eq 0 ]]; then
+        print_error "No snapshot images could be reverted."
+        return 1
+    fi
+
+    print_info "Restarting the stack on the previous images (no rebuild)..."
+    $DC up -d --no-build
+
+    # The previous image expects the previous schema; a migration that partially
+    # applied leaves the DB ahead of it. Offer to restore the pre-deploy backup.
+    if [[ -n "$predeploy_dump" && -f "$predeploy_dump" ]]; then
+        echo ""
+        print_warning "The previous build expects the PRE-deploy database schema."
+        print_warning "If the failed deploy applied a migration, restore the pre-deploy backup:"
+        echo "    $predeploy_dump"
+        echo -n "Restore the pre-deploy database backup now? [y/N] "
+        read -r restore_confirm
+        if [[ "$restore_confirm" == "y" || "$restore_confirm" == "Y" ]]; then
+            if [[ -x "scripts/restore-db.sh" ]]; then
+                ./scripts/restore-db.sh "$predeploy_dump"
+            else
+                print_error "scripts/restore-db.sh not found — restore manually:"
+                echo "    ./scripts/restore-db.sh \"$predeploy_dump\""
+            fi
+        else
+            print_info "Skipped DB restore. If the old build misbehaves, restore manually:"
+            echo "    ./scripts/restore-db.sh \"$predeploy_dump\""
+        fi
+    else
+        print_warning "No pre-deploy DB backup was recorded — if the failed deploy migrated the"
+        print_warning "schema, the previous build may error against it. Restore a backup manually."
+    fi
+
+    echo ""
+    print_success "Rollback complete. Verify with option 5 / your health checks."
+}
+
+# ------------------------------------------------------------------
 # Main menu
 # ------------------------------------------------------------------
 echo "=============================================="
@@ -400,7 +554,11 @@ echo ""
 echo "6) Back up .env + SSL to the parent folder"
 echo "   Stash environment config outside the project dir before a re-copy deploy"
 echo ""
-echo "Enter your choice (1-6): "
+echo "7) Roll back to previous build"
+echo "   Revert to the images snapshotted before the last option-1 deploy"
+echo "   (e.g. after a failed boot migration), with optional DB restore"
+echo ""
+echo "Enter your choice (1-7): "
 read -r DEPLOY_CHOICE
 
 case $DEPLOY_CHOICE in
@@ -410,6 +568,13 @@ case $DEPLOY_CHOICE in
         CONFIGURED_IP=$(get_configured_ip)
         ensure_ssl_certs "$CONFIGURED_IP"
         ensure_uploads_dir
+
+        # B2-1 — before rebuilding in place, snapshot the current images and
+        # take a DB backup so a deploy whose boot migration fails (crash-loop,
+        # no prior image) can be rolled back via option 7.
+        snapshot_images_for_rollback
+        predeploy_db_backup
+
         # CACHE_BUST forces the frontend builder to re-run npm run build
         # on every deploy.  Without it, Docker reuses the cached COPY +
         # build layers when the source dir hash hasn't changed since the
@@ -420,7 +585,19 @@ case $DEPLOY_CHOICE in
         # NOT busting is shipping a stale bundle and not knowing it.
         CACHE_BUST=$(date +%s) $DC up --build -d
 
-        print_success "Deployment complete!"
+        # Verify the backend actually came up (migrations ran, uvicorn bound).
+        # A failed boot migration crash-loops here; surface it with the
+        # rollback escape hatch instead of a silently-broken deploy.
+        if wait_for_backend_healthy; then
+            print_success "Deployment complete!"
+        else
+            echo ""
+            print_error "Backend did not become healthy — the boot migration may have failed."
+            print_warning "Check logs:   $DC logs backend | tail -n 50   (look for 'DATABASE MIGRATION FAILED')"
+            print_warning "Roll back:    re-run this script and choose option 7 (Roll back to previous build)"
+            echo ""
+            exit 1
+        fi
         echo ""
         echo "  Frontend: https://${CONFIGURED_IP:-localhost}"
         echo "  Backend:  https://${CONFIGURED_IP:-localhost}:8000"
@@ -600,8 +777,12 @@ case $DEPLOY_CHOICE in
         backup_config
         ;;
 
+    7)
+        rollback_to_previous
+        ;;
+
     *)
-        print_error "Invalid choice. Please select 1-6."
+        print_error "Invalid choice. Please select 1-7."
         exit 1
         ;;
 esac
