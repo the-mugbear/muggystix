@@ -4,6 +4,8 @@
 
 BlueStick's ingestion pipeline automatically detects and routes uploads to the correct parser. The table below summarises the current parser coverage and what your source tools need to export.
 
+> **Maintainers / power users:** [`PARSERS.md`](./PARSERS.md) documents exactly **which fields each parser extracts** and where they land in the schema, plus a step-by-step **guide to adding a new parser**.
+
 | Tool | Accepted Extensions | Parser Module | Notes |
 | --- | --- | --- | --- |
 | Nmap | `.xml` (normal), `.gnmap` (grepable) | `backend/app/parsers/nmap_parser.py`, `backend/app/parsers/gnmap_parser.py` | Use `-oX` for XML or `-oG` for GNMAP. Multi-host files are supported. |
