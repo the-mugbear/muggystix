@@ -31,7 +31,7 @@ from app.db import models
 from app.db.models import Annotation, FollowStatus, HostFollow, NoteStatus
 from app.db.models_agent import TestPlan, TestPlanEntry
 from app.db.models_auth import User
-from app.db.models_findings import Finding, FindingHost
+from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project
 from app.services.vulnerability_service import VulnerabilityService
 
@@ -694,3 +694,106 @@ def compute_my_findings(
         db.query(func.count(Finding.id)).filter(*base_filters).scalar() or 0
     )
     return MyFindingsResponse(items=items, total_open=total_open)
+
+
+# ---------------------------------------------------------------------------
+# My recent activity (§27) — a unified personal work history across entities,
+# answering "what did I do?" better than the authored-notes-only Recent Notes.
+# Each source is user-attributed + timestamped; we normalise to one event shape,
+# merge, and take the newest.  User-scoped + per-source limited, so it stays
+# cheap regardless of project size.
+# ---------------------------------------------------------------------------
+class ActivityEvent(BaseModel):
+    kind: str  # note | finding_created | finding_status | host_reviewed
+    at: datetime
+    summary: str
+    host_id: Optional[int] = None
+    note_id: Optional[int] = None
+    finding_id: Optional[int] = None
+    severity: Optional[str] = None
+
+
+class MyActivityResponse(BaseModel):
+    items: List[ActivityEvent] = Field(default_factory=list)
+
+
+def compute_my_activity(
+    db: Session, current_user: User, project: Project, limit: int = 20,
+) -> MyActivityResponse:
+    uid = current_user.id
+    pid = project.id
+    events: List[ActivityEvent] = []
+
+    # Notes authored by the caller.
+    for note, host in (
+        db.query(Annotation, models.Host)
+        .join(models.Host, Annotation.host_id == models.Host.id)
+        .filter(models.Host.project_id == pid, Annotation.user_id == uid)
+        .order_by(desc(Annotation.created_at))
+        .limit(limit)
+        .all()
+    ):
+        body = (note.body or "").strip()
+        preview = body.splitlines()[0][:80] if body else ""
+        events.append(ActivityEvent(
+            kind="note", at=note.created_at,
+            summary=f"Noted {host.ip_address}" + (f" — {preview}" if preview else ""),
+            host_id=host.id, note_id=note.id,
+        ))
+
+    # Findings the caller created / promoted.
+    for f in (
+        db.query(Finding)
+        .filter(Finding.project_id == pid, Finding.created_by_id == uid)
+        .order_by(desc(Finding.created_at))
+        .limit(limit)
+        .all()
+    ):
+        verb = "Created" if f.source == "manual" else "Promoted"
+        events.append(ActivityEvent(
+            kind="finding_created", at=f.created_at,
+            summary=f"{verb} finding: {f.title}", finding_id=f.id, severity=f.severity,
+        ))
+
+    # Finding dispositions the caller made (real transitions, not the create row).
+    for hist, f in (
+        db.query(FindingStatusHistory, Finding)
+        .join(Finding, FindingStatusHistory.finding_id == Finding.id)
+        .filter(
+            Finding.project_id == pid,
+            FindingStatusHistory.changed_by_id == uid,
+            FindingStatusHistory.from_status.isnot(None),
+        )
+        .order_by(desc(FindingStatusHistory.created_at))
+        .limit(limit)
+        .all()
+    ):
+        events.append(ActivityEvent(
+            kind="finding_status", at=hist.created_at,
+            summary=f"Marked {f.title} {hist.to_status.replace('_', ' ')}",
+            finding_id=f.id, severity=f.severity,
+        ))
+
+    # Hosts the caller marked Reviewed.  A fresh follow row has updated_at=NULL
+    # (it's onupdate-only), so fall back to created_at for the event time.
+    review_ts = func.coalesce(HostFollow.updated_at, HostFollow.created_at)
+    for follow, host in (
+        db.query(HostFollow, models.Host)
+        .join(models.Host, HostFollow.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id == pid,
+            HostFollow.user_id == uid,
+            HostFollow.status == FollowStatus.REVIEWED,
+        )
+        .order_by(desc(review_ts))
+        .limit(limit)
+        .all()
+    ):
+        events.append(ActivityEvent(
+            kind="host_reviewed", at=(follow.updated_at or follow.created_at),
+            summary=f"Reviewed {host.ip_address}", host_id=host.id,
+        ))
+
+    events = [e for e in events if e.at is not None]
+    events.sort(key=lambda e: e.at, reverse=True)
+    return MyActivityResponse(items=events[:limit])

@@ -40,12 +40,14 @@ from app.services.operations_read_service import (
     compute_my_assigned_notes,
     compute_my_recent_notes,
     compute_my_findings,
+    compute_my_activity,
     compute_team_review,
     MyAttentionResponse,
     MyTasksResponse,
     MyNotesResponse,
     MyRecentNotesResponse,
     MyFindingsResponse,
+    MyActivityResponse,
     TeamReviewResponse,
 )
 
@@ -234,3 +236,22 @@ def mark_workbench_seen(
         ts_column="last_viewed_at", ts_value=now,
     )
     return MarkSeenResponse(last_viewed_at=now)
+
+
+@router.get(
+    "/my-activity",
+    response_model=MyActivityResponse,
+    summary="The caller's recent work history across notes, findings, and reviews",
+)
+def get_my_activity(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """§27 personal work history — a unified, newest-first feed of what the
+    caller did (notes authored, findings created/promoted/dispositioned, hosts
+    reviewed). Separate from the batched workbench so it can grow its own
+    filters/pagination without bloating that call."""
+    limit = max(1, min(limit, 100))
+    return compute_my_activity(db, current_user, project, limit=limit)

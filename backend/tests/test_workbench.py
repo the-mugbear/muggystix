@@ -177,3 +177,31 @@ def test_workbench_returns_my_recent_authored_notes(client, db_session, test_pro
     assert recent, "expected the authored note in recent_notes"
     assert recent[0]["host_ip"] == "10.7.7.7"
     assert recent[0]["body_preview"].startswith("my latest investigation")
+
+
+def test_my_activity_feed_unifies_notes_findings_reviews(client, db_session, test_project, test_user):
+    """§27 — GET /workbench/my-activity merges the caller's notes, created
+    findings, and reviewed hosts into one newest-first feed with deep-links."""
+    pid = test_project.id
+    host = _make_host(db_session, pid, "10.3.0.1")
+    db_session.add(models.Annotation(
+        host_id=host.id, user_id=test_user.id, body="checked SMB signing", note_type="observation",
+    ))
+    db_session.commit()
+
+    fid = client.post(
+        f"/api/v1/projects/{pid}/findings", json={"title": "Weak TLS", "severity": "high"},
+    ).json()["id"]
+    assert client.post(
+        f"/api/v1/projects/{pid}/hosts/{host.id}/follow", json={"status": "reviewed"},
+    ).status_code == 200
+
+    items = client.get(_url(pid, "/my-activity")).json()["items"]
+    by_kind = {e["kind"]: e for e in items}
+    assert {"note", "finding_created", "host_reviewed"} <= set(by_kind)
+    assert by_kind["note"]["host_id"] == host.id and by_kind["note"]["note_id"] is not None
+    assert by_kind["finding_created"]["finding_id"] == fid
+    assert by_kind["host_reviewed"]["host_id"] == host.id
+    # Newest-first ordering.
+    ats = [e["at"] for e in items]
+    assert ats == sorted(ats, reverse=True)

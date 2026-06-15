@@ -267,6 +267,25 @@ export const markWorkbenchSeen = async (): Promise<{ last_viewed_at: string }> =
   return response.data;
 };
 
+// §27 — the caller's recent work history across notes, findings, and reviews.
+export type ActivityEventKind = 'note' | 'finding_created' | 'finding_status' | 'host_reviewed';
+export interface ActivityEvent {
+  kind: ActivityEventKind;
+  at: string;
+  summary: string;
+  host_id: number | null;
+  note_id: number | null;
+  finding_id: number | null;
+  severity: string | null;
+}
+export interface MyActivityResponse {
+  items: ActivityEvent[];
+}
+export const getMyActivity = async (limit = 20): Promise<MyActivityResponse> => {
+  const response = await api.get(`${p()}/workbench/my-activity?limit=${limit}`);
+  return response.data;
+};
+
 // --- New scans since last dashboard visit ---
 
 export interface NewScansSinceResponse {

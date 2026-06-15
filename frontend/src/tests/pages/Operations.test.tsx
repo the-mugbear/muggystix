@@ -68,6 +68,8 @@ vi.mock('../../services/api', () => ({
     },
   }),
   markWorkbenchSeen: vi.fn().mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' }),
+  // MyActivityCard (replaces RecentNotesCard) self-fetches this.
+  getMyActivity: vi.fn().mockResolvedValue({ items: [] }),
   getCurrentProjectId: vi.fn(() => 1),
   setCurrentProjectId: vi.fn(),
 }));
