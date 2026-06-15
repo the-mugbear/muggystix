@@ -102,3 +102,19 @@ def test_analyst_can_create_tag(member_client, db_session, test_project, member)
     resp = member_client.post(f"{_base(test_project)}/tags", json={"name": "prod"})
     assert resp.status_code == 201
     assert resp.json()["name"] == "prod"
+
+
+def test_require_project_role_rejects_unknown_role_at_construction():
+    """A typo'd role must fail LOUD when the dependency is built, not silently
+    grant access at request time.  ``check_permissions`` resolves an unknown
+    role to level 0 (gate passes for everyone), so the factory coerces to the
+    ``ProjectRole`` enum up front and ``ProjectRole("analist")`` raises."""
+    from app.api.deps import require_project_role
+    from app.db.models_project import ProjectRole
+
+    with pytest.raises(ValueError):
+        require_project_role("analist")  # typo
+
+    # The valid forms (enum and its string value) both construct cleanly.
+    require_project_role(ProjectRole.ANALYST)
+    require_project_role("analyst")

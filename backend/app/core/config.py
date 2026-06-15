@@ -189,16 +189,10 @@ class Settings:
     NESSUS_PLUGIN_OUTPUT_MAX_CHARS: int = int(
         os.getenv("NESSUS_PLUGIN_OUTPUT_MAX_CHARS", str(32 * 1024))
     )
-    
-    # Supported file extensions for scan uploads
-    ALLOWED_EXTENSIONS: List[str] = [
-        ".xml",     # Nmap XML, Masscan XML, Nessus XML
-        ".nessus",  # Nessus vulnerability scan files
-        ".gnmap",   # Nmap grepable format
-        ".json",    # Masscan JSON, Eyewitness JSON, NetExec JSON
-        ".csv",     # Eyewitness CSV, DNS records CSV
-        ".txt"      # Masscan list format, NetExec output
-    ]
+
+    # NOTE: the upload allowlist lives on the ingestion service
+    # (ALLOWED_UPLOAD_EXTENSIONS), enforced in create_job for every caller.
+    # The previously-dead copy here was removed in the review remediation.
 
     @property
     def SQLALCHEMY_CONNECT_ARGS(self) -> Dict[str, Any]:

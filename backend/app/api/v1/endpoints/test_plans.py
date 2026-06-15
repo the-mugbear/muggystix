@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.db.session import get_db
 from app.db.models import Host
 from app.db.models_auth import User, UserRole, APIKey
-from app.db.models_project import Project, ProjectMembership
+from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_agent import (
     Agent, AgentSession, AgentSessionWorkflow, TestPlan, TestPlanEntry,
     TestPlanHistory, TestPlanStatus,
@@ -162,7 +162,7 @@ def create_test_plan(
     body: UserPlanCreate,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     svc = TestPlanService(db)
     plan = svc.create_plan(
@@ -242,7 +242,7 @@ def generate_test_plan(
     request: Request,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Create a test plan and return an agent API key + instructions.
 
@@ -420,7 +420,7 @@ def add_test_plan_entries(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Add up to 500 entries to an existing test plan.
 
@@ -807,7 +807,7 @@ def approve_test_plan(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, project.id)
@@ -828,7 +828,7 @@ def reject_test_plan(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, project.id)
@@ -849,7 +849,7 @@ def archive_test_plan(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Abandon a plan — move any non-terminal plan to ARCHIVED.
 
@@ -886,7 +886,7 @@ def rotate_test_plan_key(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Issue a new plaintext API key for ``plan_id`` and revoke prior keys.
 
@@ -951,7 +951,7 @@ def resume_plan_generation(
     request: Request = None,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Re-mint a fresh agent key and rebuild the plan-generation
     instructions block for a draft plan whose agent went quiet.
@@ -1027,7 +1027,7 @@ def update_test_plan_metadata(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Edit a plan's title and/or description.
 
@@ -1081,7 +1081,7 @@ def update_test_plan_entry(
     entry_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, project.id)
@@ -1639,7 +1639,7 @@ def delete_test_plan(
     plan_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    _user: User = Depends(require_project_role("analyst")),
+    _user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Delete a test plan and cascade-delete its entries and history.
 
@@ -1812,7 +1812,7 @@ def execute_test_plan(
     request: Request = None,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Create an execution session and return an agent API key + instructions.
 
@@ -1957,7 +1957,7 @@ def resume_execution_session(
     request: Request = None,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Re-mint an agent API key for an existing, non-terminal execution session.
 
@@ -2148,7 +2148,7 @@ def export_test_plan_execution_report(
     ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Generate and download a test plan execution report.
 

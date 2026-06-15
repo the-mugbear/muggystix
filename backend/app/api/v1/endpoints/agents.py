@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import APIKey
 from app.db.models_agent import Agent
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_project, is_project_admin, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
 from app.db.models_auth import User
@@ -117,7 +117,7 @@ def create_agent(
     # /test-plans/* endpoints.  Restricting key creation closes that
     # privilege-escalation path; existing agent ownership semantics
     # (owner-or-project-admin can update/rotate) are unchanged.
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     # One agent per user per project
     existing = db.query(Agent).filter(

@@ -13,13 +13,16 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
-from app.services.ingestion_service import ingestion_service
+from app.services.ingestion_service import ingestion_service, ALLOWED_UPLOAD_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
-ALLOWED_EXTENSIONS = {'.xml', '.json', '.jsonl', '.csv', '.txt', '.gnmap', '.nessus', '.zip'}
+# Single source of truth lives on the ingestion service (enforced in
+# create_job for every caller).  Kept here as an alias so this path can still
+# reject early, before touching disk, with a friendly message.
+ALLOWED_EXTENSIONS = ALLOWED_UPLOAD_EXTENSIONS
 
 
 class CancelJobResponse(BaseModel):

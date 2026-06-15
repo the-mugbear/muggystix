@@ -289,3 +289,17 @@ def test_unrecognized_agent_session_workflow_denied(
     )
     assert resp.status_code == 403, resp.text
     assert "unrecognized workflow" in resp.json()["detail"].lower()
+
+
+def test_recon_upload_rejects_disallowed_extension(client, recon_key):
+    """The recon upload reaches ingestion_service.create_job directly, NOT via
+    the JWT /upload path that historically owned the ALLOWED_EXTENSIONS check.
+    create_job now enforces the allowlist for every caller, so an arbitrary
+    extension is rejected (400) before anything lands on disk."""
+    resp = client.post(
+        "/api/v1/agent/recon/upload",
+        headers={"X-API-Key": recon_key},
+        files={"file": ("payload.exe", b"MZ\x90\x00not a scan", "application/octet-stream")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "file type not allowed" in resp.json()["detail"].lower()

@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.db.models_agent import Agent, TestPlan
 from app.api.deps import get_current_project, require_project_role
 
@@ -54,7 +54,7 @@ def export_test_plan_bundle(
     request: Request = None,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Package an approved plan into a downloadable ZIP bundle.
 
@@ -134,7 +134,7 @@ async def import_test_plan_results(
     file: UploadFile = File(..., description="The results.json file produced by the remote agent"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role("analyst")),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     """Apply a remote agent's results file to its execution session.
 

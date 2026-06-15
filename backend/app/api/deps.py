@@ -575,12 +575,21 @@ def is_project_admin(db: Session, project_id: int, user: User) -> bool:
     return membership is not None and check_permissions(membership.role, ProjectRole.ADMIN)
 
 
-def require_project_role(required_role: str):
+def require_project_role(required_role: "ProjectRole | str"):
     """Dependency factory that checks per-project role.
 
     Global admins bypass. Otherwise the user's ProjectMembership.role
     is checked against the role hierarchy.
+
+    The argument is coerced to ``ProjectRole`` HERE, at factory-construction
+    (import) time.  A typo'd role would otherwise be silent and dangerous:
+    ``check_permissions`` looks the required role up in a hierarchy dict with
+    ``.get(role, 0)``, so an unknown string yields required-level 0 and the
+    gate passes for *everyone* (fails open).  Coercing raises ``ValueError``
+    at import instead, so a bad role can never reach a request.
     """
+    required = ProjectRole(required_role)
+
     def checker(
         project_id: int = Path(..., gt=0),
         db: Session = Depends(get_db),
@@ -597,10 +606,10 @@ def require_project_role(required_role: str):
         if not membership:
             raise HTTPException(status_code=403, detail="Not a member of this project")
 
-        if not check_permissions(membership.role, required_role):
+        if not check_permissions(membership.role, required.value):
             raise HTTPException(
                 status_code=403,
-                detail=f"Insufficient project role. Required: {required_role}",
+                detail=f"Insufficient project role. Required: {required.value}",
             )
         return current_user
 

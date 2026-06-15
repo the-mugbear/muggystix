@@ -35,6 +35,15 @@ from app.services.parse_error_service import log_parse_error
 
 logger = logging.getLogger(__name__)
 
+# Canonical upload allowlist — the single source of truth for which file
+# extensions ingestion accepts.  Enforced inside ``create_job`` so EVERY
+# caller passes through it (the JWT /upload path AND the agent recon upload,
+# which reaches create_job directly).  ``upload.py`` re-exports this for its
+# early, pre-disk 400.
+ALLOWED_UPLOAD_EXTENSIONS = frozenset(
+    {".xml", ".json", ".jsonl", ".csv", ".txt", ".gnmap", ".nessus", ".zip"}
+)
+
 # Thread-local storage for the active ingestion job, enabling parsers to
 # report heartbeat/progress without needing a direct reference to the service.
 _active_job = threading.local()
@@ -140,6 +149,16 @@ class IngestionService:
         options: Optional[Dict[str, object]] = None,
     ) -> IngestionJob:
         """Persist an upload to disk and register an ingestion job."""
+        # Allowlist the extension here — not just on the JWT /upload path —
+        # so the agent recon upload (which calls create_job directly) can't
+        # land an arbitrary-extension file on disk.  ValueError surfaces as a
+        # 400 in every caller's handler.
+        filename = upload.filename or ""
+        if not any(filename.lower().endswith(ext) for ext in ALLOWED_UPLOAD_EXTENSIONS):
+            raise ValueError(
+                "File type not allowed. Supported types: "
+                + ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
+            )
         job_token = uuid4().hex
         job_dir = self._storage_root / job_token
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -406,9 +425,9 @@ class IngestionService:
                 raise ValueError(
                     f"File extension {ext} expects text content but file contains NUL bytes."
                 )
-        # Unknown extensions fall through — upload_scan_file already
-        # enforces ALLOWED_EXTENSIONS, so anything reaching here is one
-        # of the known-good types.
+        # Unknown extensions fall through — create_job enforces
+        # ALLOWED_UPLOAD_EXTENSIONS before we get here, so anything reaching
+        # this point is one of the known-good types.
 
     async def _write_upload(self, upload: UploadFile, destination: Path) -> int:
         """Stream an upload to disk in chunks, returning written size.
