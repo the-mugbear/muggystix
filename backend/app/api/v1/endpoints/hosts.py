@@ -373,7 +373,7 @@ def get_hosts_v2(
     # 500 to bound the worst case while staying generous for normal use.
     limit: int = Query(100, ge=1, le=500),
     include_total: bool = Query(True, description="Include the total number of matching hosts"),
-    sort_by: str = Query("critical_vulns", pattern="^(critical_vulns|high_vulns|open_ports|note_count|discovery_count|ip_address|hostname|last_seen)$"),
+    sort_by: str = Query("critical_vulns", pattern="^(critical_vulns|high_vulns|exploitable_vulns|open_ports|note_count|discovery_count|ip_address|hostname|last_seen)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

@@ -342,6 +342,17 @@ def apply_host_sorting(query, sort_by: str, sort_order: str):
             ])
         return _subquery_cache["high_vulns"]
 
+    def _exploitable_vulns():
+        # Mirrors the has_exploit_available filter + the serialized
+        # exploitable_count: hosts with a known-exploitable vuln first. This is
+        # the triage question the Attention column is built around.
+        if "exploitable_vulns" not in _subquery_cache:
+            _subquery_cache["exploitable_vulns"] = make_correlated_subquery([
+                Vulnerability.host_id == models.Host.id,
+                Vulnerability.exploitable.is_(True),
+            ])
+        return _subquery_cache["exploitable_vulns"]
+
     # Sort IPs by numeric/octet order, not lexicographically (string order puts
     # 10.0.0.10 before 10.0.0.2 and 10.x before 9.x). Postgres' inet type orders
     # correctly (and handles IPv6); SQLite (tests) has no inet, so it falls back
@@ -358,6 +369,7 @@ def apply_host_sorting(query, sort_by: str, sort_order: str):
         "discovery_count": _discovery_count,
         "critical_vulns": _critical_vulns,
         "high_vulns": _high_vulns,
+        "exploitable_vulns": _exploitable_vulns,
         "last_seen": lambda: func.coalesce(models.Host.last_seen, models.Host.first_seen),
     }
 

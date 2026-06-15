@@ -76,6 +76,34 @@ const CopyIpButton: React.FC<{ ip: string }> = ({ ip }) => {
   );
 };
 
+// Compact liveness indicator for the IP cell (B3-1).  host.state was only
+// visible in the inspector / expanded sub-row, so the table couldn't answer
+// "is this thing even alive?" — and /operations itself notes masscan/naabu/DNS
+// often leave it unknown.  Non-interactive (the IP cell is a button, so no
+// nested interactive el): a coloured dot + a title.  Mirrors stateBadgeClass:
+// up=success, down=destructive, unknown/absent=hollow muted ring.
+const StateDot: React.FC<{ state: string | null | undefined }> = ({ state }) => {
+  const cls =
+    state === 'up'
+      ? 'bg-success'
+      : state === 'down'
+        ? 'bg-destructive'
+        : 'border border-muted-foreground/50';
+  const title =
+    state === 'up'
+      ? 'State: up — a scanner confirmed this host responding'
+      : state === 'down'
+        ? 'State: down — a scanner reported this host not responding'
+        : 'State: unknown — liveness not confirmed (e.g. masscan / naabu / DNS)';
+  return (
+    <span
+      className={cn('mt-1 inline-block size-2 shrink-0 rounded-full', cls)}
+      title={title}
+      aria-label={title}
+    />
+  );
+};
+
 /**
  * Hosts-table column definitions extracted from Hosts.tsx
  * (v2.43.0 — MONO-1).  Pre-extraction this was a 166-line `useMemo`
@@ -456,6 +484,7 @@ export function useHostColumns({
           return (
             <div className="min-w-0">
               <div className="flex min-w-0 items-start gap-xs">
+                <StateDot state={host.state} />
                 {opener}
                 <div className="flex shrink-0 items-center gap-xxs pt-px">
                   <CopyIpButton ip={host.ip_address} />

@@ -130,6 +130,7 @@ import HostInspector from '../components/HostInspector';
 
 type HostSortOption =
   | 'critical_desc'
+  | 'exploitable_desc'
   | 'open_ports_desc'
   | 'notes_desc'
   | 'discoveries_desc'
@@ -540,6 +541,7 @@ export default function Hosts() {
     if (filters.query?.trim()) params.q = filters.query.trim();
     params.sort_by = ({
       critical_desc: 'critical_vulns',
+      exploitable_desc: 'exploitable_vulns',
       open_ports_desc: 'open_ports',
       notes_desc: 'note_count',
       discoveries_desc: 'discovery_count',
@@ -886,6 +888,7 @@ export default function Hosts() {
       // encoded in the HostSortOption itself, so sort_by alone is enough.
       const reverseSort: Record<string, HostSortOption> = {
         critical_vulns: 'critical_desc',
+        exploitable_vulns: 'exploitable_desc',
         open_ports: 'open_ports_desc',
         note_count: 'notes_desc',
         discovery_count: 'discoveries_desc',
@@ -2001,6 +2004,7 @@ export default function Hosts() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="critical_desc">Critical vulnerabilities</SelectItem>
+                    <SelectItem value="exploitable_desc">Exploitable first</SelectItem>
                     <SelectItem value="open_ports_desc">Open ports</SelectItem>
                     <SelectItem value="discoveries_desc">Most discoveries</SelectItem>
                     <SelectItem value="notes_desc">Most notes</SelectItem>
