@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, String
 from sqlalchemy.orm import Session
@@ -245,13 +245,21 @@ def mark_workbench_seen(
 )
 def get_my_activity(
     limit: int = 20,
+    kinds: Optional[str] = Query(
+        None, description="Comma list of event kinds to include: note, finding_created, finding_status, host_reviewed.",
+    ),
+    days: Optional[int] = Query(None, ge=1, le=3650, description="Only events within the last N days."),
+    search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring (note body, finding title, or host ip/hostname)."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
     """§27 personal work history — a unified, newest-first feed of what the
     caller did (notes authored, findings created/promoted/dispositioned, hosts
-    reviewed). Separate from the batched workbench so it can grow its own
-    filters/pagination without bloating that call."""
+    reviewed), with optional kind / date-range / search filters. Separate from
+    the batched workbench so it can grow without bloating that call."""
     limit = max(1, min(limit, 100))
-    return compute_my_activity(db, current_user, project, limit=limit)
+    kind_set = {k.strip() for k in kinds.split(",") if k.strip()} if kinds else None
+    return compute_my_activity(
+        db, current_user, project, limit=limit, kinds=kind_set, days=days, search=search,
+    )

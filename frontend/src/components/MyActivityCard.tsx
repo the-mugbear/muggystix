@@ -8,14 +8,27 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  CheckCircle2, Loader2, MessageSquare, RefreshCw, ShieldAlert,
+  CheckCircle2, Loader2, MessageSquare, RefreshCw, Search, ShieldAlert,
 } from 'lucide-react';
 
 import { getMyActivity, type ActivityEvent, type ActivityEventKind } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
 import { Alert, AlertDescription } from './ui/alert';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from './ui/select';
+
+// Coarse type filter → the backend kind set.
+type TypeFilter = 'all' | 'notes' | 'findings' | 'reviews';
+const TYPE_KINDS: Record<TypeFilter, string | undefined> = {
+  all: undefined,
+  notes: 'note',
+  findings: 'finding_created,finding_status',
+  reviews: 'host_reviewed',
+};
 
 const KIND_ICON: Record<ActivityEventKind, typeof MessageSquare> = {
   note: MessageSquare,
@@ -63,16 +76,33 @@ export const MyActivityCard: React.FC = () => {
   const [events, setEvents] = React.useState<ActivityEvent[] | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = React.useState<TypeFilter>('all');
+  const [days, setDays] = React.useState<'all' | '7' | '30'>('all');
+  const [searchInput, setSearchInput] = React.useState('');
+  const [search, setSearch] = React.useState('');
+
+  // Debounce the free-text box so typing doesn't refetch per keystroke.
+  React.useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   const load = React.useCallback(() => {
     setLoading(true);
-    getMyActivity(20)
+    getMyActivity({
+      limit: 20,
+      kinds: TYPE_KINDS[typeFilter],
+      days: days === 'all' ? undefined : Number(days),
+      search: search || undefined,
+    })
       .then((res) => { setEvents(res.items); setError(null); })
       .catch((err) => setError(formatApiError(err, 'Failed to load your activity.')))
       .finally(() => setLoading(false));
-  }, []);
+  }, [typeFilter, days, search]);
 
   React.useEffect(() => { load(); }, [load]);
+
+  const hasFilters = typeFilter !== 'all' || days !== 'all' || search !== '';
 
   // Group consecutive events by day (the feed is already newest-first).
   const groups = React.useMemo(() => {
@@ -94,6 +124,38 @@ export const MyActivityCard: React.FC = () => {
           What you’ve worked on — notes, findings, and reviews. Pick up where you left off.
         </p>
 
+        {/* Recall filters (§27): narrow by type / recency / free text. */}
+        <div className="mb-sm flex flex-wrap items-center gap-xs">
+          <div className="relative min-w-40 flex-1">
+            <Search className="pointer-events-none absolute left-sm top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+            <Input
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search my work…"
+              aria-label="Search my activity"
+              className="h-8 pl-lg text-caption"
+            />
+          </div>
+          <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as TypeFilter)}>
+            <SelectTrigger className="h-8 w-28 text-caption" aria-label="Activity type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              <SelectItem value="notes">Notes</SelectItem>
+              <SelectItem value="findings">Findings</SelectItem>
+              <SelectItem value="reviews">Reviews</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={days} onValueChange={(v) => setDays(v as 'all' | '7' | '30')}>
+            <SelectTrigger className="h-8 w-24 text-caption" aria-label="Time range"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any time</SelectItem>
+              <SelectItem value="7">7 days</SelectItem>
+              <SelectItem value="30">30 days</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         {loading && !events ? (
           <div className="flex items-center gap-xs" role="status" aria-live="polite">
             <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
@@ -110,7 +172,9 @@ export const MyActivityCard: React.FC = () => {
           </Alert>
         ) : (events?.length ?? 0) === 0 ? (
           <p className="text-metadata text-muted-foreground">
-            No recent activity yet — add a note, review a host, or promote a finding to see it here.
+            {hasFilters
+              ? 'No activity matches these filters.'
+              : 'No recent activity yet — add a note, review a host, or promote a finding to see it here.'}
           </p>
         ) : (
           <div className="flex flex-col gap-sm">

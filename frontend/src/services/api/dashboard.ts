@@ -281,8 +281,14 @@ export interface ActivityEvent {
 export interface MyActivityResponse {
   items: ActivityEvent[];
 }
-export const getMyActivity = async (limit = 20): Promise<MyActivityResponse> => {
-  const response = await api.get(`${p()}/workbench/my-activity?limit=${limit}`);
+export const getMyActivity = async (
+  params?: { limit?: number; kinds?: string; days?: number; search?: string },
+): Promise<MyActivityResponse> => {
+  const sp = new URLSearchParams({ limit: String(params?.limit ?? 20) });
+  if (params?.kinds) sp.set('kinds', params.kinds);
+  if (params?.days) sp.set('days', String(params.days));
+  if (params?.search) sp.set('search', params.search);
+  const response = await api.get(`${p()}/workbench/my-activity?${sp.toString()}`);
   return response.data;
 };
 

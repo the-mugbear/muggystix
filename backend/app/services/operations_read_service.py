@@ -20,7 +20,7 @@ cycle and the aggregations are unit-testable without a request.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -717,82 +717,113 @@ class MyActivityResponse(BaseModel):
     items: List[ActivityEvent] = Field(default_factory=list)
 
 
+ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed"}
+
+
 def compute_my_activity(
     db: Session, current_user: User, project: Project, limit: int = 20,
+    kinds: Optional[set] = None, days: Optional[int] = None,
+    search: Optional[str] = None,
 ) -> MyActivityResponse:
+    """The caller's recent work history.  Optional filters (§27 recall):
+    ``kinds`` restricts the event types, ``days`` bounds how far back, and
+    ``search`` is a case-insensitive substring matched per-source (note body,
+    finding title, or host ip/hostname)."""
     uid = current_user.id
     pid = project.id
+    want = (kinds & ACTIVITY_KINDS) if kinds else ACTIVITY_KINDS
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+        if days and days > 0 else None
+    )
+    needle = f"%{search.strip()}%" if search and search.strip() else None
     events: List[ActivityEvent] = []
 
     # Notes authored by the caller.
-    for note, host in (
-        db.query(Annotation, models.Host)
-        .join(models.Host, Annotation.host_id == models.Host.id)
-        .filter(models.Host.project_id == pid, Annotation.user_id == uid)
-        .order_by(desc(Annotation.created_at))
-        .limit(limit)
-        .all()
-    ):
-        body = (note.body or "").strip()
-        preview = body.splitlines()[0][:80] if body else ""
-        events.append(ActivityEvent(
-            kind="note", at=note.created_at,
-            summary=f"Noted {host.ip_address}" + (f" — {preview}" if preview else ""),
-            host_id=host.id, note_id=note.id,
-        ))
+    if "note" in want:
+        q = (
+            db.query(Annotation, models.Host)
+            .join(models.Host, Annotation.host_id == models.Host.id)
+            .filter(models.Host.project_id == pid, Annotation.user_id == uid)
+        )
+        if cutoff is not None:
+            q = q.filter(Annotation.created_at >= cutoff)
+        if needle is not None:
+            q = q.filter(or_(
+                Annotation.body.ilike(needle),
+                models.Host.ip_address.ilike(needle),
+                models.Host.hostname.ilike(needle),
+            ))
+        for note, host in q.order_by(desc(Annotation.created_at)).limit(limit).all():
+            body = (note.body or "").strip()
+            preview = body.splitlines()[0][:80] if body else ""
+            events.append(ActivityEvent(
+                kind="note", at=note.created_at,
+                summary=f"Noted {host.ip_address}" + (f" — {preview}" if preview else ""),
+                host_id=host.id, note_id=note.id,
+            ))
 
     # Findings the caller created / promoted.
-    for f in (
-        db.query(Finding)
-        .filter(Finding.project_id == pid, Finding.created_by_id == uid)
-        .order_by(desc(Finding.created_at))
-        .limit(limit)
-        .all()
-    ):
-        verb = "Created" if f.source == "manual" else "Promoted"
-        events.append(ActivityEvent(
-            kind="finding_created", at=f.created_at,
-            summary=f"{verb} finding: {f.title}", finding_id=f.id, severity=f.severity,
-        ))
+    if "finding_created" in want:
+        q = db.query(Finding).filter(Finding.project_id == pid, Finding.created_by_id == uid)
+        if cutoff is not None:
+            q = q.filter(Finding.created_at >= cutoff)
+        if needle is not None:
+            q = q.filter(Finding.title.ilike(needle))
+        for f in q.order_by(desc(Finding.created_at)).limit(limit).all():
+            verb = "Created" if f.source == "manual" else "Promoted"
+            events.append(ActivityEvent(
+                kind="finding_created", at=f.created_at,
+                summary=f"{verb} finding: {f.title}", finding_id=f.id, severity=f.severity,
+            ))
 
     # Finding dispositions the caller made (real transitions, not the create row).
-    for hist, f in (
-        db.query(FindingStatusHistory, Finding)
-        .join(Finding, FindingStatusHistory.finding_id == Finding.id)
-        .filter(
-            Finding.project_id == pid,
-            FindingStatusHistory.changed_by_id == uid,
-            FindingStatusHistory.from_status.isnot(None),
+    if "finding_status" in want:
+        q = (
+            db.query(FindingStatusHistory, Finding)
+            .join(Finding, FindingStatusHistory.finding_id == Finding.id)
+            .filter(
+                Finding.project_id == pid,
+                FindingStatusHistory.changed_by_id == uid,
+                FindingStatusHistory.from_status.isnot(None),
+            )
         )
-        .order_by(desc(FindingStatusHistory.created_at))
-        .limit(limit)
-        .all()
-    ):
-        events.append(ActivityEvent(
-            kind="finding_status", at=hist.created_at,
-            summary=f"Marked {f.title} {hist.to_status.replace('_', ' ')}",
-            finding_id=f.id, severity=f.severity,
-        ))
+        if cutoff is not None:
+            q = q.filter(FindingStatusHistory.created_at >= cutoff)
+        if needle is not None:
+            q = q.filter(Finding.title.ilike(needle))
+        for hist, f in q.order_by(desc(FindingStatusHistory.created_at)).limit(limit).all():
+            events.append(ActivityEvent(
+                kind="finding_status", at=hist.created_at,
+                summary=f"Marked {f.title} {hist.to_status.replace('_', ' ')}",
+                finding_id=f.id, severity=f.severity,
+            ))
 
     # Hosts the caller marked Reviewed.  A fresh follow row has updated_at=NULL
     # (it's onupdate-only), so fall back to created_at for the event time.
-    review_ts = func.coalesce(HostFollow.updated_at, HostFollow.created_at)
-    for follow, host in (
-        db.query(HostFollow, models.Host)
-        .join(models.Host, HostFollow.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == pid,
-            HostFollow.user_id == uid,
-            HostFollow.status == FollowStatus.REVIEWED,
+    if "host_reviewed" in want:
+        review_ts = func.coalesce(HostFollow.updated_at, HostFollow.created_at)
+        q = (
+            db.query(HostFollow, models.Host)
+            .join(models.Host, HostFollow.host_id == models.Host.id)
+            .filter(
+                models.Host.project_id == pid,
+                HostFollow.user_id == uid,
+                HostFollow.status == FollowStatus.REVIEWED,
+            )
         )
-        .order_by(desc(review_ts))
-        .limit(limit)
-        .all()
-    ):
-        events.append(ActivityEvent(
-            kind="host_reviewed", at=(follow.updated_at or follow.created_at),
-            summary=f"Reviewed {host.ip_address}", host_id=host.id,
-        ))
+        if cutoff is not None:
+            q = q.filter(review_ts >= cutoff)
+        if needle is not None:
+            q = q.filter(or_(
+                models.Host.ip_address.ilike(needle),
+                models.Host.hostname.ilike(needle),
+            ))
+        for follow, host in q.order_by(desc(review_ts)).limit(limit).all():
+            events.append(ActivityEvent(
+                kind="host_reviewed", at=(follow.updated_at or follow.created_at),
+                summary=f"Reviewed {host.ip_address}", host_id=host.id,
+            ))
 
     events = [e for e in events if e.at is not None]
     events.sort(key=lambda e: e.at, reverse=True)

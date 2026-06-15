@@ -205,3 +205,26 @@ def test_my_activity_feed_unifies_notes_findings_reviews(client, db_session, tes
     # Newest-first ordering.
     ats = [e["at"] for e in items]
     assert ats == sorted(ats, reverse=True)
+
+
+def test_my_activity_filters(client, db_session, test_project, test_user):
+    """§27 recall filters — kinds restricts type, search matches title/body."""
+    pid = test_project.id
+    host = _make_host(db_session, pid, "10.3.9.9")
+    db_session.add(models.Annotation(
+        host_id=host.id, user_id=test_user.id, body="examined kerberos", note_type="observation",
+    ))
+    db_session.commit()
+    client.post(f"/api/v1/projects/{pid}/findings", json={"title": "Weak TLS cipher", "severity": "high"})
+
+    base = _url(pid, "/my-activity")
+    notes_only = client.get(f"{base}?kinds=note").json()["items"]
+    assert notes_only and all(e["kind"] == "note" for e in notes_only)
+
+    tls = client.get(f"{base}?search=weak%20tls").json()["items"]
+    assert [e["kind"] for e in tls] == ["finding_created"]
+
+    kerb = client.get(f"{base}?search=kerberos").json()["items"]
+    assert [e["kind"] for e in kerb] == ["note"]
+
+    assert client.get(f"{base}?search=zzznomatch").json()["items"] == []
