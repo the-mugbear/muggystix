@@ -258,4 +258,7 @@ all_container_logs.txt
 /backend/frontend-package-lock.json
 
 # Oneoff planning docs
-suggestions.md.deploy-rollback-state
+suggestions.md
+
+# deploy.sh rollback snapshot state (B2-1) — operator-local, per-deploy
+.deploy-rollback-state
