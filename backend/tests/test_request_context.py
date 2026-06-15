@@ -13,6 +13,22 @@ def test_inbound_request_id_is_honored(client):
     assert r.headers.get("x-request-id") == "corr-abc-123"
 
 
+def test_api_responses_are_no_store(client):
+    """Every /api/ response must carry Cache-Control: no-store so a browser/proxy
+    can't serve a stale host list (e.g. a 'Not Reviewed' default showing hosts
+    that were just reviewed). Even a 404 routes through the middleware, so the
+    header presence + scoping is what we pin — no auth/data setup needed."""
+    r = client.get("/api/v1/__definitely_not_a_route__")
+    assert r.headers.get("cache-control") == "no-store"
+
+
+def test_non_api_responses_are_not_forced_no_store(client):
+    """The header is scoped to the data API; /health (served at root, not under
+    /api) is left alone."""
+    r = client.get("/health")
+    assert r.headers.get("cache-control") != "no-store"
+
+
 def test_dispatch_returns_split_result_no_targets(db_session, test_project):
     res = WebhookDispatcher(db_session).dispatch(
         project_id=test_project.id, event="note_mention", title="t",

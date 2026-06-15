@@ -33,6 +33,14 @@ _access_logger = logging.getLogger("app.access")
 
 _REQUEST_ID_HEADER = b"x-request-id"
 _SERVER_TIMING_HEADER = b"server-timing"
+_CACHE_CONTROL_HEADER = b"cache-control"
+# Authenticated API responses carry per-project, often-mutating data (host
+# lists, review state, findings) AND sensitive content. Nothing set a
+# Cache-Control header, so a browser/proxy could serve a stale GET /hosts from
+# cache — e.g. a project-default "Not Reviewed" filter showing hosts that were
+# just reviewed, until a param change busts the cache. `no-store` forces every
+# API read to be fresh and keeps sensitive JSON out of the on-disk cache.
+_NO_STORE = b"no-store"
 
 # Requests at/above this land on a greppable WARNING ("SLOW request …") so a
 # large-dataset instance's hot endpoints surface without trawling every access
@@ -73,6 +81,9 @@ class RequestContextMiddleware:
         start = time.perf_counter()
         status_code = 0
         rid_bytes = rid.encode("latin-1", "replace")
+        # Only the data API gets no-store; static assets are served by nginx,
+        # not here.
+        is_api = scope.get("path", "").startswith("/api/")
 
         async def send_wrapper(message):
             nonlocal status_code
@@ -80,6 +91,11 @@ class RequestContextMiddleware:
                 status_code = message["status"]
                 headers = message.setdefault("headers", [])
                 headers.append((_REQUEST_ID_HEADER, rid_bytes))
+                # Prevent stale/sensitive API responses being served from the
+                # browser/proxy cache — unless a handler deliberately set its
+                # own Cache-Control (none do today, but don't clobber it).
+                if is_api and not any(k == _CACHE_CONTROL_HEADER for k, _ in headers):
+                    headers.append((_CACHE_CONTROL_HEADER, _NO_STORE))
                 # Server-Timing surfaces backend time in the browser's Network
                 # tab, so clicking around a large instance shows which endpoints
                 # are slow without reading logs.  Measured to first-byte: for the
