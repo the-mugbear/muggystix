@@ -71,6 +71,7 @@ import { ListPageSkeleton } from '../components/PageSkeleton';
 import { InlineLoader } from '../components/ui/inline-loader';
 import { PORTS_OF_INTEREST_SET, PORTS_OF_INTEREST } from '../utils/portsOfInterest';
 import { getHostWebLinks } from '../utils/webLinks';
+import { buildHostsUrl } from '../utils/drilldownLinks';
 import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
 import { copyToClipboard } from '../utils/clipboard';
@@ -2452,6 +2453,12 @@ export default function Hosts() {
                 onFollowChange={(id, follow) =>
                   setHosts((prev) => prev.map((h) => (h.id === id ? { ...h, follow } : h)))
                 }
+                onQueryHosts={(q) => {
+                  // Close the sheet so the freshly-filtered list is visible,
+                  // then apply the vuln query through the normal URL-restore path.
+                  setInspectedHostId(null);
+                  navigate(buildHostsUrl({ q }));
+                }}
               />
             )}
           </SideSheetBody>

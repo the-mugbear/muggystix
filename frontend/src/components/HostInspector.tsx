@@ -41,6 +41,7 @@ import {
   MoreHorizontal,
   Network,
   NotebookPen,
+  ScanSearch,
   RefreshCw,
   Reply,
   RotateCcw,
@@ -79,10 +80,13 @@ import type {
   ProposedTestObject,
   HostFollowerEntry,
   FindingSeverity,
+  HostVulnerability,
   PromoteVulnerabilityPreview,
   ProjectMember,
   ReviewConclusion,
 } from '../services/api';
+import { buildHostsUrl } from '../utils/drilldownLinks';
+import { buildSameVulnQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
 import { StructuredTestCard } from './ProposedTestList';
@@ -243,6 +247,14 @@ export interface HostInspectorProps {
    * follow record, or null when the host was unfollowed.
    */
   onFollowChange?: (hostId: number, follow: Host['follow']) => void;
+  /**
+   * "Find other hosts with this vulnerability" — pivot a vuln row to the
+   * filtered /hosts inventory. When the inspector is a SideSheet overlay on
+   * the Hosts page the parent passes this to close the sheet AND apply the
+   * query; standalone mounts (HostDetail) omit it and the inspector navigates
+   * itself.
+   */
+  onQueryHosts?: (query: string) => void;
 }
 
 export const HostInspector: React.FC<HostInspectorProps> = ({
@@ -250,11 +262,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   density = 'page',
   onHostLoaded,
   onFollowChange,
+  onQueryHosts,
 }) => {
   const navigate = useNavigate();
   const toast = useToast();
   const { hasPermission, user } = useAuth();
   const canManageEntries = hasPermission('analyst');
+
+  // Pivot a vuln to the host inventory filtered to every host with the same
+  // vulnerability. When the parent supplies onQueryHosts (the Hosts SideSheet)
+  // it closes the sheet + applies the query; otherwise (standalone HostDetail)
+  // we navigate to the filtered /hosts ourselves.
+  const handleQueryHosts = useCallback(
+    (vuln: HostVulnerability) => {
+      const q = buildSameVulnQuery(vuln);
+      if (!q) return;
+      if (onQueryHosts) onQueryHosts(q);
+      else navigate(buildHostsUrl({ q }));
+    },
+    [onQueryHosts, navigate],
+  );
   const [host, setHost] = useState<Host | null>(null);
   const [conflicts, setConflicts] = useState<HostConflict[]>([]);
   const [conflictHistory, setConflictHistory] = useState<ConflictHistoryEntry[]>([]);
@@ -2080,6 +2107,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     </Badge>
                     {vuln.exploitable && (
                       <Badge variant="destructive">Exploit available</Badge>
+                    )}
+                    {/* Pivot to the host inventory filtered to every host with
+                        this same vulnerability (by CVE, else by finding title).
+                        Always available, independent of promotion state. */}
+                    {buildSameVulnQuery(vuln) && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost" size="icon"
+                            onClick={() => handleQueryHosts(vuln)}
+                            aria-label={`Find other hosts with ${title}`}
+                          >
+                            <ScanSearch className="size-3.5" aria-hidden />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Find hosts with this vulnerability
+                          {vuln.cve_id ? ` (${vuln.cve_id})` : ''}
+                        </TooltipContent>
+                      </Tooltip>
                     )}
                     {(() => {
                       const promotedFindingId = vuln.finding_id ?? promotedVulns[vuln.id];
