@@ -190,10 +190,10 @@ describe('Operations page', () => {
   it('surfaces a pending-review plan in the Pending approvals queue', async () => {
     renderPage();
     await waitFor(() => {
-      // The pending-plans section heading (renamed from the ambiguous "Needs
-      // attention" — the exposure/neglect AttentionCard was removed from
-      // Operations in favour of a link to /insights).
-      expect(screen.getByRole('heading', { name: 'Pending approvals' })).toBeInTheDocument();
+      // §27 role-aware: the test user has the analyst role (mocked
+      // hasPermission → true), so the heading is the actionable
+      // "Needs your approval" rather than the passive "Pending approvals".
+      expect(screen.getByRole('heading', { name: 'Needs your approval' })).toBeInTheDocument();
     });
     expect(screen.getByText('1 pending review')).toBeInTheDocument();
     expect(screen.getByText(/Pending plan/)).toBeInTheDocument();

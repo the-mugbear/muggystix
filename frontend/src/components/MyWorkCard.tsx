@@ -5,12 +5,14 @@
  *   - Overdue      = assigned notes past their due date
  *   - Handoffs     = note threads of type 'handoff' assigned to the caller
  *   - Assigned     = assigned notes + test-plan steps assigned to the caller
+ *   - Findings     = active canonical findings the caller owns
  *   - In review    = hosts the caller marked In Review (+ in-review steps)
- *   - Triage       = unassigned critical/high test-plan steps
+ *   - Available    = unassigned critical/high test-plan steps anyone may claim
  *
- * This is the host/investigation resume queue. Owned *findings* are NOT here —
- * they're a different artifact with their own home (the Findings page); mixing
- * them into the day-to-day host worklist muddied what this card is for.
+ * §27: owned findings ARE surfaced here (one resume surface — don't make the
+ * analyst remember a second queue exists), and unassigned "Available" triage is
+ * kept visually separate AND excluded from the personal total, so shared work
+ * doesn't inflate the user's apparent load. Each Available row has a Claim.
  *
  * P0 (resume pass): every row deep-links to its EXACT artifact — a note to
  * its thread anchor (/hosts/:id#note-:id), a plan step to its entry
@@ -26,13 +28,19 @@ import {
   MessageSquare,
   RefreshCw,
   ServerIcon,
+  ShieldAlert,
 } from 'lucide-react';
 import type {
   MyAttentionResponse,
+  MyFindingsResponse,
   MyNotesResponse,
   MyTaskReason,
   MyTasksResponse,
 } from '../services/api';
+import { updateTestPlanEntry } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
+import { formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -41,14 +49,16 @@ import { cn } from '../utils/cn';
 
 type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
 
-type GroupKey = 'overdue' | 'handoff' | 'assigned' | 'in_review' | 'triage';
+type GroupKey = 'overdue' | 'handoff' | 'assigned' | 'findings' | 'in_review' | 'triage';
 
 const GROUP_META: Record<GroupKey, { label: string; rank: number; tone: BadgeTone }> = {
   overdue: { label: 'Overdue', rank: 0, tone: 'destructive' },
   handoff: { label: 'Handoffs', rank: 1, tone: 'info' },
   assigned: { label: 'Assigned', rank: 2, tone: 'info' },
-  in_review: { label: 'In review', rank: 3, tone: 'muted' },
-  triage: { label: 'Triage', rank: 4, tone: 'warning' },
+  findings: { label: 'Findings I own', rank: 3, tone: 'info' },
+  in_review: { label: 'In review', rank: 4, tone: 'muted' },
+  // Shared, unowned work — kept last and out of the personal total.
+  triage: { label: 'Available to claim', rank: 5, tone: 'warning' },
 };
 const GROUP_ORDER = (Object.keys(GROUP_META) as GroupKey[]).sort(
   (a, b) => GROUP_META[a].rank - GROUP_META[b].rank,
@@ -97,12 +107,16 @@ interface WorkItem {
   right: { label: string; tone: BadgeTone | null };
   priorityRank: number;
   tsEpoch: number;
+  // Present on "Available to claim" rows — claiming assigns the entry to the
+  // caller (moving it into Assigned).
+  claim?: { planId: number; entryId: number; updatedAt: string | null };
 }
 
 function buildItems(
   queue: MyAttentionResponse | null,
   tasks: MyTasksResponse | null,
   notes: MyNotesResponse | null,
+  findings: MyFindingsResponse | null,
 ): WorkItem[] {
   const items: WorkItem[] = [];
 
@@ -151,6 +165,23 @@ function buildItems(
     });
   }
 
+  // Active findings the caller owns — their own group (link to the finding).
+  for (const f of findings?.items ?? []) {
+    items.push({
+      key: `finding-${f.finding_id}`,
+      group: 'findings',
+      Icon: ShieldAlert,
+      to: `/findings/${f.finding_id}`,
+      primary: `#${f.finding_id}`,
+      primaryMono: false,
+      chip: { label: f.severity, tone: sevTone(f.severity) },
+      meta: `${f.title} · ${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${f.status.replace(/_/g, ' ')}`,
+      right: { label: fmtAgo(tsOf(f.updated_at)), tone: null },
+      priorityRank: PRIORITY_RANK[f.severity] ?? 5,
+      tsEpoch: tsOf(f.updated_at),
+    });
+  }
+
   // Test-plan steps — assigned / in_review / triage; link to the entry.
   for (const t of tasks?.items ?? []) {
     const reasons = (t.reasons && t.reasons.length ? t.reasons : ['triage']) as MyTaskReason[];
@@ -172,6 +203,10 @@ function buildItems(
       right: { label: fmtAgo(tsOf(t.updated_at)), tone: null },
       priorityRank: PRIORITY_RANK[t.priority] ?? 5,
       tsEpoch: tsOf(t.updated_at),
+      // Only the unowned triage rows are claimable.
+      claim: group === 'triage'
+        ? { planId: t.plan_id, entryId: t.entry_id, updatedAt: t.updated_at }
+        : undefined,
     });
   }
 
@@ -188,6 +223,7 @@ export interface MyWorkCardProps {
   queue: MyAttentionResponse | null;
   tasks: MyTasksResponse | null;
   notes: MyNotesResponse | null;
+  findings: MyFindingsResponse | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
@@ -199,22 +235,47 @@ export interface MyWorkCardProps {
 const PREVIEW = 8;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
-  queue, tasks, notes, loading, error, onRetry,
+  queue, tasks, notes, findings, loading, error, onRetry,
 }) => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const toast = useToast();
   const [expanded, setExpanded] = React.useState(false);
+  const [claimingId, setClaimingId] = React.useState<number | null>(null);
 
   const items = React.useMemo(
-    () => buildItems(queue, tasks, notes),
-    [queue, tasks, notes],
+    () => buildItems(queue, tasks, notes, findings),
+    [queue, tasks, notes, findings],
   );
   const shown = expanded ? items : items.slice(0, PREVIEW);
 
+  const handleClaim = async (c: { planId: number; entryId: number; updatedAt: string | null }) => {
+    if (user?.id == null) return;
+    setClaimingId(c.entryId);
+    try {
+      await updateTestPlanEntry(c.planId, c.entryId, {
+        assigned_to_id: user.id,
+        expected_updated_at: c.updatedAt ?? undefined,
+      });
+      toast.success("Claimed — it's now in your assigned work", { autoHideMs: 2000 });
+      onRetry(); // refetch so it moves from Available → Assigned
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to claim.'));
+    } finally {
+      setClaimingId(null);
+    }
+  };
+
   // Authoritative server totals (the merged list is capped at the per-source
-  // fetch limits, so it must NOT stand in for the totals).
+  // fetch limits, so it must NOT stand in for the totals).  §27: the personal
+  // total EXCLUDES unassigned triage (shared work isn't "mine") and INCLUDES
+  // owned findings.
+  const availableCount = tasks?.reason_counts?.triage ?? 0;
   const totalCount =
     (notes?.total_open ?? 0) +
-    (queue?.in_review_count ?? 0) + (tasks?.total_open ?? 0);
+    (queue?.in_review_count ?? 0) +
+    Math.max(0, (tasks?.total_open ?? 0) - availableCount) +
+    (findings?.total_open ?? 0);
   const overdue = notes?.overdue_count ?? 0;
 
   // Group-count headers, computed over the SHOWN rows (the visible grouping).
@@ -231,6 +292,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           <p className="text-subheading font-semibold text-foreground">My work</p>
           {totalCount > 0 && <Badge variant="secondary">{totalCount}</Badge>}
           {overdue > 0 && <Badge variant="destructive">{overdue} overdue</Badge>}
+          {availableCount > 0 && <Badge variant="outline">{availableCount} to claim</Badge>}
         </div>
 
         {loading ? (
@@ -269,35 +331,46 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                       </span>
                     </div>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => navigate(it.to)}
-                    className={cn(
-                      'flex w-full items-center gap-xs px-xs py-xxs text-left',
-                      'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    )}
-                  >
-                    <it.Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                    {it.chip && <Badge variant={it.chip.tone}>{it.chip.label}</Badge>}
-                    <span
+                  <div className="flex items-center gap-xxs">
+                    <button
+                      type="button"
+                      onClick={() => navigate(it.to)}
                       className={cn(
-                        'shrink-0 text-metadata font-medium text-foreground',
-                        it.primaryMono && 'font-mono',
+                        'flex min-w-0 flex-1 items-center gap-xs px-xs py-xxs text-left',
+                        'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       )}
                     >
-                      {it.primary}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
-                      — {it.meta}
-                    </span>
-                    {it.right.label && (
-                      it.right.tone ? (
-                        <Badge variant={it.right.tone}>{it.right.label}</Badge>
-                      ) : (
-                        <span className="shrink-0 text-caption text-muted-foreground">{it.right.label}</span>
-                      )
+                      <it.Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      {it.chip && <Badge variant={it.chip.tone}>{it.chip.label}</Badge>}
+                      <span
+                        className={cn(
+                          'shrink-0 text-metadata font-medium text-foreground',
+                          it.primaryMono && 'font-mono',
+                        )}
+                      >
+                        {it.primary}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
+                        — {it.meta}
+                      </span>
+                      {it.right.label && (
+                        it.right.tone ? (
+                          <Badge variant={it.right.tone}>{it.right.label}</Badge>
+                        ) : (
+                          <span className="shrink-0 text-caption text-muted-foreground">{it.right.label}</span>
+                        )
+                      )}
+                    </button>
+                    {it.claim && (
+                      <Button
+                        size="sm" variant="outline" className="h-7 shrink-0"
+                        disabled={claimingId === it.claim.entryId}
+                        onClick={() => handleClaim(it.claim!)}
+                      >
+                        {claimingId === it.claim.entryId ? 'Claiming…' : 'Claim'}
+                      </Button>
                     )}
-                  </button>
+                  </div>
                 </li>
               );
             })}

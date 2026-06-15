@@ -467,7 +467,10 @@ const RecentNotesCard: React.FC<{
 const NeedsAttentionSection: React.FC<{
   pendingPlans: TestPlanSummary[] | null;
   loading: boolean;
-}> = ({ pendingPlans, loading }) => {
+  // Approving a plan needs analyst+; for viewers/auditors this is passive
+  // project context, not personal work (§27 role-aware approvals).
+  canApprove: boolean;
+}> = ({ pendingPlans, loading, canApprove }) => {
   const navigate = useNavigate();
 
   if (loading && !pendingPlans) {
@@ -490,15 +493,18 @@ const NeedsAttentionSection: React.FC<{
   return (
     <Card className="mb-md">
       <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">Pending approvals</h2>
+        <h2 className="text-subheading font-semibold">
+          {canApprove ? 'Needs your approval' : 'Pending approvals'}
+        </h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          Agent-drafted test plans awaiting a human approve/reject decision. Project-wide —
-          independent of the Mine / All toggle.
+          {canApprove
+            ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide — independent of the Mine / All toggle.'
+            : 'Agent-drafted test plans awaiting an analyst’s approve/reject decision. Shown for visibility — approving needs the analyst role.'}
         </p>
 
         {!hasAny && (
           <p className="text-metadata text-muted-foreground">
-            Nothing currently needs your attention.
+            {canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}
           </p>
         )}
 
@@ -528,7 +534,7 @@ const NeedsAttentionSection: React.FC<{
                     variant="outline"
                     onClick={() => navigate(`/test-plans/${plan.id}`)}
                   >
-                    Review
+                    {canApprove ? 'Review' : 'View'}
                     <SquareArrowOutUpRight className="size-3" aria-hidden />
                   </Button>
                 </li>
@@ -832,6 +838,8 @@ const SinceLastVisitBanner: React.FC<{
 
 const Operations: React.FC = () => {
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+  const canApprovePlans = hasPermission('analyst');
 
   const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(true);
@@ -1107,6 +1115,7 @@ const Operations: React.FC = () => {
               queue={workbench?.my_queue ?? null}
               tasks={workbench?.my_tasks ?? null}
               notes={workbench?.my_notes ?? null}
+              findings={workbench?.my_findings ?? null}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}
@@ -1129,7 +1138,7 @@ const Operations: React.FC = () => {
               </AlertDescription>
             </Alert>
           )}
-          <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} />
+          <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} canApprove={canApprovePlans} />
           <RunsSection />
         </>
       )}
