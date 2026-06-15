@@ -408,6 +408,15 @@ async def upload_recon_output(
 
     session = _load_recon_session(db, request)
 
+    # SCOPE BOUNDARY (review A-6): a recon key is scope-bound for AUTH and
+    # ATTRIBUTION, not for CONTAINMENT.  Ingestion is a project-level pipeline:
+    # the parsed hosts land at `project_id` and are correlated to scopes
+    # downstream (HostSubnetMapping), so output containing IPs OUTSIDE the
+    # bound scope's CIDRs is written to the project, not rejected.  This is
+    # deliberate — a sweep legitimately discovers adjacent hosts the operator
+    # wants — so do NOT mistake the scope binding for a write-containment
+    # boundary.  The `recon_session_id` below is what ties the upload back to
+    # this session for audit/roll-up.
     opts: Dict[str, Any] = {
         "project_id": agent.project_id,
         "recon_session_id": session.id,
