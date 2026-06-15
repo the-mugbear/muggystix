@@ -22,6 +22,7 @@ deliberate follow-up; the contextvar is in place so it's a small addition.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from contextvars import ContextVar
@@ -31,6 +32,15 @@ request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 _access_logger = logging.getLogger("app.access")
 
 _REQUEST_ID_HEADER = b"x-request-id"
+_SERVER_TIMING_HEADER = b"server-timing"
+
+# Requests at/above this land on a greppable WARNING ("SLOW request …") so a
+# large-dataset instance's hot endpoints surface without trawling every access
+# line.  Overridable via env for tuning against a specific deployment.
+try:
+    _SLOW_MS = int(os.getenv("SLOW_REQUEST_MS", "1000"))
+except ValueError:
+    _SLOW_MS = 1000
 
 
 def get_request_id() -> str:
@@ -70,18 +80,31 @@ class RequestContextMiddleware:
                 status_code = message["status"]
                 headers = message.setdefault("headers", [])
                 headers.append((_REQUEST_ID_HEADER, rid_bytes))
+                # Server-Timing surfaces backend time in the browser's Network
+                # tab, so clicking around a large instance shows which endpoints
+                # are slow without reading logs.  Measured to first-byte: for the
+                # JSON aggregate endpoints (posture/insights/dashboard/workbench)
+                # the handler has fully run by here, so this ≈ total handler time;
+                # for streaming responses it's time-to-first-byte (expected).
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                headers.append(
+                    (_SERVER_TIMING_HEADER, f"app;dur={elapsed_ms:.1f}".encode("latin-1")),
+                )
             await send(message)
 
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
+            method = scope.get("method", "?")
+            path = scope.get("path", "?")
             _access_logger.info(
-                "%s %s -> %s %dms req=%s",
-                scope.get("method", "?"),
-                scope.get("path", "?"),
-                status_code or "-",
-                duration_ms,
-                rid,
+                "%s %s -> %s %dms req=%s", method, path, status_code or "-", duration_ms, rid,
             )
+            # Greppable hot-endpoint marker for large-dataset profiling.
+            if duration_ms >= _SLOW_MS:
+                _access_logger.warning(
+                    "SLOW request %s %s %dms -> %s req=%s",
+                    method, path, duration_ms, status_code or "-", rid,
+                )
             request_id_var.reset(token)

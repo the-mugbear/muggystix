@@ -138,29 +138,36 @@ const ProjectStateCard: React.FC<{
         {stats && (
           <div className="mb-md">
             <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Exposure</h3>
-            {/* A raw open-ports total isn't a decision input on the "what
-                needs attention" surface — exposure reads better as hosts +
-                hosts-with-vulns + the severity bar. Per-host/per-scan open-port
-                counts (the useful, scoped form) live on Hosts + Scan detail. */}
-            <div className="mb-md grid grid-cols-2 gap-sm">
-              <CoverageStatTile
-                label="Hosts"
-                value={stats.total_hosts.toLocaleString()}
-                href={buildHostsUrl({})}
-                subtle={`${stats.up_hosts.toLocaleString()} marked up`}
-                hint={
-                  'Total distinct hosts in the project. "marked up" counts only hosts a scanner ' +
-                  'explicitly tagged with host-status "up" (e.g. an nmap host that reported Up). ' +
-                  'Hosts ingested from masscan lists, naabu, DNS records, or subnet seeds are often ' +
-                  'left "unknown" even when they have open ports and are clearly reachable — so this ' +
-                  'number is usually far lower than the host total and is NOT a liveness count. ' +
-                  'For reachability, look at open ports / per-host detail.'
-                }
-              />
-              <CoverageStatTile
-                label="Hosts with vulns"
-                value={(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()}
-              />
+            {/* Compact inline counts (a passive total doesn't earn a big tile —
+                only the host count navigates). The severity bar below carries
+                the actionable per-severity drill-downs. Raw open-ports totals
+                were dropped as a vanity metric; the useful scoped form lives on
+                Hosts + Scan detail. */}
+            <div className="mb-md flex flex-wrap items-center gap-x-sm gap-y-xxs text-metadata">
+              <Link to={buildHostsUrl({})}
+                className="font-semibold text-foreground hover:text-info hover:underline">
+                {stats.total_hosts.toLocaleString()} hosts
+              </Link>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button" aria-label="What does the host count include?"
+                    className="rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                    <Info className="size-3.5" aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs text-left">
+                  Total distinct hosts in the project. "marked up" counts only hosts a scanner
+                  explicitly tagged host-status "up"; hosts from masscan/naabu/DNS/subnet seeds are
+                  often left "unknown" even when reachable — so it's usually far lower than the total
+                  and is NOT a liveness count.
+                </TooltipContent>
+              </Tooltip>
+              <span className="text-muted-foreground" aria-hidden>·</span>
+              <span className="text-muted-foreground">{stats.up_hosts.toLocaleString()} marked up</span>
+              <span className="text-muted-foreground" aria-hidden>·</span>
+              <span className="text-muted-foreground">
+                {(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()} with vulns
+              </span>
             </div>
 
             {vuln && sevTotal > 0 ? (

@@ -23,6 +23,19 @@ describe('dslFromFilters', () => {
     expect(dsl).toBe('NOT has:web');
   });
 
+  it('converts every vuln-severity filter (incl. medium/low) so drill-downs round-trip', () => {
+    const { dsl, consumedKeys } = dslFromFilters({
+      hasCriticalVulns: true, hasHighVulns: true, hasMediumVulns: true, hasLowVulns: true,
+    });
+    expect(dsl).toContain('has:critical');
+    expect(dsl).toContain('has:high');
+    expect(dsl).toContain('has:medium');
+    expect(dsl).toContain('has:low');
+    expect(consumedKeys).toEqual(
+      expect.arrayContaining(['hasMediumVulns', 'hasLowVulns']),
+    );
+  });
+
   it('flags a conversion as lossy only when >=2 port dimensions combine', () => {
     // One port dimension round-trips faithfully.
     expect(dslFromFilters({ ports: ['22'] }).lossy).toBe(false);

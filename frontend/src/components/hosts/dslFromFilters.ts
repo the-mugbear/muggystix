@@ -70,6 +70,10 @@ export function dslFromFilters(filters: HostFilterOptions): DslConversion {
   }
   if (filters.hasCriticalVulns) { clauses.push('has:critical'); take('hasCriticalVulns'); }
   if (filters.hasHighVulns) { clauses.push('has:high'); take('hasHighVulns'); }
+  // medium/low have DSL keywords too (has:medium / has:low) — without these a
+  // drill-down into a medium/low severity left a filter that couldn't convert.
+  if (filters.hasMediumVulns) { clauses.push('has:medium'); take('hasMediumVulns'); }
+  if (filters.hasLowVulns) { clauses.push('has:low'); take('hasLowVulns'); }
   if (filters.hasExploitAvailable) { clauses.push('has:exploit'); take('hasExploitAvailable'); }
   if (filters.hasTestExecution) { clauses.push('has:tested'); take('hasTestExecution'); }
   if (filters.onlyWithNotes) { clauses.push('has:notes'); take('onlyWithNotes'); }
