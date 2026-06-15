@@ -8,7 +8,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  CheckCircle2, Loader2, MessageSquare, RefreshCw, Search, ShieldAlert,
+  CheckCircle2, Loader2, MessageSquare, Play, RefreshCw, Search, ShieldAlert,
 } from 'lucide-react';
 
 import { getMyActivity, type ActivityEvent, type ActivityEventKind } from '../services/api';
@@ -22,12 +22,13 @@ import {
 } from './ui/select';
 
 // Coarse type filter → the backend kind set.
-type TypeFilter = 'all' | 'notes' | 'findings' | 'reviews';
+type TypeFilter = 'all' | 'notes' | 'findings' | 'reviews' | 'runs';
 const TYPE_KINDS: Record<TypeFilter, string | undefined> = {
   all: undefined,
   notes: 'note',
   findings: 'finding_created,finding_status',
   reviews: 'host_reviewed',
+  runs: 'session',
 };
 
 const KIND_ICON: Record<ActivityEventKind, typeof MessageSquare> = {
@@ -35,6 +36,7 @@ const KIND_ICON: Record<ActivityEventKind, typeof MessageSquare> = {
   finding_created: ShieldAlert,
   finding_status: ShieldAlert,
   host_reviewed: CheckCircle2,
+  session: Play,
 };
 
 const KIND_TONE: Record<ActivityEventKind, string> = {
@@ -42,9 +44,11 @@ const KIND_TONE: Record<ActivityEventKind, string> = {
   finding_created: 'text-warning',
   finding_status: 'text-warning',
   host_reviewed: 'text-success',
+  session: 'text-muted-foreground',
 };
 
 function hrefFor(e: ActivityEvent): string | null {
+  if (e.link) return e.link;
   if (e.finding_id != null) return `/findings/${e.finding_id}`;
   if (e.host_id != null) return e.note_id != null
     ? `/hosts/${e.host_id}#note-${e.note_id}`
@@ -153,6 +157,7 @@ export const MyActivityCard: React.FC = () => {
               <SelectItem value="notes">Notes</SelectItem>
               <SelectItem value="findings">Findings</SelectItem>
               <SelectItem value="reviews">Reviews</SelectItem>
+              <SelectItem value="runs">Runs</SelectItem>
             </SelectContent>
           </Select>
           <Select value={days} onValueChange={(v) => setDays(v as 'all' | '7' | '30')}>

@@ -228,3 +228,29 @@ def test_my_activity_filters(client, db_session, test_project, test_user):
     assert [e["kind"] for e in kerb] == ["note"]
 
     assert client.get(f"{base}?search=zzznomatch").json()["items"] == []
+
+
+def test_my_activity_includes_agent_runs(client, db_session, test_project, test_user):
+    """§27 — recon/execution/plan-generation runs the caller started appear as
+    'session' events with a deep-link; they're excluded from a text search."""
+    from app.db import models
+    from app.db.models_agent import AgentSession
+
+    scope = models.Scope(project_id=test_project.id, name="ext")
+    db_session.add(scope)
+    db_session.flush()
+    s = AgentSession(
+        workflow="recon", project_id=test_project.id, scope_id=scope.id,
+        started_by_id=test_user.id, status="completed",
+    )
+    db_session.add(s)
+    db_session.commit()
+
+    base = _url(test_project.id, "/my-activity")
+    sessions = [e for e in client.get(base).json()["items"] if e["kind"] == "session"]
+    assert len(sessions) == 1
+    assert sessions[0]["link"] == f"/recon/runs/{s.id}"
+
+    # kinds filter isolates them; a text search excludes them (no title).
+    assert all(e["kind"] == "session" for e in client.get(f"{base}?kinds=session").json()["items"])
+    assert client.get(f"{base}?search=anything").json()["items"] == []

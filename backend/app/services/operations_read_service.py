@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models import Annotation, FollowStatus, HostFollow, NoteStatus
-from app.db.models_agent import TestPlan, TestPlanEntry
+from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project
@@ -704,20 +704,31 @@ def compute_my_findings(
 # cheap regardless of project size.
 # ---------------------------------------------------------------------------
 class ActivityEvent(BaseModel):
-    kind: str  # note | finding_created | finding_status | host_reviewed
+    kind: str  # note | finding_created | finding_status | host_reviewed | session
     at: datetime
     summary: str
     host_id: Optional[int] = None
     note_id: Optional[int] = None
     finding_id: Optional[int] = None
     severity: Optional[str] = None
+    # Server-computed in-app path for sources with no entity-id mapping on the
+    # client (agent runs). The client prefers this when present.
+    link: Optional[str] = None
 
 
 class MyActivityResponse(BaseModel):
     items: List[ActivityEvent] = Field(default_factory=list)
 
 
-ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed"}
+ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed", "session"}
+
+# Agent-run workflows surfaced in the activity feed, with their summary verb and
+# the in-app detail route. assist is omitted (no detail page).
+_SESSION_WORKFLOWS = {
+    "recon": ("Ran a recon session", lambda s: f"/recon/runs/{s.id}"),
+    "execution": ("Ran an execution", lambda s: f"/executions/{s.id}"),
+    "plan_generation": ("Generated a test plan", lambda s: f"/test-plans/{s.plan_id}" if s.plan_id else None),
+}
 
 
 def compute_my_activity(
@@ -823,6 +834,27 @@ def compute_my_activity(
             events.append(ActivityEvent(
                 kind="host_reviewed", at=(follow.updated_at or follow.created_at),
                 summary=f"Reviewed {host.ip_address}", host_id=host.id,
+            ))
+
+    # Agent runs the caller started (recon / execution / plan generation).
+    # No free-text title, so they're omitted from a `search` query.
+    if "session" in want and needle is None:
+        session_ts = func.coalesce(AgentSession.started_at, AgentSession.created_at)
+        q = (
+            db.query(AgentSession)
+            .filter(
+                AgentSession.project_id == pid,
+                AgentSession.started_by_id == uid,
+                AgentSession.workflow.in_(list(_SESSION_WORKFLOWS)),
+            )
+        )
+        if cutoff is not None:
+            q = q.filter(session_ts >= cutoff)
+        for s in q.order_by(desc(session_ts)).limit(limit).all():
+            verb, link_fn = _SESSION_WORKFLOWS[s.workflow]
+            events.append(ActivityEvent(
+                kind="session", at=(s.started_at or s.created_at),
+                summary=f"{verb} ({s.status})", link=link_fn(s),
             ))
 
     events = [e for e in events if e.at is not None]
