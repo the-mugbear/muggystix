@@ -813,6 +813,11 @@ const Operations: React.FC = () => {
   // We only bootstrap it once on the genuine first visit (nothing to review
   // yet); thereafter it advances only when the user acknowledges the banner.
   const seenBootstrappedRef = useRef(false);
+  // Stale-write guard: `reload` is fired imperatively from Refresh, every
+  // section's Retry, and the mount effect, so two can overlap. Each run claims
+  // the next generation; a run only writes state if it's still the latest,
+  // so a slower earlier payload can't land on top of a newer one.
+  const reloadGenRef = useRef(0);
   const dismissSince = useCallback(() => {
     setSinceDismissed(true);
     // Acknowledging the changes is what advances the cursor to "now".
@@ -820,6 +825,8 @@ const Operations: React.FC = () => {
   }, []);
 
   const reload = useCallback(async () => {
+    const gen = ++reloadGenRef.current;
+    const isStale = () => gen !== reloadGenRef.current;
     setError(null);
     setCoverageLoading(true);
     setPendingLoading(true);
@@ -832,6 +839,7 @@ const Operations: React.FC = () => {
     // cards' own error state (with Retry) instead of blanking the page.
     getWorkbench()
       .then((wb) => {
+        if (isStale()) return;
         setWorkbench(wb);
         // Bootstrap the cursor on the very first visit only (no prior baseline,
         // so nothing to lose) — otherwise leave it until the user acknowledges
@@ -842,10 +850,14 @@ const Operations: React.FC = () => {
         }
       })
       .catch((err) => {
+        if (isStale()) return;
         setWorkbench(null);
         setWorkbenchError(formatApiError(err, 'Could not load your workbench.'));
       })
-      .finally(() => setWorkbenchLoading(false));
+      .finally(() => {
+        if (isStale()) return;
+        setWorkbenchLoading(false);
+      });
 
     // RV-10b — settle the core fetches independently. Pre-fix a single
     // Promise.all rejection (e.g. /dashboard/stats) blanked coverage AND
@@ -858,6 +870,10 @@ const Operations: React.FC = () => {
       getDashboardStats(),
       getStaleness(),
     ]);
+
+    // A newer reload superseded us while these were in flight — drop this
+    // payload so it can't overwrite the fresher one.
+    if (isStale()) return;
 
     if (coverageR.status === 'fulfilled') {
       setCoverage(coverageR.value);

@@ -91,15 +91,32 @@ const SecurityPosture: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    getPosture()
-      .then((d) => { setData(d); setError(null); })
-      .catch((e) => setError(formatApiError(e, 'Could not load security posture.')))
-      .finally(() => setLoading(false));
-  }, []);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const load = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  useEffect(() => { load(); }, [load, currentProject?.id]);
+  // Each fetch aborts the previous in-flight one — a rapid project switch
+  // (A→B→A) or Refresh previously raced, letting a slower response win and
+  // painting another project's posture onto this one. Keyed on the project id
+  // so a switch re-fetches; the abort guard makes the last *intended* response
+  // the one that lands.
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    getPosture({ signal: controller.signal })
+      .then((d) => {
+        if (controller.signal.aborted) return;
+        setData(d); setError(null);
+      })
+      .catch((e) => {
+        if (controller.signal.aborted) return;
+        setError(formatApiError(e, 'Could not load security posture.'));
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return;
+        setLoading(false);
+      });
+    return () => controller.abort();
+  }, [currentProject?.id, reloadNonce]);
 
   return (
     <div className="space-y-md p-md">

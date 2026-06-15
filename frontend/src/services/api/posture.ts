@@ -78,7 +78,11 @@ export interface PostureResponse {
   evidence: { scan_count: number; scan_staleness_days: number | null };
 }
 
-export const getPosture = async (): Promise<PostureResponse> => {
-  const response = await api.get<PostureResponse>(`${p()}/posture`);
+export const getPosture = async (
+  options: { signal?: AbortSignal } = {},
+): Promise<PostureResponse> => {
+  const response = await api.get<PostureResponse>(`${p()}/posture`, {
+    signal: options.signal,
+  });
   return response.data;
 };
