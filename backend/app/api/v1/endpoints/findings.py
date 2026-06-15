@@ -80,6 +80,7 @@ def list_findings(
     unowned: bool = Query(False, description="Only findings with no owner (overrides owner_id)."),
     source: Optional[str] = Query(None),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
+    search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring match on finding title."),
     sort: Optional[str] = Query(
         None, description="severity | status | title | host_count | source | created_at (default newest-first).",
     ),
@@ -93,11 +94,11 @@ def list_findings(
     rows, total = svc.list_findings(
         project_id=project.id, status=status, severity=severity,
         owner_id=owner_id, unowned=unowned, source=source, host_id=host_id,
-        limit=limit, offset=offset, sort=sort, sort_dir=dir,
+        search=search, limit=limit, offset=offset, sort=sort, sort_dir=dir,
     )
     sev_counts = svc.severity_counts(
         project_id=project.id, status=status, owner_id=owner_id,
-        unowned=unowned, source=source, host_id=host_id,
+        unowned=unowned, source=source, host_id=host_id, search=search,
     )
     return FindingListResponse(
         items=[_serialize(f) for f in rows], total=total, severity_counts=sev_counts,

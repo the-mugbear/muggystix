@@ -60,6 +60,8 @@ export interface FindingFilters {
   unowned?: boolean;
   source?: FindingSource;
   host_id?: number;
+  /** Case-insensitive substring match on the finding title. */
+  search?: string;
   sort?: FindingSortField;
   dir?: 'asc' | 'desc';
   limit?: number;

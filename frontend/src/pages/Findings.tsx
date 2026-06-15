@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
 
 import {
   Finding,
@@ -27,6 +27,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
+import { Input } from '../components/ui/input';
 import SeverityBar from '../components/ui/SeverityBar';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
@@ -91,6 +92,7 @@ const Findings: React.FC = () => {
   const severityFilter = (searchParams.get('severity') as FindingSeverity | null) ?? 'all';
   const sourceFilter = (searchParams.get('source') as FindingSource | null) ?? 'all';
   const ownerFilter = (searchParams.get('owner') as OwnerFilterValue | null) ?? 'any';
+  const searchValue = searchParams.get('search') ?? '';
 
   const setFilterParam = useCallback(
     (key: string, value: string, defaultValue: string) => {
@@ -108,6 +110,14 @@ const Findings: React.FC = () => {
   const setSourceFilter = (v: FindingSource | 'all') => setFilterParam('source', v, 'all');
   const setOwnerFilter = (v: OwnerFilterValue) => setFilterParam('owner', v, 'any');
 
+  // Search is debounced into the URL so typing doesn't refetch per keystroke;
+  // the URL stays the source of truth (shareable).
+  const [searchInput, setSearchInput] = useState(searchValue);
+  useEffect(() => {
+    const t = setTimeout(() => setFilterParam('search', searchInput.trim(), ''), 300);
+    return () => clearTimeout(t);
+  }, [searchInput, setFilterParam]);
+
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   // Column sort (server-side — sorting only the current page would mislead
@@ -121,11 +131,11 @@ const Findings: React.FC = () => {
   const [summaryText, setSummaryText] = useState('');
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
-    || sourceFilter !== 'all' || ownerFilter !== 'any';
+    || sourceFilter !== 'all' || ownerFilter !== 'any' || searchValue !== '';
 
   // A filter change resets to the first page so we never sit on an
   // out-of-range page after the result set shrinks.
-  useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter, ownerFilter]);
+  useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue]);
 
   const filters = useMemo<FindingFilters>(() => {
     const f: FindingFilters = { limit: pageSize, offset: page * pageSize };
@@ -134,9 +144,10 @@ const Findings: React.FC = () => {
     if (sourceFilter !== 'all') f.source = sourceFilter;
     if (ownerFilter === 'unowned') f.unowned = true;
     else if (ownerFilter === 'me' && user?.id != null) f.owner_id = user.id;
+    if (searchValue) f.search = searchValue;
     if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
-  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, user?.id, page, pageSize, sortBy, sortDir]);
+  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue, user?.id, page, pageSize, sortBy, sortDir]);
 
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.
@@ -278,6 +289,20 @@ const Findings: React.FC = () => {
       </div>
 
       <div className="mb-md flex flex-wrap items-end gap-sm">
+        <div className="min-w-56 flex-1">
+          <Label htmlFor="findings-search">Search</Label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+            <Input
+              id="findings-search"
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search finding titles…"
+              className="pl-xl"
+            />
+          </div>
+        </div>
         <div className="min-w-40">
           <Label htmlFor="findings-status">Status</Label>
           <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilterValue)}>

@@ -253,7 +253,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 }) => {
   const navigate = useNavigate();
   const toast = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canManageEntries = hasPermission('analyst');
   const [host, setHost] = useState<Host | null>(null);
   const [conflicts, setConflicts] = useState<HostConflict[]>([]);
@@ -319,6 +319,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // Promote-note-to-finding dialog state (foundation 6b).
   const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
   const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
+  // §12 — let the analyst confirm the finding title + owner before promoting
+  // (the note's first line / assignee are just defaults).
+  const [promoteTitle, setPromoteTitle] = useState('');
+  const [promoteOwnerId, setPromoteOwnerId] = useState<number | 'none'>('none');
   const [promoting, setPromoting] = useState(false);
   // Bumped after a promote so the inline HostFindingsCard refetches.
   const [findingsRefresh, setFindingsRefresh] = useState(0);
@@ -438,7 +442,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (promoteNoteId === null) return;
     setPromoting(true);
     try {
-      const finding = await promoteAnnotation(promoteNoteId, { severity: promoteSeverity });
+      const finding = await promoteAnnotation(promoteNoteId, {
+        severity: promoteSeverity,
+        title: promoteTitle.trim() || undefined,
+        owner_id: promoteOwnerId === 'none' ? null : promoteOwnerId,
+      });
       toast.success(`Promoted to finding: ${finding.title}`, { autoHideMs: 3000 });
       // Optimistically mark the note promoted so its badge appears + the
       // promote affordance hides without waiting for a host reload.
@@ -1605,8 +1613,17 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               onUpdateNoteStatus={handleUpdateNoteStatus}
               onDeleteNote={handleDeleteNote}
               onPromoteNote={(noteId) => {
-                setPromoteNoteId(noteId);
+                const note = notes.find((n) => n.id === noteId);
+                const firstLine = (note?.body ?? '')
+                  .split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+                setPromoteTitle(firstLine.slice(0, 200));
+                setPromoteOwnerId(note?.assignee_id ?? user?.id ?? 'none');
                 setPromoteSeverity('medium');
+                // Need the roster for the owner picker (lazy — only fetched once).
+                if (members.length === 0) {
+                  listProjectMembers().then(setMembers).catch(() => { /* picker degrades */ });
+                }
+                setPromoteNoteId(noteId);
               }}
               onEditDetails={openNoteDetails}
               hostId={hostId}
@@ -1755,21 +1772,57 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               multiple hosts.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-xs">
-            <Label htmlFor="promote-severity">Severity</Label>
-            <Select
-              value={promoteSeverity}
-              onValueChange={(v) => setPromoteSeverity(v as FindingSeverity)}
-            >
-              <SelectTrigger id="promote-severity">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
-                  <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="space-y-sm">
+            <div className="space-y-xxs">
+              <Label htmlFor="promote-title">Title</Label>
+              <Input
+                id="promote-title"
+                value={promoteTitle}
+                onChange={(e) => setPromoteTitle(e.target.value)}
+                placeholder="Finding title (defaults to the note's first line)"
+                maxLength={200}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-sm">
+              <div className="space-y-xxs">
+                <Label htmlFor="promote-severity">Severity</Label>
+                <Select
+                  value={promoteSeverity}
+                  onValueChange={(v) => setPromoteSeverity(v as FindingSeverity)}
+                >
+                  <SelectTrigger id="promote-severity">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
+                      <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-xxs">
+                <Label htmlFor="promote-owner">Owner</Label>
+                <Select
+                  value={promoteOwnerId === 'none' ? 'none' : String(promoteOwnerId)}
+                  onValueChange={(v) => setPromoteOwnerId(v === 'none' ? 'none' : Number(v))}
+                >
+                  <SelectTrigger id="promote-owner">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Unassigned</SelectItem>
+                    {members.map((m) => (
+                      <SelectItem key={m.user_id} value={String(m.user_id)}>
+                        {m.full_name || m.username || `User ${m.user_id}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <p className="text-caption text-muted-foreground">
+              The note thread stays attached as the finding's evidence.
+            </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPromoteNoteId(null)} disabled={promoting}>

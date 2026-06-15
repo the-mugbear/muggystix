@@ -226,6 +226,23 @@ def test_findings_sort_by_severity_rank(client, test_project):
     assert len(default.json()["items"]) == 3
 
 
+def test_findings_title_search(client, test_project):
+    """?search= does a case-insensitive substring match on the title (§15), and
+    the severity rollup respects it too."""
+    base = f"/api/v1/projects/{test_project.id}/findings"
+    client.post(base, json={"title": "SMB signing disabled", "severity": "high"})
+    client.post(base, json={"title": "Anonymous FTP login", "severity": "low"})
+
+    res = client.get(f"{base}?search=smb").json()
+    assert [f["title"] for f in res["items"]] == ["SMB signing disabled"]
+    assert res["total"] == 1
+    # severity_counts is scoped to the search too.
+    assert res["severity_counts"].get("high") == 1
+    assert "low" not in res["severity_counts"]
+
+    assert client.get(f"{base}?search=nomatch").json()["total"] == 0
+
+
 def test_findings_status_group_filter(client, test_project):
     """status=active filters to the working set (open/confirmed/retest);
     status=resolved to terminal dispositions — the groups the dashboards

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Info, Loader2, MessageCircleQuestion, RefreshCw, Sparkles, SquareArrowOutUpRight, X } from 'lucide-react';
+import { Info, Loader2, MessageCircleQuestion, RefreshCw, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
@@ -823,8 +823,10 @@ const SinceLastVisitBanner: React.FC<{
               <SquareArrowOutUpRight className="size-3" aria-hidden />
             </Button>
           )}
-          <Button size="sm" variant="ghost" aria-label="Dismiss" onClick={onDismiss}>
-            <X className="size-4" aria-hidden />
+          {/* Acknowledging is what advances the cursor — until then these
+              changes persist across visits (no silent loss on a glance). */}
+          <Button size="sm" variant="outline" onClick={onDismiss}>
+            Mark reviewed
           </Button>
         </div>
       </CardContent>
@@ -867,10 +869,16 @@ const Operations: React.FC = () => {
   const [workbenchLoading, setWorkbenchLoading] = useState(true);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const [sinceDismissed, setSinceDismissed] = useState(false);
-  // Mark the cursor seen exactly once per mount (after the first successful
-  // workbench load), so the "since last visit" diff shown this visit is
-  // snapshotted before we advance the cursor for next time.
-  const seenMarkedRef = useRef(false);
+  // §27: do NOT advance the "since last visit" cursor merely because the page
+  // loaded — that silently discarded changes the user never actually reviewed.
+  // We only bootstrap it once on the genuine first visit (nothing to review
+  // yet); thereafter it advances only when the user acknowledges the banner.
+  const seenBootstrappedRef = useRef(false);
+  const dismissSince = useCallback(() => {
+    setSinceDismissed(true);
+    // Acknowledging the changes is what advances the cursor to "now".
+    markWorkbenchSeen().catch(() => undefined);
+  }, []);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -886,10 +894,11 @@ const Operations: React.FC = () => {
     getWorkbench()
       .then((wb) => {
         setWorkbench(wb);
-        if (!seenMarkedRef.current) {
-          seenMarkedRef.current = true;
-          // Fire-and-forget: advancing the cursor must not block render,
-          // and the banner already has its snapshot from `wb`.
+        // Bootstrap the cursor on the very first visit only (no prior baseline,
+        // so nothing to lose) — otherwise leave it until the user acknowledges
+        // the banner, so a glance doesn't discard unreviewed changes.
+        if (!seenBootstrappedRef.current && wb.since_last_visit.is_first_visit) {
+          seenBootstrappedRef.current = true;
           markWorkbenchSeen().catch(() => undefined);
         }
       })
@@ -1063,7 +1072,7 @@ const Operations: React.FC = () => {
           {workbench && !sinceDismissed && (
             <SinceLastVisitBanner
               since={workbench.since_last_visit}
-              onDismiss={() => setSinceDismissed(true)}
+              onDismiss={dismissSince}
             />
           )}
           {statsError && (

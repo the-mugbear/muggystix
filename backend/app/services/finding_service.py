@@ -448,6 +448,7 @@ class FindingService:
         status: Optional[str] = None, severity: Optional[str] = None,
         owner_id: Optional[int] = None, source: Optional[str] = None,
         host_id: Optional[int] = None, unowned: bool = False,
+        search: Optional[str] = None,
         limit: int = 100, offset: int = 0,
         sort: Optional[str] = None, sort_dir: Optional[str] = None,
     ):
@@ -473,6 +474,8 @@ class FindingService:
             q = q.filter(Finding.source == source)
         if host_id is not None:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
+        if search and search.strip():
+            q = q.filter(Finding.title.ilike(f"%{search.strip()}%"))
         total = q.count()
         q = q.order_by(*_finding_order(sort, sort_dir))
         rows = q.offset(offset).limit(limit).all()
@@ -482,7 +485,7 @@ class FindingService:
         self, *, project_id: int,
         status: Optional[str] = None, owner_id: Optional[int] = None,
         source: Optional[str] = None, host_id: Optional[int] = None,
-        unowned: bool = False,
+        unowned: bool = False, search: Optional[str] = None,
     ) -> dict:
         """Per-severity finding counts for the rollup header.  Respects every
         filter EXCEPT severity (the point is to show the full severity
@@ -501,6 +504,8 @@ class FindingService:
             q = q.filter(Finding.source == source)
         if host_id is not None:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
+        if search and search.strip():
+            q = q.filter(Finding.title.ilike(f"%{search.strip()}%"))
         return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
 
     # ------------------------------------------------------------------
