@@ -101,20 +101,29 @@ export const MyActivityCard: React.FC = () => {
   }, [typeFilter, days, search]);
 
   React.useEffect(() => { load(); }, [load]);
+  // Reset the preview when the filtered result set changes.
+  const [expanded, setExpanded] = React.useState(false);
+  React.useEffect(() => { setExpanded(false); }, [typeFilter, days, search]);
 
   const hasFilters = typeFilter !== 'all' || days !== 'all' || search !== '';
 
-  // Group consecutive events by day (the feed is already newest-first).
+  // Preview a few rows so this card stays the same height as "My work" (which
+  // also previews 8); "Show more" reveals the rest of the loaded feed.
+  const PREVIEW = 8;
+  const all = events ?? [];
+  const shown = expanded ? all : all.slice(0, PREVIEW);
+
+  // Group consecutive shown events by day (the feed is already newest-first).
   const groups = React.useMemo(() => {
     const out: Array<{ day: string; items: ActivityEvent[] }> = [];
-    for (const e of events ?? []) {
+    for (const e of shown) {
       const day = dayBucket(e.at);
       const last = out[out.length - 1];
       if (last && last.day === day) last.items.push(e);
       else out.push({ day, items: [e] });
     }
     return out;
-  }, [events]);
+  }, [shown]);
 
   return (
     <Card className="h-full">
@@ -217,6 +226,15 @@ export const MyActivityCard: React.FC = () => {
                 </ul>
               </div>
             ))}
+            {all.length > PREVIEW && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="mt-xxs self-start rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {expanded ? 'Show fewer' : `Show ${all.length - PREVIEW} more`}
+              </button>
+            )}
           </div>
         )}
       </CardContent>
