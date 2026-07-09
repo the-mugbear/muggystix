@@ -22,12 +22,14 @@ FROM python:3.11-slim as production
 
 WORKDIR /app
 
-# Install runtime dependencies: libpq5 (psycopg2) and curl (health check).
+# Install runtime dependencies: libpq5 (psycopg2), curl (health check), and
+# gosu (drop from the root entrypoint to UID 999 — see docker-entrypoint.sh).
 # (PDF export was removed — reports are HTML/JSON/CSV — so the WeasyPrint
 # native stack is no longer installed.)
 RUN apt-get update && apt-get install -y \
     libpq5 \
     curl \
+    gosu \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -56,7 +58,17 @@ RUN mkdir -p uploads \
 # stable across rebuilds/base-image changes.
 RUN groupadd -g 999 appgroup && useradd -u 999 -g appgroup -r appuser \
     && chown -R appuser:appgroup /app
-USER appuser
+
+# Self-healing entrypoint: runs as root ONLY to fix bind-mount ownership of
+# /app/uploads (the manual `chown 999:999 ./uploads` fresh deploys used to
+# need), then drops to appuser via gosu before exec'ing the command below.
+# NOTE: no `USER appuser` here on purpose — the entrypoint needs root to chown
+# the mount, and drops privileges itself. The application process still runs as
+# UID 999.  worker / report-worker override the CMD in compose; those commands
+# arrive as args to this entrypoint and inherit the same drop.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Expose port
 EXPOSE 8000
