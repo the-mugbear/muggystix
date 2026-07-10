@@ -7,6 +7,7 @@ import {
   FileText,
   Filter as FilterIcon,
   Globe,
+  Info,
   Network as NetworkIcon,
   ShieldAlert,
   Shield,
@@ -14,6 +15,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import type { FollowStatus, HostFilterData } from '../services/api';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -323,6 +325,61 @@ const ToggleChip: React.FC<{
     </Tooltip>
   );
 };
+
+/**
+ * A dropdown label with a provenance hint.  The (i) icon's tooltip names the
+ * scanner/tool (or in-app action) that populates this filter, so an empty
+ * dropdown is self-explanatory.  Provenance text is also exposed as an
+ * `aria-label` and the trigger is focusable, so it's reachable without a hover.
+ */
+const FilterLabel: React.FC<{
+  htmlFor: string;
+  id?: string;
+  provenance: string;
+  children: React.ReactNode;
+}> = ({ htmlFor, id, provenance, children }) => (
+  <div className="flex items-center gap-xxs">
+    <Label htmlFor={htmlFor} id={id}>
+      {children}
+    </Label>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className="inline-flex shrink-0 cursor-help text-muted-foreground/70 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded-full"
+          tabIndex={0}
+          role="img"
+          aria-label={provenance}
+        >
+          <Info className="h-3.5 w-3.5" aria-hidden />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">{provenance}</TooltipContent>
+    </Tooltip>
+  </div>
+);
+
+/**
+ * Inline "no data yet — run X" caption shown beneath a filter whose facet is
+ * empty (and not still loading).  Coaches a fresh-project user toward the scan
+ * or action that populates it; `commandsLink` optionally links to the Tool
+ * Reference for the exact BlueStick-ingestible command.
+ */
+const FieldHint: React.FC<{ children: React.ReactNode; commandsLink?: boolean }> = ({
+  children,
+  commandsLink,
+}) => (
+  <p className="text-caption text-muted-foreground break-words">
+    {children}
+    {commandsLink && (
+      <>
+        {' '}
+        <Link to="/tool-reference" className="underline underline-offset-2 hover:text-foreground">
+          See commands
+        </Link>
+      </>
+    )}
+  </p>
+);
 
 // Vulnerability severities (#48) — the backend ORs the selected `has_*_vulns`
 // flags into one severity match, so this reads as one multi-select.  Tooltips
@@ -767,7 +824,13 @@ const HostFilters: React.FC<HostFiltersProps> = ({
           </div>
           <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-ports" id="hosts-filter-ports-label">Ports</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-ports"
+                id="hosts-filter-ports-label"
+                provenance="Populated by port scans — Nmap, Masscan, Naabu, RustScan."
+              >
+                Ports
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-ports"
                 multiple
@@ -777,11 +840,22 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('ports', values.length ? values : undefined)
                 }
                 placeholder="Select ports…"
-                emptyMessage={facetEmpty('No ports seen yet.')}
+                emptyMessage={facetEmpty('No ports yet — run a port scan (Nmap/Masscan).')}
               />
+              {portOptions.length === 0 && !optionsLoading && (
+                <FieldHint commandsLink>
+                  No ports yet — run a port scan (Nmap/Masscan) and upload it.
+                </FieldHint>
+              )}
             </div>
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-services" id="hosts-filter-services-label">Services</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-services"
+                id="hosts-filter-services-label"
+                provenance="Service names from version detection — nmap -sV (also Masscan/Naabu banners)."
+              >
+                Services
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-services"
                 multiple
@@ -791,15 +865,26 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('services', values.length ? values : undefined)
                 }
                 placeholder="Select services…"
-                emptyMessage={facetEmpty('No services seen yet.')}
+                emptyMessage={facetEmpty('No services yet — run nmap -sV.')}
               />
+              {serviceOptions.length === 0 && !optionsLoading && (
+                <FieldHint commandsLink>
+                  No services yet — run a version scan (nmap -sV) and upload it.
+                </FieldHint>
+              )}
             </div>
             {/* Port states control removed (v5.67.1) — in practice every
                 recorded port is "open" (closed/filtered are almost never
                 ingested), so the Open/Closed/Filtered picker was clutter.
                 The `portStates` param stays for DSL `portstate:` use. */}
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-tech" id="hosts-filter-tech-label">Technologies</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-tech"
+                id="hosts-filter-tech-label"
+                provenance="Web fingerprinting — httpx, WhatWeb."
+              >
+                Technologies
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-tech"
                 multiple
@@ -809,8 +894,13 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('tech', values.length ? values : undefined)
                 }
                 placeholder="Filter by tech stack (nginx, jenkins, …)"
-                emptyMessage={facetEmpty('No technologies fingerprinted yet.')}
+                emptyMessage={facetEmpty('No technologies yet — run httpx or WhatWeb.')}
               />
+              {techOptions.length === 0 && !optionsLoading && (
+                <FieldHint commandsLink>
+                  No technologies yet — run httpx or WhatWeb and upload the output.
+                </FieldHint>
+              )}
             </div>
           </div>
         </FilterSection>
@@ -832,18 +922,35 @@ const HostFilters: React.FC<HostFiltersProps> = ({
           </div>
           <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-os" id="hosts-filter-os-label">Operating system</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-os"
+                id="hosts-filter-os-label"
+                provenance="OS detection — nmap -O (also NetExec, Nessus)."
+              >
+                Operating system
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-os"
                 options={osOptions}
                 value={filters.osFilter ?? null}
                 onChange={(value) => handleFilterChange('osFilter', value ?? undefined)}
                 placeholder="Any"
-                emptyMessage={facetEmpty('No OSes seen yet.')}
+                emptyMessage={facetEmpty('No OS data yet — run nmap -O.')}
               />
+              {osOptions.length === 0 && !optionsLoading && (
+                <FieldHint commandsLink>
+                  No OS data yet — run OS detection (nmap -O) and upload it.
+                </FieldHint>
+              )}
             </div>
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-subnets" id="hosts-filter-subnets-label">Subnets</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-subnets"
+                id="hosts-filter-subnets-label"
+                provenance="Your uploaded scope / subnet definitions (not a scanner)."
+              >
+                Subnets
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-subnets"
                 multiple
@@ -853,11 +960,20 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('subnets', values.length ? values : undefined)
                 }
                 placeholder="Select subnets…"
-                emptyMessage={facetEmpty('No subnets configured.')}
+                emptyMessage={facetEmpty('No subnets yet — upload a scope/subnet file.')}
               />
+              {subnetOptions.length === 0 && !optionsLoading && (
+                <FieldHint>No subnets yet — upload a scope/subnet file to define your network.</FieldHint>
+              )}
             </div>
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-sites" id="hosts-filter-sites-label">Site</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-sites"
+                id="hosts-filter-sites-label"
+                provenance="Site names set on your uploaded subnets."
+              >
+                Site
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-sites"
                 multiple
@@ -867,11 +983,20 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('sites', values.length ? values : undefined)
                 }
                 placeholder="Select sites…"
-                emptyMessage={facetEmpty('No sites configured yet.')}
+                emptyMessage={facetEmpty('No sites yet — set a site on a subnet/scope.')}
               />
+              {siteOptions.length === 0 && !optionsLoading && (
+                <FieldHint>No sites yet — assign a site to a subnet or scope.</FieldHint>
+              )}
             </div>
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-tags" id="hosts-filter-tags-label">Tags</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-tags"
+                id="hosts-filter-tags-label"
+                provenance="Tags you create in-app on hosts."
+              >
+                Tags
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-tags"
                 multiple
@@ -881,13 +1006,20 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('tags', values.length ? values : undefined)
                 }
                 placeholder="Filter by tag…"
-                emptyMessage={facetEmpty('No tags created yet.')}
+                emptyMessage={facetEmpty('No tags yet — create one from a host.')}
               />
+              {tagOptions.length === 0 && !optionsLoading && (
+                <FieldHint>No tags yet — create one from a host's Tags menu.</FieldHint>
+              )}
             </div>
             <div className="space-y-xxs">
-              <Label htmlFor="hosts-filter-subnet-labels" id="hosts-filter-subnet-labels-label">
+              <FilterLabel
+                htmlFor="hosts-filter-subnet-labels"
+                id="hosts-filter-subnet-labels-label"
+                provenance="Labels you create in-app on subnets."
+              >
                 Subnet labels
-              </Label>
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-subnet-labels"
                 multiple
@@ -897,8 +1029,11 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('subnetLabels', values.length ? values : undefined)
                 }
                 placeholder="Filter by subnet label…"
-                emptyMessage={facetEmpty('No subnet labels created yet.')}
+                emptyMessage={facetEmpty('No subnet labels yet — create one in Subnet management.')}
               />
+              {subnetLabelOptions.length === 0 && !optionsLoading && (
+                <FieldHint>No subnet labels yet — create one in Subnet management.</FieldHint>
+              )}
             </div>
           </div>
         </FilterSection>
@@ -909,7 +1044,13 @@ const HostFilters: React.FC<HostFiltersProps> = ({
         <FilterSection title="Discovery">
           <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-xxs md:col-span-2 lg:col-span-2">
-              <Label htmlFor="hosts-filter-scans" id="hosts-filter-scans-label">Discovered in scans</Label>
+              <FilterLabel
+                htmlFor="hosts-filter-scans"
+                id="hosts-filter-scans-label"
+                provenance="Every scan you upload (any tool)."
+              >
+                Discovered in scans
+              </FilterLabel>
               <Combobox
                 id="hosts-filter-scans"
                 multiple
@@ -919,8 +1060,11 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                   handleFilterChange('scanIds', values.length ? values : undefined)
                 }
                 placeholder="Select scans…"
-                emptyMessage={facetEmpty('No scans available.')}
+                emptyMessage={facetEmpty('No scans yet — upload a scan file.')}
               />
+              {scanOptions.length === 0 && !optionsLoading && (
+                <FieldHint commandsLink>No scans yet — run a scan and upload the results.</FieldHint>
+              )}
             </div>
             <div className="space-y-xxs">
               <Label className="text-metadata text-transparent" aria-hidden>

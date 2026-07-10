@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import HostFilters from '../../components/HostFilters';
 
@@ -16,13 +17,15 @@ describe('HostFilters layout', () => {
 
   const renderFilters = () =>
     render(
-      <HostFilters
-        filters={{}}
-        onFiltersChange={vi.fn()}
-        availableData={null}
-        optionsLoading={false}
-        notesToggleVisible
-      />,
+      <MemoryRouter>
+        <HostFilters
+          filters={{}}
+          onFiltersChange={vi.fn()}
+          availableData={null}
+          optionsLoading={false}
+          notesToggleVisible
+        />
+      </MemoryRouter>,
     );
 
   it('drops the duplicate "Search hosts" field', () => {
@@ -57,13 +60,15 @@ describe('HostFilters layout', () => {
   it('offers a "My review queue" preset that filters to my unreviewed hosts', () => {
     const onFiltersChange = vi.fn();
     render(
-      <HostFilters
-        filters={{}}
-        onFiltersChange={onFiltersChange}
-        availableData={null}
-        optionsLoading={false}
-        notesToggleVisible
-      />,
+      <MemoryRouter>
+        <HostFilters
+          filters={{}}
+          onFiltersChange={onFiltersChange}
+          availableData={null}
+          optionsLoading={false}
+          notesToggleVisible
+        />
+      </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole('button', { name: /My review queue/i }));
     expect(onFiltersChange).toHaveBeenCalledWith(
