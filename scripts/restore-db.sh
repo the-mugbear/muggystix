@@ -24,27 +24,39 @@
 #   ./scripts/restore-db.sh --no-safety-backup    # skip the pre-restore safety backup
 #
 # Flags:
-#   --no-safety-backup   Don't take a fresh backup of the CURRENT database
-#                        before the restore overwrites it.  Use this only
-#                        when the current database is unrecoverable anyway
-#                        (out of disk, corrupt, …) and you accept the loss.
-#                        Default behaviour ABORTS the restore if the safety
-#                        backup fails, since the operator typed RESTORE
-#                        expecting recoverability.
+#   --no-safety-backup     Don't take a fresh backup of the CURRENT database
+#                          before the restore overwrites it.  Use this only
+#                          when the current database is unrecoverable anyway
+#                          (out of disk, corrupt, …) and you accept the loss.
+#                          Default behaviour ABORTS the restore if the safety
+#                          backup fails, since the operator typed RESTORE
+#                          expecting recoverability.
+#   --ignore-key-mismatch  Skip the credential-encryption-key check.  The
+#                          restore normally warns (and, interactively, asks for
+#                          a second confirmation) when the backup was encrypted
+#                          under a DIFFERENT key than this deployment's .env —
+#                          because that leaves restored MFA secrets and stored
+#                          credentials undecryptable.  Use this to proceed
+#                          unattended once you understand the consequence.
 #
 
 set -e
 
 # --- Parse flags (positional args follow) ---
 NO_SAFETY_BACKUP=0
+IGNORE_KEY_MISMATCH=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-safety-backup)
             NO_SAFETY_BACKUP=1
             shift
             ;;
+        --ignore-key-mismatch)
+            IGNORE_KEY_MISMATCH=1
+            shift
+            ;;
         -h|--help)
-            sed -n '2,30p' "$0"
+            sed -n '2,40p' "$0"
             exit 0
             ;;
         --)
@@ -85,6 +97,28 @@ fi
 env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d'=' -f2-; }
 PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
 PG_DB="$(env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
+
+# --- Credential-encryption key fingerprint (mirror of backup-db.sh) --------
+# Recomputes the one-way fingerprint of THIS deployment's key so we can compare
+# it to the value stamped in the backup's .meta.  See backup-db.sh for why.
+_sha256_hex() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 | sed 's/^.*= *//'
+    else
+        return 1
+    fi
+}
+key_fingerprint() {
+    local src
+    src="$(env_val CREDENTIAL_ENCRYPTION_KEY)"
+    [[ -z "$src" ]] && src="$(env_val SECRET_KEY)"
+    [[ -z "$src" ]] && return 1
+    printf 'networkmapper-keyfp-v1:%s' "$src" | _sha256_hex | cut -c1-16
+}
 
 BACKUP_DIR="$PROJECT_ROOT/backups"
 
@@ -151,6 +185,73 @@ fi
 
 [[ -f "$BACKUP_FILE" ]] || { print_error "Backup file not found: $BACKUP_FILE"; exit 1; }
 print_info "Selected: $BACKUP_FILE"
+
+# --- Credential-encryption key check ---------------------------------------
+# If the backup was taken under a different CREDENTIAL_ENCRYPTION_KEY/SECRET_KEY
+# than this .env holds, every restored TOTP secret and stored credential becomes
+# undecryptable — MFA silently stops working.  Warn loudly (and, interactively,
+# demand a second confirmation) before the operator commits.  Backups made
+# before this feature carry no fingerprint; we can't verify those, so we say so
+# rather than blocking.
+check_key_fingerprint() {
+    if [[ "$IGNORE_KEY_MISMATCH" -eq 1 ]]; then
+        print_warning "Skipping credential-encryption-key check (--ignore-key-mismatch)."
+        return 0
+    fi
+
+    local meta backup_fp current_fp
+    meta="${BACKUP_FILE}.meta"
+    backup_fp=""
+    [[ -f "$meta" ]] && backup_fp="$(grep -E '^key_fingerprint=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    current_fp="$(key_fingerprint 2>/dev/null || true)"
+
+    if [[ -z "$backup_fp" || "$backup_fp" == "unknown" ]]; then
+        print_warning "This backup carries no credential-encryption-key fingerprint"
+        print_warning "(made before this check, or with no key set) — can't verify it."
+        print_warning "If MFA fails to work after restore, the backup was encrypted under"
+        print_warning "a different SECRET_KEY/CREDENTIAL_ENCRYPTION_KEY than this .env holds."
+        return 0
+    fi
+    if [[ -z "$current_fp" ]]; then
+        print_warning "No SECRET_KEY/CREDENTIAL_ENCRYPTION_KEY set in this .env — can't"
+        print_warning "verify it matches the backup. Set it before users rely on MFA."
+        return 0
+    fi
+    if [[ "$backup_fp" == "$current_fp" ]]; then
+        print_success "Credential-encryption key matches the backup."
+        return 0
+    fi
+
+    # Mismatch — the dangerous case.
+    echo ""
+    print_error "==========================================================="
+    print_error "  CREDENTIAL-ENCRYPTION KEY MISMATCH"
+    print_error "==========================================================="
+    print_warning "This backup was encrypted under a DIFFERENT key than this"
+    print_warning "deployment's .env (backup: $backup_fp, current: $current_fp)."
+    print_warning ""
+    print_warning "If you restore now, for every user/account in the backup:"
+    print_warning "  • TOTP / 2FA will stop working (codes always rejected)"
+    print_warning "  • stored LLM / integration / webhook credentials won't decrypt"
+    print_warning "  (Recovery codes still work — they're hashed, not encrypted.)"
+    print_warning ""
+    print_warning "To keep them working, copy the SOURCE deployment's key into this"
+    print_warning ".env BEFORE restoring, then re-run:"
+    print_warning "    SECRET_KEY=<old value>              # and, if it was set,"
+    print_warning "    CREDENTIAL_ENCRYPTION_KEY=<old value>"
+    print_warning "(Leave POSTGRES_*, HOST_IP, CORS_ORIGINS as they are.)"
+    echo ""
+
+    if [[ ! -t 0 ]]; then
+        print_error "Non-interactive shell — aborting rather than silently breaking MFA."
+        print_error "Re-run with --ignore-key-mismatch to proceed anyway."
+        exit 1
+    fi
+    echo -n "Type 'KEYS-DIFFER' to acknowledge and restore anyway: "
+    read -r ack
+    [[ "$ack" == "KEYS-DIFFER" ]] || { print_info "Cancelled."; exit 0; }
+}
+check_key_fingerprint
 
 # --- Confirm (destructive) ---
 echo ""

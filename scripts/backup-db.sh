@@ -53,6 +53,34 @@ env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d'=' -f2-; }
 PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
 PG_DB="$(env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
 
+# --- Credential-encryption key fingerprint ---------------------------------
+# TOTP/2FA secrets and per-user LLM/integration/webhook credentials are stored
+# in the DB as Fernet ciphertext, keyed (via HKDF) off CREDENTIAL_ENCRYPTION_KEY
+# — or SECRET_KEY when that's unset — which lives ONLY in .env, never in the
+# database.  Restoring this dump onto a deployment with a different key leaves
+# every such secret undecryptable (MFA silently stops working).  We stamp a
+# one-way fingerprint of the key into the backup metadata so restore-db.sh can
+# warn on a mismatch.  It's a SALTED, TRUNCATED SHA-256 — enough to detect
+# "different key", never enough to help recover the key itself.
+_sha256_hex() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 | sed 's/^.*= *//'
+    else
+        return 1
+    fi
+}
+key_fingerprint() {
+    local src
+    src="$(env_val CREDENTIAL_ENCRYPTION_KEY)"
+    [[ -z "$src" ]] && src="$(env_val SECRET_KEY)"
+    [[ -z "$src" ]] && return 1   # no key configured — nothing to fingerprint
+    printf 'networkmapper-keyfp-v1:%s' "$src" | _sha256_hex | cut -c1-16
+}
+
 # Default OUTSIDE the project root (sibling dir) so an in-place folder-content
 # replace doesn't wipe the dump.  Override with BACKUP_DIR=/path.
 BACKUP_DIR="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
@@ -130,6 +158,7 @@ do_pgdump() {
         echo "database=$PG_DB"
         echo "alembic_revision=$rev"
         echo "app_version=$(env_val APP_VERSION)"
+        echo "key_fingerprint=$(key_fingerprint || echo unknown)"
     } > "$meta"
 
     print_success "Backup written: $out ($(du -h "$out" | cut -f1))"
@@ -157,6 +186,7 @@ do_volume_tar() {
         echo "type=volume"
         echo "created=$TS"
         echo "volume=$vol"
+        echo "key_fingerprint=$(key_fingerprint || echo unknown)"
     } > "$BACKUP_DIR/$out.meta"
     print_success "Backup written: $BACKUP_DIR/$out ($(du -h "$BACKUP_DIR/$out" | cut -f1))"
     print_warning "Raw volume snapshots restore only into the same PostgreSQL major version."
