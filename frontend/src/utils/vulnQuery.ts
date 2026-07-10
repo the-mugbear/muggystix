@@ -24,3 +24,16 @@ export const buildSameVulnQuery = (vuln: HostVulnerability): string | null => {
   if (title) return `vuln:"${escape(title)}"`;
   return null;
 };
+
+/**
+ * Vulnerability → "hosts with an exploit ON THIS PORT" host-query DSL predicate.
+ *
+ * Powers the port-scoped exploit pivot on a host's vuln rows. The backend
+ * `exploitport:` field correlates exploitability and port on the SAME finding
+ * (not `port:X AND has:exploit`, which matches a host with X open and an exploit
+ * on any other port). Only meaningful when the finding is itself flagged
+ * exploitable AND carries a port; returns null otherwise (the pivot is hidden).
+ * The value is a bare port number, so no DSL-string escaping is needed.
+ */
+export const buildExploitOnPortQuery = (vuln: HostVulnerability): string | null =>
+  vuln.exploitable && vuln.port_number != null ? `exploitport:${vuln.port_number}` : null;

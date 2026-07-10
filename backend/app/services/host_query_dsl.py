@@ -359,7 +359,7 @@ _HAS_KEYWORDS = {
     "notes": (lambda ctx: P.has_notes_predicate(ctx.db, ctx.project_id),
               "Has an analyst note (on the host or one of its ports)."),
     "exploit": (lambda ctx: P.has_exploit_predicate(ctx.db, ctx.project_id),
-                "Has a finding flagged exploitable by Nessus."),
+                "Has a finding flagged exploitable by a vulnerability scanner (currently Nessus)."),
     "tested": (lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
                "Has had an agentic test executed against it."),
     "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
@@ -405,23 +405,35 @@ def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return P.scan_predicate(ctx.db, ids)
 
 
-def _b_port(ctx: BuildCtx, values: List[str]) -> ColumnElement:
-    # RV-5 — validate here so a non-numeric value (``port:ssh``) is a 400,
-    # not a silent broadening.  Pre-fix the leaf dropped non-numeric values
-    # and an empty int list left the port subquery unfiltered → matched
-    # every host with any port.
+def _parse_ports(field: str, values: List[str]) -> List[int]:
+    # RV-5 — validate so a non-numeric value (``port:ssh``) is a 400, not a
+    # silent broadening.  Pre-fix the leaf dropped non-numeric values and an
+    # empty int list left the port subquery unfiltered → matched every host
+    # with any port.  Shared by ``port:`` and ``exploitport:``.
     ports = []
     for v in values:
         s = str(v).strip()
         if not s.isdigit():
-            raise DSLError(f"port: expects a number, got '{v}' (try service: for a name)")
+            raise DSLError(f"{field}: expects a number, got '{v}' (try service: for a name)")
         n = int(s)
         if not (0 <= n <= 65535):
-            raise DSLError(f"port: out of range 0-65535, got '{v}'")
+            raise DSLError(f"{field}: out of range 0-65535, got '{v}'")
         ports.append(n)
     if not ports:
-        raise DSLError("port: requires at least one numeric value")
+        raise DSLError(f"{field}: requires at least one numeric value")
+    return ports
+
+
+def _b_port(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    # Validate BEFORE touching ctx — a bad value is a 400 regardless of context
+    # (and unit tests exercise the validation with a null ctx).
+    ports = _parse_ports("port", values)
     return P.port_predicate(ctx.db, ports)
+
+
+def _b_exploitport(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    ports = _parse_ports("exploitport", values)
+    return P.exploit_on_port_predicate(ctx.db, ports, ctx.project_id)
 
 
 def _b_follow(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -502,6 +514,9 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="A finding’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
     FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True,
               description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
+    FieldSpec("exploitport", _b_exploitport, value_source="port",
+              description="A port carrying a finding flagged exploitable by a vulnerability "
+                          "scanner (currently Nessus) — the exploit is on THIS port (same-row)."),
     FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True,
               description="HTTP Server response header — httpx."),
     FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True,

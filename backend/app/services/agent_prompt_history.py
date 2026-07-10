@@ -21,6 +21,18 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.39.0",
+        "app_version": "2.230.0",
+        "summary": (
+            "New host-query DSL field `exploitport:<port>` — matches hosts whose "
+            "exploitable finding is ON that port (same-row correlation), stricter "
+            "than `port:X AND has:exploit` (X open AND any exploit anywhere). "
+            "Available anywhere the DSL is (`GET /agent/assist/hosts?q=`). "
+            "Exploitability remains a source-agnostic boolean (Nessus today). "
+            "Additive; no endpoint or field removed."
+        ),
+    },
+    {
         "version": "1.38.0",
         "app_version": "2.202.0",
         "summary": (

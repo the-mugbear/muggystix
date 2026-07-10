@@ -353,12 +353,47 @@ def severity_predicate(db: Session, severities: Iterable[str], project_id: int) 
 
 
 def has_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host has a vulnerability flagged exploitable by Nessus (project-scoped)."""
+    """Host has a vulnerability flagged exploitable (project-scoped).
+
+    Source-agnostic: reads ``Vulnerability.exploitable``, which only the Nessus
+    path populates today — the moment another scanner sets it, its rows match
+    here with no change.  See ``exploit_on_port_predicate`` for the port-scoped
+    variant."""
     _H = aliased(models.Host)
     sub = (
         db.query(Vulnerability.host_id)
         .join(_H, _H.id == Vulnerability.host_id)
         .filter(_H.project_id == project_id, Vulnerability.exploitable.is_(True))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def exploit_on_port_predicate(
+    db: Session, ports: Sequence[int], project_id: int
+) -> ColumnElement:
+    """Host has an exploitable finding whose port is one of ``ports`` — same-row
+    correlation (the exploit AND the port are on the SAME vulnerability), so it
+    does NOT reduce to ``port:X AND has:exploit`` (which matches a host with X
+    open and an exploit on any *other* port).
+
+    The inner join on ``port_id`` drops host-level (``port_id IS NULL``)
+    exploitable findings — correct, since a host-level exploit isn't 'on a port'.
+    ``ports`` are port NUMBERS (what the user types), matched via the joined Port
+    row.  Source-agnostic on ``exploitable`` (see ``has_exploit_predicate``)."""
+    port_ints = [int(p) for p in ports]
+    if not port_ints:
+        return false()
+    _H = aliased(models.Host)
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .join(models.Port, models.Port.id == Vulnerability.port_id)
+        .filter(
+            _H.project_id == project_id,
+            Vulnerability.exploitable.is_(True),
+            models.Port.port_number.in_(port_ints),
+        )
         .distinct()
     )
     return models.Host.id.in_(sub)

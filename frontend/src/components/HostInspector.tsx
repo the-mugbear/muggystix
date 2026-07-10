@@ -33,6 +33,7 @@ import {
   ClipboardList,
   Computer,
   Copy,
+  Crosshair,
   ExternalLink,
   Eye,
   Flag,
@@ -86,7 +87,7 @@ import type {
   ReviewConclusion,
 } from '../services/api';
 import { buildHostsUrl } from '../utils/drilldownLinks';
-import { buildSameVulnQuery } from '../utils/vulnQuery';
+import { buildSameVulnQuery, buildExploitOnPortQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
 import { StructuredTestCard } from './ProposedTestList';
@@ -276,6 +277,20 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const handleQueryHosts = useCallback(
     (vuln: HostVulnerability) => {
       const q = buildSameVulnQuery(vuln);
+      if (!q) return;
+      if (onQueryHosts) onQueryHosts(q);
+      else navigate(buildHostsUrl({ q }));
+    },
+    [onQueryHosts, navigate],
+  );
+
+  // Pivot a vuln to the host inventory filtered to every host with an
+  // exploitable finding ON THIS PORT (same-row correlation, not "port open
+  // anywhere AND exploit anywhere"). Same close-sheet-or-navigate contract as
+  // handleQueryHosts. Only wired up when the vuln is exploitable + has a port.
+  const handleQueryExploitPort = useCallback(
+    (vuln: HostVulnerability) => {
+      const q = buildExploitOnPortQuery(vuln);
       if (!q) return;
       if (onQueryHosts) onQueryHosts(q);
       else navigate(buildHostsUrl({ q }));
@@ -2107,6 +2122,25 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     </Badge>
                     {vuln.exploitable && (
                       <Badge variant="destructive">Exploit available</Badge>
+                    )}
+                    {/* Pivot to every host with an exploitable finding ON THIS
+                        PORT (same-row; distinct from "port open AND exploit
+                        anywhere"). Only when the finding is exploitable + ported. */}
+                    {buildExploitOnPortQuery(vuln) && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost" size="icon"
+                            onClick={() => handleQueryExploitPort(vuln)}
+                            aria-label={`Find hosts with an exploit on port ${vuln.port_number}`}
+                          >
+                            <Crosshair className="size-3.5" aria-hidden />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Find hosts with an exploit on this port (:{vuln.port_number})
+                        </TooltipContent>
+                      </Tooltip>
                     )}
                     {/* Pivot to the host inventory filtered to every host with
                         this same vulnerability (by CVE, else by finding title).

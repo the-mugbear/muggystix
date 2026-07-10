@@ -252,6 +252,12 @@ def upsert_vulnerability(
     cve_id: Optional[str] = None,
     solution: Optional[str] = None,
     references: Optional[list[str]] = None,
+    # Onboarding seam for exploitability: this shared helper does NOT set
+    # `Vulnerability.exploitable` today — only the Nessus path
+    # (VulnerabilityService) does.  To let another scanner (e.g. Qualys) feed the
+    # source-agnostic `has:exploit` / `exploitport:` filters, add an
+    # `exploitable: bool = False` param here, set it on the row below, and have
+    # that parser compute it (à la nessus_parser._is_exploitable).
 ) -> Vulnerability:
     query = db.query(Vulnerability).filter(
         Vulnerability.host_id == host_id,
