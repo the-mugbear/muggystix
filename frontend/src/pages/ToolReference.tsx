@@ -53,8 +53,14 @@ interface ToolEntry {
  * flag) that produces a file BlueStick can upload.  `note` explains what to
  * upload / any gotcha.  Kept as a sibling map (not inlined on every TOOLS row)
  * so the ~200-char catalogue lines stay readable; grounded in AGENTS.md's
- * "Supported upload formats" table and documentation/UPLOAD_FORMATS.md — keep
- * the two aligned.  `<target>` / list files are placeholders the operator fills.
+ * "Supported upload formats" table and documentation/UPLOAD_FORMATS.md.
+ * `<target>` / list files are placeholders the operator fills.
+ *
+ * SOURCE OF TRUTH for the output-extension contract:
+ *   backend/app/services/tool_output_contract.py
+ * A backend test (backend/tests/test_tool_command_consistency.py) fails if any
+ * run command here writes an extension that tool's parser can't ingest — so
+ * this map, the backend recon catalog, and the two docs can't silently drift.
  */
 interface RunCommand {
   run: string;

@@ -143,6 +143,11 @@ def build_tool_catalog(
     scope appears first.  Pre-v2.13.0 nmap always led, which caused
     agents to pick it even on /16 scopes where it takes hours.  The
     rest of the catalog is order-stable.
+
+    Each entry's ``output_format`` and the output flag in ``command`` are pinned
+    against ``tool_output_contract.TOOL_OUTPUT_CONTRACT`` by
+    ``tests/test_tool_command_consistency.py`` — a command whose output an
+    ingestion parser can't read fails that test.  Keep new tools in the contract.
     """
     # Space-joined for tools that accept multiple positional CIDRs (nmap, masscan).
     # Comma-joined for tools whose `-a` flag wants a single comma-delimited arg (rustscan).
