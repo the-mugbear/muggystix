@@ -765,6 +765,11 @@ case $DEPLOY_CHOICE in
         # Clean up .env so first-time setup starts fresh
         rm -f .env
 
+        # The database is gone, so the first-boot admin credential file no
+        # longer opens anything — remove it so the next deploy's freshly
+        # generated credential is the only one an operator can find.
+        rm -f uploads/initial-admin-password.txt
+
         print_success "BlueStick containers, volumes, and images removed."
         print_info "Other Docker projects on this system were NOT affected."
         ;;

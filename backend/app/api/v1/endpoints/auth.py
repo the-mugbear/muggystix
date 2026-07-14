@@ -640,7 +640,8 @@ def change_password(
     # happened — it must not outlive the forced first-login change (C4).
     try:
         import os
-        os.unlink(os.path.join("/app", "uploads", "initial-admin-password.txt"))
+        from app.startup import admin_marker_path
+        os.unlink(admin_marker_path())
     except OSError:
         pass  # already gone / never existed / operator-supplied password
 
