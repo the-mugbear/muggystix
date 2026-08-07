@@ -399,7 +399,7 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 **Adding a new UI feature.**
 1. Route pages belong in `frontend/src/pages/`; shared components in `frontend/src/components/`.
 2. Reuse `services/api.ts` typed clients and the shared `uiStyles.ts` helpers. Never write one-off ellipsis `sx` blocks — import `singleLineEllipsisSx`, `twoLineClampSx`, etc.
-3. Test worst-case data (200-char hostname, long filename, null values, empty arrays) at mobile and desktop widths.
+3. Test worst-case data (200-char hostname, long filename, null values, empty arrays) at desktop widths, including a narrowed window. Desktop-only product — no mobile layouts (UI_STYLE_GUIDE.md §3).
 4. Before shipping: type check clean under strict mode, handle Pydantic 422 shapes in error paths.
 
 **Adding a new service layer module.**

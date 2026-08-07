@@ -57,11 +57,23 @@ No component may assume:
   - clamp
   - collapse behind a detail surface
 
-### 3. Responsive Behavior
-- Every page must work at mobile, tablet, and desktop widths.
-- Dense desktop layouts must define a smaller-screen fallback (mobile cards via `md:hidden`, desktop table via `hidden md:block` — CSS-only, no `useMediaQuery`).
-- Horizontal scroll is allowed only inside intentional subregions, not on the page body.
-- If a table is not usable on small screens, it must collapse into a stacked layout or card view.
+### 3. Viewport Behavior — desktop only
+**BlueStick is a desktop-browser application.** It is an operator tool used at a
+workstation alongside a terminal; there is no mobile or tablet target, and pages
+are not expected to be usable on a phone.
+
+- **Do not build mobile card fallbacks.** The `md:hidden` card list / `hidden
+  md:block` table swap is a retired pattern — `Hosts.tsx` deliberately dropped
+  its mobile card layout, and new pages must not reintroduce one. A dense table
+  is the correct and only rendering.
+- **Horizontal scroll inside a table is fine** at narrow widths. That is the
+  intended degradation, not a defect to design around.
+- The page **body** must still never scroll horizontally — wide content scrolls
+  inside its own container. This rule is about not breaking the shell, and is
+  unrelated to small-screen support.
+- Layouts should stay sane when a desktop window is resized or the browser is
+  zoomed, because that happens in normal use. That is the extent of the
+  responsiveness requirement.
 
 ## Data Display Rules
 
@@ -126,7 +138,7 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
   - fixed width via `<TableHead className="w-[10%]">` or `<th style={{ width: 120 }}>`
   - min/max width via `min-w-[…]` / `max-w-[…]`
   - truncation via `<TableCell className="truncate">`
-  - responsive hide/collapse via `hidden md:table-cell`
+  - collapse behind a detail surface when a column is low-value
 - Action columns must stay visible regardless of neighboring content length.
 - Cells containing long content must not rely on default browser table sizing.
 - Bulk text should not be shown fully inline in dense tables.
@@ -180,9 +192,11 @@ When a row has many fields, lead the eye in this order:
 
 If a cell ends up holding three or more chips of similar weight, that's the cue to demote most of them to text.
 
-#### Mobile cards
+#### Card surfaces
 
-A mobile card is not the desktop row with smaller widths.  Collapse to:
+Cards exist for dashboards and detail panels, not as a small-screen fallback for
+tables (see §3 — there is no mobile target). Where a card is the right surface,
+the same density discipline applies:
 
 - ≤ 2 chips at the top (state + alert-when-firing, or state + interactive control).
 - One metadata sentence underneath (dot-separated: `12 open · 3 notes · Linux · viewed 2h ago`).
@@ -334,7 +348,6 @@ When adding a new field from the backend:
 - define formatting
 - define empty behavior (use `safeFallback()`)
 - define overflow behavior (truncate / wrap / clamp / collapse)
-- define responsive behavior
 - decide whether it belongs inline, clamped, or in a detail surface
 
 A new field is not complete if it only renders correctly for short fixture values.
@@ -367,10 +380,11 @@ Verify behavior with:
 
 ### 29. Layout Stress Tests
 Verify behavior at:
-- mobile width (< 768px)
-- tablet width
 - standard desktop width
+- a narrowed desktop window (the table scrolls horizontally; the shell does not)
 - zoomed browser UI if practical
+
+Mobile and tablet widths are **not** targets — see §3.
 
 Confirm:
 - no page-level overflow
@@ -390,7 +404,7 @@ Follow the UI style guide (Tailwind v4 + Radix primitives + lucide-react).
 - Prevent page-level horizontal overflow.
 - Do not let long values resize cards, tables, chips, buttons, or action areas unpredictably.
 - Add explicit truncation, wrapping, or clamping behavior where needed.
-- Preserve mobile and desktop usability (CSS-only swap via md:hidden / hidden md:block).
+- Target desktop browsers only — no mobile card fallbacks (see §3).
 - Handle loading, empty, and error states for new data surfaces.
 - Reuse the v4 primitives from src/components/ui/ instead of building inline.
 - Use semantic tokens (bg-card, text-muted-foreground, etc.) rather than raw colors.
@@ -418,7 +432,7 @@ LLM-generated changes must be reviewed for:
 - long values do not break layout
 - null and empty values render safely
 - loading and error states are handled
-- mobile and desktop layouts are both usable
+- the layout holds up when the desktop window is narrowed or zoomed
 - actions remain visible and aligned
 - no page-level horizontal overflow exists
 - formatting is consistent with existing patterns or shared utilities
