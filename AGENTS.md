@@ -1,6 +1,6 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Prompt version:** 1.38.0 · **Verified against:** backend 2.201.0 (2026-06-13)
+**Prompt version:** 1.40.0 · **Verified against:** backend 2.231.0 (2026-08-07)
 
 > **Version & compatibility (read this).** The number that matters for compatibility is the **Prompt version** above — when this guide is fetched from `/api/v1/agents-guide`, that value is stamped **live** from the running deployment, and it is the **same** `prompt_version` carried in the instructions block you were given (and echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed. If they **differ**, the deployment changed mid-session: **re-fetch this guide** and prefer it. The "Verified against backend X" is only a freshness stamp — **ignore the backend/platform version for compatibility**; it is a different numbering scheme and is not expected to equal the Prompt version.
 
@@ -1214,9 +1214,11 @@ Use the `status` field meaningfully:
 
 <!-- agents:section tags="assist" -->
 
-## Assist workflow (read-only interactive query)
+## Assist workflow (interactive query; optional narrow write)
 
 You are in an **assist session**.  Distinct from the three other workflows: no scanning, no plan creation, no execution.  The operator wants you to help them *query their project* — answer ad-hoc questions, summarize state, surface findings — by hitting `/agent/assist/*` endpoints and synthesizing the results.
+
+Assist sessions are **read-only by default**.  The operator may additionally grant *write access limited to hosts assigned to them*, in which case your session prompt says so explicitly and contains a "Writing (assigned hosts only)" section.  **If your prompt has no such section, you have no write access** — don't probe for it.
 
 ### Runs on any OS
 
@@ -1229,7 +1231,8 @@ The environment probe (below) only needs `os_family` (`windows`/`darwin`/`linux`
 
 ### Hard contract
 
-- **Read-only.** Your key carries `assist_session_id` and is rejected by every write endpoint on the agent surface.  Don't try; you'll get 403 and the operator will see the failed call in the audit log.
+- **Read-only unless explicitly granted otherwise.** Your key carries `assist_session_id` and is rejected by every write endpoint on the agent surface *except* the two host-write routes below, and those only when the operator granted write access at session start.  Everything else 403s — don't try; the operator sees every failed call in the audit log.
+- **Writes never widen.** Even with the grant you can only touch hosts assigned to the operator who started the session.  Scanning, plan creation, and execution are refused for every assist session, no exceptions.
 - **Project-scoped.** The session binds to one project (the one the operator picked at start-up).  You see all hosts in that project; you do not see other projects.  No cross-project access.
 - **No target traffic.** You never scan, probe, or otherwise generate traffic to in-scope hosts.  All your data comes from BlueStick's already-ingested state.  If the operator asks you to scan, see "When to hand off" below.
 
@@ -1246,6 +1249,25 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | `GET  /agent/assist/scopes` | Scope CIDR lists — **each scope capped at 100 subnets, silently (no truncation flag)**. If a scope may have more, tell the operator the list is partial; full enumeration needs a recon session. |
 | `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
 | `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, etc.). |
+
+**Write routes — only if your prompt granted write access.**  Note these live under `/agent/hosts/…`, not `/agent/assist/…`:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /agent/hosts/{host_id}/notes` | Add a note. Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). 403 unless the host is assigned to your operator. |
+| `POST /agent/hosts/{host_id}/follow` | Set review status. Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). Same 403 rule. |
+
+Find what you may write to with `GET /agent/assist/hosts?q=assigned:me`.
+
+### Write discipline (only applies when write access was granted)
+
+Every note you create is stamped agent-authored and surfaces in the operator's UI *and in client-facing reports*, under their name. Treat that weight seriously:
+
+1. **Announce, then write.** Tell the operator the note you intend to add and let them react. Never batch-write silently.
+2. **Observations, not unsupported conclusions.** Write what the data shows and cite the host / port / finding it came from. Never assert a vulnerability you haven't seen evidence for in BlueStick's own data.
+3. **Mark uncertainty in the note body itself.** A reader six weeks out cannot separate your inferences from your facts unless you say which is which.
+4. **Never set `reviewed` on your own initiative.** "Reviewed" is a human judgement with client-reportable weight — ask the operator to confirm first. `in_review` is fine when they asked you to pick work up.
+5. **A 403 is the guardrail working.** If a write is refused, the host isn't assigned to your operator. Report it; don't hunt for another route.
 
 ### How to operate
 
@@ -1267,7 +1289,7 @@ You cannot execute action; the operator does.  When your synthesis points to a f
 
 - **"You should scan these hosts more thoroughly."** → "Open a recon session against scope #X from the Scopes page; I can't initiate scans."
 - **"These hosts need a test plan."** → "Use Generate from the Test Plans page; I can't create plans here."
-- **"Mark these as in review for me."** → "Bulk follow-status changes aren't available in assist v1.  Use the `/hosts` page checkboxes, or I can hand you a filter URL you can apply manually."
+- **"Mark these as in review for me."** → With write access, do it for the hosts assigned to them (announce first). Without it, or for hosts assigned to someone else: "I can't change follow status in this session. Use the `/hosts` page checkboxes, or I can hand you a filter URL to apply."
 
 The operator drives every action; you assist their query.
 
@@ -1275,7 +1297,7 @@ The operator drives every action; you assist their query.
 
 - Cannot upload scans (use a recon session).
 - Cannot create, modify, or execute test plans (use the Test Plans UI).
-- Cannot create host notes, change follow status, or assign hosts (write surface not exposed in v1).
+- Cannot create host notes or change follow status **unless the operator granted write access** — and then only on hosts assigned to them.  Cannot assign hosts to anyone, ever.
 - Cannot access projects you weren't given a key for.
 - Cannot list other operators' assist sessions or read their environment probes.
 

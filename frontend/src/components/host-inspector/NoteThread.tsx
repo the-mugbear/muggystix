@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Flag, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
+import { AgentAuthorBadge } from '../AgentAuthorBadge';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import {
@@ -133,6 +134,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
               </Link>
             )}
             <span className="text-metadata font-semibold">{authorLabel}</span>
+            <AgentAuthorBadge actorType={note.actor_type} />
             <span className="text-caption text-muted-foreground">
               {new Date(note.created_at).toLocaleString()}
               {note.updated_at && ' · edited'}

@@ -119,6 +119,10 @@ class Annotation(AnnotationBase):
     note_type: Optional[str] = None
     resolution_summary: Optional[str] = None
     pinned: bool = False
+    # 'user' (a human typed it) or 'agent' (an AI assist session wrote it on
+    # the operator's behalf).  ``author_id`` is the operator in both cases, so
+    # this is the only thing distinguishing the two in the UI and in reports.
+    actor_type: str = "user"
     # Set when this thread root has been promoted to a finding — drives the
     # note's "promoted" badge + link and guards a duplicate promote.
     finding_id: Optional[int] = None

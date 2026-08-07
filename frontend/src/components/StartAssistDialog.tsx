@@ -50,6 +50,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   onSessionStarted,
 }) => {
   const [purpose, setPurpose] = useState('');
+  const [canWrite, setCanWrite] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<StartAssistResponse | null>(null);
@@ -59,6 +60,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
 
   const reset = useCallback(() => {
     setPurpose('');
+    setCanWrite(false);
     setLoading(false);
     setError(null);
     setResult(null);
@@ -73,6 +75,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     try {
       const resp = await startAssistSession({
         purpose: purpose.trim() || undefined,
+        can_write_assigned: canWrite,
       });
       setResult(resp);
     } catch (err) {
@@ -81,6 +84,11 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
       setLoading(false);
     }
   };
+
+  // Read back what the server actually granted rather than trusting the
+  // checkbox — the two can diverge (e.g. a future policy that refuses the
+  // grant), and the operator needs to know which one they got.
+  const grantedWrite = (result?.capabilities?.length ?? 0) > 0;
 
   const copyKey = async () => {
     if (!result) return;
@@ -141,11 +149,11 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                 lockstep with backend ASSIST_KEY_DEFAULT_TTL_HOURS
                 and respects any AGENT_KEY_TTL_HOURS env override.
                 Falls back to "4" before the response lands. */}
-            Mints a read-only, project-scoped agent API key ({result?.key_ttl_hours ?? 4} h TTL) and shows
+            Mints a project-scoped agent API key ({result?.key_ttl_hours ?? 4} h TTL) and shows
             the prompt to paste into Claude Code / Codex / Cursor. The agent
-            can read host inventory, scope CIDRs, and scan summaries — it cannot
-            scan, create plans, execute tests, or change host follow status.
-            The key is shown once; copy it before closing.
+            can read host inventory, scope CIDRs, and scan summaries — it can
+            never scan, create plans, or execute tests. The key is shown once;
+            copy it before closing.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-md">
@@ -174,6 +182,27 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   disabled={loading}
                 />
               </div>
+              <div className="flex flex-col gap-xxs rounded-control border border-border p-sm">
+                <label className="flex items-start gap-xs">
+                  <Checkbox
+                    checked={canWrite}
+                    onCheckedChange={(v) => setCanWrite(v === true)}
+                    disabled={loading}
+                    aria-label="Allow writing to hosts assigned to me"
+                  />
+                  <span className="flex flex-col gap-xxs">
+                    <span className="text-metadata font-semibold">
+                      Let the agent write to hosts assigned to me
+                    </span>
+                    <span className="text-caption text-muted-foreground">
+                      Adds host notes and review status only, and only on hosts
+                      currently assigned to you. Everything else stays read-only.
+                      Notes the agent writes are attributed to you and marked
+                      &ldquo;Agent&rdquo;.
+                    </span>
+                  </span>
+                </label>
+              </div>
               {error && (
                 <Alert variant="destructive">
                   <AlertDescription>{error}</AlertDescription>
@@ -186,6 +215,23 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                 <AlertDescription>
                   Assist session <strong>#{result.assist_session_id}</strong>{' '}
                   started for project <strong>{result.project_name}</strong>.
+                </AlertDescription>
+              </Alert>
+              <Alert variant={grantedWrite ? 'warning' : 'info'}>
+                <AlertDescription>
+                  {grantedWrite ? (
+                    <>
+                      This session can <strong>add notes and set review status
+                      on hosts assigned to you</strong>. It cannot touch any other
+                      host, scan, create plans, or execute tests. Notes it writes
+                      appear under your name with an &ldquo;Agent&rdquo; badge.
+                    </>
+                  ) : (
+                    <>
+                      This session is <strong>read-only</strong>. It can query
+                      project data but cannot change anything.
+                    </>
+                  )}
                 </AlertDescription>
               </Alert>
               <div>

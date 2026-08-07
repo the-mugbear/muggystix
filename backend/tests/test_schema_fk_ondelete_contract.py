@@ -57,6 +57,7 @@ EXPECTED_ONDELETE = {
     ('agent_sessions', 'project_id'): 'CASCADE',
     ('agent_sessions', 'scope_id'): 'CASCADE',
     ('agent_sessions', 'started_by_id'): 'SET NULL',
+    ('annotations', 'agent_session_id'): 'SET NULL',
     ('annotations', 'assignee_id'): 'SET NULL',
     ('annotations', 'finding_id'): 'CASCADE',
     ('annotations', 'host_id'): 'CASCADE',

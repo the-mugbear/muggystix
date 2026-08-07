@@ -17,8 +17,14 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.db.models import HostFollow
 from app.db.models_auth import User, UserRole, APIKey
-from app.db.models_agent import Agent, AgentApiCall
+from app.db.models_agent import (
+    Agent,
+    AgentApiCall,
+    AgentCapabilityConstraint,
+    LEGACY_WRITE_CAPABILITIES,
+)
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.security import check_permissions
 
@@ -67,6 +73,109 @@ _AGENT_RECENT_CALLS_LOCK = threading.Lock()
 # rate window has fully drained (idle/dead agents), so the map stays bounded by
 # ACTIVE agents rather than every distinct agent seen since restart.
 _AGENT_RECENT_CALLS_SWEEP_AT = 1024
+
+
+def resolve_capabilities(*, workflow, agent_session) -> tuple[frozenset, str | None]:
+    """Return ``(capabilities, constraint)`` for an authenticated key.
+
+    ``workflow`` says which surface a key may reach; capabilities say how
+    much authority it carries there.  The two are deliberately separate so a
+    write endpoint can state its own requirement positively instead of every
+    handler re-deriving "…but not assist".
+
+    Only assist sessions consult the stored ``capabilities`` column.  Plan,
+    execution, recon, and legacy unscoped keys have always been able to write
+    notes / follow state / execution results, so they resolve to
+    :data:`LEGACY_WRITE_CAPABILITIES` unconditionally — the gate rolls out
+    without changing what any existing key can do.  Assist sessions start at
+    ``[]`` (read-only, today's behaviour) and only gain writes when the
+    operator explicitly grants them at mint time.
+    """
+    if workflow != "assist":
+        return LEGACY_WRITE_CAPABILITIES, None
+    if agent_session is None:
+        # Fail closed: an assist-scoped key with no session row to read the
+        # grant from gets nothing.
+        return frozenset(), None
+    stored = agent_session.capabilities or []
+    return frozenset(stored), agent_session.capability_constraint
+
+
+def require_capability(capability: str):
+    """Dependency factory: require *capability* on the calling agent key.
+
+    Fails closed.  An endpoint that declares nothing grants nothing, so a
+    newly-added write route cannot silently inherit authority it was never
+    meant to have — the failure mode the previous per-handler deny guards
+    had (forget the guard, and read-only keys could write).
+
+    Pair with :func:`enforce_capability_row_scope` on host-targeted writes to
+    apply the row-level constraint (e.g. "assigned hosts only").
+    """
+    def _dep(
+        request: Request,
+        agent: Agent = Depends(check_agent_rate_limit),
+    ) -> Agent:
+        caps = getattr(request.state, "key_capabilities", None) or frozenset()
+        if capability not in caps:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"This API key does not carry the '{capability}' capability. "
+                    "Assist sessions are read-only unless the operator granted "
+                    "write access when starting the session; start a new assist "
+                    "session with write access enabled, or use the UI."
+                ),
+            )
+        return agent
+    return _dep
+
+
+def enforce_capability_row_scope(
+    request: Request, db: Session, *, host_id: int
+) -> None:
+    """Apply the key's row-level constraint to a host-targeted write.
+
+    No constraint (plan / recon / legacy keys) is a no-op.  Under
+    ``ASSIGNED``, the host must be assigned to the session's own operator —
+    a ``host_follows`` row for ``started_by_id`` with ``assigned_at`` set,
+    which is exactly what the ``assigned:me`` host filter resolves.  Raises
+    403 otherwise.
+    """
+    constraint = getattr(request.state, "key_capability_constraint", None)
+    if constraint != AgentCapabilityConstraint.ASSIGNED.value:
+        return
+
+    operator_id = getattr(request.state, "key_operator_id", None)
+    if operator_id is None:
+        # The grant is meaningless without an operator to resolve it against.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This key's write access is limited to hosts assigned to the "
+                "operator who started the session, but no operator is bound to "
+                "it. Start a new session."
+            ),
+        )
+
+    assigned = (
+        db.query(HostFollow.id)
+        .filter(
+            HostFollow.host_id == host_id,
+            HostFollow.user_id == operator_id,
+            HostFollow.assigned_at.isnot(None),
+        )
+        .first()
+    )
+    if assigned is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Host {host_id} is not assigned to you. This session may only "
+                "write to hosts assigned to the operator who started it — ask a "
+                "project lead to assign the host, or make the change in the UI."
+            ),
+        )
 
 
 def get_current_agent(
@@ -204,6 +313,21 @@ def get_current_agent(
         request.state.key_plan_id = None
     request.state.agent_session_id = (
         agent_session.id if agent_session is not None else None
+    )
+
+    # Effective authority for this key.  Read access is implicit; only writes
+    # are enumerated.  See ``resolve_capabilities`` for why non-assist
+    # workflows don't consult the stored column.
+    caps, constraint = resolve_capabilities(
+        workflow=request.state.key_workflow, agent_session=agent_session
+    )
+    request.state.key_capabilities = caps
+    request.state.key_capability_constraint = constraint
+    # The human this session acts on behalf of.  Row-level constraints
+    # ("assigned to me") resolve against this, and agent-authored notes are
+    # attributed to them with actor_type='agent'.
+    request.state.key_operator_id = (
+        agent_session.started_by_id if agent_session is not None else None
     )
 
     # v2.24.0 — agent_api_call middleware reads these after the response

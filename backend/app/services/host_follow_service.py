@@ -169,6 +169,8 @@ class HostFollowService:
         body: str,
         status: NoteStatus = NoteStatus.OPEN,
         parent_id: Optional[int] = None,
+        actor_type: str = "user",
+        agent_session_id: Optional[int] = None,
     ) -> Annotation:
         # Security fix: previously trusted ``parent_id`` verbatim, so a
         # note on host A in Project A could be threaded under a note on
@@ -185,7 +187,17 @@ class HostFollowService:
             )
             if parent is None:
                 raise ValueError("parent_id must reference a note on the same host")
-        note = Annotation(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
+        # ``user_id`` is the operator either way; ``actor_type`` records whether
+        # they typed it or an agent wrote it on their behalf.
+        note = Annotation(
+            host_id=host_id,
+            user_id=user_id,
+            body=body,
+            status=status,
+            parent_id=parent_id,
+            actor_type=actor_type,
+            agent_session_id=agent_session_id,
+        )
         self.db.add(note)
         self.db.flush()  # assign note.id before stamping thread_root_id
         # Persist the thread root (review #5): a root note points at itself;

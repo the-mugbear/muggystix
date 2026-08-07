@@ -17,11 +17,23 @@ export interface StartAssistResponse {
   // hardcoding "4 h" so an env override (or future ASSIST_KEY_TTL
   // bump) doesn't require a frontend change in lockstep.
   key_ttl_hours: number;
+  // What the session may do beyond reading (e.g. ["write:follow","write:notes"]),
+  // and how narrowly ("assigned" = only hosts assigned to the operator).
+  // Echoed back so the dialog states the granted authority rather than
+  // assuming its own checkbox took effect.
+  capabilities: string[];
+  capability_constraint: string | null;
 }
 
 export interface StartAssistRequest {
   purpose?: string;
   ttl_hours?: number;
+  /**
+   * Let the session write host notes and set review status, limited to hosts
+   * assigned to the operator starting it. Defaults to false — assist is
+   * read-only unless the operator opts in.
+   */
+  can_write_assigned?: boolean;
 }
 
 export interface AssistSessionRow {
@@ -35,6 +47,9 @@ export interface AssistSessionRow {
   ended_at: string | null;
   last_activity_at: string | null;
   environment_probed: boolean;
+  // Audit: which sessions carried write authority, and how narrowly.
+  capabilities: string[];
+  capability_constraint: string | null;
 }
 
 export const startAssistSession = async (

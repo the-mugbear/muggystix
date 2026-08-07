@@ -12,6 +12,7 @@ import {
   NotificationItem,
 } from '../services/api';
 import { formatStatusLabel, getNoteStatusChipColor } from '../utils/statusMeta';
+import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Card, CardContent } from '../components/ui/card';
@@ -512,6 +513,7 @@ const Activity: React.FC = () => {
                           <p className="text-metadata font-semibold text-foreground">
                             {note.author_name || 'Unknown analyst'}
                           </p>
+                          <AgentAuthorBadge actorType={note.actor_type} />
                           <Badge variant="outline">
                             {formatStatusLabel(note.status)}
                           </Badge>

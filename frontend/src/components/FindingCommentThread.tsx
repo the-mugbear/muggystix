@@ -21,6 +21,7 @@ import { Textarea } from './ui/textarea';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
+import { AgentAuthorBadge } from './AgentAuthorBadge';
 
 interface FindingCommentThreadProps {
   findingId: number;
@@ -117,6 +118,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           <span className="text-metadata font-semibold text-foreground">
             {safeFallback(note.author_name, 'Unknown analyst')}
           </span>
+          <AgentAuthorBadge actorType={note.actor_type} />
           <span className="text-caption text-muted-foreground">
             {new Date(note.created_at).toLocaleString()}
           </span>

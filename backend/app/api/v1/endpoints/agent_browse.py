@@ -28,9 +28,13 @@ from sqlalchemy.orm import Session, joinedload
 from app.db.session import get_db
 from app.db import models
 from app.db.models import NoteStatus, FollowStatus
-from app.db.models_agent import Agent
+from app.db.models_agent import ActorType, Agent, AgentCapability
 from app.db.models_project import Project
-from app.api.deps import check_agent_rate_limit
+from app.api.deps import (
+    check_agent_rate_limit,
+    enforce_capability_row_scope,
+    require_capability,
+)
 from app.services.host_follow_service import HostFollowService
 
 from app.api.v1.endpoints.agent_schemas import (
@@ -392,21 +396,16 @@ def create_agent_note(
     body: AgentNoteCreate,
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
+    agent: Agent = Depends(require_capability(AgentCapability.WRITE_NOTES.value)),
     db: Session = Depends(get_db),
 ):
-    # v2.64.0 — assist keys are strictly read-only.  Note creation
-    # is a write; reject explicitly so an off-piste assist agent
-    # gets a loud 403 instead of silently mutating project data.
-    if getattr(request.state, "scoped_assist_session_id", None) is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Assist sessions are read-only — cannot create host "
-                "notes.  Ask the operator to use the UI, or have them "
-                "mint a plan-generation key for write workflows."
-            ),
-        )
+    """Create a note on a host.
+
+    Requires the ``write:notes`` capability (v2.231.0).  Plan, execution,
+    recon, and legacy unscoped keys carry it implicitly; an assist session
+    only carries it when the operator granted write access at start time,
+    and then only for hosts assigned to them.
+    """
     q = (
         db.query(models.Host)
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
@@ -418,13 +417,22 @@ def create_agent_note(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
+    enforce_capability_row_scope(request, db, host_id=host_id)
+
     try:
         note_status = NoteStatus(body.status)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid note status: {body.status}")
 
     svc = HostFollowService(db)
-    note = svc.create_note(host_id, agent.owner_id, body.body, note_status)
+    note = svc.create_note(
+        host_id,
+        agent.owner_id,
+        body.body,
+        note_status,
+        actor_type=ActorType.AGENT.value,
+        agent_session_id=getattr(request.state, "agent_session_id", None),
+    )
 
     return AgentNoteResponse(
         id=note.id,
@@ -433,6 +441,7 @@ def create_agent_note(
         status=note.status,
         author_id=note.user_id,
         parent_id=note.parent_id,
+        actor_type=note.actor_type,
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
@@ -486,20 +495,14 @@ def set_agent_follow(
     body: AgentFollowRequest,
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
+    agent: Agent = Depends(require_capability(AgentCapability.WRITE_FOLLOW.value)),
     db: Session = Depends(get_db),
 ):
-    # v2.64.0 — see create_agent_note above; same rationale.  Assist
-    # keys can't mutate follow status.
-    if getattr(request.state, "scoped_assist_session_id", None) is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Assist sessions are read-only — cannot change host "
-                "follow status.  Bulk-follow is on the roadmap but "
-                "ships behind its own approval surface."
-            ),
-        )
+    """Set review status on a host.
+
+    Requires the ``write:follow`` capability (v2.231.0) — see
+    ``create_agent_note`` for how that resolves per workflow.
+    """
     q = (
         db.query(models.Host)
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
@@ -510,6 +513,8 @@ def set_agent_follow(
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
+
+    enforce_capability_row_scope(request, db, host_id=host_id)
 
     try:
         follow_status = FollowStatus(body.status)

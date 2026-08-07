@@ -187,6 +187,10 @@ export interface Annotation {
   note_type?: NoteType | null;
   resolution_summary?: string | null;
   pinned?: boolean;
+  // 'user' (typed by a person) or 'agent' (written by an AI assist session on
+  // the operator's behalf). author_id/author_name are the operator either way,
+  // so this is the only signal that a machine wrote it — badge on it.
+  actor_type?: 'user' | 'agent';
   // Set when this thread root has been promoted to a finding — drives the
   // "Promoted" badge/link and guards a duplicate promote.
   finding_id?: number | null;
@@ -464,6 +468,8 @@ export interface NoteActivityItem {
   status: NoteStatus;
   author_name: string | null;
   author_id: number;
+  // See Annotation.actor_type — 'agent' notes get a badge in the feed.
+  actor_type?: 'user' | 'agent';
   parent_id?: number | null;
   thread_root_id?: number | null;
   // Status of the thread's ROOT note — use this for the thread-level badge,

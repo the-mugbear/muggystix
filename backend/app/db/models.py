@@ -958,6 +958,22 @@ class Annotation(Base):
     note_type = Column(String(20), nullable=True)
     resolution_summary = Column(Text, nullable=True)
     pinned = Column(Boolean, nullable=False, default=False)
+    # Who actually authored this note: 'user' (a human typed it) or 'agent'
+    # (an AI assist session wrote it on the operator's behalf).  ``user_id``
+    # stays the operator either way — the agent acts AS them — so without
+    # this discriminator an agent-written note is indistinguishable from a
+    # hand-typed one.  In a tool whose notes feed findings and client
+    # reports, "did a person assert this?" has to be answerable.
+    actor_type = Column(String(10), nullable=False, default="user", server_default="user")
+    # Which agent session produced it, when actor_type == 'agent'.  SET NULL
+    # rather than CASCADE: purging session history must not delete the
+    # operator's notes.
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

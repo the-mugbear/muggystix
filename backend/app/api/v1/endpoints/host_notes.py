@@ -262,6 +262,9 @@ def get_note_activity(
             "status": note.status.value if hasattr(note.status, "value") else note.status,
             "author_name": author_name,
             "author_id": note.user_id,
+            # 'user' or 'agent' — the author is the operator either way, so
+            # this is what the feed badges on.
+            "actor_type": note.actor_type or "user",
             "parent_id": note.parent_id,
             "thread_root_id": thread_root_id,
             "thread_root_status": thread_root_status,

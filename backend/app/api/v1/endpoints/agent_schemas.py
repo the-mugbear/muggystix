@@ -338,6 +338,9 @@ class AgentNoteResponse(BaseModel):
     status: str
     author_id: int
     parent_id: Optional[int] = None
+    # 'agent' for anything written through this API — echoed back so the
+    # agent can confirm its note is attributed as machine-authored.
+    actor_type: str = "agent"
     created_at: datetime
     updated_at: Optional[datetime] = None
 

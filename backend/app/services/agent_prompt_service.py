@@ -18,7 +18,7 @@ entry, so the version and its changelog can never drift.
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Request
 
@@ -715,31 +715,44 @@ def build_assist_instructions(
     raw_api_key: str,
     user_label: str,
     user_id: Optional[int],
+    capabilities: Optional[List[str]] = None,
 ) -> str:
     """Instructions for an agent in an interactive assist session.
 
-    Assist sessions are read-only.  No scanning, no test plan
-    creation, no host follow mutation, no execution.  The agent's
-    job is to answer the operator's questions by querying BlueStick
-    and synthesizing — not by acting on the data.
+    Assist sessions read by default.  No scanning, no test plan
+    creation, no execution — ever.  The agent's job is to answer the
+    operator's questions by querying BlueStick and synthesizing.
+
+    v2.231.0 — the operator may additionally grant note/follow writes,
+    narrowed to hosts assigned to them.  When granted, the prompt gains
+    a write section; when not, it keeps the original read-only framing.
+    The grant is stated explicitly either way so the agent doesn't have
+    to discover its own authority by trial and error.
 
     Shorter prompt than recon/plan/execution because the surface is
-    smaller (six endpoints) and the safety surface is trivial (no
-    target traffic, no writes).  The biggest risk to flag is "the
-    agent decides to run a scan locally to answer a question" — the
-    operator has not consented to that and the assist key wouldn't
-    accept the upload anyway.  Steer the agent to ask the operator
-    to open a recon session if scanning is the right next step.
+    smaller and the safety surface is small (no target traffic).  The
+    biggest risk to flag is "the agent decides to run a scan locally to
+    answer a question" — the operator has not consented to that and the
+    assist key wouldn't accept the upload anyway.  Steer the agent to
+    ask the operator to open a recon session if scanning is the right
+    next step.
     """
     from datetime import datetime, timezone
     base_url = resolve_base_url(request)
     agents_guide_url = f"{base_url}/agents-guide?workflow=assist"
 
+    granted = set(capabilities or [])
+    can_write = bool(granted)
+
     provenance = build_provenance_block(
         base_url=base_url,
         user_label=user_label,
         user_id=user_id,
-        action="interactive assist (read-only project query)",
+        action=(
+            "interactive assist (read + notes/review status on assigned hosts)"
+            if can_write
+            else "interactive assist (read-only project query)"
+        ),
         target_label=f"project #{project_id} ({project_name}); assist session #{assist_session_id}",
         timestamp_iso=datetime.now(timezone.utc).isoformat(),
     )
@@ -750,17 +763,63 @@ def build_assist_instructions(
         else ""
     )
 
+    if can_write:
+        authority_block = (
+            f"## Agent Interactive Assist Instructions\n\n"
+            f"You are in an assist session against project **{project_name}** "
+            f"(id {project_id}).  Your main job is to help the operator query "
+            f"their project — answer questions about hosts, summarize "
+            f"findings, surface relevant scans — by hitting BlueStick's "
+            f"`/agent/assist/*` endpoints and synthesizing the results.\n\n"
+            f"**This session also has limited write access.**  You may record "
+            f"notes and set review status on hosts **assigned to "
+            f"{user_label}** — nothing else.  Writing to a host that is not "
+            f"assigned to them returns 403; that is the guardrail working, not "
+            f"an error to route around.  Do **not** run scans, do **not** "
+            f"create test plans, do **not** execute tests.  The API will "
+            f"refuse all three.\n\n"
+            f"### Writing (assigned hosts only)\n\n"
+            f"- **Add a note:** `POST {base_url}/agent/hosts/<host_id>/notes` "
+            f"with `{{\"body\": \"...\", \"status\": \"open\"}}` "
+            f"(status: `open` | `in_progress` | `resolved`).\n"
+            f"- **Set review status:** `POST {base_url}/agent/hosts/<host_id>/follow` "
+            f"with `{{\"status\": \"in_review\"}}` "
+            f"(status: `watching` | `in_review` | `reviewed`).\n"
+            f"- Find what you may write to with "
+            f"`GET {base_url}/agent/assist/hosts?q=assigned:me`.\n\n"
+            f"**Write discipline — read this before your first write.**  Every "
+            f"note you create is stamped as agent-authored and shows up in the "
+            f"operator's UI and in client-facing reports under their name. So:\n"
+            f"1. **Say what you did, then do it** — tell the operator the note "
+            f"you intend to write and let them react. Don't batch-write "
+            f"silently.\n"
+            f"2. **Record observations, not conclusions you can't support.** "
+            f"Write what the data shows and cite the host/port/finding it came "
+            f"from. Never assert a vulnerability you have not seen evidence "
+            f"for in BlueStick's own data.\n"
+            f"3. **Mark uncertainty in the note body.** If you inferred "
+            f"something, say so in the note — a reader six weeks from now "
+            f"cannot tell your guesses from your facts.\n"
+            f"4. **Never mark a host `reviewed` on your own initiative.** "
+            f"Reviewed is a human judgement with client-reportable weight; ask "
+            f"the operator to confirm before setting it.\n\n"
+        )
+    else:
+        authority_block = (
+            f"## Agent Interactive Assist Instructions\n\n"
+            f"You are in a **read-only** assist session against project "
+            f"**{project_name}** (id {project_id}).  Your job is to help the "
+            f"operator query their project — answer questions about hosts, "
+            f"summarize findings, surface relevant scans — by hitting "
+            f"BlueStick's `/agent/assist/*` endpoints and synthesizing the "
+            f"results.  Do **not** run scans, do **not** create test plans, "
+            f"do **not** mutate follow status.  This session has no "
+            f"authority to do any of those things — the API will refuse.\n\n"
+        )
+
     instructions = (
         provenance +
-        f"## Agent Interactive Assist Instructions\n\n"
-        f"You are in a **read-only** assist session against project "
-        f"**{project_name}** (id {project_id}).  Your job is to help the "
-        f"operator query their project — answer questions about hosts, "
-        f"summarize findings, surface relevant scans — by hitting "
-        f"BlueStick's `/agent/assist/*` endpoints and synthesizing the "
-        f"results.  Do **not** run scans, do **not** create test plans, "
-        f"do **not** mutate follow status.  This session has no "
-        f"authority to do any of those things — the API will refuse.\n\n"
+        authority_block +
         f"{purpose_line}"
         f"**Assist session:** #{assist_session_id} · **Project:** {project_name}\n"
         f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"

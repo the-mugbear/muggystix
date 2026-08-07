@@ -28,6 +28,7 @@ import {
   getHostNotes,
   listProjectMembers,
 } from '../services/api';
+import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
 import { useToast } from '../contexts/ToastContext';
@@ -345,6 +346,7 @@ const FindingDetail: React.FC = () => {
                   <span className="text-metadata font-semibold text-foreground">
                     {note.author_name || 'Unknown analyst'}
                   </span>
+                  <AgentAuthorBadge actorType={note.actor_type} />
                   <span className="text-caption text-muted-foreground">
                     {new Date(note.created_at).toLocaleString()}
                   </span>

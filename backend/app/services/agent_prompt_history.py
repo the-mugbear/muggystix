@@ -21,6 +21,21 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.40.0",
+        "app_version": "2.231.0",
+        "summary": (
+            "Assist sessions can now be started with limited write access. When "
+            "the operator grants it, the assist prompt gains a write section "
+            "covering POST /agent/hosts/<id>/notes and /follow, scoped to hosts "
+            "assigned to that operator (find them with `?q=assigned:me`), plus "
+            "write-discipline rules: announce before writing, record evidence-"
+            "backed observations only, mark uncertainty in the note body, and "
+            "never set `reviewed` without the operator confirming. Notes written "
+            "through the API are stamped agent-authored and render with an "
+            "'Agent' badge. Read-only sessions keep the previous prompt verbatim."
+        ),
+    },
+    {
         "version": "1.39.0",
         "app_version": "2.230.0",
         "summary": (

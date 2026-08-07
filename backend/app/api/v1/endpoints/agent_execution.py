@@ -17,14 +17,14 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import (
-    Agent, TestPlan, TestPlanEntry,
+    Agent, AgentCapability, TestPlan, TestPlanEntry,
     ExecutionSession, ExecutionSessionStatus,
     TestExecutionResult, TestExecutionStatus,
     HostSanityCheck,
 )
 from app.core.config import settings as _settings
 from app.core.security import log_audit_event
-from app.api.deps import require_plan_scope, check_agent_rate_limit
+from app.api.deps import require_plan_scope, check_agent_rate_limit, require_capability
 from app.services.test_plan_service import TestPlanService
 from app.services.notification_service import NotificationService
 from app.services.agent_prompt_history import PROMPT_VERSION
@@ -143,7 +143,7 @@ def record_execution_environment(
     body: EnvironmentProbeRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
+    agent: Agent = Depends(require_capability(AgentCapability.WRITE_EXECUTION.value)),
     db: Session = Depends(get_db),
 ):
     """Record the agent's environment probe for an execution session.
@@ -175,8 +175,11 @@ def record_execution_environment(
     # otherwise pass the "plan_id is None → skip plan check" branch
     # and let a recon key write into an execution session it should
     # have nothing to do with.
+    # Assist keys are turned away by the ``write:execution`` capability on the
+    # route itself (v2.231.0), so only the recon workflow boundary is left to
+    # enforce here: a recon key DOES carry write:execution, but has no
+    # business inside an execution session.
     scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
     if scoped_scope is not None:
         raise HTTPException(
             status_code=403,
@@ -184,20 +187,6 @@ def record_execution_environment(
                 "This API key is scoped to a reconnaissance run and cannot "
                 "write to execution-session endpoints. Use the plan-scoped "
                 "key minted by /execute, or the unscoped agent key."
-            ),
-        )
-    if scoped_assist is not None:
-        # The completion route at the bottom of this file rejects assist
-        # keys too; mirror the guard here so the environment write surface
-        # can't drift back into accepting them.  Assist keys bind to the
-        # same project agent that owns plans, so plan.agent_id == agent.id
-        # and scoped_plan_id is None — both downstream checks would
-        # otherwise pass.
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a read-only assist session and "
-                "cannot write to execution-session endpoints."
             ),
         )
     plan = session.test_plan
@@ -1100,7 +1089,7 @@ def complete_execution_session(
     body: ExecutionSessionCompleteRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
+    agent: Agent = Depends(require_capability(AgentCapability.WRITE_EXECUTION.value)),
     db: Session = Depends(get_db),
 ):
     """Transition the execution session from active/paused to a terminal state (v2.45.2).
@@ -1171,9 +1160,10 @@ def complete_execution_session(
     # record_execution_environment above: reject recon/assist keys
     # outright, then verify a plan-scoped key actually targets this
     # session's plan.  Pre-v2.84.1 the route was unreachable due to the
-    # path-parameter mismatch.
+    # path-parameter mismatch.  Assist keys are turned away by the
+    # ``write:execution`` capability on the route (v2.231.0); what remains is
+    # the recon workflow boundary and the per-plan scope check.
     scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
     if scoped_scope is not None:
         raise HTTPException(
             status_code=403,
@@ -1181,14 +1171,6 @@ def complete_execution_session(
                 "This API key is scoped to a reconnaissance run and cannot "
                 "complete execution sessions. Use the plan-scoped key minted "
                 "by /execute, or the unscoped agent key."
-            ),
-        )
-    if scoped_assist is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a read-only assist session and "
-                "cannot complete execution sessions."
             ),
         )
     scoped_plan = getattr(request.state, "scoped_plan_id", None)
