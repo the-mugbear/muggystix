@@ -599,9 +599,12 @@ case $DEPLOY_CHOICE in
             exit 1
         fi
         echo ""
+        # The backend port is not published; everything is proxied by nginx
+        # on the frontend origin.  Printing :8000 URLs sent operators to a
+        # dead port.
         echo "  Frontend: https://${CONFIGURED_IP:-localhost}"
-        echo "  Backend:  https://${CONFIGURED_IP:-localhost}:8000"
-        echo "  API Docs: https://${CONFIGURED_IP:-localhost}:8000/docs"
+        echo "  Backend:  https://${CONFIGURED_IP:-localhost}/api/v1  (proxied via nginx)"
+        echo "  API Docs: https://${CONFIGURED_IP:-localhost}/docs"
         echo ""
         print_info "Default admin: username 'admin'. If DEFAULT_ADMIN_PASSWORD was not set,"
         print_info "the password was auto-generated — read ./uploads/initial-admin-password.txt"
@@ -642,7 +645,7 @@ case $DEPLOY_CHOICE in
         print_success "First-time setup complete!"
         echo ""
         echo "  Frontend: https://${SELECTED_IP}"
-        echo "  Backend:  https://${SELECTED_IP}:8000"
+        echo "  Backend:  https://${SELECTED_IP}/api/v1  (proxied via nginx)"
         echo ""
 
         echo ""

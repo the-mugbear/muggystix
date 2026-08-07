@@ -1,12 +1,11 @@
 import React, { useMemo } from 'react';
 import { ColumnDef } from '@tanstack/react-table';
+import { Link } from 'react-router-dom';
 import {
   Bookmark,
   BookmarkPlus,
   Check,
-  ChevronDown,
   ChevronRight,
-  ChevronUp,
   Copy,
   Users,
 } from 'lucide-react';
@@ -415,30 +414,11 @@ export function useHostColumns({
 }: UseHostColumnsOptions): ColumnDef<Host>[] {
   return useMemo<ColumnDef<Host>[]>(
     () => [
-      {
-        id: '__expand',
-        size: 36,
-        header: () => <span className="sr-only">Expand</span>,
-        cell: ({ row }) => (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={row.getIsExpanded() ? 'Collapse host details' : 'Expand host details'}
-            aria-expanded={row.getIsExpanded()}
-            onClick={(event) => {
-              event.stopPropagation();
-              row.toggleExpanded();
-            }}
-          >
-            {row.getIsExpanded() ? (
-              <ChevronUp className="size-4" aria-hidden />
-            ) : (
-              <ChevronDown className="size-4" aria-hidden />
-            )}
-          </Button>
-        ),
-        enableSorting: false,
-      },
+      // v4.46.0 — the `__expand` chevron column was removed along with the
+      // expandable sub-row.  A row previously carried three competing
+      // affordances: this toggle, a decorative (aria-hidden, non-clickable)
+      // ChevronRight in the Host cell, and the row's own open-inspector
+      // click.  Only the last one survives, and it now announces itself.
       {
         id: 'ip',
         header: 'Host',
@@ -456,7 +436,13 @@ export function useHostColumns({
           // also fire the row's open-inspector onClick.
           const identity = (
             <div className="min-w-0">
-              <div className="break-words font-medium text-foreground">{host.ip_address}</div>
+              {/* Underlines whenever the row is hovered (not just this cell),
+                  because the whole row opens the inspector.  Without it the
+                  identity looked like inert text and operators didn't know
+                  it was the way in. */}
+              <div className="break-words font-medium text-foreground underline-offset-2 group-hover:underline">
+                {host.ip_address}
+              </div>
               {host.hostname ? (
                 <div className="line-clamp-2 text-caption text-foreground/80">
                   {host.hostname}
@@ -466,10 +452,18 @@ export function useHostColumns({
               )}
             </div>
           );
+          // An <a> rather than a <button> so cmd/ctrl/middle-click open the
+          // standalone /hosts/:id route in a new tab — the muscle memory for a
+          // triage list — while a plain click keeps the in-page side sheet.
+          // Still the keyboard-activation target for the row.
           const opener = onOpen ? (
-            <button
-              type="button"
+            <Link
+              to={`/hosts/${host.id}`}
               onClick={(e) => {
+                // Let the browser handle modified clicks (new tab/window) and
+                // anything that isn't a primary-button click.
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                e.preventDefault();
                 e.stopPropagation();
                 onOpen(host.id);
               }}
@@ -477,7 +471,7 @@ export function useHostColumns({
               className="block min-w-0 flex-1 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {identity}
-            </button>
+            </Link>
           ) : (
             <div className="min-w-0 flex-1">{identity}</div>
           );
@@ -488,7 +482,12 @@ export function useHostColumns({
                 {opener}
                 <div className="flex shrink-0 items-center gap-xxs pt-px">
                   <CopyIpButton ip={host.ip_address} />
-                  <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
+                  {/* Decorative, but now reacts to row hover so it reads as
+                      "this row goes somewhere" rather than as a dead icon. */}
+                  <ChevronRight
+                    className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
+                    aria-hidden
+                  />
                 </div>
               </div>
               {host.os_name && (

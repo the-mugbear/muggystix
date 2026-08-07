@@ -151,9 +151,15 @@ class ReportJobService:
                 gen = ReportGenerator(db, user, project_id=job.project_id)
                 filters = job.filters or {}
                 report_type = job.report_type or "comprehensive"
-                # On the worker we're not memory-constrained like the API, so the
-                # async formats get the full 50k cap back.
-                hosts = gen.get_hosts_for_report(filters, cap=gen.MAX_REPORT_HOSTS)
+                # These formats build the whole document in memory, so they are
+                # bounded by the in-memory cap rather than the streaming one.
+                # It defaults to REPORT_MAX_HOSTS (the worker isn't memory-
+                # constrained the way the API thread was), but is a real lever
+                # again: lower REPORT_MAX_INMEMORY_HOSTS if this worker OOMs
+                # against REPORT_WORKER_MEM_LIMIT.
+                hosts = gen.get_hosts_for_report(
+                    filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
+                )
                 data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
                 self.update_heartbeat(db, job_id)  # a long render leaves the row stale
 

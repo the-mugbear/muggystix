@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -1075,16 +1076,32 @@ export default function Scans() {
                       !!job.last_heartbeat &&
                       Date.now() - new Date(job.last_heartbeat).getTime() > STALL_MS;
 
+                    // A job can succeed and still have lost data: rows skipped
+                    // as malformed, or a truncated file that stopped the parse
+                    // early. Rendered as plain green "completed", that reads as
+                    // "everything imported" — and for scan data the hosts that
+                    // never parsed look exactly like hosts that were down.
+                    const skipped = job.skipped_count ?? 0;
+                    const isDegraded =
+                      job.status === 'completed' && (skipped > 0 || !!job.parser_warnings);
+                    const canExpand = isFailure || isDegraded;
+
                     return (
                       <React.Fragment key={job.id}>
                         <TableRow className={cn(job.status === 'completed' && 'opacity-75')}>
                           <TableCell className="p-xxs">
-                            {isFailure && (
+                            {canExpand && (
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 onClick={() => toggleJobExpanded(job.id)}
-                                aria-label={isExpanded ? 'Hide full error message' : 'Show full error message'}
+                                aria-label={
+                                  isExpanded
+                                    ? 'Hide import details'
+                                    : isFailure
+                                      ? 'Show full error message'
+                                      : 'Show import warnings'
+                                }
                                 aria-expanded={isExpanded}
                               >
                                 {isExpanded ? (
@@ -1129,6 +1146,12 @@ export default function Scans() {
                                 stalled?
                               </Badge>
                             )}
+                            {isDegraded && (
+                              <AlertTriangle
+                                className="ml-xxs inline size-4 text-warning"
+                                aria-label="Imported with warnings — some data may be missing"
+                              />
+                            )}
                           </TableCell>
                           <TableCell className="truncate" title={job.original_filename}>
                             {job.original_filename}
@@ -1152,6 +1175,30 @@ export default function Scans() {
                               >
                                 retried {job.retry_count}×
                               </Badge>
+                            )}
+                            {isDegraded && (
+                              <div className="mt-xxs flex flex-col gap-xxs">
+                                <Badge
+                                  variant="outline"
+                                  className="w-fit border-warning/40 text-warning"
+                                  title={job.parser_warnings || undefined}
+                                >
+                                  {skipped > 0
+                                    ? `${skipped} record${skipped === 1 ? '' : 's'} skipped`
+                                    : 'imported with warnings'}
+                                </Badge>
+                                {job.parser_warnings && (
+                                  <p
+                                    className={cn(
+                                      'text-caption text-warning',
+                                      !isExpanded && 'truncate',
+                                      isExpanded && 'whitespace-pre-wrap break-words',
+                                    )}
+                                  >
+                                    {job.parser_warnings}
+                                  </p>
+                                )}
+                              </div>
                             )}
                             {job.parse_error_id && (
                               <button

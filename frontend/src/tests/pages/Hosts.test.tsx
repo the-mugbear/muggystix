@@ -310,17 +310,38 @@ describe('Hosts', () => {
     });
   });
 
-  it('renders both mobile cards and the desktop table — CSS picks the right one at runtime', async () => {
-    // The page no longer reads `useMediaQuery`; the mobile-card stack
-    // is `md:hidden` and the desktop DataTable is `hidden md:block`.
-    // In jsdom both are present; assert each renders so we don't
-    // regress to a JS-driven layout swap.
+  it('renders the inventory table (desktop-only product — no mobile card stack)', async () => {
+    // The mobile-card layout was deleted; the table is the sole renderer and
+    // narrow widths scroll horizontally.  Assert the table exists and host
+    // data reaches it.
     renderHosts();
 
     await screen.findByText('Discovered Hosts');
     expect(screen.getByRole('table')).toBeInTheDocument();
-    // Mobile cards render IP addresses inside <button> elements with
-    // hosts' IPs — at least one should be present.
     expect(screen.getAllByText('10.0.0.20').length).toBeGreaterThan(0);
+  });
+
+  it('renders the host identity as a link to the standalone host route', async () => {
+    // The identity is an <a href="/hosts/:id">, not a <button>, so
+    // cmd/ctrl/middle-click open a new tab the way operators expect in a
+    // triage list.  A plain click is intercepted and opens the side sheet
+    // instead (see useHostColumns) — that path is covered by the
+    // open-inspector assertions elsewhere in this file.
+    renderHosts();
+
+    await screen.findByText('Discovered Hosts');
+    const opener = screen.getAllByRole('link', { name: /Open host inspector for 10\.0\.0\.20/ })[0];
+    expect(opener).toHaveAttribute('href', expect.stringContaining('/hosts/'));
+  });
+
+  it('has no per-row expand control', async () => {
+    // The expandable sub-row was removed in v4.46.0 — it predated the side
+    // sheet, duplicated most of the collapsed row, and gave every row a
+    // third competing affordance.  Guard against it creeping back.
+    renderHosts();
+
+    await screen.findByText('Discovered Hosts');
+    expect(screen.queryByRole('button', { name: /Expand host details/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Collapse host details/i })).toBeNull();
   });
 });

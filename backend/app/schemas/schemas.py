@@ -598,6 +598,15 @@ class IngestionJobSchema(BaseModel):
     # (filterable back in via ?include_dismissed=true).  The frontend
     # uses this to disable the Dismiss button on rows already acked.
     dismissed_at: Optional[datetime] = None
+    # v2.232.0 — ingestion quality.  Both columns have existed on the model
+    # since the durable-queue work and are written by _process_job, but this
+    # schema omitted them, so /upload/jobs could never return them and a
+    # partially-degraded import (skipped rows, truncated file) rendered in the
+    # Scans queue as an unqualified green "completed".  The recon-run view had
+    # been hand-duplicating its own schema to show them; this makes the main
+    # upload path first-class.
+    skipped_count: Optional[int] = None
+    parser_warnings: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

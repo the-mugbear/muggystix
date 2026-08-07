@@ -440,6 +440,19 @@
     color: hsl(var(--foreground));
   }
 
+  /* Tailwind v4 dropped `button { cursor: pointer }` from Preflight (it now
+     matches the browser default of `cursor: default`).  Nothing restored it
+     on the v4 upgrade, so every button in the app — including the host-row
+     IP opener, which is the most obviously clickable thing on /hosts —
+     showed an arrow while the surrounding <tr> showed a pointer.  That
+     inconsistency reads as "this text is NOT clickable" and was actively
+     misleading operators.  Restore the v3 behaviour once, globally, rather
+     than sprinkling `cursor-pointer` on individual controls. */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
   * {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--primary) / 0.32) hsl(var(--primary) / 0.06);

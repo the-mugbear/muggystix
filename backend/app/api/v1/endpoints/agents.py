@@ -27,6 +27,27 @@ from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
 router = APIRouter()
 
 
+# What makes a key "unscoped" (the long-lived global agent key) rather than
+# bound to one workflow session.  Used by BOTH rotate and renew — they must
+# agree on the definition, and previously didn't: rotate checked only
+# ``test_plan_id`` (so it revoked recon + assist keys) while renew checked
+# ``test_plan_id`` + ``scope_id`` (so it renewed the newest ASSIST key,
+# silently extending a deliberately 4-hour read-only credential).
+#
+# ``agent_session_id`` alone is sufficient for every key minted since the
+# agent_sessions expand phase; the four legacy columns keep pre-backfill keys
+# correctly classified as scoped.  Keep this list in lockstep with the scope
+# columns on APIKey — a new workflow that forgets to add its column here
+# would have its keys treated as global and silently revoked.
+_UNSCOPED_KEY_PREDICATES = (
+    APIKey.agent_session_id.is_(None),
+    APIKey.test_plan_id.is_(None),
+    APIKey.scope_id.is_(None),
+    APIKey.recon_session_id.is_(None),
+    APIKey.assist_session_id.is_(None),
+)
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -374,15 +395,25 @@ def rotate_agent_key(
     ):
         raise HTTPException(status_code=403, detail="Not the owner of this agent")
 
-    # Revoke existing *unscoped* keys only.  Per-plan keys (minted by
-    # /test-plans/generate or /test-plans/{id}/execute) are tied to a
-    # specific test_plan_id and must keep working independently — an
-    # admin rotating their long-lived global agent key should never
-    # collaterally kill an in-flight plan's key.
+    # Revoke existing *unscoped* keys only.  Workflow-scoped keys — per-plan
+    # (/test-plans/generate, /execute), per-recon-session, and per-assist-
+    # session — must keep working independently: rotating a long-lived global
+    # key should never collaterally kill an in-flight session.
+    #
+    # v2.232.0 — this filter previously checked ONLY ``test_plan_id IS NULL``.
+    # All four workflows resolve to the SAME Agent row (one agent per
+    # (user, project)), and recon/assist keys leave ``test_plan_id`` NULL, so
+    # a rotation silently revoked every live recon and assist key for that
+    # user — a hard 401 mid-session, recoverable only by starting a new
+    # session.  ``agent_session_id`` is the single reliable discriminator:
+    # every workflow-scoped key sets it (see _mint_* in test_plans.py,
+    # scopes.py, assist.py) and only the global key minted below leaves it
+    # NULL.  The legacy columns are checked too so keys minted before the
+    # agent_sessions backfill are still recognised as scoped.
     db.query(APIKey).filter(
         APIKey.agent_id == agent.id,
         APIKey.is_active.is_(True),
-        APIKey.test_plan_id.is_(None),
+        *_UNSCOPED_KEY_PREDICATES,
     ).update({"is_active": False})
 
     # Create new key
@@ -476,13 +507,19 @@ def renew_agent_key(
     ):
         raise HTTPException(status_code=403, detail="Not the owner of this agent")
 
+    # v2.232.0 — previously filtered on test_plan_id + scope_id only.  Assist
+    # keys set neither (only ``assist_session_id``), and because they're minted
+    # per session while the global key is minted once at agent creation,
+    # ORDER BY created_at DESC reliably picked the ASSIST key: the operator's
+    # global key went un-renewed while a deliberately short-lived read-only
+    # credential got extended to the full agent TTL.  Share the definition with
+    # rotate so the two can't drift apart again.
     key = (
         db.query(APIKey)
         .filter(
             APIKey.agent_id == agent.id,
             APIKey.is_active.is_(True),
-            APIKey.test_plan_id.is_(None),
-            APIKey.scope_id.is_(None),
+            *_UNSCOPED_KEY_PREDICATES,
         )
         .order_by(APIKey.created_at.desc())
         .first()

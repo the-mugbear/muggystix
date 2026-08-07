@@ -61,9 +61,16 @@ fi
 print_header "Production Instance Status"
 if $DC ps | grep -q "networkmapper.*Up"; then
     print_success "Production instance is running"
+    # The backend container port is NOT published (its ports block in
+    # docker-compose.yml is commented out) and it serves plain HTTP, so
+    # https://localhost:8000 was wrong on both counts — it printed two URLs
+    # nobody can open and made the health probe below fail permanently,
+    # yielding a yellow "Backend may be starting up…" on every run against a
+    # perfectly healthy deployment.  Everything reaches the backend through
+    # nginx on the frontend port; see the same note in collect-logs.sh.
     echo "  Frontend: https://localhost:3000"
-    echo "  Backend:  https://localhost:8000"
-    echo "  API Docs: https://localhost:8000/docs"
+    echo "  Backend:  https://localhost:3000/api/v1  (proxied via nginx)"
+    echo "  API Docs: https://localhost:3000/docs"
 
     # Check if frontend is responding
     if curl -k -s https://localhost:3000 >/dev/null 2>&1; then
@@ -72,9 +79,13 @@ if $DC ps | grep -q "networkmapper.*Up"; then
         print_warning "Frontend may be starting up..."
     fi
 
-    # Check if backend is responding
-    if curl -k -s https://localhost:8000/health >/dev/null 2>&1; then
+    # Backend health, proxied through nginx (`location = /health`).  Falls back
+    # to asking the container directly, which still works if nginx is down or
+    # the frontend port was remapped.
+    if curl -k -s -f https://localhost:3000/health >/dev/null 2>&1; then
         print_success "Backend is healthy"
+    elif $DC exec -T backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)" >/dev/null 2>&1; then
+        print_success "Backend is healthy (direct; nginx not serving /health)"
     else
         print_warning "Backend may be starting up..."
     fi

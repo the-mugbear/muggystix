@@ -183,7 +183,11 @@ function DataTableRowImpl<TData>({
         className={cn(
           'border-b border-border transition-colors hover:bg-accent/50',
           'data-[state=selected]:bg-accent',
-          onRowClick && 'cursor-pointer',
+          // `group` lets cells advertise the row-level click with
+          // `group-hover:` (e.g. underlining the primary identity, nudging a
+          // trailing chevron).  Background tint alone doesn't communicate
+          // "this opens something" — the cell has to react.
+          onRowClick && 'group cursor-pointer',
           extraClassName,
         )}
       >

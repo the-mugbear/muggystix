@@ -50,9 +50,13 @@ jobs:
       - name: Alembic migrations apply cleanly
         run: alembic upgrade head
       - name: Pytest
-        # --no-cov: the coverage gate (--cov-fail-under) is a separate tracked
-        # item; this job enforces tests + contracts + the service/router boundary.
-        run: python -m pytest -q --no-cov
+        # Coverage gate is ON (v2.232.0).  It was previously suppressed with
+        # --no-cov pointing at a "separate tracked item" that never existed,
+        # so a configured 70% floor silently enforced nothing for months while
+        # two docs claimed otherwise.  The floor now lives in pytest.ini and
+        # this job enforces it alongside tests, contracts, and the
+        # service/router boundary.
+        run: python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest

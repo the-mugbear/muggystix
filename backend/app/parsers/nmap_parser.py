@@ -45,6 +45,10 @@ class NmapXMLParser:
         scan_id: Optional[int] = None
         hosts_processed = 0
         parse_warnings: list = []
+        # True only for a truncated/unparseable tail — distinct from
+        # per-host skips, because it means an unknown number of hosts were
+        # never seen at all.
+        truncated = False
 
         try:
             # Hardening flags (resolve_entities/no_network/huge_tree)
@@ -109,19 +113,38 @@ class NmapXMLParser:
                 f"XML parsing halted for {filename} (likely truncated/incomplete scan): {exc}. "
                 f"Recovered {hosts_processed} hosts before the error."
             )
-            parse_warnings.append(f"Incomplete XML: {exc}")
+            truncated = True
+            parse_warnings.append(
+                f"Incomplete XML — parsing stopped early, so hosts after this point "
+                f"are MISSING, not down. Recovered {hosts_processed} host(s). "
+                f"Re-upload a complete scan file. ({exc})"
+            )
 
         if scan is None or scan_id is None:
             raise ValueError("Unable to locate nmaprun element in XML")
 
-        # Mark scan as partial if we hit XML errors
+        # v2.232.0 — publish ingestion quality so the orchestrator persists it
+        # on the IngestionJob (and the UI can show it).  This block previously
+        # read ``scan.command_line`` and wrote the same value straight back — a
+        # no-op under a comment claiming to "mark scan as partial" — and the
+        # parser never set ``last_parse_stats``, so a truncated scan reported as
+        # a clean import.  In a security tool that's the worst kind of silent
+        # failure: the hosts that never got parsed are indistinguishable from
+        # hosts that were genuinely down.
         if parse_warnings:
-            existing_notes = scan.command_line or ''
-            scan.command_line = existing_notes
             logger.warning(
                 f"Scan {filename} completed with {len(parse_warnings)} warning(s): "
                 f"{hosts_processed} hosts recovered"
             )
+        self.last_parse_stats = {
+            "skipped": len(parse_warnings),
+            "warnings": " | ".join(parse_warnings) if parse_warnings else None,
+            "summary": (
+                f"{hosts_processed} host{'s' if hosts_processed != 1 else ''}"
+                + (" (INCOMPLETE — file truncated)" if truncated else "")
+            ),
+            "partial": truncated,
+        }
 
         # Commit parsed host data before attempting correlation so it
         # survives even if correlation fails.

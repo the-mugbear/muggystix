@@ -27,7 +27,7 @@ import {
   Wand2,
   X,
 } from 'lucide-react';
-import { ColumnDef, ExpandedState, Row, RowSelectionState } from '@tanstack/react-table';
+import { ColumnDef, RowSelectionState } from '@tanstack/react-table';
 import {
   getHosts,
   getHostFilterData,
@@ -126,7 +126,7 @@ import HostInspector from '../components/HostInspector';
 // (getLatestDiscovery / getTopServices / getScanLabel /
 // formatRelativeLastViewed), the FollowMenu component, and the 166-line
 // columns useMemo all moved to ../components/hosts/useHostColumns.tsx.
-// Helpers re-exported here so anything in this file or HostExpandedRow
+// Helpers re-exported here so anything in this file
 // that still needs them keeps working.
 
 type HostSortOption =
@@ -208,161 +208,6 @@ const severityChipClasses: Record<'critical' | 'high' | 'medium' | 'low' | 'info
 
 // FollowMenu moved to ../components/hosts/useHostColumns.tsx (v2.43.0 MONO-1).
 
-/**
- * Body of the expandable per-row detail section — shared between the
- * desktop DataTable sub-row and the mobile card collapse.
- */
-const HostExpandedRow: React.FC<{
-  host: Host;
-  vulnError: boolean;
-  onOpenScan: (scanId: number) => void;
-}> = ({ host, vulnError, onOpenScan }) => {
-  const openPorts = host.ports?.filter((port) => port.state === 'open') || [];
-  const portsOfInterest = openPorts.filter((port) => PORTS_OF_INTEREST_SET.has(port.port_number));
-  const webLinks = getHostWebLinks(host);
-  const discoveries = host.discoveries ?? [];
-  const visibleDiscoveries = discoveries.slice(0, 6);
-  const latestNote = host.notes && host.notes.length > 0 ? host.notes[0] : undefined;
-  const latestNotePreview = latestNote?.body
-    ? `${latestNote.body.slice(0, 220)}${latestNote.body.length > 220 ? '…' : ''}`
-    : null;
-  const relativeViewed = formatRelativeLastViewed(host.follow?.last_viewed_at);
-  const noteCount = host.note_count ?? host.notes?.length ?? 0;
-  const vulnSummary = host.vulnerability_summary;
-
-  return (
-    <div className="grid gap-md lg:grid-cols-2">
-      <div className="min-w-0 space-y-xs">
-        <h4 className="text-metadata font-semibold uppercase tracking-wider text-muted-foreground">
-          Host context
-        </h4>
-        {/* State is the only true categorical signal here, so it's
-            the only chip; counts and metadata (open ports, notes, OS,
-            last viewed) collapse to a muted subtitle so the row reads
-            like a row, not a chip cluster. */}
-        <div className="flex flex-wrap items-center gap-xs">
-          {host.state && (
-            <Badge variant="outline" className={cn(stateBadgeClass(host.state))}>
-              {host.state}
-            </Badge>
-          )}
-          <span className="text-caption text-muted-foreground">
-            {openPorts.length} open port{openPorts.length === 1 ? '' : 's'}
-            {' · '}
-            {noteCount} note{noteCount === 1 ? '' : 's'}
-            {host.os_name && <> · {host.os_name}</>}
-            {relativeViewed && <> · viewed {relativeViewed}</>}
-          </span>
-        </div>
-        {latestNotePreview && (
-          <p className="text-metadata italic text-muted-foreground">“{latestNotePreview}”</p>
-        )}
-        {webLinks.length > 0 && (
-          <div className="flex flex-wrap gap-xs">
-            {webLinks.slice(0, 3).map((link) => (
-              <a
-                key={`${host.id}-${link.protocol}-${link.port}`}
-                href={link.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(event) => event.stopPropagation()}
-                className="inline-flex items-center gap-xxs rounded-chip border border-border px-xs py-px text-micro font-semibold uppercase tracking-wider text-foreground hover:bg-accent"
-              >
-                {link.protocol.toUpperCase()} {link.port}
-              </a>
-            ))}
-          </div>
-        )}
-        {portsOfInterest.length > 0 && (
-          <div className="flex flex-wrap gap-xs">
-            {portsOfInterest.map((port) => {
-              const definition = PORTS_OF_INTEREST.find(
-                (entry) => entry.port === port.port_number,
-              );
-              return (
-                <Badge
-                  key={`${host.id}-poi-${port.port_number}`}
-                  variant="warning"
-                  title={definition?.label || 'High-value port'}
-                >
-                  {port.port_number}/{port.service_name || 'unknown'}
-                </Badge>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div className="min-w-0 space-y-sm">
-        <div>
-          <h4 className="mb-xs text-metadata font-semibold uppercase tracking-wider text-muted-foreground">
-            Discoveries
-          </h4>
-          {visibleDiscoveries.length > 0 ? (
-            <div className="flex flex-wrap gap-xs">
-              {visibleDiscoveries.map((discovery) => (
-                <button
-                  key={`${host.id}-scan-${discovery.scan_id}`}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onOpenScan(discovery.scan_id);
-                  }}
-                  title={`${getScanLabel(discovery)} • ${formatDateTime(discovery.discovered_at)}${
-                    discovery.scan_type ? ` • ${discovery.scan_type}` : ''
-                  }`}
-                  className="inline-flex max-w-[16rem] items-center gap-xxs rounded-chip border border-border px-xs py-px text-micro font-semibold uppercase tracking-wider text-foreground hover:bg-accent"
-                >
-                  <span className="truncate">{getScanLabel(discovery)}</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="text-metadata text-muted-foreground">No discovery history available.</p>
-          )}
-        </div>
-
-        <div>
-          <h4 className="mb-xs text-metadata font-semibold uppercase tracking-wider text-muted-foreground">
-            Vulnerabilities
-          </h4>
-          {vulnSummary && vulnSummary.total_vulnerabilities > 0 ? (
-            <div className="flex flex-wrap gap-xs">
-              {vulnSummary.critical > 0 && (
-                <Badge className={severityChipClasses.critical}>
-                  {vulnSummary.critical} Critical
-                </Badge>
-              )}
-              {vulnSummary.high > 0 && (
-                <Badge className={severityChipClasses.high}>{vulnSummary.high} High</Badge>
-              )}
-              {vulnSummary.medium > 0 && (
-                <Badge className={severityChipClasses.medium}>
-                  {vulnSummary.medium} Medium
-                </Badge>
-              )}
-              {vulnSummary.low > 0 && (
-                <Badge className={severityChipClasses.low}>{vulnSummary.low} Low</Badge>
-              )}
-              {vulnSummary.info > 0 && (
-                <Badge className={severityChipClasses.info}>{vulnSummary.info} Info</Badge>
-              )}
-            </div>
-          ) : vulnError ? (
-            <p className="text-metadata text-warning">
-              Vulnerability data unavailable — the vulnerability subsystem encountered an error.
-            </p>
-          ) : (
-            <p className="text-metadata text-muted-foreground">
-              No vulnerability findings recorded for this host.
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
 export default function Hosts() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -441,7 +286,6 @@ export default function Hosts() {
   const [vulnError, setVulnError] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
-  const [expanded, setExpanded] = useState<ExpandedState>({});
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
 
   // Saved Hosts page filter views (per-user, per-project).
@@ -1664,21 +1508,6 @@ export default function Hosts() {
     return chips;
   }, [filters, clearFilterKey, removeListFilterValue, scanLookup, filterData]);
 
-  useEffect(() => {
-    setExpanded((previous) => {
-      // ExpandedState is `true | Record<string, boolean>`.  `true` means
-      // every row is expanded — we never set that here, so we only need
-      // to prune the per-row map down to ids still present in hosts.
-      if (previous === true || typeof previous !== 'object') return previous;
-      const next: Record<string, boolean> = {};
-      Object.entries(previous).forEach(([key, value]) => {
-        if (value && hosts.some((host) => host.id.toString() === key)) {
-          next[key] = true;
-        }
-      });
-      return next;
-    });
-  }, [hosts]);
 
   useEffect(() => {
     const maxPage = Math.max(Math.ceil(totalHosts / rowsPerPage) - 1, 0);
@@ -1756,9 +1585,6 @@ export default function Hosts() {
     data: hosts,
     columns,
     getRowId: (host) => host.id.toString(),
-    expanded,
-    onExpandedChange: setExpanded,
-    getRowCanExpand: () => true,
     rowSelection,
     onRowSelectionChange: setRowSelection,
     enableRowSelection: true,
@@ -2252,13 +2078,12 @@ export default function Hosts() {
             <DataTableShell<Host>
               table={table}
               onRowClick={(host) => openInspector(host.id)}
-              renderSubRow={(row: Row<Host>) => (
-                <HostExpandedRow
-                  host={row.original}
-                  vulnError={vulnError}
-                  onOpenScan={(scanId) => navigate(`/scans/${scanId}`)}
-                />
-              )}
+              // v4.46.0 — the expandable sub-row was removed.  It predated the
+              // side-sheet inspector (which superseded it as the drill-down)
+              // and had become a third competing interaction on every row:
+              // most of its content already appeared in the collapsed columns,
+              // and everything unique to it (web links, discovery chips, the
+              // latest note) lives in the inspector in richer form.
               // v4.45.0 — left-border accent on rows that have had at
               // least one agentic test executed against them
               // (test_execution_count > 0). Hover surfaces the count

@@ -52,6 +52,12 @@ export interface IngestionJob {
   retry_count?: number | null;
   last_error?: string | null;
   last_heartbeat?: string | null;
+  // Ingestion quality. A job can complete successfully and still have lost
+  // data — malformed rows skipped, or a truncated file that stopped the parse
+  // early. Without these a degraded import is indistinguishable from a clean
+  // one, which for scan data means missing hosts look like absent hosts.
+  skipped_count?: number | null;
+  parser_warnings?: string | null;
 }
 
 

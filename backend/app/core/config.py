@@ -100,12 +100,23 @@ class Settings:
     # of silently dropping rows.  The streaming CSV inventory ignores this and
     # exports the full filtered set.
     REPORT_MAX_HOSTS: int = int(os.getenv("REPORT_MAX_HOSTS", "50000"))
-    # Lower cap for the *in-memory* report formats (PDF, JSON, the zip bundles)
-    # which build the whole document in worker memory at once — a full per-host
-    # dossier is far heavier than an inventory row, so a few concurrent large
-    # exports could OOM the API worker.  The streamed HTML uses REPORT_MAX_HOSTS
-    # and the streamed CSV ignores the cap entirely.
-    REPORT_MAX_INMEMORY_HOSTS: int = int(os.getenv("REPORT_MAX_INMEMORY_HOSTS", "2000"))
+    # Cap for the *in-memory* report formats (JSON, the agent/markdown zip
+    # bundles) which build the whole document in memory at once — a full
+    # per-host dossier is far heavier than an inventory row.  The streamed HTML
+    # uses REPORT_MAX_HOSTS and the streamed CSV ignores the cap entirely.
+    #
+    # v2.232.0 — this setting had become DEAD: when those formats moved off the
+    # API thread onto the report worker, the worker deliberately took the full
+    # REPORT_MAX_HOSTS cap and nothing passed this value anywhere, while
+    # .env.example still advertised it as a live limit.  An operator lowering it
+    # to protect a memory-constrained worker got no effect at all.  It is now
+    # wired again (report_job_service), with the default raised to match the
+    # behaviour that actually shipped — so nothing changes by default, but the
+    # lever works: lower it if the report worker is OOMing against its
+    # REPORT_WORKER_MEM_LIMIT.
+    REPORT_MAX_INMEMORY_HOSTS: int = int(
+        os.getenv("REPORT_MAX_INMEMORY_HOSTS", str(REPORT_MAX_HOSTS))
+    )
     # Chunk size for the streaming CSV inventory cursor (hosts hydrated +
     # serialized per batch, bounding peak memory regardless of total rows).
     REPORT_STREAM_CHUNK: int = int(os.getenv("REPORT_STREAM_CHUNK", "500"))

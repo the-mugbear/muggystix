@@ -116,9 +116,40 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
     assert summary["vulns_by_severity"]["high"] == 1
 
 
-def test_inmemory_cap_is_lower_than_streamed_cap():
-    """PDF/JSON/bundle build in memory and must cap lower than the streamed HTML."""
-    assert ReportGenerator.MAX_INMEMORY_REPORT_HOSTS < ReportGenerator.MAX_REPORT_HOSTS
+def test_inmemory_cap_is_wired_and_not_above_the_streamed_cap():
+    """The in-memory cap must be a real, applied limit — not dead config.
+
+    This previously asserted ``INMEMORY < MAX``, which held trivially (2000 vs
+    50000) while nothing actually passed the in-memory value as a cap: when the
+    JSON/bundle formats moved onto the report worker they took the full
+    ``MAX_REPORT_HOSTS`` instead, so the setting an operator could tune did
+    nothing.  The meaningful invariants now are that it is bounded by the
+    streamed cap and that the worker genuinely applies it.
+    """
+    assert ReportGenerator.MAX_INMEMORY_REPORT_HOSTS <= ReportGenerator.MAX_REPORT_HOSTS
+
+    import inspect
+    from app.services.report_job_service import ReportJobService
+
+    src = inspect.getsource(ReportJobService)
+    assert "MAX_INMEMORY_REPORT_HOSTS" in src, (
+        "the report worker must cap in-memory formats with "
+        "MAX_INMEMORY_REPORT_HOSTS, or the setting is dead config again"
+    )
+
+
+def test_report_metadata_reports_the_cap_that_actually_applied(
+    db_session, test_project, test_user
+):
+    """host_cap in the export metadata must reflect the cap used for THIS run.
+
+    Both metadata blocks used to hard-code a constant, so the JSON export
+    advertised host_cap=2000 while 50000 had applied — telling a consumer the
+    wrong thing about where truncation could have happened.
+    """
+    gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
+    gen.get_hosts_for_report({}, cap=7)
+    assert gen.applied_host_cap == 7
 
 
 def test_html_report_renders_dossier_and_cross_links(db_session, test_project, test_user):

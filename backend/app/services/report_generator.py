@@ -75,6 +75,11 @@ class ReportGenerator:
         # the user (HTML banner / JSON flag / X-Report-Truncated header) so a
         # capped report is never mistaken for a complete one.
         self.report_truncated = False
+        # The cap that ACTUALLY applied to this run.  Report metadata used to
+        # hard-code which constant it assumed, which drifted the moment a caller
+        # passed a different one (the JSON export claimed host_cap=2000 while
+        # 50000 had applied).  Whoever caps the query records it here instead.
+        self.applied_host_cap: Optional[int] = None
 
     # Maximum number of hosts the streamed HTML report can include — high,
     # because the dossier streams chunk-by-chunk so peak memory is bounded.
@@ -142,6 +147,7 @@ class ReportGenerator:
 
         rows = query.all()
         self.report_truncated = len(rows) > cap
+        self.applied_host_cap = cap
         return rows[:cap]
 
     def _filtered_host_id_query(self, filters: Dict[str, Any]):
@@ -389,6 +395,7 @@ class ReportGenerator:
         headers before the body)."""
         all_ids = [row[0] for row in self._filtered_host_id_query(filters).all()]
         self.report_truncated = len(all_ids) > self.MAX_REPORT_HOSTS
+        self.applied_host_cap = self.MAX_REPORT_HOSTS
         return all_ids[: self.MAX_REPORT_HOSTS]
 
     def iter_html_report(self, host_ids: List[int], report_type: str = "comprehensive",
@@ -941,7 +948,7 @@ class ReportGenerator:
                 # this payload was truncated (use the CSV inventory for the
                 # complete set).
                 "truncated": self.report_truncated,
-                "host_cap": self.MAX_INMEMORY_REPORT_HOSTS,
+                "host_cap": self.applied_host_cap or self.MAX_REPORT_HOSTS,
             },
             "hosts": records,
         }
@@ -1890,7 +1897,7 @@ class ReportGenerator:
             # True when the filter matched more than the host cap and this
             # bundle was truncated (use the streaming CSV for the full set).
             "truncated": self.report_truncated,
-            "host_cap": self.MAX_REPORT_HOSTS,
+            "host_cap": self.applied_host_cap or self.MAX_REPORT_HOSTS,
             "included_sections": [
                 "identity",
                 "scope",

@@ -4,7 +4,7 @@
 
 ## Current Test Stack
 
-- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite currently runs **~750 tests** across ~100 files.
+- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite currently runs **~975 tests** across ~120 files.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
 ## Continuous Integration
@@ -55,7 +55,7 @@ docker compose run --rm --no-deps \
 
 Mounting `AGENTS.md` keeps the docs-contract tests from skipping (they read it from disk).
 
-Coverage is enforced at `70%` and configured to emit terminal and HTML reports.
+Coverage is enforced in CI at a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) and emits terminal + HTML reports. Measured coverage is **70%** as of v2.232.0; the floor sits just under so ordinary diffs don't trip it on rounding. Raise the floor as coverage climbs — never lower it to turn a red build green. (Before v2.232.0 the gate was configured but CI ran `--no-cov`, so it enforced nothing.)
 
 ## Frontend Tests
 
