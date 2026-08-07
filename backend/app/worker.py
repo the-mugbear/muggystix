@@ -124,13 +124,29 @@ def main() -> None:
         with SessionLocal() as db:
             warn_if_ingestion_backlog_high(db)
 
+    def _sweep_webhooks() -> None:
+        # v2.233.0 — retry the durable webhook outbox. Rides this worker's tick
+        # rather than a fourth container: the work is a handful of bounded HTTP
+        # POSTs, and this process already owns the periodic-maintenance slot.
+        # Batch-capped in the sweeper so dead receivers can't monopolise a tick.
+        from app.db.session import SessionLocal
+        from app.services.webhook_dispatcher import (
+            prune_delivery_history, sweep_pending_deliveries,
+        )
+
+        with SessionLocal() as db:
+            attempted = sweep_pending_deliveries(db)
+            if attempted:
+                logger.info("Retried %d pending webhook deliver(ies)", attempted)
+            prune_delivery_history(db)
+
     worker_loop.run_listen_loop(
         channel="ingestion_jobs",
         poll_one=service.poll_and_run_one,
         heartbeat_path=HEARTBEAT_PATH,
         logger=logger,
         poll_interval=POLL_INTERVAL,
-        periodic=[_reap, _check_backlog],
+        periodic=[_reap, _check_backlog, _sweep_webhooks],
     )
     logger.info("Ingestion worker stopped")
 

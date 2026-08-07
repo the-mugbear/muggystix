@@ -1281,6 +1281,29 @@ def resume_recon_session(
     recon_session.agent_id = agent.id
     # Reuse the session's existing unified base row (created at start) so the
     # resumed key links to the same AgentSession (R5).
+    #
+    # v2.233.0 — a session started before the agent_sessions backfill has no
+    # base row, so resuming it used to mint a key with agent_session_id NULL:
+    # indistinguishable, on that column alone, from the long-lived *global*
+    # key. The legacy scope columns still classify it correctly today, but the
+    # invariant "every workflow key carries an agent_session_id" is what makes
+    # dropping those columns safe, so backfill on demand instead of minting a
+    # key that violates it.
+    if recon_session.agent_session_id is None:
+        from app.db.models_agent import AgentSessionWorkflow
+        from app.services.agent_session_service import create_agent_session
+
+        backfilled = create_agent_session(
+            db,
+            workflow=AgentSessionWorkflow.RECON.value,
+            project_id=project.id,
+            agent_id=agent.id,
+            started_by_id=recon_session.started_by_id or current_user.id,
+            scope_id=scope.id,
+            status=recon_session.status,
+        )
+        recon_session.agent_session_id = backfilled.id
+        db.flush()
     raw_key = _mint_recon_session_key(
         db, agent=agent, scope=scope, recon_session=recon_session, name_suffix="-resume",
         agent_session_id=recon_session.agent_session_id,

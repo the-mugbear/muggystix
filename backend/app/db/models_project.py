@@ -151,3 +151,68 @@ class WebhookConfig(Base):
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+
+class WebhookDeliveryStatus(str, Enum):
+    """Lifecycle of one outbox row."""
+    PENDING = "pending"      # awaiting first attempt or a retry
+    DELIVERED = "delivered"  # receiver returned 2xx
+    FAILED = "failed"        # retries exhausted; kept for operator visibility
+
+
+class WebhookDelivery(Base):
+    """Durable outbox for one webhook POST (v2.233.0).
+
+    Delivery used to be pure fire-and-forget: the payload lived only in a
+    process-local queue consumed by daemon threads, so a redeploy, crash, or
+    transient receiver outage silently lost the event — network and HTTP
+    failures were logged and dropped with no retry.
+
+    Each intended POST is now persisted here first, attempted immediately on
+    the existing thread pool (so the fast path keeps its latency), and — if
+    that attempt fails — retried by a periodic sweeper with exponential
+    backoff until ``max_attempts``. A row that exhausts its attempts stays as
+    ``failed`` rather than vanishing, so "did that alert ever go out?" is
+    answerable after the fact.
+
+    Honest limitation: the row is written just *after* the caller's own
+    commit, not inside it, because every dispatch site already commits before
+    dispatching. A crash in the microseconds between the two still loses the
+    event. Closing that fully means moving dispatch inside each caller's
+    transaction; this gets the large win (restart/outage/receiver-failure
+    durability) without reworking every call site.
+    """
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    webhook_config_id = Column(
+        Integer, ForeignKey("webhook_configs.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    project_id = Column(
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    event = Column(String(50), nullable=False)
+    # The exact body to POST. Stored rather than rebuilt so a retry delivers
+    # what the event said at the time, not a re-derivation from mutated state.
+    payload = Column(JSON, nullable=False)
+    status = Column(
+        String(20), nullable=False,
+        default=WebhookDeliveryStatus.PENDING.value, index=True,
+    )
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=6)
+    # When the next attempt becomes due. NULL for terminal rows.
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_error = Column(Text, nullable=True)
+    response_status = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+
+    webhook_config = relationship("WebhookConfig")
+
+    __table_args__ = (
+        # The sweeper's only query: due pending rows, oldest first.
+        Index("idx_webhook_delivery_due", "status", "next_attempt_at"),
+    )

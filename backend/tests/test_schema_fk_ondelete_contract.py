@@ -216,6 +216,8 @@ EXPECTED_ONDELETE = {
     ('vulnerabilities', 'scan_id'): 'CASCADE',
     ('webhook_configs', 'created_by_id'): 'SET NULL',
     ('webhook_configs', 'project_id'): 'CASCADE',
+    ('webhook_deliveries', 'project_id'): 'CASCADE',
+    ('webhook_deliveries', 'webhook_config_id'): 'CASCADE',
     ('web_interfaces', 'host_id'): 'CASCADE',
     ('web_interfaces', 'port_id'): 'SET NULL',
     ('web_interfaces', 'project_id'): 'CASCADE',

@@ -22,6 +22,7 @@ import apiClient from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
+import QueueHealthCard from '../components/QueueHealthCard';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -362,6 +363,11 @@ const SystemSettings: React.FC = () => {
           <Plus className="size-4" aria-hidden /> Add User
         </Button>
       </div>
+
+      {/* Deployment worker health. First on the page because a stalled
+          ingestion or report worker silently breaks every user's uploads and
+          exports, and until now nothing in the UI surfaced it. */}
+      <QueueHealthCard />
 
       <Card className="mb-md">
         <CardHeader>

@@ -5,12 +5,25 @@ enabled ``WebhookConfig`` whose event mask includes the dispatched event.
 The payload is Slack-incoming-webhook compatible (a top-level ``text``
 field) while also carrying structured fields for generic consumers.
 
-Delivery is **best-effort, fire-and-forget**: the HTTP POST runs on a
-small thread pool so it never blocks the request, and failures are logged
-rather than retried/persisted.  Callers dispatch *after* their DB commit
-so a rolled-back transaction doesn't emit a webhook for work that didn't
-land.  The ``/test`` path delivers synchronously so the UI can show an
-immediate pass/fail.
+Delivery is **durable** as of v2.233.0.  Every intended POST is first
+persisted to the ``webhook_deliveries`` outbox, then attempted immediately
+on a small thread pool so the request path keeps its latency.  Anything
+that attempt can't deliver — receiver down, 5xx during a deploy, process
+restarted mid-flight, queue full — is retried by ``sweep_pending_deliveries``
+on the ingestion worker's tick with exponential backoff, and a row that
+exhausts ``max_attempts`` stays as ``failed`` rather than vanishing, so
+"did that alert ever go out?" is answerable after the fact.
+
+Before this, delivery was best-effort fire-and-forget: the payload lived
+only in a process-local queue and any network or HTTP failure was logged
+and dropped.  Callers still dispatch *after* their DB commit so a
+rolled-back transaction doesn't emit a webhook for work that didn't land —
+which means the outbox row is written just after that commit rather than
+inside it, leaving a microscopic crash window.  Closing that fully would
+require moving dispatch inside every caller's transaction; see
+``WebhookDelivery`` for why that trade was made.  The ``/test`` path still
+delivers synchronously (and is not persisted) so the UI shows immediate
+pass/fail.
 
 v2.91.2 (code review NEW D, Option A) — replaced the unbounded
 ``ThreadPoolExecutor`` work queue with a fixed-size ``queue.Queue`` +
@@ -38,7 +51,7 @@ import logging
 import queue
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
 from urllib.parse import urlparse
 
@@ -113,8 +126,8 @@ def _worker_loop() -> None:
         try:
             if task is None:
                 return  # sentinel; not used in production but useful for tests
-            url, secret, payload = task
-            _deliver(url, secret, payload)
+            url, secret, payload, delivery_id = task
+            _deliver(url, secret, payload, delivery_id)
         except Exception:  # pragma: no cover — defensive: never kill the worker
             logger.exception("webhook worker loop swallowed unexpected error")
         finally:
@@ -271,13 +284,87 @@ def _post(url: str, secret: Optional[str], payload: dict) -> httpx.Response:
     )
 
 
-def _deliver(url: str, secret: Optional[str], payload: dict) -> None:
+# Retry schedule for a persisted delivery: ~30s, 1m, 4m, 16m, 64m … capped.
+# Exponential so a receiver that is briefly down recovers fast, while a
+# receiver that is properly broken stops being hammered.
+_RETRY_BASE_SECONDS = 30
+_RETRY_MAX_SECONDS = 3600
+# Rows the sweeper will attempt per pass — bounded so a large backlog can't
+# monopolise the worker tick.
+_SWEEP_BATCH = 20
+# How long delivered rows are kept before the sweeper prunes them. Failed rows
+# are kept longer (they're the ones an operator investigates).
+_DELIVERED_RETENTION_DAYS = 7
+_FAILED_RETENTION_DAYS = 30
+
+
+def _backoff_seconds(attempts: int) -> int:
+    """Delay before attempt N+1. Grows 4x per failure, capped."""
+    return min(_RETRY_BASE_SECONDS * (4 ** max(attempts - 1, 0)), _RETRY_MAX_SECONDS)
+
+
+def _attempt_delivery(url: str, secret: Optional[str], payload: dict):
+    """POST once. Returns (ok, response_status, error) — never raises.
+
+    A 2xx is success. Anything else, including a transport failure, is a
+    retryable error: a receiver returning 500 during a deploy is exactly the
+    case the outbox exists for.
+    """
     try:
         resp = _post(url, secret, payload)
-        if resp.status_code >= 400:
-            logger.warning("Webhook POST to %s returned HTTP %s", url, resp.status_code)
-    except Exception as exc:  # network error, timeout, DNS, …
-        logger.warning("Webhook delivery to %s failed: %s", url, exc)
+    except Exception as exc:  # network error, timeout, DNS, size cap, …
+        return False, None, str(exc)[:1000]
+    if 200 <= resp.status_code < 300:
+        return True, resp.status_code, None
+    return False, resp.status_code, f"receiver returned HTTP {resp.status_code}"
+
+
+def _record_attempt(delivery_id: int, ok: bool, status: Optional[int], error: Optional[str]) -> None:
+    """Persist the outcome of one attempt on its own short-lived session.
+
+    Runs on a delivery thread, so it must not touch the caller's session.
+    """
+    from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
+
+    SessionLocal = _session_module.SessionLocal
+    try:
+        with SessionLocal() as db:
+            row = db.get(WebhookDelivery, delivery_id)
+            if row is None or row.status != WebhookDeliveryStatus.PENDING.value:
+                return
+            row.attempts = (row.attempts or 0) + 1
+            row.response_status = status
+            if ok:
+                row.status = WebhookDeliveryStatus.DELIVERED.value
+                row.delivered_at = datetime.now(timezone.utc)
+                row.next_attempt_at = None
+                row.last_error = None
+            else:
+                row.last_error = error
+                if row.attempts >= (row.max_attempts or 6):
+                    row.status = WebhookDeliveryStatus.FAILED.value
+                    row.next_attempt_at = None
+                    logger.warning(
+                        "Webhook delivery %s to config %s gave up after %d attempts: %s",
+                        delivery_id, row.webhook_config_id, row.attempts, error,
+                    )
+                else:
+                    row.next_attempt_at = datetime.now(timezone.utc) + timedelta(
+                        seconds=_backoff_seconds(row.attempts)
+                    )
+            db.commit()
+    except Exception:  # pragma: no cover — bookkeeping must never kill a worker
+        logger.exception("Could not record webhook delivery outcome for %s", delivery_id)
+
+
+def _deliver(url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None) -> None:
+    """Attempt one delivery and, when it is backed by an outbox row, record the
+    outcome so a failure is retried instead of vanishing into a log line."""
+    ok, status, error = _attempt_delivery(url, secret, payload)
+    if not ok:
+        logger.warning("Webhook delivery to %s failed: %s", url, error)
+    if delivery_id is not None:
+        _record_attempt(delivery_id, ok, status, error)
 
 
 class DispatchResult(NamedTuple):
@@ -321,14 +408,41 @@ class WebhookDispatcher:
             return DispatchResult(queued=0, dropped=0)
         _ensure_workers()
         payload = build_payload(event, title, body, project_id, context)
+
+        # v2.233.0 — persist each intended POST BEFORE attempting it, so a
+        # crash, redeploy, or receiver outage can't make the event disappear.
+        # The in-process queue is now just the fast path: it carries the first
+        # attempt so latency is unchanged, and anything it can't deliver is
+        # picked up by sweep_pending_deliveries() on the worker tick.
+        from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
+
+        now = datetime.now(timezone.utc)
+        rows = [
+            WebhookDelivery(
+                webhook_config_id=cfg.id,
+                project_id=project_id,
+                event=event,
+                payload=payload,
+                status=WebhookDeliveryStatus.PENDING.value,
+                next_attempt_at=now,
+            )
+            for cfg in targets
+        ]
+        self.db.add_all(rows)
+        self.db.commit()
+
         queued = 0
         dropped = 0
-        for cfg in targets:
+        for cfg, row in zip(targets, rows):
             secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
             try:
-                _QUEUE.put_nowait((cfg.url, secret, payload))
+                _QUEUE.put_nowait((cfg.url, secret, payload, row.id))
                 queued += 1
             except queue.Full:
+                # The row stays pending, so this is now a *deferral*, not a
+                # loss — the sweeper will deliver it. The operator
+                # notification is still worth raising: it means the receiver
+                # is too slow to keep up in real time.
                 _record_dropped_delivery(cfg, event, title)
                 dropped += 1
         return DispatchResult(queued=queued, dropped=dropped)
@@ -368,3 +482,99 @@ def safe_dispatch(db: Session, **kwargs) -> None:
             )
     except Exception:
         logger.warning("Webhook dispatch failed for event=%s", kwargs.get("event"), exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Outbox sweeper
+# ---------------------------------------------------------------------------
+
+def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
+    """Retry due outbox rows. Returns how many were attempted.
+
+    This is what turns the outbox from a log into a guarantee: the fast path
+    handles the happy case, and anything it couldn't deliver — receiver down,
+    process restarted mid-flight, queue full — lands here on the next worker
+    tick and keeps being retried with backoff until it succeeds or exhausts
+    its attempts.
+
+    Claimed with ``FOR UPDATE SKIP LOCKED`` so multiple workers (or a worker
+    racing the API's own threads) can't double-send the same row. Delivery
+    happens synchronously here; the batch is bounded so a pile-up of dead
+    receivers can't monopolise the tick.
+    """
+    from app.db.models_project import (
+        WebhookConfig, WebhookDelivery, WebhookDeliveryStatus,
+    )
+
+    now = datetime.now(timezone.utc)
+    query = (
+        db.query(WebhookDelivery)
+        .filter(
+            WebhookDelivery.status == WebhookDeliveryStatus.PENDING.value,
+            WebhookDelivery.next_attempt_at.isnot(None),
+            WebhookDelivery.next_attempt_at <= now,
+        )
+        .order_by(WebhookDelivery.next_attempt_at.asc())
+        .limit(limit)
+    )
+    try:
+        due = query.with_for_update(skip_locked=True).all()
+    except Exception:
+        # SQLite (test fallback) has no SKIP LOCKED; correctness there doesn't
+        # depend on it since there's a single writer.
+        due = query.all()
+    if not due:
+        return 0
+
+    # Push each claimed row out of the due window before releasing the row
+    # lock, so a concurrent sweeper can't pick it up while we're POSTing.
+    config_ids = {row.webhook_config_id for row in due}
+    configs = {
+        c.id: c
+        for c in db.query(WebhookConfig).filter(WebhookConfig.id.in_(config_ids)).all()
+    }
+    claimed = []
+    for row in due:
+        cfg = configs.get(row.webhook_config_id)
+        if cfg is None or not cfg.is_active:
+            # Config deleted or disabled since the event fired — nothing to
+            # deliver to. Terminal, not an error.
+            row.status = WebhookDeliveryStatus.FAILED.value
+            row.next_attempt_at = None
+            row.last_error = "webhook config removed or disabled before delivery"
+            continue
+        row.next_attempt_at = now + timedelta(seconds=_backoff_seconds(row.attempts + 1))
+        claimed.append((row.id, cfg, dict(row.payload or {})))
+    db.commit()
+
+    for delivery_id, cfg, payload in claimed:
+        secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
+        ok, status, error = _attempt_delivery(cfg.url, secret, payload)
+        _record_attempt(delivery_id, ok, status, error)
+    return len(claimed)
+
+
+def prune_delivery_history(db: Session) -> int:
+    """Drop old terminal rows. Delivered rows are noise after a week; failed
+    ones are kept longer because they're what an operator investigates."""
+    from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
+
+    now = datetime.now(timezone.utc)
+    deleted = (
+        db.query(WebhookDelivery)
+        .filter(
+            WebhookDelivery.status == WebhookDeliveryStatus.DELIVERED.value,
+            WebhookDelivery.created_at < now - timedelta(days=_DELIVERED_RETENTION_DAYS),
+        )
+        .delete(synchronize_session=False)
+    )
+    deleted += (
+        db.query(WebhookDelivery)
+        .filter(
+            WebhookDelivery.status == WebhookDeliveryStatus.FAILED.value,
+            WebhookDelivery.created_at < now - timedelta(days=_FAILED_RETENTION_DAYS),
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return deleted
