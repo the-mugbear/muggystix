@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Fragment } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   RefreshCw,
@@ -136,7 +136,18 @@ const ParseErrors: React.FC = () => {
   // matches further down the list when projects had >100 ingest jobs.
   const [searchText, setSearchText] = useState('');
   const debouncedSearchText = useDebouncedValue(searchText, 300);
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  // URL-backed so other surfaces can deep-link a filtered view (the queue
+  // health card links here for failed / queued / in-flight jobs). Local state
+  // would have made those links land on an unfiltered list.
+  const statusFilter = searchParams.get('status') ?? 'all';
+  const setStatusFilter = useCallback((value: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value === 'all') next.delete('status');
+      else next.set('status', value);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [sortBy, setSortBy] = useState<IngestionResultsSortBy>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   // v5.135.0 — the page used to request skip:0/limit:100 unconditionally and
@@ -184,7 +195,20 @@ const ParseErrors: React.FC = () => {
     // data; they were inspecting an invention. We now surface the
     // failure honestly and refuse to open the dialog.
     try {
-      const detail = await getParseError(item.id);
+      // item.id is the INGESTION JOB id; this endpoint wants a ParseError id.
+      // They are independent sequences that overlap, so passing the job id
+      // didn't 404 — it returned whichever parse error happened to share the
+      // number, and the dialog presented it as this row's detail. That is the
+      // same "showing an invention as backend data" failure the CRIT-8 note
+      // below says was closed.
+      if (item.parse_error_id == null) {
+        toast.error(
+          `Ingestion #${item.id} has no recorded parse error to open.`,
+          { id: `pe-detail-${item.id}` },
+        );
+        return;
+      }
+      const detail = await getParseError(item.parse_error_id);
       setSelectedParseError(detail);
       setDetailDialogOpen(true);
     } catch (err) {
@@ -200,12 +224,30 @@ const ParseErrors: React.FC = () => {
   // re-render, and so the URL doesn't keep re-focusing on refresh.
   useEffect(() => {
     if (focusErrorId === null || loading) return;
-    const match = (data?.items ?? []).some((i) => i.id === focusErrorId);
-    if (!match) return;
-    setExpandedRow(focusErrorId);
+    // Scans links with the PARSE ERROR id, so resolve it back to the row that
+    // produced it. Matching it against `i.id` (the job id) meant the link
+    // almost never focused anything, and on a numeric collision focused an
+    // unrelated row.
+    const row = (data?.items ?? []).find((i) => i.parse_error_id === focusErrorId);
+    if (!row) {
+      // Not on this page. Clear the param so it doesn't re-fire on every
+      // refetch, and say so rather than leaving the operator on a list that
+      // silently ignored their link.
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('error_id');
+        return next;
+      }, { replace: true });
+      toast.info(
+        `Ingestion result for error #${focusErrorId} isn't on this page — search or page to it.`,
+        { id: `pe-focus-${focusErrorId}` },
+      );
+      return;
+    }
+    setExpandedRow(row.id);
     requestAnimationFrame(() => {
       document
-        .querySelector(`[data-ingestion-row="${focusErrorId}"]`)
+        .querySelector(`[data-ingestion-row="${row.id}"]`)
         ?.scrollIntoView({ block: 'center' });
     });
     setSearchParams((prev) => {

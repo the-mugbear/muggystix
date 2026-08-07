@@ -165,4 +165,29 @@ describe('Findings — bulk selection scope', () => {
       expect(screen.getByText(/1 not on this page/)).toBeInTheDocument(),
     );
   });
+
+  // Selection spans pages, so the header checkbox must union/subtract the
+  // current page — replacing the set made select-all on page 2 silently drop
+  // page 1's work, and unchecking wiped everything.
+  it('select-all adds this page without discarding off-page selections', async () => {
+    renderFindings();
+    await screen.findByText('Finding 1');
+
+    await selectFinding(1);
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeInTheDocument());
+
+    // Page over (a sort — not a membership change), keeping the selection.
+    setResponse([makeFinding(7), makeFinding(8)], 5);
+    fireEvent.click(screen.getByRole('button', { name: /^Title$/ }));
+    await screen.findByText('Finding 7');
+    await waitFor(() => expect(screen.getByText(/1 not on this page/)).toBeInTheDocument());
+
+    // Select all on this page: 1 (off-page) + 7 + 8 = 3.
+    fireEvent.click(screen.getByLabelText('Select all findings on this page'));
+    await waitFor(() => expect(screen.getByText(/3 selected/)).toBeInTheDocument());
+
+    // Unchecking removes only this page, leaving the off-page one.
+    fireEvent.click(screen.getByLabelText('Select all findings on this page'));
+    await waitFor(() => expect(screen.getByText(/1 selected/)).toBeInTheDocument());
+  });
 });

@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/api', () => ({
@@ -34,7 +35,7 @@ describe('QueueHealthCard', () => {
 
   it('reports healthy queues without raising an alarm', async () => {
     mocked.getQueueMetrics.mockResolvedValue(metrics());
-    render(<QueueHealthCard />);
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText(/Scan ingestion idle/)).toBeInTheDocument());
     expect(screen.queryByText(/stuck in flight/)).toBeNull();
   });
@@ -44,7 +45,7 @@ describe('QueueHealthCard', () => {
     mocked.getQueueMetrics.mockResolvedValue(
       metrics(snapshot({ processing: 3, stale_processing: 3 })),
     );
-    render(<QueueHealthCard />);
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     await waitFor(() =>
       expect(screen.getByText(/3 Scan ingestion jobs stuck in flight/)).toBeInTheDocument(),
     );
@@ -56,7 +57,7 @@ describe('QueueHealthCard', () => {
     mocked.getQueueMetrics.mockResolvedValue(
       metrics(snapshot({ queued: 40, processing: 1, oldest_queued_age_seconds: 30 })),
     );
-    render(<QueueHealthCard />);
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText(/Scan ingestion healthy/)).toBeInTheDocument());
     expect(screen.queryByText(/not draining/)).toBeNull();
   });
@@ -65,7 +66,7 @@ describe('QueueHealthCard', () => {
     mocked.getQueueMetrics.mockResolvedValue(
       metrics(snapshot({ queued: 2, oldest_queued_age_seconds: 3600 })),
     );
-    render(<QueueHealthCard />);
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     await waitFor(() =>
       expect(screen.getByText(/Scan ingestion backlog not draining/)).toBeInTheDocument(),
     );
@@ -74,9 +75,29 @@ describe('QueueHealthCard', () => {
 
   it('surfaces a load failure instead of rendering an empty card', async () => {
     mocked.getQueueMetrics.mockRejectedValue(new Error('boom'));
-    render(<QueueHealthCard />);
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     await waitFor(() =>
       expect(screen.getByText(/Could not load queue metrics/)).toBeInTheDocument(),
     );
+  });
+
+  // A card that says "review and dismiss these" and offers only Refresh is a
+  // dead end; the point is to turn monitoring into a recovery step.
+  it('links failed ingestion jobs to a filtered view', async () => {
+    mocked.getQueueMetrics.mockResolvedValue(metrics(snapshot({ failed: 4 })));
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+
+    const link = await screen.findByRole('link', { name: /Review failed jobs/ });
+    expect(link).toHaveAttribute('href', '/parse-errors?status=failed');
+  });
+
+  // Report jobs surface only inside the Reports dialog (no route), so linking
+  // somewhere useless would be worse than not linking.
+  it('does not fabricate a destination for the report queue', async () => {
+    mocked.getQueueMetrics.mockResolvedValue(metrics(snapshot(), snapshot({ failed: 2 })));
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+
+    await screen.findByText(/2 failed Report jobs/);
+    expect(screen.queryByRole('link')).toBeNull();
   });
 });

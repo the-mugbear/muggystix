@@ -7,7 +7,7 @@ Mounted under ``/projects/{id}/webhooks``.  Secrets are write-only
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -188,3 +188,128 @@ def test_webhook(
 ):
     cfg = _config_or_404(db, project.id, webhook_id)
     return WebhookDispatcher(db).deliver_test(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Delivery history (v2.235.0)
+# ---------------------------------------------------------------------------
+# The outbox keeps FAILED rows deliberately, so "did that alert ever go out?"
+# is answerable — but nothing exposed them, which meant the answer lived only
+# in psql. These make the retained data reachable, and let an operator push a
+# settled failure back into the queue once the receiver is fixed.
+
+class WebhookDeliveryRow(BaseModel):
+    id: int
+    webhook_config_id: int
+    webhook_name: Optional[str] = None
+    event: str
+    status: str
+    attempts: int
+    max_attempts: int
+    last_error: Optional[str] = None
+    response_status: Optional[int] = None
+    next_attempt_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+@router.get(
+    "/deliveries",
+    response_model=List[WebhookDeliveryRow],
+    summary="Recent webhook delivery attempts for this project",
+)
+def list_deliveries(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _: object = _ADMIN,
+    status: Optional[str] = None,
+    limit: int = 100,
+):
+    """Newest first. ``status`` filters to pending / delivered / failed."""
+    from app.db.models_project import WebhookDelivery
+
+    limit = max(1, min(limit, 500))
+    q = (
+        db.query(WebhookDelivery, WebhookConfig.name)
+        .outerjoin(WebhookConfig, WebhookConfig.id == WebhookDelivery.webhook_config_id)
+        .filter(WebhookDelivery.project_id == project.id)
+    )
+    if status:
+        q = q.filter(WebhookDelivery.status == status)
+    rows = q.order_by(WebhookDelivery.created_at.desc()).limit(limit).all()
+    return [
+        WebhookDeliveryRow(
+            id=d.id,
+            webhook_config_id=d.webhook_config_id,
+            webhook_name=name,
+            event=d.event,
+            status=d.status,
+            attempts=d.attempts,
+            max_attempts=d.max_attempts,
+            last_error=d.last_error,
+            response_status=d.response_status,
+            next_attempt_at=d.next_attempt_at,
+            created_at=d.created_at,
+            delivered_at=d.delivered_at,
+        )
+        for d, name in rows
+    ]
+
+
+@router.post(
+    "/deliveries/{delivery_id:int}/retry",
+    response_model=WebhookDeliveryRow,
+    summary="Requeue a failed delivery",
+)
+def retry_delivery(
+    delivery_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _: object = _ADMIN,
+):
+    """Push a settled failure back into the queue after fixing the receiver.
+
+    Resets the attempt counter — this is a fresh delivery decision by a human,
+    not a continuation of the exhausted backoff, and leaving `attempts` at the
+    cap would make the sweeper give up again on the first transient error.
+    """
+    from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
+
+    row = (
+        db.query(WebhookDelivery)
+        .filter(
+            WebhookDelivery.id == delivery_id,
+            WebhookDelivery.project_id == project.id,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Delivery not found in this project")
+    if row.status == WebhookDeliveryStatus.PENDING.value:
+        raise HTTPException(
+            status_code=409, detail="This delivery is already queued for retry.",
+        )
+    row.status = WebhookDeliveryStatus.PENDING.value
+    row.attempts = 0
+    row.last_error = None
+    row.response_status = None
+    row.delivered_at = None
+    row.next_attempt_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+    return WebhookDeliveryRow(
+        id=row.id,
+        webhook_config_id=row.webhook_config_id,
+        webhook_name=None,
+        event=row.event,
+        status=row.status,
+        attempts=row.attempts,
+        max_attempts=row.max_attempts,
+        last_error=row.last_error,
+        response_status=row.response_status,
+        next_attempt_at=row.next_attempt_at,
+        created_at=row.created_at,
+        delivered_at=row.delivered_at,
+    )

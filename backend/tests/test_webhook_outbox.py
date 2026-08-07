@@ -8,6 +8,7 @@ pin the property that makes the outbox worth having — a failed attempt is
 still *pending work*, not a discarded one.
 """
 
+import queue
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -54,6 +55,18 @@ def _dispatch(db, project_id):
     )
 
 
+def _expire_lease(db):
+    """Rows handed to the fast path are leased into the future so the sweeper
+    can't claim them mid-POST. Tests that exercise the sweeper have to fast-
+    forward past that lease, which is what a real 60s tick does."""
+    from app.db.models_project import WebhookDelivery
+
+    for row in db.query(WebhookDelivery).all():
+        if row.next_attempt_at is not None:
+            row.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+
+
 def test_dispatch_persists_the_event_before_attempting_it(
     db_session, test_project, webhook
 ):
@@ -73,6 +86,7 @@ def test_failed_attempt_stays_pending_and_backs_off(
     db_session, test_project, webhook
 ):
     _dispatch(db_session, test_project.id)
+    _expire_lease(db_session)
     attempted = wd.sweep_pending_deliveries(db_session)
     assert attempted == 1
 
@@ -91,6 +105,7 @@ def test_retry_eventually_succeeds_and_settles(
 ):
     """A receiver that recovers gets the event it would previously have lost."""
     _dispatch(db_session, test_project.id)
+    _expire_lease(db_session)
     wd.sweep_pending_deliveries(db_session)  # fails
 
     row = db_session.query(WebhookDelivery).one()
@@ -133,6 +148,7 @@ def test_disabled_config_settles_instead_of_retrying_forever(
     db_session, test_project, webhook
 ):
     _dispatch(db_session, test_project.id)
+    _expire_lease(db_session)
     webhook.is_active = False
     db_session.commit()
 
@@ -179,3 +195,140 @@ def test_prune_keeps_failures_longer_than_successes(
     assert WebhookDeliveryStatus.FAILED.value in statuses, (
         "failures are what an operator investigates — keep them longer"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fast path vs sweeper
+# ---------------------------------------------------------------------------
+# The suite above disables the fast path so the sweeper can be driven
+# deterministically. That left the two delivery paths never exercised
+# together — which is exactly where the duplicate-POST bug lived. These
+# re-enable enough of the fast path to test the interaction.
+
+
+def test_a_freshly_dispatched_row_is_not_immediately_sweepable(
+    db_session, test_project, webhook
+):
+    """The core guard. The fast path is about to POST this row; if the sweeper
+    can claim it in that window the receiver gets the event twice, and since
+    payloads carry no idempotency key it cannot dedupe."""
+    _dispatch(db_session, test_project.id)
+
+    attempted = wd.sweep_pending_deliveries(db_session)
+    assert attempted == 0, (
+        "the sweeper claimed a row the fast path is still delivering — "
+        "that is a duplicate POST"
+    )
+
+    row = db_session.query(WebhookDelivery).one()
+    assert row.next_attempt_at > datetime.now(timezone.utc), "row must be leased"
+
+
+def test_queue_full_hands_the_row_straight_back_to_the_sweeper(
+    db_session, test_project, webhook, monkeypatch
+):
+    """When the fast path refuses the work it must drop the lease, or the
+    event sits idle for the full lease before anyone retries it."""
+    def _full(_item):
+        raise queue.Full()
+
+    monkeypatch.setattr(wd._QUEUE, "put_nowait", _full)
+
+    result = _dispatch(db_session, test_project.id)
+    assert result.dropped == 1
+
+    row = db_session.query(WebhookDelivery).one()
+    db_session.refresh(row)
+    assert row.next_attempt_at <= datetime.now(timezone.utc), (
+        "a row the fast path refused must be due immediately"
+    )
+    assert wd.sweep_pending_deliveries(db_session) == 1
+
+
+def test_a_queued_task_does_not_send_if_the_row_already_settled(
+    db_session, test_project, webhook, monkeypatch
+):
+    """A task can sit in the bounded queue behind a slow receiver long enough
+    for the sweeper to deliver it. Without a pre-send status re-read the
+    queued task POSTs anyway — a guaranteed duplicate on a deep queue, not a
+    narrow race."""
+    _dispatch(db_session, test_project.id)
+    row = db_session.query(WebhookDelivery).one()
+
+    # Something else (the sweeper) delivered it while the task sat in the queue.
+    row.status = WebhookDeliveryStatus.DELIVERED.value
+    row.next_attempt_at = None
+    db_session.commit()
+
+    sent = []
+    monkeypatch.setattr(
+        wd, "_attempt_delivery",
+        lambda *a, **kw: (sent.append(a) or (True, 200, None)),
+    )
+    wd._deliver(webhook.url, None, {"x": 1}, row.id)
+
+    assert sent == [], "a settled row must not be POSTed again by a queued task"
+
+
+# ---------------------------------------------------------------------------
+# Delivery history surface
+# ---------------------------------------------------------------------------
+# The outbox retains FAILED rows so "did that alert ever go out?" is
+# answerable. It only actually is if something exposes them.
+
+
+def test_delivery_history_is_reachable_over_the_api(
+    client, db_session, test_project, webhook
+):
+    _dispatch(db_session, test_project.id)
+    _expire_lease(db_session)
+    wd.sweep_pending_deliveries(db_session)  # one failed attempt
+
+    resp = client.get(f"/api/v1/projects/{test_project.id}/webhooks/deliveries")
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["event"] == "host_assigned"
+    assert rows[0]["attempts"] == 1
+    assert rows[0]["last_error"]
+    assert rows[0]["webhook_name"] == "outbox-fixture"
+
+
+def test_a_settled_failure_can_be_requeued(
+    client, db_session, test_project, webhook
+):
+    """After fixing the receiver an operator must be able to push the event
+    back through without editing the database by hand."""
+    _dispatch(db_session, test_project.id)
+    row = db_session.query(WebhookDelivery).one()
+    row.status = WebhookDeliveryStatus.FAILED.value
+    row.attempts = 6
+    row.last_error = "receiver unreachable"
+    row.next_attempt_at = None
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/v1/projects/{test_project.id}/webhooks/deliveries/{row.id}/retry",
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "pending"
+    # Reset, not resumed: a human decision shouldn't inherit an exhausted
+    # backoff and give up on the first transient error.
+    assert body["attempts"] == 0
+    assert body["last_error"] is None
+
+    db_session.refresh(row)
+    assert wd.sweep_pending_deliveries(db_session) == 1
+
+
+def test_retrying_an_already_queued_delivery_is_rejected(
+    client, db_session, test_project, webhook
+):
+    _dispatch(db_session, test_project.id)
+    row = db_session.query(WebhookDelivery).one()
+
+    resp = client.post(
+        f"/api/v1/projects/{test_project.id}/webhooks/deliveries/{row.id}/retry",
+    )
+    assert resp.status_code == 409, resp.text

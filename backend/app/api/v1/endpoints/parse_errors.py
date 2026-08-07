@@ -58,7 +58,17 @@ class IngestionResultError(BaseModel):
 
 
 class IngestionResultItem(BaseModel):
+    # NB: this is the INGESTION JOB id, not a ParseError id. The two live in
+    # separate tables with independent sequences that overlap heavily (most
+    # ingestions succeed, so job ids climb past the dense low range of parse
+    # error ids), so passing one where the other is expected does not 404 —
+    # it silently returns a DIFFERENT file's error. Use `parse_error_id`
+    # below for anything that addresses the ParseError itself.
     id: int
+    # The ParseError this job produced, when it produced one. Previously the
+    # id was resolved server-side and then dropped, leaving callers to guess
+    # with `id` (see /parse-errors/{error_id}).
+    parse_error_id: Optional[int] = None
     original_filename: str
     status: str  # queued, processing, completed, failed
     file_size: Optional[int] = None
@@ -289,6 +299,7 @@ def get_ingestion_results(
 
         item = IngestionResultItem(
             id=job.id,
+            parse_error_id=job.parse_error_id,
             original_filename=job.original_filename,
             status=job.status,
             file_size=job.file_size,

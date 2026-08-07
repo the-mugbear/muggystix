@@ -289,6 +289,12 @@ def _post(url: str, secret: Optional[str], payload: dict) -> httpx.Response:
 # receiver that is properly broken stops being hammered.
 _RETRY_BASE_SECONDS = 30
 _RETRY_MAX_SECONDS = 3600
+# How long a row handed to the in-process fast path is hidden from the sweeper.
+# Must exceed the HTTP timeout, or the sweeper can claim a row the delivery
+# thread is still POSTing and send the same event twice — FOR UPDATE SKIP
+# LOCKED only coordinates sweepers, the fast-path thread holds no row lock.
+# Generous margin over _TIMEOUT_SECONDS to cover queue wait + DNS + TLS.
+_FASTPATH_LEASE_SECONDS = 60
 # Rows the sweeper will attempt per pass — bounded so a large backlog can't
 # monopolise the worker tick.
 _SWEEP_BATCH = 20
@@ -357,9 +363,39 @@ def _record_attempt(delivery_id: int, ok: bool, status: Optional[int], error: Op
         logger.exception("Could not record webhook delivery outcome for %s", delivery_id)
 
 
+def _claim_for_send(delivery_id: int) -> bool:
+    """Return True if this row is still ours to send.
+
+    A task can sit in the bounded queue for a long time behind a slow
+    receiver. By the time a worker thread picks it up the sweeper may already
+    have delivered it (or it may have exhausted its attempts), and nothing in
+    the old path re-checked — the POST went out regardless. Since payloads
+    carry no idempotency key, the receiver cannot dedupe, so the check has to
+    happen here.
+    """
+    from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
+
+    SessionLocal = _session_module.SessionLocal
+    try:
+        with SessionLocal() as db:
+            row = db.get(WebhookDelivery, delivery_id)
+            if row is None:
+                return False
+            return row.status == WebhookDeliveryStatus.PENDING.value
+    except Exception:  # pragma: no cover — never let bookkeeping block delivery
+        logger.exception("Could not re-check webhook delivery %s; sending", delivery_id)
+        return True
+
+
 def _deliver(url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None) -> None:
     """Attempt one delivery and, when it is backed by an outbox row, record the
     outcome so a failure is retried instead of vanishing into a log line."""
+    if delivery_id is not None and not _claim_for_send(delivery_id):
+        logger.debug(
+            "Webhook delivery %s already settled before the fast path ran; skipping",
+            delivery_id,
+        )
+        return
     ok, status, error = _attempt_delivery(url, secret, payload)
     if not ok:
         logger.warning("Webhook delivery to %s failed: %s", url, error)
@@ -424,7 +460,11 @@ class WebhookDispatcher:
                 event=event,
                 payload=payload,
                 status=WebhookDeliveryStatus.PENDING.value,
-                next_attempt_at=now,
+                # Leased, not due: the fast path is about to take this row, and
+                # a row that is immediately due can be claimed by the sweeper
+                # mid-POST. If the enqueue below fails we reset it to `now` so
+                # the sweeper picks it up promptly instead.
+                next_attempt_at=now + timedelta(seconds=_FASTPATH_LEASE_SECONDS),
             )
             for cfg in targets
         ]
@@ -439,12 +479,16 @@ class WebhookDispatcher:
                 _QUEUE.put_nowait((cfg.url, secret, payload, row.id))
                 queued += 1
             except queue.Full:
-                # The row stays pending, so this is now a *deferral*, not a
-                # loss — the sweeper will deliver it. The operator
-                # notification is still worth raising: it means the receiver
-                # is too slow to keep up in real time.
+                # The fast path refused it, so drop the lease and make it due
+                # immediately — the sweeper is now the delivery path. This is a
+                # *deferral*, not a loss. The operator notification still fires:
+                # a receiver too slow to keep up in real time is worth knowing
+                # about even though the event will land.
+                row.next_attempt_at = now
                 _record_dropped_delivery(cfg, event, title)
                 dropped += 1
+        if dropped:
+            self.db.commit()  # persist the un-leased rows
         return DispatchResult(queued=queued, dropped=dropped)
 
     def deliver_test(self, config: WebhookConfig) -> dict:
@@ -497,8 +541,12 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
     tick and keeps being retried with backoff until it succeeds or exhausts
     its attempts.
 
-    Claimed with ``FOR UPDATE SKIP LOCKED`` so multiple workers (or a worker
-    racing the API's own threads) can't double-send the same row. Delivery
+    Claimed with ``FOR UPDATE SKIP LOCKED`` so concurrent SWEEPERS can't both
+    take the same row. That lock does NOT reach the API's fast-path threads —
+    they hold no row lock while POSTing — so the fast path is kept out of the
+    way by leasing instead: a row handed to the in-process queue is created
+    ``_FASTPATH_LEASE_SECONDS`` in the future, and ``_claim_for_send``
+    re-reads its status before any queued task actually sends. Delivery
     happens synchronously here; the batch is bounded so a pile-up of dead
     receivers can't monopolise the tick.
     """

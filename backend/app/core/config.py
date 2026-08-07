@@ -105,17 +105,25 @@ class Settings:
     # per-host dossier is far heavier than an inventory row.  The streamed HTML
     # uses REPORT_MAX_HOSTS and the streamed CSV ignores the cap entirely.
     #
-    # v2.232.0 — this setting had become DEAD: when those formats moved off the
-    # API thread onto the report worker, the worker deliberately took the full
-    # REPORT_MAX_HOSTS cap and nothing passed this value anywhere, while
-    # .env.example still advertised it as a live limit.  An operator lowering it
-    # to protect a memory-constrained worker got no effect at all.  It is now
-    # wired again (report_job_service), with the default raised to match the
-    # behaviour that actually shipped — so nothing changes by default, but the
-    # lever works: lower it if the report worker is OOMing against its
-    # REPORT_WORKER_MEM_LIMIT.
+    # v2.232.0 wired this setting back up after it had become dead config, but
+    # defaulted it to REPORT_MAX_HOSTS to "preserve shipped behaviour".  That
+    # preserved a value that was never safe.  Measured v2.235.0 against the
+    # JSON dossier path: ~0.072 MB/host of Python allocation (40 hosts → 2.9 MB
+    # peak via tracemalloc, which counts object allocation only — real RSS is
+    # higher, and a production host with many vulns/notes/ports is heavier than
+    # this dev fixture).  Extrapolated:
+    #
+    #     2,000 hosts  →  ~144 MB      comfortable under a 2 GB worker
+    #    50,000 hosts  →  ~3.5 GB      exceeds REPORT_WORKER_MEM_LIMIT (2 GB)
+    #
+    # So the default returns to 2,000.  Truncation is not silent — the report
+    # carries ``truncated`` and ``host_cap`` and the HTML/CSV paths are
+    # chunk-streamed with no cap at all — so a conservative default costs a
+    # visible banner on huge exports rather than lost data, while the previous
+    # value cost an OOM.  Raise it deliberately alongside
+    # REPORT_WORKER_MEM_LIMIT, not by accident.
     REPORT_MAX_INMEMORY_HOSTS: int = int(
-        os.getenv("REPORT_MAX_INMEMORY_HOSTS", str(REPORT_MAX_HOSTS))
+        os.getenv("REPORT_MAX_INMEMORY_HOSTS", "2000")
     )
     # Chunk size for the streaming CSV inventory cursor (hosts hydrated +
     # serialized per batch, bounding peak memory regardless of total rows).

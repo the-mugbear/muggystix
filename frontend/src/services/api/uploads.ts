@@ -198,7 +198,13 @@ export const retryIngestionJob = async (
 
 // Ingestion Results API
 export interface IngestionResultItem {
+  /** The INGESTION JOB id — not a ParseError id. The two are independent
+   *  sequences that overlap, so passing this where a parse-error id is
+   *  expected silently returns a different file's error rather than 404ing.
+   *  Use `parse_error_id` to address the ParseError. */
   id: number;
+  /** The ParseError this job produced, when it produced one. */
+  parse_error_id?: number | null;
   original_filename: string;
   status: string;
   file_size: number | null;

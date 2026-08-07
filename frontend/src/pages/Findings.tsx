@@ -522,8 +522,17 @@ const Findings: React.FC = () => {
                     <Checkbox
                       aria-label="Select all findings on this page"
                       checked={findings.length > 0 && findings.every((f) => selected.has(f.id))}
+                      // Union/subtract THIS page rather than replacing the set.
+                      // Selection deliberately spans pages, so replacing it
+                      // made select-all on page 2 silently drop page 1's work,
+                      // and unchecking wiped everything — contradicting both
+                      // the label and the cross-page count beside it.
                       onCheckedChange={(v) =>
-                        setSelected(v ? new Set(findings.map((f) => f.id)) : new Set())
+                        setSelected((prev) => {
+                          const next = new Set(prev);
+                          findings.forEach((f) => (v ? next.add(f.id) : next.delete(f.id)));
+                          return next;
+                        })
                       }
                     />
                   )}
