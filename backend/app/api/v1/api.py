@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
-    host_queries, findings,
+    host_queries, findings, findings_bulk,
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, dns, parse_errors, reports, auth, two_factor,
     audit, users, projects, notifications,
@@ -130,6 +130,13 @@ project_router.include_router(scans.router, prefix="/scans", tags=["scans"])
 project_router.include_router(hosts.router, prefix="/hosts", tags=["hosts"])
 project_router.include_router(host_follow.router, prefix="/hosts", tags=["host-follow"])
 project_router.include_router(host_notes.router, prefix="/hosts", tags=["host-notes"])
+# Bulk finding operations — mirrors the host_bulk split (its own router so
+# the per-id and batch surfaces stay independently reviewable).
+# MOUNTED FIRST, deliberately: findings.router owns /findings/{finding_id},
+# which otherwise matches "/findings/bulk/status" and 422s trying to parse
+# "bulk" as an int. Literal paths must be registered before the parameterised
+# one that would swallow them.
+project_router.include_router(findings_bulk.router, prefix="", tags=["findings-bulk"])
 project_router.include_router(findings.router, prefix="", tags=["findings"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])
 project_router.include_router(host_bulk.router, prefix="/hosts", tags=["host-bulk"])

@@ -16,7 +16,6 @@ import {
   Loader2,
   Search,
   SquareArrowOutUpRight,
-  Terminal,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -904,6 +903,8 @@ export default function Scans() {
             <Button
               variant="ghost"
               size="sm"
+              // No id to carry here — uploadError is a plain message with no
+              // ParseError attached, so this stays a list-level link.
               onClick={() => navigate('/parse-errors')}
               className="shrink-0"
             >
@@ -1203,7 +1204,7 @@ export default function Scans() {
                             {job.parse_error_id && (
                               <button
                                 type="button"
-                                onClick={() => navigate('/parse-errors')}
+                                onClick={() => navigate(`/parse-errors?error_id=${job.parse_error_id}`)}
                                 className="mt-xxs rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                               >
                                 <Badge variant="outline" className="cursor-pointer border-destructive/40 text-destructive hover:bg-destructive/10">
@@ -1482,237 +1483,143 @@ export default function Scans() {
               </CardContent>
             </Card>
           ) : (
-          <>
-          {/* Mobile cards */}
-          <div className="flex flex-col gap-sm md:hidden">
-            {scans.map((scan) => {
-              const windowInfo = getScanWindow(scan);
-              const isExpanded = expandedScanIds.includes(scan.id);
-              const hasCommand = !!(scan.command_line && scan.command_line.trim());
-              return (
-                <Card key={scan.id}>
-                  <CardContent className="flex flex-col gap-sm p-md">
-                    <div className="flex flex-wrap items-start justify-between gap-sm">
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-xxs flex flex-wrap items-center gap-xs">
-                          <h4 className="break-words text-subheading font-semibold">{scan.filename}</h4>
-                          {renderInlineToolBadge(scan)}
-                        </div>
-                        <p className="text-caption text-muted-foreground">
-                          Uploaded: {formatDateTime(scan.created_at)}
-                        </p>
-                        <p className="text-caption text-muted-foreground">
-                          Window: {formatDateTime(windowInfo.start)} → {formatDateTime(windowInfo.end)} ({formatDuration(windowInfo.durationMs)})
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-xs">
-                        {scan.total_hosts > 0 && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => navigate(`/hosts?scan_ids=${scan.id}`)}
-                            title="Open the Hosts page filtered to this scan"
-                          >
-                            <SquareArrowOutUpRight className="size-4" aria-hidden /> Hosts
-                          </Button>
-                        )}
-                        <Button size="sm" onClick={() => handleViewScan(scan.id)}>
-                          <Eye className="size-4" aria-hidden /> View
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDeleteClick(scan)}
-                          aria-label={`Delete scan ${scan.filename || scan.id}`}
-                          className="text-muted-foreground hover:text-destructive"
-                        >
-                          <Trash2 className="size-4" aria-hidden />
-                        </Button>
-                      </div>
-                    </div>
-                    {/* What this scan introduced — new vs re-observed hosts. */}
-                    {scan.total_hosts === 0 ? (
-                      <p className="text-caption text-muted-foreground">No hosts detected</p>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-md text-metadata">
-                        <span title="Hosts this scan discovered for the first time">
-                          <span className="font-semibold tabular-nums text-success">
-                            {scan.new_hosts > 0 ? `+${scan.new_hosts}` : '0'}
-                          </span>{' '}
-                          <span className="text-muted-foreground">new</span>
-                        </span>
-                        <span title="Already-known hosts this scan re-observed and updated">
-                          <span className="font-semibold tabular-nums">{scan.updated_hosts}</span>{' '}
-                          <span className="text-muted-foreground">modified</span>
-                        </span>
-                      </div>
-                    )}
-                    {hasCommand && (
-                      <>
-                        <Separator />
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="self-start"
-                          onClick={() => toggleScanExpanded(scan.id)}
-                        >
-                          {isExpanded ? (
-                            <ChevronUp className="size-4" aria-hidden />
-                          ) : (
-                            <Terminal className="size-4" aria-hidden />
-                          )}
-                          {isExpanded ? 'Hide command' : 'Show command'}
-                        </Button>
-                        {isExpanded && commandDetail(scan)}
-                      </>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* Desktop table */}
-          <div className="hidden md:block">
-            <Card>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      {renderSortHeader('filename', 'Scan', 'w-[28%]')}
-                      {renderSortHeader('created_at', 'Uploaded', 'w-[16%]')}
-                      <TableHead className="w-[18%]">Window</TableHead>
-                      {renderSortHeader('new_hosts', 'New hosts', 'w-[14%]')}
-                      <TableHead className="w-[14%]" title="Already-known hosts this scan re-observed and updated">
-                        Modified
-                      </TableHead>
-                      <TableHead className="w-[10%]">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {scans.map((scan) => {
-                      const windowInfo = getScanWindow(scan);
-                      const isExpanded = expandedScanIds.includes(scan.id);
-                      const hasCommand = !!(scan.command_line && scan.command_line.trim());
-                      return (
-                        <React.Fragment key={scan.id}>
-                          <TableRow className="align-top">
-                            <TableCell>
-                              <div className="mb-xxs flex items-center gap-xxs">
-                                {hasCommand && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="-ml-xxs"
-                                        onClick={() => toggleScanExpanded(scan.id)}
-                                        aria-label={isExpanded ? 'Hide command' : 'Show command'}
-                                        aria-expanded={isExpanded}
-                                      >
-                                        {isExpanded ? (
-                                          <ChevronUp className="size-4" aria-hidden />
-                                        ) : (
-                                          <ChevronDown className="size-4" aria-hidden />
-                                        )}
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      {isExpanded ? 'Hide command' : 'Show command'}
-                                    </TooltipContent>
-                                  </Tooltip>
-                                )}
-                                {/* min-w-0 lets the filename shrink + wrap
-                                    inside the flex row; without it the
-                                    span keeps its content width and a long
-                                    name overflows into the next column. */}
-                                <span className="min-w-0 break-words font-semibold">{scan.filename}</span>
-                              </div>
-                              <div className="flex flex-wrap gap-xxs">
-                                {renderInlineToolBadge(scan)}
-                                {scan.version && <Badge variant="outline">v{scan.version}</Badge>}
-                                {statusBadge(scan)}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <p className="text-metadata">{formatDateTime(scan.created_at)}</p>
-                              {scan.start_time && (
-                                <p className="mt-xxs text-caption text-muted-foreground">
-                                  Scanned: {formatDateTime(scan.start_time)}
-                                </p>
+          <Card>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {renderSortHeader('filename', 'Scan', 'w-[28%]')}
+                    {renderSortHeader('created_at', 'Uploaded', 'w-[16%]')}
+                    <TableHead className="w-[18%]">Window</TableHead>
+                    {renderSortHeader('new_hosts', 'New hosts', 'w-[14%]')}
+                    <TableHead className="w-[14%]" title="Already-known hosts this scan re-observed and updated">
+                      Modified
+                    </TableHead>
+                    <TableHead className="w-[10%]">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {scans.map((scan) => {
+                    const windowInfo = getScanWindow(scan);
+                    const isExpanded = expandedScanIds.includes(scan.id);
+                    const hasCommand = !!(scan.command_line && scan.command_line.trim());
+                    return (
+                      <React.Fragment key={scan.id}>
+                        <TableRow className="align-top">
+                          <TableCell>
+                            <div className="mb-xxs flex items-center gap-xxs">
+                              {hasCommand && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="-ml-xxs"
+                                      onClick={() => toggleScanExpanded(scan.id)}
+                                      aria-label={isExpanded ? 'Hide command' : 'Show command'}
+                                      aria-expanded={isExpanded}
+                                    >
+                                      {isExpanded ? (
+                                        <ChevronUp className="size-4" aria-hidden />
+                                      ) : (
+                                        <ChevronDown className="size-4" aria-hidden />
+                                      )}
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {isExpanded ? 'Hide command' : 'Show command'}
+                                  </TooltipContent>
+                                </Tooltip>
                               )}
-                            </TableCell>
-                            <TableCell>
-                              <p className="text-metadata">{formatDateTime(windowInfo.start)}</p>
+                              {/* min-w-0 lets the filename shrink + wrap
+                                  inside the flex row; without it the
+                                  span keeps its content width and a long
+                                  name overflows into the next column. */}
+                              <span className="min-w-0 break-words font-semibold">{scan.filename}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-xxs">
+                              {renderInlineToolBadge(scan)}
+                              {scan.version && <Badge variant="outline">v{scan.version}</Badge>}
+                              {statusBadge(scan)}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <p className="text-metadata">{formatDateTime(scan.created_at)}</p>
+                            {scan.start_time && (
                               <p className="mt-xxs text-caption text-muted-foreground">
-                                {formatDuration(windowInfo.durationMs)}
+                                Scanned: {formatDateTime(scan.start_time)}
                               </p>
-                            </TableCell>
-                            {/* What the scan INTRODUCED, not a re-observation
-                                count that's already on the host pages: hosts
-                                first discovered here vs already-known hosts it
-                                touched. */}
-                            <TableCell title="Hosts this scan discovered for the first time">
-                              {scan.total_hosts === 0 ? (
-                                <span className="text-caption text-muted-foreground">No hosts</span>
-                              ) : scan.new_hosts > 0 ? (
-                                <span className="tabular-nums font-semibold text-success">+{scan.new_hosts}</span>
-                              ) : (
-                                <span className="tabular-nums text-muted-foreground">0</span>
-                              )}
-                            </TableCell>
-                            <TableCell title="Already-known hosts this scan re-observed and updated">
-                              {scan.total_hosts === 0 ? (
-                                <span className="text-caption text-muted-foreground">—</span>
-                              ) : (
-                                <span className={`tabular-nums ${scan.updated_hosts > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
-                                  {scan.updated_hosts}
-                                </span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex flex-wrap items-center gap-xs">
-                                {scan.total_hosts > 0 && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => navigate(`/hosts?scan_ids=${scan.id}`)}
-                                    title="Open the Hosts page filtered to this scan"
-                                  >
-                                    <SquareArrowOutUpRight className="size-4" aria-hidden /> Hosts
-                                  </Button>
-                                )}
-                                <Button size="sm" onClick={() => handleViewScan(scan.id)}>
-                                  <Eye className="size-4" aria-hidden /> View
-                                </Button>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <p className="text-metadata">{formatDateTime(windowInfo.start)}</p>
+                            <p className="mt-xxs text-caption text-muted-foreground">
+                              {formatDuration(windowInfo.durationMs)}
+                            </p>
+                          </TableCell>
+                          {/* What the scan INTRODUCED, not a re-observation
+                              count that's already on the host pages: hosts
+                              first discovered here vs already-known hosts it
+                              touched. */}
+                          <TableCell title="Hosts this scan discovered for the first time">
+                            {scan.total_hosts === 0 ? (
+                              <span className="text-caption text-muted-foreground">No hosts</span>
+                            ) : scan.new_hosts > 0 ? (
+                              <span className="tabular-nums font-semibold text-success">+{scan.new_hosts}</span>
+                            ) : (
+                              <span className="tabular-nums text-muted-foreground">0</span>
+                            )}
+                          </TableCell>
+                          <TableCell title="Already-known hosts this scan re-observed and updated">
+                            {scan.total_hosts === 0 ? (
+                              <span className="text-caption text-muted-foreground">—</span>
+                            ) : (
+                              <span className={`tabular-nums ${scan.updated_hosts > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
+                                {scan.updated_hosts}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap items-center gap-xs">
+                              {scan.total_hosts > 0 && (
                                 <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleDeleteClick(scan)}
-                                  aria-label={`Delete scan ${scan.filename || scan.id}`}
-                                  className="text-muted-foreground hover:text-destructive"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => navigate(`/hosts?scan_ids=${scan.id}`)}
+                                  title="Open the Hosts page filtered to this scan"
                                 >
-                                  <Trash2 className="size-4" aria-hidden />
+                                  <SquareArrowOutUpRight className="size-4" aria-hidden /> Hosts
                                 </Button>
-                              </div>
+                              )}
+                              <Button size="sm" onClick={() => handleViewScan(scan.id)}>
+                                <Eye className="size-4" aria-hidden /> View
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleDeleteClick(scan)}
+                                aria-label={`Delete scan ${scan.filename || scan.id}`}
+                                className="text-muted-foreground hover:text-destructive"
+                              >
+                                <Trash2 className="size-4" aria-hidden />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                        {hasCommand && isExpanded && (
+                          <TableRow>
+                            <TableCell colSpan={6} className="py-sm">
+                              {commandDetail(scan)}
                             </TableCell>
                           </TableRow>
-                          {hasCommand && isExpanded && (
-                            <TableRow>
-                              <TableCell colSpan={6} className="py-sm">
-                                {commandDetail(scan)}
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </div>
-          </>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
           )}
 
           {hasMoreScans && (

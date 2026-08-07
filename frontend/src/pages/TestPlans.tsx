@@ -613,165 +613,111 @@ const TestPlans: React.FC = () => {
         </Card>
       ) : (
         <>
-          {/* Mobile cards */}
-          <div className="flex flex-col gap-xs md:hidden">
-            {filteredPlans.map((plan) => {
-              const strippedDesc = plan.description ? stripAttribution(plan.description) : '';
-              return (
-                <Card key={plan.id}>
-                  <CardContent className="p-sm">
-                    <div className="flex items-start gap-xs">
-                      <Checkbox
-                        checked={selectedIds.includes(plan.id)}
-                        onCheckedChange={() => toggleSelect(plan.id)}
-                        aria-label={`Select plan ${plan.id} for comparison`}
-                        className="mt-xxs"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-xs flex flex-wrap items-center gap-xs">
-                          <Badge variant={planStatusTone(plan.status)}>
-                            {formatStatusLabel(plan.status)}
-                          </Badge>
-                          <span className="text-caption text-muted-foreground">
-                            {formatDate(plan.created_at)}
-                          </span>
-                        </div>
-                        <p className="break-words font-semibold">{plan.title}</p>
-                        {strippedDesc && (
-                          <p className="mt-xxs whitespace-pre-wrap break-words text-metadata text-muted-foreground">
-                            {strippedDesc}
-                          </p>
-                        )}
-                        <div className="mt-xs flex flex-wrap gap-md text-caption text-muted-foreground">
-                          <span>Author: {plan.agent_name || plan.created_by_username || '-'}</span>
-                          <span>Entries: {plan.entry_count}</span>
-                          <span>v{plan.version}</span>
-                        </div>
-                        <div className="mt-xs">
-                          <div className="mb-xxs flex justify-between text-caption text-muted-foreground">
-                            <span>Progress</span>
-                            <span>{plan.completion_pct.toFixed(0)}%</span>
-                          </div>
-                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                            <div
-                              className="h-full bg-primary transition-all"
-                              style={{ width: `${plan.completion_pct}%` }}
-                            />
-                          </div>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="mt-xs self-start"
-                          onClick={() => navigate(`/test-plans/${plan.id}`)}
-                        >
-                          View Details
-                          <SquareArrowOutUpRight className="size-3" aria-hidden />
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* Desktop table */}
-          <div className="hidden md:block">
-            <Card>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-12" />
-                        <TableHead className="w-[26%]">Title</TableHead>
-                        <TableHead className="w-[10%]">Status</TableHead>
-                        <TableHead className="w-[14%]">Author</TableHead>
-                        <TableHead className="w-[7%] text-center">Entries</TableHead>
-                        <TableHead className="w-[17%]">Progress</TableHead>
-                        <TableHead className="w-[10%]">Created</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredPlans.map((plan) => {
-                        const strippedDesc = plan.description
-                          ? stripAttribution(plan.description)
-                          : '';
-                        return (
-                            <NavigableTableRow key={plan.id} selected={selectedIds.includes(plan.id)}>
-                              <TableCell className="w-12">
-                                <Checkbox
-                                  checked={selectedIds.includes(plan.id)}
-                                  onCheckedChange={() => toggleSelect(plan.id)}
-                                  aria-label={`Select plan ${plan.id} for comparison`}
-                                />
-                              </TableCell>
-                              {/* Title links to detail — flat row matching the
-                                  recon + execution workflow lists (no inline
-                                  expand). */}
-                              <NavigableTableCell
-                                to={`/test-plans/${plan.id}`}
-                                ariaLabel={`Open plan #${plan.id}: ${plan.title}`}
-                              >
-                                {/* Audit RSP·H6 — wrap in min-w-0
-                                    block so `truncate` actually clips
-                                    with long titles inside table-cell. */}
-                                <div className="min-w-0 max-w-full">
-                                  <p className="truncate">{plan.title}</p>
-                                  {strippedDesc && (
-                                    <p className="truncate text-caption text-muted-foreground">
-                                      {strippedDesc}
-                                    </p>
-                                  )}
-                                </div>
-                              </NavigableTableCell>
-                              <TableCell>
-                                <Badge variant={planStatusTone(plan.status)} className="whitespace-nowrap">
-                                  {formatStatusLabel(plan.status)}
-                                </Badge>
-                              </TableCell>
-                              <TableCell>
+          {/* Desktop-only product: the table is the sole renderer;
+              narrow widths scroll horizontally. */}
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-12" />
+                      <TableHead className="w-[26%]">Title</TableHead>
+                      <TableHead className="w-[10%]">Status</TableHead>
+                      <TableHead className="w-[14%]">Author</TableHead>
+                      <TableHead className="w-[7%] text-center">Entries</TableHead>
+                      <TableHead className="w-[17%]">Progress</TableHead>
+                      <TableHead className="w-[10%]">Created</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredPlans.map((plan) => {
+                      const strippedDesc = plan.description
+                        ? stripAttribution(plan.description)
+                        : '';
+                      return (
+                          <NavigableTableRow key={plan.id} selected={selectedIds.includes(plan.id)}>
+                            <TableCell className="w-12">
+                              <Checkbox
+                                checked={selectedIds.includes(plan.id)}
+                                onCheckedChange={() => toggleSelect(plan.id)}
+                                aria-label={`Select plan ${plan.id} for comparison`}
+                              />
+                            </TableCell>
+                            {/* Title links to detail — flat row matching the
+                                recon + execution workflow lists (no inline
+                                expand). */}
+                            <NavigableTableCell
+                              to={`/test-plans/${plan.id}`}
+                              ariaLabel={`Open plan #${plan.id}: ${plan.title}`}
+                            >
+                              {/* Audit RSP·H6 — wrap in min-w-0
+                                  block so `truncate` actually clips
+                                  with long titles inside table-cell. */}
+                              <div className="min-w-0 max-w-full">
                                 <p className="truncate">
-                                  {plan.agent_name || plan.created_by_username || '-'}
+                                  {plan.title}
+                                  {/* Version lived only in the removed
+                                      mobile card; a plan's version matters
+                                      when several revisions exist, so it
+                                      moves here rather than being dropped.
+                                      Matches ExecutionsList's `#id v{n}`. */}
+                                  <span className="ml-xxs shrink-0 text-caption font-normal text-muted-foreground">
+                                    v{plan.version}
+                                  </span>
                                 </p>
-                                {plan.agent_name && plan.created_by_username && (
+                                {strippedDesc && (
                                   <p className="truncate text-caption text-muted-foreground">
-                                    via {plan.created_by_username}
+                                    {strippedDesc}
                                   </p>
                                 )}
-                              </TableCell>
-                              <TableCell className="text-center">{plan.entry_count}</TableCell>
-                              <TableCell>
-                                <div className="flex flex-col gap-xxs">
-                                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                                    <div
-                                      className="h-full bg-primary transition-all"
-                                      style={{ width: `${plan.completion_pct}%` }}
-                                    />
-                                  </div>
-                                  <p className="text-caption text-muted-foreground">
-                                    {plan.completion_pct.toFixed(0)}%
-                                  </p>
+                              </div>
+                            </NavigableTableCell>
+                            <TableCell>
+                              <Badge variant={planStatusTone(plan.status)} className="whitespace-nowrap">
+                                {formatStatusLabel(plan.status)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <p className="truncate">
+                                {plan.agent_name || plan.created_by_username || '-'}
+                              </p>
+                              {plan.agent_name && plan.created_by_username && (
+                                <p className="truncate text-caption text-muted-foreground">
+                                  via {plan.created_by_username}
+                                </p>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-center">{plan.entry_count}</TableCell>
+                            <TableCell>
+                              <div className="flex flex-col gap-xxs">
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                                  <div
+                                    className="h-full bg-primary transition-all"
+                                    style={{ width: `${plan.completion_pct}%` }}
+                                  />
                                 </div>
-                              </TableCell>
-                              <TableCell>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span>{formatDate(plan.created_at)}</span>
-                                  </TooltipTrigger>
-                                  <TooltipContent>{plan.created_at}</TooltipContent>
-                                </Tooltip>
-                              </TableCell>
-                            </NavigableTableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+                                <p className="text-caption text-muted-foreground">
+                                  {plan.completion_pct.toFixed(0)}%
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span>{formatDate(plan.created_at)}</span>
+                                </TooltipTrigger>
+                                <TooltipContent>{plan.created_at}</TooltipContent>
+                              </Tooltip>
+                            </TableCell>
+                          </NavigableTableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
         </>
       )}
 

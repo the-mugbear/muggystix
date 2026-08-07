@@ -32,7 +32,6 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table';
-import { cn } from '../utils/cn';
 
 type StatusFilter = '' | 'active' | 'completed' | 'failed' | 'abandoned';
 
@@ -294,75 +293,10 @@ const ReconRunsList: React.FC = () => {
           </CardContent>
         </Card>
       ) : (
-        <>
-          {/* Mobile cards — match the responsive list pattern used by
-              Test Plans so all three workflow lists behave the same on
-              narrow viewports. */}
-          <div className="flex flex-col gap-xs md:hidden">
-            {sortedRows.map((row) => {
-              const isSelected = selected.includes(row.id);
-              const attribution = [
-                row.generated_by_model,
-                row.generated_by_tool,
-                row.started_by_username ? `by ${row.started_by_username}` : null,
-              ]
-                .filter(Boolean)
-                .join(' · ');
-              return (
-                <Card key={row.id} className={cn(isSelected && 'border-primary')}>
-                  <CardContent className="flex flex-col gap-xs p-sm">
-                    <div className="flex items-start gap-xs">
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={() => toggleSelect(row.id)}
-                        aria-label={`Select recon run ${row.id} for compare`}
-                        className="mt-xxs"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-xs">
-                          <span className="font-mono font-semibold">#{row.id}</span>
-                          <Badge variant={statusTone(row.status)} className="whitespace-nowrap">
-                            {row.status}
-                          </Badge>
-                          {row.is_stale && (
-                            <Badge variant="warning" className="whitespace-nowrap">
-                              Possibly interrupted
-                            </Badge>
-                          )}
-                        </div>
-                        {attribution && (
-                          <p className="mt-xxs break-words text-caption text-muted-foreground">
-                            {attribution}
-                          </p>
-                        )}
-                        <div className="mt-xs flex flex-wrap gap-md text-caption text-muted-foreground">
-                          <span>{fmtTime(row.started_at)}</span>
-                          <span>{row.hosts_discovered} hosts</span>
-                          <span>{row.uploads_submitted} uploads</span>
-                        </div>
-                      </div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="self-start"
-                      onClick={() => navigate(`/recon/runs/${row.id}`)}
-                    >
-                      Open
-                      <SquareArrowOutUpRight className="size-3" aria-hidden />
-                    </Button>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* Desktop table */}
-          <div className="hidden md:block">
-            <Card>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <Table>
+        <Card>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-12" />
@@ -472,11 +406,9 @@ const ReconRunsList: React.FC = () => {
                   })}
                 </TableBody>
               </Table>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Scope picker — only opens when the project has multiple

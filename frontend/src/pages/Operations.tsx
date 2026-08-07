@@ -219,10 +219,20 @@ const ProjectStateCard: React.FC<{
               <CoverageStatTile
                 label="With plan entries"
                 value={coverage.hosts_with_plan_entry.toLocaleString()}
+                href={
+                  coverage.hosts_with_plan_entry > 0
+                    ? buildHostsUrl({ q: 'has:planned' })
+                    : undefined
+                }
                 subtle={
                   coverage.hosts_no_plan > 0
                     ? `${coverage.hosts_no_plan.toLocaleString()} not yet in any plan`
                     : 'all hosts planned'
+                }
+                subtleHref={
+                  coverage.hosts_no_plan > 0
+                    ? buildHostsUrl({ q: 'NOT has:planned' })
+                    : undefined
                 }
               />
               <CoverageStatTile
@@ -233,6 +243,11 @@ const ProjectStateCard: React.FC<{
                   coverage.hosts_no_execution > 0
                     ? `${coverage.hosts_no_execution.toLocaleString()} not yet tested`
                     : 'all hosts tested'
+                }
+                subtleHref={
+                  coverage.hosts_no_execution > 0
+                    ? buildHostsUrl({ q: 'NOT has:tested' })
+                    : undefined
                 }
               />
               <CoverageStatTile
@@ -327,7 +342,11 @@ const CoverageStatTile: React.FC<{
   hint?: string;
   /** Drill-down to the records this tile counts (§26) — makes the value a link. */
   href?: string;
-}> = ({ label, value, subtle, hint, href }) => (
+  /** Drill-down for the GAP line. The section's own copy calls the gap counts
+      the point of this block, so leaving them as dead text was the one number
+      an operator couldn't act on. */
+  subtleHref?: string;
+}> = ({ label, value, subtle, hint, href, subtleHref }) => (
   <Card>
     <CardContent className="p-md text-center">
       {href ? (
@@ -355,7 +374,20 @@ const CoverageStatTile: React.FC<{
           </Tooltip>
         )}
       </p>
-      {subtle && <p className="mt-xxs text-caption text-muted-foreground">{subtle}</p>}
+      {subtle && (
+        <p className="mt-xxs text-caption text-muted-foreground">
+          {subtleHref ? (
+            <Link
+              to={subtleHref}
+              className="rounded text-warning hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {subtle}
+            </Link>
+          ) : (
+            subtle
+          )}
+        </p>
+      )}
     </CardContent>
   </Card>
 );

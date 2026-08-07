@@ -6,7 +6,7 @@
  * filterable list by status / severity. The destination that "matriculate
  * up" lands on.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
@@ -19,7 +19,11 @@ import {
   FindingSource,
   FindingStatus,
   FindingStatusQuery,
+  ProjectMember,
+  bulkAssignFindings,
+  bulkSetFindingStatus,
   listFindings,
+  listProjectMembers,
   setFindingStatus,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
@@ -66,7 +70,9 @@ const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
 type SummaryPrompt =
   | { kind: 'single'; findingId: number; status: FindingStatus; title: string }
-  | { kind: 'bulk'; status: FindingStatus; ids: number[] };
+  // `offscreen` = how many of `ids` aren't on the visible page, so the dialog
+  // can state the real blast radius instead of a bare count.
+  | { kind: 'bulk'; status: FindingStatus; ids: number[]; offscreen: number };
 
 type StatusFilterValue = FindingStatusQuery | 'all';
 type OwnerFilterValue = 'any' | 'me' | 'unowned';
@@ -124,11 +130,18 @@ const Findings: React.FC = () => {
   // under pagination). null = backend default (newest-first).
   const [sortBy, setSortBy] = useState<FindingSortField | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
-  // Bulk triage — selected finding ids on the current page.
+  // Bulk triage — selected finding ids. Survives sort + pagination (see the
+  // membership guard below), so this set can span pages.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkApplying, setBulkApplying] = useState(false);
   const [summaryPrompt, setSummaryPrompt] = useState<SummaryPrompt | null>(null);
   const [summaryText, setSummaryText] = useState('');
+  // Project roster for bulk owner assignment. Failure is non-fatal — the
+  // status controls keep working, the assign menu just shows nobody.
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  useEffect(() => {
+    listProjectMembers().then(setMembers).catch(() => setMembers([]));
+  }, []);
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
     || sourceFilter !== 'all' || ownerFilter !== 'any' || searchValue !== '';
@@ -136,6 +149,29 @@ const Findings: React.FC = () => {
   // A filter change resets to the first page so we never sit on an
   // out-of-range page after the result set shrinks.
   useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue]);
+
+  // Bulk-selection safety — mirrors the guard in Hosts.tsx. The selected set is
+  // only meaningful for the result set it was made against: a filter change
+  // swaps which findings exist, so keeping the selection would let a bulk
+  // disposition act on rows the operator can no longer see (and never chose
+  // under the new filter). Sort and pagination don't change membership, so
+  // they're deliberately excluded and selection survives them — the same
+  // convention Hosts uses.
+  const membershipSignature = useMemo(
+    () => JSON.stringify([statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue]),
+    [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue],
+  );
+  const prevMembership = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevMembership.current === null) {
+      prevMembership.current = membershipSignature; // seed; don't clear on mount
+      return;
+    }
+    if (prevMembership.current !== membershipSignature) {
+      prevMembership.current = membershipSignature;
+      setSelected(new Set());
+    }
+  }, [membershipSignature]);
 
   const filters = useMemo<FindingFilters>(() => {
     const f: FindingFilters = { limit: pageSize, offset: page * pageSize };
@@ -220,30 +256,77 @@ const Findings: React.FC = () => {
 
   // The actual bulk apply, with one optional rationale applied to every row's
   // history (the terminal-disposition audit trail).
+  // v5.135.0 — one request, server-side. Previously this fired N independent
+  // PATCHes via Promise.allSettled: unbounded, half-appliable, and with the
+  // terminal-justification rule enforced per call rather than per batch.
   const runBulk = async (ids: number[], status: FindingStatus, summary?: string) => {
     setBulkApplying(true);
     try {
-      const results = await Promise.allSettled(ids.map((id) => setFindingStatus(id, status, summary)));
-      const updatedById = new Map<number, Finding>();
-      let failed = 0;
-      results.forEach((r, i) => {
-        if (r.status === 'fulfilled') updatedById.set(ids[i], r.value);
-        else failed += 1;
-      });
+      const result = await bulkSetFindingStatus(ids, status, summary);
+      const changed = new Set(ids.filter((id) => !result.skipped_ids.includes(id)));
       setFindings((prev) =>
         prev
+          .map((f) => (changed.has(f.id) ? { ...f, status } : f))
           // Drop rows that no longer match the active status filter.
-          .filter((f) => !updatedById.has(f.id) || matchesStatusFilter(updatedById.get(f.id)!.status, statusFilter))
-          .map((f) => updatedById.get(f.id) ?? f),
+          .filter((f) => !changed.has(f.id) || matchesStatusFilter(status, statusFilter)),
       );
       setSelected(new Set());
-      const ok = ids.length - failed;
-      if (failed === 0) toast.success(`${ok} finding${ok === 1 ? '' : 's'} → ${STATUS_LABEL[status]}`, { autoHideMs: 2500 });
-      else toast.warning(`${ok}/${ids.length} updated; ${failed} failed`);
+      if (result.skipped_ids.length === 0) {
+        toast.success(
+          `${result.affected} finding${result.affected === 1 ? '' : 's'} → ${STATUS_LABEL[status]}`,
+          { autoHideMs: 2500 },
+        );
+      } else {
+        toast.warning(`${result.affected}/${result.requested} updated; ${result.skipped_ids.length} skipped`);
+      }
+    } catch (err) {
+      toast.error(formatApiError(err, 'Bulk update failed — no findings were changed.'));
     } finally {
       setBulkApplying(false);
     }
   };
+
+  const runBulkAssign = async (assigneeId: number | null) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBulkApplying(true);
+    try {
+      const result = await bulkAssignFindings(ids, assigneeId);
+      const name = assigneeId === null
+        ? null
+        : members.find((m) => m.user_id === assigneeId)?.username ?? 'user';
+      setFindings((prev) =>
+        prev.map((f) =>
+          selected.has(f.id)
+            ? { ...f, owner_id: assigneeId, owner_name: name }
+            : f,
+        ),
+      );
+      setSelected(new Set());
+      toast.success(
+        assigneeId === null
+          ? `${result.affected} finding${result.affected === 1 ? '' : 's'} unassigned`
+          : `${result.affected} finding${result.affected === 1 ? '' : 's'} → ${name}`,
+        { autoHideMs: 2500 },
+      );
+    } catch (err) {
+      toast.error(formatApiError(err, 'Bulk assignment failed — no findings were changed.'));
+    } finally {
+      setBulkApplying(false);
+    }
+  };
+
+  // How many selected findings aren't on the page in front of the operator.
+  // Selection intentionally spans pages, so the confirm has to say so — a bare
+  // count reads as "these rows here" and hides the real blast radius.
+  const offscreenSelectedCount = useMemo(
+    () => [...selected].filter((id) => !findings.some((f) => f.id === id)).length,
+    [selected, findings],
+  );
+  const offscreenNote = (n: number) =>
+    n > 0
+      ? ` ${n} of them ${n === 1 ? 'is' : 'are'} not on this page.`
+      : '';
 
   const applyBulkStatus = async (status: FindingStatus) => {
     const ids = [...selected];
@@ -251,14 +334,18 @@ const Findings: React.FC = () => {
     if (TERMINAL_STATUSES.has(status)) {
       // Terminal bulk disposition: collect ONE rationale (applied to every
       // history row) + show the count — same audit discipline as the
-      // single-finding flow, instead of silently applying to up to 200.
+      // single-finding flow.
       setSummaryText('');
-      setTimeout(() => setSummaryPrompt({ kind: 'bulk', status, ids }), 0);
+      setTimeout(
+        () => setSummaryPrompt({ kind: 'bulk', status, ids, offscreen: offscreenSelectedCount }),
+        0,
+      );
       return;
     }
     // Non-terminal bulk move: confirm the blast radius before applying.
     const ok = await confirm({
       title: `Set ${ids.length} finding${ids.length === 1 ? '' : 's'} to ${STATUS_LABEL[status]}?`,
+      body: `This applies to every selected finding.${offscreenNote(offscreenSelectedCount)}`,
       severity: 'warning',
       confirmLabel: 'Apply',
     });
@@ -378,7 +465,17 @@ const Findings: React.FC = () => {
           disposition to all selected (no per-item summary prompt in bulk). */}
       {selected.size > 0 && (
         <div className="mb-sm flex flex-wrap items-center gap-sm rounded-control border border-border bg-muted/30 p-sm">
-          <span className="text-metadata font-medium">{selected.size} selected</span>
+          {/* Selection spans pages (it survives sort/pagination), so a bare
+              count reads as "these rows here" and understates the blast
+              radius. Say up front how much of it the operator can't see. */}
+          <span className="text-metadata font-medium">
+            {selected.size} selected
+            {offscreenSelectedCount > 0 && (
+              <span className="ml-xxs font-normal text-warning">
+                · {offscreenSelectedCount} not on this page
+              </span>
+            )}
+          </span>
           <Select onValueChange={(v) => void applyBulkStatus(v as FindingStatus)} disabled={bulkApplying}>
             <SelectTrigger className="h-8 w-48 text-caption" aria-label="Set status for selected findings">
               <SelectValue placeholder={bulkApplying ? 'Applying…' : 'Set status…'} />
@@ -386,6 +483,25 @@ const Findings: React.FC = () => {
             <SelectContent>
               {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
                 <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {/* Owner assignment was previously reachable only by opening each
+              finding's detail page — one round trip per finding for a large
+              unowned queue. */}
+          <Select
+            onValueChange={(v) => void runBulkAssign(v === '__unassign' ? null : Number(v))}
+            disabled={bulkApplying}
+          >
+            <SelectTrigger className="h-8 w-48 text-caption" aria-label="Assign selected findings to a user">
+              <SelectValue placeholder="Assign owner…" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__unassign">Unassigned</SelectItem>
+              {members.map((m) => (
+                <SelectItem key={m.user_id} value={String(m.user_id)}>
+                  {m.full_name || m.username}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -563,6 +679,9 @@ const Findings: React.FC = () => {
             <DialogDescription>
               {summaryPrompt?.kind === 'bulk'
                 ? 'A justification is required — one reason is recorded on every selected finding’s history and carried into reports.'
+                  + (summaryPrompt.offscreen > 0
+                    ? ` ${summaryPrompt.offscreen} of the ${summaryPrompt.ids.length} selected ${summaryPrompt.offscreen === 1 ? 'is' : 'are'} not on this page.`
+                    : '')
                 : 'A justification is required for a terminal disposition — it’s kept on the finding’s history and carried into the report.'}
             </DialogDescription>
           </DialogHeader>

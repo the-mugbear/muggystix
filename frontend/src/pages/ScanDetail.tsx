@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, ChevronRight, Globe } from 'lucide-react';
+import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, Globe } from 'lucide-react';
 import { getScan, getHostsByScan, getScanDnsRecords } from '../services/api';
 import type { Host, DNSRecord } from '../services/api';
 import CommandExplanation from '../components/CommandExplanation';
@@ -257,115 +257,78 @@ const ScanDetail: React.FC = () => {
                       </AlertDescription>
                     </Alert>
                   )}
-                  {/* Mobile card list (audit RSP·CRIT-13) — table
-                      column scrolling is hostile on small viewports,
-                      so render the same data as a stacked card list
-                      below md. */}
-                  <ul className="space-y-xs md:hidden">
-                    {hosts.map((host) => {
-                      const openCount = host.ports.filter((p) => p.state === 'open').length;
-                      return (
-                        <li key={host.id}>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              navigate(`/hosts/${host.id}`, {
-                                state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                              })
-                            }
-                            className="flex w-full items-center gap-sm overflow-hidden rounded-panel border border-border p-sm text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <div className="min-w-0 flex-1 space-y-xxs">
-                              <div className="truncate text-metadata font-semibold text-foreground">
-                                {host.hostname || 'N/A'}
+                  <div className="rounded-panel border border-border">
+                    <Table className="table-fixed">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-1/5">IP Address</TableHead>
+                          <TableHead className="w-1/4">Hostname</TableHead>
+                          <TableHead className="w-24">State</TableHead>
+                          <TableHead className="w-1/4">OS</TableHead>
+                          <TableHead className="w-1/5">Open Ports</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {hosts.map((host) => (
+                          <TableRow key={host.id}>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    navigate(`/hosts/${host.id}`, {
+                                      state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
+                                    })
+                                  }
+                                  className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
+                                >
+                                  {host.ip_address}
+                                </button>
                               </div>
-                              <div className="truncate font-mono text-caption text-muted-foreground">
-                                {host.ip_address}
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0">{host.hostname || 'N/A'}</div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={hostStateVariant(host.state)} className="whitespace-nowrap">{host.state || 'unknown'}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0">{host.os_name || 'Unknown'}</div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-xs">
+                                <span>{host.ports.filter((p) => p.state === 'open').length}</span>
+                                {host.ports
+                                  .filter((p) => p.state === 'open' && isWebPort(p))
+                                  .map((p) => (
+                                    <Tooltip key={p.id}>
+                                      <TooltipTrigger asChild>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          onClick={() =>
+                                            window.open(
+                                              getWebUrl(host.ip_address, p),
+                                              '_blank',
+                                              'noopener,noreferrer',
+                                            )
+                                          }
+                                          aria-label={`Open ${getWebUrl(host.ip_address, p)} in new tab`}
+                                        >
+                                          <ExternalLink className="size-3.5 text-primary" aria-hidden />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        Open {getWebUrl(host.ip_address, p)}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  ))}
                               </div>
-                              <div className="truncate text-caption text-muted-foreground">
-                                {host.os_name || 'Unknown OS'} — {openCount} open port{openCount === 1 ? '' : 's'}
-                              </div>
-                            </div>
-                            <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <div className="hidden md:block">
-                    <div className="rounded-panel border border-border">
-                      <Table className="table-fixed">
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-1/5">IP Address</TableHead>
-                            <TableHead className="w-1/4">Hostname</TableHead>
-                            <TableHead className="w-24">State</TableHead>
-                            <TableHead className="w-1/4">OS</TableHead>
-                            <TableHead className="w-1/5">Open Ports</TableHead>
+                            </TableCell>
                           </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {hosts.map((host) => (
-                            <TableRow key={host.id}>
-                              <TableCell>
-                                <div className="max-w-full truncate min-w-0">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      navigate(`/hosts/${host.id}`, {
-                                        state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                                      })
-                                    }
-                                    className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
-                                  >
-                                    {host.ip_address}
-                                  </button>
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <div className="max-w-full truncate min-w-0">{host.hostname || 'N/A'}</div>
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant={hostStateVariant(host.state)} className="whitespace-nowrap">{host.state || 'unknown'}</Badge>
-                              </TableCell>
-                              <TableCell>
-                                <div className="max-w-full truncate min-w-0">{host.os_name || 'Unknown'}</div>
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex items-center gap-xs">
-                                  <span>{host.ports.filter((p) => p.state === 'open').length}</span>
-                                  {host.ports
-                                    .filter((p) => p.state === 'open' && isWebPort(p))
-                                    .map((p) => (
-                                      <Tooltip key={p.id}>
-                                        <TooltipTrigger asChild>
-                                          <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            onClick={() =>
-                                              window.open(
-                                                getWebUrl(host.ip_address, p),
-                                                '_blank',
-                                                'noopener,noreferrer',
-                                              )
-                                            }
-                                            aria-label={`Open ${getWebUrl(host.ip_address, p)} in new tab`}
-                                          >
-                                            <ExternalLink className="size-3.5 text-primary" aria-hidden />
-                                          </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          Open {getWebUrl(host.ip_address, p)}
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    ))}
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
                 </>
               )}
@@ -385,120 +348,85 @@ const ScanDetail: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <>
-                  {/* Mobile card list (audit RSP·CRIT-13). */}
-                  <ul className="space-y-xs md:hidden">
-                    {hosts.flatMap((host) =>
-                      host.ports.map((port) => (
-                        <li key={`${host.id}-${port.id}`}>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              navigate(`/hosts/${host.id}`, {
-                                state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                              })
-                            }
-                            className="flex w-full items-center gap-sm overflow-hidden rounded-panel border border-border p-sm text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <div className="min-w-0 flex-1 space-y-xxs">
-                              <div className="truncate font-mono text-metadata font-semibold text-foreground">
-                                {host.ip_address}:{port.port_number}
+                <div className="rounded-panel border border-border">
+                  <Table className="table-fixed">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Host</TableHead>
+                        <TableHead className="w-24">Port</TableHead>
+                        <TableHead className="w-24">Protocol</TableHead>
+                        <TableHead className="w-24">State</TableHead>
+                        <TableHead className="w-1/4">Service</TableHead>
+                        <TableHead className="w-1/4">Version</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {hosts.flatMap((host) =>
+                        host.ports.map((port) => (
+                          <TableRow key={`${host.id}-${port.id}`}>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    navigate(`/hosts/${host.id}`, {
+                                      state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
+                                    })
+                                  }
+                                  className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
+                                >
+                                  {host.ip_address}
+                                </button>
                               </div>
-                              <div className="truncate text-caption text-muted-foreground">
-                                {port.service_name || 'Unknown service'}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-xs">
+                                <span>{port.port_number}</span>
+                                {port.state === 'open' && isWebPort(port) && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() =>
+                                          window.open(
+                                            getWebUrl(host.ip_address, port),
+                                            '_blank',
+                                            'noopener,noreferrer',
+                                          )
+                                        }
+                                        aria-label={`Open ${getWebUrl(host.ip_address, port)} in new tab`}
+                                      >
+                                        <ExternalLink className="size-3.5 text-primary" aria-hidden />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      Open {getWebUrl(host.ip_address, port)}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
                               </div>
-                              <div>
-                                <Badge variant={portStateVariant(port.state)} className="whitespace-nowrap">{port.state || 'unknown'}</Badge>
+                            </TableCell>
+                            <TableCell>{port.protocol}</TableCell>
+                            <TableCell>
+                              <Badge variant={portStateVariant(port.state)} className="whitespace-nowrap">{port.state || 'unknown'}</Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0">{port.service_name || 'Unknown'}</div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-full truncate min-w-0">
+                                {port.service_product && port.service_version
+                                  ? `${port.service_product} ${port.service_version}`
+                                  : port.service_product || 'N/A'}
                               </div>
-                            </div>
-                            <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                          </button>
-                        </li>
-                      )),
-                    )}
-                  </ul>
-                  <div className="hidden md:block">
-                    <div className="rounded-panel border border-border">
-                      <Table className="table-fixed">
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Host</TableHead>
-                            <TableHead className="w-24">Port</TableHead>
-                            <TableHead className="w-24">Protocol</TableHead>
-                            <TableHead className="w-24">State</TableHead>
-                            <TableHead className="w-1/4">Service</TableHead>
-                            <TableHead className="w-1/4">Version</TableHead>
+                            </TableCell>
                           </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {hosts.flatMap((host) =>
-                            host.ports.map((port) => (
-                              <TableRow key={`${host.id}-${port.id}`}>
-                                <TableCell>
-                                  <div className="max-w-full truncate min-w-0">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        navigate(`/hosts/${host.id}`, {
-                                          state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                                        })
-                                      }
-                                      className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
-                                    >
-                                      {host.ip_address}
-                                    </button>
-                                  </div>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex items-center gap-xs">
-                                    <span>{port.port_number}</span>
-                                    {port.state === 'open' && isWebPort(port) && (
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            onClick={() =>
-                                              window.open(
-                                                getWebUrl(host.ip_address, port),
-                                                '_blank',
-                                                'noopener,noreferrer',
-                                              )
-                                            }
-                                            aria-label={`Open ${getWebUrl(host.ip_address, port)} in new tab`}
-                                          >
-                                            <ExternalLink className="size-3.5 text-primary" aria-hidden />
-                                          </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          Open {getWebUrl(host.ip_address, port)}
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    )}
-                                  </div>
-                                </TableCell>
-                                <TableCell>{port.protocol}</TableCell>
-                                <TableCell>
-                                  <Badge variant={portStateVariant(port.state)} className="whitespace-nowrap">{port.state || 'unknown'}</Badge>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="max-w-full truncate min-w-0">{port.service_name || 'Unknown'}</div>
-                                </TableCell>
-                                <TableCell>
-                                  <div className="max-w-full truncate min-w-0">
-                                    {port.service_product && port.service_version
-                                      ? `${port.service_product} ${port.service_version}`
-                                      : port.service_product || 'N/A'}
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            )),
-                          )}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
-                </>
+                        )),
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               )}
             </TabsContent>
             {dnsTotal > 0 && (
@@ -515,53 +443,37 @@ const ScanDetail: React.FC = () => {
                     </AlertDescription>
                   </Alert>
                 )}
-                <ul className="space-y-xs md:hidden">
-                  {dnsRecords.map((r) => (
-                    <li key={r.id} className="rounded-panel border border-border p-sm">
-                      <div className="flex items-center gap-xs">
-                        <Badge variant="secondary" className="whitespace-nowrap">{r.record_type}</Badge>
-                        <span className="min-w-0 flex-1 truncate font-mono text-metadata text-foreground">{r.domain}</span>
-                      </div>
-                      <div className="mt-xxs break-all font-mono text-caption text-muted-foreground">{r.value}</div>
-                      {r.resolver_name && (
-                        <div className="mt-xxs text-caption text-muted-foreground">via {r.resolver_name}</div>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                <div className="hidden md:block">
-                  <div className="rounded-panel border border-border">
-                    <Table className="table-fixed">
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-20">Type</TableHead>
-                          <TableHead className="w-1/4">Name</TableHead>
-                          <TableHead>Value</TableHead>
-                          <TableHead className="w-40">Resolver</TableHead>
-                          <TableHead className="w-20">TTL</TableHead>
+                <div className="rounded-panel border border-border">
+                  <Table className="table-fixed">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-20">Type</TableHead>
+                        <TableHead className="w-1/4">Name</TableHead>
+                        <TableHead>Value</TableHead>
+                        <TableHead className="w-40">Resolver</TableHead>
+                        <TableHead className="w-20">TTL</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {dnsRecords.map((r) => (
+                        <TableRow key={r.id}>
+                          <TableCell>
+                            <Badge variant="secondary" className="whitespace-nowrap">{r.record_type}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="max-w-full truncate min-w-0 font-mono">{r.domain}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="max-w-full truncate min-w-0 font-mono">{r.value}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="max-w-full truncate min-w-0 text-muted-foreground">{r.resolver_name || '—'}</div>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">{r.ttl ?? '—'}</TableCell>
                         </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {dnsRecords.map((r) => (
-                          <TableRow key={r.id}>
-                            <TableCell>
-                              <Badge variant="secondary" className="whitespace-nowrap">{r.record_type}</Badge>
-                            </TableCell>
-                            <TableCell>
-                              <div className="max-w-full truncate min-w-0 font-mono">{r.domain}</div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="max-w-full truncate min-w-0 font-mono">{r.value}</div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="max-w-full truncate min-w-0 text-muted-foreground">{r.resolver_name || '—'}</div>
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{r.ttl ?? '—'}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
               </TabsContent>
             )}

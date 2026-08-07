@@ -457,6 +457,25 @@ def has_test_execution_predicate(db: Session, project_id: int) -> ColumnElement:
     return models.Host.id.in_(sub)
 
 
+def has_plan_entry_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host appears in at least one test plan (project-scoped).
+
+    Deliberately NOT the same as :func:`has_test_execution_predicate`, which
+    joins through to ``TestExecutionResult`` and therefore answers "has been
+    *tested*". Plan membership is the earlier pipeline stage: /operations
+    reports "not yet in any plan" as a coverage gap, and without this the
+    number was unreachable — there was no way to list those hosts.
+    """
+    _H = aliased(models.Host)
+    sub = (
+        db.query(TestPlanEntry.host_id)
+        .join(_H, _H.id == TestPlanEntry.host_id)
+        .filter(_H.project_id == project_id)
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
 # ---------------------------------------------------------------------------
 # Tag / label predicates (by id for the panel, by name for the DSL)
 # ---------------------------------------------------------------------------

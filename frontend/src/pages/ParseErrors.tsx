@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, Fragment } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   RefreshCw,
   X as CloseIcon,
@@ -117,6 +117,11 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
 
 const ParseErrors: React.FC = () => {
   const navigate = useNavigate();
+  // v5.135.0 — Scans links here with ?error_id=N. Previously it navigated to
+  // the bare list, so the operator arrived with no idea which of up to 100
+  // rows was the one they clicked.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusErrorId = Number(searchParams.get('error_id')) || null;
   const toast = useToast();
   const [data, setData] = useState<IngestionResultsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -134,14 +139,19 @@ const ParseErrors: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<IngestionResultsSortBy>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  // v5.135.0 — the page used to request skip:0/limit:100 unconditionally and
+  // discard the `total` the endpoint already returns, so anything past the
+  // 100th upload was unreachable by browsing and the truncation was invisible.
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
 
   const loadData = async () => {
     try {
       setLoading(true);
       setError(null);
       const result = await getIngestionResults({
-        skip: 0,
-        limit: 100,
+        skip: page * pageSize,
+        limit: pageSize,
         status: statusFilter === 'all' ? undefined : statusFilter,
         search: debouncedSearchText.trim() || undefined,
         sortBy,
@@ -161,7 +171,11 @@ const ParseErrors: React.FC = () => {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText, statusFilter, sortBy, sortOrder]);
+  }, [debouncedSearchText, statusFilter, sortBy, sortOrder, page, pageSize]);
+
+  // A filter/sort change can shrink the result set below the current page, so
+  // go back to the first page rather than landing on an empty one.
+  useEffect(() => { setPage(0); }, [debouncedSearchText, statusFilter, sortBy, sortOrder]);
 
   const handleViewParseError = async (item: IngestionResultItem) => {
     // Audit CRIT-8 — pre-fix this catch synthesized a fake ParseError
@@ -181,11 +195,34 @@ const ParseErrors: React.FC = () => {
     }
   };
 
+  // Open and scroll to the row the caller linked to, once it has loaded. The
+  // param is cleared afterwards so a later manual collapse isn't undone by a
+  // re-render, and so the URL doesn't keep re-focusing on refresh.
+  useEffect(() => {
+    if (focusErrorId === null || loading) return;
+    const match = (data?.items ?? []).some((i) => i.id === focusErrorId);
+    if (!match) return;
+    setExpandedRow(focusErrorId);
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-ingestion-row="${focusErrorId}"]`)
+        ?.scrollIntoView({ block: 'center' });
+    });
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('error_id');
+      return next;
+    }, { replace: true });
+  }, [focusErrorId, loading, data, setSearchParams]);
+
   const summary = data?.summary;
   // v2.86.2 — items come pre-filtered + pre-sorted from the server; no
   // more client-side filtering of the partial slice.  The old
   // useMemo-over-allItems block was removed alongside.
   const items = data?.items ?? [];
+  // The true match count for the active filters — distinct from items.length,
+  // which is only the current page.
+  const totalMatching = data?.total ?? 0;
 
   const copyError = async (text: string) => {
     try {
@@ -271,7 +308,12 @@ const ParseErrors: React.FC = () => {
 
       {summary && (
         <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-5">
-          <StatCard label="Total Uploads" value={items.length} Icon={CloudUpload} tone="text-muted-foreground" />
+          {/* Was items.length — the current page only. Its neighbours are
+              project-wide, so past 100 uploads this tile could read a total
+              SMALLER than the Completed count sitting next to it. `total` is
+              the match count for the active filters, which is what the label
+              means. */}
+          <StatCard label="Total Uploads" value={totalMatching.toLocaleString()} Icon={CloudUpload} tone="text-muted-foreground" />
           <StatCard label="Completed" value={summary.total_completed} Icon={CheckCircle2} tone="text-success" />
           <StatCard label="Failed" value={summary.total_failed} Icon={AlertOctagon} tone="text-destructive" />
           <StatCard label="Total Hosts" value={summary.total_hosts.toLocaleString()} Icon={Server} tone="text-info" />
@@ -279,45 +321,7 @@ const ParseErrors: React.FC = () => {
         </div>
       )}
 
-      {/* Mobile card list (audit RSP·H13) — table has too many columns
-          to fit on small viewports without horizontal scroll, so render
-          the same data as cards below md. */}
-      {!loading && items.length > 0 && (
-        <ul className="mb-md space-y-xs md:hidden">
-          {items.map((item) => {
-            const stats = item.stats;
-            return (
-              <li key={`card-${item.id}`}>
-                <button
-                  type="button"
-                  onClick={() => setExpandedRow((prev) => (prev === item.id ? null : item.id))}
-                  className="flex w-full flex-col gap-xxs overflow-hidden rounded-panel border border-border p-sm text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <div className="flex items-center gap-xs">
-                    <StatusBadge status={item.status} />
-                    <span className="truncate font-mono text-caption text-muted-foreground">
-                      {timeAgo(item.created_at)}
-                    </span>
-                  </div>
-                  <div className="truncate font-mono text-metadata font-semibold text-foreground">
-                    {item.original_filename}
-                  </div>
-                  <div className="truncate text-caption text-muted-foreground">
-                    {safeFallback(item.tool_name)} — {formatFileSize(item.file_size)} — {formatDuration(item.duration_seconds)}
-                  </div>
-                  {stats && (
-                    <div className="truncate text-caption text-muted-foreground">
-                      {stats.hosts_up}/{stats.hosts_parsed} hosts up — {stats.open_ports}/{stats.ports_found} open ports — {stats.services_detected} services
-                    </div>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      <Card className="hidden md:block">
+      <Card>
         <CardContent className="p-0">
           {/* Horizontal scroll wrapper — the table-fixed widths sum to
               ~1080px; on narrower viewports the inner table would push
@@ -372,6 +376,8 @@ const ParseErrors: React.FC = () => {
                     return (
                       <Fragment key={item.id}>
                         <TableRow
+                          // Scroll target for a ?error_id= deep link from Scans.
+                          data-ingestion-row={item.id}
                           onClick={() => setExpandedRow((prev) => (prev === item.id ? null : item.id))}
                           className="cursor-pointer"
                         >
@@ -428,6 +434,36 @@ const ParseErrors: React.FC = () => {
               </TableBody>
             </Table>
           </div>
+          {/* Server-paged: the endpoint returns `total` for the active
+              filters, so the operator can both see how much exists and reach
+              it. Without this the list silently ended at the first page. */}
+          {totalMatching > 0 && (
+            <div className="mt-sm flex flex-wrap items-center justify-between gap-sm">
+              <p className="text-caption text-muted-foreground" role="status" aria-live="polite">
+                {items.length === 0
+                  ? 'No uploads match these filters'
+                  : `Showing ${page * pageSize + 1}–${page * pageSize + items.length} of ${totalMatching.toLocaleString()}`}
+              </p>
+              <div className="flex items-center gap-xs">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(p - 1, 0))}
+                  disabled={page === 0 || loading}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={loading || (page + 1) * pageSize >= totalMatching}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -289,10 +289,9 @@ const PlanTab: React.FC = () => {
   const sortedEntryCountLabel = hasMoreOnServer
     ? `Showing ${filteredEntries.length} of ${serverLoadedCount} loaded (${totalEntries} total)`
     : `Showing ${filteredEntries.length} of ${totalEntries} entr${totalEntries === 1 ? 'y' : 'ies'}`;
-  // Empty-state copy shared by the desktop table and mobile card
-  // variants — kept in one place so a wording change can't drift
-  // between them.  "apply the filter to more entries" is filter-neutral
-  // (covers Status/Priority/Phase as well as the search box).
+  // Empty-state copy for the entry table.  "apply the filter to more
+  // entries" is filter-neutral (covers Status/Priority/Phase as well as
+  // the search box).
   const noFilteredEntriesMessage = hasMoreOnServer
     ? `No matches in the ${serverLoadedCount} loaded entries — load more below to apply the filter to more entries (${totalEntries - serverLoadedCount} remaining).`
     : 'No entries match the current filters.';
@@ -692,11 +691,10 @@ const PlanTab: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* Desktop / tablet table view (md and up).  Below md the table
-          becomes unreadable at 8 columns — even with overflow-x-auto
-          the horizontal scroll is unusable on a phone.  The mobile
-          card variant below replaces it under md. */}
-      <Card className="hidden md:block">
+      {/* Entry table — BlueStick is a desktop-only operator tool, so
+          narrow viewports scroll the table horizontally rather than
+          swapping in a second rendering of the same data. */}
+      <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
@@ -846,155 +844,6 @@ const PlanTab: React.FC = () => {
           </div>
         </CardContent>
       </Card>
-
-      {/* Mobile card list (below md).  Each entry becomes a stacked
-          card with the same affordances as the table row: chevron to
-          expand, host link, status select (or badge), priority +
-          phase chips, proposed-tests chips, clamped rationale +
-          findings.  Expansion reuses renderExpandedContent so the
-          desktop and mobile expanded bodies stay in sync. */}
-      <div className="flex flex-col gap-sm md:hidden">
-        {plan.entries.length === 0 ? (
-          <Card>
-            <CardContent className="p-md text-center text-metadata text-muted-foreground">
-              No entries in this test plan yet.
-            </CardContent>
-          </Card>
-        ) : filteredEntries.length === 0 ? (
-          <Card>
-            <CardContent className="p-md text-center text-metadata text-muted-foreground">
-              {noFilteredEntriesMessage}
-            </CardContent>
-          </Card>
-        ) : (
-          pagedEntries.map((entry) => {
-            const isExpanded = expandedEntries.has(entry.id);
-            const proposed = entry.proposed_tests || [];
-            return (
-              <Card key={entry.id}>
-                <CardContent className="flex flex-col gap-xs p-sm">
-                  {/* Row 1: host (truncating) + expand toggle */}
-                  <div className="flex items-start gap-xs">
-                    <div className="min-w-0 flex-1">
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/hosts/${entry.host_id}`)}
-                        className="block w-full truncate text-left font-semibold text-primary hover:underline focus:outline-none focus-visible:underline"
-                      >
-                        {entry.host_ip || entry.host_id}
-                      </button>
-                      {entry.host_hostname && (
-                        <p className="truncate text-caption text-muted-foreground">
-                          {entry.host_hostname}
-                        </p>
-                      )}
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => toggleEntry(entry.id)}
-                      aria-label={
-                        isExpanded
-                          ? `Collapse entry for ${entry.host_ip || entry.host_id}`
-                          : `Expand entry for ${entry.host_ip || entry.host_id}`
-                      }
-                      aria-expanded={isExpanded}
-                    >
-                      {isExpanded ? (
-                        <ChevronUp className="size-4" aria-hidden />
-                      ) : (
-                        <ChevronDown className="size-4" aria-hidden />
-                      )}
-                    </Button>
-                  </div>
-
-                  {/* Row 2: priority + phase + status — three small chips
-                      that always fit on one phone line.  Status uses
-                      the same select control as the desktop table when
-                      the user can manage. */}
-                  <div className="flex flex-wrap items-center gap-xs">
-                    <Badge variant={priorityTone(entry.priority)}>{entry.priority}</Badge>
-                    <Badge variant="outline">{formatStatusLabel(entry.test_phase)}</Badge>
-                    <div className="ml-auto">
-                      {canManage ? (
-                        <Select
-                          value={entry.status}
-                          onValueChange={(v) => handleEntryStatusChange(entry, v)}
-                        >
-                          <SelectTrigger
-                            aria-label={`Status for entry on host ${entry.host_ip || entry.host_id}`}
-                            className="h-7 min-w-32"
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ENTRY_STATUSES.map((s) => (
-                              <SelectItem key={s} value={s}>
-                                {formatStatusLabel(s)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <Badge variant={entryStatusTone(entry.status)}>
-                          {formatStatusLabel(entry.status)}
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Row 3: proposed test chips (capped at 3 + overflow
-                      pill) — same shape as the desktop column. */}
-                  {proposed.length > 0 && (
-                    <div className="flex flex-wrap gap-xxs">
-                      {proposed.slice(0, 3).map((t, i) => (
-                        <Badge key={i} variant="outline" className="max-w-full truncate">
-                          {getTestChipLabel(t)}
-                        </Badge>
-                      ))}
-                      {proposed.length > 3 && (
-                        <Badge variant="muted">+{proposed.length - 3}</Badge>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Row 4: clamped rationale (labelled).  Hidden when
-                      empty so the card stays compact on minimal entries. */}
-                  {entry.rationale && (
-                    <div>
-                      <p className="text-caption font-semibold text-muted-foreground">
-                        Rationale
-                      </p>
-                      <p className="line-clamp-2 break-words text-metadata">
-                        {stripAttribution(entry.rationale)}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Row 5: clamped findings — only shown when present
-                      so reviewers spot the difference at a glance. */}
-                  {entry.findings && (
-                    <div>
-                      <p className="text-caption font-semibold text-muted-foreground">
-                        Findings
-                      </p>
-                      <p className="line-clamp-2 break-words text-metadata">
-                        {stripAttribution(entry.findings)}
-                      </p>
-                    </div>
-                  )}
-
-                  {isExpanded && (
-                    <div className="mt-xs border-t pt-sm">
-                      {renderExpandedContent(entry)}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })
-        )}
-      </div>
 
       {/* Pager — only shown when the filtered set spans more than one
           page. Keeps a multi-thousand-entry plan from rendering every

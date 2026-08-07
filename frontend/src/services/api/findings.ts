@@ -224,3 +224,45 @@ export const promoteVulnerability = async (
   );
   return response.data;
 };
+
+// --------------------------------------------------------------------------
+// Bulk operations (v5.135.0)
+// --------------------------------------------------------------------------
+// The page previously looped `setFindingStatus` per id from the browser —
+// unbounded, partially failable, and with no single audit moment. These route
+// the whole selection through one request that validates project scope,
+// enforces the terminal-justification rule across the batch, and emits one
+// assignment notification instead of N.
+
+export interface BulkFindingResult {
+  affected: number;
+  requested: number;
+  /** Ids the server refused (not in this project / already gone). */
+  skipped_ids: number[];
+}
+
+export const bulkSetFindingStatus = async (
+  findingIds: number[],
+  status: FindingStatus,
+  summary?: string,
+): Promise<BulkFindingResult> => {
+  const res = await api.post<BulkFindingResult>(`${p()}/findings/bulk/status`, {
+    finding_ids: findingIds,
+    status,
+    summary,
+  });
+  return res.data;
+};
+
+/** `assigneeUserId: null` unassigns — the single-finding PATCH can't express
+ *  that, since it skips owner_id when null. */
+export const bulkAssignFindings = async (
+  findingIds: number[],
+  assigneeUserId: number | null,
+): Promise<BulkFindingResult> => {
+  const res = await api.post<BulkFindingResult>(`${p()}/findings/bulk/assign`, {
+    finding_ids: findingIds,
+    assignee_user_id: assigneeUserId,
+  });
+  return res.data;
+};

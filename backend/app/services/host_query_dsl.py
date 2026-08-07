@@ -362,6 +362,8 @@ _HAS_KEYWORDS = {
                 "Has a finding flagged exploitable by a vulnerability scanner (currently Nessus)."),
     "tested": (lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
                "Has had an agentic test executed against it."),
+    "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.db, ctx.project_id),
+                "Appears in at least one test plan (planned, not necessarily tested yet)."),
     "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
                    "Has at least one open port."),
     "critical": (lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
@@ -650,6 +652,8 @@ def schema() -> dict:
 EXAMPLES: List[dict] = [
     {"label": "Open 80 AND 443", "q": "port:80 port:443"},
     {"label": "Untested criticals", "q": "has:critical AND NOT has:tested"},
+    # The /operations "not yet in any plan" coverage gap, as a query.
+    {"label": "Not in any test plan", "q": "NOT has:planned"},
     {"label": "Log4Shell-exposed web", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
     {"label": "Critical and exploitable", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},
