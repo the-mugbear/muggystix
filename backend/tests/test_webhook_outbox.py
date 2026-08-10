@@ -206,22 +206,86 @@ def test_prune_keeps_failures_longer_than_successes(
 # re-enable enough of the fast path to test the interaction.
 
 
-def test_a_freshly_dispatched_row_is_not_immediately_sweepable(
-    db_session, test_project, webhook
-):
-    """The core guard. The fast path is about to POST this row; if the sweeper
-    can claim it in that window the receiver gets the event twice, and since
-    payloads carry no idempotency key it cannot dedupe."""
-    _dispatch(db_session, test_project.id)
+def test_only_one_sender_can_claim_a_delivery(db_session, test_project, webhook):
+    """The core guard, stated as the invariant rather than as a lease.
 
-    attempted = wd.sweep_pending_deliveries(db_session)
-    assert attempted == 0, (
-        "the sweeper claimed a row the fast path is still delivering — "
-        "that is a duplicate POST"
+    v2.240.3 (review A6) — this used to assert that a freshly dispatched row
+    was hidden from the sweeper for 60 seconds. That lease was the old
+    duplicate-prevention mechanism, and it did not work: both senders decided
+    by *reading* ``status == 'pending'``, so a fast-path task that outlived
+    its lease sent the same row the sweeper was sending. Hiding the row also
+    delayed recovery whenever the fast path never ran.
+
+    Claiming is atomic now, so the property to pin is simply that a second
+    claim on the same row fails while the first holds it.
+    """
+    _dispatch(db_session, test_project.id)
+    row = db_session.query(WebhookDelivery).one()
+
+    first = wd._claim_for_send(row.id)
+    second = wd._claim_for_send(row.id)
+
+    assert first is not None, "the first sender must win the row"
+    assert second is None, (
+        "a second sender claimed a row already in flight — that is the "
+        "duplicate POST this fix exists to prevent"
     )
 
+    db_session.expire_all()
     row = db_session.query(WebhookDelivery).one()
-    assert row.next_attempt_at > datetime.now(timezone.utc), "row must be leased"
+    assert row.status == "sending"
+    assert row.claim_token == first
+
+
+def test_a_dead_senders_row_is_reclaimed_once_its_lease_expires(
+    db_session, test_project, webhook
+):
+    """A crash mid-POST must not wedge the row.
+
+    The claim is ownership, not a permanent lock: once the lease passes,
+    another sender may take it. Without this a killed worker would strand its
+    delivery in ``sending`` forever, invisible to the sweeper.
+    """
+    _dispatch(db_session, test_project.id)
+    row = db_session.query(WebhookDelivery).one()
+
+    token = wd._claim_for_send(row.id)
+    assert token is not None
+
+    # Simulate the owner dying: its lease falls into the past.
+    db_session.expire_all()
+    row = db_session.query(WebhookDelivery).one()
+    row.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db_session.commit()
+
+    reclaimed = wd._claim_for_send(row.id)
+    assert reclaimed is not None and reclaimed != token, (
+        "an expired lease must be reclaimable by another sender"
+    )
+
+
+def test_the_dead_senders_result_cannot_overwrite_the_new_owner(
+    db_session, test_project, webhook
+):
+    """Only the current claim holder may record an outcome."""
+    _dispatch(db_session, test_project.id)
+    row = db_session.query(WebhookDelivery).one()
+
+    stale_token = wd._claim_for_send(row.id)
+    db_session.expire_all()
+    row = db_session.query(WebhookDelivery).one()
+    row.next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db_session.commit()
+    wd._claim_for_send(row.id)  # a new owner takes over
+
+    # The stale sender finally comes back and tries to report success.
+    wd._record_attempt(row.id, True, 200, None, token=stale_token)
+
+    db_session.expire_all()
+    row = db_session.query(WebhookDelivery).one()
+    assert row.status != "delivered", (
+        "a sender that lost its claim marked the delivery done"
+    )
 
 
 def test_queue_full_hands_the_row_straight_back_to_the_sweeper(

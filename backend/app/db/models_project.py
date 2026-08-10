@@ -156,6 +156,7 @@ class WebhookConfig(Base):
 class WebhookDeliveryStatus(str, Enum):
     """Lifecycle of one outbox row."""
     PENDING = "pending"      # awaiting first attempt or a retry
+    SENDING = "sending"      # claimed by exactly one sender; POST in flight
     DELIVERED = "delivered"  # receiver returned 2xx
     FAILED = "failed"        # retries exhausted; kept for operator visibility
 
@@ -207,6 +208,16 @@ class WebhookDelivery(Base):
     next_attempt_at = Column(DateTime(timezone=True), nullable=True, index=True)
     last_error = Column(Text, nullable=True)
     response_status = Column(Integer, nullable=True)
+    # Ownership token for the in-flight attempt (v2.240.3, review A6).
+    #
+    # Status alone can't coordinate the two senders: the sweeper and the
+    # in-process fast path both used to read `status == 'pending'` and send,
+    # which is check-then-act — both could observe pending and both POST the
+    # same event. Claiming is now a single atomic UPDATE that flips the row to
+    # `sending` and stamps a token; only the token holder may record the
+    # outcome. `next_attempt_at` doubles as the lease expiry while `sending`,
+    # so a sender that dies mid-POST is reclaimable rather than stuck.
+    claim_token = Column(String(36), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     delivered_at = Column(DateTime(timezone=True), nullable=True)
 

@@ -51,11 +51,13 @@ import logging
 import queue
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
 from urllib.parse import urlparse
 
 import httpx
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.db import session as _session_module
@@ -263,9 +265,17 @@ def build_payload(event: str, title: str, body: str, project_id: int, context: O
     }
 
 
-def _post(url: str, secret: Optional[str], payload: dict) -> httpx.Response:
+def _post(
+    url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None,
+) -> httpx.Response:
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json", "User-Agent": "BlueStick-Webhook/1"}
+    if delivery_id is not None:
+        # Stable per-delivery identifier so a receiver can dedupe on its own
+        # side. The atomic claim makes a duplicate POST very unlikely, but a
+        # retry after a response we never saw (timeout on a receiver that DID
+        # process it) is indistinguishable from a first attempt without this.
+        headers["X-BlueStick-Delivery-Id"] = str(delivery_id)
     if secret:
         headers["X-BlueStick-Signature"] = _sign(secret, body)
     # Route through the SSRF-aware client.  Webhook targets are admin-
@@ -289,12 +299,15 @@ def _post(url: str, secret: Optional[str], payload: dict) -> httpx.Response:
 # receiver that is properly broken stops being hammered.
 _RETRY_BASE_SECONDS = 30
 _RETRY_MAX_SECONDS = 3600
-# How long a row handed to the in-process fast path is hidden from the sweeper.
-# Must exceed the HTTP timeout, or the sweeper can claim a row the delivery
-# thread is still POSTing and send the same event twice — FOR UPDATE SKIP
-# LOCKED only coordinates sweepers, the fast-path thread holds no row lock.
-# Generous margin over _TIMEOUT_SECONDS to cover queue wait + DNS + TLS.
-_FASTPATH_LEASE_SECONDS = 60
+# How long a claimed (``sending``) row stays owned before another sender may
+# reclaim it. This is a crash-recovery bound, not a correctness mechanism:
+# correctness comes from the atomic claim in ``_claim_for_send``. It only has
+# to exceed a realistic POST duration so a live sender is not undercut —
+# generous margin over _TIMEOUT_SECONDS to cover DNS + TLS + the response.
+_CLAIM_LEASE_SECONDS = 60
+# Back-compat alias: the old name described the pre-A6 design (hiding a row
+# from the sweeper). Kept so external references don't break.
+_FASTPATH_LEASE_SECONDS = _CLAIM_LEASE_SECONDS
 # Rows the sweeper will attempt per pass — bounded so a large backlog can't
 # monopolise the worker tick.
 _SWEEP_BATCH = 20
@@ -309,7 +322,9 @@ def _backoff_seconds(attempts: int) -> int:
     return min(_RETRY_BASE_SECONDS * (4 ** max(attempts - 1, 0)), _RETRY_MAX_SECONDS)
 
 
-def _attempt_delivery(url: str, secret: Optional[str], payload: dict):
+def _attempt_delivery(
+    url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None,
+):
     """POST once. Returns (ok, response_status, error) — never raises.
 
     A 2xx is success. Anything else, including a transport failure, is a
@@ -317,7 +332,7 @@ def _attempt_delivery(url: str, secret: Optional[str], payload: dict):
     case the outbox exists for.
     """
     try:
-        resp = _post(url, secret, payload)
+        resp = _post(url, secret, payload, delivery_id=delivery_id)
     except Exception as exc:  # network error, timeout, DNS, size cap, …
         return False, None, str(exc)[:1000]
     if 200 <= resp.status_code < 300:
@@ -325,7 +340,10 @@ def _attempt_delivery(url: str, secret: Optional[str], payload: dict):
     return False, resp.status_code, f"receiver returned HTTP {resp.status_code}"
 
 
-def _record_attempt(delivery_id: int, ok: bool, status: Optional[int], error: Optional[str]) -> None:
+def _record_attempt(
+    delivery_id: int, ok: bool, status: Optional[int], error: Optional[str],
+    token: Optional[str] = None,
+) -> None:
     """Persist the outcome of one attempt on its own short-lived session.
 
     Runs on a delivery thread, so it must not touch the caller's session.
@@ -336,8 +354,22 @@ def _record_attempt(delivery_id: int, ok: bool, status: Optional[int], error: Op
     try:
         with SessionLocal() as db:
             row = db.get(WebhookDelivery, delivery_id)
-            if row is None or row.status != WebhookDeliveryStatus.PENDING.value:
+            if row is None:
                 return
+            # Only the claim holder may record. Without this a sender whose
+            # lease expired mid-POST could still write an outcome over the row
+            # a second sender now owns.
+            if token is not None:
+                if row.claim_token != token:
+                    logger.debug(
+                        "Webhook delivery %s changed hands before its outcome "
+                        "was recorded; discarding this sender's result",
+                        delivery_id,
+                    )
+                    return
+            elif row.status != WebhookDeliveryStatus.PENDING.value:
+                return
+            row.claim_token = None
             row.attempts = (row.attempts or 0) + 1
             row.response_status = status
             if ok:
@@ -355,6 +387,12 @@ def _record_attempt(delivery_id: int, ok: bool, status: Optional[int], error: Op
                         delivery_id, row.webhook_config_id, row.attempts, error,
                     )
                 else:
+                    # Hand the row back as retryable. It is currently
+                    # ``sending`` (we own it), so this MUST reset the status —
+                    # leaving it ``sending`` would strand the row: the
+                    # sweeper's due-query would skip it until its lease
+                    # expired, turning a routine retry into a lease timeout.
+                    row.status = WebhookDeliveryStatus.PENDING.value
                     row.next_attempt_at = datetime.now(timezone.utc) + timedelta(
                         seconds=_backoff_seconds(row.attempts)
                     )
@@ -363,44 +401,76 @@ def _record_attempt(delivery_id: int, ok: bool, status: Optional[int], error: Op
         logger.exception("Could not record webhook delivery outcome for %s", delivery_id)
 
 
-def _claim_for_send(delivery_id: int) -> bool:
-    """Return True if this row is still ours to send.
+def _claim_for_send(delivery_id: int) -> Optional[str]:
+    """Atomically take ownership of a delivery. Returns a token, or None.
 
-    A task can sit in the bounded queue for a long time behind a slow
-    receiver. By the time a worker thread picks it up the sweeper may already
-    have delivered it (or it may have exhausted its attempts), and nothing in
-    the old path re-checked — the POST went out regardless. Since payloads
-    carry no idempotency key, the receiver cannot dedupe, so the check has to
-    happen here.
+    v2.240.3 (review A6) — this used to *read* ``status == 'pending'`` and
+    return a bool. That is check-then-act, not a claim: the sweeper leaves a
+    row ``pending`` while its own POST is in flight, so a fast-path task that
+    had waited in the bounded queue past its lease would read ``pending`` and
+    send the very delivery the sweeper was sending. Four workers, a 256-slot
+    queue, a 5s HTTP timeout and a 60s lease make that reachable with ~48 slow
+    receivers. Payloads carry no idempotency key, so the receiver couldn't
+    dedupe it either.
+
+    The claim is now one UPDATE. A row is claimable when it is due and either
+    ``pending`` or ``sending`` with an expired lease (the previous owner died
+    mid-POST). Winning flips it to ``sending``, stamps a token, and pushes the
+    lease out; the loser gets zero rows back and stands down.
     """
     from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
 
+    token = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
     SessionLocal = _session_module.SessionLocal
     try:
         with SessionLocal() as db:
-            row = db.get(WebhookDelivery, delivery_id)
-            if row is None:
-                return False
-            return row.status == WebhookDeliveryStatus.PENDING.value
+            result = db.execute(
+                sa_update(WebhookDelivery)
+                .where(
+                    WebhookDelivery.id == delivery_id,
+                    WebhookDelivery.status.in_(
+                        [
+                            WebhookDeliveryStatus.PENDING.value,
+                            WebhookDeliveryStatus.SENDING.value,
+                        ]
+                    ),
+                    WebhookDelivery.next_attempt_at.isnot(None),
+                    WebhookDelivery.next_attempt_at <= now,
+                )
+                .values(
+                    status=WebhookDeliveryStatus.SENDING.value,
+                    claim_token=token,
+                    next_attempt_at=now + timedelta(seconds=_CLAIM_LEASE_SECONDS),
+                )
+            )
+            db.commit()
+            return token if result.rowcount == 1 else None
     except Exception:  # pragma: no cover — never let bookkeeping block delivery
-        logger.exception("Could not re-check webhook delivery %s; sending", delivery_id)
-        return True
+        # Failing CLOSED here: an unclaimed delivery is retried by the sweeper,
+        # whereas sending unclaimed is the duplicate this fix exists to stop.
+        logger.exception("Could not claim webhook delivery %s; leaving it queued", delivery_id)
+        return None
 
 
 def _deliver(url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None) -> None:
     """Attempt one delivery and, when it is backed by an outbox row, record the
     outcome so a failure is retried instead of vanishing into a log line."""
-    if delivery_id is not None and not _claim_for_send(delivery_id):
-        logger.debug(
-            "Webhook delivery %s already settled before the fast path ran; skipping",
-            delivery_id,
-        )
-        return
-    ok, status, error = _attempt_delivery(url, secret, payload)
+    token: Optional[str] = None
+    if delivery_id is not None:
+        token = _claim_for_send(delivery_id)
+        if token is None:
+            logger.debug(
+                "Webhook delivery %s is owned by another sender or already "
+                "settled; skipping",
+                delivery_id,
+            )
+            return
+    ok, status, error = _attempt_delivery(url, secret, payload, delivery_id=delivery_id)
     if not ok:
         logger.warning("Webhook delivery to %s failed: %s", url, error)
     if delivery_id is not None:
-        _record_attempt(delivery_id, ok, status, error)
+        _record_attempt(delivery_id, ok, status, error, token=token)
 
 
 class DispatchResult(NamedTuple):
@@ -460,11 +530,13 @@ class WebhookDispatcher:
                 event=event,
                 payload=payload,
                 status=WebhookDeliveryStatus.PENDING.value,
-                # Leased, not due: the fast path is about to take this row, and
-                # a row that is immediately due can be claimed by the sweeper
-                # mid-POST. If the enqueue below fails we reset it to `now` so
-                # the sweeper picks it up promptly instead.
-                next_attempt_at=now + timedelta(seconds=_FASTPATH_LEASE_SECONDS),
+                # Due immediately. Pre-A6 this was leased into the future to
+                # hide the row from the sweeper while the fast path worked on
+                # it — necessary back when both senders decided by reading the
+                # status. Now that claiming is atomic, whoever gets there first
+                # wins and the other stands down, so hiding the row would only
+                # delay recovery if the fast path never ran.
+                next_attempt_at=now,
             )
             for cfg in targets
         ]
@@ -558,7 +630,16 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
     query = (
         db.query(WebhookDelivery)
         .filter(
-            WebhookDelivery.status == WebhookDeliveryStatus.PENDING.value,
+            # ``sending`` rows are included so a sender that died mid-POST is
+            # recovered: its lease (next_attempt_at) has passed, and the
+            # atomic claim below decides who actually gets it. Without this a
+            # crashed worker would wedge its row permanently.
+            WebhookDelivery.status.in_(
+                [
+                    WebhookDeliveryStatus.PENDING.value,
+                    WebhookDeliveryStatus.SENDING.value,
+                ]
+            ),
             WebhookDelivery.next_attempt_at.isnot(None),
             WebhookDelivery.next_attempt_at <= now,
         )
@@ -574,14 +655,20 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
     if not due:
         return 0
 
-    # Push each claimed row out of the due window before releasing the row
-    # lock, so a concurrent sweeper can't pick it up while we're POSTing.
+    # Resolve configs and retire rows whose target is gone, then take each
+    # remaining row through the SAME atomic claim the fast path uses.
+    #
+    # v2.240.3 (review A6) — this used to push ``next_attempt_at`` forward and
+    # send while the row stayed ``pending``. FOR UPDATE SKIP LOCKED kept two
+    # sweepers apart, but the fast-path threads hold no row lock, so a queued
+    # task could read ``pending`` and POST the same event this loop was
+    # POSTing. Claiming makes exactly one sender win, whichever it is.
     config_ids = {row.webhook_config_id for row in due}
     configs = {
         c.id: c
         for c in db.query(WebhookConfig).filter(WebhookConfig.id.in_(config_ids)).all()
     }
-    claimed = []
+    candidates = []
     for row in due:
         cfg = configs.get(row.webhook_config_id)
         if cfg is None or not cfg.is_active:
@@ -589,17 +676,25 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
             # deliver to. Terminal, not an error.
             row.status = WebhookDeliveryStatus.FAILED.value
             row.next_attempt_at = None
+            row.claim_token = None
             row.last_error = "webhook config removed or disabled before delivery"
             continue
-        row.next_attempt_at = now + timedelta(seconds=_backoff_seconds(row.attempts + 1))
-        claimed.append((row.id, cfg, dict(row.payload or {})))
+        candidates.append((row.id, cfg, dict(row.payload or {})))
     db.commit()
 
-    for delivery_id, cfg, payload in claimed:
+    sent = 0
+    for delivery_id, cfg, payload in candidates:
+        token = _claim_for_send(delivery_id)
+        if token is None:
+            # The fast path (or another sweeper) owns it. Not an error.
+            continue
         secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
-        ok, status, error = _attempt_delivery(cfg.url, secret, payload)
-        _record_attempt(delivery_id, ok, status, error)
-    return len(claimed)
+        ok, status, error = _attempt_delivery(
+            cfg.url, secret, payload, delivery_id=delivery_id,
+        )
+        _record_attempt(delivery_id, ok, status, error, token=token)
+        sent += 1
+    return sent
 
 
 def prune_delivery_history(db: Session) -> int:
