@@ -99,6 +99,8 @@ import HostFindingsCard from './HostFindingsCard';
 import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
+import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
+import { groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
@@ -1011,13 +1013,25 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (timeA !== timeB) return timeB - timeA;
     return b.id - a.id;
   });
+  // Group by the ISSUE, not the scanner — Nessus and GreenBone report the same
+  // problem in their own words, and a flat list made the operator correlate by
+  // eye on every host. See utils/vulnGrouping.ts for the keying rules and why
+  // there is deliberately no fuzzy matching.
+  // Plain computation, NOT useMemo: this sits after the component's early
+  // returns, and a hook here changes the hook count between the loading and
+  // loaded renders ("Rendered more hooks than during the previous render").
+  // HostInspector.smoke.test.tsx guards exactly that. It's an O(n) pass over
+  // one host's findings, so memoising buys nothing anyway.
+  const vulnGroups = groupVulnerabilities(sortedVulnerabilities);
+  // The header count stays the raw finding total (what the scanners reported);
+  // the preview limit now counts ISSUES, since that's what a row is.
   const totalVulnerabilities =
     host.vulnerability_summary?.total_vulnerabilities ?? sortedVulnerabilities.length;
   const vulnSummaryError = host.vulnerability_summary?.error === true;
   const displayedVulnerabilities = showAllVulnerabilities
-    ? sortedVulnerabilities
-    : sortedVulnerabilities.slice(0, VULNERABILITY_PREVIEW_LIMIT);
-  const hasVulnerabilities = sortedVulnerabilities.length > 0;
+    ? vulnGroups
+    : vulnGroups.slice(0, VULNERABILITY_PREVIEW_LIMIT);
+  const hasVulnerabilities = vulnGroups.length > 0;
 
   const TESTER_STATUSES = [
     { value: 'in_progress', label: 'In Progress' },
@@ -1979,231 +1993,33 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             <div className="flex items-center gap-xs">
               <ShieldAlert className="size-5 text-destructive" aria-hidden />
               <CardTitle className="text-destructive">Vulnerabilities</CardTitle>
-              <Badge variant="destructive">{totalVulnerabilities}</Badge>
+              {/* Rows are issues now, so the badge counts issues. When
+                  scanners overlapped, say so rather than showing a number
+                  that doesn't match the rows underneath it. */}
+              <Badge variant="destructive">{vulnGroups.length}</Badge>
+              {totalVulnerabilities > vulnGroups.length && (
+                <span className="text-caption text-muted-foreground">
+                  from {totalVulnerabilities} scanner findings
+                </span>
+              )}
             </div>
           </CardHeader>
           <CardContent className="space-y-sm">
-            {displayedVulnerabilities.map((vuln) => {
-              const title = vuln.title || vuln.plugin_id || 'Unnamed finding';
-              const cveLink = vuln.cve_id
-                ? `https://cve.mitre.org/cgi-bin/cvename.cgi?name=${vuln.cve_id}`
-                : null;
-              const descExpanded = expandedVulnIds.has(vuln.id);
-              const references = vuln.references ?? [];
-              return (
-                <div
-                  key={`${vuln.id}-${vuln.plugin_id}-${vuln.port_number ?? 'host'}`}
-                  className="flex items-start gap-sm border-b border-border pb-sm last:border-b-0 last:pb-0"
-                >
-                  <div className="min-w-0 flex-1 space-y-xxs">
-                    <h4 className="text-subheading">{title}</h4>
-                    <p className="text-caption text-muted-foreground">
-                      {vuln.source ? vuln.source.toUpperCase() : 'Unknown source'}
-                      {vuln.cvss_score !== null && vuln.cvss_score !== undefined && (
-                        <> · CVSS {vuln.cvss_score}</>
-                      )}
-                      {cveLink && (
-                        <>
-                          {' · '}
-                          <a
-                            href={cveLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-primary underline-offset-4 hover:underline"
-                          >
-                            {vuln.cve_id}
-                          </a>
-                        </>
-                      )}
-                    </p>
-                    {/* CVSS vector string — the breakdown behind the score. */}
-                    {vuln.cvss_vector && (
-                      <p className="break-all font-mono text-caption text-muted-foreground">
-                        {vuln.cvss_vector}
-                      </p>
-                    )}
-                    {/* Originating plugin/check name, when it differs from
-                        the title we're already showing. */}
-                    {vuln.source_plugin_name &&
-                      vuln.source_plugin_name !== title && (
-                        <p className="truncate text-caption text-muted-foreground">
-                          Plugin: {vuln.source_plugin_name}
-                        </p>
-                      )}
-                    {vuln.port_number && (
-                      <p className="text-caption text-muted-foreground">
-                        Port {vuln.port_number}/{(vuln.protocol ?? '').toUpperCase() || 'TCP'}
-                        {vuln.service_name && ` • ${vuln.service_name}`}
-                      </p>
-                    )}
-                    {/* Description — the writeup.  Clamped to 4 lines with
-                        a per-row expand so a long Nessus paragraph doesn't
-                        dominate the card. */}
-                    {vuln.description && (
-                      <div className="pt-xxs">
-                        <p className="text-caption font-semibold text-foreground">Description</p>
-                        <p
-                          className={`whitespace-pre-wrap break-words text-caption text-muted-foreground${
-                            descExpanded ? '' : ' line-clamp-4'
-                          }`}
-                        >
-                          {vuln.description}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => toggleVulnDescription(vuln.id)}
-                          className="text-caption text-primary underline-offset-4 hover:underline"
-                        >
-                          {descExpanded ? 'Show less' : 'Show more'}
-                        </button>
-                      </div>
-                    )}
-                    {vuln.solution && (
-                      <div className="pt-xxs">
-                        <p className="text-caption font-semibold text-foreground">Remediation</p>
-                        <p className="whitespace-pre-wrap break-words text-caption text-muted-foreground">
-                          {vuln.solution}
-                        </p>
-                      </div>
-                    )}
-                    {/* References — CVE / advisory / exploit links. */}
-                    {references.length > 0 && (
-                      <div className="pt-xxs">
-                        <p className="text-caption font-semibold text-foreground">
-                          References ({references.length})
-                        </p>
-                        <ul className="space-y-0">
-                          {references.map((ref, i) => {
-                            const isUrl = /^https?:\/\//i.test(ref);
-                            // Only surface the native tooltip when the
-                            // value is likely to truncate — otherwise
-                            // every short ref shows a redundant hover.
-                            // 60 ≈ the column at its narrowest before
-                            // an ellipsis appears.
-                            const titleAttr = ref.length > 60 ? ref : undefined;
-                            return (
-                              <li key={`${vuln.id}-ref-${i}`} className="min-w-0">
-                                {isUrl ? (
-                                  <a
-                                    href={ref}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    title={titleAttr}
-                                    className="block truncate text-caption text-primary underline-offset-4 hover:underline"
-                                  >
-                                    {ref}
-                                  </a>
-                                ) : (
-                                  <span
-                                    title={titleAttr}
-                                    className="block truncate text-caption text-muted-foreground"
-                                  >
-                                    {ref}
-                                  </span>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    )}
-                    {vuln.last_seen && (
-                      <p className="pt-xxs text-caption text-muted-foreground">
-                        Last seen {new Date(vuln.last_seen).toLocaleString()}
-                      </p>
-                    )}
-                  </div>
-                  {/* Severity + exploitability badges, stacked, with
-                      promote/dismiss-to-finding actions (triage through the
-                      spine rather than annotating the raw vuln). */}
-                  <div className="flex shrink-0 flex-col items-end gap-xxs">
-                    <Badge variant={severityBadgeVariant(vuln.severity) as never}>
-                      {(vuln.severity ?? 'unknown').toUpperCase()}
-                    </Badge>
-                    {vuln.exploitable && (
-                      <Badge variant="destructive">Exploit available</Badge>
-                    )}
-                    {/* Pivot to every host with an exploitable finding ON THIS
-                        PORT (same-row; distinct from "port open AND exploit
-                        anywhere"). Only when the finding is exploitable + ported. */}
-                    {buildExploitOnPortQuery(vuln) && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost" size="icon"
-                            onClick={() => handleQueryExploitPort(vuln)}
-                            aria-label={`Find hosts with an exploit on port ${vuln.port_number}`}
-                          >
-                            <Crosshair className="size-3.5" aria-hidden />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          Find hosts with an exploit on this port (:{vuln.port_number})
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                    {/* Pivot to the host inventory filtered to every host with
-                        this same vulnerability (by CVE, else by finding title).
-                        Always available, independent of promotion state. */}
-                    {buildSameVulnQuery(vuln) && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost" size="icon"
-                            onClick={() => handleQueryHosts(vuln)}
-                            aria-label={`Find other hosts with ${title}`}
-                          >
-                            <ScanSearch className="size-3.5" aria-hidden />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          Find hosts with this vulnerability
-                          {vuln.cve_id ? ` (${vuln.cve_id})` : ''}
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                    {(() => {
-                      const promotedFindingId = vuln.finding_id ?? promotedVulns[vuln.id];
-                      return promotedFindingId ? (
-                        <Link to={`/findings/${promotedFindingId}`} aria-label={`View the finding for ${title}`}>
-                          <Badge variant="info" className="hover:underline">Promoted → finding</Badge>
-                        </Link>
-                      ) : (
-                        <div className="flex items-center gap-xxs">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost" size="icon"
-                                disabled={vulnActionId === vuln.id}
-                                onClick={() => openTriage(vuln.id, title, 'confirmed')}
-                                aria-label={`Promote ${title} to a finding`}
-                              >
-                                <Flag className="size-3.5" aria-hidden />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Promote to finding</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost" size="icon"
-                                disabled={vulnActionId === vuln.id}
-                                onClick={() => openTriage(vuln.id, title, 'false_positive')}
-                                aria-label={`Dismiss ${title} as a false positive`}
-                              >
-                                <Ban className="size-3.5" aria-hidden />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Dismiss (false positive)</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              );
-            })}
-            {sortedVulnerabilities.length > VULNERABILITY_PREVIEW_LIMIT && (
+            {displayedVulnerabilities.map((group) => (
+              <VulnerabilityGroup
+                key={group.key}
+                group={group}
+                severityBadgeVariant={severityBadgeVariant}
+                expandedVulnIds={expandedVulnIds}
+                onToggleDescription={toggleVulnDescription}
+                promotedVulns={promotedVulns}
+                vulnActionId={vulnActionId}
+                onTriage={openTriage}
+                onQueryHosts={handleQueryHosts}
+                onQueryExploitPort={handleQueryExploitPort}
+              />
+            ))}
+            {vulnGroups.length > VULNERABILITY_PREVIEW_LIMIT && (
               <div className="flex justify-end">
                 <Button
                   size="sm"
@@ -2211,8 +2027,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   onClick={() => setShowAllVulnerabilities((prev) => !prev)}
                 >
                   {showAllVulnerabilities
-                    ? 'Show fewer findings'
-                    : `Show all findings (${totalVulnerabilities})`}
+                    ? 'Show fewer issues'
+                    : `Show all issues (${vulnGroups.length})`}
                 </Button>
               </div>
             )}
