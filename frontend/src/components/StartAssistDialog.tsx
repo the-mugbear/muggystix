@@ -34,20 +34,28 @@ import {
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { startAssistSession, type StartAssistResponse } from '../services/api';
+import { startAssistSession, type AssistSessionRow, type StartAssistResponse } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import AssistSessionsPanel from './AssistSessionsPanel';
 
 export interface StartAssistDialogProps {
   open: boolean;
   onOpenChange: (next: boolean) => void;
   /** Optional callback fired AFTER the dialog closes with an active session result. */
   onSessionStarted?: (sessionId: number) => void;
+  /** The operator's own active sessions, shown above the start form so they
+   *  can see (and revoke) a key they already hold. Omit to hide the panel. */
+  mySessions?: AssistSessionRow[];
+  /** Re-fetch `mySessions` after this dialog starts or ends one. */
+  onSessionsChanged?: () => void | Promise<void>;
 }
 
 export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   open,
   onOpenChange,
   onSessionStarted,
+  mySessions = [],
+  onSessionsChanged,
 }) => {
   const [purpose, setPurpose] = useState('');
   const [canWrite, setCanWrite] = useState(false);
@@ -78,6 +86,9 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
         can_write_assigned: canWrite,
       });
       setResult(resp);
+      // The new key is live the moment this returns — reflect it wherever the
+      // operator's session count is shown.
+      await onSessionsChanged?.();
     } catch (err) {
       setError(formatApiError(err, 'Could not start assist session.'));
     } finally {
@@ -159,6 +170,10 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
         <DialogBody className="flex flex-col gap-md">
           {!result ? (
             <>
+              <AssistSessionsPanel
+                sessions={mySessions}
+                onChanged={() => onSessionsChanged?.() ?? Promise.resolve()}
+              />
               <Alert variant="info">
                 <AlertDescription>
                   Use AI assist when you want to ask interactive questions

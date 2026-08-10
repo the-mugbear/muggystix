@@ -31,6 +31,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/toolti
 import SeverityBar from '../components/ui/SeverityBar';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { cn } from '../utils/cn';
+import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 
 type ScopeView = 'all' | 'mine';
 const SCOPE_STORAGE_KEY = 'nm.operations.scopeView';
@@ -955,6 +956,13 @@ const Operations: React.FC = () => {
   // it's the project-level coordination hub; recon-start lives on
   // Scopes (it's scope-level), plan-generate on Test Plans.
   const [assistDialogOpen, setAssistDialogOpen] = useState(false);
+  // An active assist session is an outstanding agent key. Surface the count on
+  // the entry point so an operator doesn't mint a second one without knowing
+  // the first is still live — assist has no one-active-session constraint.
+  const {
+    sessions: myAssistSessions,
+    refresh: refreshAssistSessions,
+  } = useMyAssistSessions();
 
   return (
     <div className="p-md md:p-lg">
@@ -973,9 +981,19 @@ const Operations: React.FC = () => {
               size="sm"
               variant="outline"
               onClick={() => setAssistDialogOpen(true)}
+              aria-label={
+                myAssistSessions.length > 0
+                  ? `AI Assist — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
+                  : 'AI Assist'
+              }
             >
               <MessageCircleQuestion className="size-4" aria-hidden />
               AI Assist
+              {myAssistSessions.length > 0 && (
+                <Badge variant="warning" className="ml-xxs">
+                  {myAssistSessions.length}
+                </Badge>
+              )}
             </Button>
             <Button
               size="sm"
@@ -999,6 +1017,8 @@ const Operations: React.FC = () => {
       <StartAssistDialog
         open={assistDialogOpen}
         onOpenChange={setAssistDialogOpen}
+        mySessions={myAssistSessions}
+        onSessionsChanged={refreshAssistSessions}
       />
 
       {error && (
