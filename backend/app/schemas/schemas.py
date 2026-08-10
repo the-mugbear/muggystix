@@ -334,6 +334,47 @@ class HostAssignee(BaseModel):
     assigned_by_id: Optional[int] = None
 
 
+class NetworkAttributionOut(BaseModel):
+    """Who a host's netblock is registered to (RDAP / prefix lists).
+
+    Scope validation against the outside world rather than against the CIDRs
+    someone typed into the scope. Empty for internal estates and for blocks
+    never looked up — both normal, so the UI renders absence as "not looked
+    up", never as a negative finding.
+    """
+    id: int
+    cidr: str
+    org_name: Optional[str] = None
+    asn: Optional[int] = None
+    as_name: Optional[str] = None
+    country: Optional[str] = None
+    registry: Optional[str] = None
+    handle: Optional[str] = None
+    # Populated only once the cloud prefix-list importer lands; always null
+    # today. The `cloud:` DSL filter was withdrawn in 2.238.2 for the same
+    # reason — see host_query_dsl.
+    cloud_provider: Optional[str] = None
+    cloud_region: Optional[str] = None
+    source: Optional[str] = None
+    looked_up_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class HostCertOrgOut(BaseModel):
+    """Organization on a host's TLS certificate.
+
+    CA-validated before issuing, so stronger evidence of control than a
+    self-declared registry record. Absent on DV certs, which is a non-claim
+    rather than a negative.
+    """
+    org: str
+    issuer: Optional[str] = None
+    url: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Host(HostBase):
     id: int
     last_updated_scan_id: Optional[int] = None
@@ -402,6 +443,13 @@ class Host(HostBase):
     tags: List[HostTagInfo] = []
     assignees: List[HostAssignee] = []
     discoveries: List[HostDiscovery] = []
+    # Network provenance for the host-detail ProvenanceCard.  Declared here
+    # because response_model strips anything it doesn't name: the serializer
+    # emitted both from the day the card shipped, Pydantic dropped them, and
+    # the card — which renders null when both are empty — was therefore never
+    # visible to anyone.  Same failure as HostVulnerability.finding_id.
+    attributions: List[NetworkAttributionOut] = []
+    cert_orgs: List[HostCertOrgOut] = []
 
     model_config = ConfigDict(from_attributes=True)
 

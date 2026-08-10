@@ -244,6 +244,7 @@ def serialize_host_detail(
     notes: List[AnnotationModel],
     attributions: Optional[list] = None,
     vuln_coverage: Optional[dict] = None,
+    cert_web_interfaces: Optional[list] = None,
 ) -> dict:
     """Detail-endpoint payload — base + follow state + notes +
     ordered vulnerabilities."""
@@ -267,8 +268,14 @@ def serialize_host_detail(
     ]
     # Certificate Organization, most recent first — CA-validated attribution
     # that needs no external lookup.
+    #
+    # v2.240.1 — this used to read ``host.web_interfaces``, a relationship that
+    # does not exist: ``web_interfaces`` is declared on Scan, not on Host.  The
+    # getattr default swallowed it, so the list was unconditionally empty and
+    # no host ever reported a certificate org.  The caller now passes the rows
+    # in, queried by ``host_id``.
     certs = [
-        w for w in (getattr(host, "web_interfaces", None) or [])
+        w for w in (cert_web_interfaces or [])
         if getattr(w, "cert_subject_org", None)
     ]
     serialized["cert_orgs"] = [

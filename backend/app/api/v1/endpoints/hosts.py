@@ -1259,6 +1259,19 @@ def get_host_v2(
         vuln_coverage=issue_coverage_map(
             db, project.id, getattr(host, "vulnerabilities", []) or []
         ),
+        # Queried by host_id rather than through a relationship — Host has no
+        # `web_interfaces` relationship (it lives on Scan), which is why the
+        # certificate-org half of the ProvenanceCard was always empty.
+        cert_web_interfaces=(
+            db.query(models.WebInterface)
+            .filter(
+                models.WebInterface.host_id == host_id,
+                models.WebInterface.cert_subject_org.isnot(None),
+            )
+            .order_by(models.WebInterface.last_seen.desc().nullslast())
+            .limit(5)
+            .all()
+        ),
     )
     # v2.12.0: per-host count of web interfaces (httpx / eyewitness /
     # nikto rows).  HostDetail.tsx uses this to gate the "Web
