@@ -47,6 +47,14 @@ export interface AssistSessionRow {
   ended_at: string | null;
   last_activity_at: string | null;
   environment_probed: boolean;
+  /** When the session's agent key stops working — the field that answers
+   *  "end it now, or let it lapse?". This is the KEY's expiry, not the
+   *  session's: the session row has no lifetime of its own and can outlive
+   *  its key. Null means no active key remains, i.e. the session is dead in
+   *  practice even though `status` still reads 'active'.
+   *  Never derive this from started_at + 4h — AGENT_KEY_TTL_HOURS and the
+   *  per-start ttl_hours both move it. */
+  key_expires_at: string | null;
   // Audit: which sessions carried write authority, and how narrowly.
   capabilities: string[];
   capability_constraint: string | null;

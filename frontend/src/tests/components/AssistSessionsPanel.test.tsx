@@ -28,6 +28,7 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   ended_at: null,
   last_activity_at: new Date(Date.now() - 5 * 60_000).toISOString(),
   environment_probed: true,
+  key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
   capabilities: [],
   capability_constraint: null,
   ...over,
@@ -113,5 +114,23 @@ describe('AssistSessionsPanel', () => {
     expect(screen.getByText(/2 active assist sessions/i)).toBeInTheDocument();
     expect(screen.getByText('#12')).toBeInTheDocument();
     expect(screen.getByText('#13')).toBeInTheDocument();
+  });
+
+  it('shows how long the key has left, since that decides end-or-lapse', () => {
+    renderPanel([session({ key_expires_at: new Date(Date.now() + 3 * 3_600_000 + 20 * 60_000).toISOString() })]);
+    expect(screen.getByText(/expires in 3h 20m/)).toBeInTheDocument();
+  });
+
+  it('treats a session with no live key as dead, not as expiring soon', () => {
+    // status still reads 'active' here — the key is what actually grants
+    // access, so "No live key" must not be rendered as "expires in 0 min".
+    renderPanel([session({ key_expires_at: null })]);
+    expect(screen.getByText('No live key')).toBeInTheDocument();
+    expect(screen.queryByText(/expires in/)).toBeNull();
+  });
+
+  it('marks an already-expired key rather than showing negative time', () => {
+    renderPanel([session({ key_expires_at: new Date(Date.now() - 60_000).toISOString() })]);
+    expect(screen.getByText('key expired')).toBeInTheDocument();
   });
 });

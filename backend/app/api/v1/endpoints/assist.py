@@ -28,6 +28,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_project, require_project_role
@@ -134,6 +135,17 @@ class AssistSessionRow(BaseModel):
     ended_at: Optional[datetime]
     last_activity_at: Optional[datetime]
     environment_probed: bool
+    # When the session's agent key stops working — the practical question an
+    # operator has ("end it now, or let it lapse?").  Deliberately the KEY's
+    # expiry rather than a session field: the session row has no lifetime of
+    # its own, and it can outlive its key.  Null means no active key remains,
+    # i.e. the session is already dead in practice even though `status` still
+    # reads 'active' — that state is worth showing, not hiding.
+    #
+    # Not derivable client-side from started_at + a hardcoded 4 hours:
+    # AGENT_KEY_TTL_HOURS can override the default and per-session ttl_hours
+    # is a start parameter, so a computed expiry would quietly be wrong.
+    key_expires_at: Optional[datetime] = None
     # Audit: which sessions carried write authority, and how narrowly.
     capabilities: List[str] = []
     capability_constraint: Optional[str] = None
@@ -374,6 +386,26 @@ def list_assist_sessions(
         .limit(100)
         .all()
     )
+
+    # Key expiry per session, in one grouped query rather than per row.  MAX
+    # because a rotated session can hold more than one active key and the
+    # operator cares about when access actually stops.
+    expiry_by_session = {}
+    session_ids = [s.id for s, _ in rows]
+    if session_ids:
+        expiry_by_session = {
+            sid: exp
+            for sid, exp in (
+                db.query(APIKey.assist_session_id, func.max(APIKey.expires_at))
+                .filter(
+                    APIKey.assist_session_id.in_(session_ids),
+                    APIKey.is_active.is_(True),
+                )
+                .group_by(APIKey.assist_session_id)
+                .all()
+            )
+        }
+
     return [
         AssistSessionRow(
             id=s.id,
@@ -386,6 +418,7 @@ def list_assist_sessions(
             ended_at=s.ended_at,
             last_activity_at=s.last_activity_at,
             environment_probed=s.environment_probed_at is not None,
+            key_expires_at=expiry_by_session.get(s.id),
             capabilities=(s.agent_session.capabilities or []) if s.agent_session else [],
             capability_constraint=(
                 s.agent_session.capability_constraint if s.agent_session else None

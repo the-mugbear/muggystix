@@ -44,6 +44,25 @@ const formatAge = (iso: string | null): string | null => {
   return days === 1 ? '1 day ago' : `${days} days ago`;
 };
 
+/** Time remaining on the session's key, as the operator's decision needs it.
+ *  Returns null when there is no live key — the caller renders that as a
+ *  distinct dead state rather than as "expires in 0 minutes". */
+const formatRemaining = (iso: string | null): { label: string; urgent: boolean } | null => {
+  if (!iso) return null;
+  const until = new Date(iso).getTime();
+  if (Number.isNaN(until)) return null;
+  const mins = Math.floor((until - Date.now()) / 60_000);
+  if (mins <= 0) return { label: 'key expired', urgent: true };
+  if (mins < 60) return { label: `expires in ${mins} min`, urgent: true };
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return {
+    label: `expires in ${hours}h${rem ? ` ${rem}m` : ''}`,
+    // Under an hour is the point where starting fresh beats relying on it.
+    urgent: false,
+  };
+};
+
 export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
   sessions,
   onChanged,
@@ -100,6 +119,7 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
           const started = formatAge(s.started_at);
           const active = formatAge(s.last_activity_at);
           const canWrite = (s.capabilities?.length ?? 0) > 0;
+          const remaining = formatRemaining(s.key_expires_at);
           return (
             <li
               key={s.id}
@@ -130,6 +150,16 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                       key was minted and the prompt never pasted. */}
                   {!s.environment_probed && (
                     <Badge variant="outline">Not yet connected</Badge>
+                  )}
+                  {/* The field that decides "end it or let it lapse". A null
+                      expiry means no live key remains, which is a different
+                      state from "expires soon" and must not read as one. */}
+                  {remaining ? (
+                    <Badge variant={remaining.urgent ? 'warning-outline' : 'outline'}>
+                      {remaining.label}
+                    </Badge>
+                  ) : (
+                    <Badge variant="muted">No live key</Badge>
                   )}
                 </div>
                 {s.purpose && (
