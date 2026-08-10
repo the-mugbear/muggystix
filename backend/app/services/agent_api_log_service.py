@@ -369,26 +369,52 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
         # audit row's body_summary is synthesised from the headers
         # instead so the operator-visible signal (content_type +
         # size) is preserved.
-        body_bytes = b""
+        # v2.240.2 (review A2) — capture is a BOUNDED TEE, never a pre-read.
+        #
+        # The previous shape decided whether to read from the *declared*
+        # Content-Length, which trusts a header an attacker controls.  An
+        # absent header (chunked transfer-encoding) and a malformed one both
+        # produced ``content_length = None``, which fell through to the else
+        # branch and ``await request.body()`` — materialising the whole
+        # payload.  That happens in middleware, i.e. BEFORE ``call_next`` and
+        # therefore before any agent authentication, so an UNAUTHENTICATED
+        # caller could aim a 2 GB chunked body (nginx's ceiling) at any
+        # /agent/* mutation and exhaust the container across four workers.
+        # The two branches that correctly skipped were the only two the tests
+        # covered.
+        #
+        # Now nothing is read here at all.  We wrap the ASGI receive channel
+        # and record at most MAX_BODY_BYTES as the *application* consumes the
+        # stream, so memory is bounded by the cap regardless of what the
+        # headers claim, what the encoding is, or whether Content-Length lies.
+        # If the request is rejected before the body is read (the auth path),
+        # nothing is captured — which is the correct audit record anyway.
+        captured = bytearray()
+        capture_state = {"truncated": False}
         body_captured = False
         body_skip_reason: Optional[str] = None
         if is_agent_path and request.method in _BODY_CAPTURE_METHODS:
             ct_header = (request.headers.get("content-type") or "").lower()
-            cl_header = request.headers.get("content-length")
-            try:
-                content_length = int(cl_header) if cl_header is not None else None
-            except (TypeError, ValueError):
-                content_length = None
             if ct_header.startswith("multipart/form-data"):
+                # File uploads are never summarised; skipping the tee keeps
+                # the streaming-upload path allocation-free.
                 body_skip_reason = "multipart"
-            elif content_length is not None and content_length > MAX_BODY_BYTES:
-                body_skip_reason = "oversize"
             else:
-                body_bytes = await request.body()
+                original_receive = request.receive
+
+                async def _tee() -> dict:
+                    message = await original_receive()
+                    if message.get("type") == "http.request":
+                        chunk = message.get("body", b"") or b""
+                        room = MAX_BODY_BYTES - len(captured)
+                        if room > 0:
+                            captured.extend(chunk[:room])
+                        if len(chunk) > max(room, 0):
+                            capture_state["truncated"] = True
+                    return message
+
+                request._receive = _tee  # type: ignore[attr-defined]
                 body_captured = True
-                async def _receive() -> dict:
-                    return {"type": "http.request", "body": body_bytes, "more_body": False}
-                request._receive = _receive  # type: ignore[attr-defined]
         request.state._agent_audit_body_captured = body_captured  # type: ignore[attr-defined]
         request.state._agent_audit_body_skip_reason = body_skip_reason  # type: ignore[attr-defined]
 
@@ -404,6 +430,15 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
 
         if not is_agent_path:
             return response
+
+        # Resolved only now — the tee fills as the application reads.
+        body_bytes = bytes(captured)
+        if capture_state["truncated"] and body_skip_reason is None:
+            # The body exceeded the cap in flight. Report it the same way a
+            # header-declared oversize was reported, so the audit row keeps a
+            # consistent shape whether the size was declared or discovered.
+            body_skip_reason = "oversize"
+            request.state._agent_audit_body_skip_reason = body_skip_reason  # type: ignore[attr-defined]
 
         # v2.91.4 (third code review #5) — defer the synchronous DB
         # write off the response path via Starlette's BackgroundTask.

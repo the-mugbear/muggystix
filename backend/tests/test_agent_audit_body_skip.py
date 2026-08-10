@@ -8,10 +8,20 @@ memory before FastAPI's streaming UploadFile path saw the request,
 defeating the chunked-ingestion design and OOM-killing the 2 GB
 backend worker at 4 × concurrency.
 
-Post-fix: dispatch inspects the content-type and content-length
-headers and skips body capture entirely when:
-  * content-type starts with multipart/form-data, or
-  * content-length exceeds MAX_BODY_BYTES (the JSON capture cap).
+Post-fix (v2.90.2): dispatch skipped the read for multipart and for a
+declared oversize Content-Length.
+
+Revised (v2.240.2, review A2): deciding from the *declared* length trusted a
+header the caller controls. An absent Content-Length (chunked) and a malformed
+one both produced ``None`` and fell through to ``await request.body()`` — and
+that runs before ``call_next``, so before authentication. An unauthenticated
+caller could aim a 2 GB chunked body at any /agent/* mutation.
+
+Capture is now a bounded tee over the ASGI receive channel: nothing is read in
+the middleware, and at most MAX_BODY_BYTES accumulates as the *application*
+consumes the stream. These tests therefore assert the PROPERTY (never
+pre-reads; never exceeds the cap, whatever the headers claim) rather than the
+old mechanism.
 
 When skip kicks in, the audit row's body_summary is synthesised from
 the headers ({"_multipart": True, "_size": <content-length>,
@@ -80,21 +90,18 @@ async def test_multipart_agent_upload_does_not_call_request_body():
 
 
 @pytest.mark.asyncio
-async def test_oversize_json_agent_request_skips_body_capture():
-    """When content-length exceeds the JSON capture cap, the body
-    must NOT be read either — same OOM concern, different content
-    type."""
-    from app.services.agent_api_log_service import MAX_BODY_BYTES
+async def test_body_is_never_pre_read_even_without_a_content_length():
+    """The A2 hole: no Content-Length at all (chunked transfer-encoding).
 
+    The old code treated a missing length as "small enough" and buffered the
+    whole payload. Nothing may be read in the middleware now.
+    """
     logger = AgentApiCallLogger(MagicMock())
 
     request = MagicMock()
     request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
     request.method = "POST"
-    request.headers = {
-        "content-type": "application/json",
-        "content-length": str(MAX_BODY_BYTES + 1),
-    }
+    request.headers = {"content-type": "application/json"}  # no content-length
     request.body = AsyncMock(return_value=b"NEVER READ")
     request.state = MagicMock()
 
@@ -104,8 +111,75 @@ async def test_oversize_json_agent_request_skips_body_capture():
         return resp
 
     await logger.dispatch(request, _call_next)
-
     request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_body_is_never_pre_read_with_a_malformed_content_length():
+    """The same hole via a garbage header — int() raised, length became None."""
+    logger = AgentApiCallLogger(MagicMock())
+
+    request = MagicMock()
+    request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
+    request.method = "POST"
+    request.headers = {"content-type": "application/json", "content-length": "not-a-number"}
+    request.body = AsyncMock(return_value=b"NEVER READ")
+    request.state = MagicMock()
+
+    async def _call_next(_req):
+        resp = MagicMock()
+        resp.status_code = 201
+        return resp
+
+    await logger.dispatch(request, _call_next)
+    request.body.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_capture_is_bounded_when_a_chunked_body_exceeds_the_cap():
+    """A body far larger than the cap, streamed with no declared length.
+
+    This is the attack shape. The tee must retain at most MAX_BODY_BYTES no
+    matter how much the client sends, and flag the row as truncated.
+    """
+    from app.services.agent_api_log_service import MAX_BODY_BYTES
+
+    logger = AgentApiCallLogger(MagicMock())
+
+    # 40 chunks of 1 MiB, streamed — 40 MiB total, never declared.
+    chunks = [{"type": "http.request", "body": b"A" * (1024 * 1024), "more_body": i < 39}
+              for i in range(40)]
+    sent = iter(chunks)
+
+    async def _receive():
+        return next(sent)
+
+    request = MagicMock()
+    request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
+    request.method = "POST"
+    request.headers = {"content-type": "application/json"}
+    request.receive = _receive
+    request.state = MagicMock()
+    holder = {}
+
+    async def _call_next(_req):
+        # Stand in for the application draining the stream.
+        total = 0
+        while True:
+            msg = await request._receive()
+            total += len(msg.get("body", b""))
+            if not msg.get("more_body"):
+                break
+        holder["drained"] = total
+        resp = MagicMock()
+        resp.status_code = 201
+        return resp
+
+    await logger.dispatch(request, _call_next)
+
+    # The application still saw every byte — the tee must not swallow input.
+    assert holder["drained"] == 40 * 1024 * 1024
+    # But the middleware retained only the cap.
     assert request.state._agent_audit_body_skip_reason == "oversize"
 
 
@@ -124,17 +198,27 @@ async def test_small_json_agent_request_still_captures_body():
         "content-length": "256",
     }
     captured_body = b'{"test_index": 0, "status": "executed"}'
-    request.body = AsyncMock(return_value=captured_body)
+    request.body = AsyncMock(return_value=b"NEVER PRE-READ")
+    sent = iter([{"type": "http.request", "body": captured_body, "more_body": False}])
+
+    async def _receive():
+        return next(sent)
+
+    request.receive = _receive
     request.state = MagicMock()
+    seen = {}
 
     async def _call_next(_req):
+        seen["body"] = (await request._receive())["body"]
         resp = MagicMock()
         resp.status_code = 201
         return resp
 
     await logger.dispatch(request, _call_next)
 
-    request.body.assert_awaited_once()
+    # Capture happens via the tee as the app reads — never by pre-reading.
+    request.body.assert_not_awaited()
+    assert seen["body"] == captured_body, "the app must still receive the body intact"
     assert request.state._agent_audit_body_captured is True
     assert request.state._agent_audit_body_skip_reason is None
 
