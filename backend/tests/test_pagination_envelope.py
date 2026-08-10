@@ -72,14 +72,14 @@ def test_out_of_scope_envelope_has_more_with_overflow(
     client, db_session, test_project,
 ):
     """When total > skip + len(items), ``has_more`` is True."""
-    scan = models.Scan(project_id=test_project.id, filename="fix.json", scan_type="nmap")
-    db_session.add(scan)
-    db_session.flush()
+    # v2.239.0 — seeds real hosts with no subnet mapping.  This used to
+    # insert ``OutOfScopeHost`` rows directly, which is why the endpoint
+    # reading a table nothing writes still passed its tests.
     for i in range(5):
-        db_session.add(models.OutOfScopeHost(
-            project_id=test_project.id, scan_id=scan.id,
+        db_session.add(models.Host(
+            project_id=test_project.id,
             ip_address=f"10.10.0.{i+1}",
-            hostname=f"h{i}.example", reason="overflow fixture",
+            hostname=f"h{i}.example", state="up",
         ))
     db_session.flush()
 

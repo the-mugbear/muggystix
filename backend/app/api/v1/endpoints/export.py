@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
 from app.db.session import get_db
 from app.services.csv_utils import safe_csv_row
+from app.services import scope_coverage
 from app.services.export_service import ExportService
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
@@ -201,15 +202,10 @@ def export_out_of_scope_hosts(
     Default format is ``txt`` — one IP per line, suitable for feeding
     into other tools.
     """
-    rows = db.execute(sql_text("""
-        SELECT h.ip_address, h.hostname, h.state
-        FROM hosts_v2 h
-        WHERE h.project_id = :project_id
-          AND NOT EXISTS (
-            SELECT 1 FROM host_subnet_mappings hsm WHERE hsm.host_id = h.id
-        )
-        ORDER BY h.ip_address
-    """), {"project_id": project.id}).fetchall()
+    # v2.239.0 — shares ``scope_coverage`` with GET /scans/out-of-scope.  That
+    # endpoint used to read the abandoned ``out_of_scope_hosts`` table while
+    # this one computed the answer correctly, so the two disagreed completely.
+    rows, _ = scope_coverage.out_of_scope_hosts(db, project.id)
 
     if format_type == "txt":
         body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")

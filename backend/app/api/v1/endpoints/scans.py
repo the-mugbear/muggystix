@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     DNSRecord,
 )
 from app.services.command_explanation_service import CommandExplanationService
+from app.services import scope_coverage
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_auth import UserRole, User
@@ -485,7 +486,11 @@ def get_scans_summary(
     )
 
 
-@router.get("/out-of-scope", response_model=Paginated[OutOfScopeHost])
+@router.get(
+    "/out-of-scope",
+    response_model=Paginated[OutOfScopeHost],
+    summary="List hosts outside every scope CIDR",
+)
 def get_all_out_of_scope_hosts(
     # v2.86.8 — pagination caps added.  Pre-fix this returned every
     # out-of-scope host across every scan in the project on a single
@@ -497,7 +502,7 @@ def get_all_out_of_scope_hosts(
         None,
         max_length=200,
         description=(
-            "Case-insensitive substring match on IP / hostname / reason. "
+            "Case-insensitive substring match on IP / hostname. "
             "Pushed server-side so a noisy out-of-scope list is filterable "
             "without loading every row (v2.86.8)."
         ),
@@ -505,27 +510,30 @@ def get_all_out_of_scope_hosts(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """Get all out-of-scope hosts across all scans, paginated."""
-    q = db.query(models.OutOfScopeHost).filter(
-        models.OutOfScopeHost.project_id == project.id
-    )
-    if search:
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        like = f"%{escaped}%"
-        q = q.filter(
-            or_(
-                models.OutOfScopeHost.ip_address.ilike(like),
-                models.OutOfScopeHost.hostname.ilike(like),
-                models.OutOfScopeHost.reason.ilike(like),
-            )
-        )
+    """Hosts whose address falls outside every scope CIDR on this project.
 
-    # v2.86.13 — envelope shape.  Total reflects the filtered query so
-    # an active ``search`` narrows both the rows AND the total.
-    total = q.with_entities(func.count(models.OutOfScopeHost.id)).scalar() or 0
-    hosts = q.order_by(models.OutOfScopeHost.id.asc()).offset(skip).limit(limit).all()
+    v2.239.0 — this used to read the ``out_of_scope_hosts`` table, which host
+    deduplication stopped writing.  It therefore reported "nothing is out of
+    scope" for every project, forever.  The property is now derived the same
+    way ``GET /export/out-of-scope`` has always derived it, through the shared
+    helper, so the JSON and export views agree by construction.
+    """
+    hosts, total = scope_coverage.out_of_scope_hosts(
+        db, project.id, search=search, skip=skip, limit=limit,
+    )
     return Paginated[OutOfScopeHost].build(
-        items=hosts, total=total, skip=skip, limit=limit,
+        items=[
+            OutOfScopeHost(
+                host_id=h.id,
+                ip_address=h.ip_address,
+                hostname=h.hostname,
+                state=h.state,
+                last_seen=h.last_seen,
+                reason=scope_coverage.OUT_OF_SCOPE_REASON,
+            )
+            for h in hosts
+        ],
+        total=total, skip=skip, limit=limit,
     )
 
 

@@ -830,19 +830,23 @@ class DNSRecord(DNSRecordBase):
     
     model_config = ConfigDict(from_attributes=True)
 
-class OutOfScopeHostBase(BaseModel):
+class OutOfScopeHost(BaseModel):
+    """A host that falls outside every scope CIDR on the project.
+
+    Derived from subnet correlation, not stored. The previous shape mirrored
+    the abandoned ``out_of_scope_hosts`` table and carried ``id``/``scan_id``/
+    ``created_at``/``ports``/``tool_source`` — per-scan-record fields that have
+    no meaning for a derived row, and which were never populated because that
+    table has had no writer since host deduplication landed. ``host_id`` is the
+    useful identifier: it pivots straight to ``GET /hosts/{host_id}``.
+    """
+
+    host_id: int
     ip_address: str
     hostname: Optional[str] = None
-    ports: Optional[dict] = None
-    tool_source: Optional[str] = None
-    reason: Optional[str] = None
-
-class OutOfScopeHost(OutOfScopeHostBase):
-    id: int
-    scan_id: int
-    created_at: datetime
-    
-    model_config = ConfigDict(from_attributes=True)
+    state: Optional[str] = None
+    last_seen: Optional[datetime] = None
+    reason: str
 
 class ParseErrorBase(BaseModel):
     filename: str
