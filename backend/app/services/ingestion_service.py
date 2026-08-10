@@ -1239,6 +1239,12 @@ class IngestionService:
             if _cd.looks_like_dnsx(sample, filename):
                 from app.parsers.dnsx_parser import DnsxParser
                 attempts.append(("dnsx_json", DnsxParser, "dnsx DNS resolution JSON"))
+            # RDAP network registration — provenance for a netblock (who it
+            # is registered to, which ASN/org/country). Egress happens
+            # operator-side via scripts/rdap-lookup.py; we only ingest.
+            if _cd.looks_like_rdap(sample, filename):
+                from app.parsers.rdap_parser import RdapParser
+                attempts.append(("rdap_json", RdapParser, "RDAP network registration (JSON/NDJSON)"))
             if _cd.looks_like_naabu(sample, filename):
                 attempts.append(("naabu_json", NaabuParser, "Naabu JSON output"))
             if _cd.looks_like_netexec(sample, filename):

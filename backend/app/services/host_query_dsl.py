@@ -495,6 +495,19 @@ _FIELD_SPECS: List[FieldSpec] = [
     # scan below the 3-char index threshold.
     FieldSpec("tech", lambda c, v: P.tech_predicate(c.db, v), value_source="tech", trgm=True,
               description="Detected web technology — httpx, whatweb, eyewitness."),
+    # Network attribution (ingested from RDAP). Scope validation against the
+    # outside world rather than against the CIDRs someone typed into the scope.
+    FieldSpec("org", lambda c, v: P.attribution_org_predicate(c.db, v),
+              aliases=["owner"], value_source="free", trgm=True,
+              description="Registered owner of the host's netblock (RDAP). "
+                          "`NOT org:\"Acme\"` finds hosts not registered to the client."),
+    FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(c.db, v),
+              value_source="free",
+              description="Autonomous system number the host's netblock belongs to."),
+    FieldSpec("cloud", lambda c, v: P.attribution_cloud_predicate(c.db, v),
+              value_source="free",
+              description="Cloud provider hosting the netblock (aws/azure/gcp/…); "
+                          "`cloud:none` = attributed but not in a known cloud range."),
     FieldSpec("tag", lambda c, v: P.tag_predicate_by_name(c.db, v, c.project_id),
               value_source="tag",
               description="Project host tag — applied by analysts (Hosts page)."),
@@ -654,6 +667,8 @@ EXAMPLES: List[dict] = [
     {"label": "Untested criticals", "q": "has:critical AND NOT has:tested"},
     # The /operations "not yet in any plan" coverage gap, as a query.
     {"label": "Not in any test plan", "q": "NOT has:planned"},
+    # Provenance: what did we touch that isn't registered to the client?
+    {"label": "Not registered to the client", "q": 'NOT org:"Acme Corp"'},
     {"label": "Log4Shell-exposed web", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
     {"label": "Critical and exploitable", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},

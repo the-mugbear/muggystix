@@ -667,3 +667,88 @@ def scan_predicate(db: Session, scan_ids: Sequence[int], first_seen_only: bool =
         )
         history_query = history_query.filter(~earlier_exists)
     return models.Host.id.in_(history_query)
+
+
+def attribution_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Hosts whose registered netblock owner matches any value (substring).
+
+    The scope question a pentest turns on: today's out-of-scope check only
+    compares hosts against CIDRs typed into the scope, which validates a
+    spreadsheet against itself. ``NOT org:"Acme"`` asks the far more useful
+    question — what did we touch that isn't registered to the client?
+    """
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    if not values:
+        return false()
+    clauses = [
+        NetworkAttribution.org_name.ilike(f"%{escape_like(v)}%", escape="\\")
+        for v in values if v
+    ]
+    if not clauses:
+        return false()
+    sub = (
+        db.query(HostNetworkAttribution.host_id)
+        .join(
+            NetworkAttribution,
+            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
+        )
+        .filter(or_(*clauses))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def attribution_asn_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Hosts in any of the given autonomous systems. ``AS`` prefix optional."""
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    asns = []
+    for v in values or []:
+        text = str(v).strip().upper().lstrip("AS")
+        if text.isdigit():
+            asns.append(int(text))
+    if not asns:
+        return false()
+    sub = (
+        db.query(HostNetworkAttribution.host_id)
+        .join(
+            NetworkAttribution,
+            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
+        )
+        .filter(NetworkAttribution.asn.in_(asns))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def attribution_cloud_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Hosts hosted by a given cloud provider (``aws``/``azure``/``gcp``/…).
+
+    ``cloud:none`` selects hosts with attribution but NO cloud provider — i.e.
+    on-premise or a provider we don't have prefixes for — which is what an
+    operator wants when asking "what isn't in the client's cloud tenancy?".
+    """
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    if not values:
+        return false()
+    wants_none = any(str(v).strip().lower() in ("none", "null") for v in values)
+    named = [str(v).strip().lower() for v in values
+             if str(v).strip().lower() not in ("none", "null")]
+
+    base = (
+        db.query(HostNetworkAttribution.host_id)
+        .join(
+            NetworkAttribution,
+            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
+        )
+    )
+    clauses = []
+    if named:
+        clauses.append(func.lower(NetworkAttribution.cloud_provider).in_(named))
+    if wants_none:
+        clauses.append(NetworkAttribution.cloud_provider.is_(None))
+    if not clauses:
+        return false()
+    return models.Host.id.in_(base.filter(or_(*clauses)).distinct())

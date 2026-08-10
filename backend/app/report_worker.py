@@ -33,6 +33,7 @@ import app.db.models_auth  # noqa: F401,E402
 import app.db.models_project  # noqa: F401,E402
 import app.db.models_agent  # noqa: F401,E402
 import app.db.models_findings  # noqa: F401,E402
+import app.db.models_attribution  # noqa: F401,E402
 import app.db.models_vulnerability  # noqa: F401,E402
 import app.db.models_confidence  # noqa: F401,E402
 import app.db.models_llm  # noqa: F401,E402

@@ -614,3 +614,28 @@ def looks_like_dnsx(sample: bytes, filename: str) -> bool:
     if "host" not in rec:
         return False
     return _has_any(rec, ("a", "aaaa", "ptr", "cname", "mx", "ns", "txt", "soa"))
+
+
+def looks_like_rdap(sample: bytes, filename: str) -> bool:
+    """Detect RDAP network-registration output (NDJSON or a single object).
+
+    Produced by ``scripts/rdap-lookup.py``, which wraps each response as
+    ``{"query": ..., "queried_at": ..., "rdap": {...}}``. A bare RDAP object
+    saved by hand is accepted too.
+
+    Keyed on fields unique to an RDAP *IP network* object — ``startAddress`` /
+    ``endAddress`` / ``cidr0_cidrs``, or an ``objectClassName`` of ``ip
+    network``. None of the other JSON tools this app ingests carry those, so
+    there's no cross-matching risk with httpx/dnsx/amass/naabu.
+    """
+    if "rdap" in filename.lower():
+        return True
+    _, rec = _peek_json_shape(sample)
+    if rec is None:
+        return False
+    inner = rec.get("rdap") if isinstance(rec.get("rdap"), dict) else rec
+    if not isinstance(inner, dict):
+        return False
+    if str(inner.get("objectClassName", "")).lower() == "ip network":
+        return True
+    return _has_any(inner, ("startAddress", "endAddress", "cidr0_cidrs"))

@@ -47,6 +47,7 @@ TEST_USER_PW_HASH = get_password_hash(TEST_USER_PASSWORD)
 # table" errors because the declarative Base never saw them.
 from app.db import (  # noqa: F401  (side-effect imports)
     models_agent,
+    models_attribution,
     models_auth,
     models_findings,
     models_integrations,

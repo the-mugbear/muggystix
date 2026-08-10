@@ -20,6 +20,7 @@ from app.db import models  # noqa: F401 — registers the core tables on Base
 # before we walk it (mirrors conftest's registration list, plus confidence).
 from app.db import (  # noqa: F401
     models_agent,
+    models_attribution,
     models_auth,
     models_confidence,
     models_findings,
@@ -117,6 +118,8 @@ EXPECTED_ONDELETE = {
     ('host_follows', 'assigned_by_id'): 'SET NULL',
     ('host_follows', 'host_id'): 'CASCADE',
     ('host_follows', 'user_id'): 'CASCADE',
+    ('host_network_attributions', 'attribution_id'): 'CASCADE',
+    ('host_network_attributions', 'host_id'): 'CASCADE',
     ('host_query_history', 'project_id'): 'CASCADE',
     ('host_query_history', 'user_id'): 'CASCADE',
     ('host_sanity_checks', 'entry_id'): 'CASCADE',
@@ -148,6 +151,7 @@ EXPECTED_ONDELETE = {
     ('llm_providers', 'user_id'): 'CASCADE',
     ('netexec_results', 'host_id'): 'CASCADE',
     ('netexec_results', 'scan_id'): 'CASCADE',
+    ('network_attributions', 'project_id'): 'CASCADE',
     ('note_attachments', 'annotation_id'): 'CASCADE',
     ('note_attachments', 'project_id'): 'CASCADE',
     ('note_attachments', 'uploaded_by_id'): 'SET NULL',
