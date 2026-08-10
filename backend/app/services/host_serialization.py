@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from app.db import models
+from app.services.vuln_identity import issue_key_for
 from app.db.models import HostFollow, Annotation as AnnotationModel
 from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.schemas.schemas import HostVulnerabilitySummary, Annotation, HostFollowInfo
@@ -284,6 +285,12 @@ def serialize_vulnerability(vuln: Vulnerability) -> dict:
         "cvss_score": vuln.cvss_score,
         "cvss_vector": vuln.cvss_vector,
         "cve_id": vuln.cve_id,
+        # Scanner-agnostic identity of the ISSUE (services.vuln_identity).
+        # Serialized rather than recomputed client-side so the grouping the
+        # user sees in the inspector is provably the same key the Finding
+        # spine dedups on — two implementations of "is this the same issue?"
+        # would drift, and the UI would claim a merge the database didn't make.
+        "issue_key": issue_key_for(vuln),
         "scan_id": vuln.scan_id,
         "port_id": vuln.port_id,
         "port_number": port_number,

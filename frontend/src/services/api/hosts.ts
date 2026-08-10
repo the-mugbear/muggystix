@@ -44,6 +44,11 @@ export interface HostVulnerability {
   cvss_score: number | null;
   cvss_vector: string | null;
   cve_id: string | null;
+  /** Scanner-agnostic identity of the ISSUE, computed by the backend
+   *  (services/vuln_identity.py) and used both for the inspector's grouping
+   *  and for Finding dedup — one key, one implementation, so the grouping
+   *  shown can't diverge from the dedup performed. */
+  issue_key?: string | null;
   scan_id: number | null;
   port_id: number | null;
   port_number: number | null;

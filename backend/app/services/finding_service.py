@@ -18,6 +18,7 @@ from app.db.models_findings import (
     FindingSource, FindingHostStatus,
 )
 from app.services.status_history_service import record_status_transition
+from app.services.vuln_identity import issue_key_for
 
 
 _VALID_SEVERITIES = {s.value for s in FindingSeverity}
@@ -149,7 +150,16 @@ class FindingService:
     # Create / promote
     # ------------------------------------------------------------------
     def _attach_hosts(self, finding: Finding, host_ids: Sequence[int]) -> None:
-        seen = {fh.host_id for fh in finding.hosts}
+        # Read the already-attached set from the DB rather than the ORM
+        # relationship: on paths that attach to an EXISTING finding (a second
+        # scanner corroborating an issue), `finding.hosts` can be a stale
+        # selectin load from before this transaction's flushes, and an empty
+        # `seen` then re-inserts and trips uq_finding_host.
+        seen = {
+            r[0] for r in self.db.query(FindingHost.host_id)
+            .filter(FindingHost.finding_id == finding.id)
+            .all()
+        } if finding.id is not None else set()
         requested = [hid for hid in host_ids if hid is not None and hid not in seen]
         if not requested:
             return
@@ -273,6 +283,11 @@ class FindingService:
         validate_severity(sev)
         _validate_status(status)
 
+        # Identity of the ISSUE, not of the scanner row — see vuln_identity.
+        # This is what makes the Nessus row and the GreenBone row for one
+        # problem converge on a single finding.
+        key = issue_key_for(vuln)
+
         existing = (
             self.db.query(Finding)
             .filter(
@@ -281,12 +296,32 @@ class FindingService:
             )
             .first()
         )
+        if existing is None and key and not key.startswith("row:"):
+            # A different scanner already promoted this same issue. Attach to
+            # that finding as corroborating evidence instead of forking a
+            # second record — which is what produced two entries in the client
+            # report for one problem.
+            existing = (
+                self.db.query(Finding)
+                .filter(
+                    Finding.project_id == project_id,
+                    Finding.source == FindingSource.SCANNER.value,
+                    Finding.dedup_key == key,
+                )
+                .first()
+            )
         if existing is not None:
+            # Record this scanner's row as evidence even when the finding
+            # already existed; corroboration is the thing worth keeping.
+            self.attach_vulnerability(finding=existing, vuln=vuln)
+            # A second scanner may see the issue on hosts the first one missed.
+            self._attach_hosts(existing, self._issue_host_ids(vuln, project_id, key))
             # Already promoted — if the caller is dismissing/redispositioning,
             # honour the new status rather than silently returning stale.
             if status != existing.status:
                 self.set_status(finding=existing, status=status, actor_id=actor_id,
                                 summary=summary or "Re-dispositioned scanner finding")
+            self.db.flush()
             return existing
 
         finding = Finding(
@@ -297,26 +332,13 @@ class FindingService:
             source=FindingSource.SCANNER.value,
             owner_id=owner_id or actor_id,
             vuln_id=vuln.id,
+            dedup_key=key,
             created_by_id=actor_id,
         )
         self.db.add(finding)
         self.db.flush()
-        # Cross-host dedup: a scanner finding keyed by plugin_id is the SAME
-        # issue wherever that plugin fires, so attach every host in the project
-        # carrying it — "promote once" yields one finding spanning all affected
-        # hosts (the spine's whole point). Plugin-less vulns attach just their
-        # own host.
-        host_ids = [vuln.host_id] if vuln.host_id else []
-        if vuln.plugin_id:
-            from app.db.models_vulnerability import Vulnerability as _Vuln
-            sibling = (
-                self.db.query(_Vuln.host_id)
-                .join(Host, _Vuln.host_id == Host.id)
-                .filter(Host.project_id == project_id, _Vuln.plugin_id == vuln.plugin_id)
-                .distinct()
-            )
-            host_ids = list(dict.fromkeys(host_ids + [hid for (hid,) in sibling if hid is not None]))
-        self._attach_hosts(finding, host_ids)
+        self.attach_vulnerability(finding=finding, vuln=vuln)
+        self._attach_hosts(finding, self._issue_host_ids(vuln, project_id, key))
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,
@@ -325,6 +347,65 @@ class FindingService:
         )
         self.db.flush()
         return finding
+
+    def attach_vulnerability(self, *, finding: Finding, vuln) -> None:
+        """Record a scanner row as evidence for this finding. Idempotent."""
+        from app.db.models_findings import FindingVulnerability
+
+        exists = (
+            self.db.query(FindingVulnerability.id)
+            .filter(
+                FindingVulnerability.finding_id == finding.id,
+                FindingVulnerability.vuln_id == vuln.id,
+            )
+            .first()
+        )
+        if exists is None:
+            self.db.add(
+                FindingVulnerability(finding_id=finding.id, vuln_id=vuln.id)
+            )
+            self.db.flush()
+
+    def _issue_host_ids(self, vuln, project_id: int, key: Optional[str]) -> list:
+        """Every project host carrying this ISSUE.
+
+        "Promote once, cover every affected host" is the spine's whole point,
+        but this used to fan out on ``plugin_id`` — which is scanner-specific,
+        so a Nessus promotion covered only the hosts Nessus scanned and the
+        GreenBone-only hosts were silently left out of the finding. Fanning out
+        on the issue key covers both, and still falls back to plugin_id for
+        rows with no usable key (identical plugin id IS the same issue within
+        one scanner).
+        """
+        from app.db.models_vulnerability import Vulnerability as _Vuln
+
+        host_ids = [vuln.host_id] if vuln.host_id else []
+        siblings = None
+
+        if key and key.startswith("cve:"):
+            cve = key.split(":", 1)[1]
+            siblings = (
+                self.db.query(_Vuln.host_id)
+                .join(Host, _Vuln.host_id == Host.id)
+                .filter(Host.project_id == project_id, func.upper(_Vuln.cve_id) == cve)
+                .distinct()
+            )
+        elif vuln.plugin_id:
+            # Title-keyed matching is done in Python (normalisation has no SQL
+            # equivalent), so scope the scan to this scanner's plugin rather
+            # than loading every vulnerability in the project.
+            siblings = (
+                self.db.query(_Vuln.host_id)
+                .join(Host, _Vuln.host_id == Host.id)
+                .filter(Host.project_id == project_id, _Vuln.plugin_id == vuln.plugin_id)
+                .distinct()
+            )
+
+        if siblings is not None:
+            host_ids = list(
+                dict.fromkeys(host_ids + [hid for (hid,) in siblings if hid is not None])
+            )
+        return host_ids
 
     def preview_vulnerability_promotion(self, *, vuln, project_id: int) -> dict:
         """Blast radius of promoting this vuln, WITHOUT mutating anything.

@@ -228,6 +228,11 @@ class HostVulnerabilitySummary(BaseModel):
 class HostVulnerability(BaseModel):
     id: int
     plugin_id: Optional[str] = None
+    # Scanner-agnostic identity of the ISSUE (services.vuln_identity). The
+    # inspector groups by this rather than recomputing it, so it must survive
+    # the response model — an omission here is invisible in the serializer and
+    # silently degrades the UI to its local fallback.
+    issue_key: Optional[str] = None
     title: Optional[str] = None
     severity: Optional[str] = None
     source: Optional[str] = None

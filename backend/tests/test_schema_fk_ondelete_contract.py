@@ -98,6 +98,8 @@ EXPECTED_ONDELETE = {
     ('finding_hosts', 'finding_id'): 'CASCADE',
     ('finding_hosts', 'host_id'): 'CASCADE',
     ('finding_hosts', 'port_id'): 'SET NULL',
+    ('finding_vulnerabilities', 'finding_id'): 'CASCADE',
+    ('finding_vulnerabilities', 'vuln_id'): 'CASCADE',
     ('findings', 'created_by_id'): 'SET NULL',
     ('findings', 'evidence_annotation_id'): 'SET NULL',
     ('findings', 'exec_result_id'): 'CASCADE',

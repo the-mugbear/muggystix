@@ -90,8 +90,13 @@ class Finding(Base):
         Integer, ForeignKey("test_execution_results.id", ondelete="CASCADE"),
         nullable=True, index=True,
     )
-    # Application-level dedup for scanner-sourced findings (e.g.
-    # source+plugin/title), so re-ingesting the same scan upserts.
+    # Scanner-agnostic identity of the ISSUE this finding records — the value
+    # from ``services.vuln_identity.issue_key`` (``cve:CVE-…`` or
+    # ``title:<normalised>``). Declared since the spine landed but never
+    # computed; wiring it in v2.236.0 is what makes promoting the Nessus row
+    # and the GreenBone row for one issue converge on ONE finding instead of
+    # forking two. Deliberately excludes the scanner, which is provenance
+    # rather than identity.
     dedup_key = Column(String(255), nullable=True, index=True)
 
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -111,6 +116,11 @@ class Finding(Base):
     status_history = relationship(
         "FindingStatusHistory", back_populates="finding",
         cascade="all, delete-orphan",
+    )
+    # Every scanner row evidencing this finding (see FindingVulnerability).
+    vulnerabilities = relationship(
+        "FindingVulnerability", back_populates="finding",
+        cascade="all, delete-orphan", lazy="selectin",
     )
 
     __table_args__ = (
@@ -140,6 +150,41 @@ class FindingHost(Base):
 
     __table_args__ = (
         UniqueConstraint("finding_id", "host_id", name="uq_finding_host"),
+    )
+
+
+class FindingVulnerability(Base):
+    """A scanner vulnerability that evidences a finding (v2.236.0).
+
+    ``Finding.vuln_id`` is a single FK, so promoting the Nessus row and the
+    GreenBone row for one issue produced two Findings and two entries in the
+    client report — the duplication the inspector's grouping only hid. A
+    Finding is the canonical issue; the scanner rows are *evidence* for it, and
+    there can be several.
+
+    ``Finding.vuln_id`` is retained as the ORIGINATING row (the one the analyst
+    promoted from) rather than dropped — expand phase; the column still backs
+    the idempotency check and existing reads.
+
+    Corroboration is worth recording in its own right: "two independent
+    scanners found this" is a stronger finding, and a report can say so.
+    """
+    __tablename__ = "finding_vulnerabilities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    finding_id = Column(
+        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    vuln_id = Column(
+        Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    finding = relationship("Finding", back_populates="vulnerabilities")
+
+    __table_args__ = (
+        UniqueConstraint("finding_id", "vuln_id", name="uq_finding_vulnerability"),
     )
 
 

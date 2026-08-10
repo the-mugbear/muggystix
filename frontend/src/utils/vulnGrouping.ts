@@ -97,6 +97,17 @@ const toTime = (value: string | null | undefined): number => {
  * unnamed finding would be a guess.
  */
 const groupKeyFor = (v: HostVulnerability): { key: string; kind: VulnGroupKeyKind } | null => {
+  // Prefer the key the BACKEND computed. It is the same value the Finding
+  // spine dedups on, so grouping by it guarantees the UI never claims a merge
+  // the database wouldn't make. The local derivation below is the fallback for
+  // payloads predating the field.
+  const served = v.issue_key?.trim();
+  if (served) {
+    return {
+      key: served,
+      kind: served.startsWith('cve:') ? 'cve' : 'title',
+    };
+  }
   const cve = v.cve_id?.trim();
   if (cve) return { key: `cve:${cve.toUpperCase()}`, kind: 'cve' };
   const title = v.title?.trim();
