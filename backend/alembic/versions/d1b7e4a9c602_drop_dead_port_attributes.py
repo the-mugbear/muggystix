@@ -19,6 +19,7 @@ Phase 1.2 of the schema-review remediation.
 from typing import Sequence, Union
 
 from alembic import op
+import sqlalchemy as sa
 
 
 revision: str = 'd1b7e4a9c602'
@@ -32,5 +33,32 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # No-op: this drops a dead, never-used table. See the module docstring.
-    pass
+    # Restores the table as the baseline defined it.
+    #
+    # This was a deliberate no-op ("it drops a dead, never-used table"), which
+    # conflated "nobody uses this table" with "rollback doesn't need it". A
+    # downgrade's job is to return the schema to what it was AT that revision,
+    # and an earlier revision's upgrade indexes this table — so the no-op made
+    # the whole chain non-round-trippable: walking back to the baseline and
+    # forward again died on
+    #     UndefinedTable: relation "port_attributes" does not exist
+    # Found by wiring the round-trip check into CI (review B3).
+    op.create_table(
+        "port_attributes",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("port_id", sa.Integer(), nullable=False),
+        sa.Column("attribute_type", sa.String(length=50), nullable=False),
+        sa.Column("value", sa.String(length=1000), nullable=False),
+        sa.Column("confidence", sa.Float(), nullable=True),
+        sa.Column("source", sa.String(length=50), nullable=False),
+        sa.Column("scan_id", sa.Integer(), nullable=False),
+        sa.Column("first_seen", sa.DateTime(), nullable=True),
+        sa.Column("last_seen", sa.DateTime(), nullable=True),
+        sa.ForeignKeyConstraint(["port_id"], ["ports_v2.id"]),
+        sa.ForeignKeyConstraint(["scan_id"], ["scans.id"]),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_port_attributes_attribute_type"), "port_attributes",
+        ["attribute_type"], unique=False,
+    )

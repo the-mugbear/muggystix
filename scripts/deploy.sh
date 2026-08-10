@@ -434,18 +434,43 @@ predeploy_db_backup() {
         return 0
     fi
     print_info "Taking a pre-deploy database backup..."
-    # Don't let a backup failure abort the deploy (set -e is on).
+    # Review B2 — this used to warn and continue on a failed backup. Rolling
+    # back re-points the image tags, but an older image may not run against a
+    # schema a newer migration already changed, so the DB dump IS the rollback
+    # path for anything schema-touching. Continuing without one means the
+    # operator discovers recovery is impossible only after a bad migration,
+    # which is the worst possible moment to find out. Fail closed instead.
     if ./scripts/backup-db.sh; then
         local backup_dir dump
         backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
         dump="$(ls -t "$backup_dir"/nm-pgdump-*.dump 2>/dev/null | head -1)"
-        if [[ -n "$dump" ]]; then
-            echo "PREDEPLOY_DB_DUMP|${dump}" >> "$ROLLBACK_STATE_FILE"
-            print_info "Pre-deploy DB backup: $dump"
+        if [[ -z "$dump" ]]; then
+            print_error "backup-db.sh reported success but no dump was found in $backup_dir."
+            print_error "Refusing to deploy without a restorable backup."
+            print_info  "Override for a disposable environment: DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
+            [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]] || return 1
+            print_warning "DEPLOY_WITHOUT_BACKUP=1 — continuing with NO restorable database backup."
+            echo "PREDEPLOY_DB_DUMP|NONE (forced)" >> "$ROLLBACK_STATE_FILE"
+            return 0
         fi
-    else
-        print_warning "Pre-deploy DB backup failed — continuing, but rollback won't be able to restore the DB."
+        echo "PREDEPLOY_DB_DUMP|${dump}" >> "$ROLLBACK_STATE_FILE"
+        print_info "Pre-deploy DB backup: $dump"
+        return 0
     fi
+
+    print_error "Pre-deploy database backup FAILED."
+    print_error "Rollback would not be able to restore the database, so this deploy is aborting."
+    print_info  "Fix the backup (check disk space and that the db container is up), or, for a"
+    print_info  "disposable environment where losing the data is acceptable, re-run with:"
+    print_info  "    DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
+    if [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]]; then
+        print_warning "DEPLOY_WITHOUT_BACKUP=1 — proceeding with NO restorable database backup."
+        # Recorded so a later rollback tells the operator the DB cannot be
+        # restored, instead of silently offering a restore that can't happen.
+        echo "PREDEPLOY_DB_DUMP|NONE (forced)" >> "$ROLLBACK_STATE_FILE"
+        return 0
+    fi
+    return 1
 }
 
 # Probe /health INSIDE the backend container (it isn't port-exposed; only the
@@ -573,7 +598,10 @@ case $DEPLOY_CHOICE in
         # take a DB backup so a deploy whose boot migration fails (crash-loop,
         # no prior image) can be rolled back via option 7.
         snapshot_images_for_rollback
-        predeploy_db_backup
+        if ! predeploy_db_backup; then
+            print_error "Aborting deploy — no restorable pre-deploy backup."
+            return 1
+        fi
 
         # CACHE_BUST forces the frontend builder to re-run npm run build
         # on every deploy.  Without it, Docker reuses the cached COPY +

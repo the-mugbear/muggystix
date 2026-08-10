@@ -14,6 +14,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Review B3 — forward-only CI let rollback code rot silently. The repo already
+  # had scripts/test-alembic-roundtrip.sh; nothing ran it, and by the time it was
+  # wired up the chain was ALREADY broken in two places (an FK downgrade touching
+  # a table a later revision drops, and two "drop dead table" revisions whose
+  # no-op downgrades never restored what they removed). This is the gate that
+  # keeps the deploy script's rollback path honest. Runs as its own job so it
+  # doesn't add wall-clock to the test job.
+  alembic-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install deps
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Walk every migration down and back up
+        # The script boots its own throwaway Postgres via Docker (available on
+        # ubuntu runners) so it can't touch the service database above.
+        run: ./scripts/test-alembic-roundtrip.sh
+
   backend:
     runs-on: ubuntu-latest
     services:

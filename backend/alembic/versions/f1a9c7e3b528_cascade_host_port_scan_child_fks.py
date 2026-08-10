@@ -46,6 +46,7 @@ semantics for cascade-FK changes on a populated DB.
 from typing import Sequence, Union
 
 from alembic import op
+import sqlalchemy as sa
 
 
 revision: str = 'f1a9c7e3b528'
@@ -110,7 +111,30 @@ SET_NULL_FKS = [
 ]
 
 
+def _table_exists(table: str) -> bool:
+    return bool(
+        op.get_bind()
+        .execute(
+            sa.text("SELECT to_regclass(:t)"), {"t": f"public.{table}"}
+        )
+        .scalar()
+    )
+
+
 def _rebuild(fk_name, table, ref_table, col, ondelete):
+    # Skip tables a LATER migration legitimately removed.
+    #
+    # ``d1b7e4a9c602`` drops the dead ``port_attributes`` table and downgrades
+    # to a deliberate no-op (resurrecting a never-used table would be worse
+    # than leaving it gone).  Walking the chain backwards therefore reaches
+    # this revision with that table already absent, and the unguarded
+    # ALTER TABLE aborted the whole downgrade:
+    #     UndefinedTable: relation "port_attributes" does not exist
+    # That made every rollback past this point impossible — found by wiring
+    # the round-trip check into CI (review B3), which is precisely the decay
+    # it exists to catch.
+    if not _table_exists(table) or not _table_exists(ref_table):
+        return
     op.drop_constraint(fk_name, table, type_='foreignkey')
     op.create_foreign_key(fk_name, table, ref_table, [col], ['id'], ondelete=ondelete)
 
