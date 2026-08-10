@@ -69,9 +69,23 @@ from app.db import (  # noqa: F401  (side-effect imports)
 #
 # Resolution order:
 #   1. $TEST_DATABASE_URL, if set (explicit override).
-#   2. a "<app-db>_test" database on the app's own Postgres server, if
-#      that server is reachable — auto-created if it doesn't exist.
+#   2. a "<app-db>_test_<pid>" database on the app's own Postgres server, if
+#      that server is reachable — auto-created if it doesn't exist, and
+#      dropped at session end.
 #   3. in-memory SQLite.
+#
+# The database name carries the PID (review A7).  Every run used to share one
+# "<app-db>_test", and the session fixture opens by running
+# ``DROP SCHEMA public CASCADE`` — so a second suite starting while the first
+# was mid-run demolished its schema underneath it.  That surfaced as setup
+# deadlocks and errors that vanished when the failing tests were re-run in
+# isolation, i.e. as noise that looked exactly like flakiness while being
+# capable of hiding a real regression.
+#
+# PID is the right discriminator: it is unique across concurrently *live*
+# processes (so two suites, or two xdist workers, can never collide), and
+# because the OS recycles PIDs the databases left behind by a hard-killed run
+# get reused rather than accumulating without bound.
 
 
 def _ensure_database(url) -> None:
@@ -91,6 +105,30 @@ def _ensure_database(url) -> None:
                 conn.execute(text(f'CREATE DATABASE "{url.database}"'))
     finally:
         admin.dispose()
+
+
+def _drop_database(url) -> None:
+    """Drop the per-run test database, evicting any lingering backends.
+
+    Best-effort: a failure here must never fail the suite, since the database
+    is disposable and the next run with this PID recreates it anyway.
+    """
+    try:
+        admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+        try:
+            with admin.connect() as conn:
+                conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = :n AND pid <> pg_backend_pid()"
+                    ),
+                    {"n": url.database},
+                )
+                conn.execute(text(f'DROP DATABASE IF EXISTS "{url.database}"'))
+        finally:
+            admin.dispose()
+    except Exception:  # pragma: no cover — cleanup is advisory
+        pass
 
 
 def _postgres_reachable(url) -> bool:
@@ -133,7 +171,7 @@ def _resolve_test_engine():
 
     app_url = make_url(settings.DATABASE_URL)
     if app_url.get_backend_name().startswith("postgresql") and _postgres_reachable(app_url):
-        test_url = app_url.set(database=f"{app_url.database}_test")
+        test_url = app_url.set(database=f"{app_url.database}_test_{os.getpid()}")
         _ensure_database(test_url)
         return create_engine(test_url, poolclass=NullPool), True
 
@@ -141,6 +179,10 @@ def _resolve_test_engine():
 
 
 engine, USING_POSTGRES = _resolve_test_engine()
+# Only a database this process created is ours to drop at the end. An explicit
+# TEST_DATABASE_URL points at something the caller owns — CI may want to
+# inspect it after the run — so leave it alone.
+_OWNS_TEST_DB = USING_POSTGRES and not os.getenv("TEST_DATABASE_URL")
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -168,6 +210,8 @@ def test_engine():
     models.Base.metadata.create_all(bind=engine)
     yield engine
     engine.dispose()
+    if _OWNS_TEST_DB:
+        _drop_database(engine.url)
 
 
 # ---------------------------------------------------------------------------
