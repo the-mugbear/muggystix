@@ -23,7 +23,10 @@ Usage
     # Straight from arguments
     ./scripts/rdap-lookup.py 203.0.113.10 198.51.100.0/24 -o rdap.ndjson
 
-    # From a BlueStick host export (CSV with an ip_address column)
+    # From a BlueStick host export: Reports -> Host Inventory (CSV).
+    # The "IP Address" column is read on its own — a whole-row scan would
+    # pull CIDRs out of the Subnet column and stray addresses out of service
+    # banners, querying blocks nobody asked about.
     ./scripts/rdap-lookup.py --input hosts.csv --output rdap.ndjson
 
 Then upload ``rdap.ndjson`` on the Scans page.
@@ -133,19 +136,31 @@ def _iter_targets(values: Iterable[str]) -> Iterable[str]:
             yield match
 
 
+# Header spellings that mean "the host address". Compared after normalising
+# case, spaces and underscores, so BlueStick's own "IP Address" export header
+# matches alongside the snake_case variants other tools emit.
+_ADDR_COLUMNS = {"ipaddress", "ip", "address", "host", "hostip"}
+
+
+def _normalise_header(name: str) -> str:
+    return name.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
 def _read_input(path: str) -> List[str]:
     if path == "-":
         return list(_iter_targets(sys.stdin))
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         head = fh.read(4096)
         fh.seek(0)
-        # A CSV with a recognisable address column: pull just that column so
-        # unrelated numeric fields can't be mistaken for addresses.
-        if "," in head and any(k in head.lower() for k in ("ip_address", "ip,", "address")):
+        # A CSV with a recognisable address column: read ONLY that column.
+        # Scanning the whole row would pull CIDRs out of a Subnet column and
+        # stray addresses out of free-text service banners, sending lookups
+        # for blocks the operator never asked about.
+        if "," in head:
             reader = csv.DictReader(fh)
             col = next(
                 (c for c in (reader.fieldnames or [])
-                 if c and c.strip().lower() in ("ip_address", "ip", "address")),
+                 if c and _normalise_header(c) in _ADDR_COLUMNS),
                 None,
             )
             if col:
