@@ -509,10 +509,15 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(c.db, v),
               value_source="free",
               description="Autonomous system number the host's netblock belongs to."),
-    FieldSpec("cloud", lambda c, v: P.attribution_cloud_predicate(c.db, v),
-              value_source="free",
-              description="Cloud provider hosting the netblock (aws/azure/gcp/…); "
-                          "`cloud:none` = attributed but not in a known cloud range."),
+    # `cloud:` is deliberately NOT registered yet. The columns it filters on
+    # (network_attributions.cloud_provider/region) have no writer — the cloud
+    # prefix-list importer is still unbuilt — so registering it shipped a
+    # documented filter that lies: `cloud:aws` always returned zero hosts, and
+    # `cloud:none` ("attributed but not in a known cloud range") returned EVERY
+    # attributed host. A query-language field that silently answers wrong is
+    # worse than a missing one, especially on a surface framed as scope
+    # validation. `P.attribution_cloud_predicate` is kept and correct; re-add
+    # the FieldSpec in the same commit that lands the prefix-list parser.
     FieldSpec("tag", lambda c, v: P.tag_predicate_by_name(c.db, v, c.project_id),
               value_source="tag",
               description="Project host tag — applied by analysts (Hosts page)."),

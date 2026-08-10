@@ -109,6 +109,9 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
                 {safeFallback(a.org_name, 'Registrant not published')}
               </span>
               {a.country && <Badge variant="outline">{a.country}</Badge>}
+              {/* Populated only once the cloud prefix-list importer lands;
+                  until then this is always absent, which reads correctly as
+                  "not known" rather than as "not in a cloud". */}
               {a.cloud_provider && (
                 <Badge variant="info-outline">
                   {a.cloud_provider.toUpperCase()}

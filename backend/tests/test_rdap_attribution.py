@@ -309,22 +309,28 @@ def test_asn_filter(db_session, test_project, test_user, attributed_project):
     }
 
 
-def test_cloud_filter_and_the_none_case(
+def test_cloud_filter_is_not_offered_while_nothing_populates_it(
     db_session, test_project, test_user, attributed_project
 ):
-    assert _matching(db_session, test_project.id, test_user, "cloud:aws") == {
-        "203.0.113.10",
-    }
-    # `cloud:none` = attributed, but not in a known cloud range — the
-    # on-premise population, not "unattributed".
-    assert _matching(db_session, test_project.id, test_user, "cloud:none") == {
-        "198.51.100.10", "198.51.100.11",
-    }
+    """`cloud:` is withheld from the query vocabulary until the cloud
+    prefix-list importer exists.
+
+    Registered against columns with no writer it didn't fail — it answered
+    *wrongly*: `cloud:aws` returned zero hosts and `cloud:none` ("attributed
+    but not in a known cloud range") returned every attributed host. On a
+    surface framed as scope validation, a filter that quietly returns the
+    wrong set is worse than one that isn't there. The predicate itself is kept
+    and correct; this guards the vocabulary, not the SQL.
+    """
+    from app.services.host_query_dsl import DSLError
+
+    with pytest.raises(DSLError):
+        _matching(db_session, test_project.id, test_user, "cloud:aws")
 
 
 def test_attribution_filters_compose_with_the_rest_of_the_dsl(
     db_session, test_project, test_user, attributed_project
 ):
     assert _matching(
-        db_session, test_project.id, test_user, 'NOT org:"Acme" AND cloud:aws',
+        db_session, test_project.id, test_user, 'NOT org:"Acme" AND asn:64501',
     ) == {"203.0.113.10"}
