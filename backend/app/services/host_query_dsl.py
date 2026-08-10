@@ -501,6 +501,11 @@ _FIELD_SPECS: List[FieldSpec] = [
               aliases=["owner"], value_source="free", trgm=True,
               description="Registered owner of the host's netblock (RDAP). "
                           "`NOT org:\"Acme\"` finds hosts not registered to the client."),
+    FieldSpec("certorg", lambda c, v: P.cert_org_predicate(c.db, v),
+              value_source="free", trgm=True,
+              description="Organization on the host's TLS certificate — CA-validated, "
+                          "so stronger evidence of control than a self-declared registry "
+                          "record. Absent on DV certs."),
     FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(c.db, v),
               value_source="free",
               description="Autonomous system number the host's netblock belongs to."),

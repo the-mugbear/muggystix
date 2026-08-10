@@ -67,6 +67,34 @@ export interface HostVulnerability {
   source_plugin_name?: string | null;
 }
 
+/** Where a host's netblock is registered and hosted (RDAP / prefix lists).
+ *  Empty for internal estates and for blocks not yet looked up — both normal,
+ *  so absence means "not looked up", never "not the client's". */
+export interface NetworkAttribution {
+  id: number;
+  cidr: string;
+  org_name: string | null;
+  asn: number | null;
+  as_name: string | null;
+  country: string | null;
+  registry: string | null;
+  handle: string | null;
+  cloud_provider: string | null;
+  cloud_region: string | null;
+  source: string;
+  /** Registration goes stale; shown so an operator can judge currency. */
+  looked_up_at: string | null;
+}
+
+/** Organization on a host's TLS certificate — validated by a CA before
+ *  issuing, so stronger evidence of control than a self-declared registry
+ *  record. Absent on DV certs, which is a non-claim rather than a negative. */
+export interface HostCertOrg {
+  org: string;
+  issuer: string | null;
+  url: string;
+}
+
 export interface Host {
   id: number;
   ip_address: string;
@@ -133,6 +161,8 @@ export interface Host {
   tags?: HostTagInfo[];
   assignees?: HostAssignee[];
   discoveries?: HostDiscovery[];
+  attributions?: NetworkAttribution[];
+  cert_orgs?: HostCertOrg[];
   // Host-level NSE script output (smb-os-discovery, smb-security-mode,
   // etc.). Port-level scripts live on each Port.scripts.
   host_scripts?: NseScript[];

@@ -436,6 +436,13 @@ class WebInterface(Base):
     # app/services/cert_fields.derive_cert_fields. tls_info stays the raw blob.
     cert_not_after = Column(DateTime(timezone=True), index=True)
     cert_self_signed = Column(Boolean, index=True)  # None = unknown (no issuer/subject)
+    # Certificate Organization (v2.238.0) — host provenance a public CA
+    # validated before issuing, which makes it stronger evidence of who runs a
+    # host than a self-declared registry record, at no external-lookup cost.
+    # NULL is the normal case (DV certs carry no O=), so absence means "no
+    # claim made", never "not the client's".
+    cert_subject_org = Column(String(255), index=True)
+    cert_issuer_org = Column(String(255))
 
     # EyeWitness extras (null for httpx).
     screenshot_path = Column(String)  # relative path under uploads/web_screenshots/{scan_id}/

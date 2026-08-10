@@ -217,11 +217,32 @@ def serialize_port_light(port: models.Port) -> dict:
     }
 
 
+def serialize_attribution(attr) -> dict:
+    """One network-attribution row for the host detail payload."""
+    return {
+        "id": attr.id,
+        "cidr": attr.cidr,
+        "org_name": attr.org_name,
+        "asn": attr.asn,
+        "as_name": attr.as_name,
+        "country": attr.country,
+        "registry": attr.registry,
+        "handle": attr.handle,
+        "cloud_provider": attr.cloud_provider,
+        "cloud_region": attr.cloud_region,
+        "source": attr.source,
+        # Registration goes stale; the UI shows this so an operator can judge
+        # whether the evidence is current before putting it in front of a client.
+        "looked_up_at": attr.looked_up_at,
+    }
+
+
 def serialize_host_detail(
     host: models.Host,
     vuln_data: Optional[dict],
     follow: Optional[HostFollow],
     notes: List[AnnotationModel],
+    attributions: Optional[list] = None,
 ) -> dict:
     """Detail-endpoint payload — base + follow state + notes +
     ordered vulnerabilities."""
@@ -236,6 +257,22 @@ def serialize_host_detail(
     )
     serialized["vulnerabilities"] = [
         serialize_vulnerability(vuln) for vuln in vulnerabilities
+    ]
+    # Network provenance (RDAP / prefix lists). Empty for internal estates and
+    # for any host whose block hasn't been looked up — both are normal, so the
+    # UI must render absence as "not looked up", not as a negative finding.
+    serialized["attributions"] = [
+        serialize_attribution(a) for a in (attributions or [])
+    ]
+    # Certificate Organization, most recent first — CA-validated attribution
+    # that needs no external lookup.
+    certs = [
+        w for w in (getattr(host, "web_interfaces", None) or [])
+        if getattr(w, "cert_subject_org", None)
+    ]
+    serialized["cert_orgs"] = [
+        {"org": w.cert_subject_org, "issuer": w.cert_issuer_org, "url": w.url}
+        for w in certs[:5]
     ]
     return serialized
 

@@ -45,7 +45,7 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.services.cert_fields import derive_cert_fields
+from app.services.cert_fields import derive_cert_fields, derive_cert_orgs
 from app.parsers.parser_utils import (
     correlate_scan,
     record_hosts_in_scan,
@@ -259,6 +259,9 @@ class HttpxParser:
         # Promote the queryable cert predicates once, here at ingest, so the
         # insight surfaces read typed columns instead of re-parsing tls_info.
         cert_not_after, cert_self_signed = derive_cert_fields(tls_info)
+        # Subject Organization is CA-validated attribution — promote it out of
+        # the blob at ingest, same as the other cert predicates.
+        cert_subject_org, cert_issuer_org = derive_cert_orgs(tls_info)
 
         # Favicon hash — httpx emits as ``favicon`` (mmh3 hex).
         favicon_hash = record.get("favicon") or record.get("favicon_path")
@@ -298,6 +301,8 @@ class HttpxParser:
                 tls_info=tls_info,
                 cert_not_after=cert_not_after,
                 cert_self_signed=cert_self_signed,
+                cert_subject_org=cert_subject_org,
+                cert_issuer_org=cert_issuer_org,
                 raw=record,
             )
             self.db.add(wi)
@@ -315,6 +320,8 @@ class HttpxParser:
             existing.tls_info = tls_info
             existing.cert_not_after = cert_not_after
             existing.cert_self_signed = cert_self_signed
+            existing.cert_subject_org = cert_subject_org
+            existing.cert_issuer_org = cert_issuer_org
             existing.raw = record
         return host_row.id if host_row else None
 

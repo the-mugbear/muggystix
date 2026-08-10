@@ -1245,7 +1245,13 @@ def get_host_v2(
     follow_record = follow_service.get_follow(host_id, current_user.id)
     notes = follow_service.list_notes(host_id)
 
-    serialized = _serialize_host_detail(host, vuln_summary, follow_record, notes)
+    # Network provenance for this host, most-specific block first.
+    from app.services.attribution_correlation import attributions_for_host
+
+    serialized = _serialize_host_detail(
+        host, vuln_summary, follow_record, notes,
+        attributions=attributions_for_host(db, host.id),
+    )
     # v2.12.0: per-host count of web interfaces (httpx / eyewitness /
     # nikto rows).  HostDetail.tsx uses this to gate the "Web
     # Interfaces" card visibility — fetch the full list lazily

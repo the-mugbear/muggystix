@@ -752,3 +752,31 @@ def attribution_cloud_predicate(db: Session, values: Sequence[str]) -> ColumnEle
     if not clauses:
         return false()
     return models.Host.id.in_(base.filter(or_(*clauses)).distinct())
+
+
+def cert_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Hosts presenting a certificate whose subject Organization matches.
+
+    Distinct from ``org:`` (registry attribution): a CA *validated* this claim
+    before issuing, where a registry record is self-declared. Where the two
+    disagree — cert says one company, registration says another — that
+    disagreement is itself worth surfacing.
+
+    Only OV/EV certificates carry an Organization; DV certs (most of the
+    modern web) have none, so a non-match means "no claim made", not "not the
+    client's".
+    """
+    if not values:
+        return false()
+    clauses = [
+        models.WebInterface.cert_subject_org.ilike(f"%{escape_like(v)}%", escape="\\")
+        for v in values if v
+    ]
+    if not clauses:
+        return false()
+    sub = (
+        db.query(models.WebInterface.host_id)
+        .filter(or_(*clauses))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)

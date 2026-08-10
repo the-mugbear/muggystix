@@ -100,6 +100,7 @@ import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
+import ProvenanceCard from './host-inspector/ProvenanceCard';
 import { groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -1982,6 +1983,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Where this host is registered and hosted — the outside world's answer
+          to "is this the client's?", vs the scope's own CIDR list. */}
+      <ProvenanceCard attributions={host.attributions} certOrgs={host.cert_orgs} />
 
       {/* This host's findings, inline — appears once a note here is promoted. */}
       <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
