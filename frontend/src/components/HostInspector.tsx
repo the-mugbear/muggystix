@@ -1781,17 +1781,39 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </span>
               ) : triagePreview ? (
                 triagePreview.already_promoted ? (
-                  <span className="text-foreground">
-                    Already promoted — this will re-disposition the existing finding
-                    {triagePreview.finding_id != null ? ` (#${triagePreview.finding_id})` : ''}.
-                  </span>
+                  <>
+                    <span className="text-foreground">
+                      A finding for this issue already exists
+                      {triagePreview.finding_id != null ? ` (#${triagePreview.finding_id})` : ''}
+                      {triagePreview.new_host_count > 0
+                        ? ' — this attaches '
+                        : ' — this re-dispositions it; no new hosts are attached.'}
+                      {triagePreview.new_host_count > 0 && (
+                        <>
+                          <strong>{triagePreview.new_host_count}</strong>{' '}
+                          more host{triagePreview.new_host_count === 1 ? '' : 's'} and records this
+                          scanner&rsquo;s evidence.
+                        </>
+                      )}
+                    </span>
+                    {/* The issue can already be promoted from a different host or
+                        a different scanner's wording, which is not obvious from
+                        the row the operator clicked — name the total so the
+                        dialog doesn't read as "nothing happens". */}
+                    <span className="mt-xxs block text-muted-foreground">
+                      Covers <strong>{triagePreview.affected_host_count}</strong>{' '}
+                      host{triagePreview.affected_host_count === 1 ? '' : 's'} in total.
+                    </span>
+                  </>
                 ) : (
                   <>
                     <span className="text-foreground">
                       {triageVuln?.intent === 'confirmed' ? 'Creates one finding across ' : 'Records a finding across '}
                       <strong>{triagePreview.affected_host_count}</strong>{' '}
                       host{triagePreview.affected_host_count === 1 ? '' : 's'}
-                      {triagePreview.plugin_id ? ' sharing this plugin.' : ' (this host only).'}
+                      {triagePreview.affected_host_count > 1
+                        ? ' carrying this same issue — including rows reported by other scanners under different wording.'
+                        : ' (this host only).'}
                     </span>
                     {triagePreview.affected_host_sample.length > 0 && (
                       <span className="mt-xxs block break-words text-muted-foreground">

@@ -1248,9 +1248,17 @@ def get_host_v2(
     # Network provenance for this host, most-specific block first.
     from app.services.attribution_correlation import attributions_for_host
 
+    # Which of this host's issues are already covered by a finding — one
+    # query for the host, so the inspector can say "covered by finding N"
+    # instead of offering a promote that would only re-attach evidence.
+    from app.services.host_serialization import issue_coverage_map
+
     serialized = _serialize_host_detail(
         host, vuln_summary, follow_record, notes,
         attributions=attributions_for_host(db, host.id),
+        vuln_coverage=issue_coverage_map(
+            db, project.id, getattr(host, "vulnerabilities", []) or []
+        ),
     )
     # v2.12.0: per-host count of web interfaces (httpx / eyewitness /
     # nikto rows).  HostDetail.tsx uses this to gate the "Web

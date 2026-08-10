@@ -243,6 +243,7 @@ def serialize_host_detail(
     follow: Optional[HostFollow],
     notes: List[AnnotationModel],
     attributions: Optional[list] = None,
+    vuln_coverage: Optional[dict] = None,
 ) -> dict:
     """Detail-endpoint payload — base + follow state + notes +
     ordered vulnerabilities."""
@@ -256,7 +257,7 @@ def serialize_host_detail(
         key=vulnerability_sort_key,
     )
     serialized["vulnerabilities"] = [
-        serialize_vulnerability(vuln) for vuln in vulnerabilities
+        serialize_vulnerability(vuln, vuln_coverage) for vuln in vulnerabilities
     ]
     # Network provenance (RDAP / prefix lists). Empty for internal estates and
     # for any host whose block hasn't been looked up — both are normal, so the
@@ -277,7 +278,58 @@ def serialize_host_detail(
     return serialized
 
 
-def serialize_vulnerability(vuln: Vulnerability) -> dict:
+def _vuln_coverage(vuln: Vulnerability, coverage: Optional[dict]) -> dict:
+    direct = vuln.promoted_findings[0] if vuln.promoted_findings else None
+    if direct is not None:
+        return {
+            "finding_id": direct.id,
+            "finding_status": direct.status,
+            "finding_match": "vuln",
+        }
+    if coverage:
+        key = issue_key_for(vuln)
+        hit = coverage.get(key) if key else None
+        if hit:
+            return {
+                "finding_id": hit[0],
+                "finding_status": hit[1],
+                "finding_match": "issue",
+            }
+    return {"finding_id": None, "finding_status": None, "finding_match": None}
+
+
+def issue_coverage_map(db, project_id: int, vulns) -> dict:
+    """``issue_key`` → ``(finding_id, status)`` for issues already promoted.
+
+    A finding covers an ISSUE, not a scanner row: promoting a vuln attaches
+    every project host carrying the same issue.  So the row an operator sees
+    on host B is already covered by the finding they promoted from host A,
+    even though B's ``Vulnerability`` row was never itself promoted.  Without
+    this the inspector showed B as un-promoted and invited a duplicate.
+
+    One query for the whole host rather than one per row.
+    """
+    from app.db.models_findings import Finding, FindingSource
+
+    keys = {
+        k for k in (issue_key_for(v) for v in vulns)
+        if k and not k.startswith("row:")
+    }
+    if not keys:
+        return {}
+    rows = (
+        db.query(Finding.dedup_key, Finding.id, Finding.status)
+        .filter(
+            Finding.project_id == project_id,
+            Finding.source == FindingSource.SCANNER.value,
+            Finding.dedup_key.in_(keys),
+        )
+        .all()
+    )
+    return {key: (fid, status) for key, fid, status in rows if key}
+
+
+def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None) -> dict:
     """Translate one Vulnerability row into the response dict.
 
     Handles both the enum and string representations of ``severity``
@@ -334,9 +386,10 @@ def serialize_vulnerability(vuln: Vulnerability) -> dict:
         "protocol": protocol,
         "service_name": service_name,
         "exploitable": vuln.exploitable,
-        # If promoted to a finding, surface its id so the vuln row shows a
-        # "Promoted" badge + guards a duplicate promote.
-        "finding_id": (vuln.promoted_findings[0].id if vuln.promoted_findings else None),
+        # Finding coverage — drives the "Promoted"/"Covered" badge and guards
+        # a duplicate promote.  Direct promotion wins over same-issue coverage
+        # because it's the stronger statement about THIS row.
+        **_vuln_coverage(vuln, coverage),
         "first_seen": vuln.first_seen,
         "last_seen": vuln.last_seen,
         "solution": vuln.solution,

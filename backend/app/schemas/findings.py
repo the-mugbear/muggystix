@@ -77,12 +77,24 @@ class PromoteVulnerabilityRequest(BaseModel):
 
 
 class PromoteVulnerabilityPreview(BaseModel):
-    """Blast radius of a vuln promotion (read-only; §11)."""
+    """Blast radius of a vuln promotion (read-only; §11).
+
+    Every count here must match what ``promote_vulnerability`` actually does —
+    both now share ``_issue_host_ids``.  A confirmation dialog that misstates
+    the action is worse than no dialog at all.
+    """
     plugin_id: Optional[str] = None
+    # Scanner-agnostic issue identity the fan-out keys on. Surfaced so the
+    # dialog can explain *why* hosts from a different scanner are included.
+    issue_key: Optional[str] = None
     affected_host_count: int
     affected_host_sample: List[str] = []
+    # Hosts not already attached to the existing finding — what this action
+    # would actually change. Equals affected_host_count for a fresh promote.
+    new_host_count: int = 0
     already_promoted: bool = False
     finding_id: Optional[int] = None
+    finding_status: Optional[str] = None
 
 
 class FindingCreateRequest(BaseModel):

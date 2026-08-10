@@ -194,14 +194,22 @@ export const uploadFindingNoteAttachment = async (
 
 export interface PromoteVulnerabilityPreview {
   plugin_id: string | null;
+  /** Scanner-agnostic issue identity the fan-out keys on. */
+  issue_key: string | null;
   affected_host_count: number;
   affected_host_sample: string[];
+  /** Hosts not already attached — what this action would actually change.
+   *  Equals affected_host_count for a fresh promote. */
+  new_host_count: number;
   already_promoted: boolean;
   finding_id: number | null;
+  finding_status: string | null;
 }
 
-// Blast radius of promoting a vuln (read-only) — how many project hosts share
-// the plugin_id and would be attached to the one finding (§11).
+// Blast radius of promoting a vuln (read-only) — how many project hosts carry
+// the same ISSUE and would be attached to the one finding (§11). Keyed on the
+// issue, not the plugin, so it matches what promote actually does: a
+// plugin-keyed preview under-reported whenever two scanners saw one problem.
 export const previewPromoteVulnerability = async (
   vulnId: number,
 ): Promise<PromoteVulnerabilityPreview> => {

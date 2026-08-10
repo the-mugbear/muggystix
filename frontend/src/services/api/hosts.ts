@@ -55,9 +55,18 @@ export interface HostVulnerability {
   protocol: string | null;
   service_name: string | null;
   exploitable: boolean | null;
-  // Set when this vuln has been promoted to a finding — drives the "Promoted"
-  // badge/link and guards a duplicate promote.
+  /** The finding covering this vulnerability, if any — drives the badge and
+   *  suppresses a duplicate promote. Backend emitted this long before the
+   *  response model carried it, so it silently arrived undefined and the badge
+   *  only survived until the next reload (v2.239.1). */
   finding_id?: number | null;
+  finding_status?: string | null;
+  /** How the row is covered:
+   *  'vuln'  — this scanner row is itself the promoted source.
+   *  'issue' — a finding for the same issue exists already (promoted from
+   *            another host, or from another scanner's wording). Promoting
+   *            again only re-attaches evidence, so the UI must not invite it. */
+  finding_match?: 'vuln' | 'issue' | null;
   first_seen: string | null;
   last_seen: string | null;
   solution: string | null;

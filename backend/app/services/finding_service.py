@@ -410,28 +410,41 @@ class FindingService:
     def preview_vulnerability_promotion(self, *, vuln, project_id: int) -> dict:
         """Blast radius of promoting this vuln, WITHOUT mutating anything.
 
-        Promotion attaches every project host carrying the same plugin_id
-        (§11 — the cross-host fan-out an icon-click used to do silently), so
-        the UI shows the count + a sample before the analyst commits. Also
-        reports whether the vuln is already promoted (the call would be a
-        no-op / re-disposition).
+        Promotion attaches every project host carrying the same ISSUE (§11 —
+        the cross-host fan-out an icon-click used to do silently), so the UI
+        shows the count + a sample before the analyst commits. Also reports
+        whether the vuln is already promoted (the call would be a no-op /
+        re-disposition).
+
+        v2.239.1 — this fanned out on ``plugin_id`` while ``promote_vulnerability``
+        fanned out via ``_issue_host_ids`` on the issue key. The preview
+        therefore UNDER-REPORTED the blast radius: an issue seen by both
+        Nessus and GreenBone previewed as "3 hosts" and then attached 7. A
+        confirmation dialog that misstates what the action does is worse than
+        no dialog. Both paths now call the same fan-out, so they agree by
+        construction.
         """
-        from app.db.models_vulnerability import Vulnerability as _Vuln
+        key = issue_key_for(vuln)
 
         existing = (
             self.db.query(Finding)
             .filter(Finding.vuln_id == vuln.id, Finding.source == FindingSource.SCANNER.value)
             .first()
         )
-        host_ids = [vuln.host_id] if vuln.host_id else []
-        if vuln.plugin_id:
-            sibling = (
-                self.db.query(_Vuln.host_id)
-                .join(Host, _Vuln.host_id == Host.id)
-                .filter(Host.project_id == project_id, _Vuln.plugin_id == vuln.plugin_id)
-                .distinct()
+        if existing is None and key and not key.startswith("row:"):
+            # Same lookup promote_vulnerability does — a finding promoted from
+            # another host/scanner already covers this issue, so the UI must
+            # offer "covered" rather than a fresh promote.
+            existing = (
+                self.db.query(Finding)
+                .filter(
+                    Finding.project_id == project_id,
+                    Finding.source == FindingSource.SCANNER.value,
+                    Finding.dedup_key == key,
+                )
+                .first()
             )
-            host_ids = list(dict.fromkeys(host_ids + [hid for (hid,) in sibling if hid is not None]))
+        host_ids = self._issue_host_ids(vuln, project_id, key)
         sample = []
         if host_ids:
             sample = [
@@ -443,12 +456,30 @@ class FindingService:
                     .all()
                 ) if ip
             ]
+
+        # Hosts the finding does NOT already cover. When re-promoting an
+        # existing finding this is what actually changes; showing only the
+        # total would imply the action touches hosts it already attached.
+        already_attached = 0
+        if existing is not None and host_ids:
+            already_attached = (
+                self.db.query(func.count(FindingHost.id))
+                .filter(
+                    FindingHost.finding_id == existing.id,
+                    FindingHost.host_id.in_(host_ids),
+                )
+                .scalar()
+            ) or 0
+
         return {
             "plugin_id": vuln.plugin_id,
+            "issue_key": key,
             "affected_host_count": len(host_ids),
             "affected_host_sample": sample,
+            "new_host_count": max(len(host_ids) - already_attached, 0),
             "already_promoted": existing is not None,
             "finding_id": existing.id if existing is not None else None,
+            "finding_status": existing.status if existing is not None else None,
         }
 
     def create_finding(

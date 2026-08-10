@@ -245,6 +245,22 @@ class HostVulnerability(BaseModel):
     protocol: Optional[str] = None
     service_name: Optional[str] = None
     exploitable: Optional[bool] = None
+    # Finding coverage — why the inspector can show "already promoted" instead
+    # of inviting a second promote.  ``serialize_vulnerability`` has emitted
+    # ``finding_id`` since the badge was built, but this model omitted the
+    # field, so response validation dropped it on every request and the badge
+    # only ever appeared for promotions made in the current browser session —
+    # it vanished on reload, which is exactly why operators re-promoted.
+    #
+    # ``finding_match`` distinguishes the two ways a row is covered:
+    #   'vuln'  — this scanner row is itself the promoted source.
+    #   'issue' — a finding for the SAME issue already exists (promoted from
+    #             another host, or by another scanner).  Promoting again is a
+    #             no-op that only attaches evidence, so the UI says "covered"
+    #             rather than offering a fresh promote.
+    finding_id: Optional[int] = None
+    finding_status: Optional[str] = None
+    finding_match: Optional[str] = None
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     solution: Optional[str] = None
