@@ -779,7 +779,13 @@ class IngestionService:
             job = db.get(IngestionJob, job_id)
             if job:
                 job.status = "failed"
-                job.error_message = str(exc)
+                # User-facing message stays generic — raw str(exc) on a driver
+                # error carries SQL fragments and container paths into the
+                # upload UI. The full detail lives in last_error below.
+                job.error_message = (
+                    "Processing failed unexpectedly. See details or retry; "
+                    "if it persists, check the server logs."
+                )
                 job.retry_count = (job.retry_count or 0) + 1
                 # Keep a trimmed traceback for the UI — full stack
                 # would bloat the column for huge parse graphs.
@@ -845,6 +851,14 @@ class IngestionService:
                     elapsed,
                 )
                 return result
+            except ParseFailure:
+                # Cancellation / timeout is terminal for the whole job — it is
+                # NOT a "this parser didn't match, try the next one" failure.
+                # Falling through to the next attempt would re-run a cancelled
+                # or timed-out job under a second parser. Clean the session and
+                # let _run_job's ParseFailure handler mark the job.
+                db.rollback()
+                raise
             except Exception as exc:
                 db.rollback()
                 elapsed = time.time() - start
@@ -1008,7 +1022,28 @@ class IngestionService:
                 raise ValueError(f"Unsupported parser class {parser_class}")
 
             parser = parser_ctor(db)
-            scan = parser.parse_file(storage_path, filename, project_id=project_id)
+            try:
+                scan = parser.parse_file(storage_path, filename, project_id=project_id)
+            except Exception:
+                # Streaming parsers (nmap/gnmap/masscan) commit the Scan row and
+                # some hosts incrementally, so a mid-parse failure leaves a
+                # committed partial Scan. Without this, the dispatcher's rollback
+                # can't reach it and the fallback parser re-ingests the same file
+                # under a SECOND Scan, orphaning the first. Delete exactly the id
+                # this parser created (race-free — not a project-wide id sweep).
+                partial_scan_id = getattr(parser, "_created_scan_id", None)
+                if partial_scan_id is not None:
+                    try:
+                        db.rollback()
+                        from app.db.models import Scan as _Scan
+                        db.query(_Scan).filter(_Scan.id == partial_scan_id).delete(
+                            synchronize_session=False
+                        )
+                        db.commit()
+                    except Exception:  # noqa: BLE001
+                        # Best-effort cleanup; the outer handler still rolls back.
+                        db.rollback()
+                raise
             # Ensure scan and all hosts are tagged with the project
             if project_id and scan:
                 scan.project_id = project_id

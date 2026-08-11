@@ -123,7 +123,7 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
           <div key={a.id} className="min-w-0 space-y-xxs">
             <div className="flex flex-wrap items-center gap-xs">
               <span className="font-mono text-caption text-muted-foreground">{a.cidr}</span>
-              <span className="text-metadata font-medium text-foreground">
+              <span className="min-w-0 break-words text-metadata font-medium text-foreground">
                 {safeFallback(a.org_name, 'Registrant not published')}
               </span>
               {a.country && <Badge variant="outline">{a.country}</Badge>}
@@ -158,7 +158,7 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
             {certOrgs.map((c) => (
               <div key={c.url} className="flex flex-wrap items-center gap-xs">
                 <ShieldCheck className="size-3.5 shrink-0 text-success" aria-hidden />
-                <span className="text-metadata font-medium text-foreground">{c.org}</span>
+                <span className="min-w-0 break-words text-metadata font-medium text-foreground">{c.org}</span>
                 <span className="min-w-0 truncate text-caption text-muted-foreground">
                   on certificate for {c.url}
                   {c.issuer ? ` · issued by ${c.issuer}` : ''}

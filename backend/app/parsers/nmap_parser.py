@@ -24,6 +24,10 @@ class NmapXMLParser:
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
         self.correlation_service = SubnetCorrelationService(db)
+        # Id of the Scan row this parser committed (incrementally). Lets the
+        # dispatcher delete a partial scan if a later attempt fails, instead of
+        # orphaning it and re-ingesting under a second Scan (see _execute_parser).
+        self._created_scan_id = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -78,25 +82,46 @@ class NmapXMLParser:
                         clear_element(elem)
                     elif tag == "host":
                         if self._host_has_address(elem):
+                            # Per-host savepoint: a failing flush/commit inside
+                            # _process_host_with_deduplication (e.g. an over-long
+                            # value, or a duplicate that trips a unique constraint)
+                            # otherwise poisons the session, so EVERY later host in
+                            # the file raises PendingRollbackError and is discarded.
+                            # Rolling back this savepoint discards only the bad
+                            # host's writes; the scan record and prior hosts survive
+                            # (mirrors the gnmap parser).
+                            host_sp = self.db.begin_nested()
                             try:
                                 self._process_host_with_deduplication(elem, scan_id)
+                                host_sp.commit()
                                 hosts_processed += 1
-                                if hosts_processed % 100 == 0:
-                                    logger.info(f"Processed {hosts_processed} hosts so far")
-                                    from app.services.ingestion_service import report_progress
-                                    report_progress(f"{hosts_processed} hosts")
-                                # Periodic commit so a 10k-host scan doesn't hold row locks
-                                # on hosts/ports/host_scan_history for the full parse duration,
-                                # which would block every other concurrent writer.
-                                if hosts_processed % 500 == 0:
-                                    self.db.commit()
-                                    if scan is not None:
-                                        self.db.refresh(scan)
                             except Exception as e:
                                 logger.warning(f"Skipping malformed host element: {e}")
                                 parse_warnings.append(str(e))
+                                try:
+                                    host_sp.rollback()
+                                except Exception:  # noqa: BLE001
+                                    # Inner frame already rolled the savepoint back;
+                                    # the parent transaction stays committable.
+                                    pass
                             finally:
                                 clear_element(elem)
+                            # Progress + periodic commit live OUTSIDE the per-host
+                            # savepoint. report_progress raises ParseFailure on
+                            # cancel/timeout; keeping it out here lets that signal
+                            # propagate and stop the worker instead of being caught
+                            # as a per-host error.
+                            if hosts_processed and hosts_processed % 100 == 0:
+                                logger.info(f"Processed {hosts_processed} hosts so far")
+                                from app.services.ingestion_service import report_progress
+                                report_progress(f"{hosts_processed} hosts")
+                            # Periodic commit so a 10k-host scan doesn't hold row locks
+                            # on hosts/ports/host_scan_history for the full parse
+                            # duration, which would block every other concurrent writer.
+                            if hosts_processed and hosts_processed % 500 == 0:
+                                self.db.commit()
+                                if scan is not None:
+                                    self.db.refresh(scan)
                         else:
                             clear_element(elem)
                     elif tag == "finished" and scan is not None:
@@ -187,6 +212,7 @@ class NmapXMLParser:
 
         self.db.add(scan)
         self.db.flush()
+        self._created_scan_id = scan.id
         return scan
 
     def _parse_scan_info_element(self, scaninfo_elem: etree.Element, scan_id: int):

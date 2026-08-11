@@ -61,6 +61,12 @@ def write_heartbeat(path: str, logger: logging.Logger) -> None:
 def _open_listen_connection(channel: str):
     """Open a fresh raw DB connection in LISTEN mode (autocommit) on ``channel``."""
     raw_conn = engine.raw_connection()
+    # Detach from the pool immediately: this connection is switched to
+    # autocommit (isolation level 0) for LISTEN, and if it were returned to the
+    # shared pool a later ORM session could check it out and find rollback() a
+    # no-op and SAVEPOINT (the dedup service's core mechanism) failing outside a
+    # transaction. Detached, raw_conn.close() closes the real socket instead.
+    raw_conn.detach()
     raw_conn.set_isolation_level(0)  # autocommit, required for LISTEN
     cur = raw_conn.cursor()
     cur.execute(f"LISTEN {channel}")

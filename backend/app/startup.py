@@ -23,6 +23,29 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 
+def check_credential_encryption_key() -> None:
+    """Warn loudly at boot when credential encryption falls back to SECRET_KEY.
+
+    ``config.CREDENTIAL_ENCRYPTION_KEY`` resolves to ``SECRET_KEY`` when the
+    dedicated key is unset, so ``settings`` can't reveal the fallback after the
+    fact — read the raw env here. On the fallback, rotating the JWT ``SECRET_KEY``
+    silently invalidates every stored LLM + scanner credential (``decrypt_secret``
+    returns ``None`` and operators must re-enter keys). The old behaviour only
+    surfaced this on the first encrypt/decrypt, which may never happen at boot.
+    """
+    dedicated = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
+    secret = os.getenv("SECRET_KEY", "")
+    if not dedicated and secret:
+        logger.warning(
+            "=" * 60
+            + "\nCREDENTIAL_ENCRYPTION_KEY is not set — credential encryption is "
+            "falling back to SECRET_KEY.\nRotating SECRET_KEY will invalidate "
+            "every stored LLM provider and scanner integration credential.\nSet a "
+            "dedicated CREDENTIAL_ENCRYPTION_KEY (32+ bytes) in .env to decouple "
+            "them.\n" + "=" * 60
+        )
+
+
 # --- housekeeping leader election (B2-2) -----------------------------------
 #
 # The background loops below run in EVERY uvicorn worker (default 4).  Their

@@ -452,6 +452,10 @@ class AgentCapability(str, enum.Enum):
     WRITE_NOTES = "write:notes"
     WRITE_FOLLOW = "write:follow"
     WRITE_EXECUTION = "write:execution"
+    # Correct operator-curated host attributes (hostname / OS) after manual
+    # investigation. Grantable to assist sessions so an agent can fix what a
+    # scan mis-detected; always row-scoped to the operator's assigned hosts.
+    WRITE_HOST = "write:host"
 
 
 class AgentCapabilityConstraint(str, enum.Enum):
@@ -472,13 +476,15 @@ LEGACY_WRITE_CAPABILITIES = frozenset({
     AgentCapability.WRITE_NOTES.value,
     AgentCapability.WRITE_FOLLOW.value,
     AgentCapability.WRITE_EXECUTION.value,
+    AgentCapability.WRITE_HOST.value,
 })
 
 # Assist sessions start with NO write capability.  The operator may grant
-# note/follow writes at mint time, always narrowed to assigned hosts.
+# note/follow/host writes at mint time, always narrowed to assigned hosts.
 ASSIST_GRANTABLE_CAPABILITIES = frozenset({
     AgentCapability.WRITE_NOTES.value,
     AgentCapability.WRITE_FOLLOW.value,
+    AgentCapability.WRITE_HOST.value,
 })
 
 

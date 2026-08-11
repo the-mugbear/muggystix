@@ -23,6 +23,8 @@ import hashlib
 import json
 import logging
 from urllib.parse import quote
+
+import httpx
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -250,8 +252,6 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
     provider-specific SDKs, to keep the server image small and the
     failure modes easy to debug.
     """
-    import httpx
-
     api_key = decrypt_secret(provider.api_key_encrypted)
     ptype = provider.provider_type
     # Ollama is the only provider we let point at loopback / LAN hosts.

@@ -141,6 +141,11 @@ export const ExecutionSessionHeader: React.FC<ExecutionSessionHeaderProps> = ({
                 {env?.notes && (
                   <p className="text-caption text-muted-foreground">{env.notes}</p>
                 )}
+                {env?.probed_at && (
+                  <p className="text-caption text-muted-foreground">
+                    Probed at {new Date(env.probed_at).toLocaleString()}
+                  </p>
+                )}
               </div>
             );
           })()}

@@ -5,6 +5,7 @@ import { getScan, getHostsByScan, getScanDnsRecords } from '../services/api';
 import type { Host, DNSRecord } from '../services/api';
 import CommandExplanation from '../components/CommandExplanation';
 import { Card, CardContent } from '../components/ui/card';
+import SeverityBar from '../components/ui/SeverityBar';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -167,6 +168,10 @@ const ScanDetail: React.FC = () => {
   const upHostCount = scan.up_hosts ?? upHosts;
   const totalPortCount = scan.total_ports ?? totalPorts;
   const openPortCount = scan.open_ports ?? openPorts;
+  // Per-scan rollups — absent on scans ingested before the summaries
+  // existed, so both are guarded at the render site.
+  const portBreakdown = scan.port_breakdown ?? null;
+  const vulnSummary = scan.vulnerability_summary ?? null;
   // The rendered host/port tables are a sample when the scan has more
   // hosts than we fetched — surface that so the counts don't look buggy.
   const hostsCapped = hosts.length < totalHostCount;
@@ -196,7 +201,18 @@ const ScanDetail: React.FC = () => {
 
       <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-4">
         <StatCard label="Hosts Up" value={`${upHostCount}/${totalHostCount}`} />
-        <StatCard label="Open Ports" value={openPortCount} />
+        {/* Open ports with the TCP/UDP split when the scan carries a breakdown. */}
+        <Card>
+          <CardContent className="p-md">
+            <p className="text-caption text-muted-foreground">Open Ports</p>
+            <p className="truncate text-section-title font-semibold text-foreground md:text-page-title">{openPortCount}</p>
+            {portBreakdown && (portBreakdown.open_tcp_ports > 0 || portBreakdown.open_udp_ports > 0) && (
+              <p className="mt-xxs truncate text-caption tabular-nums text-muted-foreground">
+                {portBreakdown.open_tcp_ports} TCP · {portBreakdown.open_udp_ports} UDP
+              </p>
+            )}
+          </CardContent>
+        </Card>
         <StatCard label="Total Ports" value={totalPortCount} />
         <Card>
           <CardContent className="p-md">
@@ -206,6 +222,19 @@ const ScanDetail: React.FC = () => {
             <p className="text-caption text-muted-foreground">Duration: {fmtDuration(scanDurationMs)}</p>
           </CardContent>
         </Card>
+        {/* Vulnerability severity rollup — only for scans that recorded any. */}
+        {vulnSummary && vulnSummary.total > 0 && (
+          <Card className="col-span-2">
+            <CardContent className="p-md">
+              <p className="text-caption text-muted-foreground">
+                Vulnerabilities ({vulnSummary.total.toLocaleString()})
+              </p>
+              <div className="mt-xs">
+                <SeverityBar counts={vulnSummary} variant="inline" />
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <Card>

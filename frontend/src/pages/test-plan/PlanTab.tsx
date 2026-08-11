@@ -603,6 +603,11 @@ const PlanTab: React.FC = () => {
                   {priority}: {count}
                 </Badge>
               ))}
+              {Object.entries(progress.by_phase).map(([phase, count]) => (
+                <Badge key={`ph-${phase}`} variant="outline">
+                  {formatStatusLabel(phase)}: {count}
+                </Badge>
+              ))}
             </div>
           </div>
         </div>

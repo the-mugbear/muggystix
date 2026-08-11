@@ -322,6 +322,11 @@ class HostDeduplicationService:
                 scan_id=scan_id
             )
             self.db.add(new_script)
+            # autoflush is off — flush so a repeat of the same (port_id, script_id)
+            # later in THIS scan (merged/cat'd XML with duplicate host entries)
+            # finds the row above instead of inserting a second one that would
+            # detonate uq_port_script at the next commit.
+            self.db.flush()
             return new_script
     
     def add_or_update_host_script(self, host_id: int, scan_id: int, script_data: Dict[str, Any]) -> HostScript:
@@ -350,6 +355,9 @@ class HostDeduplicationService:
                 scan_id=scan_id
             )
             self.db.add(new_script)
+            # autoflush is off — flush so an in-scan repeat finds this row instead
+            # of inserting a duplicate that breaks uq_host_script at commit.
+            self.db.flush()
             return new_script
     
     def _create_new_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any]) -> Host:

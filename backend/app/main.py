@@ -12,6 +12,7 @@ from app.api.v1.api import api_router
 from app.db.init import initialize_database
 from app.startup import (
     agent_api_call_retention_loop,
+    check_credential_encryption_key,
     ensure_default_project,
     expired_session_cleanup_loop,
     get_instance_id,
@@ -563,6 +564,7 @@ async def _run_startup_sequence() -> None:
     )
     logger.info(f"CORS origins: {cors_origins}")
 
+    check_credential_encryption_key()
     seed_default_admin()
     ensure_default_project()
     seed_system_identity()

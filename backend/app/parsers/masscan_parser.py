@@ -42,6 +42,9 @@ class MasscanParser:
 
     def __init__(self, db: Session):
         self.db = db
+        # See NmapXMLParser — id of the incrementally-committed Scan so the
+        # dispatcher can delete a partial scan if the attempt fails.
+        self._created_scan_id = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Dispatch to format-specific parsers based on file extension."""
@@ -619,6 +622,7 @@ class MasscanParser:
         )
         self.db.add(scan)
         self.db.flush()
+        self._created_scan_id = scan.id
         return scan
 
     def _extract_xml_host(self, host_elem: etree._Element) -> Optional[Dict[str, Any]]:
@@ -660,6 +664,13 @@ class MasscanParser:
     # bounded regardless of how the file is formatted.
     _JSON_READ_CHUNK = 65536
 
+    # A single masscan record is a small dict; if the buffer grows past this
+    # without the decoder yielding one, the content is a giant top-level object
+    # or is corrupt past the sample window. Cap it so a bad ``.json`` routed
+    # here raises a parse error instead of buffering the whole file (up to
+    # MAX_FILE_SIZE) into a Python str and OOM-ing the worker in a retry loop.
+    _MAX_JSON_RECORD_BYTES = 16 * 1024 * 1024
+
     def _iter_json_entries(self, file_path: str) -> Iterable[Dict[str, Any]]:
         decoder = json.JSONDecoder()
         buffer = ""
@@ -681,6 +692,15 @@ class MasscanParser:
                     try:
                         entry, index = decoder.raw_decode(buffer)
                     except json.JSONDecodeError:
+                        # Normally "need more data" — break and read the next
+                        # chunk. But if the undecodable buffer is already huge,
+                        # it's malformed or a single oversized record; fail
+                        # instead of accumulating the whole file into memory.
+                        if len(buffer) > self._MAX_JSON_RECORD_BYTES:
+                            raise ValueError(
+                                "Masscan JSON record exceeds "
+                                f"{self._MAX_JSON_RECORD_BYTES} bytes or is malformed"
+                            )
                         break
                     yield entry
                     buffer = buffer[index:]

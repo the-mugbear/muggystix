@@ -18,11 +18,13 @@ from-filter) tracked in CHANGELOG and may add WRITE endpoints
 behind their own approval/confirmation surface.
 """
 
+import json
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, Query as SAQuery
 
 from app.db.session import get_db
 from app.db import models
@@ -304,6 +306,104 @@ def get_assist_context(
 # Hosts — list + detail
 # ---------------------------------------------------------------------------
 
+def _build_assist_host_query(
+    db: Session,
+    session: AssistSession,
+    *,
+    state: Optional[str],
+    ports: Optional[str],
+    services: Optional[str],
+    subnets: Optional[str],
+    has_critical_vulns: Optional[bool],
+    has_high_vulns: Optional[bool],
+    search: Optional[str],
+    q: Optional[str],
+) -> SAQuery:
+    """Build the filtered, project-scoped host query shared by the paged list
+    and the NDJSON stream. Both surfaces MUST filter identically, so the discrete
+    params + the boolean DSL live here once. Raises HTTPException(400) on a
+    malformed DSL query.
+    """
+    query = db.query(models.Host).filter(models.Host.project_id == session.project_id)
+    query = _apply_agent_host_filters(
+        query,
+        db,
+        project_id=session.project_id,
+        state=state,
+        ports=ports,
+        services=services,
+        subnets=subnets,
+        has_critical_vulns=has_critical_vulns,
+        has_high_vulns=has_high_vulns,
+        search=search,
+    )
+    if q:
+        # Boolean DSL — same parser/evaluator as the human Hosts page, bound to
+        # the session operator so follow:/assigned: are answerable. Lazy import
+        # keeps the module-load graph acyclic; a malformed query is a clean 400.
+        from app.services.host_query_dsl import BuildCtx, DSLError, evaluate, parse_query
+        operator = session.started_by
+        if operator is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Assist session has no operator bound; cannot evaluate follow:/assigned: predicates.",
+            )
+        try:
+            query = query.filter(
+                evaluate(parse_query(q), BuildCtx(db, operator, session.project_id))
+            )
+        except DSLError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid query: {exc}")
+    return query
+
+
+def _host_to_brief_dict(h: models.Host, port_counts: dict, vuln_map: dict) -> dict:
+    """Serialize one host to the HostBrief-shaped dict used by the NDJSON stream."""
+    vc = vuln_map.get(h.id, {})
+    return {
+        "id": h.id,
+        "ip_address": h.ip_address,
+        "hostname": h.hostname,
+        "state": h.state,
+        "os_name": h.os_name,
+        "os_family": h.os_family,
+        "first_seen": h.first_seen.isoformat() if h.first_seen else None,
+        "last_seen": h.last_seen.isoformat() if h.last_seen else None,
+        "open_port_count": port_counts.get(h.id, 0),
+        "vuln_summary": {
+            "critical": vc.get("critical", 0),
+            "high": vc.get("high", 0),
+            "medium": vc.get("medium", 0),
+            "low": vc.get("low", 0),
+        }
+        if vc
+        else None,
+    }
+
+
+def _iter_assist_hosts_ndjson(db: Session, query: SAQuery):
+    """Yield every matching host as one JSON object per line, paged so a
+    project with thousands of hosts streams in bounded memory instead of
+    materialising the whole ORM result set (mirrors the recon download valve).
+    """
+    _PAGE = 500
+    offset = 0
+    ordered = query.order_by(models.Host.ip_address)
+    while True:
+        hosts = ordered.offset(offset).limit(_PAGE).all()
+        if not hosts:
+            break
+        host_ids = [h.id for h in hosts]
+        port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+        for h in hosts:
+            yield json.dumps(_host_to_brief_dict(h, port_counts, vuln_map)) + "\n"
+        if len(hosts) < _PAGE:
+            break
+        offset += _PAGE
+        # Detach the page so the session doesn't accumulate every host.
+        db.expunge_all()
+
+
 @router.get(
     "/assist/hosts",
     response_model=List[HostBrief],
@@ -357,37 +457,12 @@ def list_assist_hosts(
     recon-only ``scoped_host_ids_subq`` path is skipped.
     """
     session = _load_assist_session(db, request)
-    query = db.query(models.Host).filter(models.Host.project_id == session.project_id)
-    query = _apply_agent_host_filters(
-        query,
-        db,
-        project_id=session.project_id,
-        state=state,
-        ports=ports,
-        services=services,
-        subnets=subnets,
-        has_critical_vulns=has_critical_vulns,
-        has_high_vulns=has_high_vulns,
-        search=search,
+    query = _build_assist_host_query(
+        db, session,
+        state=state, ports=ports, services=services, subnets=subnets,
+        has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
+        search=search, q=q,
     )
-    if q:
-        # Boolean DSL — same parser/evaluator as the human Hosts page,
-        # bound to the session operator so follow:/assigned: are answerable.
-        # Lazy import keeps the module-load graph acyclic.  A malformed
-        # query is a clean 400, not a 500.
-        from app.services.host_query_dsl import BuildCtx, DSLError, evaluate, parse_query
-        operator = session.started_by
-        if operator is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Assist session has no operator bound; cannot evaluate follow:/assigned: predicates.",
-            )
-        try:
-            query = query.filter(
-                evaluate(parse_query(q), BuildCtx(db, operator, session.project_id))
-            )
-        except DSLError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid query: {exc}")
     hosts = query.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
     if not hosts:
         return []
@@ -418,6 +493,55 @@ def list_assist_hosts(
             )
         )
     return result
+
+
+@router.get(
+    "/assist/hosts.ndjson",
+    summary="Stream ALL matching hosts as newline-delimited JSON (download to disk)",
+    response_class=StreamingResponse,
+)
+def download_assist_hosts_ndjson(
+    request: Request,
+    state: Optional[str] = Query(None),
+    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
+    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
+    has_critical_vulns: Optional[bool] = Query(None),
+    has_high_vulns: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    q: Optional[str] = Query(None, description="Boolean query DSL — same vocabulary as /assist/hosts."),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """The complete host set — uncapped, one JSON object per line — for when the
+    answer doesn't fit a context window.
+
+    Use this instead of paging ``/assist/hosts`` when the project has thousands
+    of hosts: redirect it to a file and process it locally so coverage stays
+    complete without the payload ever being read into the model:
+
+        curl -sk -H "X-API-Key: $KEY" .../assist/hosts.ndjson -o hosts.jsonl
+        jq -c 'select(.open_port_count > 0 and .os_family == "Windows")' hosts.jsonl
+
+    Same fields, same IP ordering, and same filter vocabulary as
+    ``GET /assist/hosts`` — the identical dataset, delivered so it can be
+    processed without being read whole. Server memory is bounded (rows are
+    paged as they stream).
+    """
+    session = _load_assist_session(db, request)
+    query = _build_assist_host_query(
+        db, session,
+        state=state, ports=ports, services=services, subnets=subnets,
+        has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
+        search=search, q=q,
+    )
+    return StreamingResponse(
+        _iter_assist_hosts_ndjson(db, query),
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": f"attachment; filename=assist-project-{session.project_id}-hosts.jsonl"
+        },
+    )
 
 
 @router.get(

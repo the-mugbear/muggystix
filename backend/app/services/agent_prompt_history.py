@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.42.0",
+        "app_version": "2.246.0",
+        "summary": (
+            "Assist gains writes + a bulk-download valve. (1) PATCH "
+            "/agent/hosts/<id> corrects operator-curated host attributes "
+            "(hostname / os_name) after investigation, gated by the new "
+            "write:host capability and the same assigned-hosts row scope as "
+            "notes/follow; only those two fields are editable, scan-derived "
+            "facts stay read-only. (2) GET /agent/assist/hosts.ndjson streams "
+            "EVERY matching host (same filters + q DSL) one JSON object per "
+            "line, uncapped, so a project with thousands of hosts is "
+            "downloaded to disk and processed with jq/grep instead of paged "
+            "into the agent's context. The assist prompt documents both."
+        ),
+    },
+    {
         "version": "1.41.0",
         "app_version": "2.241.0",
         "summary": (

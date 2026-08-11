@@ -15,6 +15,9 @@ class GnmapParser:
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
         self.correlation_service = SubnetCorrelationService(db)
+        # See NmapXMLParser — id of the incrementally-committed Scan so the
+        # dispatcher can delete a partial scan if the attempt fails.
+        self._created_scan_id = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -46,6 +49,7 @@ class GnmapParser:
         self.db.add(scan)
         self.db.flush()
         scan_id = scan.id
+        self._created_scan_id = scan_id
 
         hosts_processed = 0
         host_lines_seen = 0
@@ -86,6 +90,12 @@ class GnmapParser:
                         report_progress(f"{hosts_processed} hosts")
 
                 except Exception as e:
+                    # ParseFailure (cancel/timeout, raised by report_progress after
+                    # host_sp already committed) subclasses RuntimeError — re-raise
+                    # so it isn't swallowed as a per-host error and the worker stops.
+                    from app.services.ingestion_service import ParseFailure
+                    if isinstance(e, ParseFailure):
+                        raise
                     logger.error(f"Error processing host {host_data.get('ip_address', 'unknown')}: {e}")
                     try:
                         host_sp.rollback()
@@ -110,6 +120,22 @@ class GnmapParser:
                 self.db.rollback()
             except Exception:
                 pass
+
+        # Publish ingestion quality (mirrors NmapXMLParser). Without this a
+        # .gnmap where most Host: lines failed to parse or dedup reported as a
+        # clean `completed` job — a silent partial failure in a security tool.
+        skipped = max(host_lines_seen - hosts_processed, 0)
+        self.last_parse_stats = {
+            "skipped": skipped,
+            "warnings": (
+                f"{skipped} of {host_lines_seen} host line(s) were skipped "
+                "(unparseable or failed to import)."
+                if skipped
+                else None
+            ),
+            "summary": f"{hosts_processed} host observation(s) from {host_lines_seen} host line(s)",
+            "partial": skipped > 0,
+        }
 
         logger.info(
             "Completed parsing %s: processed %s host observations from %s host lines",

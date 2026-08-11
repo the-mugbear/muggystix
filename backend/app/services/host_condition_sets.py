@@ -45,13 +45,35 @@ CLEARTEXT_PORTS = {21, 23, 110, 143}
 
 
 def eol_os_host_ids(db: Session, project_id: int) -> Set[int]:
-    """Hosts whose ``os_name`` matches the end-of-life OS catalog."""
+    """Hosts whose ``os_name`` matches the end-of-life OS catalog.
+
+    Match the EOL regex catalog against the project's DISTINCT ``os_name``
+    values (there are far fewer distinct OS strings than hosts), then resolve
+    the host ids in SQL. Avoids running the catalog per-host and pulling every
+    ``(id, os_name)`` row into Python — the cost that dominated this call on
+    large estates when ``has:eol`` / Systemic Insights hit it.
+    """
+    distinct_os = (
+        db.query(models.Host.os_name)
+        .filter(
+            models.Host.project_id == project_id,
+            models.Host.os_name.isnot(None),
+            models.Host.os_name != "",
+        )
+        .distinct()
+        .all()
+    )
+    eol_names = [name for (name,) in distinct_os if match_eol_os(name) is not None]
+    if not eol_names:
+        return set()
     return {
         hid
-        for hid, os_name in db.query(models.Host.id, models.Host.os_name)
-        .filter(models.Host.project_id == project_id)
+        for (hid,) in db.query(models.Host.id)
+        .filter(
+            models.Host.project_id == project_id,
+            models.Host.os_name.in_(eol_names),
+        )
         .all()
-        if match_eol_os(os_name) is not None
     }
 
 

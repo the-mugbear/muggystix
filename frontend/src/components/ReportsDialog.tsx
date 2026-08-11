@@ -9,6 +9,7 @@ import {
   Globe,
   Loader2,
   ServerCog,
+  Sparkles,
   Table as TableIcon,
 } from 'lucide-react';
 import {
@@ -40,6 +41,7 @@ import {
   SelectValue,
 } from './ui/select';
 import { cn } from '../utils/cn';
+import AiDraftReportDialog from './AiDraftReportDialog';
 
 interface ReportsDialogProps {
   open: boolean;
@@ -121,6 +123,9 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // Recent async report jobs — so navigating away / reopening doesn't strand a
   // long-running or completed export; you can re-download from here.
   const [recentJobs, setRecentJobs] = useState<ReportJob[]>([]);
+  // "Draft with AI (beta)" — opens a separate dialog that asks a configured LLM
+  // to draft a narrative report from the project's promoted findings.
+  const [aiDraftOpen, setAiDraftOpen] = useState(false);
 
   const refreshRecentJobs = React.useCallback(async () => {
     try {
@@ -400,6 +405,34 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
           </div>
         </div>
 
+        {/* Draft with AI — narrative report drafted by a configured LLM from the
+            project's promoted findings, then edited by the operator. Separate
+            dialog so this export dialog stays focused on file exports. */}
+        <div className="mt-xs border-t border-border pt-sm">
+          <button
+            type="button"
+            onClick={() => setAiDraftOpen(true)}
+            disabled={isBusy}
+            className={cn(
+              'flex w-full items-start gap-xs rounded-control border border-border p-xs text-left',
+              'hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'disabled:opacity-60',
+            )}
+          >
+            <Sparkles className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="min-w-0">
+              <span className="flex items-center gap-xs">
+                <span className="text-metadata font-medium text-foreground">Draft with AI</span>
+                <Badge variant="outline">beta</Badge>
+              </span>
+              <span className="block text-caption text-muted-foreground">
+                Have a configured LLM draft a narrative report from this project&apos;s promoted
+                findings — then edit it before sharing.
+              </span>
+            </span>
+          </button>
+        </div>
+
         {/* Recent reports — async jobs persist on the worker, so navigating away
             or reopening this dialog won't strand a long-running/completed export.
             Re-download completed ones here. */}
@@ -476,6 +509,8 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
           </div>
         )}
       </DialogContent>
+
+      <AiDraftReportDialog open={aiDraftOpen} onClose={() => setAiDraftOpen(false)} />
     </Dialog>
   );
 };

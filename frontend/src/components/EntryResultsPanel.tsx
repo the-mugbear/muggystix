@@ -246,7 +246,17 @@ const SanityCheckRowDisplay: React.FC<{ row: HostSanityCheckRow }> = ({ row }) =
       {row.port_checked != null && `:${row.port_checked}`}
     </TableCell>
     <TableCell className="whitespace-pre-wrap break-words text-metadata">
-      {row.details || row.actual_value || row.dns_result || '—'}
+      {row.expected_value ? (
+        <span>
+          <span className="text-muted-foreground">{row.expected_value}</span>
+          {' → '}
+          <span className={row.passed ? undefined : 'text-destructive'}>
+            {row.details || row.actual_value || row.dns_result || '—'}
+          </span>
+        </span>
+      ) : (
+        row.details || row.actual_value || row.dns_result || '—'
+      )}
     </TableCell>
     <TableCell className="w-44 whitespace-nowrap text-caption text-muted-foreground">
       {fmtTime(row.checked_at)}

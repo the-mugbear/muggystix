@@ -351,6 +351,26 @@ class AgentFollowRequest(BaseModel):
     status: str  # watching | in_review | reviewed
 
 
+class AgentHostUpdate(BaseModel):
+    """Operator-curated host corrections an agent may apply after investigation.
+
+    Only the two attributes a human would fix by hand are editable — scan-
+    derived facts (ports, services, vulns) are never mutated here. Pass a field
+    to set it; omit it to leave it unchanged; pass an empty string to clear it.
+    """
+
+    hostname: Optional[str] = Field(None, max_length=255)
+    os_name: Optional[str] = Field(None, max_length=255)
+
+
+class AgentHostUpdateResponse(BaseModel):
+    id: int
+    ip_address: str
+    hostname: Optional[str] = None
+    os_name: Optional[str] = None
+    changed: List[str] = Field(default_factory=list)
+
+
 class EntryBatchResponse(BaseModel):
     """Wrapped response for batch entry creation.
 

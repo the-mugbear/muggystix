@@ -41,6 +41,7 @@ from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
     ScanBrief, ScopeBrief, ProjectInfo, AgentDashboard,
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest,
+    AgentHostUpdate, AgentHostUpdateResponse,
 )
 from app.api.v1.endpoints.agent_common import (
     _scoped_host_ids_subq, _scoped_scan_ids_subq,
@@ -523,3 +524,61 @@ def set_agent_follow(
 
     svc = HostFollowService(db)
     svc.set_follow_status(host_id, agent.owner_id, follow_status)
+
+
+@router.patch(
+    "/hosts/{host_id}",
+    response_model=AgentHostUpdateResponse,
+    summary="Correct operator-curated host attributes (hostname / OS)",
+)
+def update_agent_host(
+    body: AgentHostUpdate,
+    request: Request,
+    host_id: int = Path(..., gt=0),
+    agent: Agent = Depends(require_capability(AgentCapability.WRITE_HOST.value)),
+    db: Session = Depends(get_db),
+):
+    """Update ``hostname`` and/or ``os_name`` on a host after investigation.
+
+    Requires the ``write:host`` capability. Plan / execution / recon / legacy
+    keys carry it implicitly; an assist session only carries it when the
+    operator granted write access at start time, and then only for hosts
+    assigned to them. Deliberately narrow — only these two operator-correctable
+    attributes are editable; scan-derived facts are never mutated here. The
+    change is captured by the agent API audit middleware (touched host id), so
+    who-changed-what stays reconstructable.
+    """
+    q = (
+        db.query(models.Host)
+        .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
+    )
+    scoped_scope = getattr(request.state, "scoped_scope_id", None)
+    if scoped_scope is not None:
+        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
+    host = q.first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    enforce_capability_row_scope(request, db, host_id=host_id)
+
+    fields = body.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No editable fields supplied.")
+    changed: List[str] = []
+    for field in ("hostname", "os_name"):
+        if field in fields:
+            new_value = (fields[field] or "").strip() or None
+            if getattr(host, field) != new_value:
+                setattr(host, field, new_value)
+                changed.append(field)
+    if changed:
+        db.commit()
+        db.refresh(host)
+
+    return AgentHostUpdateResponse(
+        id=host.id,
+        ip_address=host.ip_address,
+        hostname=host.hostname,
+        os_name=host.os_name,
+        changed=changed,
+    )

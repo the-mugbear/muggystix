@@ -49,6 +49,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
+import SeverityBar from '../components/ui/SeverityBar';
 import { Checkbox } from '../components/ui/checkbox';
 import {
   Dialog,
@@ -1488,12 +1489,15 @@ export default function Scans() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    {renderSortHeader('filename', 'Scan', 'w-[28%]')}
-                    {renderSortHeader('created_at', 'Uploaded', 'w-[16%]')}
-                    <TableHead className="w-[18%]">Window</TableHead>
-                    {renderSortHeader('new_hosts', 'New hosts', 'w-[14%]')}
-                    <TableHead className="w-[14%]" title="Already-known hosts this scan re-observed and updated">
+                    {renderSortHeader('filename', 'Scan', 'w-[24%]')}
+                    {renderSortHeader('created_at', 'Uploaded', 'w-[14%]')}
+                    <TableHead className="w-[16%]">Window</TableHead>
+                    {renderSortHeader('new_hosts', 'New hosts', 'w-[11%]')}
+                    <TableHead className="w-[11%]" title="Already-known hosts this scan re-observed and updated">
                       Modified
+                    </TableHead>
+                    <TableHead className="w-[14%]" title="Vulnerabilities by severity and the open TCP/UDP port split for this scan">
+                      Findings / ports
                     </TableHead>
                     <TableHead className="w-[10%]">Actions</TableHead>
                   </TableRow>
@@ -1579,6 +1583,29 @@ export default function Scans() {
                               </span>
                             )}
                           </TableCell>
+                          {/* Per-scan vuln + port rollups. Older scans predate
+                              these summaries, so both blocks guard on presence
+                              and fall back to a dash. */}
+                          <TableCell className="min-w-0">
+                            {scan.vulnerability_summary && scan.vulnerability_summary.total > 0 ? (
+                              <div className="flex items-center gap-xs">
+                                <span className="w-6 shrink-0 tabular-nums text-caption text-foreground">
+                                  {scan.vulnerability_summary.total}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <SeverityBar counts={scan.vulnerability_summary} variant="compact" />
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-caption text-muted-foreground">No findings</span>
+                            )}
+                            {scan.port_breakdown
+                              && (scan.port_breakdown.open_tcp_ports > 0 || scan.port_breakdown.open_udp_ports > 0) && (
+                              <p className="mt-xxs truncate text-caption tabular-nums text-muted-foreground">
+                                {scan.port_breakdown.open_tcp_ports} TCP · {scan.port_breakdown.open_udp_ports} UDP
+                              </p>
+                            )}
+                          </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap items-center gap-xs">
                               {scan.total_hosts > 0 && (
@@ -1608,7 +1635,7 @@ export default function Scans() {
                         </TableRow>
                         {hasCommand && isExpanded && (
                           <TableRow>
-                            <TableCell colSpan={6} className="py-sm">
+                            <TableCell colSpan={7} className="py-sm">
                               {commandDetail(scan)}
                             </TableCell>
                           </TableRow>

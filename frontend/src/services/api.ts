@@ -612,6 +612,49 @@ export const dismissReportJob = async (jobId: number): Promise<ReportJob> => {
   return response.data as ReportJob;
 };
 
+// --- AI-drafted narrative report (beta) --------------------------------------
+// Asks a configured LLM provider to draft a markdown report from the project's
+// promoted findings. The operator edits the returned draft — the AI never owns
+// the final text. Errors: 400 (user-fixable: no provider / no findings — the
+// reason is in `detail`), 502 (provider failure — generic `detail`).
+
+export interface DraftReportRequest {
+  /** Provider to use; omit to let the backend pick the user's default. */
+  provider_id?: number;
+  /** Optional free-text audience (e.g. "executive", "technical remediation"). */
+  audience?: string;
+  /** Optional free-text steering instructions for the draft. */
+  instructions?: string;
+  /** Optional severity filter for the findings fed to the model. */
+  severities?: string[];
+  /** Optional status filter for the findings fed to the model. */
+  statuses?: string[];
+}
+
+export interface DraftReportResponse {
+  /** The drafted report, as markdown. */
+  content: string;
+  provider_id: number;
+  provider_type: string;
+  model_id: string | null;
+  /** How many promoted findings the draft was built from. */
+  finding_total: number;
+  severity_counts: Record<string, number>;
+  usage: Record<string, unknown> | null;
+}
+
+export const draftReportWithAI = async (
+  body: DraftReportRequest,
+  // Optional axios opts so callers can pass an AbortController signal to
+  // cancel a long (30-60s) draft mid-flight.
+  opts?: { signal?: AbortSignal },
+): Promise<DraftReportResponse> => {
+  const response = await api.post<DraftReportResponse>(`${p()}/reports/draft`, body, {
+    signal: opts?.signal,
+  });
+  return response.data;
+};
+
 // Tool Ready Output API
 export const getToolReadyOutput = async (
   format: string,

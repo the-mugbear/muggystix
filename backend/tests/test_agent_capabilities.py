@@ -157,7 +157,7 @@ def test_read_only_session_reports_no_capabilities(client, test_project):
 
 def test_write_session_reports_scoped_capabilities(client, test_project):
     body = _start_session(client, test_project.id, can_write=True)
-    assert sorted(body["capabilities"]) == ["write:follow", "write:notes"]
+    assert sorted(body["capabilities"]) == ["write:follow", "write:host", "write:notes"]
     assert body["capability_constraint"] == "assigned"
     # And the prompt must tell the agent what it may write + where.
     assert "/agent/hosts/<host_id>/notes" in body["instructions"]
@@ -276,5 +276,5 @@ def test_capabilities_visible_on_session_list_for_audit(client, test_project):
     resp = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions")
     assert resp.status_code == 200, resp.text
     row = resp.json()[0]
-    assert sorted(row["capabilities"]) == ["write:follow", "write:notes"]
+    assert sorted(row["capabilities"]) == ["write:follow", "write:host", "write:notes"]
     assert row["capability_constraint"] == "assigned"

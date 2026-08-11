@@ -575,13 +575,14 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[17%]">Site</TableHead>
-                <TableHead className="w-[11%]">Tier</TableHead>
+                <TableHead className="w-[16%]">Site</TableHead>
+                <TableHead className="w-[10%]">Tier</TableHead>
                 <TableHead className="w-[7%] text-right">Hosts</TableHead>
-                <TableHead className="w-[19%]">Active exposure</TableHead>
-                <TableHead className="w-[10%] text-right">Reviewed</TableHead>
-                <TableHead className="w-[14%]">Owner</TableHead>
-                <TableHead className="w-[22%]">Recommended action</TableHead>
+                <TableHead className="w-[11%]" title="Discovered hosts vs. the site's expected host count">Coverage</TableHead>
+                <TableHead className="w-[17%]">Active exposure</TableHead>
+                <TableHead className="w-[9%] text-right">Reviewed</TableHead>
+                <TableHead className="w-[13%]">Owner</TableHead>
+                <TableHead className="w-[17%]">Recommended action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -610,6 +611,22 @@ const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) 
                       ) : <span className="text-caption text-muted-foreground">—</span>}
                     </TableCell>
                     <TableCell className="text-right tabular-nums text-foreground">{s.host_count}</TableCell>
+                    <TableCell className="text-caption">
+                      {s.expected_host_count == null ? (
+                        <span className="text-muted-foreground">{safeFallback(null)}</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-xxs">
+                          <span className="tabular-nums text-foreground">
+                            {s.host_count} / {s.expected_host_count}
+                          </span>
+                          {s.coverage_gap != null && s.coverage_gap > 0 && (
+                            <Badge variant="warning" title={`${s.coverage_gap} expected host${s.coverage_gap === 1 ? '' : 's'} not yet discovered`}>
+                              −{s.coverage_gap}
+                            </Badge>
+                          )}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       {s.exposure.active_findings === 0 ? (
                         <span className="text-caption text-muted-foreground">none</span>

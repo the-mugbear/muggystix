@@ -7,6 +7,7 @@
  * up" lands on.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { formatDistanceToNow } from 'date-fns';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
@@ -67,6 +68,14 @@ import { safeFallback } from '../utils/uiStyles';
 import { STATUS_LABEL, TERMINAL_STATUSES, matchesStatusFilter } from '../utils/findingStatus';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
+
+// Relative age from an ISO timestamp; falls back safely on a missing/invalid
+// value rather than rendering "Invalid Date".
+const formatAge = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : formatDistanceToNow(d, { addSuffix: true });
+};
 
 type SummaryPrompt =
   | { kind: 'single'; findingId: number; status: FindingStatus; title: string }
@@ -543,6 +552,7 @@ const Findings: React.FC = () => {
                 <SortHead field="source" label="Source" className="w-24" />
                 <SortHead field="host_count" label="Hosts" className="w-48" />
                 <TableHead className="w-40">Owner</TableHead>
+                <SortHead field="created_at" label="Age" className="w-28" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -550,14 +560,14 @@ const Findings: React.FC = () => {
                   keeps prior rows visible (no full-table flash). */}
               {loading && findings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-xl text-center text-muted-foreground">
                     <Loader2 className="mx-auto size-5 animate-spin" aria-hidden />
                   </TableCell>
                 </TableRow>
               )}
               {!loading && error && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-lg text-center text-destructive">
+                  <TableCell colSpan={8} className="py-lg text-center text-destructive">
                     <AlertTriangle className="mx-auto mb-xs size-5" aria-hidden />
                     {error}
                   </TableCell>
@@ -565,7 +575,7 @@ const Findings: React.FC = () => {
               )}
               {!loading && !error && findings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-xl text-center text-muted-foreground">
                     {hasActiveFilters
                       ? 'No findings match these filters. Clear them to see all.'
                       : 'No findings yet. Promote a note from a host (Notes → Promote to finding) to record one here.'}
@@ -651,6 +661,14 @@ const Findings: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <span className="block truncate">{safeFallback(f.owner_name, 'Unassigned')}</span>
+                  </TableCell>
+                  <TableCell className="text-caption text-muted-foreground">
+                    <span
+                      className="block truncate"
+                      title={f.created_at ? new Date(f.created_at).toLocaleString() : undefined}
+                    >
+                      {formatAge(f.created_at)}
+                    </span>
                   </TableCell>
                 </TableRow>
               ))}
