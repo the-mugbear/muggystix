@@ -1263,6 +1263,12 @@ class IngestionService:
             from app.parsers.whatweb_parser import WhatwebParser, looks_like_whatweb
             if looks_like_whatweb(sample, filename):
                 attempts.append(("whatweb_json", WhatwebParser, "whatweb web fingerprint (JSON/JSONL)"))
+            # testssl.sh TLS assessment — a flat findings array (id + finding +
+            # severity) that no other JSON probe emits, so it sits beside the
+            # web-fingerprint probes with no cross-match risk.
+            from app.parsers.testssl_parser import TestsslParser, looks_like_testssl
+            if looks_like_testssl(sample, filename):
+                attempts.append(("testssl_json", TestsslParser, "testssl.sh TLS assessment (JSON)"))
             if _cd.looks_like_bloodhound(sample, filename):
                 attempts.append(("bloodhound_json", BloodHoundParser, "BloodHound/SharpHound JSON export"))
             if _cd.looks_like_amass(sample, filename):

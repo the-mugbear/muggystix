@@ -49,7 +49,7 @@ A single upload becomes an `IngestionJob`; a background worker
 | `Port` | `ports_v2` | port scanners + web/dir/vuln parsers |
 | `HostScanHistory` / `PortScanHistory` | per-scan observation audit trail |
 | `Vulnerability` | `vulnerabilities` | **Nessus, OpenVAS, Nikto only** |
-| `WebInterface` | `web_interfaces` | **httpx, whatweb, eyewitness** (unified web view, keyed by `source`) |
+| `WebInterface` | `web_interfaces` | **httpx, whatweb, eyewitness, testssl** (unified web view, keyed by `source`) |
 | `DNSRecord` | `dns_records` | **dnsx, dns CSV, amass** (columns are `domain` + `value`, *not* `hostname`/`ip_address`) |
 | `Subnet` / `SubnetLabel` | scope tables | `subnet_parser` (Scope import page only) |
 | `ScanInfo`, `Script`/`HostScript` | nmap |
