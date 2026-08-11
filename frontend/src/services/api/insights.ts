@@ -115,6 +115,11 @@ export interface SystemicCondition {
   systemic_score: number;
   example_ips: (string | null)[];
   is_blind_spot: boolean;
+  // Phase 1: spread classification (single source of is_blind_spot) + the
+  // program-level pattern family this weakness rolls up to.
+  classification: 'isolated' | 'recurring' | 'estate_wide';
+  family: string | null;
+  family_label: string | null;
   severity?: string; // present on shared-vulnerability blind spots
 }
 

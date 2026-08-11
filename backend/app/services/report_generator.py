@@ -39,6 +39,14 @@ import html
 
 logger = logging.getLogger(__name__)
 
+# Systemic spread classification (Phase 1) → report label. Falls back to the
+# legacy is_blind_spot boolean when an older/cached snapshot lacks the field.
+_SYSTEMIC_SPREAD_LABEL = {
+    "estate_wide": "estate-wide",
+    "recurring": "recurring",
+    "isolated": "isolated",
+}
+
 
 def _id_chunks(ids, size: int = 1000):
     """Yield slices of an id list for chunked ``IN (...)`` queries.
@@ -1624,7 +1632,10 @@ class ReportGenerator:
             rows = []
             for c in conditions:
                 pct = round((c.get("host_fraction") or 0) * 100)
-                scope = "estate-wide" if c.get("is_blind_spot") else "localised"
+                scope = _SYSTEMIC_SPREAD_LABEL.get(
+                    c.get("classification"),
+                    "estate-wide" if c.get("is_blind_spot") else "localised",
+                )
                 rows.append(
                     "<tr>"
                     f"<td>{html.escape(str(c.get('label', '')))}</td>"
@@ -1729,7 +1740,10 @@ class ReportGenerator:
             ]
             for c in conditions:
                 pct = round((c.get("host_fraction") or 0) * 100)
-                scope = "estate-wide" if c.get("is_blind_spot") else "localised"
+                scope = _SYSTEMIC_SPREAD_LABEL.get(
+                    c.get("classification"),
+                    "estate-wide" if c.get("is_blind_spot") else "localised",
+                )
                 action = (c.get("recommended_action") or "").replace("|", "/")
                 lines.append(
                     f"| {str(c.get('label', '')).replace('|', '/')} | {c.get('affected_hosts', 0)} ({pct}%) | "

@@ -88,6 +88,14 @@ function conditionChip(key: string): string {
   return CONDITION_LABEL[key] ?? key;
 }
 
+// Spread classification → badge tone + label (Phase 1). estate_wide is the old
+// "estate-wide" blind spot; recurring/isolated are the finer grades below it.
+const CLASSIFICATION_BADGE: Record<string, { variant: BadgeVariant; label: string }> = {
+  estate_wide: { variant: 'destructive', label: 'estate-wide' },
+  recurring: { variant: 'warning', label: 'recurring' },
+  isolated: { variant: 'muted', label: 'isolated' },
+};
+
 // Condition chips for a subnet — each links to that subnet's hosts filtered to
 // the condition (the analyst's drill-down) when the condition has a /hosts
 // predicate; chips without one (shared-vuln) render plain.
@@ -132,11 +140,12 @@ function systemicToMarkdown(data: SystemicInsightsResponse, projectName?: string
   }
   const conditions = data.conditions ?? [];
   if (conditions.length) {
-    lines.push('## Systemic conditions', '', '| Condition | Hosts | Subnets | Sites | Score | Scope |', '|---|---:|---:|---:|---:|---|');
+    lines.push('## Systemic conditions', '', '| Condition | Family | Hosts | Subnets | Sites | Score | Spread |', '|---|---|---:|---:|---:|---:|---|');
     for (const c of conditions) {
       lines.push(
-        `| ${c.label.replace(/\|/g, '/')} | ${c.affected_hosts} (${Math.round(c.host_fraction * 100)}%) | ` +
-        `${c.subnet_spread} | ${c.site_spread} | ${c.systemic_score} | ${c.is_blind_spot ? 'estate-wide' : 'localised'} |`,
+        `| ${c.label.replace(/\|/g, '/')} | ${(c.family_label ?? '—').replace(/\|/g, '/')} | ` +
+        `${c.affected_hosts} (${Math.round(c.host_fraction * 100)}%) | ` +
+        `${c.subnet_spread} | ${c.site_spread} | ${c.systemic_score} | ${(CLASSIFICATION_BADGE[c.classification] ?? CLASSIFICATION_BADGE.isolated).label} |`,
       );
     }
     lines.push('');
@@ -315,7 +324,7 @@ const SystemicInsights: React.FC = () => {
                 <section className="space-y-sm">
                   <div className="flex items-center gap-xs">
                     <h2 className="text-subheading font-semibold text-foreground">Systemic conditions</h2>
-                    <InfoTip text="Every recurring weakness and how far it spreads. Hosts = affected in-scope hosts (and their % of the estate); Subnets / Sites = distinct segments touched; Score = severity weight × affected hosts × (1 + subnets + sites). 'Estate-wide' marks the blind spots above." />
+                    <InfoTip text="Every recurring weakness, its pattern family, and how far it spreads. Hosts = affected in-scope hosts (and their % of the estate); Subnets / Sites = distinct segments touched; Score = severity weight × affected hosts × (1 + subnets + sites). Spread: estate-wide (a blind spot) / recurring (systemic but confined) / isolated (a handful of incidents)." />
                   </div>
                   <Card>
                     <CardContent className="p-0">
@@ -328,7 +337,7 @@ const SystemicInsights: React.FC = () => {
                               <TableHead className="w-[9%] text-right">Subnets</TableHead>
                               <TableHead className="w-[9%] text-right">Sites</TableHead>
                               <TableHead className="w-[10%] text-right">Score</TableHead>
-                              <TableHead className="w-[12%]">Scope</TableHead>
+                              <TableHead className="w-[12%]">Spread</TableHead>
                               <TableHead className="w-[24%]">Recommended action</TableHead>
                             </TableRow>
                           </TableHeader>
@@ -339,6 +348,12 @@ const SystemicInsights: React.FC = () => {
                                   <span className="block truncate font-medium text-foreground" title={c.label}>
                                     {c.label}
                                   </span>
+                                  {c.family_label && (
+                                    <span className="block truncate text-caption font-medium text-muted-foreground"
+                                      title={`Pattern family: ${c.family_label}`}>
+                                      {c.family_label}
+                                    </span>
+                                  )}
                                   <span className="block truncate text-caption text-muted-foreground" title={c.vector}>
                                     {c.vector}
                                   </span>
@@ -361,9 +376,11 @@ const SystemicInsights: React.FC = () => {
                                 <TableCell className="align-top text-right text-foreground">{c.site_spread}</TableCell>
                                 <TableCell className="align-top text-right text-foreground">{c.systemic_score}</TableCell>
                                 <TableCell className="align-top">
-                                  {c.is_blind_spot
-                                    ? <Badge variant="destructive">estate-wide</Badge>
-                                    : <Badge variant="muted">localised</Badge>}
+                                  {(() => {
+                                    const cls = CLASSIFICATION_BADGE[c.classification]
+                                      ?? CLASSIFICATION_BADGE.isolated;
+                                    return <Badge variant={cls.variant}>{cls.label}</Badge>;
+                                  })()}
                                 </TableCell>
                                 <TableCell className="align-top text-caption text-foreground"
                                   title={c.recommended_action ?? undefined}>

@@ -87,6 +87,15 @@ def test_eol_spanning_sites_is_blind_spot_weak_auth_is_not(db_session, test_proj
     by_key = {c["key"]: c for c in out["conditions"]}
     assert by_key["eol_os"]["site_spread"] == 2
     assert by_key["eol_os"]["affected_hosts"] == 3
+    # Phase 1: every condition carries its pattern family + spread classification,
+    # and classification is the single source of is_blind_spot.
+    assert by_key["eol_os"]["family"] == "lifecycle_patching"
+    assert by_key["eol_os"]["classification"] == "estate_wide"
+    assert by_key["weak_auth"]["family"] == "identity_auth"
+    assert by_key["smb_signing"]["family"] == "lateral_movement"
+    for c in out["conditions"]:
+        assert (c["classification"] == "estate_wide") == c["is_blind_spot"]
+        assert c["classification"] in ("isolated", "recurring", "estate_wide")
     # Weak auth touches one site only → a condition, but not an estate blind spot.
     assert "weak_auth" in by_key
     assert by_key["weak_auth"]["site_spread"] == 1

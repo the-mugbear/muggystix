@@ -51,6 +51,11 @@ from app.services.subnet_insight_service import (
     _load_subnet_meta,
     resolve_host_locations,
 )
+from app.services.pattern_families import (
+    classify,
+    family_for_condition,
+    family_for_vuln,
+)
 
 # A weakness must touch at least this fraction of in-scope hosts before it's
 # considered a *systemic* pattern rather than a handful of incidents.
@@ -183,6 +188,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             subnet_issue_incidences[host_subnet[h]] += 1
         host_fraction = len(hosts) / total_hosts if total_hosts else 0.0
         systemic_score = round(weight * len(hosts) * (1 + len(subnets) + len(sites)), 1)
+        fam = family_for_condition(key)
         row = {
             "key": key, "label": label, "vector": vector,
             "severity_weight": weight, "recommended_action": action,
@@ -192,15 +198,26 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             "site_spread": len(sites),
             "systemic_score": systemic_score,
             "example_ips": [host_ip.get(h) for h in list(hosts)[:5]],
+            "family": fam.key if fam else None,
+            "family_label": fam.label if fam else None,
         }
-        # Estate-wide blind spot: touches a meaningful host fraction AND spans
-        # most sites (or, in a single-site estate, just clears the host floor).
+        # Spread classification (isolated / recurring / estate_wide). estate_wide
+        # is the old blind spot: a meaningful host fraction AND spanning most
+        # sites (or, in a single-site estate, just clearing the host floor), on
+        # an estate big enough to generalise from.
         is_systemic = len(hosts) >= min_hosts and host_fraction >= _SYSTEMIC_HOST_FRACTION
         spans_estate = (
             total_sites <= 1
             or len(sites) >= max(2, round(_BLINDSPOT_SITE_FRACTION * total_sites))
         )
-        row["is_blind_spot"] = bool(estate_large_enough and is_systemic and spans_estate)
+        classification = classify(
+            is_systemic=is_systemic, spans_estate=spans_estate,
+            estate_large_enough=estate_large_enough,
+        )
+        row["classification"] = classification
+        # Derived: single source of truth is `classification`. Kept for the
+        # existing consumers (the _gather_signals blind-spot pass, the frontend).
+        row["is_blind_spot"] = classification == "estate_wide"
         conditions_out.append(row)
         if row["is_blind_spot"]:
             blind_spots.append(row)
@@ -240,6 +257,9 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             continue
         sev, title = plugin_meta[plugin_id]
         sev_label = sev.value if hasattr(sev, "value") else str(sev)
+        vuln_fam = family_for_vuln()
+        # A monoculture only reaches this list after clearing the estate-wide
+        # gates above, so its classification is always estate_wide.
         blind_spots.append({
             "key": f"vuln:{plugin_id}", "label": f"Shared vulnerability: {title}"[:160],
             "vector": "A single exposure replicated estate-wide — one root cause, many hosts.",
@@ -248,7 +268,8 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             "subnet_spread": len(subnets), "site_spread": len(sites),
             "systemic_score": round(8 * len(hosts) * (1 + len(subnets) + len(sites)), 1),
             "example_ips": [host_ip.get(h) for h in list(hosts)[:5]],
-            "is_blind_spot": True, "severity": sev_label,
+            "is_blind_spot": True, "classification": "estate_wide", "severity": sev_label,
+            "family": vuln_fam.key, "family_label": vuln_fam.label,
         })
 
     conditions_out.sort(key=lambda r: -r["systemic_score"])
