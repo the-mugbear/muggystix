@@ -501,42 +501,6 @@ class TestDashboardAPI:
         assert stats["total_hosts"] == 2
         assert stats["total_ports"] > 0  # Should have ports from parsed data
     
-    def test_port_stats(self, client, db_session, sample_gnmap_data, temp_file, test_project):
-        """Test port statistics endpoint."""
-        from app.parsers.gnmap_parser import GnmapParser
-        
-        # Create sample data
-        parser = GnmapParser(db_session)
-        
-        # Write sample data to temp file
-        with open(temp_file, 'w') as f:
-            f.write(sample_gnmap_data)
-        
-        scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
-        scan.project_id = test_project.id
-        db_session.commit()
-        
-        # Test API
-        response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/port-stats")
-        assert response.status_code == 200
-
-        port_stats = response.json()
-        assert isinstance(port_stats, list)
-        assert len(port_stats) > 0
-        
-        # Check structure of port stats
-        stat = port_stats[0]
-        assert "port" in stat  # API uses "port", not "port_number"
-        assert "count" in stat
-        assert "service" in stat  # API uses "service", not "service_name"
-    
-    def test_os_stats(self, client, test_project):
-        """Test OS statistics endpoint."""
-        response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/os-stats")
-        assert response.status_code == 200
-        
-        os_stats = response.json()
-        assert isinstance(os_stats, list)
 
 
 class TestErrorHandling:
@@ -549,8 +513,10 @@ class TestErrorHandling:
     
     def test_invalid_json_request(self, client, test_project):
         """Test handling of invalid JSON in request body."""
+        # v2.244.0 — POST /scopes/ was removed; any endpoint with a required
+        # JSON body exercises the same handler.
         response = client.post(
-            f"/api/v1/projects/{test_project.id}/scopes/",
+            f"/api/v1/projects/{test_project.id}/scopes/subnet-labels",
             headers={"Content-Type": "application/json"},
             data="invalid json"
         )
@@ -558,9 +524,9 @@ class TestErrorHandling:
 
     def test_missing_required_parameters(self, client, test_project):
         """Test handling of missing required parameters."""
-        # Test creating scope without required name
+        # Creating a subnet label without its required `name`.
         response = client.post(
-            f"/api/v1/projects/{test_project.id}/scopes/",
+            f"/api/v1/projects/{test_project.id}/scopes/subnet-labels",
             json={}
         )
         assert response.status_code == 422

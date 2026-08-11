@@ -60,6 +60,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SCOPE_NAME = "__default__"
 
+# v2.244.0 — POST / and PATCH /{scope_id} (create + rename a scope container)
+# were removed. They were leftovers from the pre-v2.9.4 model in which users
+# named and managed scopes; since then a project has exactly one implicit
+# scope and every write path funnels through get_or_create_default_scope
+# below. Nothing in the UI had called them for that entire time.
+
 
 def get_or_create_default_scope(db: Session, project_id: int, user_id: Optional[int] = None) -> Scope:
     """Return the project's default scope, creating it if it doesn't exist.
@@ -605,39 +611,6 @@ def get_scope(
     return _serialize_scope_with_subnets(
         db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
     )
-
-@router.post(
-    "/",
-    response_model=ScopeSchema,
-    responses={
-        401: {"description": "Not authenticated"},
-        403: {"description": "Insufficient permissions — analyst role required"},
-    },
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="Create scope (analyst)",
-)
-def create_scope(
-    scope: ScopeCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Create a new empty scope. Requires analyst role."""
-    # Check if scope name already exists within this project
-    existing_scope = db.query(Scope).filter(Scope.name == scope.name, Scope.project_id == project.id).first()
-    if existing_scope:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Scope with name '{scope.name}' already exists"
-        )
-
-    db_scope = Scope(**scope.dict(), uploaded_by_id=current_user.id, project_id=project.id)
-    db.add(db_scope)
-    db.commit()
-    db.refresh(db_scope)
-
-    return db_scope
-
 @router.delete(
     "/{scope_id}",
     response_model=MessageResponse,
@@ -755,49 +728,6 @@ def _validate_cidr(cidr: str) -> str:
             detail=f"Invalid CIDR {cidr!r}: {exc}",
         )
     return str(net)
-
-
-@router.patch(
-    "/{scope_id}",
-    response_model=ScopeSchema,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="Edit scope metadata (analyst)",
-)
-def update_scope(
-    scope_id: int,
-    body: ScopeUpdate,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Edit a scope's name and/or description."""
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-
-    if body.name is not None and body.name != scope.name:
-        collision = (
-            db.query(Scope)
-            .filter(
-                Scope.name == body.name,
-                Scope.project_id == project.id,
-                Scope.id != scope_id,
-            )
-            .first()
-        )
-        if collision:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Scope with name {body.name!r} already exists in this project",
-            )
-        scope.name = body.name
-    if body.description is not None:
-        scope.description = body.description
-
-    db.commit()
-    db.refresh(scope)
-    return scope
-
-
 @router.post(
     "/{scope_id}/subnets",
     response_model=List[SubnetSchema],

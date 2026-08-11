@@ -153,25 +153,6 @@ export const getScopes = async (): Promise<ScopeSummary[]> => {
   const response = await api.get(`${p()}/scopes/`);
   return response.data;
 };
-
-export const getScope = async (
-  scopeId: number,
-  opts: { withFindingsOnly?: boolean; subnetsSkip?: number; subnetsLimit?: number; subnetsSearch?: string } = {},
-): Promise<Scope> => {
-  // Kept in sync with the backend GET /scopes/{id} contract (which mirrors
-  // /scopes/default's pagination + subnets_search params).  Currently unused
-  // by the single-default-scope UI, which calls getDefaultScope.
-  const params = new URLSearchParams();
-  params.set('with_findings_only', String(opts.withFindingsOnly ?? false));
-  if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
-  if (opts.subnetsLimit !== undefined) params.set('subnets_limit', String(opts.subnetsLimit));
-  if (opts.subnetsSearch && opts.subnetsSearch.trim()) {
-    params.set('subnets_search', opts.subnetsSearch.trim());
-  }
-  const response = await api.get(`${p()}/scopes/${scopeId}?${params.toString()}`);
-  return response.data;
-};
-
 /**
  * Fetch the project's single scope (v2.9.4+).  A project now has
  * exactly one conceptual scope; this endpoint creates it on the fly
@@ -202,20 +183,6 @@ export const deleteScope = async (scopeId: number) => {
   const response = await api.delete(`${p()}/scopes/${scopeId}`);
   return response.data;
 };
-
-export const updateScope = async (
-  scopeId: number,
-  body: { name?: string; description?: string },
-): Promise<Scope> => {
-  const response = await api.patch<Scope>(`${p()}/scopes/${scopeId}`, body);
-  return response.data;
-};
-
-export const createScope = async (body: { name: string; description?: string }): Promise<Scope> => {
-  const response = await api.post<Scope>(`${p()}/scopes/`, body);
-  return response.data;
-};
-
 export const addScopeSubnets = async (
   scopeId: number,
   subnets: Array<{ cidr: string; description?: string }>,
@@ -256,27 +223,6 @@ export const uploadSubnetFile = async (
 
   return response.data;
 };
-
-export const getScopeHostMappings = async (
-  scopeId: number,
-  query: ScopeHostMappingsQuery = {},
-): Promise<ScopeHostMappingsResult> => {
-  // v2.86.8 — query params: subnet_id (filter to one subnet's mappings),
-  // skip + limit (pagination, le=2000 server-side).
-  // v2.86.13 — return shape standardised on the ``Paginated[T]``
-  // envelope ({items, total, skip, limit, has_more}); callers that
-  // only need the items array can ``.items`` off the result.
-  const params = new URLSearchParams();
-  if (query.subnetId !== undefined) params.set('subnet_id', String(query.subnetId));
-  if (query.skip !== undefined) params.set('skip', String(query.skip));
-  if (query.limit !== undefined) params.set('limit', String(query.limit));
-  const qs = params.toString();
-  const response = await api.get<ScopeHostMappingsResult>(
-    `${p()}/scopes/${scopeId}/host-mappings${qs ? `?${qs}` : ''}`,
-  );
-  return response.data;
-};
-
 export const getScopeCoverage = async (limit: number = 25): Promise<ScopeCoverageSummary> => {
   const response = await api.get(`${p()}/scopes/coverage?limit=${limit}`);
   return response.data;
@@ -333,22 +279,6 @@ export const replaceSubnetLabels = async (
   const response = await api.put(`${p()}/scopes/subnets/${subnetId}/labels`, { label_ids: labelIds });
   return response.data;
 };
-
-export const attachSubnetLabel = async (
-  subnetId: number,
-  labelId: number,
-): Promise<SubnetLabelInfo> => {
-  const response = await api.post(`${p()}/scopes/subnets/${subnetId}/labels/${labelId}`);
-  return response.data;
-};
-
-export const detachSubnetLabel = async (subnetId: number, labelId: number): Promise<void> => {
-  await api.delete(`${p()}/scopes/subnets/${subnetId}/labels/${labelId}`);
-};
-
-// Bulk-apply one label across many subnets in a single request (idempotent
-// per-subnet).  Drives the "select N subnets → apply label X" affordance
-// on the Scope detail page.
 export const bulkApplySubnetLabel = async (
   labelId: number,
   subnetIds: number[],

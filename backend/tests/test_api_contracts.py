@@ -299,12 +299,4 @@ class TestDashboardEndpoints:
         assert "total_hosts" in data
         assert "total_ports" in data
 
-    def test_port_stats_returns_list(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/port-stats")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
 
-    def test_os_stats_returns_list(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/os-stats")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)

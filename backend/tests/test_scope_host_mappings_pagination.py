@@ -18,12 +18,10 @@ from app.db import models
 
 def test_scope_host_mappings_rejects_oversize_limit(client, test_project):
     """Mappings endpoint caps at le=2000."""
-    # Need a scope to address; create a bare one.
-    r_make = client.post(
-        f"/api/v1/projects/{test_project.id}/scopes/",
-        json={"name": "fixture", "description": ""},
-    )
-    assert r_make.status_code in (200, 201), r_make.text
+    # v2.244.0 — POST /scopes/ was removed (scopes stopped being user-managed
+    # in v2.9.4). Address the project's implicit scope instead.
+    r_make = client.get(f"/api/v1/projects/{test_project.id}/scopes/default")
+    assert r_make.status_code == 200, r_make.text
     scope_id = r_make.json()["id"]
     r = client.get(
         f"/api/v1/projects/{test_project.id}/scopes/{scope_id}/host-mappings",

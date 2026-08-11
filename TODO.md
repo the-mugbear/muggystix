@@ -37,10 +37,9 @@ decisions (surface it or remove it), not cleanup.
 
 - [x] **DONE (2.243.0).** Tag management panel in Project Settings — rename, recolor,
       delete, with a delete confirm that states the host count it will affect.
-- [ ] **Four dashboard endpoints with no consumer:** `/dashboard/my-tasks`,
-      `/my-attention`, `/team-review`, `/new-scans-since`. Likely stranded by the
-      Operations reshape. Confirm they aren't the better source for what /operations now
-      shows, then wire or delete.
+- [x] **DONE (2.244.0) — deleted.** Confirmed superseded: `GET /workbench` batches all
+      four from the same `operations_read_service` functions (incl. `new_scan_count`) and
+      is what Operations calls. Tests ported to the service functions.
 - [x] **DONE (2.243.0).** Delivery outbox in Project Settings — last 100 attempts with
       status / attempts / HTTP code / error text, status filter, retry on failed rows.
 - [x] **DONE (2.243.0).** Audit log viewer in System Settings (admin-only, deployment-wide
@@ -53,20 +52,25 @@ decisions (surface it or remove it), not cleanup.
       authoritative NS, reads as active recon, and takes an unvalidated domain with no
       scope check or throttle. Recorded in the handler docstring so a later sweep doesn't
       re-flag it as an orphan.
-- [ ] **`POST /agents/{id}/renew-key`** — no UI, so an expired agent key has no
-      self-service recovery.
-- [ ] **`POST /findings`** (`createFinding`) — findings arrive only by promotion; manual
-      creation is unreachable. Probably correct as a product decision — if so, delete the
-      client function and consider closing the route.
-- [ ] **Scope create/update/detail** — `createScope`, `updateScope`, `getScope`,
-      `getScopeHostMappings` are all uncalled. `ScopeDetail` was retired in 4.50.0
-      (`/scopes/:id` now redirects) and these are its leftovers. Scopes appear to be
-      created only via subnet upload; confirm that's intended.
-- [ ] **Subnet label attach/detach** — `attachSubnetLabel` / `detachSubnetLabel` and both
-      `/scopes/subnets/{id}/labels/{id}` routes are unreachable from the UI.
-- [ ] **`/dashboard/os-stats`, `/dashboard/port-stats`** — analytics endpoints with no
-      consumer. Check against the no-vanity-metrics rule before wiring: if nothing acts on
-      them, delete instead.
+- [ ] **`POST /agents/{id}/renew-key`** — no UI. Extends an *unscoped* agent key's TTL
+      without rotating the secret (plan/recon keys have their own regenerate paths). Small
+      button wherever agents are managed; worth confirming unscoped agent keys are
+      actually used first.
+- [x] **DONE (2.244.0).** Orphaned `createFinding` client removed; the route is KEPT and
+      documented as deliberately API-only. Closing off manual creation would narrow the
+      product without anyone asking.
+- [x] **DONE (2.244.0) — and the answer was "retired product model", not "missing UI".**
+      From `scopes.py`: *"As of v2.9.4 the user never names or manages a 'scope
+      container' — a project has exactly one scope conceptually."* `POST /scopes/` and
+      `PATCH /scopes/{id}` deleted with their clients; `getScope`/`getScopeHostMappings`
+      clients removed (the host-mappings route kept as API-only). Also fixed the Scopes
+      empty state, which told users to "Create one" — an action the UI cannot perform.
+- [x] **DONE (2.244.0).** Both singular routes deleted — but only after checking: the
+      bulk route only ADDS, so detach would have been lost had `PUT /subnets/{id}/labels`
+      not existed. Tests pin both that the PUT detaches and that the singular routes
+      stay gone.
+- [x] **DONE (2.244.0) — deleted.** Aggregate distributions, no consumer, nothing acting
+      on them.
 
 ### C. Dead client code — superseded by bulk variants
 

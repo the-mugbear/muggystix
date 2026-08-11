@@ -122,6 +122,15 @@ def create_finding(
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
 ):
+    """Create a finding directly, without promoting an annotation.
+
+    **API-only by design, not an orphan** (v2.244.0). In the product,
+    findings arrive by promotion from an annotation, which is what carries the
+    evidence trail; nothing in the UI calls this. It stays available for
+    scripted/agent use and because closing it off would narrow the product
+    without anyone asking for that. If a UI ever wants manual creation, this is
+    the endpoint — do not "clean it up" as unreachable.
+    """
     svc = FindingService(db)
     finding = svc.create_finding(
         project_id=project.id, title=body.title, severity=body.severity,

@@ -327,65 +327,12 @@ def replace_subnet_labels(
     return [SubnetLabelInfo(id=r.id, name=r.name, color=r.color) for r in rows]
 
 
-@router.post(
-    "/subnets/{subnet_id:int}/labels/{label_id:int}",
-    response_model=SubnetLabelInfo,
-    summary="Attach a single label to a subnet (idempotent)",
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-)
-def attach_subnet_label(
-    subnet_id: int,
-    label_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    _subnet_or_404(db, project.id, subnet_id)
-    label = _label_or_404(db, project.id, label_id)
-    existing = (
-        db.query(SubnetLabelAssignment)
-        .filter(
-            SubnetLabelAssignment.subnet_id == subnet_id,
-            SubnetLabelAssignment.label_id == label_id,
-        )
-        .first()
-    )
-    if not existing:
-        db.add(SubnetLabelAssignment(
-            subnet_id=subnet_id, label_id=label_id, created_by_id=current_user.id,
-        ))
-        db.commit()
-    return SubnetLabelInfo(id=label.id, name=label.name, color=label.color)
-
-
-@router.delete(
-    "/subnets/{subnet_id:int}/labels/{label_id:int}",
-    status_code=204,
-    summary="Detach a single label from a subnet",
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-)
-def detach_subnet_label(
-    subnet_id: int,
-    label_id: int,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    _subnet_or_404(db, project.id, subnet_id)
-    _label_or_404(db, project.id, label_id)
-    assignment = (
-        db.query(SubnetLabelAssignment)
-        .filter(
-            SubnetLabelAssignment.subnet_id == subnet_id,
-            SubnetLabelAssignment.label_id == label_id,
-        )
-        .first()
-    )
-    if assignment:
-        db.delete(assignment)
-        db.commit()
-    return Response(status_code=204)
-
-
+# v2.244.0 — the singular attach/detach routes (POST|DELETE
+# /subnets/{id}/labels/{id}) were removed. Both were unreachable from the UI
+# and fully covered: PUT /subnets/{id}/labels replaces the whole set (so it
+# detaches too, which is what the UI actually calls) and the bulk route below
+# attaches across many subnets. Checked before deleting — the bulk route only
+# ADDS, so detach would have been lost had the PUT not existed.
 @router.post(
     "/subnet-labels/{label_id:int}/subnets",
     response_model=SubnetLabelSchema,

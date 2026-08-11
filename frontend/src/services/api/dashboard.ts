@@ -104,13 +104,6 @@ export interface MyAttentionResponse {
   in_review_count: number;
   watching_count: number;
 }
-
-export const getMyAttentionQueue = async (limit = 10): Promise<MyAttentionResponse> => {
-  const response = await api.get(`${p()}/dashboard/my-attention`, { params: { limit } });
-  return response.data;
-};
-
-// --- Team Review — the project-wide review roster, grouped by reviewer ---
 export interface TeamReviewHostRow {
   host_id: number;
   ip_address: string;
@@ -130,14 +123,6 @@ export interface TeamReviewResponse {
   reviewers: TeamReviewerGroup[];
   total_hosts_in_review: number;
 }
-
-export const getTeamReview = async (): Promise<TeamReviewResponse> => {
-  const response = await api.get(`${p()}/dashboard/team-review`);
-  return response.data;
-};
-
-// --- My Tasks (test plan entries on hosts I'm reviewing) ---
-
 /** Why a task is in your queue. Overlapping — a task can carry several. */
 export type MyTaskReason = 'assigned' | 'in_review' | 'triage';
 
@@ -171,14 +156,6 @@ export interface MyTasksResponse {
   total_open: number;
   reason_counts: MyTasksReasonCounts;
 }
-
-export const getMyTasks = async (limit = 15): Promise<MyTasksResponse> => {
-  const response = await api.get(`${p()}/dashboard/my-tasks`, { params: { limit } });
-  return response.data;
-};
-
-// --- My Notes / My Findings (P0 — My Work resume pass) ---
-
 export interface MyNoteItem {
   note_id: number;
   host_id: number | null;
@@ -302,17 +279,6 @@ export interface NewScansSinceResponse {
   latest_scan_filename: string | null;
   latest_scan_created_at: string | null;
 }
-
-export const getNewScansSince = async (
-  since: string | null,
-): Promise<NewScansSinceResponse> => {
-  const params = since ? { since } : undefined;
-  const response = await api.get(`${p()}/dashboard/new-scans-since`, { params });
-  return response.data;
-};
-
-// --- Agent-activity analytics (project-level aggregate of agent_api_calls) ---
-
 export interface AgentActivityStatusBreakdown {
   success: number;
   client_error: number;

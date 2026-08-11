@@ -147,29 +147,52 @@ class TestSubnetLabelCRUD:
 
 
 class TestSubnetLabelAssignment:
-    def test_attach_detach_single_label(self, client, db_session, test_project):
+    def test_replace_is_the_only_way_to_detach_a_label(self, client, db_session, test_project):
+        """Pins why removing the singular routes was safe (v2.244.0).
+
+        ``POST|DELETE /subnets/{id}/labels/{label_id}`` were unreachable from
+        the UI and were removed. Attach is covered twice over (the PUT below
+        and the bulk apply route), but the BULK route only ever ADDS — so if
+        this PUT could not detach, deleting the singular DELETE would have
+        removed the only way to take a label off a subnet. That is exactly the
+        trap the host_assigned webhook fell into, so it gets a test.
+        """
         _, subnet_id = _make_scope_with_subnet(db_session, test_project.id, "10.0.0.0/24")
         label_id = client.post(
             f"{_base(test_project.id)}/subnet-labels",
             json={"name": "L1", "color": None},
         ).json()["id"]
 
-        # Attach
-        r = client.post(f"{_base(test_project.id)}/subnets/{subnet_id}/labels/{label_id}")
-        assert r.status_code == 200
-        assert r.json()["id"] == label_id
+        # Attach via replace.
+        r = client.put(
+            f"{_base(test_project.id)}/subnets/{subnet_id}/labels",
+            json={"label_ids": [label_id]},
+        )
+        assert r.status_code == 200, r.text
+        assert [x["id"] for x in r.json()] == [label_id]
 
-        # Idempotent — attaching again is a no-op (no 409, still returns the chip)
-        r = client.post(f"{_base(test_project.id)}/subnets/{subnet_id}/labels/{label_id}")
-        assert r.status_code == 200
+        # Detach by PUTting the empty set — the capability under test.
+        r = client.put(
+            f"{_base(test_project.id)}/subnets/{subnet_id}/labels",
+            json={"label_ids": []},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == []
 
-        # Detach
-        r = client.delete(f"{_base(test_project.id)}/subnets/{subnet_id}/labels/{label_id}")
-        assert r.status_code == 204
-
-        # Detaching a not-attached label is also idempotent (204, not 404)
-        r = client.delete(f"{_base(test_project.id)}/subnets/{subnet_id}/labels/{label_id}")
-        assert r.status_code == 204
+    def test_singular_attach_detach_routes_are_gone(self, client, db_session, test_project):
+        """They were retired in v2.244.0; a reappearance means a revert."""
+        _, subnet_id = _make_scope_with_subnet(db_session, test_project.id, "10.0.9.0/24")
+        label_id = client.post(
+            f"{_base(test_project.id)}/subnet-labels", json={"name": "gone"},
+        ).json()["id"]
+        # 404: no route matches that path at all any more (the sibling
+        # PUT lives at .../labels, without the trailing label id).
+        assert client.post(
+            f"{_base(test_project.id)}/subnets/{subnet_id}/labels/{label_id}",
+        ).status_code in (404, 405)
+        assert client.delete(
+            f"{_base(test_project.id)}/subnets/{subnet_id}/labels/{label_id}",
+        ).status_code in (404, 405)
 
     def test_replace_subnet_labels_idempotent(self, client, db_session, test_project):
         _, subnet_id = _make_scope_with_subnet(db_session, test_project.id, "10.0.1.0/24")

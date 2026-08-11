@@ -24,22 +24,10 @@ from app.services.subnet_calculator import SubnetCalculator
 from app.services.vulnerability_service import VulnerabilityService
 from app.services.risk_insight_service import RiskInsightService
 from app.services.host_follow_service import HostFollowService
-# CR4-2 — the personal-work aggregations + their DTOs now live in a read
-# service; these routes are thin wrappers over it.  Re-exported so any
-# caller that imported the DTOs from this router keeps working.
-from app.services.operations_read_service import (
-    MyAttentionHost,
-    MyAttentionResponse,
-    TeamReviewHostRow,
-    TeamReviewerGroup,
-    TeamReviewResponse,
-    MyTaskItem,
-    MyTasksReasonCounts,
-    MyTasksResponse,
-    compute_my_attention_queue,
-    compute_team_review,
-    compute_my_tasks,
-)
+# v2.244.0 — the personal-work routes (my-tasks / my-attention / team-review /
+# new-scans-since) were removed: GET /workbench batches all four from the same
+# operations_read_service functions and is what the Operations page calls.  The
+# DTO re-exports went with them; nothing imported them from this module.
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project
 from app.db.models_auth import User
@@ -289,75 +277,6 @@ def get_dashboard_stats(
         vulnerability_stats=vulnerability_stats,
         note_activity=note_activity,
     )
-
-@router.get(
-    "/port-stats",
-    summary="Top 20 open ports across the project",
-)
-def get_port_statistics(
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    # Get top 20 most common open ports scoped to project
-    port_stats = (
-        db.query(
-            models.Port.port_number,
-            models.Port.service_name,
-            func.count(models.Port.id).label('count')
-        )
-        .join(models.Host, models.Port.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            models.Port.state == 'open',
-        )
-        .group_by(models.Port.port_number, models.Port.service_name)
-        .order_by(desc(func.count(models.Port.id)))
-        .limit(20)
-        .all()
-    )
-
-    return [
-        {
-            "port": stat.port_number,
-            "service": stat.service_name or "unknown",
-            "count": stat.count
-        }
-        for stat in port_stats
-    ]
-
-@router.get(
-    "/os-stats",
-    summary="OS distribution across the project",
-)
-def get_os_statistics(
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    # Get operating system distribution scoped to project
-    os_stats = (
-        db.query(
-            models.Host.os_name,
-            func.count(models.Host.id).label('count')
-        )
-        .filter(
-            models.Host.project_id == project.id,
-            models.Host.os_name.isnot(None),
-        )
-        .group_by(models.Host.os_name)
-        .order_by(desc(func.count(models.Host.id)))
-        .limit(10)
-        .all()
-    )
-
-    return [
-        {
-            "os": stat.os_name,
-            "count": stat.count
-        }
-        for stat in os_stats
-    ]
-
-
 @router.get(
     "/risk-insights",
     response_model=RiskInsightResponse,
@@ -373,76 +292,6 @@ def get_risk_insights(
 ):
     service = RiskInsightService(db)
     return service.generate_insights(limit=limit, project_id=project.id)
-
-
-# ---------------------------------------------------------------------------
-# Personal "My Queue" — replaces the project-wide highest-risk Attention
-# Queue widget on the dashboard.  Each user sees only the hosts they have
-# personally marked **In Review** via the host follow feature.
-#
-# Watching is intentionally excluded: it represents passive interest
-# ("I want to see what someone else is doing on this host"), not active
-# work, and surfacing it on the queue widget would dilute "what do I
-# need to do?" with "what am I keeping an eye on?".  Two analysts on
-# the same project will see different rows here, reflecting their own
-# in-flight work rather than a shared "highest-risk" board.
-# ---------------------------------------------------------------------------
-
-@router.get(
-    "/my-attention",
-    response_model=MyAttentionResponse,
-    summary="My Queue — hosts I've marked In Review",
-)
-def get_my_attention_queue(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-    limit: int = Query(10, ge=1, le=50),
-):
-    """My Queue — see ``operations_read_service.compute_my_attention_queue``."""
-    return compute_my_attention_queue(db, current_user, project, limit)
-
-
-@router.get(
-    "/team-review",
-    response_model=TeamReviewResponse,
-    summary="Team Review — who has which hosts In Review",
-)
-def get_team_review(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-    limit: int = Query(
-        500,
-        ge=1,
-        le=2000,
-        description=(
-            "Cap on follow rows returned.  ``total_hosts_in_review`` is "
-            "computed in SQL and is unaffected by this cap, so the widget "
-            "can still surface a correct 'showing N of T' figure even when "
-            "the roster overflows."
-        ),
-    ),
-):
-    """Team Review roster — see ``operations_read_service.compute_team_review``."""
-    return compute_team_review(db, current_user, project, limit)
-
-
-@router.get(
-    "/my-tasks",
-    response_model=MyTasksResponse,
-    summary="My Tasks — assigned + in-review + unassigned-triage test plan entries",
-)
-def get_my_tasks(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-    limit: int = Query(15, ge=1, le=100),
-):
-    """My Tasks — see ``operations_read_service.compute_my_tasks``."""
-    return compute_my_tasks(db, current_user, project, limit)
-
-
 # ---------------------------------------------------------------------------
 # "New scans since last visit" alert.
 #
@@ -459,47 +308,6 @@ class NewScansSinceResponse(BaseModel):
     latest_scan_id: Optional[int] = None
     latest_scan_filename: Optional[str] = None
     latest_scan_created_at: Optional[datetime] = None
-
-
-@router.get(
-    "/new-scans-since",
-    response_model=NewScansSinceResponse,
-    summary="Count scans uploaded since a client-supplied timestamp",
-)
-def get_new_scans_since(
-    since: Optional[datetime] = Query(
-        None,
-        description="ISO timestamp; only count scans created after this. Omit to count all scans.",
-    ),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Return how many scans have been uploaded to this project since
-    a client-supplied timestamp.
-
-    The client (Dashboard page) is responsible for tracking *its own*
-    last-visit timestamp in localStorage and passing it here.  This
-    keeps the alert scoped to "what's new since I last looked at the
-    dashboard," independent of activity on other pages.
-    """
-    q = db.query(models.Scan).filter(models.Scan.project_id == project.id)
-    if since is not None:
-        q = q.filter(models.Scan.created_at > since)
-
-    count = q.count()
-    if count == 0:
-        return NewScansSinceResponse(count=0)
-
-    latest = q.order_by(desc(models.Scan.created_at)).first()
-    return NewScansSinceResponse(
-        count=count,
-        latest_scan_id=latest.id if latest else None,
-        latest_scan_filename=latest.filename if latest else None,
-        latest_scan_created_at=latest.created_at if latest else None,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Scan staleness — "what needs re-scanning?".  Project-level age of the
 # newest scan, plus per-scope freshness (newest host observation in the

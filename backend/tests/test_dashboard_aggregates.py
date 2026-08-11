@@ -71,33 +71,31 @@ def _make_in_review_follow(db_session, user_id, host_id):
     return f
 
 
-def test_team_review_rejects_oversize_limit(client, test_project):
-    r = client.get(
-        f"/api/v1/projects/{test_project.id}/dashboard/team-review",
-        params={"limit": 999_999},
-    )
-    assert r.status_code == 422, r.text
-
-
 def test_team_review_total_includes_rows_beyond_cap(
-    client, db_session, test_project,
+    db_session, test_project, test_user,
 ):
-    """When the response row cap clips reviewers, the distinct-host
-    total still reflects the whole roster."""
+    """When the row cap clips reviewers, the distinct-host total still
+    reflects the whole roster.
+
+    v2.244.0 — ``GET /dashboard/team-review`` was removed (``GET /workbench``
+    batches it from the same service function). The cap is a service-level
+    argument and /workbench passes a fixed one, so this exercises
+    ``compute_team_review`` directly — which is where the behaviour, and the
+    original bug, live. The oversize-limit 422 test went with the route: that
+    was FastAPI validating a query param, not project behaviour.
+    """
+    from app.services.operations_read_service import compute_team_review
+
     alice = _make_user(db_session, "alice-tr")
     for i in range(5):
         h = _make_host(db_session, test_project.id, f"10.0.0.{10 + i}")
         _make_in_review_follow(db_session, alice.id, h.id)
+    db_session.commit()
 
-    r = client.get(
-        f"/api/v1/projects/{test_project.id}/dashboard/team-review",
-        params={"limit": 2},
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["total_hosts_in_review"] == 5, body
-    assert len(body["reviewers"]) == 1
-    assert body["reviewers"][0]["host_count"] == 2
+    result = compute_team_review(db_session, test_user, test_project, limit=2)
+    assert result.total_hosts_in_review == 5, result
+    assert len(result.reviewers) == 1
+    assert result.reviewers[0].host_count == 2
 
 
 def test_team_review_distinct_count_dedupes_two_reviewers_on_same_host(
@@ -113,11 +111,9 @@ def test_team_review_distinct_count_dedupes_two_reviewers_on_same_host(
     _make_in_review_follow(db_session, bob.id, shared.id)
     _make_in_review_follow(db_session, alice.id, alice_only.id)
 
-    r = client.get(
-        f"/api/v1/projects/{test_project.id}/dashboard/team-review",
-    )
+    r = client.get(f"/api/v1/projects/{test_project.id}/workbench")
     assert r.status_code == 200, r.text
-    body = r.json()
+    body = r.json()["team_review"]
     assert body["total_hosts_in_review"] == 2, body
 
 

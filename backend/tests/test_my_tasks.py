@@ -1,6 +1,12 @@
-"""Tests for the authoritative ``GET /dashboard/my-tasks`` (refactor P1).
+"""Tests for the authoritative My Tasks aggregation (refactor P1).
 
-The endpoint is the UNION of three buckets, each tagged with a reason:
+v2.244.0 — ``GET /dashboard/my-tasks`` was removed; ``GET /workbench`` batches
+this from the same ``compute_my_tasks`` service function and is what the
+Operations page calls. These tests now exercise the endpoint that ships. The
+behaviour under test is unchanged: the aggregation always lived in the service,
+and the deleted route was a thin wrapper over it.
+
+My Tasks is the UNION of three buckets, each tagged with a reason:
   - assigned   — TestPlanEntry.assigned_to_id == caller
   - in_review  — entry on a host the caller marked In Review
   - triage     — unassigned critical/high entry
@@ -73,7 +79,14 @@ def _in_review(db_session, user_id, host_id):
 
 
 def _url(pid):
-    return f"/api/v1/projects/{pid}/dashboard/my-tasks"
+    return f"/api/v1/projects/{pid}/workbench"
+
+
+def _my_tasks(client, pid):
+    """The my_tasks slice of the workbench response."""
+    r = client.get(_url(pid))
+    assert r.status_code == 200, r.text
+    return r.json()["my_tasks"]
 
 
 def test_my_tasks_unions_three_buckets_with_reasons(
@@ -102,9 +115,7 @@ def test_my_tasks_unions_three_buckets_with_reasons(
     _make_entry(db_session, test_plan.id, h_other.id, "medium",
                 assigned_to_id=other.id)
 
-    r = client.get(_url(test_project.id))
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _my_tasks(client, test_project.id)
 
     by_entry = {it["entry_id"]: it for it in body["items"]}
     # The 4 matching entries appear; the someone-else medium does not.
@@ -134,9 +145,7 @@ def test_my_tasks_excludes_terminal_entries(
     _make_entry(db_session, test_plan.id, h_rejected.id, "high",
                 assigned_to_id=test_user.id, status="rejected", phase="reconnaissance")
 
-    r = client.get(_url(test_project.id))
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _my_tasks(client, test_project.id)
     assert body["items"] == []
     assert body["total_open"] == 0
 
@@ -152,8 +161,7 @@ def test_my_tasks_orders_assigned_before_triage(
                              assigned_to_id=test_user.id)
     e_triage = _make_entry(db_session, test_plan.id, h_triage.id, "critical")
 
-    r = client.get(_url(test_project.id))
-    body = r.json()
+    body = _my_tasks(client, test_project.id)
     order = [it["entry_id"] for it in body["items"]]
     assert order.index(e_assigned.id) < order.index(e_triage.id), order
 
@@ -178,19 +186,20 @@ def test_my_tasks_assigned_survives_limit_against_many_triage(
     e_assigned = _make_entry(db_session, test_plan.id, h_assigned.id, "low",
                              assigned_to_id=test_user.id)
 
-    r = client.get(_url(test_project.id) + "?limit=2")
-    assert r.status_code == 200, r.text
-    items = r.json()["items"]
-    ids = [it["entry_id"] for it in items]
+    # Calls the service directly: the limit is the whole point of this
+    # regression and /workbench applies a fixed one. This is also where the
+    # bug lived — the route was only ever a wrapper.
+    from app.services.operations_read_service import compute_my_tasks
+
+    result = compute_my_tasks(db_session, test_user, test_project, limit=2)
+    ids = [it.entry_id for it in result.items]
     # Assigned outranks triage regardless of priority → it's first and
     # always within the limit.
     assert ids[0] == e_assigned.id, ids
 
 
 def test_my_tasks_empty_when_nothing_matches(client, test_project):
-    r = client.get(_url(test_project.id))
-    assert r.status_code == 200, r.text
-    body = r.json()
+    body = _my_tasks(client, test_project.id)
     assert body["items"] == []
     assert body["total_open"] == 0
     assert body["reason_counts"] == {"assigned": 0, "in_review": 0, "triage": 0}

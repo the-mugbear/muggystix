@@ -610,7 +610,7 @@ const Scopes: React.FC = () => {
                 ) : (
                   <Alert variant="info" className="mt-xs">
                     <AlertDescription>
-                      No subnet scopes configured yet. Create one or upload a subnet file.
+                      No subnet entries yet. Add one above or upload a subnet file.
                     </AlertDescription>
                   </Alert>
                 )}
