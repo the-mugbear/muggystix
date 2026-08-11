@@ -17,6 +17,7 @@ from app.db.models_auth import User
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project
 from app.services.posture_service import compute_posture
+from app.services.evidence_service import compute_evidence_coverage
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -105,3 +106,27 @@ def get_posture(
     same signal pass as ``priorities`` so the headline and the list never
     disagree."""
     return compute_posture(db, project.id)
+
+
+class EvidenceCoverageResponse(_Loose):
+    total_hosts: int
+    domains: List[Dict[str, Any]]
+    contributing_tools: List[Dict[str, Any]]
+    data_quality: Dict[str, Any]
+
+
+@router.get(
+    "/evidence",
+    response_model=EvidenceCoverageResponse,
+    summary="Per-domain evidence coverage (can the posture conclusions be trusted?)",
+)
+def get_evidence(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Eligibility-vs-assessed coverage per assessment domain (discovery,
+    service/version, vulnerability, web/TLS, auth/SMB/AD, validation), plus the
+    contributing tools and data-quality signals. Answers whether the posture
+    surface's conclusions rest on enough evidence."""
+    return compute_evidence_coverage(db, project.id)

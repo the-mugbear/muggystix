@@ -140,3 +140,27 @@ export const getPosture = async (
   });
   return response.data;
 };
+
+// --- Evidence coverage (Phase 4) -------------------------------------------
+export interface EvidenceDomain {
+  key: string;
+  label: string;
+  note: string;
+  coverage: Metric;
+}
+
+export interface EvidenceCoverageResponse {
+  total_hosts: number;
+  domains: EvidenceDomain[];
+  contributing_tools: { tool: string; scans: number }[];
+  data_quality: { scans: number; parse_errors_unresolved: number };
+}
+
+export const getEvidenceCoverage = async (
+  options: { signal?: AbortSignal } = {},
+): Promise<EvidenceCoverageResponse> => {
+  const response = await api.get<EvidenceCoverageResponse>(`${p()}/posture/evidence`, {
+    signal: options.signal,
+  });
+  return response.data;
+};

@@ -44,6 +44,7 @@ from app.services.attention_service import (
     compute_project_attention, compute_site_attention,
 )
 from app.services.systemic_insight_service import compute_systemic_insights
+from app.services.evidence_service import has_minimum_assessment
 
 _ACTIVE = ("open", "confirmed", "retest")
 _RESOLVED = ("remediated", "false_positive", "accepted_risk")
@@ -374,16 +375,18 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
     )
 
     # Deterministic label from the same signal pass, with an evidence gate:
-    # absence of scan evidence must never resolve to a reassuring label. A
-    # genuine action/assess signal still wins (an unowned critical is real
-    # regardless of provenance), but an otherwise-quiet estate with no scans
-    # reads "insufficient_evidence", not "no_urgent_signals".
+    # absence of *sufficient* evidence must never resolve to a reassuring label.
+    # A genuine action/assess signal still wins (an unowned critical is real
+    # regardless of provenance), but an otherwise-quiet estate that hasn't been
+    # meaningfully assessed reads "insufficient_evidence", not "no_urgent_signals".
+    # The gate is per-domain now (Phase 4): no scans at all, OR hosts exist but
+    # none carry a detected service or a vulnerability (a discovery-only estate).
     scan_count = project_att["neglect"]["scan_count"]
     if any(s["tier"] == "action" for s in signals):
         label = "action_required"
     elif any(s["tier"] == "assess" for s in signals):
         label = "needs_assessment"
-    elif scan_count == 0:
+    elif scan_count == 0 or not has_minimum_assessment(db, project_id):
         label = "insufficient_evidence"
     else:
         label = "no_urgent_signals"

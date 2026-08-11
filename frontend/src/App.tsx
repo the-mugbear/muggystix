@@ -99,6 +99,7 @@ const Scopes = lazy(() => import('./pages/Scopes'));
 const SecurityPosture = lazy(() => import('./pages/SecurityPosture'));
 const Segments = lazy(() => import('./pages/Segments'));
 const Patterns = lazy(() => import('./pages/Patterns'));
+const Evidence = lazy(() => import('./pages/Evidence'));
 const ParseErrors = lazy(() => import('./pages/ParseErrors'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -493,6 +494,14 @@ function App() {
                       />
                       {/* Legacy path → new Segments page (Phase 3 IA). */}
                       <Route path="/insights" element={<Navigate to="/posture/segments" replace />} />
+                      <Route
+                        path="/posture/evidence"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <Evidence />
+                          </ProtectedRoute>
+                        }
+                      />
                       <Route
                         path="/posture/patterns"
                         element={

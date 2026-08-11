@@ -165,6 +165,10 @@ export const NAV_PAGES: NavPage[] = [
     id: 'posture-patterns', path: '/posture/patterns', label: 'Patterns', requiredRole: 'viewer', hub: 'posture',
     palette: { Icon: AlertHexIcon, keywords: ['pattern', 'family', 'systemic', 'blind spot', 'estate', 'outlier', 'vector', 'spread', 'diagnostic', 'identity', 'encryption', 'lifecycle'], order: 6.6 },
   },
+  {
+    id: 'posture-evidence', path: '/posture/evidence', label: 'Evidence', requiredRole: 'viewer', hub: 'posture',
+    palette: { Icon: Gauge, keywords: ['evidence', 'coverage', 'assessed', 'eligible', 'trust', 'assurance', 'gap', 'parser', 'quality'], order: 6.7 },
+  },
 
   // Workflows hub
   {

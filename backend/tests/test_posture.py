@@ -65,8 +65,11 @@ def test_owned_reviewed_finding_no_urgent_signals(db_session, test_project, test
     db_session.add(models.HostFollow(
         host_id=host.id, user_id=test_user.id, status=models.FollowStatus.REVIEWED.value,
     ))
-    # Scan evidence exists — the estate has actually been assessed.
+    # Scan evidence exists AND the host has a characterised service — the estate
+    # has been meaningfully assessed (clears the per-domain minimum gate).
     db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
+    db_session.add(models.Port(host_id=host.id, port_number=443, protocol="tcp",
+                               state="open", service_name="https"))
     _finding(db_session, test_project.id, severity="low", owner_id=test_user.id, host=host)
     db_session.commit()
 
