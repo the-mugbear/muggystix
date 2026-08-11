@@ -261,7 +261,12 @@ class APIKey(Base):
 
     # Permissions and scope
     scopes = Column(JSON)  # List of allowed operations
-    allowed_ips = Column(JSON)  # IP whitelist
+    # `allowed_ips` was removed in v2.240.4. It was declared here as an "IP
+    # whitelist" and appeared NOWHERE else in the backend — nothing set it,
+    # nothing read it, nothing enforced it. A security control that exists
+    # only as a column is worse than no column: it reads like key access is
+    # IP-pinned when it never was. If key IP-pinning is wanted, it needs an
+    # enforcement point in the auth dependency, not a field.
 
     # Lifecycle
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -36,6 +36,42 @@ _done = False
 # constant — every process just has to agree on the same value.
 _MIGRATION_LOCK_KEY = 738582901
 
+# The first revision in the chain. A pre-Alembic database's schema equals THIS,
+# not head — see _plan_for_tables.
+_BASELINE_REVISION = "b46cd59c17f5"
+
+# Tables the baseline creates. Their absence means whatever this database is,
+# it isn't a BlueStick schema we can adopt.
+_BASELINE_REQUIRED_TABLES = frozenset({"users", "hosts_v2", "scans", "ports_v2"})
+
+# Tables introduced AFTER the baseline. If any exist while `alembic_version`
+# does not, the database is not a clean pre-Alembic install — it's something
+# stranger (a partial restore, a hand-edited schema, a dropped version table).
+# Adopting it at the baseline would then re-run migrations against objects that
+# already exist, so we refuse instead of guessing.
+_POST_BASELINE_TABLES = frozenset(
+    {"webhook_deliveries", "agent_sessions", "network_attributions"}
+)
+
+
+def _plan_for_tables(tables) -> str:
+    """Decide how to bring this database to head. Pure, so it can be tested.
+
+    Returns one of ``"upgrade"``, ``"adopt"``, ``"fail"``.
+    """
+    tables = set(tables)
+    if "alembic_version" in tables:
+        return "upgrade"
+    if not tables:
+        return "upgrade"
+    if not _BASELINE_REQUIRED_TABLES <= tables:
+        # Not empty, but not recognisably ours either. Let `upgrade head` run
+        # and fail loudly rather than stamping something we don't understand.
+        return "upgrade"
+    if tables & _POST_BASELINE_TABLES:
+        return "fail"
+    return "adopt"
+
 
 def _sync_schema_with_alembic() -> None:
     """Bring the schema to Alembic head.
@@ -63,9 +99,32 @@ def _sync_schema_with_alembic() -> None:
     try:
         if "alembic_version" in tables:
             command.upgrade(cfg, "head")
-        elif "users" in tables:
-            logger.info("Existing pre-Alembic schema detected — adopting it (stamp head)")
-            command.stamp(cfg, "head")
+        elif _plan_for_tables(tables) == "adopt":
+            # Adopt at the BASELINE, then migrate forward.
+            #
+            # This used to `stamp head`, which asserts the database already
+            # contains every migration in the chain. The docstring above says
+            # the opposite — a pre-Alembic schema equals the BASELINE — so a
+            # site upgrading directly from a pre-Alembic release was marked
+            # up to date while missing every post-baseline column, table,
+            # constraint and index. Nothing failed at boot; it broke later,
+            # at the first query touching anything added since.
+            logger.info(
+                "Existing pre-Alembic schema detected — adopting it at baseline "
+                "%s and migrating forward", _BASELINE_REVISION,
+            )
+            command.stamp(cfg, _BASELINE_REVISION)
+            command.upgrade(cfg, "head")
+        elif _plan_for_tables(tables) == "fail":
+            raise RuntimeError(
+                "Refusing to adopt this database: it has no alembic_version "
+                "table, but it DOES contain post-baseline tables "
+                f"({sorted(tables & _POST_BASELINE_TABLES)}). That is not a "
+                "pre-Alembic install — it looks like a partial restore or a "
+                "schema whose version table was dropped. Adopting it would "
+                "re-run migrations against objects that already exist. "
+                "Restore from a backup, or stamp the correct revision by hand."
+            )
         else:
             logger.info("Empty database — building schema from Alembic head")
             command.upgrade(cfg, "head")

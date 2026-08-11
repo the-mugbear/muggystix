@@ -40,8 +40,8 @@ from app.db.models_agent import (
     AssistSession,
     AssistSessionStatus,
 )
-from app.db.models_auth import APIKey, User
-from app.db.models_project import Project, ProjectRole
+from app.db.models_auth import APIKey, User, UserRole
+from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
 from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
 from app.services.agent_session_service import create_agent_session
@@ -154,6 +154,21 @@ class AssistSessionRow(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
+    """True for a global admin, or a member whose project role is admin."""
+    if user.role == UserRole.ADMIN:
+        return True
+    membership = (
+        db.query(ProjectMembership)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.user_id == user.id,
+        )
+        .first()
+    )
+    return membership is not None and membership.role == ProjectRole.ADMIN.value
+
 
 def _resolve_assist_agent(db: Session, *, project: Project, user: User) -> Agent:
     """Return the per-user, per-project Agent row for assist sessions.
@@ -342,6 +357,28 @@ def end_assist_session(
     if session is None:
         raise HTTPException(
             status_code=404, detail="Assist session not found in this project"
+        )
+
+    # v2.240.4 (review follow-up) — ownership check.
+    #
+    # This filtered on project only, so ANY project analyst could end any
+    # other analyst's session, revoking their key mid-conversation and handing
+    # their running agent 401s. With several operators each driving their own
+    # agent that is a live foot-gun, not a theoretical one.
+    #
+    # An operator may always stop their own agent; a project admin may clean up
+    # after someone who closed their laptop or left the engagement. Peers may
+    # not disrupt each other — they gain nothing from it, since an assist
+    # agent's writes already carry its operator's name and an "Agent" badge.
+    if session.started_by_id != current_user.id and not _is_project_admin(
+        db, user=current_user, project_id=project.id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This assist session belongs to another operator. Only its "
+                "owner or a project admin can end it."
+            ),
         )
     if session.status != AssistSessionStatus.ACTIVE.value:
         # Idempotent — calling end twice is harmless, but we 200 (well,
