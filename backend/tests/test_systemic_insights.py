@@ -112,6 +112,19 @@ def test_eol_spanning_sites_is_blind_spot_weak_auth_is_not(db_session, test_proj
     assert sn_a.id in profiles
     assert "eol_os" in profiles[sn_a.id]["conditions"]
 
+    # family_summary rolls conditions up to their pattern family, carrying the
+    # program-level control + root-cause hypothesis + worst classification.
+    fam = {f["family"]: f for f in out["family_summary"]}
+    assert "lifecycle_patching" in fam
+    assert fam["lifecycle_patching"]["conditions"] == ["eol_os"]
+    assert fam["lifecycle_patching"]["affected_hosts"] == 3
+    assert fam["lifecycle_patching"]["classification"] == "estate_wide"
+    assert fam["lifecycle_patching"]["recommended_control"]
+    assert fam["lifecycle_patching"]["root_cause_hypothesis"]
+    # Worst-first: estate-wide families sort ahead of isolated ones.
+    ranks = [f["classification"] for f in out["family_summary"]]
+    assert ranks == sorted(ranks, key=lambda c: {"estate_wide": 0, "recurring": 1, "isolated": 2}[c])
+
 
 def test_no_subnets_not_adopted(db_session, test_project):
     out = compute_systemic_insights(db_session, test_project.id)

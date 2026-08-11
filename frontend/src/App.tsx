@@ -98,7 +98,7 @@ const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
 const SecurityPosture = lazy(() => import('./pages/SecurityPosture'));
 const SubnetInsights = lazy(() => import('./pages/SubnetInsights'));
-const SystemicInsights = lazy(() => import('./pages/SystemicInsights'));
+const Patterns = lazy(() => import('./pages/Patterns'));
 const ParseErrors = lazy(() => import('./pages/ParseErrors'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -492,13 +492,15 @@ function App() {
                         }
                       />
                       <Route
-                        path="/insights/systemic"
+                        path="/posture/patterns"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <SystemicInsights />
+                            <Patterns />
                           </ProtectedRoute>
                         }
                       />
+                      {/* Legacy path → new Patterns page (Phase 3 IA). */}
+                      <Route path="/insights/systemic" element={<Navigate to="/posture/patterns" replace />} />
                       <Route
                         path="/parse-errors"
                         element={

@@ -1,17 +1,13 @@
 /**
- * SystemicInsights — "what does this environment systematically get wrong?"
+ * Patterns — "what does this environment systematically get wrong?"
  *
- * Cross-sectional companion to SubnetInsights for a single engagement's
- * snapshot.  Per-subnet insights rank *locations* by risk; this asks which
- * weaknesses recur across the estate and how widely they spread.  A weakness
- * on one host is incidental; the same weakness spanning many subnets and sites
- * is a process failure, and one spanning essentially the whole estate is an
- * organisational blind spot about a threat/vector — the spread IS the
- * diagnosis.
- *
- * Three nested tiers: estate blind spots → segment outliers (density vs the
- * estate's own median) → per-subnet diagnostic profiles (co-occurrence → root
- * cause).
+ * The pattern-family view of the posture surface (was /insights/systemic).
+ * Leads with program-level pattern families (identity & auth, encryption &
+ * trust, lifecycle, …), each rolling up the conditions that evidence it; below,
+ * the finer breakdown — estate blind spots, segment outliers (density vs the
+ * estate's own median), and per-subnet diagnostic profiles (co-occurrence →
+ * root cause). A weakness on one host is incidental; the same weakness spanning
+ * many subnets and sites is a process failure — the spread IS the diagnosis.
  *
  * UI-style-guide compliance: tables are `table-fixed` with explicit widths;
  * CIDR / site / vector cells truncate or wrap; every state (loading / error /
@@ -27,10 +23,12 @@ import {
 import {
   getSystemicInsights,
   conditionHostsHref,
+  familyCellHostsHref,
   subnetHostsHref,
   downloadSystemicReport,
   type SystemicInsightsResponse,
   type SystemicCondition,
+  type SystemicFamily,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
@@ -118,7 +116,7 @@ const ConditionChips: React.FC<{ keys: string[]; cidr: string }> = ({ keys, cidr
 // Render the systemic response as a shareable Markdown summary (for pasting
 // into a ticket / Slack / email).  Mirrors the on-page sections.
 function systemicToMarkdown(data: SystemicInsightsResponse, projectName?: string): string {
-  const lines: string[] = [`# Systemic Insights${projectName ? ` — ${projectName}` : ''}`, ''];
+  const lines: string[] = [`# Patterns${projectName ? ` — ${projectName}` : ''}`, ''];
   if (!data.adopted) return [...lines, '_No scoped subnets yet._'].join('\n');
   const e = data.estate;
   if (e) {
@@ -161,7 +159,7 @@ function systemicToMarkdown(data: SystemicInsightsResponse, projectName?: string
   return lines.join('\n');
 }
 
-const SystemicInsights: React.FC = () => {
+const Patterns: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
   const [data, setData] = useState<SystemicInsightsResponse | null>(null);
@@ -203,6 +201,7 @@ const SystemicInsights: React.FC = () => {
   useEffect(() => { load(); }, [load, currentProject?.id]);
 
   const estate = data?.estate;
+  const families = useMemo(() => data?.family_summary ?? [], [data]);
   const blindSpots = useMemo(() => data?.blind_spots ?? [], [data]);
   const conditions = useMemo(() => data?.conditions ?? [], [data]);
   const outliers = useMemo(() => data?.segment_outliers ?? [], [data]);
@@ -214,16 +213,15 @@ const SystemicInsights: React.FC = () => {
     <div className="space-y-md p-md">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
-          <h1 className="text-page-title">Systemic Insights</h1>
+          <h1 className="text-page-title">Patterns</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Which weaknesses recur across the{' '}
+            The recurring weaknesses across the{' '}
             <strong className="text-foreground">estate</strong> — every in-scope host across all
-            sites and subnets in this project — and how widely they spread. A weakness on one
-            host is incidental;{' '}
-            <strong className="text-foreground">the same weakness across many subnets and sites</strong>{' '}
-            is a process failure, and one spanning essentially the whole estate points at an
-            organisational blind spot about that threat. The spread is the diagnosis. These are
-            evidence-backed hypotheses, not verdicts — review the breakdown.
+            sites and subnets — grouped into <strong className="text-foreground">pattern families</strong>{' '}
+            (identity &amp; auth, encryption &amp; trust, lifecycle, …). A weakness on one host is
+            incidental; the same weakness across many subnets and sites is a process failure, and one
+            spanning essentially the whole estate points at an organisational blind spot. The spread
+            is the diagnosis. Root causes are evidence-backed hypotheses, not verdicts.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
@@ -297,6 +295,19 @@ const SystemicInsights: React.FC = () => {
             </Alert>
           ) : (
             <>
+              {/* Primary — pattern families (the program-level rollup). */}
+              {families.length > 0 && (
+                <section className="space-y-sm">
+                  <div className="flex items-center gap-xs">
+                    <h2 className="text-subheading font-semibold text-foreground">Pattern families</h2>
+                    <InfoTip text="Weaknesses grouped into program-level families. Each shows how many in-scope hosts it affects, how far it spreads, its likely root cause (a hypothesis), and the recommended program-level control. Worst-first by spread." />
+                  </div>
+                  <div className="grid gap-sm md:grid-cols-2">
+                    {families.map((f) => <PatternFamilyCard key={f.family} f={f} />)}
+                  </div>
+                </section>
+              )}
+
               {/* Tier 1 — estate blind spots */}
               <section className="space-y-sm">
                 <div className="flex items-center gap-xs">
@@ -558,4 +569,55 @@ const BlindSpotCard: React.FC<{ c: SystemicCondition }> = ({ c }) => {
   );
 };
 
-export default SystemicInsights;
+// A program-level pattern family: spread classification, affected hosts, its
+// member conditions (with drill-downs), the root-cause hypothesis, and the
+// recommended control.
+const PatternFamilyCard: React.FC<{ f: SystemicFamily }> = ({ f }) => {
+  const cls = CLASSIFICATION_BADGE[f.classification] ?? CLASSIFICATION_BADGE.isolated;
+  const href = familyCellHostsHref(f.conditions, null);
+  return (
+    <Card>
+      <CardContent className="space-y-sm p-md">
+        <div className="flex items-start justify-between gap-xs">
+          <h3 className="min-w-0 truncate font-semibold text-foreground" title={f.family_label}>
+            {f.family_label}
+          </h3>
+          <Badge variant={cls.variant}>{cls.label}</Badge>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-md gap-y-xxs text-caption text-muted-foreground">
+          <span>
+            {href ? (
+              <Link to={href} className="font-medium text-info hover:underline">
+                {f.affected_hosts} hosts
+              </Link>
+            ) : <span className="font-medium text-foreground">{f.affected_hosts} hosts</span>}
+            {' '}({Math.round(f.host_fraction * 100)}%)
+          </span>
+          <span>{f.subnet_spread} subnet{f.subnet_spread === 1 ? '' : 's'}</span>
+          <span>{f.site_spread} site{f.site_spread === 1 ? '' : 's'}</span>
+        </div>
+        <div className="flex flex-wrap gap-xxs">
+          {f.conditions.map((k) => {
+            const ch = familyCellHostsHref([k], null);
+            const label = conditionChip(k);
+            return ch ? (
+              <Link key={k} to={ch} title={`View hosts with ${label}`}>
+                <Badge variant="muted" className="cursor-pointer hover:bg-muted-foreground/20">{label}</Badge>
+              </Link>
+            ) : <Badge key={k} variant="muted">{label}</Badge>;
+          })}
+        </div>
+        <p className="text-caption text-muted-foreground">
+          <span className="font-medium text-foreground">Likely root cause (hypothesis): </span>
+          {f.root_cause_hypothesis}
+        </p>
+        <p className="flex items-start gap-xxs text-caption text-foreground">
+          <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-info" aria-hidden />
+          <span><span className="font-medium">Recommended control: </span>{f.recommended_control}</span>
+        </p>
+      </CardContent>
+    </Card>
+  );
+};
+
+export default Patterns;

@@ -20,7 +20,7 @@ import {
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
-import { conditionHostsHref, familyCellHostsHref } from '../services/api/insights';
+import { familyCellHostsHref } from '../services/api/insights';
 import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
@@ -33,7 +33,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/toolti
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
-import { Meter, PrevalenceBar } from '../components/posture/PostureCharts';
+import { Meter } from '../components/posture/PostureCharts';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
 import {
@@ -165,13 +165,11 @@ const SecurityPosture: React.FC = () => {
           {/* 4. The systemic hero — where weaknesses concentrate (families × sites). */}
           <ConditionSegmentHeatmap data={data} />
 
-          {/* 5. Highest-leverage actions beside the systemic + disposition stack. */}
+          {/* 5. Highest-leverage actions beside finding disposition. The
+              systemic detail now lives on the Patterns page; sites on Segments. */}
           <div className="grid items-start gap-md lg:grid-cols-2">
             <ManagementPriorities priorities={data.priorities} decisions={data.decisions} />
-            <div className="space-y-md">
-              <SystemicWeaknesses data={data} />
-              <FindingDisposition data={data} />
-            </div>
+            <FindingDisposition data={data} />
           </div>
 
           <SitesRequiringAttention data={data} />
@@ -306,7 +304,7 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
       ) : <span className="text-caption text-warning">Not assessed</span>}
     >
       {h.systemic.adopted ? (
-        <Link to="/insights/systemic" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
+        <Link to="/posture/patterns" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
           estate blind spots · {h.systemic.condition_count} condition{h.systemic.condition_count === 1 ? '' : 's'}
           <ArrowUpRight className="size-3" aria-hidden />
         </Link>
@@ -620,67 +618,6 @@ const ManagementPriorities: React.FC<{
     </CardContent>
   </Card>
 );
-
-// ---------------------------------------------------------------------------
-// Systemic weaknesses — prevalence bars.
-// ---------------------------------------------------------------------------
-const SystemicWeaknesses: React.FC<{ data: PostureResponse }> = ({ data }) => {
-  const conditions = [...data.systemic.conditions].sort((a, b) => b.host_fraction - a.host_fraction).slice(0, 6);
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-xs">
-          <span className="flex items-center gap-xs">
-            Systemic weaknesses
-            <InfoTip text="How widely each recurring weakness spreads — % of in-scope hosts affected, plus how many subnets and sites it touches. An 'estate blind spot' spans most of the estate, pointing at a process gap rather than a one-off." />
-          </span>
-          <Link to="/insights/systemic" className="text-caption text-info hover:underline">All →</Link>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-md">
-        {!data.systemic.adopted ? (
-          <p className="text-caption text-warning">
-            Systemic posture can't be assessed yet — no scoped subnets.{' '}
-            <Link to="/scopes" className="text-info hover:underline">Manage scopes</Link>.
-          </p>
-        ) : conditions.length === 0 ? (
-          <p className="text-caption text-muted-foreground">
-            Assessed — no weakness recurs widely enough across the estate to read as systemic.
-          </p>
-        ) : conditions.map((c) => {
-          const color = c.is_blind_spot ? 'hsl(var(--destructive))' : 'hsl(var(--warning))';
-          // Shared-vuln blind spots (key vuln:<plugin_id>) have no host predicate.
-          const href = conditionHostsHref(c.key);
-          return (
-            <div key={c.key} className="space-y-xs">
-              <div className="flex items-baseline justify-between gap-xs">
-                {href ? (
-                  <Link to={href} className="min-w-0 truncate text-metadata font-medium text-info hover:underline"
-                    title={`${c.label} — view affected hosts`}>
-                    {c.label}
-                  </Link>
-                ) : (
-                  <span className="min-w-0 truncate text-metadata font-medium text-foreground" title={c.label}>
-                    {c.label}
-                  </span>
-                )}
-                <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
-                  {c.affected_hosts} hosts ({Math.round(c.host_fraction * 100)}%)
-                </span>
-              </div>
-              <PrevalenceBar fraction={c.host_fraction} color={color} />
-              <div className="flex flex-wrap items-center gap-xxs">
-                {c.is_blind_spot && <Badge variant="destructive">estate blind spot</Badge>}
-                <Badge variant="muted">{c.subnet_spread} subnets</Badge>
-                <Badge variant="muted">{c.site_spread} sites</Badge>
-              </div>
-            </div>
-          );
-        })}
-      </CardContent>
-    </Card>
-  );
-};
 
 // ---------------------------------------------------------------------------
 // Finding disposition — scanner-confirmed kept visually separate.

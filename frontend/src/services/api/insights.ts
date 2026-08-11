@@ -146,6 +146,20 @@ export interface DiagnosticProfile {
   root_cause: { kind: string; text: string };
 }
 
+/** Per pattern-family rollup — the Patterns page's primary rows. */
+export interface SystemicFamily {
+  family: string;
+  family_label: string;
+  root_cause_hypothesis: string;
+  recommended_control: string;
+  conditions: string[];
+  affected_hosts: number;
+  host_fraction: number;
+  subnet_spread: number;
+  site_spread: number;
+  classification: 'isolated' | 'recurring' | 'estate_wide';
+}
+
 export interface SystemicInsightsResponse {
   adopted: boolean;
   estate?: {
@@ -154,6 +168,7 @@ export interface SystemicInsightsResponse {
     sites: number;
     blind_spot_count: number;
   };
+  family_summary?: SystemicFamily[];
   blind_spots?: SystemicCondition[];
   segment_outliers?: SegmentOutlier[];
   conditions?: SystemicCondition[];

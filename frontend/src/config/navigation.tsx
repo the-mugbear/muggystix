@@ -162,8 +162,8 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: AlertHexIcon, keywords: ['subnet', 'hygiene', 'neglect', 'exposure', 'eol', 'attention'], order: 6.5 },
   },
   {
-    id: 'systemic-insights', path: '/insights/systemic', label: 'Systemic', requiredRole: 'viewer', hub: 'posture',
-    palette: { Icon: AlertHexIcon, keywords: ['systemic', 'blind spot', 'estate', 'outlier', 'vector', 'spread', 'diagnostic'], order: 6.6 },
+    id: 'posture-patterns', path: '/posture/patterns', label: 'Patterns', requiredRole: 'viewer', hub: 'posture',
+    palette: { Icon: AlertHexIcon, keywords: ['pattern', 'family', 'systemic', 'blind spot', 'estate', 'outlier', 'vector', 'spread', 'diagnostic', 'identity', 'encryption', 'lifecycle'], order: 6.6 },
   },
 
   // Workflows hub

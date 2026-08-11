@@ -55,6 +55,7 @@ from app.services.pattern_families import (
     classify,
     family_for_condition,
     family_for_vuln,
+    FAMILIES,
 )
 from app.schemas.metric import ratio_metric
 
@@ -173,6 +174,8 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     estate_large_enough = total_hosts >= _BLINDSPOT_MIN_ESTATE_HOSTS
     conditions_out: List[Dict[str, Any]] = []
     blind_spots: List[Dict[str, Any]] = []
+    # condition key -> its classification, for the per-family worst-of rollup.
+    cond_class: Dict[str, str] = {}
     # subnet → set(condition keys present) for the diagnostic profiles
     subnet_conditions: Dict[int, Set[str]] = defaultdict(set)
     # subnet → count of (condition, host) incidences for density
@@ -216,6 +219,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             estate_large_enough=estate_large_enough,
         )
         row["classification"] = classification
+        cond_class[key] = classification
         # Derived: single source of truth is `classification`. Kept for the
         # existing consumers (the _gather_signals blind-spot pass, the frontend).
         row["is_blind_spot"] = classification == "estate_wide"
@@ -328,6 +332,9 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     family_matrix = _build_family_site_matrix(
         affected, host_site, in_scope, subnet_meta,
     )
+    family_summary = _build_family_summary(
+        affected, host_subnet, host_site, cond_class, total_hosts,
+    )
 
     return {
         "adopted": True,
@@ -342,7 +349,62 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         "conditions": conditions_out,
         "diagnostic_profiles": diagnostic_profiles,
         "family_matrix": family_matrix,
+        "family_summary": family_summary,
     }
+
+
+_CLASS_RANK = {"isolated": 0, "recurring": 1, "estate_wide": 2}
+
+
+def _build_family_summary(
+    affected: Dict[str, Set[int]],
+    host_subnet: Dict[int, int],
+    host_site: Dict[int, Optional[int]],
+    cond_class: Dict[str, str],
+    total_hosts: int,
+) -> List[Dict[str, Any]]:
+    """Per pattern-family rollup — the Patterns page's primary rows.
+
+    Aggregates the per-host conditions that share a family: union of affected
+    hosts, distinct subnets/sites touched, and the worst spread classification
+    among the family's member conditions. Carries the family's root-cause
+    hypothesis and recommended program-level control (from the taxonomy).
+    Worst-first (estate-wide before recurring before isolated).
+    """
+    fam_members: Dict[str, List[str]] = defaultdict(list)
+    fam_hosts: Dict[str, Set[int]] = defaultdict(set)
+    for cond_key, hosts in affected.items():
+        if not hosts:
+            continue
+        fam = family_for_condition(cond_key)
+        if fam is None:
+            continue
+        fam_members[fam.key].append(cond_key)
+        fam_hosts[fam.key] |= hosts
+
+    out: List[Dict[str, Any]] = []
+    for fam_key, hosts in fam_hosts.items():
+        fam = FAMILIES[fam_key]
+        subnets = {host_subnet[h] for h in hosts}
+        sites = {host_site[h] for h in hosts if host_site[h] is not None}
+        worst = max(
+            (cond_class.get(c, "isolated") for c in fam_members[fam_key]),
+            key=lambda c: _CLASS_RANK[c],
+        )
+        out.append({
+            "family": fam_key,
+            "family_label": fam.label,
+            "root_cause_hypothesis": fam.root_cause_hypothesis,
+            "recommended_control": fam.recommended_control,
+            "conditions": sorted(fam_members[fam_key]),
+            "affected_hosts": len(hosts),
+            "host_fraction": round(len(hosts) / total_hosts, 3) if total_hosts else 0.0,
+            "subnet_spread": len(subnets),
+            "site_spread": len(sites),
+            "classification": worst,
+        })
+    out.sort(key=lambda r: (-_CLASS_RANK[r["classification"]], -r["affected_hosts"]))
+    return out
 
 
 def _build_family_site_matrix(
