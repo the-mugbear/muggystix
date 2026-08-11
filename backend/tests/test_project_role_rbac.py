@@ -102,6 +102,56 @@ def test_viewer_can_still_list_tags(member_client, db_session, test_project, mem
     assert resp.status_code == 200
 
 
+def test_viewer_can_unassign_themselves(member_client, db_session, test_project, member):
+    """A viewer assigned to a host must be able to remove their OWN assignment,
+    even though assigning is analyst+ (bug: no unassign path existed)."""
+    from datetime import datetime, timezone
+    from app.db.models import HostFollow, FollowStatus
+
+    _set_role(db_session, test_project, member, "viewer")
+    host = _host(db_session, test_project)
+    db_session.add(HostFollow(
+        host_id=host.id, user_id=member.id, status=FollowStatus.IN_REVIEW,
+        assigned_at=datetime.now(timezone.utc), assigned_by_id=member.id,
+    ))
+    db_session.commit()
+
+    resp = member_client.post(
+        f"{_base(test_project)}/bulk/unassign", json={"host_ids": [host.id]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected"] == 1
+    follow = db_session.query(HostFollow).filter_by(host_id=host.id, user_id=member.id).one()
+    assert follow.assigned_at is None
+    # The follow row itself survives — unassigning isn't unfollowing.
+    assert follow.status == FollowStatus.IN_REVIEW
+
+
+def test_assigned_predicate_resolves_username(db_session, test_project, member):
+    """The assigned/assignee filter accepts a username, not just a user id
+    (ids aren't surfaced in the UI)."""
+    from datetime import datetime, timezone
+    from app.db.models import HostFollow, FollowStatus
+    from app.services.host_query_predicates import assigned_predicate
+
+    host = _host(db_session, test_project)
+    db_session.add(HostFollow(
+        host_id=host.id, user_id=member.id, status=FollowStatus.IN_REVIEW,
+        assigned_at=datetime.now(timezone.utc),
+    ))
+    db_session.commit()
+
+    # By username (the reported case) resolves to the same host as by id.
+    pred_name = assigned_predicate(db_session, member.username, member)
+    pred_id = assigned_predicate(db_session, str(member.id), member)
+    assert pred_name is not None and pred_id is not None
+    ids_by_name = {h.id for h in db_session.query(models.Host).filter(pred_name).all()}
+    ids_by_id = {h.id for h in db_session.query(models.Host).filter(pred_id).all()}
+    assert ids_by_name == ids_by_id == {host.id}
+    # An unknown username yields no filter (None), not a crash.
+    assert assigned_predicate(db_session, "no-such-user", member) is None
+
+
 def test_analyst_can_bulk_tag(member_client, db_session, test_project, member):
     _set_role(db_session, test_project, member, "analyst")
     host = _host(db_session, test_project)

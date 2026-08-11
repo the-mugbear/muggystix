@@ -626,9 +626,10 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
 
 
 def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[ColumnElement]:
-    """Assignment predicate: ``any`` → assigned to anyone, ``me`` → the
-    caller, or a numeric user id.  Returns ``None`` for an unusable value
-    so callers skip the filter (legacy parity).
+    """Assignment predicate: ``any`` → assigned to anyone, ``me`` → the caller,
+    a **username** (the normal case — user ids aren't surfaced in the UI), or a
+    numeric user id.  Returns ``None`` for an unusable value so callers skip the
+    filter (legacy parity).
 
     "Assigned" keys on ``assigned_at`` (cleared on unassign).  Taking a host
     In Review now sets ``assigned_at`` too (see the review-status write path),
@@ -636,7 +637,19 @@ def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[
     if value == "any":
         assigned = db.query(HostFollow.host_id).filter(HostFollow.assigned_at.isnot(None))
         return models.Host.id.in_(assigned)
-    assignee_id = current_user.id if value == "me" else (int(value) if value.isdigit() else None)
+    if value == "me":
+        assignee_id: Optional[int] = current_user.id
+    elif value.isdigit():
+        assignee_id = int(value)
+    else:
+        # A username — the value a user actually knows and types (ids aren't
+        # shown anywhere). Case-insensitive exact match.
+        row = (
+            db.query(User.id)
+            .filter(func.lower(User.username) == value.lower())
+            .first()
+        )
+        assignee_id = row[0] if row else None
     if assignee_id is None:
         return None
     assigned = db.query(HostFollow.host_id).filter(

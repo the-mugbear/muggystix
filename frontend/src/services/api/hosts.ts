@@ -739,6 +739,13 @@ export const bulkAssignHosts = async (
   return response.data;
 };
 
+/** Remove the caller's OWN assignment from the given hosts (any project
+ *  member may drop their own assignment, unlike assigning which is analyst+). */
+export const bulkUnassignHosts = async (hostIds: number[]): Promise<BulkResult> => {
+  const response = await api.post(`${p()}/hosts/bulk/unassign`, { host_ids: hostIds });
+  return response.data;
+};
+
 export const bulkFollowHosts = async (
   hostIds: number[],
   status: FollowStatus,

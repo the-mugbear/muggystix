@@ -232,6 +232,48 @@ def bulk_assign(
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))
 
 
+class BulkUnassignRequest(BaseModel):
+    host_ids: List[int]
+
+
+@router.post(
+    "/bulk/unassign", response_model=BulkResult,
+    summary="Remove the caller's own assignment from many hosts",
+    # Self-unassignment only — you can always drop your OWN assignment, so this
+    # is gated at project membership (VIEWER), not ANALYST like assigning others.
+    # A user assigned to a host may be a viewer/auditor, and must be able to
+    # remove themselves regardless of role.
+    dependencies=[Depends(require_project_role(ProjectRole.VIEWER))],
+)
+def bulk_unassign(
+    payload: BulkUnassignRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Clear the caller's assignment (``assigned_at`` / ``assigned_by_id``) on the
+    given hosts. Keeps the follow row + review status — unassigning isn't
+    unfollowing; the caller may still be watching of their own accord."""
+    host_ids = _valid_host_ids(db, project.id, payload.host_ids)
+    if not host_ids:
+        return BulkResult(affected=0, requested=len(payload.host_ids))
+
+    rows = (
+        db.query(HostFollow)
+        .filter(
+            HostFollow.user_id == current_user.id,
+            HostFollow.host_id.in_(host_ids),
+            HostFollow.assigned_at.isnot(None),
+        )
+        .all()
+    )
+    for follow in rows:
+        follow.assigned_at = None
+        follow.assigned_by_id = None
+    db.commit()
+    return BulkResult(affected=len(rows), requested=len(payload.host_ids))
+
+
 class BulkFollowRequest(BaseModel):
     host_ids: List[int]
     status: FollowStatus

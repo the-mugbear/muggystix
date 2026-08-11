@@ -15,6 +15,7 @@ import {
   FollowStatus,
   bulkTagHosts,
   bulkAssignHosts,
+  bulkUnassignHosts,
   bulkFollowHosts,
   getMatchingHostIds,
   listHostTags,
@@ -34,6 +35,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import {
@@ -318,6 +320,14 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
               })}
             {members.length === 0 && !user && (
               <DropdownMenuItem disabled>No members</DropdownMenuItem>
+            )}
+            {user && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => runAction((ids) => bulkUnassignHosts(ids), 'Unassigned', 'Unassign me')}>
+                  Unassign me
+                </DropdownMenuItem>
+              </>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
