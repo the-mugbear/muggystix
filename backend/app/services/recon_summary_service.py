@@ -23,9 +23,10 @@ returning typed agent_schemas shapes.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
-from sqlalchemy import distinct, func
+from sqlalchemy import case, cast, distinct, func
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -36,11 +37,137 @@ from app.api.v1.endpoints.agent_schemas import (
 )
 
 
+def _ip_order_by(db: Session) -> List[Any]:
+    """ORDER BY terms giving numeric (not lexicographic) IP ordering.
+
+    String order puts ``10.0.0.100`` before ``10.0.0.2`` because ``'1' <
+    '2'`` at index 8, so the ordering has to happen on the parsed
+    address.  Postgres' ``inet`` type does that (and handles IPv6), but a
+    bare ``ip_address::inet`` raises on any row that isn't an address —
+    and this column has historically carried non-addresses here (the
+    v2.13.1 note below: ``localhost`` strings from httpx TLS-SAN
+    expansion).  One such row would 500 the whole endpoint.
+
+    ``pg_input_is_valid`` (PG 16+) is the guard: it answers "would this
+    cast succeed?" without raising, so unparseable values sort into a
+    trailing bucket by raw string instead of taking the request down.
+    Host id is the final tiebreaker so paging is deterministic even when
+    two rows compare equal.
+
+    SQLite (test fallback) has no inet type; it sorts by the raw string,
+    which is fine for the small fixtures that path runs on.
+    """
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return [models.Host.ip_address.asc(), models.Host.id.asc()]
+
+    parseable = func.pg_input_is_valid(models.Host.ip_address, "inet")
+    return [
+        # Booleans sort false < true, so desc() puts real addresses first.
+        parseable.desc(),
+        case((parseable, cast(models.Host.ip_address, INET)), else_=None).asc(),
+        models.Host.ip_address.asc(),
+        models.Host.id.asc(),
+    ]
+
+
+def _session_hosts_query(db: Session, recon_session_id: int):
+    """IP-ordered ``Host`` query for one recon session, scope-bounded.
+
+    Membership is expressed as ``Host.id IN (session host ids)`` rather
+    than a join + ``DISTINCT``: ``SELECT DISTINCT`` requires every ORDER
+    BY expression to appear in the select list, which the inet ordering
+    above does not.  The subquery form also matches how
+    ``recon_session_host_stats`` bounds the same set.
+    """
+    session_row = (
+        db.query(ReconSession)
+        .filter(ReconSession.id == recon_session_id)
+        .first()
+    )
+    scope_id = session_row.scope_id if session_row else None
+    host_ids_subq = _session_host_ids_subq(db, recon_session_id, scope_id)
+    return (
+        db.query(models.Host)
+        .filter(models.Host.id.in_(host_ids_subq.select()))
+        .order_by(*_ip_order_by(db))
+    )
+
+
+def recon_session_host_count(db: Session, recon_session_id: int) -> int:
+    """Number of in-scope hosts this recon session discovered.
+
+    Constant-time in host count — the callers that used to derive this
+    with ``len(recon_session_host_breakdown(...))`` were materialising
+    every host just to read its length.
+    """
+    session_row = (
+        db.query(ReconSession)
+        .filter(ReconSession.id == recon_session_id)
+        .first()
+    )
+    if session_row is None:
+        return 0
+    host_ids_subq = _session_host_ids_subq(
+        db, recon_session_id, session_row.scope_id,
+    )
+    return (
+        db.query(func.count()).select_from(host_ids_subq).scalar() or 0
+    )
+
+
+def iter_recon_session_hosts(
+    db: Session, recon_session_id: int, *, chunk_size: int = 500,
+) -> Iterator[ReconHostBrief]:
+    """Stream the per-host breakdown in IP order, bounded memory.
+
+    Backs the ``/agent/recon/*`` download endpoints, which exist so an
+    agent can redirect a 40k-host result to a file and parse it with
+    shell tools instead of pulling 30 MB into its context window.
+
+    Only the ordered id list is held whole (8 bytes a row — 40k hosts is
+    ~320 KB); host and port rows are fetched a chunk at a time, so peak
+    memory is one chunk regardless of session size.  Ids are resolved up
+    front rather than streamed off a server-side cursor because each
+    chunk issues its own port queries on the same Session, which would
+    interleave with an open cursor.
+    """
+    host_ids = [
+        row[0] for row in
+        _session_hosts_query(db, recon_session_id)
+        .with_entities(models.Host.id)
+        .all()
+    ]
+    for start in range(0, len(host_ids), chunk_size):
+        page = host_ids[start:start + chunk_size]
+        # Re-apply the ordering: IN (...) does not preserve list order.
+        rows = (
+            db.query(models.Host)
+            .filter(models.Host.id.in_(page))
+            .order_by(*_ip_order_by(db))
+            .all()
+        )
+        for brief in _briefs_for_hosts(db, rows):
+            yield brief
+        # Release the chunk's identity-map references so a long stream
+        # doesn't accumulate every Host row it has already emitted.
+        for row in rows:
+            db.expunge(row)
+
+
 def recon_session_host_breakdown(
-    db: Session, recon_session_id: int,
+    db: Session,
+    recon_session_id: int,
+    *,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> List[ReconHostBrief]:
     """Return per-host rollup (ip, hostname, open_port_count, services)
     for a recon session's ingested scans.
+
+    ``limit``/``offset`` page the result in SQL.  Callers that want the
+    whole set at 40k+ hosts should use :func:`iter_recon_session_hosts`
+    instead — this builds the full list in memory when unbounded.
 
     v2.11.1 — the prompt always claimed /recon/summary returned this,
     but the response was only totals.  Shared by the summary and
@@ -56,35 +183,21 @@ def recon_session_host_breakdown(
     whenever a parser wrote a row whose IP/hostname didn't belong to
     the scope — observed live during recon session #6 testing.
     """
-    # Resolve the session's scope_id so we can scope-filter hosts.
-    session_row = (
-        db.query(ReconSession)
-        .filter(ReconSession.id == recon_session_id)
-        .first()
-    )
-    scope_id = session_row.scope_id if session_row else None
+    query = _session_hosts_query(db, recon_session_id)
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    return _briefs_for_hosts(db, query.all())
 
-    # Distinct host rows reachable from this session's scans, bounded
-    # by scope membership (HostSubnetMapping → Subnet under scope_id).
-    # If the session has no scope (shouldn't happen for recon-scoped
-    # keys but guard anyway), fall through to the unscoped behavior.
-    query = (
-        db.query(models.Host)
-        .join(
-            models.HostScanHistory,
-            models.HostScanHistory.host_id == models.Host.id,
-        )
-        .join(
-            models.IngestionJob,
-            models.IngestionJob.scan_id == models.HostScanHistory.scan_id,
-        )
-        .filter(models.IngestionJob.recon_session_id == recon_session_id)
-    )
-    if scope_id is not None:
-        query = query.filter(
-            models.Host.id.in_(_scoped_host_ids_subq(db, scope_id))
-        )
-    host_rows = query.distinct().all()
+
+def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ReconHostBrief]:
+    """Attach open-port detail to an already-ordered page of Host rows.
+
+    Split out of ``recon_session_host_breakdown`` so the paged and
+    streaming callers share one definition of a host brief.  Ordering is
+    the caller's — this preserves ``host_rows`` order exactly.
+    """
     if not host_rows:
         return []
 
@@ -139,7 +252,11 @@ def recon_session_host_breakdown(
             )
         )
 
-    result = [
+    # IP-natural ordering (v2.43.3, AUD-N2) now happens in SQL via
+    # _ip_order_by, so the caller's row order is already correct.  Sorting
+    # here as well would have forced every caller to materialise the whole
+    # session before it could return the first row.
+    return [
         ReconHostBrief(
             host_id=h.id,
             ip_address=h.ip_address,
@@ -150,24 +267,6 @@ def recon_session_host_breakdown(
         )
         for h in host_rows
     ]
-    # v2.43.3 (AUD-N2): sort IP-naturally, not lexicographically.  The
-    # pre-fix string sort put "10.0.0.100" before "10.0.0.2" because
-    # '1' < '2' at character index 8.  ipaddress.ip_address gives the
-    # numeric ordering operators expect; fallback to the original
-    # string for non-IP rows (the model nullably accepts hostnames in
-    # this column on legacy data).
-    import ipaddress
-
-    def _ip_sort_key(row: ReconHostBrief):
-        try:
-            return (0, ipaddress.ip_address(row.ip_address or ""))
-        except (ValueError, TypeError):
-            # Bucket non-IP values after real IPs so the operator-facing
-            # table still groups consistently.
-            return (1, row.ip_address or "")
-
-    result.sort(key=_ip_sort_key)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -426,67 +525,73 @@ def recon_session_diff_ips(
     hosts_a = _session_host_ids_subq(db, session_a_id, session_a.scope_id)
     hosts_b = _session_host_ids_subq(db, session_b_id, session_b.scope_id)
 
-    # Resolve diff host_ids — set differences in SQL.  EXCEPT works
-    # on PostgreSQL; for SQLite fall back to a NOT IN form so the
-    # test suite still passes.
+    # Resolve the set differences in SQL.  EXCEPT works on PostgreSQL;
+    # for SQLite fall back to a Python set difference so the test suite
+    # still passes.
+    #
+    # On Postgres the diff stays a *subquery* rather than a materialised
+    # id list: counting is a COUNT(*) over it and the sample is an
+    # ORDER BY … LIMIT against it, so a 40k-host diff never crosses the
+    # wire to produce a 50-row sample (nor builds a 40k-element IN list).
     bind = db.get_bind()
     if bind.dialect.name == "postgresql":
-        in_a_not_b_ids = [
-            row[0] for row in
-            db.execute(
-                hosts_a.select().except_(hosts_b.select())
-            ).all()
-        ]
-        in_b_not_a_ids = [
-            row[0] for row in
-            db.execute(
-                hosts_b.select().except_(hosts_a.select())
-            ).all()
-        ]
-        shared_count = (
-            db.query(func.count())
-            .select_from(hosts_a.select().intersect(hosts_b.select()).subquery())
-            .scalar() or 0
+        diff_a = hosts_a.select().except_(hosts_b.select()).subquery()
+        diff_b = hosts_b.select().except_(hosts_a.select()).subquery()
+
+        def _count_of(subq) -> int:
+            return db.query(func.count()).select_from(subq).scalar() or 0
+
+        in_a_not_b_count = _count_of(diff_a)
+        in_b_not_a_count = _count_of(diff_b)
+        shared_count = _count_of(
+            hosts_a.select().intersect(hosts_b.select()).subquery()
         )
+        in_a_not_b_ids = db.query(diff_a.c.host_id)
+        in_b_not_a_ids = db.query(diff_b.c.host_id)
     else:
         a_ids = {row[0] for row in db.query(hosts_a.c.host_id).all()}
         b_ids = {row[0] for row in db.query(hosts_b.c.host_id).all()}
         in_a_not_b_ids = list(a_ids - b_ids)
         in_b_not_a_ids = list(b_ids - a_ids)
+        in_a_not_b_count = len(in_a_not_b_ids)
+        in_b_not_a_count = len(in_b_not_a_ids)
         shared_count = len(a_ids & b_ids)
 
     def _sample_rows(host_ids: List[int]) -> List[Dict[str, Any]]:
-        if not host_ids:
+        """First ``limit`` hosts of a diff side, in IP order.
+
+        The cap belongs in SQL.  This previously fetched a full ORM Host
+        row for every id in the diff, sorted them all in Python, and
+        returned ``[:limit]`` — its own comment said it avoided exactly
+        that.  On a 40k-vs-0 comparison it cost ~4.5s and tens of
+        thousands of ORM objects to produce 50 rows.
+        """
+        # `host_ids` is a Query of ids on Postgres and a plain list on
+        # SQLite; `in_` accepts either, so the cap lands in SQL on the
+        # backend that actually sees these volumes.
+        if isinstance(host_ids, list) and not host_ids:
             return []
-        # Cap before the per-row query so we don't fetch 10k Host rows
-        # just to slice to 50.  Sort by ip_address so the cap is
-        # deterministic — same first-50 every render.
-        import ipaddress
-
-        def _ip_key(h):
-            try:
-                return (0, ipaddress.ip_address(h.ip_address or ""))
-            except (ValueError, TypeError):
-                return (1, h.ip_address or "")
-
         rows = (
-            db.query(models.Host)
+            db.query(
+                models.Host.id, models.Host.ip_address, models.Host.hostname,
+            )
             .filter(models.Host.id.in_(host_ids))
+            .order_by(*_ip_order_by(db))
+            .limit(limit)
             .all()
         )
-        rows.sort(key=_ip_key)
         return [
             {
-                "host_id": h.id,
-                "ip_address": h.ip_address,
-                "hostname": h.hostname,
+                "host_id": r.id,
+                "ip_address": r.ip_address,
+                "hostname": r.hostname,
             }
-            for h in rows[:limit]
+            for r in rows
         ]
 
     return {
-        "in_a_not_b_count": len(in_a_not_b_ids),
-        "in_b_not_a_count": len(in_b_not_a_ids),
+        "in_a_not_b_count": int(in_a_not_b_count),
+        "in_b_not_a_count": int(in_b_not_a_count),
         "shared_count": int(shared_count),
         "in_a_not_b_sample": _sample_rows(in_a_not_b_ids),
         "in_b_not_a_sample": _sample_rows(in_b_not_a_ids),
@@ -564,6 +669,48 @@ def session_hosts_file_content(hosts: List[ReconHostBrief]) -> str:
     """
     ips = [h.ip_address for h in hosts if h.ip_address]
     return ("\n".join(ips) + "\n") if ips else ""
+
+
+# ---------------------------------------------------------------------------
+# Streaming download bodies (v2.241.0)
+# ---------------------------------------------------------------------------
+#
+# The agent-facing summary used to inline every discovered host, every
+# derived web target, and a newline-joined IP file.  Measured on one recon
+# session holding 40,000 hosts with 3 open ports each, that response was
+# 31.4 MB — roughly 7.8M tokens, so it fits in no context window at all.
+# The contract's answer was a warning telling the agent not to "read or
+# echo it whole", which is unfollowable: receiving a tool result IS
+# reading it.
+#
+# These generators are the alternative.  An agent redirects them to a file
+# (`curl -o session-hosts.jsonl`) and greps/jqs it locally, so the full
+# dataset stays complete and on disk instead of half-consumed in context.
+# Memory is bounded by iter_recon_session_hosts' chunking on both sides.
+
+def iter_recon_hosts_ndjson(db: Session, recon_session_id: int) -> Iterator[str]:
+    """Newline-delimited JSON, one host object per line.
+
+    NDJSON rather than a JSON array so the agent can stream-process it
+    (``jq -c 'select(...)'``, ``grep``, ``head``) without a parser that
+    holds the whole document.
+    """
+    for brief in iter_recon_session_hosts(db, recon_session_id):
+        yield brief.model_dump_json() + "\n"
+
+
+def iter_recon_live_hosts(db: Session, recon_session_id: int) -> Iterator[str]:
+    """One IP per line — the ``nmap -iL`` / ``masscan -iL`` target file."""
+    for brief in iter_recon_session_hosts(db, recon_session_id):
+        if brief.ip_address:
+            yield brief.ip_address + "\n"
+
+
+def iter_recon_web_targets(db: Session, recon_session_id: int) -> Iterator[str]:
+    """One URL per line — the ``httpx -l`` / ``eyewitness -f`` target file."""
+    for brief in iter_recon_session_hosts(db, recon_session_id):
+        for target in web_targets_from_hosts([brief]):
+            yield target.url + "\n"
 
 
 def build_known_hosts_probe(

@@ -852,6 +852,28 @@ class WebTarget(BaseModel):
     url: str
 
 
+class ReconDownload(BaseModel):
+    """One streamable artifact an agent should fetch to disk, not to context."""
+    url: str = Field(description="Path to GET, relative to the API root.")
+    media_type: str
+    description: str
+    curl: str = Field(
+        description="Ready-to-run command that writes the artifact to a file.",
+    )
+
+
+class ReconDownloads(BaseModel):
+    """Bulk artifacts for this recon session.
+
+    Every one of these is unbounded and streamed.  They exist so the agent
+    never has to choose between "complete data" and "a usable context
+    window" — download, then parse locally with jq/grep/awk.
+    """
+    hosts_ndjson: ReconDownload
+    live_hosts: ReconDownload
+    web_targets: ReconDownload
+
+
 class ReconSummaryResponse(BaseModel):
     recon_session_id: int
     scope_id: int
@@ -866,10 +888,19 @@ class ReconSummaryResponse(BaseModel):
     # v2.11.1 — the prompt had always promised this but the response
     # was only returning totals.  Populated from the same scan-history
     # joins that produce the aggregate counts, so it's consistent.
+    # v2.241.0 — CAPPED at _SUMMARY_HOST_CAP.  See `downloads` below and
+    # `hosts_truncated` for the full set.
     hosts: List[ReconHostBrief] = Field(default_factory=list)
+    # Total in-scope hosts this session discovered, independent of the cap
+    # applied to `hosts` — this is the number to report as progress.
+    hosts_total: int = 0
+    hosts_truncated: bool = False
     # v2.13.2 — pre-computed web-fingerprint target list derived from
-    # hosts[].open_ports.  Saves agents a round trip.
+    # hosts[].open_ports.  Saves agents a round trip.  v2.241.0 — derived
+    # from the capped `hosts` above, so it is a sample too whenever
+    # `hosts_truncated` is set; the authoritative list is the download.
     web_targets: List[WebTarget] = Field(default_factory=list)
+    web_targets_truncated: bool = False
     # Newline-joined IP list of every host discovered SO FAR in this
     # session, ready to redirect to a file and pipe into the next tool
     # (e.g. `nmap -iL session-hosts.txt`).  Mirrors
@@ -879,6 +910,14 @@ class ReconSummaryResponse(BaseModel):
     # target file from `hosts[]` itself.  Empty string until the first
     # host lands.
     live_hosts_file_content: str = ""
+    # v2.241.0 — set when the session grew past _INLINE_FILE_HOST_CAP and
+    # `live_hosts_file_content` was therefore left EMPTY rather than
+    # shortened.  Truncating it silently would be the dangerous option: an
+    # agent would scan a subset with `-iL` and report full coverage.  An
+    # empty file makes the next tool fail loudly instead, and
+    # `downloads.live_hosts` has the complete list.
+    live_hosts_file_truncated: bool = False
+    downloads: Optional[ReconDownloads] = None
 
 
 class ReconCompleteRequest(BaseModel):

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from app.api.v1.endpoints.agent_schemas import (
     ReconContextResponse, ReconUploadResponse,
     ReconJobStatus,
     ReconSummaryResponse, ReconCompleteRequest,
+    ReconDownload, ReconDownloads,
     EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
 )
 from app.api.v1.endpoints.agent_common import _scoped_host_ids_subq
@@ -37,9 +39,13 @@ from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.agent_environment_probe_service import apply_environment_probe
 from app.services.recon_summary_service import (
     recon_session_host_breakdown as _recon_session_host_breakdown,
+    recon_session_host_count as _recon_session_host_count,
     web_targets_from_hosts as _web_targets_from_hosts,
     build_known_hosts_probe as _build_known_hosts_probe,
     session_hosts_file_content as _session_hosts_file_content,
+    iter_recon_hosts_ndjson as _iter_recon_hosts_ndjson,
+    iter_recon_live_hosts as _iter_recon_live_hosts,
+    iter_recon_web_targets as _iter_recon_web_targets,
 )
 from app.services.recon_planning_service import (
     analyze_scope_size as _analyze_scope_size,
@@ -48,6 +54,122 @@ from app.services.recon_planning_service import (
 )
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Summary payload caps (v2.241.0)
+# ---------------------------------------------------------------------------
+#
+# Measured against one recon session holding 40,000 hosts × 3 open ports,
+# the uncapped summary response was 31.4 MB — hosts[] 18.9 MB, web_targets[]
+# 12.0 MB, live_hosts_file_content 0.5 MB.  That is roughly 7.8M tokens: it
+# does not fit in any context window, so an agent calling /recon/summary on
+# a large session lost the run regardless of how careful it was.
+#
+# AGENTS.md previously handled this by warning the agent not to "read or
+# echo it whole" — advice no agent can follow, because receiving a tool
+# result is what puts it in context.  The cap has to be server-side.
+#
+# 50 hosts is a *sample* — enough to sanity-check that ingestion produced
+# sensible rows, small enough to never dominate a response.  Everything
+# beyond it comes from the streaming download endpoints below.
+_SUMMARY_HOST_CAP = 50
+
+# live_hosts_file_content is different in kind: an agent pipes it straight
+# into `nmap -iL`.  A shortened list would scan part of the scope while the
+# agent reported full coverage, so past this size the field is emptied (not
+# trimmed) and the download URL carries the complete set.  An empty target
+# file makes the next tool fail loudly, which is the safe direction.
+_INLINE_FILE_HOST_CAP = 1000
+
+
+def _download_manifest(session_id: int) -> ReconDownloads:
+    """Bulk-artifact pointers for a recon session.
+
+    The ``curl`` strings are ready to run: they carry the API key header
+    and redirect to a file, because the entire point is that these bodies
+    land on disk rather than in the agent's context.
+    """
+    base = "/api/v1/agent/recon"
+    auth = '-H "X-API-Key: $BLUESTICK_API_KEY"'
+    return ReconDownloads(
+        hosts_ndjson=ReconDownload(
+            url=f"{base}/hosts.ndjson",
+            media_type="application/x-ndjson",
+            description=(
+                "Every in-scope host this session discovered, one JSON object "
+                "per line (host_id, ip_address, hostname, open_port_count, "
+                "services, open_ports). Filter locally with jq."
+            ),
+            curl=f"curl -sS {auth} $BLUESTICK_URL{base}/hosts.ndjson -o session-hosts.jsonl",
+        ),
+        live_hosts=ReconDownload(
+            url=f"{base}/live-hosts.txt",
+            media_type="text/plain",
+            description=(
+                "One IP per line, IP-sorted — the target file for "
+                "`nmap -iL` / `masscan -iL`."
+            ),
+            curl=f"curl -sS {auth} $BLUESTICK_URL{base}/live-hosts.txt -o session-hosts.txt",
+        ),
+        web_targets=ReconDownload(
+            url=f"{base}/web-targets.txt",
+            media_type="text/plain",
+            description=(
+                "One http/https URL per line for every web port discovered — "
+                "the target file for `httpx -l` / `eyewitness -f`."
+            ),
+            curl=f"curl -sS {auth} $BLUESTICK_URL{base}/web-targets.txt -o web-targets.txt",
+        ),
+    )
+
+
+def _build_summary_response(
+    db: Session,
+    session: ReconSession,
+    *,
+    scans_ingested: int,
+    hosts_discovered: int,
+    ports_discovered: int,
+) -> ReconSummaryResponse:
+    """Assemble the capped summary envelope shared by /summary and /complete.
+
+    Both endpoints returned identical bodies built by copy-paste; they now
+    share this so a cap fixed in one place can't be missed in the other.
+    """
+    hosts_total = _recon_session_host_count(db, session.id)
+    hosts_sample = _recon_session_host_breakdown(
+        db, session.id, limit=_SUMMARY_HOST_CAP,
+    )
+    hosts_truncated = hosts_total > len(hosts_sample)
+
+    inline_file = (
+        _session_hosts_file_content(
+            _recon_session_host_breakdown(db, session.id)
+        )
+        if 0 < hosts_total <= _INLINE_FILE_HOST_CAP
+        else ""
+    )
+
+    return ReconSummaryResponse(
+        recon_session_id=session.id,
+        scope_id=session.scope_id,
+        status=session.status,
+        uploads_submitted=session.uploads_submitted or 0,
+        scans_ingested=scans_ingested,
+        hosts_discovered=hosts_discovered,
+        ports_discovered=ports_discovered,
+        started_at=session.started_at,
+        completed_at=session.completed_at,
+        hosts=hosts_sample,
+        hosts_total=hosts_total,
+        hosts_truncated=hosts_truncated,
+        web_targets=_web_targets_from_hosts(hosts_sample),
+        web_targets_truncated=hosts_truncated,
+        live_hosts_file_content=inline_file,
+        live_hosts_file_truncated=hosts_total > _INLINE_FILE_HOST_CAP,
+        downloads=_download_manifest(session.id),
+    )
 
 
 def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Optional[float]:
@@ -305,6 +427,100 @@ def get_recon_subnets(
         "subnets": cidrs,
         "has_more": offset + len(cidrs) < total,
     }
+
+
+# ---------------------------------------------------------------------------
+# Bulk downloads (v2.241.0)
+# ---------------------------------------------------------------------------
+#
+# Streamed, uncapped, and meant to be redirected to a file.  These are the
+# answer to "the complete host list does not fit in a context window": the
+# agent writes them to disk and greps/jqs them, so coverage stays complete
+# without the payload ever being read into the model.
+#
+# Bounded server memory too — iter_recon_session_hosts pages the rows, so a
+# 40k-host session streams in chunks instead of materialising 19 MB of ORM
+# objects the way the old inline `hosts[]` did.
+
+def _stream(generator, media_type: str, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        generator,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get(
+    "/recon/hosts.ndjson",
+    summary="Stream every discovered host as newline-delimited JSON",
+    response_class=StreamingResponse,
+)
+def download_recon_hosts_ndjson(
+    request: Request,
+    agent: Agent = Depends(require_recon_scope),
+    db: Session = Depends(get_db),
+):
+    """Complete per-host breakdown, one JSON object per line.
+
+    Use this instead of reading ``hosts[]`` from ``/recon/summary`` when
+    ``hosts_truncated`` is true.  Redirect it to a file:
+
+        curl -sS -H "X-API-Key: $KEY" .../recon/hosts.ndjson -o hosts.jsonl
+        jq -c 'select(.open_ports[]?.port == 445)' hosts.jsonl
+
+    Same fields, same IP ordering, and same scope bounding as the summary
+    breakdown — this is the identical dataset, delivered so it can be
+    processed without being read whole.
+    """
+    session = _load_recon_session(db, request)
+    return _stream(
+        _iter_recon_hosts_ndjson(db, session.id),
+        "application/x-ndjson",
+        f"recon-session-{session.id}-hosts.jsonl",
+    )
+
+
+@router.get(
+    "/recon/live-hosts.txt",
+    summary="Stream discovered host IPs as an -iL target file",
+    response_class=StreamingResponse,
+)
+def download_recon_live_hosts(
+    request: Request,
+    agent: Agent = Depends(require_recon_scope),
+    db: Session = Depends(get_db),
+):
+    """One IP per line, IP-sorted — feed straight to ``nmap -iL``.
+
+    This is the authoritative form of ``live_hosts_file_content``, which
+    the summary leaves EMPTY past _INLINE_FILE_HOST_CAP hosts rather than
+    shortening it (a trimmed target file would silently under-scan).
+    """
+    session = _load_recon_session(db, request)
+    return _stream(
+        _iter_recon_live_hosts(db, session.id),
+        "text/plain",
+        f"recon-session-{session.id}-hosts.txt",
+    )
+
+
+@router.get(
+    "/recon/web-targets.txt",
+    summary="Stream derived http/https URLs as an httpx/eyewitness target file",
+    response_class=StreamingResponse,
+)
+def download_recon_web_targets(
+    request: Request,
+    agent: Agent = Depends(require_recon_scope),
+    db: Session = Depends(get_db),
+):
+    """One URL per line for every discovered web port — ``httpx -l`` input."""
+    session = _load_recon_session(db, request)
+    return _stream(
+        _iter_recon_web_targets(db, session.id),
+        "text/plain",
+        f"recon-session-{session.id}-web-targets.txt",
+    )
 
 
 # --- Environment probe (v2.23.0) ---
@@ -588,20 +804,11 @@ def get_recon_summary(
     session.ports_discovered = ports_count
     db.commit()
 
-    hosts_breakdown = _recon_session_host_breakdown(db, session.id)
-    return ReconSummaryResponse(
-        recon_session_id=session.id,
-        scope_id=session.scope_id,
-        status=session.status,
-        uploads_submitted=session.uploads_submitted or 0,
+    return _build_summary_response(
+        db, session,
         scans_ingested=scans_count,
         hosts_discovered=hosts_count,
         ports_discovered=ports_count,
-        started_at=session.started_at,
-        completed_at=session.completed_at,
-        hosts=hosts_breakdown,
-        web_targets=_web_targets_from_hosts(hosts_breakdown),
-        live_hosts_file_content=_session_hosts_file_content(hosts_breakdown),
     )
 
 
@@ -700,18 +907,9 @@ def complete_recon_session(
     db.commit()
     db.refresh(session)
 
-    hosts_breakdown = _recon_session_host_breakdown(db, session.id)
-    return ReconSummaryResponse(
-        recon_session_id=session.id,
-        scope_id=session.scope_id,
-        status=session.status,
-        uploads_submitted=session.uploads_submitted or 0,
+    return _build_summary_response(
+        db, session,
         scans_ingested=session.scans_ingested,
         hosts_discovered=session.hosts_discovered,
         ports_discovered=session.ports_discovered,
-        started_at=session.started_at,
-        completed_at=session.completed_at,
-        hosts=hosts_breakdown,
-        web_targets=_web_targets_from_hosts(hosts_breakdown),
-        live_hosts_file_content=_session_hosts_file_content(hosts_breakdown),
     )

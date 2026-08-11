@@ -543,13 +543,48 @@ Content-Type: application/json
     {"host_id": 18, "ip_address": "192.168.7.200", "hostname": "pi.hole",
      "port": 80, "protocol": "http", "url": "http://192.168.7.200/"}
   ],
-  "live_hosts_file_content": "192.168.7.200\n..."  // every host found SO FAR, newline-joined
+  "live_hosts_file_content": "192.168.7.200\n...",  // see the size rule below
+  "hosts_total": 41233,                          // TRUE count — report this, not hosts.length
+  "hosts_truncated": true,                       // hosts[] above is a 50-host SAMPLE
+  "web_targets_truncated": true,
+  "live_hosts_file_truncated": true,             // then live_hosts_file_content is ""
+  "downloads": {                                 // the complete data lives here
+    "hosts_ndjson": {"url": "/api/v1/agent/recon/hosts.ndjson", "curl": "curl -sS ... -o session-hosts.jsonl"},
+    "live_hosts":   {"url": "/api/v1/agent/recon/live-hosts.txt", "curl": "curl -sS ... -o session-hosts.txt"},
+    "web_targets":  {"url": "/api/v1/agent/recon/web-targets.txt", "curl": "curl -sS ... -o web-targets.txt"}
+  }
 }
 ```
 
-Per-host fields use `open_ports` (full objects) and `services` (deduped names) — *not* `ports`. `web_targets` is pre-filtered to ports detected as HTTP/HTTPS so an agent can drive httpx/eyewitness/nikto from a single array without re-scanning the open_ports list. `live_hosts_file_content` is a ready-to-redirect target file of every host discovered so far this session (newline-joined IPs, trailing newline) — write it straight to `session-hosts.txt` and feed the next stage with `-iL` instead of rebuilding the list from `hosts[]`. Empty string until the first host lands.
+Per-host fields use `open_ports` (full objects) and `services` (deduped names) — *not* `ports`. `web_targets` is pre-filtered to ports detected as HTTP/HTTPS so an agent can drive httpx/eyewitness/nikto from a single array without re-scanning the open_ports list.
 
-> **`hosts[]` and `web_targets[]` are UNBOUNDED — no pagination, no truncation flag.** Every in-scope discovered host is returned in one response with full per-host port detail; a `/20` sweep can return tens of thousands of host objects. The payload is *complete* (good for coverage) but can blow your context window if you read or echo it whole. Don't dump it — iterate incrementally, and use the scalar counters (`scans_ingested`, `hosts_discovered`, `ports_discovered`) for progress reporting.
+#### Large sessions: download the data, don't read it (v2.241.0)
+
+**`hosts[]` is capped at 50 — it is a sample, not the dataset.** Before this cap, the response was complete but unusable: one real session holding 40,000 hosts produced a **31.4 MB** body (~7.8M tokens). No context window holds that, so the run was lost at the moment of the call. The previous contract told you to avoid "reading or echoing it whole", which is not something you can do — receiving a tool result *is* reading it.
+
+So the complete data moved to three streaming endpoints. **Write them to a file and process them with shell tools; never `cat` them into your context.**
+
+```bash
+# The full per-host dataset — one JSON object per line
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/hosts.ndjson" -o session-hosts.jsonl
+
+wc -l session-hosts.jsonl                                  # how many hosts
+jq -c 'select(.open_ports[]?.port == 445)' session-hosts.jsonl | head   # SMB hosts
+jq -r '.services[]' session-hosts.jsonl | sort | uniq -c | sort -rn     # service spread
+
+# Ready-made target files for the next tool — no jq needed
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/live-hosts.txt"  -o session-hosts.txt
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/web-targets.txt" -o web-targets.txt
+nmap -sV -iL session-hosts.txt -oX services.xml
+httpx -l web-targets.txt -json -o httpx.jsonl
+```
+
+Rules that matter:
+
+- **Report `hosts_total`, never `hosts.length`.** The array is a sample; its length is 50 on every large session and saying "found 50 hosts" would be wrong.
+- **When `hosts_truncated` is true, the download is the only complete source.** `web_targets[]` is derived from the sampled hosts, so it is a sample too — use `web-targets.txt` for any actual scanning.
+- **`live_hosts_file_content` is emptied, not shortened, past 1000 hosts** (`live_hosts_file_truncated: true`). A trimmed `-iL` file would scan part of the scope while you reported full coverage; an empty one makes the next tool fail loudly. Fetch `live-hosts.txt` instead.
+- The downloads carry the same scope bounding and IP ordering as the summary breakdown — same dataset, delivered so it can be processed without being read.
 
 ### Scope-size awareness
 
@@ -702,6 +737,8 @@ Derived from `hosts[].open_ports` using the standard HTTP/HTTPS port map (80/808
 Each `hosts[].open_ports[]` entry carries `{port, protocol, state, service, product, version}` — enough to build any follow-up target list without cross-referencing `/agent/hosts` or parsing the uploaded XML locally.
 
 The same response also carries `live_hosts_file_content` — a newline-joined file of every host discovered so far this session (trailing newline, IP-sorted). For the staged service-probe pass below, write it straight to `session-hosts.txt` and run `nmap -sV -iL session-hosts.txt` rather than rebuilding the list from `hosts[]`. It's empty until the first host lands, and (unlike `known_hosts_probe.live_hosts_file_content`, which is *prior* recon) it reflects THIS session's running discoveries.
+
+Past 1000 hosts this field is **emptied** and `live_hosts_file_truncated` is set — download `GET /agent/recon/live-hosts.txt` to `session-hosts.txt` instead and use it exactly the same way. Check the flag before feeding the field to `-iL`; a silently short target file under-scans the scope.
 
 **Staged discovery is mandatory.** Never run `nmap -sV` on a full CIDR — it probes dead addresses for hours. Always: fast sweep → live-host list → service probe on hits only. `--top-ports 1000` covers >95% of real services; use `-p-` only as a targeted escalation on high-value hosts flagged during triage.
 
@@ -908,7 +945,10 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | POST | `/agent/recon/sessions/{session_id}/environment` | Record this recon session's operator-environment probe (v2.23.0) |
 | POST | `/agent/recon/upload` | **Submit scanner output here** — multipart upload, any supported tool format |
 | GET | `/agent/recon/jobs/{id}` | Poll an upload's parse status |
-| GET | `/agent/recon/summary` | **Authoritative progress view** — rolling counts + per-host breakdown for your session |
+| GET | `/agent/recon/summary` | **Authoritative progress view** — rolling counts + a 50-host sample. Use `hosts_total` for the real count; when `hosts_truncated` is set, fetch the downloads below |
+| GET | `/agent/recon/hosts.ndjson` | **Complete** per-host dataset, newline-delimited JSON. Streamed — redirect to a file (`-o session-hosts.jsonl`) and query it with `jq`, never read it into context |
+| GET | `/agent/recon/live-hosts.txt` | **Complete** IP list, one per line — `nmap -iL` / `masscan -iL` target file |
+| GET | `/agent/recon/web-targets.txt` | **Complete** http/https URL list, one per line — `httpx -l` / `eyewitness -f` target file |
 | POST | `/agent/recon/complete` | Close the session, freeze counts |
 
 > **Scope isolation for recon keys.** The common endpoints above (`/agent/hosts`, `/agent/dashboard`, `/agent/scans`) are automatically filtered to your scope's hosts/scans — they're a different lens on the same data `/agent/recon/summary` reports. Plan endpoints (`/agent/test-plans/*`) are rejected with 403. The full list of hosts across other scopes in the project is deliberately not visible to a recon key.

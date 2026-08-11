@@ -167,7 +167,10 @@ def test_agent_workflow_tags_are_described():
 
 _METHOD = re.compile(r"\b(GET|POST|PATCH|PUT|DELETE)\b")
 # First backtick-wrapped token on the row that contains an /agent/ path.
-_AGENT_PATH = re.compile(r"`[^`]*?(/agent/[A-Za-z0-9_\-/{}*]+)")
+# The class includes '.' so extension-bearing routes (/agent/recon/hosts.ndjson,
+# live-hosts.txt) parse whole — without it the path truncated at the dot and the
+# contract check reported drift against routes that do exist.
+_AGENT_PATH = re.compile(r"`[^`]*?(/agent/[A-Za-z0-9_\-/{}*.]+)")
 
 
 def _norm(path: str) -> str:

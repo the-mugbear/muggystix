@@ -21,6 +21,26 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.41.0",
+        "app_version": "2.241.0",
+        "summary": (
+            "Recon summary is no longer allowed to overflow the agent's "
+            "context. Measured at 40,000 hosts in one session, "
+            "GET /agent/recon/summary returned 31.4 MB (~7.8M tokens) — "
+            "unusable by any model, and the old guidance ('don't read or "
+            "echo it whole') was unfollowable since receiving a tool result "
+            "is reading it. hosts[] is now a 50-host sample carrying "
+            "hosts_total / hosts_truncated, and the complete data moved to "
+            "three streamed downloads (recon/hosts.ndjson, "
+            "recon/live-hosts.txt, recon/web-targets.txt) that the agent "
+            "redirects to a file and parses with jq/grep. Past 1000 hosts "
+            "live_hosts_file_content is EMPTIED rather than shortened — a "
+            "trimmed -iL file would under-scan the scope while the run "
+            "reported full coverage. Agents must report hosts_total, not "
+            "hosts.length."
+        ),
+    },
+    {
         "version": "1.40.0",
         "app_version": "2.231.0",
         "summary": (
