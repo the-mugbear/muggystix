@@ -76,7 +76,8 @@ const ROOT_CAUSE_TONE: Record<string, BadgeVariant> = {
 const CONDITION_LABEL: Record<string, string> = {
   eol_os: 'EOL OS',
   cleartext_services: 'Cleartext',
-  tls_hygiene: 'TLS',
+  tls_hygiene: 'TLS cert',
+  weak_tls: 'Weak TLS',
   weak_auth: 'Weak auth',
   smb_signing: 'SMB signing',
 };

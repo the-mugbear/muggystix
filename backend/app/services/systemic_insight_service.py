@@ -46,6 +46,7 @@ from app.services.host_condition_sets import (
     eol_os_host_ids,
     smb_unsigned_host_ids,
     weak_auth_host_ids,
+    weak_tls_host_ids,
 )
 from app.services.subnet_insight_service import (
     _load_subnet_meta,
@@ -98,6 +99,9 @@ _CONDITIONS = [
     ("tls_hygiene", "Expired or self-signed TLS certificates",
      "No certificate / PKI governance — TLS trust is unmanaged.",
      3, "Stand up certificate issuance/renewal; replace self-signed/expired certs."),
+    ("weak_tls", "Weak TLS protocols (SSLv2 / SSLv3 / TLS 1.0 / 1.1)",
+     "Deprecated TLS versions are offered — downgrade / interception risk; no modern-TLS baseline.",
+     4, "Disable SSLv2/SSLv3/TLS 1.0/1.1; require TLS 1.2+ across the estate."),
     ("weak_auth", "Guest / anonymous authentication succeeds",
      "Unauthenticated access is tolerated — access control is not enforced.",
      7, "Disable guest/null sessions; require authenticated, least-privilege access."),
@@ -164,6 +168,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         "smb_signing": smb_unsigned_host_ids(db, project_id) & in_scope,
         "cleartext_services": cleartext_host_ids(db, project_id) & in_scope,
         "tls_hygiene": cert_issue_host_ids(db, project_id, now) & in_scope,
+        "weak_tls": weak_tls_host_ids(db, project_id) & in_scope,
         "weak_auth": weak_auth_host_ids(db, project_id) & in_scope,
     }
 

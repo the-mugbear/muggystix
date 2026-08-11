@@ -109,6 +109,7 @@ _CONDITION_FAMILY: Dict[str, str] = {
     "eol_os": "lifecycle_patching",
     "cleartext_services": "legacy_cleartext",
     "tls_hygiene": "encryption_trust",
+    "weak_tls": "encryption_trust",
     "weak_auth": "identity_auth",
     "smb_signing": "lateral_movement",
 }

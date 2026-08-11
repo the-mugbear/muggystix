@@ -45,7 +45,7 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.services.cert_fields import derive_cert_fields, derive_cert_orgs
+from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, derive_weak_protocol
 from app.parsers.parser_utils import (
     correlate_scan,
     record_hosts_in_scan,
@@ -262,6 +262,8 @@ class HttpxParser:
         # Subject Organization is CA-validated attribution — promote it out of
         # the blob at ingest, same as the other cert predicates.
         cert_subject_org, cert_issuer_org = derive_cert_orgs(tls_info)
+        # Weak TLS protocol (SSLv2/SSLv3/TLS1.0/1.1) — from httpx's tls.version.
+        tls_weak_protocol = derive_weak_protocol(tls_info)
 
         # Favicon hash — httpx emits as ``favicon`` (mmh3 hex).
         favicon_hash = record.get("favicon") or record.get("favicon_path")
@@ -303,6 +305,7 @@ class HttpxParser:
                 cert_self_signed=cert_self_signed,
                 cert_subject_org=cert_subject_org,
                 cert_issuer_org=cert_issuer_org,
+                tls_weak_protocol=tls_weak_protocol,
                 raw=record,
             )
             self.db.add(wi)
@@ -322,6 +325,7 @@ class HttpxParser:
             existing.cert_self_signed = cert_self_signed
             existing.cert_subject_org = cert_subject_org
             existing.cert_issuer_org = cert_issuer_org
+            existing.tls_weak_protocol = tls_weak_protocol
             existing.raw = record
         return host_row.id if host_row else None
 

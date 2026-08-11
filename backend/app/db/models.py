@@ -443,6 +443,12 @@ class WebInterface(Base):
     # claim made", never "not the client's".
     cert_subject_org = Column(String(255), index=True)
     cert_issuer_org = Column(String(255))
+    # Weak TLS protocol offered (SSLv2 / SSLv3 / TLS 1.0 / TLS 1.1) — a typed,
+    # queryable promotion of what would otherwise be buried in tls_info, so the
+    # encryption-&-trust systemic condition and the has:weak_tls drill-down can
+    # filter/aggregate on it. None = unknown (the scan didn't enumerate
+    # protocols); False = only strong protocols observed. Derived at ingest.
+    tls_weak_protocol = Column(Boolean, index=True)
 
     # EyeWitness extras (null for httpx).
     screenshot_path = Column(String)  # relative path under uploads/web_screenshots/{scan_id}/

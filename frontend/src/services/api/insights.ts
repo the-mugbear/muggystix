@@ -192,6 +192,7 @@ const CONDITION_DSL: Record<string, string> = {
   smb_signing: 'has:smb_unsigned',
   weak_auth: 'has:weak_auth',
   tls_hygiene: 'has:cert_issue',
+  weak_tls: 'has:weak_tls',
   cleartext_services: 'has:cleartext',
 };
 

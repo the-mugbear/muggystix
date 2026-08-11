@@ -384,6 +384,8 @@ _HAS_KEYWORDS = {
                   "A guest / anonymous / null-session login succeeded (NetExec)."),
     "cert_issue": (lambda ctx: P.cert_issue_predicate(ctx.db, ctx.project_id),
                    "Latest TLS certificate is expired or self-signed."),
+    "weak_tls": (lambda ctx: P.weak_tls_predicate(ctx.db, ctx.project_id),
+                 "Offers a weak TLS protocol (SSLv2 / SSLv3 / TLS 1.0 / TLS 1.1)."),
     "cleartext": (lambda ctx: P.cleartext_predicate(ctx.db),
                   "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),
     "stale_review": (lambda ctx: P.stale_review_predicate(ctx.db),

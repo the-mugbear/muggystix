@@ -147,6 +147,35 @@ def cert_issue_host_ids(
     return out
 
 
+def weak_tls_host_ids(db: Session, project_id: int) -> Set[int]:
+    """Hosts whose LATEST TLS observation per (host, url) offers a weak protocol
+    (SSLv2 / SSLv3 / TLS 1.0 / TLS 1.1).
+
+    Latest-observation-wins, mirroring ``cert_issue_host_ids`` — a re-scan that
+    now shows only strong protocols retires the weakness, and a NULL (protocols
+    not enumerated) never counts."""
+    latest: Dict[Tuple[int, Optional[str]], Tuple] = {}
+    for hid, url, weak, last_seen in (
+        db.query(
+            WebInterface.host_id,
+            WebInterface.url,
+            WebInterface.tls_weak_protocol,
+            WebInterface.last_seen,
+        )
+        .filter(
+            WebInterface.project_id == project_id,
+            WebInterface.host_id.isnot(None),
+            WebInterface.tls_weak_protocol.isnot(None),
+        )
+        .all()
+    ):
+        ls = _normalize_dt(last_seen) or _EPOCH
+        prev = latest.get((hid, url))
+        if prev is None or ls >= prev[0]:
+            latest[(hid, url)] = (ls, weak)
+    return {hid for (hid, _url), (_ls, weak) in latest.items() if weak}
+
+
 def weak_auth_host_ids(db: Session, project_id: int) -> Set[int]:
     """Hosts where the LATEST NetExec observation per (host, proto, port) is a
     successful guest / anonymous / null-session login.

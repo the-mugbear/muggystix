@@ -130,6 +130,67 @@ def derive_cert_orgs(tls_info: Any) -> Tuple[Optional[str], Optional[str]]:
     return trim(subject_org), trim(issuer_org)
 
 
+# --- Weak TLS protocol (v-phase5) ------------------------------------------
+# Protocols considered weak: SSLv2, SSLv3, TLS 1.0, TLS 1.1 (all deprecated /
+# known-attackable). Tools serialise the negotiated / offered version many ways
+# ("TLSv1.0", "TLS1", "tls10", "SSLv3", "0x0301"), so normalisation tolerates
+# the common shapes. Strong = TLS 1.2 / 1.3.
+_WEAK_TLS_TOKENS = {
+    "sslv2", "ssl2", "sslv3", "ssl3",
+    "tlsv1", "tls1", "tlsv10", "tls10", "tlsv1.0", "tls1.0",
+    "tlsv11", "tls11", "tlsv1.1", "tls1.1",
+}
+_STRONG_TLS_TOKENS = {
+    "tlsv12", "tls12", "tlsv1.2", "tls1.2",
+    "tlsv13", "tls13", "tlsv1.3", "tls1.3",
+}
+
+
+def _norm_tls_token(value: Any) -> str:
+    return re.sub(r"[\s_\-]", "", str(value)).lower()
+
+
+def _classify_tls_version(value: Any) -> Optional[bool]:
+    """True if a single version string is weak, False if strong, None if
+    unrecognised."""
+    t = _norm_tls_token(value)
+    if not t:
+        return None
+    if t in _WEAK_TLS_TOKENS:
+        return True
+    if t in _STRONG_TLS_TOKENS:
+        return False
+    return None
+
+
+def derive_weak_protocol(tls_info: Any) -> Optional[bool]:
+    """From a raw ``tls_info`` blob, decide whether a weak TLS protocol is
+    offered.
+
+    Handles both single-version blobs (httpx's ``tls_version``/``version``) and
+    a list of offered protocols (``versions``/``protocols`` a la testssl). Returns
+    True if any offered version is weak, False if only strong versions are seen,
+    None when no version information is present (unknown, not a negative)."""
+    if not isinstance(tls_info, dict):
+        return None
+    # A list of offered protocols wins — any weak one flips it True.
+    offered = tls_info.get("versions") or tls_info.get("protocols") or tls_info.get("offered")
+    if isinstance(offered, (list, tuple)) and offered:
+        classes = [_classify_tls_version(v) for v in offered]
+        if any(c is True for c in classes):
+            return True
+        if any(c is False for c in classes):
+            return False
+        return None
+    # Otherwise a single negotiated/lowest version field.
+    for key in ("tls_version", "version", "protocol", "min_version", "lowest_protocol"):
+        if key in tls_info and tls_info[key]:
+            c = _classify_tls_version(tls_info[key])
+            if c is not None:
+                return c
+    return None
+
+
 def cert_issue_from_columns(
     not_after: Optional[datetime], self_signed: Optional[bool], now: datetime,
 ) -> Optional[str]:

@@ -55,6 +55,7 @@ from app.services.host_condition_sets import (
     cert_issue_host_ids,
     eol_os_host_ids,
     weak_auth_host_ids,
+    weak_tls_host_ids,
 )
 
 
@@ -288,6 +289,13 @@ def cert_issue_predicate(db: Session, project_id: int) -> ColumnElement:
 def weak_auth_predicate(db: Session, project_id: int) -> ColumnElement:
     """Host where a guest / anonymous / null-session login succeeded."""
     ids = weak_auth_host_ids(db, project_id)
+    return models.Host.id.in_(ids) if ids else false()
+
+
+def weak_tls_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host whose latest TLS observation offers a weak protocol (SSLv2/SSLv3/
+    TLS 1.0/1.1)."""
+    ids = weak_tls_host_ids(db, project_id)
     return models.Host.id.in_(ids) if ids else false()
 
 
