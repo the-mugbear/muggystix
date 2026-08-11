@@ -73,3 +73,33 @@ describe('ProvenanceCard', () => {
     expect(screen.getByText(/AWS · eu-west-1/)).toBeInTheDocument();
   });
 });
+
+describe('certificate status (v5.143.0)', () => {
+  it('states an expiry as a deadline the operator can act on', () => {
+    const soon = new Date(Date.now() + 9 * 86_400_000).toISOString();
+    renderCard({ certStatus: [{ url: 'https://10.0.0.1', not_after: soon, self_signed: false }] });
+    expect(screen.getByText(/expires in 9 days/)).toBeInTheDocument();
+  });
+
+  it('says a certificate has already expired rather than counting down past zero', () => {
+    const past = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    renderCard({ certStatus: [{ url: 'https://10.0.0.1', not_after: past, self_signed: false }] });
+    expect(screen.getByText(/expired 3 days ago/)).toBeInTheDocument();
+  });
+
+  it('flags a self-signed certificate', () => {
+    renderCard({ certStatus: [{ url: 'https://10.0.0.1', not_after: null, self_signed: true }] });
+    expect(screen.getByText(/self-signed/)).toBeInTheDocument();
+  });
+
+  it('renders for a DV cert that has an expiry but no organisation', () => {
+    // The case the backend query used to drop entirely.
+    const soon = new Date(Date.now() + 14 * 86_400_000).toISOString();
+    renderCard({
+      attributions: [],
+      certOrgs: [],
+      certStatus: [{ url: 'https://10.0.0.1', not_after: soon, self_signed: false, subject_org: null }],
+    });
+    expect(screen.getByText(/expires in 14 days/)).toBeInTheDocument();
+  });
+});

@@ -104,6 +104,16 @@ export interface HostCertOrg {
   url: string;
 }
 
+/** Expiry + self-signed state for a host's TLS certificate (v5.143.0).
+ *  Separate from HostCertOrg: a DV certificate has no organisation but still
+ *  has an expiry the operator needs. */
+export interface HostCertStatus {
+  url?: string | null;
+  not_after?: string | null;
+  self_signed?: boolean | null;
+  subject_org?: string | null;
+}
+
 export interface Host {
   id: number;
   ip_address: string;
@@ -172,6 +182,7 @@ export interface Host {
   discoveries?: HostDiscovery[];
   attributions?: NetworkAttribution[];
   cert_orgs?: HostCertOrg[];
+  cert_status?: HostCertStatus[];
   // Host-level NSE script output (smb-os-discovery, smb-security-mode,
   // etc.). Port-level scripts live on each Port.scripts.
   host_scripts?: NseScript[];

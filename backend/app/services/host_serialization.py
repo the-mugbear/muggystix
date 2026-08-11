@@ -282,6 +282,27 @@ def serialize_host_detail(
         {"org": w.cert_subject_org, "issuer": w.cert_issuer_org, "url": w.url}
         for w in certs[:5]
     ]
+
+    # v2.244.0 — expiry + self-signed were written by the httpx parser and read
+    # by NOTHING: no serializer emitted them, so the two most actionable facts
+    # on a certificate ("this expires in 9 days", "this is self-signed") were
+    # invisible everywhere in the product. Unlike the org fields above, these
+    # are worth surfacing even without a subject org, so they're collected from
+    # every row that carries them rather than only from `certs`.
+    tls = [
+        w for w in (cert_web_interfaces or [])
+        if getattr(w, "cert_not_after", None) is not None
+        or getattr(w, "cert_self_signed", None) is not None
+    ]
+    serialized["cert_status"] = [
+        {
+            "url": w.url,
+            "not_after": w.cert_not_after,
+            "self_signed": w.cert_self_signed,
+            "subject_org": w.cert_subject_org,
+        }
+        for w in tls[:5]
+    ]
     return serialized
 
 

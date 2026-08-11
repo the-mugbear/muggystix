@@ -361,6 +361,22 @@ class NetworkAttributionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HostCertStatusOut(BaseModel):
+    """Expiry + self-signed state for a host's TLS certificate.
+
+    The two facts an operator acts on: an expiring cert is a finding with a
+    deadline, and a self-signed one changes how much the identity in the
+    subject is worth. Written since the httpx parser landed and, until
+    v2.244.0, read by nothing.
+    """
+    url: Optional[str] = None
+    not_after: Optional[datetime] = None
+    self_signed: Optional[bool] = None
+    subject_org: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class HostCertOrgOut(BaseModel):
     """Organization on a host's TLS certificate.
 
@@ -450,6 +466,7 @@ class Host(HostBase):
     # visible to anyone.  Same failure as HostVulnerability.finding_id.
     attributions: List[NetworkAttributionOut] = []
     cert_orgs: List[HostCertOrgOut] = []
+    cert_status: List[HostCertStatusOut] = []
 
     model_config = ConfigDict(from_attributes=True)
 

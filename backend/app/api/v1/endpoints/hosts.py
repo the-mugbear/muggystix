@@ -1262,11 +1262,22 @@ def get_host_v2(
         # Queried by host_id rather than through a relationship — Host has no
         # `web_interfaces` relationship (it lives on Scan), which is why the
         # certificate-org half of the ProvenanceCard was always empty.
+        # v2.244.0 — widened from `cert_subject_org IS NOT NULL`. That filter
+        # was right for the org half but wrong for expiry: a DV certificate
+        # (Let's Encrypt et al.) carries no organizationName at all, so every
+        # such host was dropped before the expiry/self-signed fields could be
+        # read — and DV is the common case on the public internet. Now any row
+        # carrying ANY certificate fact qualifies, and the serializer decides
+        # which list each row belongs in.
         cert_web_interfaces=(
             db.query(models.WebInterface)
             .filter(
                 models.WebInterface.host_id == host_id,
-                models.WebInterface.cert_subject_org.isnot(None),
+                or_(
+                    models.WebInterface.cert_subject_org.isnot(None),
+                    models.WebInterface.cert_not_after.isnot(None),
+                    models.WebInterface.cert_self_signed.isnot(None),
+                ),
             )
             .order_by(models.WebInterface.last_seen.desc().nullslast())
             .limit(5)

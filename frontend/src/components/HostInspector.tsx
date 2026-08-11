@@ -2008,7 +2008,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
       {/* Where this host is registered and hosted — the outside world's answer
           to "is this the client's?", vs the scope's own CIDR list. */}
-      <ProvenanceCard attributions={host.attributions} certOrgs={host.cert_orgs} />
+      <ProvenanceCard
+        attributions={host.attributions}
+        certOrgs={host.cert_orgs}
+        certStatus={host.cert_status}
+      />
 
       {/* This host's findings, inline — appears once a note here is promoted. */}
       <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />

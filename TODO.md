@@ -104,10 +104,25 @@ decisions (surface it or remove it), not cleanup.
 
 ### E. Partial writers — column exists, only some paths populate it
 
-- [ ] **`WebInterface.cert_not_after` / `cert_self_signed`** are written only by the httpx
-      path; whatweb and eyewitness imports leave them null, and neither is serialized to
-      the host detail response. This is why the ProvenanceCard renders empty on most hosts
-      even though its plumbing was fixed in 2.240.x. Fix the writers, then serialize.
+- [x] **PARTLY DONE (2.245.0) — and the original entry was wrong about the cause.**
+      Serialization shipped (`cert_status` on host detail, rendered in ProvenanceCard),
+      along with a query fix: the host-detail fetch filtered `cert_subject_org IS NOT
+      NULL`, dropping every DV certificate — which has no organisation but does have an
+      expiry.
+
+      whatweb and eyewitness are **not** missing writers: neither format carries
+      certificate data (`tls_info=None, # whatweb has no structured TLS block`). Null is
+      correct there.
+
+- [ ] **Parse nmap `ssl-cert` NSE output into the typed cert columns.** The real coverage
+      gap. `nmap --script ssl-cert` is far more common in recon than httpx TLS probing,
+      and its output is already stored as `Script` rows — just never parsed. Precedent
+      exists: `_detect_smb_signing` extracts `Host.smb_signing` from NSE text the same way.
+      **Open design question:** the cert columns live on `WebInterface`, which nmap never
+      creates. Either synthesise a WebInterface row per TLS port (lights up the existing
+      ProvenanceCard path for free, but widens what a "web interface" means — nmap can see
+      TLS on 993/imaps, which is not a web interface) or give Port its own cert columns
+      (truer semantics, but a second home for the same fact). Needs a call before building.
 
 ### F. Loaded gun
 

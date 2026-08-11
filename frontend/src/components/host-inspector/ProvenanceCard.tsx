@@ -22,9 +22,9 @@
  * disagree about a host attribute.
  */
 import React from 'react';
-import { Globe, ShieldCheck } from 'lucide-react';
+import { Globe, ShieldCheck, ShieldAlert } from 'lucide-react';
 
-import type { HostCertOrg, NetworkAttribution } from '../../services/api';
+import type { HostCertOrg, HostCertStatus, NetworkAttribution } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -33,7 +33,22 @@ import { safeFallback } from '../../utils/uiStyles';
 export interface ProvenanceCardProps {
   attributions?: NetworkAttribution[];
   certOrgs?: HostCertOrg[];
+  /** Expiry / self-signed state. Separate from certOrgs because a DV cert has
+   *  no organisation but still has an expiry worth acting on. */
+  certStatus?: HostCertStatus[];
 }
+
+/** Days until expiry; negative when already expired. */
+const daysUntil = (iso: string | null | undefined): number | null => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.round((t - Date.now()) / 86_400_000);
+};
+
+/** Expiry is a deadline, so it's stated as one. 30 days is the usual renewal
+ *  window — inside it, the operator has something to act on. */
+const EXPIRY_WARN_DAYS = 30;
 
 const formatAge = (iso: string | null): string | null => {
   if (!iso) return null;
@@ -59,8 +74,11 @@ const isStale = (iso: string | null): boolean => {
 export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
   attributions = [],
   certOrgs = [],
+  certStatus = [],
 }) => {
-  if (attributions.length === 0 && certOrgs.length === 0) return null;
+  if (attributions.length === 0 && certOrgs.length === 0 && certStatus.length === 0) {
+    return null;
+  }
 
   // Disagreement between an independently-validated cert and a self-declared
   // registration is the signal worth raising.
@@ -147,6 +165,44 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
                 </span>
               </div>
             ))}
+          </div>
+        )}
+
+        {certStatus.length > 0 && (
+          <div className="space-y-xxs border-t border-border pt-sm">
+            {certStatus.map((c) => {
+              const days = daysUntil(c.not_after);
+              const expired = days !== null && days < 0;
+              const expiringSoon = days !== null && days >= 0 && days <= EXPIRY_WARN_DAYS;
+              return (
+                <div key={`status-${c.url}`} className="flex flex-wrap items-center gap-xs">
+                  {c.self_signed ? (
+                    <ShieldAlert className="size-3.5 shrink-0 text-warning" aria-hidden />
+                  ) : (
+                    <ShieldCheck className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  )}
+                  <span className="min-w-0 truncate text-caption text-muted-foreground">
+                    {safeFallback(c.url)}
+                  </span>
+                  {c.self_signed && (
+                    <Badge variant="outline" className="border-warning/40 text-warning">
+                      self-signed
+                    </Badge>
+                  )}
+                  {days !== null && (
+                    <span
+                      className={
+                        expired || expiringSoon ? 'text-metadata text-destructive' : 'text-caption text-muted-foreground'
+                      }
+                    >
+                      {expired
+                        ? `certificate expired ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} ago`
+                        : `expires in ${days} day${days === 1 ? '' : 's'}`}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </CardContent>
