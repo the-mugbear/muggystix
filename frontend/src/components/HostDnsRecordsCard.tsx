@@ -1,14 +1,17 @@
-import React, { useEffect, useState } from 'react';
-import { Globe, Loader2 } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Globe, Loader2, Search } from 'lucide-react';
 
 import {
   getHostDnsRecords,
+  performDnsLookup,
   HostDnsRecordRow,
   HostDnsRecordsResponse,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { useToast } from '../contexts/ToastContext';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
+import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 
 /**
@@ -27,6 +30,9 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 
 interface HostDnsRecordsCardProps {
   hostId: number;
+  /** Needed for the on-demand lookup — the endpoint resolves a NAME, so the
+   *  action is only offered when the host has one. */
+  hostname?: string | null;
 }
 
 // Display ordering — operators read forward records first, then
@@ -51,42 +57,67 @@ const sortRecordTypes = (types: string[]): string[] => {
   return [...known, ...unknown];
 };
 
-const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
+const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, hostname }) => {
+  const toast = useToast();
   const [data, setData] = useState<HostDnsRecordsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+
+  const load = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await getHostDnsRecords(hostId));
+    } catch (err) {
+      setError(formatApiError(err, 'DNS records could not be loaded for this host.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [hostId]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getHostDnsRecords(hostId)
-      .then((resp) => {
-        if (!cancelled) {
-          setData(resp);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(formatApiError(err, 'DNS records could not be loaded for this host.'));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
+    void (async () => {
+      await load();
+      if (cancelled) return;
+    })();
     return () => {
       cancelled = true;
     };
-  }, [hostId]);
+  }, [load]);
+
+  // On-demand resolution (v2.243.0).  NOTE: this query leaves the BlueStick
+  // SERVER, not the operator's machine — the target's nameserver sees the
+  // server's address, which may not be in the engagement's authorised source
+  // range.  That's why it's an explicit button and not something the page
+  // does on load.  Zone transfer is deliberately not offered here.
+  const handleResolve = useCallback(async () => {
+    if (!hostname) return;
+    setResolving(true);
+    try {
+      await performDnsLookup(hostname);
+      await load();
+      toast.success(`Resolved ${hostname} — records refreshed.`);
+    } catch (err) {
+      toast.error(formatApiError(err, `Lookup failed for ${hostname}.`));
+    } finally {
+      setResolving(false);
+    }
+  }, [hostname, load, toast]);
 
   // Render-nothing path: only when there's no DNS data ANYWHERE in the
   // project.  If records exist project-wide but none match this host, we
   // still render the card with an explicit "none match" hint (below) so an
   // ingested-but-unmatched DNS upload isn't mistaken for "no DNS evidence".
   const projectTotal = data?.project_total ?? 0;
-  if (!loading && !error && (!data || (data.total === 0 && projectTotal === 0))) {
+  // Self-suppress on hosts with nothing to show AND nothing to look up.  When
+  // the host has a hostname the card stays, otherwise the resolve action would
+  // be unreachable exactly on the fresh hosts that most need it.
+  if (
+    !loading && !error && !hostname
+    && (!data || (data.total === 0 && projectTotal === 0))
+  ) {
     return null;
   }
   const noneMatchThisHost =
@@ -112,6 +143,21 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
           <CardTitle>DNS Evidence</CardTitle>
           {data && data.total > 0 && (
             <Badge variant="outline">{data.total}</Badge>
+          )}
+          {hostname && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              disabled={resolving || loading}
+              onClick={() => void handleResolve()}
+              title={`Resolve ${hostname} from the BlueStick server (not your workstation)`}
+            >
+              {resolving
+                ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                : <Search className="size-3.5" aria-hidden />}
+              Resolve now
+            </Button>
           )}
         </div>
         {data && data.resolvers.length > 0 && (

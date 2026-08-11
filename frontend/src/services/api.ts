@@ -274,6 +274,113 @@ export const testWebhook = async (id: number): Promise<WebhookTestResult> => {
 };
 
 // ---------------------------------------------------------------------------
+// Webhook delivery outbox (v2.243.0)
+// ---------------------------------------------------------------------------
+//
+// The delivery table has existed since the outbox landed; nothing rendered it,
+// so a webhook that silently stopped delivering looked identical to one with
+// nothing to say. These back the Deliveries panel in Project Settings.
+
+export interface WebhookDeliveryRow {
+  id: number;
+  webhook_config_id: number | null;
+  webhook_name: string | null;
+  event: string;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  response_status: number | null;
+  next_attempt_at?: string | null;
+  created_at?: string | null;
+  delivered_at?: string | null;
+}
+
+export const listWebhookDeliveries = async (
+  params: { status?: string; limit?: number } = {},
+): Promise<WebhookDeliveryRow[]> => {
+  const response = await api.get(`${p()}/webhooks/deliveries`, { params });
+  return response.data;
+};
+
+export const retryWebhookDelivery = async (id: number): Promise<WebhookDeliveryRow> => {
+  const response = await api.post(`${p()}/webhooks/deliveries/${id}/retry`);
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
+// Audit log (v2.243.0) — admin-only, deployment-wide (NOT project-scoped)
+// ---------------------------------------------------------------------------
+
+export interface AuditLogRow {
+  id: number;
+  user_id: number | null;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  details: string | null;
+  success: boolean;
+  error_message: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
+  created_at?: string | null;
+}
+
+export interface AuditLogPage {
+  logs: AuditLogRow[];
+  total: number;
+  skip: number;
+  limit: number;
+}
+
+export const listAuditLogs = async (
+  params: {
+    skip?: number;
+    limit?: number;
+    action?: string;
+    resource_type?: string;
+    user_id?: number;
+  } = {},
+): Promise<AuditLogPage> => {
+  const response = await api.get('/audit/logs', { params });
+  return response.data;
+};
+
+export interface AuditStats {
+  total_logs: number;
+  successful_logs: number;
+  failed_logs: number;
+  recent_logs: number;
+  top_actions: Array<{ action: string; count: number }>;
+  top_users: Array<{ user_id: number | null; count: number }>;
+}
+
+export const getAuditStats = async (): Promise<AuditStats> => {
+  const response = await api.get('/audit/stats');
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
+// On-demand DNS resolution (v2.243.0)
+// ---------------------------------------------------------------------------
+//
+// Note this queries from the SERVER, not the operator's machine — the target's
+// nameserver sees the BlueStick host's address. Zone transfer is deliberately
+// NOT exposed here: it is aimed at the target's authoritative NS, reads as
+// recon in their logs, and takes an unvalidated domain. It stays API-only.
+
+export interface DnsLookupResult {
+  hostname: string;
+  records: Array<Record<string, unknown>> | Record<string, string[]>;
+  message: string;
+}
+
+export const performDnsLookup = async (hostname: string): Promise<DnsLookupResult> => {
+  const response = await api.post(`${p()}/dns/lookup/${encodeURIComponent(hostname)}`);
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
 // Scan staleness (v2.73.0)
 // ---------------------------------------------------------------------------
 

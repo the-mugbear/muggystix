@@ -23,6 +23,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
+import AuditLogViewer from '../components/AuditLogViewer';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -535,6 +536,9 @@ const SystemSettings: React.FC = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Audit log — deployment-wide, admin-only (v2.243.0). */}
+      <AuditLogViewer />
 
       <Card>
         <CardHeader>

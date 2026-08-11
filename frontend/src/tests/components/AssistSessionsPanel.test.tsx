@@ -117,8 +117,18 @@ describe('AssistSessionsPanel', () => {
   });
 
   it('shows how long the key has left, since that decides end-or-lapse', () => {
-    renderPanel([session({ key_expires_at: new Date(Date.now() + 3 * 3_600_000 + 20 * 60_000).toISOString() })]);
-    expect(screen.getByText(/expires in 3h 20m/)).toBeInTheDocument();
+    // Pin the clock. Computing the expiry from a live Date.now() made this
+    // flaky: the few ms between building the timestamp and rendering pushed
+    // the remaining time just under the boundary, so "3h 20m" intermittently
+    // rendered as "3h 19m".
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-10T12:00:00Z'));
+    try {
+      renderPanel([session({ key_expires_at: '2026-08-10T15:20:00Z' })]);
+      expect(screen.getByText(/expires in 3h 20m/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('treats a session with no live key as dead, not as expiring soon', () => {

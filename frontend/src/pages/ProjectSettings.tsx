@@ -29,6 +29,8 @@ import { NavigableTableRow } from '../components/NavigableTableRow';
 import { formatStatusLabel, getProjectStatusChipColor } from '../utils/statusMeta';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import WebhookSettings from '../components/WebhookSettings';
+import WebhookDeliveries from '../components/WebhookDeliveries';
+import TagManagement from '../components/TagManagement';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -1079,8 +1081,14 @@ const ProjectSettings: React.FC = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Host tags — rename/delete; creation happens by tagging hosts (v2.243.0). */}
+      {currentProject && <TagManagement />}
+
       {/* Outbound webhooks — scoped to the active project (v2.73.0). */}
       {currentProject && <WebhookSettings />}
+
+      {/* Delivery outbox — the difference between "configured" and "working" (v2.243.0). */}
+      {currentProject && <WebhookDeliveries />}
 
       {confirmEl}
       {/* prevent ESLint unused on the cn import — kept for future variants */}

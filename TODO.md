@@ -35,21 +35,24 @@ in backend code.
 Each has a working, tested endpoint and no path for a user to get to it. These are product
 decisions (surface it or remove it), not cleanup.
 
-- [ ] **Tags can be created but never renamed or deleted.** *(backend confirmed intact;
-      UI pending)* `bulkTagHosts` creates tags by
-      name, so the list only grows — a typo is permanent. `PATCH /hosts/tags/{id}` and
-      `DELETE /hosts/tags/{id}` exist and are unreachable. Wants a small tag-management UI.
+- [x] **DONE (2.243.0).** Tag management panel in Project Settings — rename, recolor,
+      delete, with a delete confirm that states the host count it will affect.
 - [ ] **Four dashboard endpoints with no consumer:** `/dashboard/my-tasks`,
       `/my-attention`, `/team-review`, `/new-scans-since`. Likely stranded by the
       Operations reshape. Confirm they aren't the better source for what /operations now
       shows, then wire or delete.
-- [ ] **`GET /webhooks/deliveries`** — the outbox has no UI. (Previously raised as B4 in
-      the 2026-06 review; still open. The delivery-claim work in 2.240.x makes the outbox
-      more trustworthy, not more visible.)
-- [ ] **`GET /audit/logs`** — audit logging is a documented feature in CLAUDE.md with no
-      way to read it outside the API.
-- [ ] **DNS enrichment is entirely unsurfaced** — `/dns/records`, `/dns/lookup/{hostname}`,
-      `/dns/zone-transfer/{domain}`. CLAUDE.md documents DNSService as a core service.
+- [x] **DONE (2.243.0).** Delivery outbox in Project Settings — last 100 attempts with
+      status / attempts / HTTP code / error text, status filter, retry on failed rows.
+- [x] **DONE (2.243.0).** Audit log viewer in System Settings (admin-only, deployment-wide
+      — login and user-admin events aren't project-scoped).
+- [x] **DONE (2.243.0) — and the original claim was wrong.** DNS was never "entirely
+      unsurfaced": per-host (`/hosts/{id}/dns-records`) and per-scan DNS already rendered.
+      Only the three `/dns/*` endpoints were unreached. Resolved by adding a "Resolve now"
+      action to the host DNS card (`/dns/lookup`), deleting the redundant `/dns/records`,
+      and leaving zone transfer **deliberately API-only** — it targets the domain's
+      authoritative NS, reads as active recon, and takes an unvalidated domain with no
+      scope check or throttle. Recorded in the handler docstring so a later sweep doesn't
+      re-flag it as an orphan.
 - [ ] **`POST /agents/{id}/renew-key`** — no UI, so an expired agent key has no
       self-service recovery.
 - [ ] **`POST /findings`** (`createFinding`) — findings arrive only by promotion; manual

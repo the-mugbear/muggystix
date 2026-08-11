@@ -2274,7 +2274,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       {/* v4.55.0 — DNS evidence card (UX phase 3 + #44.1 frontend
           surface).  Self-suppresses when the host has no DNS records,
           so it doesn't add visual clutter on freshly-discovered hosts. */}
-      <HostDnsRecordsCard hostId={host.id} />
+      <HostDnsRecordsCard hostId={host.id} hostname={host.hostname} />
 
       {/* NSE script output — port + host scripts.  Renders nothing
           when the host was scanned without -sC/--script. */}
