@@ -217,6 +217,12 @@ class ReconHostStats(BaseModel):
     top_open_ports: List[ReconPortBreakdown] = Field(default_factory=list)
 
 
+# Cap for the opt-in ?include_hosts=true array (v2.242.0). Generous enough
+# that any session a human would page through fits, bounded enough that a
+# 40k-host session can't return ~19 MB.
+_INCLUDE_HOSTS_CAP = 2000
+
+
 class ReconSessionDetail(BaseModel):
     """Full detail bundle for one recon session.
 
@@ -248,6 +254,9 @@ class ReconSessionDetail(BaseModel):
     uploads_limit: int = 0
     host_stats: ReconHostStats = Field(default_factory=ReconHostStats)
     hosts: List[ReconHostRow] = Field(default_factory=list)
+    # True when ?include_hosts=true hit the cap — `host_stats.host_count`
+    # remains the true total.
+    hosts_truncated: bool = False
     plans_generated: List[ReconPlanLink] = Field(default_factory=list)
     plans_total: int = 0
     plans_skip: int = 0
@@ -481,10 +490,11 @@ def get_recon_session(
     include_hosts: bool = Query(
         False,
         description=(
-            "Include the per-host array (~10-30 MB on large sessions). "
-            "The Recon Run Detail page reads ``host_stats`` instead — "
-            "this flag is for the comparison/diff view's fallback path "
-            "and one-off integrations that need the raw list."
+            "Include the per-host array, capped at "
+            f"{_INCLUDE_HOSTS_CAP} rows (``hosts_truncated`` says whether it "
+            "was cut). The Recon Run Detail page reads ``host_stats`` "
+            "instead; for the complete list use the agent download "
+            "``GET /agent/recon/hosts.ndjson`` or the Inventory page."
         ),
     ),
     # v2.87.0 — child-list pagination.  Default page size is generous
@@ -611,9 +621,20 @@ def get_recon_session(
     # this on the default path is what makes a 40k-host session render
     # in <100ms instead of pinning the worker on Pydantic serialisation
     # of tens of thousands of rows.
+    #
+    # v2.242.0 — capped even when opted in.  This flag had no caller at all
+    # (the client option was removed in the same sweep), so its uncapped
+    # form was a loaded gun: ~19 MB the moment anything called it on a large
+    # session.  The agent path learned this lesson in 2.241.0; the operator
+    # path gets the same treatment rather than waiting to be discovered.
     hosts: List[ReconHostRow] = []
+    hosts_truncated = False
     if include_hosts:
-        agent_breakdown = recon_session_host_breakdown(db, session.id)
+        agent_breakdown = recon_session_host_breakdown(
+            db, session.id, limit=_INCLUDE_HOSTS_CAP + 1,
+        )
+        hosts_truncated = len(agent_breakdown) > _INCLUDE_HOSTS_CAP
+        agent_breakdown = agent_breakdown[:_INCLUDE_HOSTS_CAP]
         hosts = [
             ReconHostRow(
                 host_id=h.host_id,
@@ -730,6 +751,7 @@ def get_recon_session(
         uploads_limit=uploads_limit,
         host_stats=host_stats,
         hosts=hosts,
+        hosts_truncated=hosts_truncated,
         plans_generated=plan_links,
         plans_total=plans_total,
         plans_skip=plans_skip,

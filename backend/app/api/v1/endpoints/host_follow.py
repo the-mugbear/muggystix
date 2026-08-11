@@ -10,14 +10,12 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models import HostFollow
-from app.db.models_auth import User, UserRole
+from app.db.models_auth import User
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.db.models_project import Project, ProjectRole
 from app.schemas.schemas import HostFollowInfo, HostFollowUpdate
 from app.services.host_follow_service import HostFollowService
-from app.services.notification_service import NotificationService
-from app.services.webhook_dispatcher import safe_dispatch
 # CR4-2 — serializer moved to the service layer (was defined here and
 # imported back by host_serialization, a service -> router dependency).
 from app.services.host_serialization import _serialize_follow
@@ -184,115 +182,3 @@ def list_host_followers(
     return HostFollowersResponse(followers=followers)
 
 
-# ---------------------------------------------------------------------------
-# Host assignment / ownership (v2.71.0).  Assignment is a follow row for
-# the assignee with ``assigned_at`` set; assigning bumps status to In
-# Review so the host enters the assignee's My Queue.
-# ---------------------------------------------------------------------------
-
-class HostAssignRequest(BaseModel):
-    assignee_user_id: int
-
-
-class HostAssignmentInfo(BaseModel):
-    host_id: int
-    user_id: int
-    assigned_by_id: Optional[int] = None
-    assigned_at: Optional[datetime] = None
-    status: str
-
-
-def _status_str(follow: HostFollow) -> str:
-    return follow.status.value if hasattr(follow.status, "value") else str(follow.status)
-
-
-@router.post(
-    "/{host_id:int}/assign",
-    response_model=HostAssignmentInfo,
-    summary="Assign a host to a project member",
-    # Assigning a host to another member mutates shared workflow state and
-    # fires notifications/webhooks — analyst+ only, not every member.
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-)
-def assign_host(
-    host_id: int,
-    payload: HostAssignRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    host = db.query(models.Host).filter(
-        models.Host.id == host_id, models.Host.project_id == project.id
-    ).first()
-    if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-
-    assignee = db.query(User).filter(
-        User.id == payload.assignee_user_id, User.is_active.is_(True)
-    ).first()
-    if not assignee:
-        raise HTTPException(status_code=404, detail="Assignee not found")
-
-    # The assignee must be able to see this project — a global admin can,
-    # otherwise a ProjectMembership row is required.  Assigning a host to
-    # someone with no access would create a dead queue entry and leak the
-    # host label into their notification feed.
-    if assignee.role != UserRole.ADMIN:
-        is_member = db.query(ProjectMembership).filter(
-            ProjectMembership.project_id == project.id,
-            ProjectMembership.user_id == assignee.id,
-        ).first()
-        if not is_member:
-            raise HTTPException(status_code=400, detail="Assignee is not a member of this project")
-
-    follow = HostFollowService(db).assign_host(host_id, assignee.id, current_user.id)
-
-    # Notification is best-effort — a failure here must not roll back the
-    # assignment itself (which already committed in the service).
-    try:
-        NotificationService(db).notify_host_assignment(assignee, host, project, current_user)
-        db.commit()
-    except Exception:
-        db.rollback()
-
-    # Outbound webhook (post-commit, fire-and-forget).
-    safe_dispatch(
-        db,
-        project_id=project.id,
-        event="host_assigned",
-        title=f"{host.hostname or host.ip_address} assigned to {assignee.full_name or assignee.username}",
-        body=f"Assigned by @{current_user.username}",
-        context={"host_id": host_id, "assignee_user_id": assignee.id},
-    )
-
-    return HostAssignmentInfo(
-        host_id=host_id,
-        user_id=assignee.id,
-        assigned_by_id=follow.assigned_by_id,
-        assigned_at=follow.assigned_at,
-        status=_status_str(follow),
-    )
-
-
-@router.delete(
-    "/{host_id:int}/assign",
-    status_code=204,
-    summary="Unassign a host from a user (keeps their follow row)",
-    # Shared-state mutation (see assign) — analyst+ only.
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-)
-def unassign_host(
-    host_id: int,
-    user_id: int = Query(..., description="The assignee to unassign"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    host = db.query(models.Host).filter(
-        models.Host.id == host_id, models.Host.project_id == project.id
-    ).first()
-    if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-
-    HostFollowService(db).unassign_host(host_id, user_id)
-    return Response(status_code=204)

@@ -24,8 +24,14 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.services.webhook_dispatcher import safe_dispatch
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# Cap the host_ids carried in a webhook payload. A bulk assign can cover
+# thousands of hosts; the receiver needs to know what happened, not to
+# receive a megabyte of ids. `host_count` is always exact.
+_WEBHOOK_HOST_ID_CAP = 100
 
 # Mirror of hosts._BULK_SELECT_CAP — the most hosts one bulk call touches.
 _BULK_CAP = 5000
@@ -194,6 +200,35 @@ def bulk_assign(
         ))
 
     db.commit()
+
+    # v2.242.0 — the `host_assigned` webhook used to fire only from the
+    # singular POST /hosts/{id}/assign route, which no UI ever called: every
+    # assignment in the product goes through this bulk endpoint. So the event
+    # was advertised in the integrations picker ("A host was assigned to
+    # someone") and never delivered once. Dispatching it here is what makes
+    # the subscription real.
+    #
+    # One event per operation, not per host — a 500-host assign should not
+    # become 500 POSTs to someone's endpoint. `host_id` is still sent when a
+    # single host was assigned, so the simple single-host consumer shape works.
+    assignee_label = assignee.full_name or assignee.username
+    plural = "s" if len(host_ids) != 1 else ""
+    context = {
+        "assignee_user_id": assignee.id,
+        "host_ids": host_ids[:_WEBHOOK_HOST_ID_CAP],
+        "host_count": len(host_ids),
+        "host_ids_truncated": len(host_ids) > _WEBHOOK_HOST_ID_CAP,
+    }
+    if len(host_ids) == 1:
+        context["host_id"] = host_ids[0]
+    safe_dispatch(
+        db,
+        project_id=project.id,
+        event="host_assigned",
+        title=f"{len(host_ids)} host{plural} assigned to {assignee_label}",
+        body=f"Assigned by @{current_user.username}",
+        context=context,
+    )
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))
 
 

@@ -63,7 +63,6 @@ class NetworkAttribution(Base):
     # --- Hosting attribution (cloud prefix lists) ---
     cloud_provider = Column(String(32), nullable=True, index=True)
     cloud_region = Column(String(64), nullable=True)
-    cloud_service = Column(String(64), nullable=True)
 
     source = Column(String(20), nullable=False, default=AttributionSource.RDAP)
     # Untouched provider response, for reprocessing when parsing improves.

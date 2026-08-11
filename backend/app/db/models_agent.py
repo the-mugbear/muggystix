@@ -883,7 +883,6 @@ class ImportedResultFile(Base):
     feedback_extracted = Column(Boolean, nullable=False, default=False)
     parse_errors = Column(JSON, nullable=True)
     is_final = Column(Boolean, nullable=False, default=False)
-    imported_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------

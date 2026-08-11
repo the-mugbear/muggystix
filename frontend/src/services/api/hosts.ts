@@ -252,16 +252,6 @@ export interface NoteAttachment {
   created_at: string;
 }
 
-export interface AnnotationStatusHistoryEntry {
-  id: number;
-  from_status: string | null;
-  to_status: string;
-  changed_by_id: number | null;
-  changed_by_name: string | null;
-  summary: string | null;
-  created_at: string;
-}
-
 export interface HostDiscovery {
   scan_id: number;
   scan_filename: string | null;
@@ -461,15 +451,6 @@ export const getHostNotes = async (hostId: number): Promise<Annotation[]> => {
   const response = await api.get(`${p()}/hosts/${hostId}/notes`);
   return response.data;
 };
-
-export const getAnnotationHistory = async (
-  hostId: number,
-  noteId: number,
-): Promise<AnnotationStatusHistoryEntry[]> => {
-  const response = await api.get(`${p()}/hosts/${hostId}/notes/${noteId}/history`);
-  return response.data;
-};
-
 export const deleteAnnotation = async (hostId: number, noteId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/${hostId}/notes/${noteId}`);
 };
@@ -707,12 +688,6 @@ export const listHostTags = async (): Promise<HostTagWithCount[]> => {
   const response = await api.get(`${p()}/hosts/tags`);
   return response.data;
 };
-
-export const createHostTag = async (name: string, color?: string | null): Promise<HostTagWithCount> => {
-  const response = await api.post(`${p()}/hosts/tags`, { name, color: color ?? null });
-  return response.data;
-};
-
 export const updateHostTag = async (
   tagId: number,
   body: { name?: string; color?: string | null },
@@ -724,52 +699,6 @@ export const updateHostTag = async (
 export const deleteHostTag = async (tagId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/tags/${tagId}`);
 };
-
-export const assignHostTags = async (
-  hostId: number,
-  body: { tag_ids?: number[]; names?: string[] },
-): Promise<HostTagInfo[]> => {
-  const response = await api.post(`${p()}/hosts/${hostId}/tags`, {
-    tag_ids: body.tag_ids ?? [],
-    names: body.names ?? [],
-  });
-  return response.data;
-};
-
-export const removeHostTag = async (hostId: number, tagId: number): Promise<void> => {
-  await api.delete(`${p()}/hosts/${hostId}/tags/${tagId}`);
-};
-
-// ---------------------------------------------------------------------------
-// Host assignment (v2.71.0)
-// ---------------------------------------------------------------------------
-
-export interface HostAssignmentInfo {
-  host_id: number;
-  user_id: number;
-  assigned_by_id?: number | null;
-  assigned_at?: string | null;
-  status: string;
-}
-
-export const assignHost = async (
-  hostId: number,
-  assigneeUserId: number,
-): Promise<HostAssignmentInfo> => {
-  const response = await api.post(`${p()}/hosts/${hostId}/assign`, {
-    assignee_user_id: assigneeUserId,
-  });
-  return response.data;
-};
-
-export const unassignHost = async (hostId: number, userId: number): Promise<void> => {
-  await api.delete(`${p()}/hosts/${hostId}/assign`, { params: { user_id: userId } });
-};
-
-// ---------------------------------------------------------------------------
-// Bulk host operations + select-all helper (v2.71.0)
-// ---------------------------------------------------------------------------
-
 export interface BulkResult {
   affected: number;
   requested: number;

@@ -24,18 +24,19 @@ in backend code.
 
 ### A. Broken — client calls an endpoint that does not exist
 
-- [ ] **`getAnnotationHistory` → `GET /hosts/{id}/notes/{id}/history` — no such route.**
+- [x] **DONE (2.242.0) — stub deleted.** ~~`getAnnotationHistory` → `GET /hosts/{id}/notes/{id}/history` — no such route.**
       The endpoint isn't in the app's 316 routes; the note-history feature was removed or
       never landed, and the client stub survived. Would 404 the moment anything wired it
-      up. Decide: build the endpoint, or delete the stub and its
-      `AnnotationStatusHistoryEntry` type.
+      up.~~ Removed along with its `AnnotationStatusHistoryEntry` type; note
+      status changes remain visible in the finding-comment threads (2.184.0).
 
 ### B. Backend feature is live, nothing in the UI reaches it
 
 Each has a working, tested endpoint and no path for a user to get to it. These are product
 decisions (surface it or remove it), not cleanup.
 
-- [ ] **Tags can be created but never renamed or deleted.** `bulkTagHosts` creates tags by
+- [ ] **Tags can be created but never renamed or deleted.** *(backend confirmed intact;
+      UI pending)* `bulkTagHosts` creates tags by
       name, so the list only grows — a typo is permanent. `PATCH /hosts/tags/{id}` and
       `DELETE /hosts/tags/{id}` exist and are unreachable. Wants a small tag-management UI.
 - [ ] **Four dashboard endpoints with no consumer:** `/dashboard/my-tasks`,
@@ -64,33 +65,34 @@ decisions (surface it or remove it), not cleanup.
       consumer. Check against the no-vanity-metrics rule before wiring: if nothing acts on
       them, delete instead.
 
-### C. Dead client code — superseded by bulk variants (propose deleting)
+### C. Dead client code — superseded by bulk variants
 
-The singular forms were replaced by bulk operations and left behind. Deletion is safe but
-**needs sign-off before removal**, per standing preference on destructive changes.
+- [x] **DONE (2.242.0).** All seven client functions and both orphaned types removed, and
+      the now-unreachable singular backend routes retired with them (`POST /hosts/tags`,
+      `POST /hosts/{id}/tags`, `DELETE /hosts/{id}/tags/{tag_id}`,
+      `POST|DELETE /hosts/{id}/assign`).
 
-- [ ] `assignHost` / `unassignHost` → superseded by `bulkAssignHosts`
-- [ ] `assignHostTags` / `removeHostTag` → superseded by `bulkTagHosts`
-- [ ] `createHostTag` → superseded by `bulkTagHosts` creating tags by name
-- [ ] `conditionHasDrilldown` (insights) — uncalled; sibling `conditionHostsHref` is used
-
-Note the asymmetry: the singular *backend* routes (`POST /hosts/{id}/tags`,
-`POST /hosts/{id}/assign`, …) are also unreached once these go. Decide per route whether to
-keep them as agent/API surface or retire them with the client code.
+      **This is where the `host_assigned` webhook bug surfaced.** The singular assign route
+      was the only place that dispatched the event, so retiring it would have silently
+      deleted a feature users can subscribe to — one that had never worked, because the UI
+      only ever called the bulk path. The dispatch moved to `/bulk/assign`. Worth
+      remembering as a pattern: *the unreachable route was the only one doing part of the
+      job.* Check what a dead route uniquely does before deleting it.
 
 ### D. Dead schema — columns nothing reads or writes
 
-- [ ] **`SecurityPolicy` — 14 of its columns are referenced nowhere in the app**
+- [x] **DONE (2.242.0) — whole table dropped.** ~~`SecurityPolicy` — 14 of its columns are referenced nowhere in the app~~
       (`password_min_length`, `password_require_*`, `max_failed_login_attempts`,
       `lockout_duration_minutes`, `session_timeout_minutes`, `max_concurrent_sessions`,
       `password_expiry_days`, `audit_retention_days`, `require_audit_login`,
       `require_audit_data_access`, `updated_by_id`). The table advertises a configurable
       password/session policy that nothing enforces — the same shape as the `allowed_ips`
       column dropped in 2.240.4. Either implement enforcement or drop the columns; leaving
-      them is a standing misrepresentation of what the system does.
-- [ ] `NetworkAttribution.cloud_service` — left behind when the `cloud:` DSL filter was
+      them is a standing misrepresentation of what the system does. Dropping just the
+      columns would have left an `id`+timestamps husk, so the table went too.
+- [x] **DONE (2.242.0).** `NetworkAttribution.cloud_service` — left behind when the `cloud:` DSL filter was
       withdrawn (2026-08). No reader, no writer.
-- [ ] `User.last_activity_seen_at`, `UserSession.device_info`,
+- [x] **DONE (2.242.0).** `User.last_activity_seen_at`, `UserSession.device_info`,
       `ImportedResultFile.imported_at` — never read.
 
 ### E. Partial writers — column exists, only some paths populate it
@@ -102,10 +104,9 @@ keep them as agent/API surface or retire them with the client code.
 
 ### F. Loaded gun
 
-- [ ] **`getReconSession(id, { includeHosts: true })`** — no caller, and the opt-in path it
-      triggers is still uncapped. Harmless today; returns ~19 MB the moment anything calls
-      it on a large session. Either cap it like the agent path (2.241.0) or remove the
-      option.
+- [x] **DONE (2.242.0).** ~~`getReconSession(id, { includeHosts: true })`~~ — client option
+      removed and the backend path capped at 2000 rows with a `hosts_truncated` flag,
+      matching the agent-path treatment from 2.241.0.
 
 ---
 

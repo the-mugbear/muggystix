@@ -75,9 +75,14 @@ def _base(project):
     return f"/api/v1/projects/{project.id}/hosts"
 
 
-def test_viewer_cannot_create_tag(member_client, db_session, test_project, member):
+def test_viewer_cannot_bulk_tag(member_client, db_session, test_project, member):
+    """v2.242.0 — POST /tags retired; /bulk/tags is the tag-write surface."""
     _set_role(db_session, test_project, member, "viewer")
-    resp = member_client.post(f"{_base(test_project)}/tags", json={"name": "prod"})
+    host = _host(db_session, test_project)
+    resp = member_client.post(
+        f"{_base(test_project)}/bulk/tags",
+        json={"host_ids": [host.id], "names": ["prod"], "action": "add"},
+    )
     assert resp.status_code == 403
 
 
@@ -97,11 +102,39 @@ def test_viewer_can_still_list_tags(member_client, db_session, test_project, mem
     assert resp.status_code == 200
 
 
-def test_analyst_can_create_tag(member_client, db_session, test_project, member):
+def test_analyst_can_bulk_tag(member_client, db_session, test_project, member):
     _set_role(db_session, test_project, member, "analyst")
-    resp = member_client.post(f"{_base(test_project)}/tags", json={"name": "prod"})
-    assert resp.status_code == 201
-    assert resp.json()["name"] == "prod"
+    host = _host(db_session, test_project)
+    resp = member_client.post(
+        f"{_base(test_project)}/bulk/tags",
+        json={"host_ids": [host.id], "names": ["prod"], "action": "add"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected"] == 1
+
+
+def test_viewer_cannot_rename_or_delete_a_tag(
+    member_client, db_session, test_project, member,
+):
+    """RBAC on the surviving tag-management routes, which the new UI uses.
+
+    The tag is seeded directly rather than through the admin `client`
+    fixture: `client` and `member_client` both override get_current_user, so
+    a test that requests both authenticates as whichever was built last.
+    """
+    from app.db.models import HostTag
+
+    tag = HostTag(project_id=test_project.id, name="prod", created_by_id=member.id)
+    db_session.add(tag)
+    db_session.commit()
+    tag_id = tag.id
+    _set_role(db_session, test_project, member, "viewer")
+    assert member_client.patch(
+        f"{_base(test_project)}/tags/{tag_id}", json={"name": "nope"},
+    ).status_code == 403
+    assert member_client.delete(
+        f"{_base(test_project)}/tags/{tag_id}",
+    ).status_code == 403
 
 
 def test_require_project_role_rejects_unknown_role_at_construction():

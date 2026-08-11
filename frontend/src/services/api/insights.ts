@@ -172,9 +172,6 @@ const CONDITION_DSL: Record<string, string> = {
   cleartext_services: 'has:cleartext',
 };
 
-/** Whether a systemic condition key has a /hosts drill-down. */
-export const conditionHasDrilldown = (key: string): boolean => key in CONDITION_DSL;
-
 /**
  * /hosts link for a systemic condition, optionally narrowed to one subnet.
  * Returns null when the condition has no host-filter predicate.

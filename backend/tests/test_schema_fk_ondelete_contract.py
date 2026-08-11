@@ -189,7 +189,6 @@ EXPECTED_ONDELETE = {
     ('scopes', 'uploaded_by_id'): 'SET NULL',
     ('scripts_v2', 'port_id'): 'CASCADE',
     ('scripts_v2', 'scan_id'): 'CASCADE',
-    ('security_policies', 'updated_by_id'): 'SET NULL',
     ('sites', 'created_by_id'): 'SET NULL',
     ('sites', 'owner_id'): 'SET NULL',
     ('sites', 'project_id'): 'CASCADE',

@@ -51,7 +51,6 @@ class User(Base):
     last_login = Column(DateTime(timezone=True))
 
     # Activity tracking
-    last_activity_seen_at = Column(DateTime(timezone=True), nullable=True)
 
     # Security settings
     password_changed_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -139,7 +138,6 @@ class UserSession(Base):
     # Session metadata
     ip_address = Column(String(45))  # IPv6 compatible
     user_agent = Column(Text)
-    device_info = Column(JSON)
 
     # Session lifecycle
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -278,42 +276,6 @@ class APIKey(Base):
     user = relationship("User")
     agent = relationship("Agent", foreign_keys=[agent_id])
     agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
-
-
-class SecurityPolicy(Base):
-    """System security policies and configuration"""
-    __tablename__ = "security_policies"
-
-    id = Column(Integer, primary_key=True, index=True)
-
-    # Policy settings
-    password_min_length = Column(Integer, default=12)
-    password_require_uppercase = Column(Boolean, default=True)
-    password_require_lowercase = Column(Boolean, default=True)
-    password_require_numbers = Column(Boolean, default=True)
-    password_require_symbols = Column(Boolean, default=True)
-    password_expiry_days = Column(Integer, default=90)
-
-    # Session security
-    session_timeout_minutes = Column(Integer, default=480)  # 8 hours
-    max_concurrent_sessions = Column(Integer, default=3)
-
-    # Account lockout
-    max_failed_login_attempts = Column(Integer, default=5)
-    lockout_duration_minutes = Column(Integer, default=30)
-
-    # Audit settings
-    audit_retention_days = Column(Integer, default=365)
-    require_audit_login = Column(Boolean, default=True)
-    require_audit_data_access = Column(Boolean, default=True)
-
-    # Policy metadata
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
-
-    # Relationships
-    updated_by = relationship("User")
 
 
 class SystemIdentity(Base):
