@@ -1861,6 +1861,11 @@ class WebInterfaceResponse(BaseModel):
     technologies: Optional[List[str]] = None
     favicon_hash: Optional[str] = None
     tls_info: Optional[dict] = None
+    # Typed cert / TLS promotions (surfaced per-port in the host inspector).
+    cert_not_after: Optional[datetime] = None
+    cert_self_signed: Optional[bool] = None
+    cert_subject_org: Optional[str] = None
+    tls_weak_protocol: Optional[bool] = None
     has_screenshot: bool = False
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
@@ -1916,6 +1921,10 @@ def list_host_web_interfaces(
             technologies=r.technologies or [],
             favicon_hash=r.favicon_hash,
             tls_info=r.tls_info,
+            cert_not_after=r.cert_not_after,
+            cert_self_signed=r.cert_self_signed,
+            cert_subject_org=r.cert_subject_org,
+            tls_weak_protocol=r.tls_weak_protocol,
             has_screenshot=bool(r.screenshot_path),
             first_seen=r.first_seen,
             last_seen=r.last_seen,

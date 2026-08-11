@@ -27,7 +27,6 @@ import { Globe, ShieldCheck, ShieldAlert } from 'lucide-react';
 import type { HostCertOrg, HostCertStatus, NetworkAttribution } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { safeFallback } from '../../utils/uiStyles';
 
 export interface ProvenanceCardProps {
@@ -100,25 +99,22 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
           <Globe className="size-5 text-info" aria-hidden />
           <CardTitle>Provenance</CardTitle>
           {disagrees && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  tabIndex={0}
-                  className="rounded text-caption text-warning focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  certificate and registration disagree
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                The certificate names a different organisation than the netblock
-                registration. Common for hosted or CDN-fronted services — worth
-                confirming the host is in scope.
-              </TooltipContent>
-            </Tooltip>
+            <Badge variant="outline" className="border-warning/40 text-warning">scope check</Badge>
           )}
         </div>
       </CardHeader>
       <CardContent className="space-y-sm">
+        {disagrees && (
+          <div className="flex items-start gap-xs rounded-control border border-warning/40 bg-warning/10 p-sm">
+            <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+            <p className="text-caption text-foreground">
+              <span className="font-medium">Certificate and registration disagree.</span>{' '}
+              The TLS certificate names a different organisation than the netblock is
+              registered to. Common for hosted / CDN-fronted services — but worth confirming
+              this host is actually in the engagement's scope before acting on it.
+            </p>
+          </div>
+        )}
         {attributions.map((a) => (
           <div key={a.id} className="min-w-0 space-y-xxs">
             <div className="flex flex-wrap items-center gap-xs">

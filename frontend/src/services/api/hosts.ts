@@ -839,6 +839,11 @@ export interface WebInterface {
   technologies?: string[] | null;  // flattened ["Nginx 1.18.0", "React", ...]
   favicon_hash?: string | null;
   tls_info?: Record<string, unknown> | null;
+  // Typed cert / TLS promotions (surfaced per-port in the host inspector).
+  cert_not_after?: string | null;
+  cert_self_signed?: boolean | null;
+  cert_subject_org?: string | null;
+  tls_weak_protocol?: boolean | null;
   has_screenshot: boolean;
   first_seen?: string | null;
   last_seen?: string | null;

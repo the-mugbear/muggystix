@@ -101,6 +101,8 @@ import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProvenanceCard from './host-inspector/ProvenanceCard';
+import PortDetailsCard from './host-inspector/PortDetailsCard';
+import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
 import { groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -204,22 +206,6 @@ const NOTE_STATUS_META: Record<
   resolved: { label: 'Resolved', badgeVariant: 'success' },
 };
 
-const stateBadgeVariant = (
-  state: string | null,
-): 'success' | 'destructive' | 'warning' | 'outline' => {
-  switch (state) {
-    case 'up':
-    case 'open':
-      return 'success';
-    case 'down':
-    case 'closed':
-      return 'destructive';
-    case 'filtered':
-      return 'warning';
-    default:
-      return 'outline';
-  }
-};
 
 const confidenceBadgeVariant = (score: number): 'success' | 'warning' | 'destructive' => {
   if (score >= 90) return 'success';
@@ -227,8 +213,6 @@ const confidenceBadgeVariant = (score: number): 'success' | 'warning' | 'destruc
   return 'destructive';
 };
 
-const formatDateTime = (value: string | null | undefined) =>
-  value ? new Date(value).toLocaleString() : 'Unknown date';
 
 export interface HostInspectorProps {
   hostId: number;
@@ -380,7 +364,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [detailsPinned, setDetailsPinned] = useState(false);
   // Port-table sort by port number (null = scan order). Shared across the
   // open/closed/filtered port tables so they stay consistent.
-  const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
   const [detailsSaving, setDetailsSaving] = useState(false);
   const [members, setMembers] = useState<ProjectMember[]>([]);
 
@@ -965,24 +948,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // returns (see note near noteThreadGroups) to keep the hook count stable.
   const closedPorts = host.ports.filter((port) => port.state === 'closed');
   const filteredPorts = host.ports.filter((port) => port.state === 'filtered');
-  const sortPorts = <T extends { port_number: number | null }>(arr: T[]): T[] => {
-    if (!portSortDir) return arr;
-    const s = [...arr].sort((a, b) => (a.port_number ?? 0) - (b.port_number ?? 0));
-    return portSortDir === 'desc' ? s.reverse() : s;
-  };
-  const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
-    <TableHead className={className}
-      aria-sort={portSortDir ? (portSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
-      <button type="button"
-        onClick={() => setPortSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-        className="inline-flex items-center gap-xxs rounded text-inherit hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        Port
-        {portSortDir
-          ? (portSortDir === 'asc' ? <ArrowUp className="size-3" aria-hidden /> : <ArrowDown className="size-3" aria-hidden />)
-          : <ArrowUpDown className="size-3 opacity-40" aria-hidden />}
-      </button>
-    </TableHead>
-  );
   const followInfo = host.follow;
   const followHelperText = followStatus
     ? FOLLOW_STATUS_META[followStatus].description
@@ -1428,111 +1393,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             )}
           </div>
 
-          <div className="md:col-span-5">
-            {discoveryTimeline.length > 0 && (
-              <div className="rounded-control border border-border bg-muted/30 p-sm">
-                <h3 className="mb-xs text-subheading">
-                  Discovered in {discoveryTimeline.length} scan
-                  {discoveryTimeline.length === 1 ? '' : 's'}
-                  {discoveryTimeline.length > 3 && (
-                    <span className="ml-xs text-caption font-normal text-muted-foreground">
-                      (most recent 3)
-                    </span>
-                  )}
-                </h3>
-                <div className="space-y-xs">
-                  {[...discoveryTimeline]
-                    .sort((a, b) => {
-                      const t = (e: typeof a) =>
-                        new Date(e.scan_end || e.scan_start || e.discovered_at || 0).getTime();
-                      return t(b) - t(a);
-                    })
-                    .slice(0, 3)
-                    .map((entry) => {
-                    // SOC alert correlation needs the scan window (when the
-                    // tool was probing the network), not the ingest time.
-                    // Fall back to discovered_at only when the parser
-                    // couldn't extract start/end — common for masscan list
-                    // output and some gnmap files.
-                    const hasWindow = entry.scan_start || entry.scan_end;
-                    return (
-                      <div
-                        key={`disc-${entry.scan_id}-${entry.discovered_at ?? ''}`}
-                        className="rounded-control border border-border/60 bg-background/40 px-xs py-xxs"
-                      >
-                        <div className="flex items-center gap-xs">
-                          <Badge variant="outline">
-                            {entry.scan_type || entry.tool_name || 'Scan'}
-                          </Badge>
-                          <span
-                            className="min-w-0 flex-1 truncate text-caption"
-                            title={entry.scan_filename || `Scan #${entry.scan_id}`}
-                          >
-                            {entry.scan_filename || `Scan #${entry.scan_id}`}
-                          </span>
-                        </div>
-                        <dl className="mt-xxs grid grid-cols-[auto_1fr] gap-x-xs gap-y-0 text-metadata text-muted-foreground">
-                          {hasWindow ? (
-                            <>
-                              <dt className="font-medium">Scan start:</dt>
-                              <dd className="tabular-nums">
-                                {entry.scan_start ? formatDateTime(entry.scan_start) : '—'}
-                              </dd>
-                              <dt className="font-medium">Scan end:</dt>
-                              <dd className="tabular-nums">
-                                {entry.scan_end ? formatDateTime(entry.scan_end) : '—'}
-                              </dd>
-                            </>
-                          ) : (
-                            <>
-                              <dt className="font-medium" title="Scan tool did not record start/end; this is when the file was ingested.">
-                                Ingested:
-                              </dt>
-                              <dd className="tabular-nums">{formatDateTime(entry.discovered_at)}</dd>
-                            </>
-                          )}
-                          {entry.command_line && (
-                            <>
-                              <dt className="font-medium">Command:</dt>
-                              <dd className="flex min-w-0 items-center gap-1">
-                                <span className="min-w-0 truncate font-mono" title={entry.command_line}>
-                                  {entry.command_line}
-                                </span>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
-                                  aria-label="Copy scan command to clipboard"
-                                  title="Copy command"
-                                  onClick={() => {
-                                    navigator.clipboard
-                                      .writeText(entry.command_line as string)
-                                      .then(
-                                        () => toast.info('Command copied', { autoHideMs: 1500 }),
-                                        () => {
-                                          /* clipboard denied */
-                                        },
-                                      );
-                                  }}
-                                >
-                                  <Copy className="size-3.5" aria-hidden />
-                                </Button>
-                              </dd>
-                            </>
-                          )}
-                        </dl>
-                      </div>
-                    );
-                  })}
-                  {discoveryTimeline.length > 5 && (
-                    <p className="text-caption text-muted-foreground">
-                      + {discoveryTimeline.length - 5} more
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
         </CardContent>
       </Card>
 
@@ -2289,221 +2149,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       <NetExecCard hostId={host.id} count={host.netexec_result_count ?? 0} />
 
       {/* Port Details */}
-      <Card id="host-detail-ports">
-        <CardHeader>
-          <div className="flex items-center gap-xs">
-            <Network className="size-5 text-primary" aria-hidden />
-            <CardTitle>Port Details</CardTitle>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <Accordion type="multiple" defaultValue={openPorts.length > 0 ? ['open'] : []}>
-            {openPorts.length > 0 && (
-              <AccordionItem value="open">
-                <AccordionTrigger>Open Ports ({openPorts.length})</AccordionTrigger>
-                <AccordionContent>
-                  <div className="overflow-x-auto">
-                    <Table className="table-fixed">
-                      <TableHeader>
-                        <TableRow>
-                          <PortSortHead className="w-[10%]" />
-                          <TableHead className="w-[10%]">Proto</TableHead>
-                          <TableHead className="w-[20%]">Service</TableHead>
-                          <TableHead className="w-[35%]">Version</TableHead>
-                          <TableHead className="w-[12%]">State</TableHead>
-                          <TableHead className="w-[13%] text-center">Helpers</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {sortPorts(openPorts).map((port) => {
-                          const helpers = connectionHelpersByPort.get(port.id) ?? [];
-                          return (
-                            <TableRow key={port.id}>
-                              <TableCell>{port.port_number}</TableCell>
-                              <TableCell>{port.protocol}</TableCell>
-                              <TableCell className="truncate" title={port.service_name || undefined}>
-                                <div className="truncate">{port.service_name || 'Unknown'}</div>
-                                {(port.service_method || (port.service_conf != null && port.service_conf !== '')) && (
-                                  <div className="truncate text-caption text-muted-foreground" title="How the service was detected (and nmap confidence 0–10)">
-                                    {[
-                                      port.service_method,
-                                      port.service_conf != null && port.service_conf !== ''
-                                        ? `conf ${port.service_conf}`
-                                        : null,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(' · ')}
-                                  </div>
-                                )}
-                              </TableCell>
-                              <TableCell className="max-w-[16rem] truncate" title={port.service_extrainfo || undefined}>
-                                {port.service_product && port.service_version
-                                  ? `${port.service_product} ${port.service_version}`
-                                  : port.service_product || 'N/A'}
-                                {port.service_extrainfo && (
-                                  <span className="ml-xxs text-caption text-muted-foreground">
-                                    ({port.service_extrainfo})
-                                  </span>
-                                )}
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant={stateBadgeVariant(port.state)}>
-                                  {port.state || 'unknown'}
-                                </Badge>
-                                {port.reason && (
-                                  <div className="truncate text-caption text-muted-foreground" title={`Why this port is ${port.state || 'in this state'}: ${port.reason}`}>
-                                    {port.reason}
-                                  </div>
-                                )}
-                              </TableCell>
-                              <TableCell className="text-center">
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      aria-label={`Connection helpers for port ${port.port_number}`}
-                                    >
-                                      <Terminal className="size-4" aria-hidden />
-                                    </Button>
-                                  </PopoverTrigger>
-                                  <PopoverContent className="w-[34rem] max-w-[90vw]" align="start">
-                                    <div className="max-h-[24rem] overflow-y-auto p-xs">
-                                      <h4 className="mb-xs text-subheading">
-                                        Commands for {host?.ip_address}:{port.port_number}
-                                      </h4>
-                                      <div className="space-y-xs">
-                                        {helpers.map((helper, idx) => (
-                                          <div
-                                            key={idx}
-                                            className="flex items-start gap-xs rounded-control bg-muted/30 p-xs"
-                                          >
-                                            <div className="min-w-0 flex-1">
-                                              <p className="text-caption text-muted-foreground">
-                                                {helper.tool} — {helper.description}
-                                              </p>
-                                              <div className="mt-xxs max-h-[8rem] overflow-y-auto rounded-control bg-muted/30 p-xs">
-                                                <code className="block whitespace-pre-wrap break-words font-mono text-caption">
-                                                  {helper.command}
-                                                </code>
-                                              </div>
-                                            </div>
-                                            <Tooltip>
-                                              <TooltipTrigger asChild>
-                                                <Button
-                                                  variant="ghost"
-                                                  size="icon"
-                                                  // Audit RSP·H5 — keep the copy button
-                                                  // pinned at full size next to the
-                                                  // (truncating) command text.
-                                                  className="shrink-0"
-                                                  aria-label="Copy command to clipboard"
-                                                  onClick={() => {
-                                                    navigator.clipboard
-                                                      .writeText(helper.command)
-                                                      .then(
-                                                        () =>
-                                                          toast.info('Copied to clipboard', {
-                                                            autoHideMs: 1500,
-                                                          }),
-                                                        () => {
-                                                          /* clipboard denied */
-                                                        },
-                                                      );
-                                                  }}
-                                                >
-                                                  <Copy className="size-4" aria-hidden />
-                                                </Button>
-                                              </TooltipTrigger>
-                                              <TooltipContent>Copy to clipboard</TooltipContent>
-                                            </Tooltip>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            )}
-
-            {closedPorts.length > 0 && (
-              <AccordionItem value="closed">
-                <AccordionTrigger>Closed Ports ({closedPorts.length})</AccordionTrigger>
-                <AccordionContent>
-                  <div className="overflow-x-auto">
-                    <Table className="table-fixed">
-                      <TableHeader>
-                        <TableRow>
-                          <PortSortHead className="w-[15%]" />
-                          <TableHead className="w-[15%]">Proto</TableHead>
-                          <TableHead className="w-[45%]">Service</TableHead>
-                          <TableHead className="w-[25%]">State</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {sortPorts(closedPorts).map((port) => (
-                          <TableRow key={port.id}>
-                            <TableCell>{port.port_number}</TableCell>
-                            <TableCell>{port.protocol}</TableCell>
-                            <TableCell>{port.service_name || 'Unknown'}</TableCell>
-                            <TableCell>
-                              <Badge variant={stateBadgeVariant(port.state)}>
-                                {port.state || 'unknown'}
-                              </Badge>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            )}
-
-            {filteredPorts.length > 0 && (
-              <AccordionItem value="filtered">
-                <AccordionTrigger>Filtered Ports ({filteredPorts.length})</AccordionTrigger>
-                <AccordionContent>
-                  <div className="overflow-x-auto">
-                    <Table className="table-fixed">
-                      <TableHeader>
-                        <TableRow>
-                          <PortSortHead className="w-[15%]" />
-                          <TableHead className="w-[15%]">Proto</TableHead>
-                          <TableHead className="w-[45%]">Service</TableHead>
-                          <TableHead className="w-[25%]">State</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {sortPorts(filteredPorts).map((port) => (
-                          <TableRow key={port.id}>
-                            <TableCell>{port.port_number}</TableCell>
-                            <TableCell>{port.protocol}</TableCell>
-                            <TableCell>{port.service_name || 'Unknown'}</TableCell>
-                            <TableCell>
-                              <Badge variant={stateBadgeVariant(port.state)}>
-                                {port.state || 'unknown'}
-                              </Badge>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            )}
-          </Accordion>
-        </CardContent>
-      </Card>
+      <PortDetailsCard
+        hostId={host.id}
+        hostIp={host.ip_address}
+        openPorts={openPorts}
+        closedPorts={closedPorts}
+        filteredPorts={filteredPorts}
+        connectionHelpersByPort={connectionHelpersByPort}
+      />
 
       {/* Data conflicts */}
       {showConflicts && hasConflicts && (
@@ -2611,6 +2264,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
       {/* Workflow lineage */}
       <HostLineagePanel hostId={host.id} />
+
+      {/* Scan discovery timeline — audit evidence, relevant occasionally, so it
+          lives at the bottom with a show-all expander (was pinned in the header,
+          capped at 3). */}
+      <DiscoveryTimelineCard discoveries={discoveryTimeline} />
 
       {/* Resolution-summary capture (replaces window.prompt) — required to
           resolve a note thread; the backend 400s without it. */}

@@ -42,7 +42,7 @@ describe('ProvenanceCard', () => {
       attributions: [attr({ org_name: 'Unrelated Hosting BV' })],
       certOrgs: [cert({ org: 'Acme Corporation' })],
     });
-    expect(screen.getByText(/certificate and registration disagree/)).toBeInTheDocument();
+    expect(screen.getByText(/certificate and registration disagree/i)).toBeInTheDocument();
   });
 
   it('stays quiet when the two signals corroborate each other', () => {
