@@ -201,3 +201,89 @@ def test_require_project_role_rejects_unknown_role_at_construction():
     # The valid forms (enum and its string value) both construct cleanly.
     require_project_role(ProjectRole.ANALYST)
     require_project_role("analyst")
+
+
+# ---------------------------------------------------------------------------
+# Review remediation: shared assignee validation + explicit-null owner clear (#4)
+# ---------------------------------------------------------------------------
+
+def test_resolve_project_assignee_rules(db_session, test_project, member):
+    """The shared validator: None passes (unassignment); an outsider or inactive
+    user is rejected 400; a project member is accepted."""
+    import pytest
+    from fastapi import HTTPException
+    from app.api.deps import resolve_project_assignee
+
+    assert resolve_project_assignee(db_session, test_project.id, None) is None
+    # member is not in the project yet → rejected.
+    with pytest.raises(HTTPException) as e:
+        resolve_project_assignee(db_session, test_project.id, member.id)
+    assert e.value.status_code == 400
+    # add to project → accepted.
+    _set_role(db_session, test_project, member, "analyst")
+    assert resolve_project_assignee(db_session, test_project.id, member.id) == member.id
+    # inactive → rejected.
+    member.is_active = False
+    db_session.commit()
+    with pytest.raises(HTTPException):
+        resolve_project_assignee(db_session, test_project.id, member.id)
+
+
+def test_finding_owner_explicit_null_clears(member_client, db_session, test_project, member):
+    """PATCH owner_id: null actually clears ownership (was silently ignored)."""
+    from app.db.models_findings import Finding
+    _set_role(db_session, test_project, member, "analyst")
+    f = Finding(project_id=test_project.id, title="t", severity="high",
+                status="open", source="manual", owner_id=member.id)
+    db_session.add(f)
+    db_session.commit()
+
+    resp = member_client.patch(
+        f"/api/v1/projects/{test_project.id}/findings/{f.id}", json={"owner_id": None},
+    )
+    assert resp.status_code == 200, resp.text
+    db_session.refresh(f)
+    assert f.owner_id is None
+
+
+def test_finding_owner_rejects_non_member(member_client, db_session, test_project, member):
+    """Setting an owner who isn't an active project member is refused (400)."""
+    from app.db.models_findings import Finding
+    from app.db.models_auth import User, UserRole
+    _set_role(db_session, test_project, member, "analyst")
+    outsider = User(id=99, username="outsider", email="o@x.co", full_name="O",
+                    hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True)
+    db_session.add(outsider)
+    f = Finding(project_id=test_project.id, title="t", severity="high",
+                status="open", source="manual")
+    db_session.add(f)
+    db_session.commit()
+
+    resp = member_client.patch(
+        f"/api/v1/projects/{test_project.id}/findings/{f.id}",
+        json={"owner_id": outsider.id},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_dns_lookup_returns_dict_and_persists(member_client, db_session, test_project, member, monkeypatch):
+    """DNS lookup returns the record dict (200, not a 500 from the old `list`
+    contract) and commits the staged records (was rolled back on session close)."""
+    from app.db import models
+    from app.services.dns_service import DNSService
+    _set_role(db_session, test_project, member, "analyst")
+
+    def fake_get_dns_records(self, hostname, record_types=None):
+        self.db.add(models.DNSRecord(
+            domain=hostname, record_type="A", value="1.2.3.4", ttl=60,
+            project_id=self.project_id,
+        ))
+        return {"A": ["1.2.3.4"]}
+
+    monkeypatch.setattr(DNSService, "get_dns_records", fake_get_dns_records)
+    resp = member_client.post(f"/api/v1/projects/{test_project.id}/dns/lookup/example.com")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["records"] == {"A": ["1.2.3.4"]}
+    # Persisted (a fresh query sees it — proves the commit).
+    assert db_session.query(models.DNSRecord).filter_by(
+        project_id=test_project.id, domain="example.com").count() == 1

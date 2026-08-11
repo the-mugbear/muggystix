@@ -335,15 +335,6 @@ class TestScansAPI:
         "queries (pg_constraint/pg_class/pg_attribute) and ANY(:ids) array "
         "syntax — runs only against the Postgres test DB, not SQLite.",
     )
-    @pytest.mark.xfail(
-        reason="Test schema is built via create_all from the models, which never "
-        "declared the ON DELETE CASCADE that migration f1a9c7e3b528 added to the "
-        "host/port/scan child FKs in prod. Scan-delete cascades correctly in "
-        "production (migrated schema); under create_all the ports_v2.host_id FK "
-        "blocks the host delete. Holistic fix: run migrations in tests, or align "
-        "the model FK declarations with f1a9c7e3b528.",
-        strict=False,
-    )
     def test_delete_scan(self, client, db_session, sample_gnmap_data, temp_file, test_project):
         """Test deleting a scan."""
         from app.parsers.gnmap_parser import GnmapParser

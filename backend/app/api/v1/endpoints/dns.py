@@ -1,3 +1,5 @@
+from typing import Dict, List
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -12,7 +14,9 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class DNSLookupResponse(BaseModel):
     hostname: str
-    records: list
+    # record_type -> values, e.g. {"A": ["1.2.3.4"], "MX": ["10 mail..."]}.
+    # (Was `list`, which rejected the service's dict and 500'd every call.)
+    records: Dict[str, List[str]]
     message: str
 
 
@@ -29,8 +33,15 @@ def perform_dns_lookup(
     """Perform DNS lookup for a hostname and store results."""
     dns_service = DNSService(db, project_id=project.id)
 
-    # Get various DNS records
-    dns_records = dns_service.get_dns_records(hostname)
+    # get_dns_records STAGES DNSRecord rows (db.add) as a side effect; commit
+    # them here so the frontend's immediate refetch sees them — without this the
+    # request-scoped session's close() rolled the staged records back.
+    try:
+        dns_records = dns_service.get_dns_records(hostname)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "hostname": hostname,

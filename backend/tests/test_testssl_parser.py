@@ -60,6 +60,26 @@ def test_parse_weak_protocol_and_cert(db_session, test_project, tmp_path):
     assert row.host_id in weak_tls_host_ids(db_session, test_project.id)
 
 
+def test_colliding_target_does_not_abort_upload(db_session, test_project, tmp_path):
+    """A second target that collides on (scan_id, url, source) must be isolated
+    by its savepoint and dropped — not poison the session and abort the whole
+    upload (regression: the caught flush error used to leave pending_rollback)."""
+    # Same IP:port reported under two hostnames → two targets, one URL.
+    records = [
+        {"id": "TLS1", "ip": "a.example.com/10.7.0.9", "port": "443", "severity": "LOW", "finding": "offered"},
+        {"id": "TLS1", "ip": "b.example.com/10.7.0.9", "port": "443", "severity": "LOW", "finding": "offered"},
+    ]
+    path = _fixture(tmp_path, records)
+    parser = TestsslParser(db_session)
+    scan = parser.parse_file(str(path), path.name, project_id=test_project.id)  # must not raise
+
+    rows = db_session.query(models.WebInterface).filter(models.WebInterface.scan_id == scan.id).all()
+    assert len(rows) == 1                    # collision dropped, first survives
+    assert rows[0].url == "https://10.7.0.9:443"
+    # The session is healthy afterwards — a follow-up query does not raise.
+    assert db_session.query(models.WebInterface).count() >= 1
+
+
 def test_parse_strong_only_is_not_weak(db_session, test_project, tmp_path):
     records = [
         {"id": "SSLv3", "ip": "10.7.0.2", "port": "443", "severity": "OK", "finding": "not offered"},

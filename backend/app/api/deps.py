@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from typing import Deque, Dict, List
+from typing import Deque, Dict, List, Optional
 
 from fastapi import Depends, Header, HTTPException, Path, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -738,3 +738,40 @@ def require_project_role(required_role: "ProjectRole | str"):
         return current_user
 
     return checker
+
+
+def resolve_project_assignee(
+    db: Session, project_id: int, assignee_user_id: Optional[int]
+) -> Optional[int]:
+    """Validate that ``assignee_user_id`` may own/be-assigned work in this project.
+
+    Returns the id unchanged when it's ``None`` (an explicit unassignment) or a
+    valid target: an ACTIVE user who is a member of the project (global admins
+    bypass the membership check, mirroring bulk_assign). Raises 400 for an
+    inactive user, a non-existent user, or a user who isn't in the project — so
+    every owner-write path (manual create, promotion, single update, bulk) shares
+    one rule instead of accepting any global user id.
+    """
+    if assignee_user_id is None:
+        return None
+    assignee = (
+        db.query(User)
+        .filter(User.id == assignee_user_id, User.is_active.is_(True))
+        .first()
+    )
+    if not assignee:
+        raise HTTPException(status_code=400, detail="Assignee is not an active user")
+    if assignee.role != UserRole.ADMIN:
+        is_member = (
+            db.query(ProjectMembership)
+            .filter(
+                ProjectMembership.project_id == project_id,
+                ProjectMembership.user_id == assignee.id,
+            )
+            .first()
+        )
+        if not is_member:
+            raise HTTPException(
+                status_code=400, detail="Assignee is not a member of this project"
+            )
+    return assignee_user_id

@@ -162,6 +162,48 @@ def test_technology_monoculture_blind_spot(db_session, test_project):
     assert tech["affected_hosts"] == 5
 
 
+def test_technology_monoculture_uses_latest_observation(db_session, test_project):
+    """A technology from an EARLIER scan that a later scan no longer reports must
+    NOT keep counting — an upgraded estate can't show a remediated version as a
+    current monoculture (latest-observation-wins)."""
+    from datetime import datetime, timezone, timedelta
+    from app.db.models import Scope, Subnet, HostSubnetMapping
+    from app.services.systemic_insight_service import compute_systemic_insights
+
+    pid = test_project.id
+    scope = Scope(project_id=pid, name="scope")
+    db_session.add(scope)
+    db_session.flush()
+    sn = Subnet(scope_id=scope.id, cidr="10.11.0.0/24", site=None, site_id=None)
+    db_session.add(sn)
+    old_scan = models.Scan(project_id=pid, filename="old", tool_name="httpx", scan_type="web_fingerprint")
+    new_scan = models.Scan(project_id=pid, filename="new", tool_name="httpx", scan_type="web_fingerprint")
+    db_session.add_all([old_scan, new_scan])
+    db_session.flush()
+    t0 = datetime.now(timezone.utc) - timedelta(days=30)
+    t1 = datetime.now(timezone.utc)
+    for i in range(1, 6):
+        h = _host(db_session, pid, f"10.11.0.{i}")
+        _map(db_session, h, sn)
+        url = f"https://10.11.0.{i}"
+        # Earlier observation: nginx 1.14.0. Later observation on the SAME url:
+        # upgraded to 1.24.0.
+        db_session.add(models.WebInterface(
+            host_id=h.id, project_id=pid, scan_id=old_scan.id, url=url,
+            protocol="https", technologies=["nginx 1.14.0"], last_seen=t0,
+        ))
+        db_session.add(models.WebInterface(
+            host_id=h.id, project_id=pid, scan_id=new_scan.id, url=url,
+            protocol="https", technologies=["nginx 1.24.0"], last_seen=t1,
+        ))
+    db_session.commit()
+
+    out = compute_systemic_insights(db_session, pid)
+    keys = {b["key"] for b in out["blind_spots"]}
+    assert "tech:nginx 1.24.0" in keys        # the current version is the monoculture
+    assert "tech:nginx 1.14.0" not in keys     # the remediated version no longer counts
+
+
 def test_tiny_estate_never_yields_blind_spot(db_session, test_project):
     """A one-host estate with a weakness is a condition, never an "estate-wide
     blind spot" — a single host can't evidence an estate-level pattern."""

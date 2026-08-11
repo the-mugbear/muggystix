@@ -17,7 +17,7 @@ from app.db.models_findings import Finding, FindingHost, FindingStatus, FindingS
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
-from app.api.deps import get_current_project, require_project_role
+from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
 from app.services.finding_service import FindingService, validate_severity
 from app.services.host_serialization import _serialize_note
 from app.services.note_attachment_service import store_image_attachment
@@ -131,6 +131,7 @@ def create_finding(
     without anyone asking for that. If a UI ever wants manual creation, this is
     the endpoint — do not "clean it up" as unreachable.
     """
+    resolve_project_assignee(db, project.id, body.owner_id)
     svc = FindingService(db)
     finding = svc.create_finding(
         project_id=project.id, title=body.title, severity=body.severity,
@@ -164,6 +165,7 @@ def promote_annotation(
     resolved = svc._project_id_for_annotation(annotation)
     if resolved is not None and resolved != project.id:
         raise HTTPException(status_code=404, detail="Annotation not found in this project")
+    resolve_project_assignee(db, project.id, body.owner_id)
     finding = svc.promote_annotation(
         annotation=annotation, severity=body.severity, title=body.title,
         status=body.status or FindingStatus.CONFIRMED.value, owner_id=body.owner_id,
@@ -225,6 +227,7 @@ def promote_vulnerability(
     )
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerability not found in this project")
+    resolve_project_assignee(db, project.id, body.owner_id)
     finding = FindingService(db).promote_vulnerability(
         vuln=vuln, project_id=project.id, actor_id=current_user.id,
         severity=body.severity, status=body.status or FindingStatus.CONFIRMED.value,
@@ -249,8 +252,11 @@ def update_finding(
         finding.title = body.title[:500]
     if body.severity is not None:
         finding.severity = validate_severity(body.severity)
-    if body.owner_id is not None:
-        finding.owner_id = body.owner_id
+    # Owner: distinguish "field omitted" from "explicitly set to null" so
+    # selecting Unassigned (owner_id: null) actually clears ownership instead of
+    # being silently ignored. A non-null owner must be a valid project assignee.
+    if "owner_id" in body.model_fields_set:
+        finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
     db.commit()
     return _serialize(_load(db, project, finding_id))
 

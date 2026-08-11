@@ -165,16 +165,28 @@ class TestsslParser:
         written = 0
         host_ids_seen: set = set()
         for (ip, hostname, port), t in targets.items():
+            # Per-target SAVEPOINT so a single row's integrity failure (e.g. a
+            # (scan_id, url, source) collision) rolls back JUST this target
+            # instead of poisoning the session — without it, the caught flush
+            # error left the transaction in pending_rollback and the next flush
+            # raised PendingRollbackError, aborting the whole upload. Mirrors the
+            # dnsx parser / persist_host_observation isolation.
+            sp = self.db.begin_nested()
             try:
                 host_row = resolve_host_cached(self.db, self._project_id, ip,
                                                self._host_cache, hostname=hostname)
                 if host_row is None:
+                    sp.rollback()
                     continue
                 port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
                 # weak is True if any weak protocol offered; False if only strong
                 # protocols were observed; None when protocols weren't enumerated.
                 weak = t["weak"] if t["weak"] is not None else (False if t["strong_seen"] else None)
-                url = f"https://{hostname or ip}:{port}"
+                # Key the URL by the IP tested, not the hostname: testssl probes a
+                # specific IP endpoint, and a hostname resolving to several IPs
+                # would otherwise collapse to one URL (and collide on the unique
+                # (scan_id, url, source) constraint across its distinct hosts).
+                url = f"https://{ip}:{port}"
                 self.db.add(models.WebInterface(
                     scan_id=scan.id, host_id=host_row.id,
                     port_id=port_row.id if port_row else None,
@@ -186,9 +198,11 @@ class TestsslParser:
                     raw={"findings": t["raw"]},
                 ))
                 self.db.flush()
+                sp.commit()
                 written += 1
                 host_ids_seen.add(host_row.id)
             except Exception as exc:
+                sp.rollback()
                 logger.warning("testssl: skipping target %s:%s due to %s", ip, port, exc)
 
         record_hosts_in_scan(self.db, scan.id, host_ids_seen)

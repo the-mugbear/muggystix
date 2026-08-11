@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -49,7 +49,9 @@ from app.services.host_condition_sets import (
     weak_tls_host_ids,
 )
 from app.services.subnet_insight_service import (
+    _EPOCH,
     _load_subnet_meta,
+    _normalize_dt,
     resolve_host_locations,
 )
 from app.services.pattern_families import (
@@ -292,9 +294,18 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     # upgrade. Python-side bucketing (no JSON WHERE/GROUP BY), exactly like the
     # vuln monoculture reads typed rows and buckets — so no typed technologies
     # table is required to emit this family.
-    tech_hosts: Dict[str, Set[int]] = defaultdict(set)
-    for hid, technologies in (
-        db.query(models.WebInterface.host_id, models.WebInterface.technologies)
+    # Latest observation per (host, url) wins — a technology seen on an EARLIER
+    # scan that a later scan no longer reports (e.g. nginx 1.14 after the host
+    # was upgraded to 1.24) must NOT keep counting as current, exactly as the
+    # cert / weak-TLS conditions retire stale observations (host_condition_sets).
+    latest_tech: Dict[Tuple[int, Optional[str]], Tuple[Any, Any]] = {}
+    for hid, url, technologies, last_seen in (
+        db.query(
+            models.WebInterface.host_id,
+            models.WebInterface.url,
+            models.WebInterface.technologies,
+            models.WebInterface.last_seen,
+        )
         .filter(
             models.WebInterface.project_id == project_id,
             models.WebInterface.host_id.isnot(None),
@@ -302,7 +313,16 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         )
         .all()
     ):
-        if hid not in in_scope or not isinstance(technologies, list):
+        if hid not in in_scope:
+            continue
+        ls = _normalize_dt(last_seen) or _EPOCH
+        prev = latest_tech.get((hid, url))
+        if prev is None or ls >= prev[0]:
+            latest_tech[(hid, url)] = (ls, technologies)
+
+    tech_hosts: Dict[str, Set[int]] = defaultdict(set)
+    for (hid, _url), (_ls, technologies) in latest_tech.items():
+        if not isinstance(technologies, list):
             continue
         for tech in technologies:
             name = str(tech).strip()
