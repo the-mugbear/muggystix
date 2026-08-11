@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.201.0 (2026-06-13)
+> **Last verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11)
 
 Base path: `/api/v1`
 
@@ -417,16 +417,17 @@ These mount under `/projects/{project_id}/...` alongside the above. Most are das
 
 | Base path | Purpose |
 |---|---|
-| `/posture` | Security Posture roll-up (label + headline + priorities + breakdowns) — the manager-facing summary composing attention + systemic + finding disposition. |
-| `/insights/subnets` | Per-subnet insights (exposure + neglect + hygiene, worst-first). |
-| `/insights/systemic` | Systemic insights (estate blind spots, segment outliers, diagnostic profiles). |
+| `/posture` | Security Posture roll-up — deterministic condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`), plain-language conclusion, remediation flow, and the condition-family × site heatmap. Drives the frontend **Posture** tab. |
+| `/posture/evidence` | Per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) + contributing tools + parse-error data quality. Drives the frontend **Evidence** tab; answers whether the posture conclusions are trustworthy. |
+| `/insights/subnets` | Per-subnet insights (exposure + neglect + hygiene, worst-first). Drives the frontend **Segments** tab (Subnet lens). |
+| `/insights/systemic` | Systemic insights — pattern families, estate blind spots, segment outliers, diagnostic profiles. Drives the frontend **Patterns** tab. |
 | `/attention` | Project "needs help" attention model (the site-metrics arc). |
 | `/sites` | Site entity management (tier / owner / coverage). |
 | `/coverage` | Project coverage summary (drives v3 Operations). |
 | `/workbench` | Batched Operations workbench + since-last-visit cursor. |
 | `/webhooks` | Per-project outbound webhook subscriptions + delivery records. |
 | `/hosts/tags` | Project tag catalog with host counts (`host_tags`). |
-| `/hosts/bulk/*` | Bulk host operations — e.g. `POST /hosts/bulk/follow` (`host_bulk`). |
+| `/hosts/bulk/*` | Bulk host operations (`host_bulk`): `POST /hosts/bulk/tags`, `/bulk/assign` (assign hosts to a user — analyst+), `/bulk/unassign` (remove the **caller's own** assignment — any project member, so an assigned viewer/auditor can drop it), `/bulk/follow`. |
 | `/hosts/views`, `/hosts/views/{id}/promote` | Saved Hosts-page filter/view state per user (`host_filter_views`). |
 | `/hosts/query/schema`, `/hosts/query/validate`, `/hosts/query/history` | Boolean query-DSL catalogue, validate/match-count preview, and per-user query history (`host_queries`). |
 | `/scopes/subnet-labels`, `/scopes/subnets/{id}/labels` | Subnet labelling (`subnet_labels`; mounted before `scopes` so the static prefix wins route resolution). |
@@ -515,7 +516,7 @@ For "ask questions about this project" agents that shouldn't trigger the plan-ap
 | GET | `/agent/assist/scans` | Scan list. |
 | GET | `/agent/assist/session` | Current assist-session metadata. |
 
-**`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `has:`, `follow:`, `assigned:`), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). It is ANDed with the discrete filter params. `follow:` and `assigned:` resolve against the **operator who started the (read-only) session** — so `follow:in_review` means "hosts that operator has in review" and `assigned:me` resolves to that same user. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); if the session has no bound operator, `follow:`/`assigned:` predicates also return 400. Backed by `host_query_dsl.parse_query` / `evaluate`.
+**`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `exploitport:`, `header:`, `webtitle:`, `tech:`, `org:`, `certorg:`, `asn:`, `note:`, `scan:`, `has:`, `follow:`, `assigned:` (alias `assignee:`)), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). `has:` takes one of `eol` · `smb_unsigned` · `weak_auth` · `cert_issue` · `weak_tls` · `cleartext` · `critical`/`high`/`medium`/`low` · `exploit` · `web` · `open_ports` · `tested` · `planned` · `notes` · `stale_review`. It is ANDed with the discrete filter params. `follow:` and `assigned:` accept `me` — which resolves against the **operator who started the (read-only) session** (so `assigned:me` means "hosts assigned to that operator") — and `assigned:`/`assignee:` also accept a **username** (case-insensitive; the value a user actually knows, since ids aren't surfaced) or a numeric user id. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); if the session has no bound operator, `follow:`/`assigned:` predicates also return 400. Backed by `host_query_dsl.parse_query` / `evaluate`.
 
 The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt (shown once); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists recent sessions.
 

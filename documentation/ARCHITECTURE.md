@@ -1,6 +1,6 @@
 # BlueStick Architecture
 
-> **Last verified against:** backend 2.201.0 / frontend 5.106.0 (2026-06-13)
+> **Last verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11)
 
 BlueStick is a multi-user, multi-project pentest-operations platform that ingests scanner output, deduplicates hosts, correlates them to project scopes, enriches findings with vulnerability data, and drives agent-assisted test-plan generation and execution. This document is the canonical architecture reference — update it when domains, endpoints, or workflows change materially.
 
@@ -156,6 +156,13 @@ backend/app/
 │   ├── vulnerability_service.py
 │   ├── confidence_service.py
 │   ├── risk_insight_service.py
+│   ├── posture_service.py        # /posture composition (label + conclusion + remediation flow + heatmap)
+│   ├── systemic_insight_service.py # cross-sectional pattern families + blind spots + monocultures
+│   ├── subnet_insight_service.py # per-subnet exposure/neglect/hygiene lens
+│   ├── pattern_families.py       # the program-level weakness taxonomy + classify()
+│   ├── evidence_service.py       # per-domain assessment-coverage (eligible vs assessed)
+│   ├── attention_service.py      # per-project / per-site exposure + neglect rollups
+│   ├── host_condition_sets.py    # per-condition host-id sets (shared by systemic + the has: DSL)
 │   ├── ports_of_interest.py
 │   ├── host_follow_service.py
 │   ├── notification_service.py
@@ -200,7 +207,12 @@ Routers stay thin — business logic lives in `services/`. Parsers only normaliz
 
 - **Finding spine** — `db/models_findings.py` (`Finding`, `FindingHost`, `FindingStatusHistory`) is the canonical correlated-finding layer that de-duplicates raw vulnerabilities into one record per finding-across-hosts. Reports, the posture dashboard, and finding-comments all read this spine rather than raw `vulnerabilities`. Schemas in `schemas/findings.py`.
 - **Sites** — `Site` (`db/models.py`) is a project-scoped grouping of subnets/hosts with tiered weighting; managed via `endpoints/sites.py` and feeds per-site attention rollups.
-- **Posture + Insights** — `endpoints/posture.py` is the manager-facing security-posture rollup; `endpoints/insights.py` is the per-subnet exposure/neglect/hygiene lens. Both are read-only analytics over the existing host/finding data.
+- **Posture hub** — the manager-facing analytics surface, four read-only lenses over the existing host/finding data, all composing (never re-collecting):
+  - **Posture** (`endpoints/posture.py` → `posture_service`) — the executive rollup: a deterministic security-condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`, evidence-gated so an unassessed estate never reads clear), a plain-language conclusion, the in-engagement remediation flow (from `FindingStatusHistory`), and the condition-family × site heatmap.
+  - **Patterns** (frontend `/posture/patterns` → `endpoints/insights.py` `/insights/systemic` → `systemic_insight_service`) — cross-sectional analysis: recurring weaknesses grouped into program-level **pattern families** (`pattern_families.py`: identity & auth, encryption & trust, lifecycle & patching, legacy & cleartext, lateral-movement, vulnerability & technology monocultures), classified `isolated` / `recurring` / `estate_wide`.
+  - **Segments** (frontend `/posture/segments` → `endpoints/insights.py` `/insights/subnets` → `subnet_insight_service`) — the per-subnet exposure/neglect/hygiene lens plus a server-authoritative per-site rollup, behind a Site | Subnet toggle.
+  - **Evidence** (`endpoints/posture.py` `/posture/evidence` → `evidence_service`) — per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) answering whether the conclusions are trustworthy.
+  - The per-condition host sets live once in `host_condition_sets.py`, so a systemic count and its `has:<condition>` drill-down on the Hosts page resolve the identical hosts. Legacy frontend paths `/insights` and `/insights/systemic` redirect into the hub. (The backend `endpoints/insights.py` routes were **not** renamed — only the frontend page paths moved.)
 - **Webhooks** — `WebhookConfig` (`db/models_project.py`) + `endpoints/webhooks.py` manage per-project outbound notification hooks (egress goes through the SSRF-safe HTTP client).
 - **Annotations (notes) + attachments** — the note system is `Annotation` (+ `AnnotationStatusHistory`) in `db/models.py` with generalized targets (host, finding, etc. — see `finding_id`); file attachments live in `NoteAttachment` and are purged on note delete.
 
@@ -438,4 +450,4 @@ Auxiliary scripts:
 
 ---
 
-This document reflects the backend 2.201.0 / frontend 5.106.0 (2026-06-13) state of the system. When a domain, endpoint, or workflow changes, update the relevant section here and bump the version stamp at the top so future maintainers have an accurate map.
+This document reflects the backend 2.254.1 / frontend 5.152.1 (2026-08-11) state of the system. When a domain, endpoint, or workflow changes, update the relevant section here and bump the version stamp at the top so future maintainers have an accurate map.

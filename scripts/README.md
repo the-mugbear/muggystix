@@ -17,7 +17,7 @@ This directory contains utility scripts for deployment and maintenance.
 
 - **`collect-logs.sh`** - Comprehensive log collection with authentication debugging
 - **`status.sh`** - Quick status check for all instances
-- **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so Posture/Insights/Findings are evaluable on a fresh install. Runs inside the backend container.
+- **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so the Posture hub (Posture / Segments / Patterns / Evidence) and Findings are evaluable on a fresh install. Runs inside the backend container.
 - **`transfer-images.sh`** - Export/import container images for offline or air-gapped moves
 - **`preflight.sh`** - Environment probe helper used by the agentic recon workflow
 - **`generate-ssl-cert.sh`** / **`generate-ssl-cert-simple.sh`** - SSL certificate generators (also invoked by `deploy.sh` during first-time setup)

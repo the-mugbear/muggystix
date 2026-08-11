@@ -1,6 +1,6 @@
 # BlueStick
 
-> **Verified against:** backend 2.201.0 / frontend 5.106.0 (2026-06-13). New here? See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions you'll need on day one.
+> **Verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11). New here? See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions you'll need on day one.
 
 BlueStick is a network visibility and review platform for aggregating host intelligence from one or more networks. It ingests output from security tooling, normalizes hosts and ports into a shared model, and presents dashboards for triage, reporting, and analyst follow-up. Analysts can flag hosts for review, attach notes, and revisit the same asset as fresh scan data arrives.
 
@@ -14,10 +14,10 @@ BlueStick is a network visibility and review platform for aggregating host intel
 
 ## Core Workflows
 
-- **Ingest** scan output from Nmap, Masscan, Naabu, RustScan, Nessus, OpenVAS, NetExec, Eyewitness, httpx, Nikto, Amass, BloodHound, DirBuster/Gobuster/ffuf, DNS CSV, and subnet CSV sources.
+- **Ingest** scan output from Nmap (XML + grepable), Masscan, Naabu, RustScan, Nessus, OpenVAS, NetExec, Eyewitness, httpx, WhatWeb, testssl.sh, Nikto, Amass/Subfinder, BloodHound/SharpHound, DirBuster/Gobuster/ffuf/Feroxbuster/Dirsearch, dnsx, RDAP, SMBMap, DNS CSV, and subnet CSV sources. Format is auto-detected at upload — see [Upload Formats](documentation/UPLOAD_FORMATS.md) for the full table.
 - **Deduplicate** hosts by IP so repeated scans update a shared asset record instead of creating parallel copies; track per-attribute confidence + conflicts across the scan history.
 - **Triage** host discoveries, open ports, findings/vulnerabilities, web-interface inventory, and parse failures from the **Hosts** page (with a boolean query DSL) and the **Findings** spine.
-- **Analyse posture** — the **Posture** hub rolls the inventory up for managers: exposure/coverage/ownership (**Posture**), per-subnet hygiene (**Insights**), estate-wide blind spots (**Systemic**), plus a network **Topology** map and a cross-project **Portfolio** view.
+- **Analyse posture** — the **Posture** hub answers a manager's questions across four tabs: the executive security condition, remediation trajectory, and highest-leverage action (**Posture**); segment comparison by site or subnet (**Segments**); recurring weaknesses grouped into program-level pattern families (**Patterns**); and whether the conclusions are trustworthy via per-domain assessment coverage (**Evidence**). A network **Topology** map and a cross-project **Portfolio** view round out the manager-facing surfaces.
 - **Collaborate** — each authenticated user can mark a host with a personal follow status and add attributed review notes (threaded, @mentions) that surface in host and activity feeds.
 - **Agent workflows** — **four** structured surfaces for AI/terminal-side agents (Claude Code, Codex, etc.), each minting a scope-bound, time-limited X-API-Key:
   - **Recon** — agent populates host data for a scope from scanner output
@@ -101,7 +101,7 @@ npm test -- --run    # Vitest suites
 ./scripts/deploy.sh        # unified deploy menu (start/rebuild, first-time setup, reconfigure IP, nuclear clean, security status)
 ./scripts/status.sh        # quick container health check
 ./scripts/collect-logs.sh  # bundle backend + worker + report-worker + db + nginx logs for support
-./scripts/seed_demo_data.py  # populate a realistic demo project (so Posture/Insights/Findings are evaluable)
+./scripts/seed_demo_data.py  # populate a realistic demo project (so Posture, Segments/Patterns, and Findings are evaluable)
 ```
 
 ## Schema & Migrations

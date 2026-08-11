@@ -21,6 +21,20 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.43.0",
+        "app_version": "2.254.1",
+        "summary": (
+            "Host-assignment DSL guidance updated + contract tightened. The "
+            "`assigned:` predicate (alias `assignee:`) now accepts a USERNAME "
+            "(case-insensitive) or numeric id, not only `me`/`any` — user ids "
+            "aren't surfaced, so username is the normal case. The `has:` value "
+            "vocabulary is now enumerated and includes the new `weak_tls` "
+            "(SSLv2/SSLv3/TLS 1.0/1.1 offered). AGENTS.md was also trimmed of "
+            "version-archaeology and duplicated guidance for concision; no "
+            "workflow step, endpoint, or behavioural rule changed."
+        ),
+    },
+    {
         "version": "1.42.0",
         "app_version": "2.246.0",
         "summary": (

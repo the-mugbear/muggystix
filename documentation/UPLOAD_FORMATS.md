@@ -1,6 +1,6 @@
 # Supported Upload Formats
 
-> **Last verified against:** backend 2.201.0 / frontend 5.106.0 (2026-06-13)
+> **Last verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11)
 
 BlueStick's ingestion pipeline automatically detects and routes uploads to the correct parser. The table below summarises the current parser coverage and what your source tools need to export.
 

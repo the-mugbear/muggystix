@@ -1,6 +1,6 @@
 # Parser Reference & Contributor Guide
 
-> **Last verified against:** backend 2.228.0 / frontend 5.128.0 (2026-06-14)
+> **Last verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11)
 >
 > Companion to [`UPLOAD_FORMATS.md`](./UPLOAD_FORMATS.md). That doc is the
 > *user-facing* "what can I upload" table. **This** doc is for operators and
