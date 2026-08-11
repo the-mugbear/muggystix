@@ -450,6 +450,40 @@ def build_tool_catalog(
             "requires_privileges": "none",
             "alternatives": ["nuclei -t exposures/ (faster, more targeted)"],
         },
+        {
+            # TLS/SSL assessment — its --jsonfile output ingests through
+            # TestsslParser into web_interfaces (source="testssl"), populating the
+            # typed tls_weak_protocol + cert-expiry/self-signed columns that drive
+            # the encryption-&-trust systemic condition (weak_tls) and the
+            # has:weak_tls drill-down. Run it against known HTTPS/TLS services
+            # (from the discovery + web passes), not the whole estate.
+            "phase": "web",
+            "tool": "testssl",
+            "command": "testssl --jsonfile testssl.json --warnings batch https://{ip}:443",
+            "rationale": (
+                "Deep TLS/SSL posture — enumerates offered protocol versions "
+                "(flags SSLv2/SSLv3/TLS 1.0/1.1), cipher strength, and certificate "
+                "expiry / self-signed state. Read-only, but thorough: it opens many "
+                "handshakes per host, so target the known HTTPS services rather than "
+                "sweeping the estate. `--jsonfile` produces the finding array this "
+                "platform ingests, feeding the weak-TLS / encryption-&-trust signal."
+            ),
+            "intrusive": False,
+            "output_format": "json",
+            "best_for": "TLS protocol / cipher / certificate hygiene on HTTPS services",
+            "preflight": "testssl --version 2>&1 | head -1",
+            "requires_privileges": "none",
+            "alternatives": [
+                "sslyze --json_out sslyze.json {ip}:443",
+                "nmap --script ssl-enum-ciphers -p443 {ip} (always-available; less detail)",
+            ],
+            "install_hints": {
+                "apt": "sudo apt install testssl.sh   # Debian / Kali (binary: testssl or testssl.sh)",
+                "brew": "brew install testssl",
+                "source": "git clone --depth 1 https://github.com/testssl/testssl.sh && ./testssl.sh/testssl.sh --version",
+                "note": "Pure bash + OpenSSL — no compiler/Go toolchain. The binary may be named `testssl` or `testssl.sh` depending on install; adjust the command accordingly.",
+            },
+        },
         # --- DNS ---
         {
             "phase": "dns",

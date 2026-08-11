@@ -51,6 +51,7 @@ TOOL_OUTPUT_CONTRACT: Dict[str, Dict[str, object]] = {
     "whatweb": {"exts": {"json", "jsonl"}},
     "eyewitness": {"exts": {"json", "csv", "zip"}, "note": "default / -d directory output; no output-file flag"},
     "nikto": {"exts": {"json", "csv", "txt"}},
+    "testssl": {"exts": {"json"}, "note": "--jsonfile / --jsonfile-pretty; ingests via TestsslParser into web_interfaces"},
     "nuclei": {"exts": {"json"}},
     # unified dirbuster-family parser (tool name goes in the filename)
     "gobuster": {"exts": {"json", "csv", "txt"}},
