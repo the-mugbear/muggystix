@@ -131,6 +131,37 @@ def test_no_subnets_not_adopted(db_session, test_project):
     assert out == {"adopted": False}
 
 
+def test_technology_monoculture_blind_spot(db_session, test_project):
+    """A versioned technology concentrated estate-wide surfaces as a
+    technology-monoculture blind spot; a version-less library does not."""
+    pid = test_project.id
+    scope = Scope(project_id=pid, name="scope")
+    db_session.add(scope)
+    db_session.flush()
+    sn = Subnet(scope_id=scope.id, cidr="10.8.8.0/24", site=None, site_id=None)
+    db_session.add(sn)
+    scan = models.Scan(project_id=pid, filename="s", tool_name="httpx", scan_type="web_fingerprint")
+    db_session.add(scan)
+    db_session.flush()
+    # 5 hosts all running the same versioned tech + a version-less lib.
+    for i in range(1, 6):
+        h = _host(db_session, pid, f"10.8.8.{i}")
+        _map(db_session, h, sn)
+        db_session.add(models.WebInterface(
+            host_id=h.id, project_id=pid, scan_id=scan.id, url=f"https://10.8.8.{i}",
+            protocol="https", technologies=["nginx 1.14.0", "Bootstrap"],
+        ))
+    db_session.commit()
+
+    out = compute_systemic_insights(db_session, pid)
+    keys = {b["key"] for b in out["blind_spots"]}
+    assert "tech:nginx 1.14.0" in keys
+    assert "tech:Bootstrap" not in keys           # version-less → filtered as noise
+    tech = next(b for b in out["blind_spots"] if b["key"] == "tech:nginx 1.14.0")
+    assert tech["family"] == "technology_monoculture"
+    assert tech["affected_hosts"] == 5
+
+
 def test_tiny_estate_never_yields_blind_spot(db_session, test_project):
     """A one-host estate with a weakness is a condition, never an "estate-wide
     blind spot" — a single host can't evidence an estate-level pattern."""

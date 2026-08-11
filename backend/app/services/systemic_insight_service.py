@@ -282,6 +282,57 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             "family": vuln_fam.key, "family_label": vuln_fam.label,
         })
 
+    # --- technology monoculture: one versioned technology estate-wide --------
+    # Analogous to the vuln monoculture, over the web-fingerprint technologies
+    # blob (httpx / whatweb). A shared *versioned* technology (e.g. "nginx
+    # 1.14.0", "Apache Tomcat 7.0.56") concentrated across the estate is a single
+    # patchable flaw with a large blast radius. Require a version token (a digit)
+    # to exclude ubiquitous version-less entries ("Bootstrap", "PHP") that would
+    # otherwise flag as noise — the actionable target is a specific version to
+    # upgrade. Python-side bucketing (no JSON WHERE/GROUP BY), exactly like the
+    # vuln monoculture reads typed rows and buckets — so no typed technologies
+    # table is required to emit this family.
+    tech_hosts: Dict[str, Set[int]] = defaultdict(set)
+    for hid, technologies in (
+        db.query(models.WebInterface.host_id, models.WebInterface.technologies)
+        .filter(
+            models.WebInterface.project_id == project_id,
+            models.WebInterface.host_id.isnot(None),
+            models.WebInterface.technologies.isnot(None),
+        )
+        .all()
+    ):
+        if hid not in in_scope or not isinstance(technologies, list):
+            continue
+        for tech in technologies:
+            name = str(tech).strip()
+            if not name or not any(ch.isdigit() for ch in name):
+                continue  # require a version token — skip version-less libraries
+            tech_hosts[name[:160]].add(hid)
+    tech_fam = FAMILIES["technology_monoculture"]
+    for tech_name, hosts in tech_hosts.items():
+        if not estate_large_enough or len(hosts) < min_hosts:
+            continue
+        subnets = {host_subnet[h] for h in hosts}
+        sites = {host_site[h] for h in hosts if host_site[h] is not None}
+        host_fraction = len(hosts) / total_hosts if total_hosts else 0.0
+        if host_fraction < _SYSTEMIC_HOST_FRACTION:
+            continue
+        spans_estate = total_sites <= 1 or len(sites) >= max(2, round(_BLINDSPOT_SITE_FRACTION * total_sites))
+        if not spans_estate:
+            continue
+        blind_spots.append({
+            "key": f"tech:{tech_name}", "label": f"Technology monoculture: {tech_name}"[:180],
+            "vector": "One technology/version concentrated across the estate — a single flaw exposes many hosts.",
+            "severity_weight": 5, "recommended_action": "Diversify, or standardise on a patched version of the concentrated technology.",
+            "affected_hosts": len(hosts), "host_fraction": round(host_fraction, 3),
+            "subnet_spread": len(subnets), "site_spread": len(sites),
+            "systemic_score": round(5 * len(hosts) * (1 + len(subnets) + len(sites)), 1),
+            "example_ips": [host_ip.get(h) for h in list(hosts)[:5]],
+            "is_blind_spot": True, "classification": "estate_wide",
+            "family": tech_fam.key, "family_label": tech_fam.label,
+        })
+
     conditions_out.sort(key=lambda r: -r["systemic_score"])
     blind_spots.sort(key=lambda r: -r["systemic_score"])
 

@@ -84,6 +84,7 @@ const CONDITION_LABEL: Record<string, string> = {
 
 function conditionChip(key: string): string {
   if (key.startsWith('vuln:')) return 'Shared vuln';
+  if (key.startsWith('tech:')) return 'Tech monoculture';
   return CONDITION_LABEL[key] ?? key;
 }
 

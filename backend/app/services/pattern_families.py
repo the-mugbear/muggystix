@@ -13,10 +13,13 @@ overhaul). It's deliberately pure data + two small pure functions — no DB, no
 ORM — so the systemic service, the (later) Patterns page, and tests all agree on
 one mapping.
 
-`technology_monoculture` is defined here for completeness but is NOT yet emitted
-by any producer: cohort analysis over technologies needs the technologies blob
-promoted to a typed table first (column-vs-blob policy). It's listed so the
-vocabulary is stable when that feature lands.
+`technology_monoculture` is emitted by the systemic service as per-technology
+monocultures (keyed ``tech:<name>``), analogous to the per-plugin vuln
+monoculture — a shared versioned technology concentrated estate-wide. Both are
+computed by Python-side bucketing of already-typed/blob rows (no JSON WHERE /
+GROUP BY), so no separate typed technologies table is required; one would only
+become necessary for a per-technology SQL-scale drill-down filter, which the
+current has: DSL does not offer for monocultures.
 """
 from __future__ import annotations
 
@@ -94,7 +97,6 @@ FAMILIES: Dict[str, PatternFamily] = {
             "A single exposure replicated estate-wide — one root cause, many hosts.",
             "Remediate the shared root cause once across all affected hosts.",
         ),
-        # Not yet emitted — see module docstring.
         PatternFamily(
             "technology_monoculture", "Technology monoculture",
             "A single technology/version concentrated across the estate — one flaw exposes many hosts.",
