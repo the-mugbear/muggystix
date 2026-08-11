@@ -30,7 +30,6 @@ from app.db.models import Host, HostScanHistory, IngestionJob
 # app.db.session.SessionLocal onto the test engine and have these background
 # sessions land in the test DB — same pattern as agent_api_log_service.
 from app.db import session as _session_module
-from app.services.dns_service import DNSService
 from app.services.parse_error_service import log_parse_error
 
 logger = logging.getLogger(__name__)
@@ -1106,13 +1105,6 @@ class IngestionService:
                 logger.warning("Job %s: %s", job.id, mismatch_msg)
                 warnings_parts.append(mismatch_msg)
 
-        if options.get("enrich_dns") and scan_id:
-            dns_server = options.get("dns_server")
-            enriched = self._enrich_dns(db, scan_id, dns_server, project_id=project_id)
-            if enriched:
-                db.commit()
-                message = f"{message} (DNS enriched {enriched} hosts)"
-
         return {
             "scan_id": scan_id,
             "message": message,
@@ -1125,41 +1117,6 @@ class IngestionService:
             # column and no record count anywhere.
             "progress_summary": parse_stats.get("summary") if parse_stats else None,
         }
-
-    def _enrich_dns(self, db: Session, scan_id: int, dns_server: Optional[str], project_id: int = None) -> int:
-        dns_service = DNSService(db, custom_dns_server=dns_server if dns_server else None, project_id=project_id)
-        hosts = (
-            db.query(Host)
-            .join(HostScanHistory, Host.id == HostScanHistory.host_id)
-            .filter(HostScanHistory.scan_id == scan_id)
-            .all()
-        )
-
-        enriched_count = 0
-        total = len(hosts)
-        # Commit in batches rather than per host, and emit progress every
-        # batch.  report_progress doubles as the job's timeout/cancel
-        # checkpoint (raises ParseFailure if the job has been cancelled or
-        # the heartbeat lapsed), so a large enrichment run over a slow
-        # resolver is observable and can bail out instead of silently
-        # running past the job timeout and looking hung.
-        _DNS_COMMIT_BATCH = 100
-        for idx, host in enumerate(hosts, start=1):
-            try:
-                enrichment = dns_service.enrich_host_data(host)
-                if enrichment.get("reverse_dns") or enrichment.get("dns_records"):
-                    enriched_count += 1
-            except Exception as exc:  # pragma: no cover - log and continue
-                logger.warning(
-                    "DNS enrichment failed for host %s: %s",
-                    host.ip_address,
-                    exc,
-                )
-            if idx % _DNS_COMMIT_BATCH == 0:
-                db.commit()
-                report_progress(f"DNS enrichment: {idx}/{total} hosts")
-        db.commit()
-        return enriched_count
 
     # ------------------------------------------------------------------
     # Parser detection helpers

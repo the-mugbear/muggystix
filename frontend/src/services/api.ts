@@ -361,26 +361,6 @@ export const getAuditStats = async (): Promise<AuditStats> => {
 };
 
 // ---------------------------------------------------------------------------
-// On-demand DNS resolution (v2.243.0)
-// ---------------------------------------------------------------------------
-//
-// Note this queries from the SERVER, not the operator's machine — the target's
-// nameserver sees the BlueStick host's address. Zone transfer is deliberately
-// NOT exposed here: it is aimed at the target's authoritative NS, reads as
-// recon in their logs, and takes an unvalidated domain. It stays API-only.
-
-export interface DnsLookupResult {
-  hostname: string;
-  records: Array<Record<string, unknown>> | Record<string, string[]>;
-  message: string;
-}
-
-export const performDnsLookup = async (hostname: string): Promise<DnsLookupResult> => {
-  const response = await api.post(`${p()}/dns/lookup/${encodeURIComponent(hostname)}`);
-  return response.data;
-};
-
-// ---------------------------------------------------------------------------
 // Scan staleness (v2.73.0)
 // ---------------------------------------------------------------------------
 

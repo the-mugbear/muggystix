@@ -50,7 +50,6 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import SeverityBar from '../components/ui/SeverityBar';
-import { Checkbox } from '../components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -60,7 +59,6 @@ import {
 } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { Separator } from '../components/ui/separator';
 import {
   Table,
@@ -181,9 +179,6 @@ export default function Scans() {
       }
     >
   >({});
-  const [enrichDns, setEnrichDns] = useState(false);
-  const [dnsServerType, setDnsServerType] = useState<'default' | 'custom'>('default');
-  const [customDnsServer, setCustomDnsServer] = useState('');
 
   const [activeJobIds, setActiveJobIds] = useState<number[]>([]);
   const [activeJobs, setActiveJobs] = useState<Record<number, IngestionJob>>({});
@@ -442,17 +437,8 @@ export default function Scans() {
   const onDrop = (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
 
-    if (enrichDns && dnsServerType === 'custom' && customDnsServer.trim() === '') {
-      setUploadError('Please enter a custom DNS server or select "Use system default DNS servers"');
-      return;
-    }
-
     setUploadError(null);
     setUploadSuccess(null);
-
-    const dnsConfig = enrichDns
-      ? { enabled: true, server: dnsServerType === 'custom' ? customDnsServer.trim() : undefined }
-      : { enabled: false };
 
     // v2.43.1 — bug fix: keys generated UPFRONT (one per file) before
     // any setState call.  Pre-fix the keys lived inside a setUploadProgress
@@ -489,7 +475,7 @@ export default function Scans() {
     };
 
     for (const { file, key } of fileKeys) {
-      uploadFile(file, dnsConfig, (percent) => {
+      uploadFile(file, (percent) => {
         setUploadProgress((prev) => {
           const existing = prev[key];
           if (!existing) return prev; // entry already cleaned up — ignore late progress
@@ -1706,72 +1692,6 @@ export default function Scans() {
                 </AlertDescription>
               </Alert>
             )}
-
-            <div className="rounded-control border border-border bg-accent p-sm">
-              <div className="flex items-center gap-xs">
-                <Checkbox
-                  id="enrich-dns"
-                  checked={enrichDns}
-                  onCheckedChange={(v) => setEnrichDns(v === true)}
-                />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Label htmlFor="enrich-dns" className="cursor-pointer">
-                      Enrich with DNS data
-                    </Label>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p className="text-metadata font-semibold">DNS Data Enrichment</p>
-                    <p className="mt-xxs text-caption">
-                      Adds reverse DNS lookups, forward DNS resolution, and permitted zone-transfer
-                      checks while processing files.
-                    </p>
-                    <p className="mt-xxs text-caption italic">
-                      Enrichment may increase processing time.
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-              {enrichDns && (
-                <div className="mt-sm pl-lg">
-                  <p className="mb-xs text-metadata font-semibold">DNS server</p>
-                  <RadioGroup
-                    value={dnsServerType}
-                    onValueChange={(v) => setDnsServerType(v as 'default' | 'custom')}
-                  >
-                    <div className="flex items-center gap-xs">
-                      <RadioGroupItem id="dns-default" value="default" />
-                      <Label htmlFor="dns-default">Use system default DNS servers</Label>
-                    </div>
-                    <div className="flex items-center gap-xs">
-                      <RadioGroupItem id="dns-custom" value="custom" />
-                      <Label htmlFor="dns-custom">Use custom DNS server</Label>
-                    </div>
-                  </RadioGroup>
-                  {dnsServerType === 'custom' && (
-                    <div className="mt-sm">
-                      <Label htmlFor="dns-server">Custom DNS Server</Label>
-                      <Input
-                        id="dns-server"
-                        placeholder="8.8.8.8 or dns.company.com"
-                        value={customDnsServer}
-                        onChange={(e) => setCustomDnsServer(e.target.value)}
-                      />
-                      <p
-                        className={cn(
-                          'mt-xxs text-caption',
-                          customDnsServer.trim() === ''
-                            ? 'text-destructive'
-                            : 'text-muted-foreground',
-                        )}
-                      >
-                        Enter an IP address or hostname.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
 
             <Accordion type="single" collapsible>
               <AccordionItem value="formats">

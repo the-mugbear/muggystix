@@ -264,26 +264,3 @@ def test_finding_owner_rejects_non_member(member_client, db_session, test_projec
         json={"owner_id": outsider.id},
     )
     assert resp.status_code == 400, resp.text
-
-
-def test_dns_lookup_returns_dict_and_persists(member_client, db_session, test_project, member, monkeypatch):
-    """DNS lookup returns the record dict (200, not a 500 from the old `list`
-    contract) and commits the staged records (was rolled back on session close)."""
-    from app.db import models
-    from app.services.dns_service import DNSService
-    _set_role(db_session, test_project, member, "analyst")
-
-    def fake_get_dns_records(self, hostname, record_types=None):
-        self.db.add(models.DNSRecord(
-            domain=hostname, record_type="A", value="1.2.3.4", ttl=60,
-            project_id=self.project_id,
-        ))
-        return {"A": ["1.2.3.4"]}
-
-    monkeypatch.setattr(DNSService, "get_dns_records", fake_get_dns_records)
-    resp = member_client.post(f"/api/v1/projects/{test_project.id}/dns/lookup/example.com")
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["records"] == {"A": ["1.2.3.4"]}
-    # Persisted (a fresh query sees it — proves the commit).
-    assert db_session.query(models.DNSRecord).filter_by(
-        project_id=test_project.id, domain="example.com").count() == 1

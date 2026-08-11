@@ -21,6 +21,19 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.44.0",
+        "app_version": "2.258.0",
+        "summary": (
+            "Server-side DNS querying removed entirely — BlueStick never "
+            "originates network queries. The /dns lookup + zone-transfer (AXFR) "
+            "routes and the upload-time DNS enrichment option are gone; DNS data "
+            "is ingested only from operator-produced files (dnsx JSON, DNS CSV, "
+            "amass). The recon exit criterion now says to collect DNS records "
+            "terminal-side (dnsx / dig) and upload the output, rather than expect "
+            "server enrichment."
+        ),
+    },
+    {
         "version": "1.43.0",
         "app_version": "2.254.1",
         "summary": (

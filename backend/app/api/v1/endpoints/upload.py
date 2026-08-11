@@ -51,8 +51,6 @@ def _require_job_access(job: IngestionJob, current_user: User) -> None:
 )
 async def upload_scan_file(
     file: UploadFile = File(...),
-    enrich_dns: bool = False,
-    dns_server: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -60,6 +58,11 @@ async def upload_scan_file(
     """Upload a scan file for background ingestion. Requires analyst role.
 
     Supported file types: .xml, .json, .csv, .txt, .gnmap, .nessus
+
+    BlueStick never originates network queries: DNS (and all other) data is
+    ingested from files the operator produced on their own host. There is no
+    server-side DNS enrichment — run your lookups locally and upload the output
+    (dnsx JSON, DNS CSV).
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
@@ -73,12 +76,7 @@ async def upload_scan_file(
             ),
         )
 
-    options = {"enrich_dns": enrich_dns}
-    if dns_server:
-        from app.services.dns_validation import validate_dns_server
-        options["dns_server"] = validate_dns_server(dns_server)
-
-    options["project_id"] = project.id
+    options = {"project_id": project.id}
 
     try:
         job = await ingestion_service.create_job(

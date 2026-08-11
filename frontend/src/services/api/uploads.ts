@@ -8,12 +8,6 @@
 import { api, p } from './client';
 
 
-interface DnsConfig {
-  enabled: boolean;
-  server?: string;
-}
-
-
 
 export interface FileUploadResponse {
   job_id: number;
@@ -63,17 +57,10 @@ export interface IngestionJob {
 
 export const uploadFile = async (
   file: File,
-  dnsConfig: DnsConfig = { enabled: false },
   onProgress?: (percent: number) => void,
 ): Promise<FileUploadResponse> => {
   const formData = new FormData();
   formData.append('file', file);
-  if (dnsConfig.enabled) {
-    formData.append('enrich_dns', 'true');
-    if (dnsConfig.server) {
-      formData.append('dns_server', dnsConfig.server);
-    }
-  }
 
   // Bypass axios for the upload and use a raw XMLHttpRequest.  We
   // tried the axios path twice (with explicit Content-Type and with

@@ -353,11 +353,11 @@ Since v2.196.0 the heavy report formats (PDF, JSON, ZIP bundles, large host-cent
 
 ### 4.8 DNS
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/dns/records` | Stored DNS records. |
-| POST | `/dns/lookup/{hostname}` | Live lookup + store. |
-| POST | `/dns/zone-transfer/{domain}` | Analyst+. Attempt AXFR. |
+BlueStick **never originates DNS (or any other) network queries** — the server
+must not be usable as a recon proxy. DNS data is ingested only from files the
+operator produced on their own host (dnsx JSON, DNS CSV, amass). There is no
+server-side lookup/AXFR endpoint. Stored DNS records are read per host/scan via
+`GET /hosts/{id}/dns-records` and `GET /scans/{id}/dns-records`.
 
 ### 4.9 Parse errors
 

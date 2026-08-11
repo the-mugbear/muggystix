@@ -3,7 +3,7 @@ from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
     host_queries, findings, findings_bulk,
     webhooks, dashboard, upload,
-    scopes, subnet_labels, export, dns, parse_errors, reports, report_drafts, auth, two_factor,
+    scopes, subnet_labels, export, parse_errors, reports, report_drafts, auth, two_factor,
     audit, users, projects, notifications,
     portfolio, agents, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
@@ -161,7 +161,6 @@ project_router.include_router(posture.router, prefix="/posture", tags=["posture"
 project_router.include_router(subnet_labels.router, prefix="/scopes", tags=["subnet-labels"])
 project_router.include_router(scopes.router, prefix="/scopes", tags=["scopes"])
 project_router.include_router(export.router, prefix="/export", tags=["export"])
-project_router.include_router(dns.router, prefix="/dns", tags=["dns"])
 project_router.include_router(parse_errors.router, prefix="/parse-errors", tags=["parse-errors"])
 project_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 # AI-assisted report drafting (LLM narrative from findings + evidence).  Same

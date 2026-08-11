@@ -1,6 +1,6 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Prompt version:** 1.43.0 · **Verified against:** backend 2.255.0 (2026-08-11)
+**Prompt version:** 1.44.0 · **Verified against:** backend 2.258.0 (2026-08-11)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 
@@ -745,7 +745,7 @@ You're done when:
 - Every in-scope CIDR has been swept for live hosts.
 - Every live host has at least a service-version scan recorded.
 - Any configured credentialed scanner (Nessus / OpenVAS / Nuclei) has been used if the user authorized it.
-- (Optional) DNS enrichment has been applied to hosts with hostnames.
+- (Optional) DNS records have been collected terminal-side (dnsx / dig — the server never resolves anything itself) and the output uploaded for hosts needing name / PTR data.
 
 **Closing the session is mandatory — and it is the *last* thing you do.** Call `POST /agent/recon/complete` with a short `notes` summary; the session transitions to `completed`, counters freeze, and your key's usefulness ends. This is the **only** call that moves the session out of `active` (uploads and feedback do not), so a run that scanned and uploaded everything but never called it shows as perpetually-running in the operator's Recon Runs list. Do all uploads, submit feedback, then call `/recon/complete` last and confirm the `200`. (If the agent process dies first, the operator can force-close with **Abandon** — a recovery path, not the normal exit.)
 

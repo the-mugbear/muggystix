@@ -31,7 +31,7 @@ A single upload becomes an `IngestionJob`; a background worker
    `.txt` as masscan" fallback anymore).
 4. **Post-processing** — the orchestrator commits, tags `scan.project_id`,
    backfills `scan.command_line` from the agent's `command_run` when the parser
-   left it blank, optionally runs DNS enrichment, and records
+   left it blank, and records
    `skipped_count` / `parser_warnings` on the job (see Part 2).
 
 > **Two-place registration.** Every parser is referenced **twice** in
@@ -243,8 +243,7 @@ class MyToolParser:
 
 - **Constructor** takes the DB session; **`parse_file(file_path, filename,
   **kwargs)`** returns the `Scan` (read `project_id` from `kwargs`).
-- **The orchestrator** commits, tags `project_id`, backfills `command_line`,
-  and runs DNS enrichment — your parser should **not** commit the final
+- **The orchestrator** commits, tags `project_id`, backfills `command_line` — your parser should **not** commit the final
   transaction itself (parsers that do, like masscan, do so deliberately for
   batch memory reasons and accept the trade-off).
 - **Fail closed:** raise `ValueError` when the file yields **zero** records, so

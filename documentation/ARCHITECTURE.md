@@ -168,7 +168,6 @@ backend/app/
 │   ├── notification_service.py
 │   ├── parse_error_service.py
 │   ├── export_service.py + report_templates.py
-│   ├── dns_service.py + dns_validation.py
 │   ├── subnet_calculator.py + subnet_parser.py
 │   ├── command_explanation_service.py
 │   ├── agent_prompt_service.py     # builds plan-gen/execution/recon prompts
