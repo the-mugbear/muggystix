@@ -903,9 +903,10 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/hosts/{id}` | Host detail with ports — 404 if host is not in your scope (recon keys) |
 | GET | `/agent/scans` | List scans — scope-filtered for recon keys. **Newest-first, default 100 / max 500, NO offset — scans past the newest 500 are not retrievable here (use `scans_ingested` in `/agent/recon/summary` for true per-session counts).** Optional filters: `tool`, `created_after`, `sort_by` (`created_at`\|`filename`\|`tool_name`), `sort_order` (`asc`\|`desc`) |
 | GET | `/agent/scopes` | List scopes |
-| POST | `/agent/hosts/{id}/notes` | Create a note on a host |
+| POST | `/agent/hosts/{id}/notes` | Create a note on a host (requires `write:notes`) |
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
-| POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) |
+| POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) (requires `write:follow`) |
+| PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation (requires `write:host`). Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
 | POST | `/agent/feedback` | **Submit structured feedback at the end of every workflow.** Pass one of `test_plan_id` / `execution_session_id` / `recon_session_id` / `assist_session_id` so the row links back to the session it came from (recon/assist linkage added v2.85.0 — pre-v2.85.0 those keys were silently dropped). See the `## Feedback Requested` block at the end of every prompt for the full payload shape. |
 
 <!-- agents:end -->
@@ -1271,7 +1272,7 @@ The environment probe (below) only needs `os_family` (`windows`/`darwin`/`linux`
 
 ### Hard contract
 
-- **Read-only unless explicitly granted otherwise.** Your key carries `assist_session_id` and is rejected by every write endpoint on the agent surface *except* the two host-write routes below, and those only when the operator granted write access at session start.  Everything else 403s — don't try; the operator sees every failed call in the audit log.
+- **Read-only unless explicitly granted otherwise.** Your key carries `assist_session_id` and is rejected by every write endpoint on the agent surface *except* the three host-write routes below, and those only when the operator granted the matching capability at session start.  Everything else 403s — don't try; the operator sees every failed call in the audit log.
 - **Writes never widen.** Even with the grant you can only touch hosts assigned to the operator who started the session.  Scanning, plan creation, and execution are refused for every assist session, no exceptions.
 - **Project-scoped.** The session binds to one project (the one the operator picked at start-up).  You see all hosts in that project; you do not see other projects.  No cross-project access.
 - **No target traffic.** You never scan, probe, or otherwise generate traffic to in-scope hosts.  All your data comes from BlueStick's already-ingested state.  If the operator asks you to scan, see "When to hand off" below.
@@ -1286,6 +1287,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
 | `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `exploitport:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `has:`, **`follow:`**, **`assigned:`** combined with `AND`/`OR`/`NOT` and parentheses. `follow:`/`assigned:` resolve against the operator who started the session — so `q=follow:in_review` answers "hosts I have in review" and `q=assigned:me` "hosts assigned to me". `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
 | `GET  /agent/assist/hosts/{host_id}` | One host with its FULL open-port list (can be large for hosts with many ports — prefer `open_port_count` from the list for triage). |
+| `GET  /agent/assist/hosts.ndjson` | **The complete matching host set** — same filters + `q` DSL as `/agent/assist/hosts`, but uncapped and streamed one JSON object per line. Use this instead of paging when the project is large: redirect to a file and query it locally (`curl -sk -H "X-API-Key: $KEY" ".../agent/assist/hosts.ndjson" -o hosts.jsonl`, then `jq`/`grep`/`wc -l`). Report counts from the file, never a truncated page. Never read the stream into context whole. |
 | `GET  /agent/assist/scopes` | Scope CIDR lists — **each scope capped at 100 subnets, silently (no truncation flag)**. If a scope may have more, tell the operator the list is partial; full enumeration needs a recon session. |
 | `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
 | `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, etc.). |
@@ -1294,8 +1296,9 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /agent/hosts/{host_id}/notes` | Add a note. Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). 403 unless the host is assigned to your operator. |
-| `POST /agent/hosts/{host_id}/follow` | Set review status. Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). Same 403 rule. |
+| `POST /agent/hosts/{host_id}/notes` | Add a note (`write:notes`). Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). 403 unless the host is assigned to your operator. |
+| `POST /agent/hosts/{host_id}/follow` | Set review status (`write:follow`). Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). Same 403 rule. |
+| `PATCH /agent/hosts/{host_id}` | Correct a host's `hostname` / `os_name` after investigation (`write:host`). Body `{"hostname": "...", "os_name": "..."}` — send only the field you're fixing; only these two are editable. Same assigned-host 403 rule. Use when your investigation established the real hostname/OS a scan mis-detected. |
 
 Find what you may write to with `GET /agent/assist/hosts?q=assigned:me`.
 
@@ -1307,7 +1310,8 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
 2. **Observations, not unsupported conclusions.** Write what the data shows and cite the host / port / finding it came from. Never assert a vulnerability you haven't seen evidence for in BlueStick's own data.
 3. **Mark uncertainty in the note body itself.** A reader six weeks out cannot separate your inferences from your facts unless you say which is which.
 4. **Never set `reviewed` on your own initiative.** "Reviewed" is a human judgement with client-reportable weight — ask the operator to confirm first. `in_review` is fine when they asked you to pick work up.
-5. **A 403 is the guardrail working.** If a write is refused, the host isn't assigned to your operator. Report it; don't hunt for another route.
+5. **A 403 is the guardrail working.** If a write is refused, the host isn't assigned to your operator (or your key wasn't granted that capability). Report it; don't hunt for another route.
+6. **Host attribute edits are corrections, not guesses.** Only `PATCH /agent/hosts/{id}` (`hostname` / `os_name`) when your investigation actually established the real value — cite what showed it (a banner, a cert CN, a service response) in a note alongside the edit. Don't overwrite a scan's OS on a hunch; a wrong "correction" is worse than the scan's uncertainty because it reads as settled.
 
 ### How to operate
 
