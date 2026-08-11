@@ -59,9 +59,59 @@ export interface PostureSite {
   recommended_action: { kind: string; text: string };
 }
 
+/** A single explainable measure — mirrors app/schemas/metric.py. */
+export interface Metric {
+  value: number;
+  numerator: number;
+  denominator: number;
+  drilldown_filter?: Record<string, unknown> | null;
+  confidence?: number | null;
+}
+
+/** One cell of the condition-family × site heatmap. */
+export interface HeatmapCell extends Metric {
+  segment: string;
+  drilldown_filter?: { conditions: string[]; site: string | null } | null;
+}
+
+export interface HeatmapSegment {
+  key: string;
+  label: string;
+  assessed: number;
+}
+
+export interface HeatmapRow {
+  family: string;
+  family_label: string;
+  conditions: string[];
+  affected_total: number;
+  cells: HeatmapCell[];
+}
+
+export interface PostureHeatmap {
+  segments: HeatmapSegment[];
+  rows: HeatmapRow[];
+}
+
+export interface RemediationFlow {
+  remediated: number;
+  reopened: number;
+  active_age_bands: { le_7d: number; le_30d: number; le_90d: number; gt_90d: number };
+  active_total: number;
+  unowned_backlog: number;
+}
+
+export interface PostureConclusion {
+  text: string;
+  tone: 'negative' | 'caution' | 'neutral' | 'positive';
+}
+
 export interface PostureResponse {
   label: PostureLabel;
+  conclusion: PostureConclusion;
   reasons: PostureReason[];
+  remediation_flow: RemediationFlow;
+  heatmap: PostureHeatmap | null;
   headline: PostureHeadline;
   priorities: PriorityItem[];
   decisions: { pending_approvals: number; blocked_sessions: number };

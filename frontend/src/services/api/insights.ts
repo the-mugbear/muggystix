@@ -194,6 +194,23 @@ export const conditionHostsHref = (key: string, cidr?: string | null): string | 
 export const subnetHostsHref = (cidr: string): string => buildHostsUrl({ subnets: cidr });
 
 /**
+ * /hosts link for a posture heatmap cell — a pattern family's condition(s)
+ * optionally narrowed to one site. Combines the condition DSL predicate(s) with
+ * the site filter so the cell's affected count reconciles with the list it opens.
+ * Returns null when none of the family's conditions have a host-filter predicate.
+ */
+export const familyCellHostsHref = (
+  conditions: string[],
+  site?: string | null,
+): string | null => {
+  const preds = conditions.map((k) => CONDITION_DSL[k]).filter(Boolean);
+  if (preds.length === 0) return null;
+  // Multiple conditions in one family → OR them (the /hosts DSL supports `or`).
+  const q = preds.length === 1 ? preds[0] : preds.join(' or ');
+  return buildHostsUrl({ q, sites: site ?? undefined });
+};
+
+/**
  * Download the lightweight executive systemic report (standalone HTML) — a
  * self-contained file for sharing at a high-level meeting.  Fetched via the
  * authed client (the endpoint needs the JWT) and saved as a blob, mirroring the

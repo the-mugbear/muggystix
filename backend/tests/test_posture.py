@@ -5,7 +5,7 @@ priorities share one signal pass (so they can't disagree).
 from __future__ import annotations
 
 from app.db import models
-from app.db.models_findings import Finding, FindingHost
+from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.services.posture_service import compute_posture
 
 
@@ -143,9 +143,14 @@ def test_posture_response_contract(db_session, test_project):
     drifted from the manual TS interface before; this fails loudly on the next."""
     out = compute_posture(db_session, test_project.id, use_cache=False)
     assert set(out) >= {
-        "label", "reasons", "headline", "priorities", "decisions",
-        "sites", "systemic", "disposition", "evidence",
+        "label", "conclusion", "reasons", "remediation_flow", "headline",
+        "priorities", "decisions", "sites", "systemic", "disposition", "evidence",
     }
+    assert set(out["conclusion"]) >= {"text", "tone"}
+    assert set(out["remediation_flow"]) >= {
+        "remediated", "reopened", "active_age_bands", "active_total", "unowned_backlog",
+    }
+    assert set(out["remediation_flow"]["active_age_bands"]) == {"le_7d", "le_30d", "le_90d", "gt_90d"}
     assert set(out["headline"]) >= {
         "active_exposure", "review_coverage", "ownership", "systemic", "detected_exposure",
     }
@@ -155,6 +160,63 @@ def test_posture_response_contract(db_session, test_project):
     assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
     for p in out["priorities"]:
         assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}
+
+
+def test_remediation_flow_counts_remediated_and_reopened(db_session, test_project, test_user):
+    """remediation_flow reports remediated + reopened + active-backlog age bands."""
+    host = _host(db_session, test_project.id, "10.0.0.50")
+    db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
+    # One remediated finding.
+    _finding(db_session, test_project.id, severity="medium", status="remediated", owner_id=test_user.id, host=host)
+    # One reopened finding: a resolved -> active transition in its history.
+    reopened = _finding(db_session, test_project.id, severity="high", status="open", owner_id=test_user.id, host=host)
+    db_session.add(FindingStatusHistory(
+        finding_id=reopened.id, from_status="remediated", to_status="open",
+    ))
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    rf = out["remediation_flow"]
+    assert rf["remediated"] == 1
+    assert rf["reopened"] == 1
+    # The one active finding lands in a single age band.
+    assert sum(rf["active_age_bands"].values()) == rf["active_total"] == 1
+
+
+def test_heatmap_present_with_scoped_estate(db_session, test_project):
+    """When scoped subnets exist, the heatmap carries family rows × site columns
+    with affected/assessed cells; absent (null) when systemic isn't adopted."""
+    from app.db.models import Scope, Subnet, Site, HostSubnetMapping
+
+    # No scopes yet → systemic not adopted → heatmap is null.
+    out0 = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out0["heatmap"] is None
+
+    scope = Scope(project_id=test_project.id, name="scope")
+    db_session.add(scope)
+    site = Site(project_id=test_project.id, name="HQ", criticality_tier=1)
+    db_session.add(site)
+    db_session.flush()
+    sn = Subnet(scope_id=scope.id, cidr="10.4.4.0/24", site="HQ", site_id=site.id)
+    db_session.add(sn)
+    db_session.flush()
+    for i in range(1, 4):
+        h = models.Host(project_id=test_project.id, ip_address=f"10.4.4.{i}", state="up",
+                        os_name="Windows XP")  # EOL
+        db_session.add(h)
+        db_session.flush()
+        db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=sn.id))
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    hm = out["heatmap"]
+    assert hm is not None
+    assert any(seg["label"] == "HQ" for seg in hm["segments"])
+    lifecycle = next((r for r in hm["rows"] if r["family"] == "lifecycle_patching"), None)
+    assert lifecycle is not None
+    cell = lifecycle["cells"][0]
+    assert cell["numerator"] == 3 and cell["denominator"] == 3   # 3/3 EOL in HQ
+    assert cell["drilldown_filter"]["conditions"] == ["eol_os"]
 
 
 def test_posture_output_validates_against_response_model(db_session, test_project, test_user):

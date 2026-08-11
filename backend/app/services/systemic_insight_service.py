@@ -56,6 +56,7 @@ from app.services.pattern_families import (
     family_for_condition,
     family_for_vuln,
 )
+from app.schemas.metric import ratio_metric
 
 # A weakness must touch at least this fraction of in-scope hosts before it's
 # considered a *systemic* pattern rather than a handful of incidents.
@@ -324,6 +325,10 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         })
     diagnostic_profiles.sort(key=lambda r: (-len(r["conditions"]), -r["host_count"]))
 
+    family_matrix = _build_family_site_matrix(
+        affected, host_site, in_scope, subnet_meta,
+    )
+
     return {
         "adopted": True,
         "estate": {
@@ -336,7 +341,98 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         "segment_outliers": segment_outliers,
         "conditions": conditions_out,
         "diagnostic_profiles": diagnostic_profiles,
+        "family_matrix": family_matrix,
     }
+
+
+def _build_family_site_matrix(
+    affected: Dict[str, Set[int]],
+    host_site: Dict[int, Optional[int]],
+    in_scope: Set[int],
+    subnet_meta: Dict[int, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Condition-family × site matrix — the Overview heatmap.
+
+    Rows are pattern families (each carrying the per-host conditions that roll up
+    to it); columns are sites (plus an 'unassigned' column when in-scope hosts
+    have no site). Each cell is a Metric: numerator = hosts in this site affected
+    by any of the family's conditions, denominator = in-scope hosts in this site
+    (Phase 2 uses the full site population as the assessed denominator; per-domain
+    eligibility refines this in Phase 4). ``drilldown_filter`` carries the family's
+    condition keys + the site so the frontend can open exactly those hosts.
+    """
+    # site_id -> label (from subnet metadata; a site may span several subnets).
+    site_label: Dict[int, str] = {}
+    for meta in subnet_meta.values():
+        sid, name = meta.get("site_id"), meta.get("site")
+        if sid is not None and name:
+            site_label[sid] = name
+
+    # Columns: hosts per segment (site_id or None -> the 'unassigned' bucket).
+    UNASSIGNED = "unassigned"
+    seg_hosts: Dict[str, Set[int]] = defaultdict(set)
+    for hid in in_scope:
+        sid = host_site.get(hid)
+        seg_hosts[str(sid) if sid is not None else UNASSIGNED].add(hid)
+    # Named sites first (by population desc), unassigned last.
+    def _seg_sort(key: str):
+        return (key == UNASSIGNED, -len(seg_hosts[key]))
+    segment_keys = sorted(seg_hosts.keys(), key=_seg_sort)
+    segments = [
+        {
+            "key": k,
+            "label": site_label.get(int(k)) if k != UNASSIGNED else "Unassigned",
+            "assessed": len(seg_hosts[k]),
+        }
+        for k in segment_keys
+    ]
+    # A named site whose label is missing (site_id with no metadata name) falls
+    # back to a stable placeholder so a column never renders blank.
+    for s in segments:
+        if s["label"] is None:
+            s["label"] = f"Site {s['key']}"
+
+    # Rows: group the per-host condition affected-sets by family.
+    family_conditions: Dict[str, List[str]] = defaultdict(list)
+    family_hosts: Dict[str, Set[int]] = defaultdict(set)
+    family_label: Dict[str, str] = {}
+    for cond_key, hosts in affected.items():
+        fam = family_for_condition(cond_key)
+        if fam is None:
+            continue
+        family_conditions[fam.key].append(cond_key)
+        family_hosts[fam.key] |= hosts
+        family_label[fam.key] = fam.label
+
+    rows: List[Dict[str, Any]] = []
+    for fam_key, fam_hosts in family_hosts.items():
+        if not fam_hosts:
+            continue
+        conds = sorted(family_conditions[fam_key])
+        cells = []
+        for seg in segments:
+            seg_set = seg_hosts[seg["key"]]
+            hit = len(fam_hosts & seg_set)
+            cell = ratio_metric(
+                hit, seg["assessed"],
+                drilldown_filter={
+                    "conditions": conds,
+                    "site": seg["label"] if seg["key"] != UNASSIGNED else None,
+                },
+            ).model_dump()
+            cell["segment"] = seg["key"]
+            cells.append(cell)
+        rows.append({
+            "family": fam_key,
+            "family_label": family_label[fam_key],
+            "conditions": conds,
+            "affected_total": len(fam_hosts),
+            "cells": cells,
+        })
+    # Worst-first: families affecting the most hosts at the top.
+    rows.sort(key=lambda r: -r["affected_total"])
+
+    return {"segments": segments, "rows": rows}
 
 
 def _root_cause(conds: Set[str]) -> Dict[str, str]:

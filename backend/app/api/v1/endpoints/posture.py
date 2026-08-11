@@ -67,9 +67,18 @@ class PostureEvidence(_Loose):
     scan_staleness_days: Optional[int] = None
 
 
+class PostureConclusion(_Loose):
+    text: str
+    tone: str
+
+
 class PostureResponse(_Loose):
     label: PostureLabel
+    conclusion: PostureConclusion
     reasons: List[PostureReason]
+    remediation_flow: Dict[str, Any]
+    # Condition-family × site heatmap; null when systemic analysis isn't adopted.
+    heatmap: Optional[Dict[str, Any]] = None
     headline: Dict[str, Any]
     priorities: List[PosturePriority]
     decisions: PostureDecisions
