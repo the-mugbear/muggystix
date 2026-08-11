@@ -97,7 +97,7 @@ const Activity = lazy(() => import('./pages/Activity'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
 const SecurityPosture = lazy(() => import('./pages/SecurityPosture'));
-const SubnetInsights = lazy(() => import('./pages/SubnetInsights'));
+const Segments = lazy(() => import('./pages/Segments'));
 const Patterns = lazy(() => import('./pages/Patterns'));
 const ParseErrors = lazy(() => import('./pages/ParseErrors'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
@@ -484,13 +484,15 @@ function App() {
                         }
                       />
                       <Route
-                        path="/insights"
+                        path="/posture/segments"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <SubnetInsights />
+                            <Segments />
                           </ProtectedRoute>
                         }
                       />
+                      {/* Legacy path → new Segments page (Phase 3 IA). */}
+                      <Route path="/insights" element={<Navigate to="/posture/segments" replace />} />
                       <Route
                         path="/posture/patterns"
                         element={

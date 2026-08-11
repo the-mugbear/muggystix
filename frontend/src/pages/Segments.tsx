@@ -1,13 +1,16 @@
 /**
- * SubnetInsights — "which network ranges are neglected or in bad shape?"
+ * Segments — "which network ranges / sites are neglected or in bad shape?"
  *
- * The attention model (exposure + neglect) re-grouped by subnet, plus a
- * hygiene lens (EOL OS / TLS cert issues / weak auth / risky services) that
- * surfaces lack-of-IT-management.  Worst-first.  Every number stays
- * decomposed and explainable — no opaque score (the lesson from the deleted
- * risk-scoring system the attention model was built to replace).
+ * Merges the subnet and site comparison behind a Site | Subnet toggle (was two
+ * pages: /insights + the sites table on /posture). Subnet mode is the attention
+ * model (exposure + neglect) re-grouped by subnet plus a hygiene lens (EOL OS /
+ * TLS cert issues / weak auth / risky services); Site mode is the same signals
+ * rolled up per configured site (server-authoritative, from the posture
+ * snapshot). Worst-first. Every number stays decomposed and explainable — no
+ * opaque score; site criticality tier is shown as its own column and never
+ * folded into the raw counts.
  *
- * UI-style-guide compliance: table is `table-fixed` with explicit column
+ * UI-style-guide compliance: tables are `table-fixed` with explicit column
  * widths; CIDR / site / owner / action cells truncate; every state
  * (loading / error / not-adopted / empty) renders a safe fallback.
  */
@@ -18,11 +21,16 @@ import { ChevronDown, ChevronRight, Copy, Download, Info, Loader2, RefreshCw, Sh
 
 import {
   getSubnetInsights,
+  getPosture,
   conditionHostsHref,
   subnetHostsHref,
   type SubnetInsight,
   type SubnetInsightsResponse,
+  type PostureSite,
 } from '../services/api';
+import { buildHostsUrl } from '../utils/drilldownLinks';
+import SeverityBar from '../components/ui/SeverityBar';
+import { tierHsl, TIER_LABEL } from '../components/posture/postureTheme';
 import { formatApiError } from '../utils/apiErrors';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
@@ -113,9 +121,10 @@ function subnetsToMarkdown(data: SubnetInsightsResponse, projectName?: string): 
   return lines.join('\n');
 }
 
-const SubnetInsights: React.FC = () => {
+const Segments: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
+  const [mode, setMode] = useState<'subnet' | 'site'>('subnet');
   const [data, setData] = useState<SubnetInsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -167,33 +176,46 @@ const SubnetInsights: React.FC = () => {
     <div className="space-y-md p-md">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
-          <h1 className="text-page-title">Subnet Insights</h1>
+          <h1 className="text-page-title">Segments</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Which network ranges need attention — ranked worst-first.{' '}
-            <InfoTip text="Ranking: tier-weighted exposure first, then neglect + hygiene magnitude, then host count. Deliberately no single opaque score — each component below is shown so the order is explainable and auditable." />{' '}
-            <strong className="text-foreground">Exposure</strong> is severity-weighted active
-            findings (scaled by site criticality);{' '}
+            Which network segments need attention — ranked worst-first. Toggle between{' '}
+            <strong className="text-foreground">Site</strong> (configured groupings, with criticality
+            tier) and <strong className="text-foreground">Subnet</strong> (network ranges).{' '}
+            <InfoTip text="Ranking: exposure first, then neglect + hygiene magnitude, then host count. Deliberately no single opaque score — each component is shown so the order is explainable. Site criticality tier is shown as its own column and never folded into the raw counts." />{' '}
+            <strong className="text-foreground">Exposure</strong> is active findings by severity;{' '}
             <strong className="text-foreground">neglect</strong> is unowned/unreviewed/stale signals;{' '}
             <strong className="text-foreground">hygiene</strong> surfaces end-of-life OS, certificate
-            issues, weak authentication, and risky exposed services. A subnet with many
-            unmanaged hosts often signals a gap in IT ownership.{' '}
-            For the site-level rollup, see <Link to="/posture" className="text-info hover:underline">Security Posture</Link>.
+            issues, weak authentication, and risky exposed services.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-xs">
-          <Button size="sm" variant="outline" onClick={handleCopyMarkdown} disabled={loading || !data?.adopted}>
-            <Copy className="size-3.5" aria-hidden /> Copy table
-          </Button>
-          <Button size="sm" variant="outline" onClick={handleDownloadJson} disabled={loading || !data?.adopted}>
-            <Download className="size-3.5" aria-hidden /> JSON
-          </Button>
-          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-          </Button>
-        </div>
+        {mode === 'subnet' && (
+          <div className="flex flex-wrap items-center gap-xs">
+            <Button size="sm" variant="outline" onClick={handleCopyMarkdown} disabled={loading || !data?.adopted}>
+              <Copy className="size-3.5" aria-hidden /> Copy table
+            </Button>
+            <Button size="sm" variant="outline" onClick={handleDownloadJson} disabled={loading || !data?.adopted}>
+              <Download className="size-3.5" aria-hidden /> JSON
+            </Button>
+            <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+              <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+            </Button>
+          </div>
+        )}
       </div>
 
-      {loading && !data ? (
+      {/* Site | Subnet lens toggle. */}
+      <div className="inline-flex rounded-md border border-border p-0.5" role="tablist" aria-label="Segment lens">
+        {(['site', 'subnet'] as const).map((m) => (
+          <button key={m} type="button" role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
+            className={`rounded px-md py-1 text-caption font-medium capitalize transition-colors ${mode === m ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'site' ? (
+        <SitePanel />
+      ) : loading && !data ? (
         <div className="flex items-center gap-xs" role="status" aria-live="polite">
           <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
           <p className="text-metadata text-muted-foreground">Assessing subnets…</p>
@@ -513,4 +535,150 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
   );
 };
 
-export default SubnetInsights;
+// ---------------------------------------------------------------------------
+// Site mode — the configured-site rollup, from the posture snapshot's
+// server-authoritative per-site attention (exposure + neglect + tier).
+// ---------------------------------------------------------------------------
+const SitePanel: React.FC = () => {
+  const { currentProject } = useProject();
+  const [sites, setSites] = useState<PostureSite[] | null>(null);
+  const [adopted, setAdopted] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getPosture()
+      .then((d) => {
+        setSites(d.sites.items);
+        setAdopted(d.sites.adopted);
+        setError(null);
+      })
+      .catch((e) => setError(formatApiError(e, 'Could not load site rollup.')))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load, currentProject?.id]);
+
+  if (loading && !sites) {
+    return (
+      <div className="flex items-center gap-xs" role="status" aria-live="polite">
+        <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
+        <p className="text-metadata text-muted-foreground">Rolling up sites…</p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Couldn't load site rollup</AlertTitle>
+        <AlertDescription>
+          <p className="break-words">{error}</p>
+          <Button size="sm" variant="outline" className="mt-xs" onClick={load}>
+            <RefreshCw className="size-3.5" aria-hidden /> Retry
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (!adopted || !sites || sites.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-lg text-center">
+          <ShieldAlert className="mx-auto mb-sm size-8 text-muted-foreground" aria-hidden />
+          <p className="text-subheading font-semibold text-foreground">No sites configured yet</p>
+          <p className="mx-auto mt-xs max-w-md text-metadata text-muted-foreground">
+            Group subnets into sites to compare exposure, coverage, and criticality by location.
+            Until then, switch to the <strong className="text-foreground">Subnet</strong> lens above.
+          </p>
+          <Button asChild size="sm" className="mt-md"><Link to="/scopes">Manage scopes</Link></Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <Table className="table-fixed">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[22%]">Site</TableHead>
+                <TableHead className="w-[14%]">Tier</TableHead>
+                <TableHead className="w-[9%] text-right">Hosts</TableHead>
+                <TableHead className="w-[22%]">Exposure</TableHead>
+                <TableHead className="w-[9%] text-right">Unowned</TableHead>
+                <TableHead className="w-[10%] text-right">Unreviewed</TableHead>
+                <TableHead className="w-[14%]">Next action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sites.map((s) => {
+                const tier = s.criticality_tier;
+                const hostsHref = s.site ? buildHostsUrl({ sites: s.site }) : undefined;
+                return (
+                  <TableRow key={s.site_id ?? (s.unassigned ? 'unassigned' : s.site ?? 'na')}>
+                    <TableCell className="align-top">
+                      <span className="block truncate font-medium text-foreground" title={s.site ?? 'Unassigned'}>
+                        {s.unassigned ? <span className="italic text-muted-foreground">Unassigned</span>
+                          : safeFallback(s.site, '—')}
+                      </span>
+                      {s.owner_name && (
+                        <span className="block truncate text-caption text-muted-foreground" title={s.owner_name}>
+                          {s.owner_name}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      {tier ? (
+                        <span className="inline-flex items-center gap-xxs text-caption text-foreground"
+                          title={TIER_LABEL[tier]}>
+                          <span className="size-2.5 rounded-full" style={{ background: tierHsl(tier) }} aria-hidden />
+                          {TIER_LABEL[tier]?.split(' — ')[0] ?? `Tier ${tier}`}
+                        </span>
+                      ) : <span className="text-caption text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className="align-top text-right tabular-nums text-foreground">
+                      {hostsHref ? <Link to={hostsHref} className="text-info hover:underline">{s.host_count}</Link> : s.host_count}
+                      {s.coverage_gap != null && s.coverage_gap > 0 && (
+                        <span className="block text-caption text-warning" title="Expected hosts not yet discovered">
+                          −{s.coverage_gap} gap
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <div className="flex items-center gap-xs">
+                        <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
+                          {s.exposure.active_findings}
+                        </span>
+                        <SeverityBar counts={s.exposure.by_severity} variant="compact" />
+                      </div>
+                    </TableCell>
+                    <TableCell className="align-top text-right tabular-nums">
+                      {s.neglect.unowned_active_findings > 0 ? (
+                        <span className="text-warning">{s.neglect.unowned_active_findings}</span>
+                      ) : <span className="text-muted-foreground">0</span>}
+                    </TableCell>
+                    <TableCell className="align-top text-right tabular-nums">
+                      {s.neglect.unreviewed_hosts > 0 ? (
+                        <span className="text-warning">{s.neglect.unreviewed_hosts}</span>
+                      ) : <span className="text-muted-foreground">0</span>}
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <span className="block truncate text-caption text-foreground" title={s.recommended_action?.text}>
+                        {safeFallback(s.recommended_action?.text, '—')}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+export default Segments;

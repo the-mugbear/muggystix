@@ -290,7 +290,7 @@ const Patterns: React.FC = () => {
               <AlertDescription>
                 No weakness recurs widely enough across the in-scope estate to suggest a systemic
                 process failure. Per-host issues still surface in{' '}
-                <Link to="/insights" className="underline">Subnet Insights</Link>.
+                <Link to="/posture/segments" className="underline">Segments</Link>.
               </AlertDescription>
             </Alert>
           ) : (

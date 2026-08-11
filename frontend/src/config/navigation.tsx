@@ -158,8 +158,8 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Gauge, keywords: ['posture', 'security', 'manager', 'exposure', 'coverage', 'ownership', 'summary', 'dashboard'], order: 6.4 },
   },
   {
-    id: 'subnet-insights', path: '/insights', label: 'Insights', requiredRole: 'viewer', hub: 'posture',
-    palette: { Icon: AlertHexIcon, keywords: ['subnet', 'hygiene', 'neglect', 'exposure', 'eol', 'attention'], order: 6.5 },
+    id: 'posture-segments', path: '/posture/segments', label: 'Segments', requiredRole: 'viewer', hub: 'posture',
+    palette: { Icon: AlertHexIcon, keywords: ['segment', 'site', 'subnet', 'hygiene', 'neglect', 'exposure', 'eol', 'attention'], order: 6.5 },
   },
   {
     id: 'posture-patterns', path: '/posture/patterns', label: 'Patterns', requiredRole: 'viewer', hub: 'posture',

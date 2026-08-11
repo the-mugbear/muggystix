@@ -21,7 +21,7 @@ import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
 import { familyCellHostsHref } from '../services/api/insights';
-import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
+import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
@@ -30,14 +30,11 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '../components/ui/table';
 import { Meter } from '../components/posture/PostureCharts';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
 import {
-  SEVERITY_HSL, LABEL_TONE, PRIORITY_KIND, tierHsl, TIER_LABEL,
+  SEVERITY_HSL, LABEL_TONE, PRIORITY_KIND,
 } from '../components/posture/postureTheme';
 
 const LABEL_ICON = {
@@ -172,7 +169,6 @@ const SecurityPosture: React.FC = () => {
             <FindingDisposition data={data} />
           </div>
 
-          <SitesRequiringAttention data={data} />
         </>
       ) : null}
     </div>
@@ -485,7 +481,7 @@ const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) 
             <p className="mx-auto mt-xxs max-w-sm text-caption text-muted-foreground">
               {!hm ? (
                 <>Group subnets into scopes and sites to see weaknesses by location. See{' '}
-                  <Link to="/insights" className="text-info hover:underline">Insights</Link>.</>
+                  <Link to="/posture/segments" className="text-info hover:underline">Segments</Link>.</>
               ) : 'Weaknesses that recur across sites will appear here as they are detected.'}
             </p>
           </div>
@@ -655,118 +651,6 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
 
         <DispositionPipeline byStatus={d.by_status}
           statusHref={(status) => buildFindingsUrl({ status: status as never })} />
-      </CardContent>
-    </Card>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Sites requiring attention — worst-first table.
-// ---------------------------------------------------------------------------
-const SitesRequiringAttention: React.FC<{ data: PostureResponse }> = ({ data }) => {
-  if (!data.sites.adopted || data.sites.items.length === 0) return null;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-xs">
-          Sites requiring attention
-          <InfoTip text="Configured sites worst-first by tier-weighted exposure (severity-weighted active findings scaled by site criticality) and neglect. 'Reviewed' is the % of the site's hosts marked Reviewed. Sites with zero discovered hosts are included — absence of results is not safety." />
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="overflow-x-auto">
-          <Table className="table-fixed">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[16%]">Site</TableHead>
-                <TableHead className="w-[10%]">Tier</TableHead>
-                <TableHead className="w-[7%] text-right">Hosts</TableHead>
-                <TableHead className="w-[11%]" title="Discovered hosts vs. the site's expected host count">Coverage</TableHead>
-                <TableHead className="w-[17%]">Active exposure</TableHead>
-                <TableHead className="w-[9%] text-right">Reviewed</TableHead>
-                <TableHead className="w-[13%]">Owner</TableHead>
-                <TableHead className="w-[17%]">Recommended action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.sites.items.map((s, i) => {
-                const reviewed = s.host_count - s.neglect.unreviewed_hosts;
-                const reviewPct = s.host_count > 0 ? Math.round((reviewed / s.host_count) * 100) : null;
-                return (
-                  <TableRow key={s.site_id ?? `unassigned-${i}`}>
-                    <TableCell className="truncate font-medium text-foreground"
-                      title={s.unassigned ? 'Unassigned' : (s.site ?? undefined)}>
-                      {s.unassigned ? (
-                        <span className="italic text-muted-foreground">Unassigned</span>
-                      ) : s.site ? (
-                        <Link to={buildHostsUrl({ sites: s.site })} className="text-info hover:underline"
-                          title={`${s.site} — view hosts`}>
-                          {s.site}
-                        </Link>
-                      ) : '—'}
-                    </TableCell>
-                    <TableCell>
-                      {s.criticality_tier ? (
-                        <span className="inline-flex items-center gap-xxs text-caption">
-                          <span className="size-2.5 rounded-full" style={{ background: tierHsl(s.criticality_tier) }} aria-hidden />
-                          {TIER_LABEL[s.criticality_tier]?.split(' — ')[0] ?? `Tier ${s.criticality_tier}`}
-                        </span>
-                      ) : <span className="text-caption text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums text-foreground">{s.host_count}</TableCell>
-                    <TableCell className="text-caption">
-                      {s.expected_host_count == null ? (
-                        <span className="text-muted-foreground">{safeFallback(null)}</span>
-                      ) : (
-                        <span className="inline-flex items-center gap-xxs">
-                          <span className="tabular-nums text-foreground">
-                            {s.host_count} / {s.expected_host_count}
-                          </span>
-                          {s.coverage_gap != null && s.coverage_gap > 0 && (
-                            <Badge variant="warning" title={`${s.coverage_gap} expected host${s.coverage_gap === 1 ? '' : 's'} not yet discovered`}>
-                              −{s.coverage_gap}
-                            </Badge>
-                          )}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {s.exposure.active_findings === 0 ? (
-                        <span className="text-caption text-muted-foreground">none</span>
-                      ) : (
-                        <div className="flex items-center gap-xs">
-                          <span className="w-8 shrink-0 text-caption tabular-nums text-foreground">
-                            {s.exposure.active_findings}
-                          </span>
-                          <div className="min-w-0 flex-1"><SeverityBar counts={s.exposure.by_severity} variant="compact" /></div>
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {reviewPct == null ? (
-                        <span className="text-caption text-muted-foreground">—</span>
-                      ) : (
-                        <span className={`text-caption tabular-nums ${reviewPct < 50 ? 'text-warning' : 'text-foreground'}`}>
-                          {reviewPct}%
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="truncate text-caption"
-                      title={s.owner_name ?? undefined}>
-                      {s.owner_name
-                        ? <span className="text-foreground">{s.owner_name}</span>
-                        : <span className="text-warning">unassigned</span>}
-                    </TableCell>
-                    <TableCell className="truncate text-caption text-muted-foreground"
-                      title={s.recommended_action.text}>
-                      {s.recommended_action.text}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
       </CardContent>
     </Card>
   );
