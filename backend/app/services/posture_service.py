@@ -73,7 +73,7 @@ def _gather_signals(
     db: Session, project_id: int, *, project_att: Dict[str, Any],
     site_att: Dict[str, Any], systemic: Dict[str, Any],
     unowned_by_sev: Dict[str, int], review_pct: Optional[float],
-    pending_approvals: int, blocked_sessions: int, detected_vulns: int,
+    detected_vulns: int,
 ) -> List[Dict[str, Any]]:
     signals: List[Dict[str, Any]] = []
     by_sev = project_att["exposure"]["by_severity"]
@@ -138,15 +138,11 @@ def _gather_signals(
                     severity="critical", owner=s.get("owner_name"), link="/insights",
                 ))
 
-    # D. Blocked agent runs — failed/abandoned execution sessions (action).
-    if blocked_sessions > 0:
-        signals.append(_signal(
-            "action", 60 + blocked_sessions,
-            f"{blocked_sessions} agent session{'' if blocked_sessions == 1 else 's'} failed or abandoned",
-            kind="blocked", title=f"{blocked_sessions} execution session{'' if blocked_sessions == 1 else 's'} blocked",
-            blast_radius="Validation work stalled", action="Review and resume or close",
-            severity="high", owner=None, link="/executions",
-        ))
+    # NOTE: agent workflow queue state — blocked execution sessions and pending
+    # plan approvals — is deliberately NOT a strategic-posture signal. A manager's
+    # security-condition read must not flip because a run is paused or a plan
+    # awaits approval; that is operational state, owned by /operations. Those
+    # counts still ride along in the response's `decisions` block for context.
 
     # E. Under-reviewed estate (assess).
     if review_pct is not None and review_pct < _REVIEW_FLOOR:
@@ -169,15 +165,8 @@ def _gather_signals(
             severity="medium", owner=None, link="/findings",
         ))
 
-    # G. Pending plan approvals (assess).
-    if pending_approvals > 0:
-        signals.append(_signal(
-            "assess", 45 + pending_approvals,
-            f"{pending_approvals} test plan{'' if pending_approvals == 1 else 's'} awaiting approval",
-            kind="approval", title=f"{pending_approvals} test plan{'' if pending_approvals == 1 else 's'} pending approval",
-            blast_radius="Validation blocked on a decision", action="Review and approve or reject",
-            severity="low", owner=None, link="/test-plans",
-        ))
+    # (Pending plan approvals — an operational queue — is likewise excluded from
+    # the strategic label; see the note above. It remains in `decisions`.)
 
     # H. Coverage gaps — configured sites under their expected host count (assess).
     if site_att.get("adopted"):
@@ -304,15 +293,21 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
     signals = _gather_signals(
         db, project_id, project_att=project_att, site_att=site_att, systemic=systemic,
         unowned_by_sev=unowned_by_sev, review_pct=review_pct,
-        pending_approvals=int(pending_approvals), blocked_sessions=int(blocked_sessions),
         detected_vulns=int(detected_vulns),
     )
 
-    # Deterministic label from the same signal pass.
+    # Deterministic label from the same signal pass, with an evidence gate:
+    # absence of scan evidence must never resolve to a reassuring label. A
+    # genuine action/assess signal still wins (an unowned critical is real
+    # regardless of provenance), but an otherwise-quiet estate with no scans
+    # reads "insufficient_evidence", not "no_urgent_signals".
+    scan_count = project_att["neglect"]["scan_count"]
     if any(s["tier"] == "action" for s in signals):
         label = "action_required"
     elif any(s["tier"] == "assess" for s in signals):
         label = "needs_assessment"
+    elif scan_count == 0:
+        label = "insufficient_evidence"
     else:
         label = "no_urgent_signals"
     reasons = [{"text": s["reason"], "severity": s["priority"]["severity"]} for s in signals[:3]]

@@ -12,7 +12,10 @@ from datetime import datetime, timezone
 from app.db import models
 from app.db.models import Scope, Subnet, Site, HostSubnetMapping
 from app.db.models_confidence import NetexecResult
-from app.services.systemic_insight_service import compute_systemic_insights
+from app.services.systemic_insight_service import (
+    compute_systemic_insights,
+    _OUTLIER_ABS_DENSITY,
+)
 
 
 def _host(db, project_id, ip, os_name=None):
@@ -104,6 +107,63 @@ def test_eol_spanning_sites_is_blind_spot_weak_auth_is_not(db_session, test_proj
 def test_no_subnets_not_adopted(db_session, test_project):
     out = compute_systemic_insights(db_session, test_project.id)
     assert out == {"adopted": False}
+
+
+def test_tiny_estate_never_yields_blind_spot(db_session, test_project):
+    """A one-host estate with a weakness is a condition, never an "estate-wide
+    blind spot" — a single host can't evidence an estate-level pattern."""
+    pid = test_project.id
+    scope = Scope(project_id=pid, name="scope")
+    db_session.add(scope)
+    db_session.flush()
+    sn = Subnet(scope_id=scope.id, cidr="10.9.9.0/24", site=None, site_id=None)
+    db_session.add(sn)
+    db_session.flush()
+    h = _host(db_session, pid, "10.9.9.1", "Windows XP")   # EOL
+    _map(db_session, h, sn)
+    db_session.commit()
+
+    out = compute_systemic_insights(db_session, pid)
+    assert out["estate"]["hosts_in_scope"] == 1
+    by_key = {c["key"]: c for c in out["conditions"]}
+    # The condition is still surfaced...
+    assert "eol_os" in by_key
+    # ...but never promoted to a blind spot on a sub-threshold estate.
+    assert by_key["eol_os"]["is_blind_spot"] is False
+    assert out["blind_spots"] == []
+
+
+def test_outlier_flagged_when_estate_median_is_zero(db_session, test_project):
+    """A mostly-clean estate with one concentrated-issue subnet must still flag
+    that subnet — the old rule required median_density>0 and suppressed it."""
+    pid = test_project.id
+    scope = Scope(project_id=pid, name="scope")
+    db_session.add(scope)
+    db_session.flush()
+    bad = Subnet(scope_id=scope.id, cidr="10.5.5.0/24", site=None, site_id=None)
+    clean1 = Subnet(scope_id=scope.id, cidr="10.6.6.0/24", site=None, site_id=None)
+    clean2 = Subnet(scope_id=scope.id, cidr="10.7.7.0/24", site=None, site_id=None)
+    db_session.add_all([bad, clean1, clean2])
+    db_session.flush()
+
+    # Bad subnet: 3 hosts, every one EOL → density 1.0 incidence/host.
+    for i in range(1, 4):
+        h = _host(db_session, pid, f"10.5.5.{i}", "Windows XP")
+        _map(db_session, h, bad)
+    # Two clean subnets, 3 healthy hosts each → density 0 → estate median 0.
+    for sn, base in ((clean1, "10.6.6."), (clean2, "10.7.7.")):
+        for i in range(1, 4):
+            h = _host(db_session, pid, f"{base}{i}", "Ubuntu")
+            _map(db_session, h, sn)
+    db_session.commit()
+
+    out = compute_systemic_insights(db_session, pid)
+    outlier_subnets = {o["subnet_id"] for o in out["segment_outliers"]}
+    assert bad.id in outlier_subnets
+    bad_row = next(o for o in out["segment_outliers"] if o["subnet_id"] == bad.id)
+    # No non-zero baseline → no "×median"; density carries the signal instead.
+    assert bad_row["times_median"] is None
+    assert bad_row["issue_density"] >= _OUTLIER_ABS_DENSITY
 
 
 def test_host_inherits_site_from_labelled_parent_subnet(db_session, test_project):

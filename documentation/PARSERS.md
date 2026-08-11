@@ -113,10 +113,13 @@ go through `upsert_vulnerability` (app-level dedup on
 - **Vulnerability columns written:** `plugin_id`, `title` (plugin name),
   `description` (`description` → `synopsis`), `severity` (0–4 → INFO/LOW/
   MEDIUM/HIGH/CRITICAL), `source=NESSUS`, `solution`, `references` (CVE-MITRE
-  URLs), `exploitable`, `cve_id` (first CVE only).
-- **Parsed but dropped at persistence:** `cvss_base_score`/`cvss3_*`/
-  `cvss_vector`, `plugin_output`, `risk_factor`, publication dates,
-  `service_name`. (So `cvss_score` is *not* populated on the Nessus path.)
+  URLs), `exploitable`, `cve_id` (first CVE only), **`cvss_score`/`cvss_vector`**
+  (CVSSv3 preferred over v2), **`plugin_output`** (raw plugin evidence,
+  pre-truncated to `NESSUS_PLUGIN_OUTPUT_MAX_CHARS`).
+- **Parsed but dropped at persistence:** `risk_factor`, publication dates,
+  `service_name`. (CVSS + `plugin_output` are persisted as of the plugin-output
+  migration; re-upload old scans to backfill — the columns are populated only on
+  (re-)ingest.)
 - **`exploitable`** is derived from `exploit_available` /
   `metasploit_name` / `core_impact_name` / `canvas_package` /
   `exploit_code_maturity ∈ {functional, high, proof-of-concept}`. (Re-upload

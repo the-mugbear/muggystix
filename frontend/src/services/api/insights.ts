@@ -125,7 +125,10 @@ export interface SegmentOutlier {
   host_count: number;
   issue_density: number;
   estate_median_density: number;
-  times_median: number;
+  // null when the estate median density is 0 — the outlier was flagged by an
+  // absolute-density floor, so there's no meaningful "× median". Show the
+  // density instead.
+  times_median: number | null;
   conditions: string[];
 }
 

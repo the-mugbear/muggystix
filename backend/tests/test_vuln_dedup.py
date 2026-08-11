@@ -13,21 +13,25 @@ from app.parsers.nessus_parser import NessusHost, NessusVulnerability
 from app.services.vulnerability_service import VulnerabilityService
 
 
-def _vuln(plugin_id: str, port: int, *, name: str = "Test Plugin", severity: int = 3) -> NessusVulnerability:
+def _vuln(
+    plugin_id: str, port: int, *, name: str = "Test Plugin", severity: int = 3,
+    cvss_base_score=7.5, cvss_vector=None, cvss3_base_score=None, cvss3_vector=None,
+    plugin_output=None,
+) -> NessusVulnerability:
     return NessusVulnerability(
         plugin_id=plugin_id,
         plugin_name=name,
         severity=severity,
         risk_factor="High",
-        cvss_base_score=7.5,
-        cvss_vector=None,
-        cvss3_base_score=None,
-        cvss3_vector=None,
+        cvss_base_score=cvss_base_score,
+        cvss_vector=cvss_vector,
+        cvss3_base_score=cvss3_base_score,
+        cvss3_vector=cvss3_vector,
         cve_list=[],
         description="desc",
         solution="patch it",
         synopsis="syn",
-        plugin_output=None,
+        plugin_output=plugin_output,
         port=port,
         protocol="tcp",
         service_name=None,
@@ -172,6 +176,68 @@ def test_one_bad_finding_does_not_lose_the_host(
 
     # And the host row itself is still present.
     assert db_session.query(models.Host).filter_by(id=host.id).first() is not None
+
+
+def test_nessus_persists_cvss_and_plugin_output(db_session, test_project):
+    """CVSS score/vector and plugin_output — parsed all along — are now written,
+    preferring CVSSv3 over v2 when both are present."""
+    host, scan = _mk_host_and_scan(db_session, test_project.id, "10.9.0.5")
+    v = _vuln(
+        "44444", 443,
+        cvss_base_score=7.5, cvss_vector="AV:N/AC:L/Au:N/C:P/I:P/A:P",
+        cvss3_base_score=9.8, cvss3_vector="CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        plugin_output="Observed: TLS 1.0 offered on 443",
+    )
+    VulnerabilityService(db_session).process_nessus_vulnerabilities(
+        host, _nessus_host("10.9.0.5", [v]), scan,
+    )
+    db_session.flush()
+
+    row = (
+        db_session.query(Vulnerability)
+        .filter(Vulnerability.host_id == host.id, Vulnerability.plugin_id == "44444")
+        .one()
+    )
+    # v3 wins over v2.
+    assert row.cvss_score == 9.8
+    assert row.cvss_vector == "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    assert row.plugin_output == "Observed: TLS 1.0 offered on 443"
+
+
+def test_nessus_backfills_cvss_on_reupload(db_session, test_project):
+    """A pre-existing row (originally written without CVSS) is backfilled when
+    the same plugin is re-ingested carrying CVSS + plugin_output."""
+    host, scan_a = _mk_host_and_scan(db_session, test_project.id, "10.9.0.6")
+    svc = VulnerabilityService(db_session)
+    # First ingest: no CVSS/output at all.
+    svc.process_nessus_vulnerabilities(
+        host,
+        _nessus_host("10.9.0.6", [_vuln("55555", 22, cvss_base_score=None)]),
+        scan_a,
+    )
+    db_session.flush()
+    row = db_session.query(Vulnerability).filter_by(host_id=host.id, plugin_id="55555").one()
+    assert row.cvss_score is None
+
+    # Re-upload carrying CVSSv2 + evidence → backfilled onto the same row.
+    scan_b = models.Scan(project_id=test_project.id, filename="n2.nessus", tool_name="Nessus", scan_type="nessus")
+    db_session.add(scan_b)
+    db_session.flush()
+    svc.process_nessus_vulnerabilities(
+        host,
+        _nessus_host("10.9.0.6", [_vuln(
+            "55555", 22, cvss_base_score=6.1, cvss_vector="AV:N/AC:M/Au:N/C:N/I:P/A:N",
+            plugin_output="detail",
+        )]),
+        scan_b,
+    )
+    db_session.flush()
+
+    rows = db_session.query(Vulnerability).filter_by(host_id=host.id, plugin_id="55555").all()
+    assert len(rows) == 1                      # still deduped onto one row
+    assert rows[0].cvss_score == 6.1
+    assert rows[0].cvss_vector == "AV:N/AC:M/Au:N/C:N/I:P/A:N"
+    assert rows[0].plugin_output == "detail"
 
 
 def test_repeated_plugin_across_scans_dedups(db_session, test_project):

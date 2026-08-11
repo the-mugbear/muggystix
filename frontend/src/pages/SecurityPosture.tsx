@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Clock, Eye, Info, Loader2, RefreshCw, ShieldAlert,
+  AlertTriangle, ArrowUpRight, Clock, Eye, HelpCircle, Info, Loader2, RefreshCw, ShieldAlert,
   ShieldCheck, Telescope, Layers, UserCheck,
 } from 'lucide-react';
 
@@ -44,6 +44,7 @@ import {
 const LABEL_ICON = {
   action_required: AlertTriangle,
   needs_assessment: Telescope,
+  insufficient_evidence: HelpCircle,
   no_urgent_signals: ShieldCheck,
 } as const;
 
@@ -190,7 +191,7 @@ const PostureLabelBanner: React.FC<{ data: PostureResponse }> = ({ data }) => {
           <div>
             <p className="flex items-center gap-xxs text-caption uppercase tracking-wide text-muted-foreground">
               Posture
-              <InfoTip text="A deterministic label, not a score. Action required = any unowned critical/high finding, estate blind spot, hot tier-1/2 site, or blocked run. Needs assessment = low review coverage, pending approvals, or untriaged scan data. Otherwise No urgent signals. The lines on the right are the top contributing reasons." />
+              <InfoTip text="A deterministic label, not a score. Action required = any unowned critical/high finding, estate blind spot, or hot tier-1/2 site. Needs assessment = low review coverage, untriaged scan data, or a site coverage gap. Insufficient evidence = no scan evidence yet, so a clear reading can't be trusted. Otherwise No urgent signals. Operational queues (pending approvals, blocked runs) are shown separately and do not change this label. The lines on the right are the top contributing reasons." />
             </p>
             <p className={`text-subheading font-bold ${tone.textClass}`}>{tone.text}</p>
           </div>
@@ -357,7 +358,7 @@ const RiskConcentration: React.FC<{ data: PostureResponse }> = ({ data }) => {
       <CardHeader>
         <CardTitle className="flex items-center gap-xs">
           Where risk concentrates
-          <InfoTip text="Each bubble is a site. X = % of its hosts reviewed; Y = finding incidences per host (each affected host counts); bubble size = host count; colour = criticality tier. The shaded top-left is the danger zone — under-reviewed AND high-exposure." />
+          <InfoTip text="Each bubble is a site. X = % of its hosts reviewed; Y = finding incidences per host (each affected host counts); bubble size = host count; colour = worst active severity in the site (toggle to per-site colour with the control on the chart). The shaded top-left is the danger zone — under-reviewed AND high-exposure." />
         </CardTitle>
       </CardHeader>
       <CardContent>

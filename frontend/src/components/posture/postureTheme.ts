@@ -45,6 +45,13 @@ export const LABEL_TONE: Record<PostureLabel, LabelTone> = {
     text: 'Needs assessment', hsl: 'hsl(var(--warning))',
     textClass: 'text-warning', tintClass: 'bg-warning/10', borderClass: 'border-l-warning',
   },
+  // Neutral, not green: an absence of scan evidence means the reading can't be
+  // trusted either way — distinct from a genuine "no urgent signals" clear.
+  insufficient_evidence: {
+    text: 'Insufficient evidence', hsl: 'hsl(var(--muted-foreground))',
+    textClass: 'text-muted-foreground', tintClass: 'bg-muted-foreground/10',
+    borderClass: 'border-l-muted-foreground',
+  },
   no_urgent_signals: {
     text: 'No urgent signals', hsl: 'hsl(var(--success))',
     textClass: 'text-success', tintClass: 'bg-success/10', borderClass: 'border-l-success',

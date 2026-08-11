@@ -6,7 +6,11 @@
 import { api, p } from './client';
 import type { SystemicCondition, SeverityCounts } from './insights';
 
-export type PostureLabel = 'action_required' | 'needs_assessment' | 'no_urgent_signals';
+export type PostureLabel =
+  | 'action_required'
+  | 'needs_assessment'
+  | 'insufficient_evidence'
+  | 'no_urgent_signals';
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export interface PostureReason {

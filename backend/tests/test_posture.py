@@ -60,11 +60,13 @@ def test_unowned_critical_is_action_required(db_session, test_project):
 
 def test_owned_reviewed_finding_no_urgent_signals(db_session, test_project, test_user):
     """A single owned, non-critical finding on a reviewed host, with no systemic
-    spread, produces no action/assess signals."""
+    spread AND scan evidence present, produces no action/assess signals."""
     host = _host(db_session, test_project.id, "10.0.0.20")
     db_session.add(models.HostFollow(
         host_id=host.id, user_id=test_user.id, status=models.FollowStatus.REVIEWED.value,
     ))
+    # Scan evidence exists — the estate has actually been assessed.
+    db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
     _finding(db_session, test_project.id, severity="low", owner_id=test_user.id, host=host)
     db_session.commit()
 
@@ -72,6 +74,42 @@ def test_owned_reviewed_finding_no_urgent_signals(db_session, test_project, test
     assert out["label"] == "no_urgent_signals"
     assert out["headline"]["review_coverage"]["pct"] == 100
     assert out["headline"]["ownership"]["unowned"] == 0
+
+
+def test_owned_reviewed_finding_without_scans_is_insufficient_evidence(db_session, test_project, test_user):
+    """The false-green guard: the SAME owned+reviewed finding but with NO scan
+    evidence must read 'insufficient_evidence', not 'no_urgent_signals'. Absence
+    of evidence is never a reassuring result."""
+    host = _host(db_session, test_project.id, "10.0.0.21")
+    db_session.add(models.HostFollow(
+        host_id=host.id, user_id=test_user.id, status=models.FollowStatus.REVIEWED.value,
+    ))
+    _finding(db_session, test_project.id, severity="low", owner_id=test_user.id, host=host)
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out["evidence"]["scan_count"] == 0
+    assert out["label"] == "insufficient_evidence"
+
+
+def test_blocked_run_is_not_a_strategic_signal(db_session, test_project):
+    """A blocked execution session must NOT escalate the strategic label or
+    appear as a management priority — it's operational state (kept in decisions),
+    not a security-condition signal."""
+    from app.db.models_agent import TestPlan, ExecutionSession
+
+    host = _host(db_session, test_project.id, "10.0.0.30")
+    db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
+    plan = TestPlan(project_id=test_project.id, title="plan")
+    db_session.add(plan)
+    db_session.flush()
+    db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out["decisions"]["blocked_sessions"] == 1          # still counted...
+    assert out["label"] != "action_required"                 # ...but not a label driver
+    assert not any(p["kind"] == "blocked" for p in out["priorities"])
 
 
 def test_blocked_runs_count_only_latest_session_per_plan(db_session, test_project):
@@ -117,3 +155,28 @@ def test_posture_response_contract(db_session, test_project):
     assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
     for p in out["priorities"]:
         assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}
+
+
+def test_posture_output_validates_against_response_model(db_session, test_project, test_user):
+    """The endpoint's Pydantic response_model must accept a real compute_posture
+    dict without dropping fields the frontend reads (extra="allow"), for every
+    label state — including the new insufficient_evidence."""
+    from app.api.v1.endpoints.posture import PostureResponse
+
+    # insufficient_evidence: an owned, reviewed finding but NO scan evidence —
+    # no action/assess signal fires, so the evidence gate decides the label.
+    host = _host(db_session, test_project.id, "10.0.0.40")
+    db_session.add(models.HostFollow(
+        host_id=host.id, user_id=test_user.id, status=models.FollowStatus.REVIEWED.value,
+    ))
+    _finding(db_session, test_project.id, severity="low", owner_id=test_user.id, host=host)
+    db_session.commit()
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out["label"] == "insufficient_evidence"
+
+    model = PostureResponse.model_validate(out)
+    dumped = model.model_dump()
+    # Round-trips every top-level key (extra="allow" keeps the ones not on the model).
+    assert set(dumped) == set(out)
+    assert dumped["systemic"] == out["systemic"]
+    assert dumped["headline"] == out["headline"]

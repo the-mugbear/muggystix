@@ -145,7 +145,7 @@ function systemicToMarkdown(data: SystemicInsightsResponse, projectName?: string
   if (outliers.length) {
     lines.push('## Segment outliers', '', '| Subnet | Site | Hosts | Density | Conditions |', '|---|---|---:|---:|---|');
     for (const o of outliers) {
-      lines.push(`| ${o.cidr} | ${o.site ?? '—'} | ${o.host_count} | ${o.times_median}× median | ${(o.conditions || []).join(', ') || '—'} |`);
+      lines.push(`| ${o.cidr} | ${o.site ?? '—'} | ${o.host_count} | ${o.times_median != null ? `${o.times_median}× median` : `${o.issue_density}/host`} | ${(o.conditions || []).join(', ') || '—'} |`);
     }
     lines.push('');
   }
@@ -420,7 +420,9 @@ const SystemicInsights: React.FC = () => {
                                 <TableCell className="align-top text-right text-foreground">{o.host_count}</TableCell>
                                 <TableCell className="align-top text-right">
                                   <span className="font-medium text-warning" title={`Estate median ${o.estate_median_density}`}>
-                                    {o.times_median}× median
+                                    {o.times_median != null
+                                      ? `${o.times_median}× median`
+                                      : `${o.issue_density}/host`}
                                   </span>
                                 </TableCell>
                                 <TableCell className="align-top">

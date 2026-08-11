@@ -55,6 +55,14 @@ from app.services.subnet_insight_service import (
 # A weakness must touch at least this fraction of in-scope hosts before it's
 # considered a *systemic* pattern rather than a handful of incidents.
 _SYSTEMIC_HOST_FRACTION = 0.10
+# ...and at least this many hosts in absolute terms.  A single affected host is
+# an incident, not a pattern — the 10%-fraction floor alone rounds down to 1 on
+# tiny estates, so a one-host project used to satisfy "systemic".
+_SYSTEMIC_MIN_HOSTS_ABS = 2
+# "Estate-wide blind spot" is a claim about the whole estate; it's meaningless
+# below this many in-scope hosts (a 1–3 host lab can't have an estate-wide
+# pattern — it surfaces conditions, never blind spots).
+_BLINDSPOT_MIN_ESTATE_HOSTS = 4
 # To be promoted to an estate-wide "blind spot", a condition must additionally
 # span at least this fraction of the sites that exist (when >1 site exists).
 _BLINDSPOT_SITE_FRACTION = 0.6
@@ -63,6 +71,11 @@ _BLINDSPOT_SITE_FRACTION = 0.6
 # one issue don't dominate).
 _OUTLIER_FACTOR = 2.0
 _OUTLIER_MIN_HOSTS = 3
+# When the estate median density is zero (most subnets clean), the ratio rule
+# can never fire — precisely the estate where one bad subnet IS the story.  Fall
+# back to an absolute density floor in that case: >= 1.0 means the subnet's hosts
+# each carry, on average, at least one weakness — a stark contrast to a clean estate.
+_OUTLIER_ABS_DENSITY = 1.0
 
 
 # (key, label, vector, severity_weight, recommended_action) for the conditions
@@ -148,7 +161,10 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     }
 
     # --- per-condition spread metrics ------------------------------------
-    min_hosts = max(1, round(_SYSTEMIC_HOST_FRACTION * total_hosts))
+    min_hosts = max(_SYSTEMIC_MIN_HOSTS_ABS, round(_SYSTEMIC_HOST_FRACTION * total_hosts))
+    # A blind spot is an estate-level claim — suppress it entirely on estates too
+    # small to generalise from (conditions still surface; only the promotion is gated).
+    estate_large_enough = total_hosts >= _BLINDSPOT_MIN_ESTATE_HOSTS
     conditions_out: List[Dict[str, Any]] = []
     blind_spots: List[Dict[str, Any]] = []
     # subnet → set(condition keys present) for the diagnostic profiles
@@ -184,7 +200,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             total_sites <= 1
             or len(sites) >= max(2, round(_BLINDSPOT_SITE_FRACTION * total_sites))
         )
-        row["is_blind_spot"] = bool(is_systemic and spans_estate)
+        row["is_blind_spot"] = bool(estate_large_enough and is_systemic and spans_estate)
         conditions_out.append(row)
         if row["is_blind_spot"]:
             blind_spots.append(row)
@@ -212,7 +228,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             plugin_hosts[plugin_id].add(hid)
             plugin_meta[plugin_id] = (severity, title)
     for plugin_id, hosts in plugin_hosts.items():
-        if len(hosts) < min_hosts:
+        if not estate_large_enough or len(hosts) < min_hosts:
             continue
         subnets = {host_subnet[h] for h in hosts}
         sites = {host_site[h] for h in hosts if host_site[h] is not None}
@@ -251,17 +267,29 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     for sid, hosts in subnet_hosts.items():
         hc = len(hosts)
         dens = per_subnet_density[sid]
-        if hc >= _OUTLIER_MIN_HOSTS and median_density > 0 and dens >= _OUTLIER_FACTOR * median_density:
-            meta = subnet_meta[sid]
-            segment_outliers.append({
-                "subnet_id": sid, "cidr": meta["cidr"], "site": meta["site"],
-                "host_count": hc,
-                "issue_density": round(dens, 3),
-                "estate_median_density": round(median_density, 3),
-                "times_median": round(dens / median_density, 1),
-                "conditions": sorted(subnet_conditions.get(sid, set())),
-            })
-    segment_outliers.sort(key=lambda r: -r["times_median"])
+        if hc < _OUTLIER_MIN_HOSTS:
+            continue
+        # Ratio rule when there's a non-zero baseline to compare against;
+        # otherwise (a mostly-clean estate) an absolute-density floor, so the
+        # one genuinely bad subnet isn't silently suppressed by a zero median.
+        if median_density > 0:
+            is_outlier = dens >= _OUTLIER_FACTOR * median_density
+        else:
+            is_outlier = dens >= _OUTLIER_ABS_DENSITY
+        if not is_outlier:
+            continue
+        meta = subnet_meta[sid]
+        segment_outliers.append({
+            "subnet_id": sid, "cidr": meta["cidr"], "site": meta["site"],
+            "host_count": hc,
+            "issue_density": round(dens, 3),
+            "estate_median_density": round(median_density, 3),
+            # None when there's no non-zero baseline — an absolute-floor outlier
+            # has no meaningful "×median". The UI shows the density instead.
+            "times_median": round(dens / median_density, 1) if median_density > 0 else None,
+            "conditions": sorted(subnet_conditions.get(sid, set())),
+        })
+    segment_outliers.sort(key=lambda r: (r["times_median"] is None, -(r["times_median"] or r["issue_density"])))
 
     # --- diagnostic profiles: co-occurrence → root cause -----------------
     diagnostic_profiles: List[Dict[str, Any]] = []
