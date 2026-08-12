@@ -87,9 +87,11 @@ def run_listen_loop(
 
     ``poll_one()`` claims and processes one queued job, returning ``True`` if it
     did work (so a backlog drains before we wait) and ``False`` when the queue is
-    empty.  ``periodic`` callables (reaper, cleanup) run every
-    ``periodic_every_ticks`` idle ticks.  The heartbeat is rewritten at the top of
-    every cycle and after every job so a backlog drain keeps it fresh.
+    empty.  ``periodic`` callables (reaper, cleanup) run on a monotonic deadline
+    of ``periodic_every_ticks * poll_interval`` seconds — so they fire on that
+    cadence whether the worker is idle OR continuously draining a full queue,
+    rather than only once the backlog clears.  The heartbeat is rewritten at the
+    top of every cycle and after every job so a backlog drain keeps it fresh.
 
     Wrapped in an outer reconnect loop so a Postgres restart / blip doesn't kill
     the worker — DB errors close the connection, log, back off, and retry.
@@ -108,10 +110,21 @@ def run_listen_loop(
                 "Worker connected — LISTEN %s, polling every %.0fs", channel, poll_interval,
             )
             backoff = _RECONNECT_INITIAL_DELAY  # reset on a clean connect
-            tick = 0
+            # Periodic maintenance runs on a monotonic DEADLINE, not an
+            # idle-tick count.  The old code advanced a tick only AFTER the
+            # inner drain returned — so a queue that never empties (arrival at
+            # or above single-worker throughput) meant the drain never returned,
+            # the tick never advanced, and reaping / backlog-warnings / cleanup
+            # starved exactly during the overload they exist to surface.  The
+            # interval preserves the previous idle cadence (~periodic_every_ticks
+            # polls apart).
+            periodic_interval = max(1.0, periodic_every_ticks * poll_interval)
+            last_periodic = time.monotonic()
             while not _shutdown:
                 write_heartbeat(heartbeat_path, logger)
-                # Drain any queued jobs first (there may be several).
+                # Drain queued jobs, but break to the periodic deadline even
+                # when the queue is still non-empty, so maintenance runs.
+                work_pending = False
                 while not _shutdown:
                     try:
                         did_work = poll_one()
@@ -121,17 +134,26 @@ def run_listen_loop(
                     write_heartbeat(heartbeat_path, logger)
                     if not did_work:
                         break
+                    if time.monotonic() - last_periodic >= periodic_interval:
+                        # More jobs may remain; re-drain right after periodic.
+                        work_pending = True
+                        break
 
-                tick = (tick + 1) % periodic_every_ticks
-                if tick == 0:
+                if time.monotonic() - last_periodic >= periodic_interval:
                     for fn in periodic:
                         try:
                             fn()
                         except Exception:
                             logger.exception("Unexpected error in periodic task")
+                    last_periodic = time.monotonic()
 
                 if _shutdown:
                     break
+
+                # Interrupted a drain to run maintenance — keep draining now
+                # instead of blocking on select for up to poll_interval.
+                if work_pending:
+                    continue
 
                 # Wait for a notification or timeout; a dead socket raises and
                 # bubbles to the reconnect handler below.
