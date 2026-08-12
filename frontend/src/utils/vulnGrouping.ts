@@ -44,6 +44,19 @@ export interface VulnScannerReport {
   members: HostVulnerability[];
 }
 
+/**
+ * One *distinct detail block* to render — a representative row plus the ports it
+ * covers. A scanner that reports the same plugin on several ports produces one
+ * row per port, all carrying the SAME description / solution / references; those
+ * collapse to a single detail here (the ports are listed once) instead of
+ * repeating the whole write-up per port. Genuinely different plugins that share
+ * a CVE stay as separate detail blocks — their descriptions differ.
+ */
+export interface VulnDetailRow {
+  vuln: HostVulnerability;
+  ports: number[];
+}
+
 export interface VulnGroup {
   /** Stable key for React and for expand/collapse state. */
   key: string;
@@ -53,6 +66,9 @@ export interface VulnGroup {
   title: string;
   /** Every underlying row, worst severity first. */
   members: HostVulnerability[];
+  /** Deduplicated detail blocks to render — members that differ only by port
+   *  are collapsed to one, so a multi-port plugin shows its description once. */
+  detailRows: VulnDetailRow[];
   /** One entry per distinct scanner, with the severity that scanner assigned. */
   reports: VulnScannerReport[];
   /** Worst severity across members — what the group is sorted and badged by. */
@@ -168,12 +184,41 @@ export function groupVulnerabilities(vulns: HostVulnerability[]): VulnGroup[] {
       ),
     ].sort((a, b) => a - b);
 
+    // Collapse rows that are the same detail on different ports. Key on
+    // (scanner, plugin) — the same plugin_id has identical description/solution,
+    // so re-rendering it per port is pure repetition; different plugins (even
+    // sharing a CVE) keep distinct blocks because their write-ups differ. The
+    // representative prefers a finding-covered row so the badge/promote state is
+    // accurate across the collapsed ports.
+    const detailBuckets = new Map<string, { vuln: HostVulnerability; ports: Set<number> }>();
+    ordered.forEach((m) => {
+      const source = (m.source ?? 'unknown').toLowerCase();
+      const ident = m.plugin_id?.trim()
+        || (m.title ? normalizeVulnTitle(m.title) : `row:${m.id}`);
+      const dk = `${source} ${ident}`;
+      const bucket = detailBuckets.get(dk);
+      if (bucket) {
+        if (typeof m.port_number === 'number') bucket.ports.add(m.port_number);
+        if (!bucket.vuln.finding_id && m.finding_id) bucket.vuln = m;
+      } else {
+        detailBuckets.set(dk, {
+          vuln: m,
+          ports: new Set(typeof m.port_number === 'number' ? [m.port_number] : []),
+        });
+      }
+    });
+    const detailRows: VulnDetailRow[] = [...detailBuckets.values()].map((b) => ({
+      vuln: b.vuln,
+      ports: [...b.ports].sort((a, c) => a - c),
+    }));
+
     groups.push({
       key,
       keyKind: kind,
       cveId: worst.cve_id?.trim() ? worst.cve_id.trim().toUpperCase() : null,
       title: worst.title || worst.plugin_id || 'Unnamed finding',
       members: ordered,
+      detailRows,
       reports,
       severity: (worst.severity ?? 'unknown').toLowerCase(),
       severityDisagreement: new Set(reports.map((r) => r.severity)).size > 1,
