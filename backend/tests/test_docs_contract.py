@@ -125,11 +125,16 @@ def test_slice_with_no_workflow_returns_full_file():
 # 2. OpenAPI tag coherence
 # ---------------------------------------------------------------------------
 
+# Enumerate from the OpenAPI schema rather than iterating ``app.routes``:
+# FastAPI 0.141 stores an included router as a single ``_IncludedRouter`` node
+# instead of flattening its sub-routes into ``app.routes``, so flat iteration
+# finds only the handful of app-level routes. The schema is the complete,
+# version-stable source (no agent route uses ``include_in_schema=False``).
 def _route_tags() -> set[str]:
     used: set[str] = set()
-    for r in app.routes:
-        if isinstance(r, APIRoute):
-            for t in (r.tags or []):
+    for _path, operations in app.openapi().get("paths", {}).items():
+        for op in operations.values():
+            for t in (op.get("tags") or []):
                 used.add(str(t))
     return used
 
@@ -203,12 +208,14 @@ def _documented_agent_endpoints(text: str) -> set[tuple[str, str]]:
 
 
 def _actual_agent_routes() -> set[tuple[str, str]]:
+    # OpenAPI schema, not ``app.routes`` — see the _route_tags note above.
     out: set[tuple[str, str]] = set()
-    for r in app.routes:
-        if isinstance(r, APIRoute) and r.path.startswith("/api/v1/agent/"):
-            norm = _norm(r.path)
-            for m in r.methods:
-                out.add((m, norm))
+    for path, operations in app.openapi().get("paths", {}).items():
+        if not path.startswith("/api/v1/agent/"):
+            continue
+        norm = _norm(path)
+        for m in operations:
+            out.add((m.upper(), norm))
     return out
 
 

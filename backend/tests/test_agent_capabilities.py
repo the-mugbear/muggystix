@@ -84,18 +84,24 @@ ASSIST_PERMITTED_WRITES = {
 
 
 def _agent_write_routes():
-    """Every mutating route mounted under /api/v1/agent."""
+    """Every mutating route mounted under /api/v1/agent.
+
+    Enumerated from the OpenAPI schema, not by iterating ``app.routes``:
+    FastAPI 0.141 stores an included router as a single ``_IncludedRouter``
+    node instead of flattening its sub-routes into ``app.routes``, so the old
+    flat iteration finds nothing. No agent route is hidden from the schema
+    (none use ``include_in_schema=False``), so the schema is a complete source
+    of every write route — which is exactly what this completeness check needs.
+    """
     from app.main import app
 
     seen = []
-    for route in app.routes:
-        path = getattr(route, "path", "")
-        methods = getattr(route, "methods", set()) or set()
+    for path, operations in app.openapi().get("paths", {}).items():
         if not path.startswith("/api/v1/agent"):
             continue
-        for method in ("POST", "PUT", "PATCH", "DELETE"):
-            if method in methods:
-                seen.append((method, path))
+        for method in operations:
+            if method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
+                seen.append((method.upper(), path))
     return sorted(set(seen))
 
 
