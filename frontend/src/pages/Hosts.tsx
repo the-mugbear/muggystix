@@ -2143,24 +2143,31 @@ export default function Hosts() {
               // most of its content already appeared in the collapsed columns,
               // and everything unique to it (web links, discovery chips, the
               // latest note) lives in the inspector in richer form.
-              // v4.45.0 — left-border accent on rows that have had at
-              // least one agentic test executed against them
-              // (test_execution_count > 0). Hover surfaces the count
-              // as a native title tooltip.  The keyboard cursor row (1c)
-              // also gets a highlight + a `host-cursor-row` marker class
-              // the scroll-into-view effect keys off.
-              getRowClassName={(row) =>
-                cn(
-                  (row.original.test_execution_count ?? 0) > 0 && 'border-l-4 border-l-info',
+              // Left-border accent by test-workflow state, hover title explains:
+              //  • executed (test_execution_count > 0) → info (blue), "Tested"
+              //  • planned but not executed (has plan entries, zero results) →
+              //    warning (amber), "Planned · not yet executed" — surfaces
+              //    approved work that never ran, a real triage gap the API
+              //    already reported (test_plan_entry_count) but the UI ignored.
+              // Executed wins over planned. The keyboard cursor row (1c) also
+              // gets a highlight + a `host-cursor-row` marker class the
+              // scroll-into-view effect keys off.
+              getRowClassName={(row) => {
+                const executed = (row.original.test_execution_count ?? 0) > 0;
+                const planned = !executed && (row.original.test_plan_entry_count ?? 0) > 0;
+                return cn(
+                  executed && 'border-l-4 border-l-info',
+                  planned && 'border-l-4 border-l-warning',
                   row.index === cursorIndex &&
                     'host-cursor-row bg-accent ring-1 ring-inset ring-ring',
-                ) || undefined
-              }
+                ) || undefined;
+              }}
               getRowTitle={(row) => {
                 const n = row.original.test_execution_count ?? 0;
-                return n > 0
-                  ? `Tested · ${n} agentic test result${n === 1 ? '' : 's'} recorded`
-                  : undefined;
+                if (n > 0) return `Tested · ${n} agentic test result${n === 1 ? '' : 's'} recorded`;
+                const p = row.original.test_plan_entry_count ?? 0;
+                if (p > 0) return `Planned · ${p} test${p === 1 ? '' : 's'} approved but not yet executed`;
+                return undefined;
               }}
               tableClassName="table-fixed"
             />

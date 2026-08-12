@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
   ClipboardCheck,
+  ClipboardList,
   Computer as ComputerIcon,
   Eye,
   FileText,
@@ -206,6 +207,13 @@ export const HOST_FILTER_PRESETS: Array<{
     Icon: ShieldAlert,
     description: 'Legacy/insecure protocols (21/23/53/69/135/139)',
     filters: { ports: ['21', '23', '53', '69', '135', '139'], portStates: ['open'] },
+  },
+  {
+    id: 'planned_not_tested',
+    name: 'Planned, not tested',
+    Icon: ClipboardList,
+    description: 'Approved in a test plan but no results recorded yet — work that never ran',
+    filters: { query: 'has:planned AND NOT has:tested' },
   },
 ];
 
