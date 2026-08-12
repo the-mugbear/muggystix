@@ -511,6 +511,11 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(c.db, v),
               value_source="free",
               description="Autonomous system number the host's netblock belongs to."),
+    FieldSpec("country", lambda c, v: P.attribution_country_predicate(c.db, v),
+              value_source="free",
+              description="ISO country the host's netblock is registered in (RDAP) — "
+                          "e.g. `country:US`. `NOT country:US` surfaces foreign-hosted "
+                          "assets for scope validation."),
     # `cloud:` is deliberately NOT registered yet. The columns it filters on
     # (network_attributions.cloud_provider/region) have no writer — the cloud
     # prefix-list importer is still unbuilt — so registering it shipped a
@@ -681,6 +686,7 @@ EXAMPLES: List[dict] = [
     {"label": "Not in any test plan", "q": "NOT has:planned"},
     # Provenance: what did we touch that isn't registered to the client?
     {"label": "Not registered to the client", "q": 'NOT org:"Acme Corp"'},
+    {"label": "Foreign-hosted (outside US)", "q": "NOT country:US"},
     {"label": "Log4Shell-exposed web", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
     {"label": "Critical and exploitable", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},

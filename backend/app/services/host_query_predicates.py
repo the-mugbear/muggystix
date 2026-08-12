@@ -775,6 +775,31 @@ def attribution_cloud_predicate(db: Session, values: Sequence[str]) -> ColumnEle
     return models.Host.id.in_(base.filter(or_(*clauses)).distinct())
 
 
+def attribution_country_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Hosts whose registered netblock is in any of the given countries.
+
+    RDAP stores an ISO-3166 alpha-2 code (``US``, ``NL``), so this is an
+    exact case-insensitive match — ``country:US`` — not a substring like
+    ``org:``. ``NOT country:US`` is the useful scope-validation query: what did
+    we touch that isn't registered where the client operates?
+    """
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    codes = [str(v).strip().upper() for v in (values or []) if str(v).strip()]
+    if not codes:
+        return false()
+    sub = (
+        db.query(HostNetworkAttribution.host_id)
+        .join(
+            NetworkAttribution,
+            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
+        )
+        .filter(func.upper(NetworkAttribution.country).in_(codes))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
 def cert_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Hosts presenting a certificate whose subject Organization matches.
 

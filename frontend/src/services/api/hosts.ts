@@ -584,6 +584,11 @@ export const getHosts = async (params: {
   // Comma-separated site names; OR within the group.
   sites?: string;
   assigned_to?: string;
+  // RDAP network-attribution filters. Arrays → repeated query params
+  // (?orgs=A&orgs=B), NOT comma-joined, because org names contain commas.
+  orgs?: string[];
+  asns?: string[];
+  countries?: string[];
   // v5.0.0 — boolean query DSL; ANDs with the discrete filters above.
   q?: string;
   skip?: number;
@@ -592,16 +597,28 @@ export const getHosts = async (params: {
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
 }, signal?: AbortSignal): Promise<HostListResponse> => {
-  const queryParams = new URLSearchParams();
+  const response = await api.get(`${p()}/hosts/?${serializeHostParams(params)}`, { signal });
+  return response.data;
+};
 
+// Flat scalars append once; arrays append per element as repeated keys so a
+// value containing a comma (e.g. an org name "Google, LLC") survives transport
+// intact rather than being re-split on the server.  Exported so every
+// host-filter endpoint (list, ids, reports, tool-ready) serializes identically
+// — an array param that slips through as a comma-joined scalar corrupts values.
+export const serializeHostParams = (
+  params: Record<string, string | number | boolean | string[] | undefined>,
+): string => {
+  const queryParams = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined) {
+    if (value === undefined) return;
+    if (Array.isArray(value)) {
+      value.forEach((v) => queryParams.append(key, String(v)));
+    } else {
       queryParams.append(key, value.toString());
     }
   });
-  
-  const response = await api.get(`${p()}/hosts/?${queryParams}`, { signal });
-  return response.data;
+  return queryParams.toString();
 };
 
 export const getHost = async (hostId: number): Promise<Host> => {
@@ -761,13 +778,14 @@ export interface MatchingHostIds {
 }
 
 export const getMatchingHostIds = async (
-  params: Record<string, string | boolean | number | undefined>,
+  params: Record<string, string | boolean | number | string[] | undefined>,
 ): Promise<MatchingHostIds> => {
-  const clean: Record<string, string> = {};
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== '') clean[k] = String(v);
-  });
-  const response = await api.get(`${p()}/hosts/ids`, { params: clean });
+  // Serialize ourselves (repeated params for arrays) rather than handing axios
+  // the object — its default array encoding is `key[]=v`, which FastAPI won't
+  // read as List[str], so the org/asn/country filters would be dropped and
+  // "select all matching" would act on the wrong host set.
+  const qs = serializeHostParams(params);
+  const response = await api.get(`${p()}/hosts/ids${qs ? `?${qs}` : ''}`);
   return response.data;
 };
 
@@ -1000,18 +1018,15 @@ export interface HostFilterData {
   tags?: Array<{ id: number; name: string; color?: string | null; host_count: number }>;
   subnet_labels?: Array<{ id: number; name: string; color?: string | null; host_count: number }>;
   sites?: Array<{ name: string; host_count: number }>;
+  // RDAP network-attribution facets — empty unless the project ingested RDAP
+  // output, in which case the corresponding filter control is hidden.
+  orgs?: Array<{ name: string; host_count: number }>;
+  asns?: Array<{ asn: number; as_name?: string | null; host_count: number }>;
+  countries?: Array<{ country: string; host_count: number }>;
 }
 
-export const getHostFilterData = async (params?: Record<string, string | boolean | number | undefined>, signal?: AbortSignal): Promise<HostFilterData> => {
-  const queryParams = new URLSearchParams();
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined) {
-        queryParams.append(key, value.toString());
-      }
-    });
-  }
-  const qs = queryParams.toString();
+export const getHostFilterData = async (params?: Record<string, string | boolean | number | string[] | undefined>, signal?: AbortSignal): Promise<HostFilterData> => {
+  const qs = params ? serializeHostParams(params) : '';
   const response = await api.get(`${p()}/hosts/filters/data${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };

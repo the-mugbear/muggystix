@@ -24,7 +24,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 interface ToolReadyOutputProps {
   open: boolean;
   onClose: () => void;
-  filters: Record<string, string | boolean | number | undefined>;
+  filters: Record<string, string | boolean | number | string[] | undefined>;
 }
 
 const TOOL_FORMATS = [

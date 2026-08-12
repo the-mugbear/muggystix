@@ -173,6 +173,10 @@ type HostQueryContext = {
   subnet_labels?: string;
   sites?: string;
   assigned_to?: string;
+  // RDAP attribution — arrays → repeated query params (comma-safe org names).
+  orgs?: string[];
+  asns?: string[];
+  countries?: string[];
   // v5.0.0 — boolean query DSL; ANDs with the structured params above.
   q?: string;
   sort_by?: string;
@@ -318,7 +322,8 @@ export default function Hosts() {
   // because removeListFilterValue couldn't accept the key.
   type ArrayFilterKeys =
     | 'ports' | 'services' | 'portStates' | 'subnets' | 'scanIds' | 'tech'
-    | 'tags' | 'subnetLabels' | 'sites';
+    | 'tags' | 'subnetLabels' | 'sites'
+    | 'orgs' | 'asns' | 'countries';
 
   const clearFilterKey = useCallback(
     (key: keyof HostFilterOptions) => {
@@ -382,6 +387,11 @@ export default function Hosts() {
     if (filters.tags?.length) params.tags = filters.tags.join(',');
     if (filters.subnetLabels?.length) params.subnet_labels = filters.subnetLabels.join(',');
     if (filters.sites?.length) params.sites = filters.sites.join(',');
+    // RDAP attribution — passed as arrays (repeated params), not comma-joined,
+    // since org names contain commas.
+    if (filters.orgs?.length) params.orgs = filters.orgs;
+    if (filters.asns?.length) params.asns = filters.asns;
+    if (filters.countries?.length) params.countries = filters.countries;
     if (filters.assignedToMe) params.assigned_to = 'me';
     if (filters.query?.trim()) params.q = filters.query.trim();
     params.sort_by = ({
@@ -481,7 +491,7 @@ export default function Hosts() {
   };
 
   const fetchFilterData = async (
-    params?: Record<string, string | boolean | number | undefined>,
+    params?: Record<string, string | boolean | number | string[] | undefined>,
   ) => {
     filterAbortRef.current?.abort();
     const controller = new AbortController();
@@ -567,6 +577,7 @@ export default function Hosts() {
       'has_exploit_available', 'has_test_execution',
       'has_web_interface', 'tech', 'follow_status', 'follow',
       'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
+      'orgs', 'asns', 'countries',
     ];
     const urlIsAuthoritative = HOST_URL_PARAMS.some((p) => urlParams.has(p));
 
@@ -601,6 +612,19 @@ export default function Hosts() {
       }
     };
 
+    // Repeated params (?orgs=A&orgs=B) — read every value, don't comma-split,
+    // because the values themselves (org names) contain commas.
+    const applyRepeatedParam = (param: string, key: keyof HostFilterOptions) => {
+      if (urlParams.has(param)) {
+        const values = urlParams.getAll(param).map((v) => v.trim()).filter(Boolean);
+        if (values.length) {
+          (initialFilters as any)[key] = values;
+        } else {
+          delete (initialFilters as any)[key];
+        }
+      }
+    };
+
     const applyStringParam = (param: string, key: keyof HostFilterOptions) => {
       if (urlParams.has(param)) {
         const value = urlParams.get(param);
@@ -624,6 +648,9 @@ export default function Hosts() {
     applyListParam('tags', 'tags');
     applyListParam('subnet_labels', 'subnetLabels');
     applyListParam('sites', 'sites');
+    applyRepeatedParam('orgs', 'orgs');
+    applyRepeatedParam('asns', 'asns');
+    applyRepeatedParam('countries', 'countries');
 
     if (urlParams.has('out_of_scope_only') || urlParams.has('out_of_scope')) {
       initialFilters.outOfScopeOnly =
@@ -949,7 +976,13 @@ export default function Hosts() {
     const sp = new URLSearchParams();
     Object.entries(ctx).forEach(([key, value]) => {
       if (value === undefined || value === null || value === '') return;
-      sp.set(key, String(value));
+      // Arrays (orgs/asns/countries) become repeated params, not a comma-joined
+      // scalar — an org name contains commas, so joining would corrupt it.
+      if (Array.isArray(value)) {
+        value.forEach((v) => sp.append(key, String(v)));
+      } else {
+        sp.set(key, String(value));
+      }
     });
     const search = sp.toString();
     const timer = setTimeout(() => {
@@ -997,7 +1030,11 @@ export default function Hosts() {
     const sp = new URLSearchParams();
     Object.entries(ctx).forEach(([key, value]) => {
       if (value === undefined || value === null || value === '') return;
-      sp.set(key, String(value));
+      if (Array.isArray(value)) {
+        value.forEach((v) => sp.append(key, String(v)));
+      } else {
+        sp.set(key, String(value));
+      }
     });
     const query = sp.toString();
     const url = `${window.location.origin}${window.location.pathname}${query ? `?${query}` : ''}`;
@@ -1431,6 +1468,28 @@ export default function Hosts() {
         key: `site-${site}`,
         label: `Site: ${site}`,
         onDelete: () => removeListFilterValue('sites', site),
+      });
+    });
+    filters.orgs?.forEach((org) => {
+      chips.push({
+        key: `org-${org}`,
+        label: `Owner: ${org}`,
+        onDelete: () => removeListFilterValue('orgs', org),
+      });
+    });
+    filters.asns?.forEach((asn) => {
+      const name = filterData?.asns?.find((a) => String(a.asn) === asn)?.as_name;
+      chips.push({
+        key: `asn-${asn}`,
+        label: `ASN: AS${asn}${name ? ` (${name})` : ''}`,
+        onDelete: () => removeListFilterValue('asns', asn),
+      });
+    });
+    filters.countries?.forEach((country) => {
+      chips.push({
+        key: `country-${country}`,
+        label: `Country: ${country}`,
+        onDelete: () => removeListFilterValue('countries', country),
       });
     });
     if (filters.firstSeenInSelectedScans)

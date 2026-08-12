@@ -57,6 +57,12 @@ export function dslFromFilters(filters: HostFilterOptions): DslConversion {
   if (filters.portStates?.length) { clauses.push(field('portstate', filters.portStates)); take('portStates'); }
   if (filters.subnets?.length) { clauses.push(field('subnet', filters.subnets)); take('subnets'); }
   if (filters.sites?.length) { clauses.push(field('site', filters.sites)); take('sites'); }
+  // RDAP attribution. org: is a substring match (like the panel control), asn:/
+  // country: are exact — the same predicates the typed params hit, so Convert
+  // is lossless. quote() handles the commas in org names.
+  if (filters.orgs?.length) { clauses.push(field('org', filters.orgs)); take('orgs'); }
+  if (filters.asns?.length) { clauses.push(field('asn', filters.asns)); take('asns'); }
+  if (filters.countries?.length) { clauses.push(field('country', filters.countries)); take('countries'); }
   if (filters.tech?.length) { clauses.push(field('tech', filters.tech)); take('tech'); }
   if (filters.scanIds?.length) { clauses.push(field('scan', filters.scanIds)); take('scanIds'); }
 

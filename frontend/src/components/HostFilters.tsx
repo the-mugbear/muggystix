@@ -60,6 +60,12 @@ export interface HostFilterOptions {
   subnetLabels?: string[];
   // Site names (a host matches if any of its subnets belongs to the site).
   sites?: string[];
+  // RDAP network attribution — registered owner(s), ASN(s), ISO country
+  // code(s) of the host's netblock. Empty facets hide the controls, so these
+  // only appear once a project has ingested RDAP output.
+  orgs?: string[];
+  asns?: string[];
+  countries?: string[];
   assignedToMe?: boolean;
   // v4.51.0 — followFilter + onlyWithNotes folded into HostFilterOptions
   // so the page state is a single object instead of three useStates.  Both
@@ -481,6 +487,9 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       (filters.tags?.length ?? 0) > 0,
       (filters.subnetLabels?.length ?? 0) > 0,
       (filters.sites?.length ?? 0) > 0,
+      (filters.orgs?.length ?? 0) > 0,
+      (filters.asns?.length ?? 0) > 0,
+      (filters.countries?.length ?? 0) > 0,
       filters.assignedToMe === true,
       // v4.26.0 — previously omitted (count bug); the chip-row in
       // Hosts.tsx counts these, so the badge here was off by 1-2.
@@ -643,6 +652,39 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       })) || []
     );
   }, [availableData?.sites]);
+
+  // RDAP attribution options. Value is the raw string the backend matches on
+  // (org name / ASN number / ISO country). Absent when no RDAP data, which
+  // hides the controls entirely.
+  const orgOptions: ComboboxOption[] = useMemo(() => {
+    return (
+      availableData?.orgs?.map((o) => ({
+        value: o.name,
+        label: o.name,
+        trailing: `${o.host_count}`,
+      })) || []
+    );
+  }, [availableData?.orgs]);
+
+  const asnOptions: ComboboxOption[] = useMemo(() => {
+    return (
+      availableData?.asns?.map((a) => ({
+        value: String(a.asn),
+        label: a.as_name ? `AS${a.asn} · ${a.as_name}` : `AS${a.asn}`,
+        trailing: `${a.host_count}`,
+      })) || []
+    );
+  }, [availableData?.asns]);
+
+  const countryOptions: ComboboxOption[] = useMemo(() => {
+    return (
+      availableData?.countries?.map((c) => ({
+        value: c.country,
+        label: c.country,
+        trailing: `${c.host_count}`,
+      })) || []
+    );
+  }, [availableData?.countries]);
 
   return (
     <Card className="mb-md">
@@ -1035,6 +1077,75 @@ const HostFilters: React.FC<HostFiltersProps> = ({
                 <FieldHint>No subnet labels yet — create one in Subnet management.</FieldHint>
               )}
             </div>
+            {/* RDAP network attribution — only shown once a project has ingested
+                RDAP output (rdap-lookup.py). Hidden entirely otherwise so
+                internal engagements aren't offered empty controls. */}
+            {orgOptions.length > 0 && (
+              <div className="space-y-xxs">
+                <FilterLabel
+                  htmlFor="hosts-filter-orgs"
+                  id="hosts-filter-orgs-label"
+                  provenance="Registered netblock owner (RDAP lookup upload)."
+                >
+                  Registered owner
+                </FilterLabel>
+                <Combobox
+                  id="hosts-filter-orgs"
+                  multiple
+                  options={orgOptions}
+                  values={filters.orgs ?? []}
+                  onValuesChange={(values) =>
+                    handleFilterChange('orgs', values.length ? values : undefined)
+                  }
+                  placeholder="Filter by registered owner…"
+                  emptyMessage={facetEmpty('No RDAP attribution yet.')}
+                />
+              </div>
+            )}
+            {asnOptions.length > 0 && (
+              <div className="space-y-xxs">
+                <FilterLabel
+                  htmlFor="hosts-filter-asns"
+                  id="hosts-filter-asns-label"
+                  provenance="Autonomous system of the netblock (RDAP)."
+                >
+                  ASN
+                </FilterLabel>
+                <Combobox
+                  id="hosts-filter-asns"
+                  multiple
+                  options={asnOptions}
+                  values={filters.asns ?? []}
+                  onValuesChange={(values) =>
+                    handleFilterChange('asns', values.length ? values : undefined)
+                  }
+                  placeholder="Filter by ASN…"
+                  emptyMessage={facetEmpty('No RDAP attribution yet.')}
+                />
+              </div>
+            )}
+            {countryOptions.length > 0 && (
+              <div className="space-y-xxs">
+                <FilterLabel
+                  htmlFor="hosts-filter-countries"
+                  id="hosts-filter-countries-label"
+                  provenance="ISO country the netblock is registered in (RDAP)."
+                >
+                  Registered country
+                </FilterLabel>
+                <Combobox
+                  id="hosts-filter-countries"
+                  multiple
+                  options={countryOptions}
+                  values={filters.countries ?? []}
+                  onValuesChange={(values) =>
+                    handleFilterChange('countries', values.length ? values : undefined)
+                  }
+                  placeholder="Filter by country…"
+                  emptyMessage={facetEmpty('No RDAP attribution yet.')}
+                />
+              </div>
+            )}
           </div>
         </FilterSection>
 

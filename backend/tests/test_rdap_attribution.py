@@ -309,6 +309,53 @@ def test_asn_filter(db_session, test_project, test_user, attributed_project):
     }
 
 
+def test_country_filter_matches_iso_code(
+    db_session, test_project, test_user, attributed_project
+):
+    # Exact, case-insensitive match on the ISO code RDAP stores.
+    assert _matching(db_session, test_project.id, test_user, "country:US") == {
+        "198.51.100.10", "198.51.100.11",
+    }
+    assert _matching(db_session, test_project.id, test_user, "country:nl") == {
+        "203.0.113.10",
+    }
+
+
+def test_negated_country_is_the_foreign_hosted_query(
+    db_session, test_project, test_user, attributed_project
+):
+    """`NOT country:US` surfaces assets registered outside where the client
+    operates — the scope-validation angle for geography."""
+    assert _matching(db_session, test_project.id, test_user, "NOT country:US") == {
+        "203.0.113.10",
+    }
+
+
+def test_typed_attribution_params_filter_like_the_dsl(
+    db_session, test_project, test_user, attributed_project
+):
+    """The Advanced-filters comboboxes send typed list params (orgs/asns/
+    countries) to build_filtered_host_query, a different entry point than the
+    DSL — assert it delegates to the same predicates and agrees."""
+    from app.services.host_query import build_filtered_host_query
+
+    def ips(**kw):
+        q = build_filtered_host_query(
+            db_session, test_user, project_id=test_project.id, **kw
+        )
+        return {h.ip_address for h in q.all()}
+
+    assert ips(orgs=["Acme"]) == {"198.51.100.10", "198.51.100.11"}
+    assert ips(asns=["64501"]) == {"203.0.113.10"}
+    assert ips(countries=["NL"]) == {"203.0.113.10"}
+    # org names contain commas — the repeated-param transport must keep the
+    # whole value intact rather than splitting it into false-positive tokens.
+    assert ips(orgs=["Unrelated Hosting BV"]) == {"203.0.113.10"}
+    # AND across groups: US-registered AND owned by Acme.
+    assert ips(orgs=["Acme"], countries=["US"]) == {"198.51.100.10", "198.51.100.11"}
+    assert ips(orgs=["Acme"], countries=["NL"]) == set()
+
+
 def test_cloud_filter_is_not_offered_while_nothing_populates_it(
     db_session, test_project, test_user, attributed_project
 ):

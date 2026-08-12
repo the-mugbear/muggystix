@@ -22,7 +22,7 @@ exercised against a plain ``Session`` from a contract test.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import cast, func, not_, or_, select
@@ -141,6 +141,9 @@ def build_filtered_host_query(
     subnet_labels: Optional[str] = None,
     sites: Optional[str] = None,
     assigned_to: Optional[str] = None,
+    orgs: Optional[List[str]] = None,
+    asns: Optional[List[str]] = None,
+    countries: Optional[List[str]] = None,
     project_id: int = None,
     q: Optional[str] = None,
 ):
@@ -274,6 +277,22 @@ def build_filtered_host_query(
         assigned_pred = P.assigned_predicate(db, assigned_to, current_user)
         if assigned_pred is not None:
             query = query.filter(assigned_pred)
+
+    # RDAP network-attribution filters (org / ASN / country).  Repeated-value
+    # lists (comma-safe — org names contain commas); OR within each group,
+    # AND across groups.  Delegate to the same predicates the DSL uses.
+    if orgs:
+        org_values = [s.strip() for s in orgs if s and s.strip()]
+        if org_values:
+            query = query.filter(P.attribution_org_predicate(db, org_values))
+    if asns:
+        asn_values = [s.strip() for s in asns if s and s.strip()]
+        if asn_values:
+            query = query.filter(P.attribution_asn_predicate(db, asn_values))
+    if countries:
+        country_values = [s.strip() for s in countries if s and s.strip()]
+        if country_values:
+            query = query.filter(P.attribution_country_predicate(db, country_values))
 
     # v2.93.0 — boolean query DSL.  Appended last; ANDs with every
     # discrete param above.  A malformed ``q`` raises ``DSLError`` →

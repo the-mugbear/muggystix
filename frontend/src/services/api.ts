@@ -19,6 +19,7 @@
  * as the default below for code that hand-rolls a request.
  */
 import { api, p, setCurrentProjectId, getCurrentProjectId } from './api/client';
+import { serializeHostParams } from './api/hosts';
 import { asAxiosError } from '../utils/apiErrors';
 import type { Paginated } from './api/shared';  // local use; also re-exported via the barrel below
 
@@ -455,36 +456,15 @@ export const getScanCommandExplanation = async (scanId: number): Promise<Command
 // formats (json/zip bundles) are async report jobs — see enqueueReportJob.
 export const generateHostsReport = async (
   format: 'csv' | 'html',
-  filters: {
-    scan_id?: number;
-    state?: string;
-    search?: string;
-    ports?: string;
-    services?: string;
-    port_states?: string;
-    has_open_ports?: boolean;
-    os_filter?: string;
-    subnets?: string;
-    has_critical_vulns?: boolean;
-    has_high_vulns?: boolean;
-    follow_status?: string;
-    out_of_scope_only?: boolean;
-    scan_ids?: string;
-    first_seen_in_scan?: boolean;
-    with_notes_only?: boolean;
-    q?: string;
-  },
+  // The full host-filter context (whatever buildHostQueryContext produced),
+  // including array filters like orgs/asns/countries — so an export honours the
+  // same filters the list shows.
+  filters: Record<string, string | number | boolean | string[] | undefined>,
   // 'comprehensive' (full security report) | 'inventory' (concise host list).
   // Ignored by csv (always the inventory table) and the structured zip exports.
   reportType?: 'inventory' | 'comprehensive',
 ) => {
-  const queryParams = new URLSearchParams();
-
-  Object.entries(filters).forEach(([key, value]) => {
-    if (value !== undefined) {
-      queryParams.append(key, value.toString());
-    }
-  });
+  const queryParams = new URLSearchParams(serializeHostParams(filters));
   // CSV is always the inventory table; only HTML honours report_type.
   if (reportType && format === 'html') {
     queryParams.append('report_type', reportType);
@@ -547,15 +527,12 @@ export interface ReportJob {
 
 export const enqueueReportJob = async (
   format: AsyncReportFormat,
-  filters: Record<string, string | number | boolean | undefined>,
+  filters: Record<string, string | number | boolean | string[] | undefined>,
   reportType?: 'inventory' | 'comprehensive',
 ): Promise<ReportJob> => {
-  const query = new URLSearchParams();
+  const query = new URLSearchParams(serializeHostParams(filters));
   query.set('format', format);
   if (reportType) query.set('report_type', reportType);
-  Object.entries(filters).forEach(([key, value]) => {
-    if (value !== undefined) query.append(key, value.toString());
-  });
   const response = await api.post(`${p()}/reports/jobs?${query}`);
   return response.data as ReportJob;
 };
@@ -665,6 +642,10 @@ export const getToolReadyOutput = async (
     tech?: string;
     tags?: string;
     subnet_labels?: string;
+    sites?: string;
+    orgs?: string[];
+    asns?: string[];
+    countries?: string[];
     assigned_to?: string;
     q?: string;
     sort_by?: string;
@@ -684,6 +665,11 @@ export const getToolReadyOutput = async (
     }
     if (key === 'scanId') {
       params.append('scan_id', String(value));
+      return;
+    }
+    // Arrays (orgs/asns/countries) → repeated params, comma-safe.
+    if (Array.isArray(value)) {
+      value.forEach((v) => params.append(key, String(v)));
       return;
     }
     params.append(key, String(value));

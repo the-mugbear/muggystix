@@ -55,7 +55,7 @@ interface HostBulkBarProps {
   /** Total hosts matching the active filters (for "select all"). */
   totalMatching: number;
   /** Filter params for the current view — feeds GET /hosts/ids. */
-  queryContext: Record<string, string | boolean | number | undefined>;
+  queryContext: Record<string, string | boolean | number | string[] | undefined>;
   /** Clear the selection (and exit select-all-matching). */
   onClear: () => void;
   /** Re-fetch hosts + filter data after a successful mutation. */

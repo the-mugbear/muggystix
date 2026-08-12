@@ -123,6 +123,25 @@ class SiteFilterItem(BaseModel):
     host_count: int = 0
 
 
+# RDAP network-attribution facets. Empty unless the project has ingested RDAP
+# output — the frontend hides the corresponding controls when a list is empty,
+# so projects without attribution don't see filters that can't match anything.
+class AttributionOrgFilterItem(BaseModel):
+    name: str
+    host_count: int = 0
+
+
+class AttributionAsnFilterItem(BaseModel):
+    asn: int
+    as_name: Optional[str] = None
+    host_count: int = 0
+
+
+class AttributionCountryFilterItem(BaseModel):
+    country: str
+    host_count: int = 0
+
+
 class HostFilterDataResponse(BaseModel):
     common_ports: List[PortFilterItem]
     services: List[ServiceFilterItem]
@@ -140,6 +159,11 @@ class HostFilterDataResponse(BaseModel):
     # response_model so FastAPI silently stripped it — the Site filter dropdown
     # rendered empty even with sites configured. Declared here so it ships.
     sites: List[SiteFilterItem] = []
+    # RDAP network attribution — distinct owners / ASNs / countries observed on
+    # in-scope hosts, for the RDAP filter comboboxes. Empty when no RDAP data.
+    orgs: List[AttributionOrgFilterItem] = []
+    asns: List[AttributionAsnFilterItem] = []
+    countries: List[AttributionCountryFilterItem] = []
 
 class ConfidenceEntry(BaseModel):
     id: int
@@ -247,6 +271,12 @@ class HostFilterParams:
         subnet_labels: Optional[str] = Query(None, description="Comma-separated subnet-label IDs; OR semantics — host qualifies if it sits in any subnet carrying any listed label", examples=["2,5"]),
         sites: Optional[str] = Query(None, description="Comma-separated site names; OR semantics — host qualifies if any of its subnets belongs to a listed site", examples=["London DC"]),
         assigned_to: Optional[str] = Query(None, description="Assignment filter: 'me', 'any', or a numeric user id", examples=["me"]),
+        # RDAP network-attribution filters (org / ASN / country). Repeated
+        # params (?orgs=A&orgs=B), NOT comma-joined, because org names routinely
+        # contain commas ("Google, LLC"). OR semantics within each group.
+        orgs: Optional[List[str]] = Query(None, description="Registered netblock owner(s) from RDAP; repeat the param per value. OR semantics; substring match.", examples=["Google, LLC"]),
+        asns: Optional[List[str]] = Query(None, description="Autonomous system number(s) from RDAP; repeat the param per value. OR semantics.", examples=["15169"]),
+        countries: Optional[List[str]] = Query(None, description="ISO country code(s) of the registered netblock; repeat the param per value. OR semantics; exact match.", examples=["US"]),
         q: Optional[str] = Query(None, description="Boolean query DSL. Fields (port, os, service, subnet, tag, label, cve, vuln, header, note, has:, …) combined with AND/OR/NOT + parentheses. Comma = OR within a field; repeated field = AND. e.g. 'port:80 port:443 AND NOT tag:test', 'cve:CVE-2021-44228 OR vuln:\"log4j\"'. ANDs with the other filters."),
     ):
         self.state = state
@@ -274,6 +304,9 @@ class HostFilterParams:
         self.subnet_labels = subnet_labels
         self.sites = sites
         self.assigned_to = assigned_to
+        self.orgs = orgs
+        self.asns = asns
+        self.countries = countries
         self.q = q
 
     def as_builder_kwargs(self) -> Dict[str, Any]:
@@ -1040,6 +1073,52 @@ def get_host_filter_data_v2(
         ).filter(or_(host_scope, models.HostSubnetMapping.host_id.is_(None)))
     sites_result = site_query.group_by(models.Subnet.site).order_by(models.Subnet.site).all()
 
+    # RDAP attribution facets — distinct owner / ASN / country across in-scope
+    # hosts, each with a DISTINCT host count (a host maps to one block, but a
+    # block covers many hosts).  Scoped by the active filter like the other
+    # cascading facets.  Empty when the project has no RDAP data, which the
+    # frontend reads as "hide this control".
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    def _attr_query(*entities):
+        q = (
+            db.query(*entities)
+            .select_from(NetworkAttribution)
+            .join(
+                HostNetworkAttribution,
+                HostNetworkAttribution.attribution_id == NetworkAttribution.id,
+            )
+            .join(models.Host, models.Host.id == HostNetworkAttribution.host_id)
+        )
+        return q.filter(host_scope) if host_scope is not None else q.filter(
+            models.Host.project_id == project.id
+        )
+
+    distinct_hosts = func.count(func.distinct(HostNetworkAttribution.host_id))
+    org_rows = (
+        _attr_query(NetworkAttribution.org_name, distinct_hosts)
+        .filter(NetworkAttribution.org_name.isnot(None), NetworkAttribution.org_name != '')
+        .group_by(NetworkAttribution.org_name)
+        .order_by(distinct_hosts.desc())
+        .limit(200)
+        .all()
+    )
+    asn_rows = (
+        _attr_query(NetworkAttribution.asn, NetworkAttribution.as_name, distinct_hosts)
+        .filter(NetworkAttribution.asn.isnot(None))
+        .group_by(NetworkAttribution.asn, NetworkAttribution.as_name)
+        .order_by(distinct_hosts.desc())
+        .limit(200)
+        .all()
+    )
+    country_rows = (
+        _attr_query(NetworkAttribution.country, distinct_hosts)
+        .filter(NetworkAttribution.country.isnot(None), NetworkAttribution.country != '')
+        .group_by(NetworkAttribution.country)
+        .order_by(distinct_hosts.desc())
+        .all()
+    )
+
     return {
         'common_ports': [
             {'port': p.port_number, 'service': p.service_name or 'unknown', 'state': p.state, 'count': p.count}
@@ -1071,6 +1150,18 @@ def get_host_filter_data_v2(
         'sites': [
             {'name': s.site, 'host_count': s.host_count or 0}
             for s in sites_result
+        ],
+        'orgs': [
+            {'name': r[0], 'host_count': r[1] or 0}
+            for r in org_rows
+        ],
+        'asns': [
+            {'asn': r[0], 'as_name': r[1], 'host_count': r[2] or 0}
+            for r in asn_rows
+        ],
+        'countries': [
+            {'country': r[0], 'host_count': r[1] or 0}
+            for r in country_rows
         ],
     }
 

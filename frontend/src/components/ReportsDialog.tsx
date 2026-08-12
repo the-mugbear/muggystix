@@ -46,7 +46,7 @@ import AiDraftReportDialog from './AiDraftReportDialog';
 interface ReportsDialogProps {
   open: boolean;
   onClose: () => void;
-  filters: Record<string, string | boolean | number | undefined>;
+  filters: Record<string, string | boolean | number | string[] | undefined>;
   totalHosts: number;
 }
 
