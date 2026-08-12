@@ -334,3 +334,13 @@ def test_attribution_filters_compose_with_the_rest_of_the_dsl(
     assert _matching(
         db_session, test_project.id, test_user, 'NOT org:"Acme" AND asn:64501',
     ) == {"203.0.113.10"}
+
+
+def test_ndjson_is_an_allowed_upload_extension():
+    """scripts/rdap-lookup.py emits .ndjson, and UPLOAD_FORMATS documents it as
+    supported — so the upload allowlist MUST accept it. Regression: .ndjson was
+    missing (only .jsonl was listed), so RDAP uploads 400'd on the extension
+    check before ever reaching the parser, which had always handled the content."""
+    from app.services.ingestion_service import ALLOWED_UPLOAD_EXTENSIONS
+    assert ".ndjson" in ALLOWED_UPLOAD_EXTENSIONS
+    assert ".jsonl" in ALLOWED_UPLOAD_EXTENSIONS

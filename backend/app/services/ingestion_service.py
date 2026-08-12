@@ -40,7 +40,9 @@ logger = logging.getLogger(__name__)
 # which reaches create_job directly).  ``upload.py`` re-exports this for its
 # early, pre-disk 400.
 ALLOWED_UPLOAD_EXTENSIONS = frozenset(
-    {".xml", ".json", ".jsonl", ".csv", ".txt", ".gnmap", ".nessus", ".zip"}
+    # .ndjson is newline-delimited JSON, identical to .jsonl — the bundled
+    # scripts/rdap-lookup.py writes .ndjson, so it must be accepted.
+    {".xml", ".json", ".jsonl", ".ndjson", ".csv", ".txt", ".gnmap", ".nessus", ".zip"}
 )
 
 # Thread-local storage for the active ingestion job, enabling parsers to
@@ -393,13 +395,13 @@ class IngestionService:
                 raise ValueError(
                     "File extension .json expects an object or array at the root."
                 )
-        elif ext == ".jsonl":
-            # httpx (and similar line-delimited formats) — each line is
-            # its own JSON object.  First non-blank line must start
-            # with ``{``.
+        elif ext in (".jsonl", ".ndjson"):
+            # httpx / rdap (and similar line-delimited formats) — each line is
+            # its own JSON object.  First non-blank line must start with ``{``.
+            # (.ndjson is the same format under a different name.)
             if first != b"{":
                 raise ValueError(
-                    ".jsonl expects one JSON object per line, starting with '{'."
+                    f"{ext} expects one JSON object per line, starting with '{{'."
                 )
         elif ext == ".zip":
             # PK\x03\x04 zip header.  The EyeWitness bundle upload
@@ -1207,7 +1209,7 @@ class IngestionService:
                 attempts.append(("nmap_gnmap", GnmapParser, "Nmap .gnmap file"))
             except ImportError as exc:
                 logger.warning("Gnmap parser unavailable: %s", exc)
-        elif filename.endswith(".json") or filename.endswith(".jsonl"):
+        elif filename.endswith((".json", ".jsonl", ".ndjson")):
             # httpx first because it has a very specific content
             # signature (``tech`` + ``webserver`` + ``url``) that rarely
             # false-positives.  Must come before other JSON probes.

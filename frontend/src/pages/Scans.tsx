@@ -572,11 +572,16 @@ export default function Scans() {
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop,
+    // Keep in sync with the backend ALLOWED_UPLOAD_EXTENSIONS. Line-delimited
+    // JSON arrives as both .jsonl (httpx/dnsx) and .ndjson (rdap-lookup.py); ZIP
+    // is the EyeWitness bundle. These were accepted server-side but missing here,
+    // so the dropzone rejected them before upload.
     accept: {
       'text/xml': ['.xml', '.nessus'],
-      'application/json': ['.json'],
+      'application/json': ['.json', '.jsonl', '.ndjson'],
       'text/csv': ['.csv'],
       'text/plain': ['.txt', '.gnmap'],
+      'application/zip': ['.zip'],
     },
     // v4.28.0 — keep in lockstep with nginx (ssl-nginx.conf
     // `client_max_body_size`) and backend (`MAX_FILE_SIZE` in .env).
