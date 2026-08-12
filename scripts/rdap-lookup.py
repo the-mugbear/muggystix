@@ -41,6 +41,14 @@ Notes
   addressing for no return.
 * Registries rate-limit. The default pacing is deliberately unhurried; raise
   ``--delay`` if you see 429s rather than lowering it.
+* An end-of-run **funnel** accounts for every input: how many were skipped as
+  private/duplicate/unparseable, how many collapsed into an already-answered
+  block (the usual reason an input of N hosts yields far fewer records), and
+  how many lookups returned a registration vs a 404 vs an error. Pass ``-v``
+  for a line per input describing its fate.
+* Tokenising is **IPv4-only**: IPv6 addresses and hostnames are not recognised
+  and never reach the funnel. If "address tokens read" is lower than your input
+  line count, those lines held no IPv4 address (resolve hostnames first).
 """
 from __future__ import annotations
 
@@ -62,23 +70,30 @@ USER_AGENT = "BlueStick-rdap-lookup/1.0 (+network attribution)"
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 
 
-def _get_json(url: str, timeout: float) -> Optional[dict]:
+def _get_json(url: str, timeout: float) -> Tuple[Optional[dict], str]:
+    """Fetch an RDAP/JSON document.
+
+    Returns ``(body, status)`` so the caller can tally *why* a lookup produced
+    nothing. ``status`` is one of:
+      * ``"ok"``          — body returned
+      * ``"not_found"``   — HTTP 404: no registration for this address at the
+                            authoritative registry (the normal "unregistered"
+                            answer, not an error)
+      * ``"http:<code>"`` — any other HTTP status (429 = rate-limited, 5xx =
+                            registry-side problem)
+      * ``"net:<Exc>"``   — timeout / connection reset / DNS / decode failure
+    """
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
         "Accept": "application/rdap+json, application/json",
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace"))
+            return json.loads(resp.read().decode("utf-8", errors="replace")), "ok"
     except urllib.error.HTTPError as exc:
-        # 404 is a normal answer: the address has no registration at this
-        # registry. Anything else is worth surfacing.
-        if exc.code != 404:
-            print(f"  ! HTTP {exc.code} for {url}", file=sys.stderr)
-        return None
+        return (None, "not_found") if exc.code == 404 else (None, f"http:{exc.code}")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        print(f"  ! {type(exc).__name__} for {url}: {exc}", file=sys.stderr)
-        return None
+        return None, f"net:{type(exc).__name__}"
 
 
 class Bootstrap:
@@ -92,8 +107,9 @@ class Bootstrap:
     def load(self) -> bool:
         ok = False
         for url, store in ((BOOTSTRAP_V4, self._v4), (BOOTSTRAP_V6, self._v6)):
-            data = _get_json(url, self.timeout)
+            data, status = _get_json(url, self.timeout)
             if not data:
+                print(f"  ! bootstrap fetch failed ({status}): {url}", file=sys.stderr)
                 continue
             for entry in data.get("services", []):
                 if len(entry) < 2:
@@ -187,6 +203,9 @@ def main() -> int:
                     help="Seconds between queries (default: 1.0; registries rate-limit)")
     ap.add_argument("--timeout", type=float, default=15.0, help="Per-request timeout (default: 15)")
     ap.add_argument("--limit", type=int, default=0, help="Stop after N lookups (0 = no limit)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="Print a line for EVERY input's fate (dedup skips, 404s, errors), "
+                         "not just successes and the end-of-run funnel summary")
     args = ap.parse_args()
 
     raw: List[str] = list(_iter_targets(args.targets))
@@ -199,6 +218,8 @@ def main() -> int:
     seen_addr = set()
     queue = []
     skipped_private = 0
+    skipped_unparseable = 0
+    skipped_dup = 0
     for token in raw:
         try:
             addr = (
@@ -206,11 +227,19 @@ def main() -> int:
                 if "/" in token else ipaddress.ip_address(token)
             )
         except ValueError:
+            skipped_unparseable += 1
+            if args.verbose:
+                print(f"  · unparseable token skipped: {token!r}", file=sys.stderr)
             continue
         if not _usable(addr):
             skipped_private += 1
+            if args.verbose:
+                print(f"  · private/reserved skipped: {addr}", file=sys.stderr)
             continue
         if addr in seen_addr:
+            skipped_dup += 1
+            if args.verbose:
+                print(f"  · duplicate address skipped: {addr}", file=sys.stderr)
             continue
         seen_addr.add(addr)
         queue.append(addr)
@@ -233,26 +262,56 @@ def main() -> int:
     covered: List[ipaddress._BaseNetwork] = []
     written = 0
     queried = 0
+    skipped_covered = 0        # address already inside an answered block (dedup)
+    no_server = 0              # no RDAP server in the IANA bootstrap for it
+    not_found = 0              # 404 — no registration at the registry
+    http_err = 0              # non-404 HTTP status (429 rate-limit, 5xx, …)
+    net_err = 0               # timeout / connection / decode failure
+    http_codes: Dict[str, int] = {}
+    limited = False
 
     with open(args.output, "w", encoding="utf-8") as out:
         for addr in queue:
             # One lookup per BLOCK: if a previous answer already covers this
             # address, the registration is the same and re-querying only burns
-            # rate limit.
+            # rate limit. This is the single biggest reason an input of N hosts
+            # produces far fewer records — N hosts commonly live in a handful of
+            # registered blocks.
             if any(addr in net for net in covered):
+                skipped_covered += 1
+                if args.verbose:
+                    print(f"  · {addr} already covered by an answered block", file=sys.stderr)
                 continue
             if args.limit and queried >= args.limit:
-                print(f"Reached --limit {args.limit}; stopping.", file=sys.stderr)
+                print(f"Reached --limit {args.limit}; stopping before the rest of the queue.",
+                      file=sys.stderr)
+                limited = True
                 break
 
             server = bootstrap.server_for(addr)
             if not server:
+                no_server += 1
                 print(f"  ? no RDAP server for {addr}", file=sys.stderr)
                 continue
 
             queried += 1
-            body = _get_json(f"{server}/ip/{addr}", args.timeout)
+            body, status = _get_json(f"{server}/ip/{addr}", args.timeout)
             if body is None:
+                if status == "not_found":
+                    not_found += 1
+                    if args.verbose:
+                        print(f"  ✗ {addr}: no registration at {server} (404)", file=sys.stderr)
+                elif status.startswith("http:"):
+                    http_err += 1
+                    code = status.split(":", 1)[1]
+                    http_codes[code] = http_codes.get(code, 0) + 1
+                    print(f"  ! {addr}: HTTP {code} from {server}"
+                          f"{' (rate-limited — raise --delay)' if code == '429' else ''}",
+                          file=sys.stderr)
+                else:
+                    net_err += 1
+                    print(f"  ! {addr}: {status.split(':', 1)[1]} querying {server}",
+                          file=sys.stderr)
                 time.sleep(args.delay)
                 continue
 
@@ -268,6 +327,43 @@ def main() -> int:
                 covered.append(net)
             print(f"  + {addr} → {_summary(body)}", file=sys.stderr)
             time.sleep(args.delay)
+
+    # Funnel: account for every input token, so "911 in / 53 out" is explained
+    # rather than mysterious. Most of the gap is normally per-block dedup.
+    def line(n: int, label: str) -> str:
+        return f"  {n:>7}  {label}"
+
+    print("\nInput funnel", file=sys.stderr)
+    print(line(len(raw), "address tokens read"), file=sys.stderr)
+    if skipped_unparseable:
+        print(line(skipped_unparseable, "unparseable, skipped"), file=sys.stderr)
+    if skipped_private:
+        print(line(skipped_private, "private/reserved/loopback, skipped"), file=sys.stderr)
+    if skipped_dup:
+        print(line(skipped_dup, "exact-duplicate addresses, skipped"), file=sys.stderr)
+    print(line(len(queue), "unique public candidate address(es)"), file=sys.stderr)
+    if skipped_covered:
+        print(line(skipped_covered,
+                   "already covered by an answered block (dedup — expected, not a failure)"),
+              file=sys.stderr)
+    if no_server:
+        print(line(no_server, "no RDAP server in IANA bootstrap"), file=sys.stderr)
+    if limited:
+        print(line(len(queue) - queried - skipped_covered - no_server,
+                   "left unqueried by --limit"), file=sys.stderr)
+    print(line(queried, "distinct block lookup(s) performed"), file=sys.stderr)
+
+    print("Query results", file=sys.stderr)
+    print(line(written, "registration(s) written to the output"), file=sys.stderr)
+    if not_found:
+        print(line(not_found, "404 — no public registration at the registry"), file=sys.stderr)
+    if http_err:
+        codes = ", ".join(f"{c}×{n}" for c, n in sorted(http_codes.items()))
+        print(line(http_err, f"HTTP error(s) [{codes}] — 429 = rate-limited, 5xx = registry-side"),
+              file=sys.stderr)
+    if net_err:
+        print(line(net_err, "network/timeout error(s) — raise --timeout/--delay and re-run"),
+              file=sys.stderr)
 
     print(
         f"\nWrote {written} record(s) from {queried} lookup(s) to {args.output}.\n"
