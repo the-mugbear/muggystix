@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeftRight,
@@ -103,16 +104,15 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const toast = useToast();
   const handleCopy = () => {
-    navigator.clipboard.writeText(text).then(
-      () => {
+    copyToClipboard(text).then((ok) => {
+      if (ok) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
         toast.success('Copied to clipboard');
-      },
-      () => {
+      } else {
         toast.warning('Could not copy to clipboard. Select the text manually instead.');
-      },
-    );
+      }
+    });
   };
   return (
     <Tooltip>

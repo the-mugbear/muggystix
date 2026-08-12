@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 
 import {
   resumeReconSession,
@@ -155,18 +156,18 @@ export function useReconPlan() {
 
   const copyKey = useCallback(() => {
     if (!result?.api_key) return;
-    navigator.clipboard.writeText(result.api_key).then(
-      () => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 1500); },
-      () => { toast.warning('Could not copy.'); },
-    );
+    copyToClipboard(result.api_key).then((ok) => {
+      if (ok) { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 1500); }
+      else { toast.warning('Could not copy.'); }
+    });
   }, [result, toast]);
 
   const copyInstructions = useCallback(() => {
     if (!result?.instructions) return;
-    navigator.clipboard.writeText(result.instructions).then(
-      () => { setCopiedInstr(true); setTimeout(() => setCopiedInstr(false), 1500); },
-      () => { toast.warning('Could not copy.'); },
-    );
+    copyToClipboard(result.instructions).then((ok) => {
+      if (ok) { setCopiedInstr(true); setTimeout(() => setCopiedInstr(false), 1500); }
+      else { toast.warning('Could not copy.'); }
+    });
   }, [result, toast]);
 
   return {

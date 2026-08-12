@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { ShieldCheck, ShieldOff, Loader2, KeyRound, Copy, Download } from 'lucide-react';
 import apiClient from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
@@ -115,10 +116,9 @@ const TwoFactorCard: React.FC = () => {
   };
 
   const copyCodes = () => {
-    navigator.clipboard?.writeText(recoveryCodes.join('\n')).then(
-      () => toast.success('Recovery codes copied.'),
-      () => undefined,
-    );
+    copyToClipboard(recoveryCodes.join('\n')).then((ok) => {
+      if (ok) toast.success('Recovery codes copied.');
+    });
   };
 
   const downloadCodes = () => {

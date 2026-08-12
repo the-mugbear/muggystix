@@ -9,6 +9,7 @@
  * triaging port 8443 saw the service banner but nothing about its certificate.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import { copyToClipboard } from '../../utils/clipboard';
 import {
   ArrowDown, ArrowUp, ArrowUpDown, Copy, Network, ShieldAlert, ShieldCheck, Terminal,
 } from 'lucide-react';
@@ -274,10 +275,9 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                                               <Button variant="ghost" size="icon" className="shrink-0"
                                                 aria-label="Copy command to clipboard"
                                                 onClick={() => {
-                                                  navigator.clipboard.writeText(helper.command).then(
-                                                    () => toast.info('Copied to clipboard', { autoHideMs: 1500 }),
-                                                    () => { /* clipboard denied */ },
-                                                  );
+                                                  copyToClipboard(helper.command).then((ok) => {
+                                                    if (ok) toast.info('Copied to clipboard', { autoHideMs: 1500 });
+                                                  });
                                                 }}>
                                                 <Copy className="size-4" aria-hidden />
                                               </Button>

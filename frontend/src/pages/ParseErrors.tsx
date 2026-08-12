@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   RefreshCw,
@@ -267,10 +268,9 @@ const ParseErrors: React.FC = () => {
   const totalMatching = data?.total ?? 0;
 
   const copyError = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyToClipboard(text)) {
       toast.success('Copied error details', { id: 'copy-pe' });
-    } catch {
+    } else {
       toast.error('Could not copy to clipboard');
     }
   };

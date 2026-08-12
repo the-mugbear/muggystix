@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { Check, Copy, ExternalLink } from 'lucide-react';
 import type { ProposedTestItem, ProposedTestObject } from '../services/api';
 import { Badge } from './ui/badge';
@@ -27,15 +28,13 @@ function CopyCommandButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(text).then(
-      () => {
+    copyToClipboard(text).then((ok) => {
+      if (ok) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
-      },
-      () => {
-        // clipboard denied — ignore gracefully
-      },
-    );
+      }
+      // else: clipboard unavailable (e.g. http://) — ignore gracefully
+    });
   };
   return (
     <Tooltip>

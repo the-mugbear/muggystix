@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, Loader2, Copy, Download } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -72,10 +73,9 @@ const ForceTwoFactorSetup: React.FC = () => {
   const finish = () => navigate('/', { replace: true });
 
   const copyCodes = () =>
-    navigator.clipboard?.writeText(recoveryCodes.join('\n')).then(
-      () => toast.success('Recovery codes copied.'),
-      () => undefined,
-    );
+    copyToClipboard(recoveryCodes.join('\n')).then((ok) => {
+      if (ok) toast.success('Recovery codes copied.');
+    });
   const downloadCodes = () => {
     const blob = new Blob([`BlueStick recovery codes\n\n${recoveryCodes.join('\n')}\n`], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);

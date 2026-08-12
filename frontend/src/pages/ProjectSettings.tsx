@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import {
   Trash2,
   Copy,
@@ -330,12 +331,9 @@ const ProjectSettings: React.FC = () => {
 
   const handleCopyApiKey = async () => {
     if (!newApiKey) return;
-    try {
-      await navigator.clipboard.writeText(newApiKey);
+    if (await copyToClipboard(newApiKey)) {
       setApiKeyCopied(true);
       setTimeout(() => setApiKeyCopied(false), 2000);
-    } catch {
-      // ignore — fallback for non-secure context
     }
   };
 

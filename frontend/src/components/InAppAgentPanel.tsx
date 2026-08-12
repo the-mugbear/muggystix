@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate } from 'react-router-dom';
 import { Bot, Check, Copy, ExternalLink, Loader2, RefreshCw, X as XIcon } from 'lucide-react';
 import {
@@ -159,15 +160,16 @@ const InAppAgentPanel: React.FC<Props> = ({ prompt, system }) => {
 
   const handleCopy = () => {
     if (!result?.content) return;
-    navigator.clipboard.writeText(result.content).then(
-      () => {
+    // Via copyToClipboard so it falls back to execCommand on non-secure
+    // (http://) contexts instead of throwing before the error branch runs.
+    copyToClipboard(result.content).then((ok) => {
+      if (ok) {
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
-      },
-      () => {
-        toast.warning('Could not copy.');
-      },
-    );
+      } else {
+        toast.warning('Could not copy — try over HTTPS or select the text manually.');
+      }
+    });
   };
 
   // Render nothing while the initial provider fetch is in flight so

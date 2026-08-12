@@ -9,6 +9,7 @@
  * "seen in 20 scans" must be fully reachable, not truncated.
  */
 import React, { useMemo, useState } from 'react';
+import { copyToClipboard } from '../../utils/clipboard';
 import { ChevronDown, ChevronUp, Copy, History } from 'lucide-react';
 
 import type { HostDiscovery } from '../../services/api';
@@ -96,10 +97,9 @@ const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ dis
                         className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
                         aria-label="Copy scan command to clipboard" title="Copy command"
                         onClick={() => {
-                          navigator.clipboard.writeText(entry.command_line as string).then(
-                            () => toast.info('Command copied', { autoHideMs: 1500 }),
-                            () => { /* clipboard denied */ },
-                          );
+                          copyToClipboard(entry.command_line as string).then((ok) => {
+                            if (ok) toast.info('Command copied', { autoHideMs: 1500 });
+                          });
                         }}>
                         <Copy className="size-3.5" aria-hidden />
                       </Button>

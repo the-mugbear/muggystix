@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate } from 'react-router-dom';
 import {
   Bot,
@@ -150,9 +151,10 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
 
   const handleCopy = () => {
     if (!draft) return;
-    navigator.clipboard.writeText(draft).then(
-      () => toast.success('Draft copied to clipboard.'),
-      () => toast.warning('Could not copy to clipboard.'),
+    copyToClipboard(draft).then((ok) =>
+      ok
+        ? toast.success('Draft copied to clipboard.')
+        : toast.warning('Could not copy — try over HTTPS or select the text manually.'),
     );
   };
 

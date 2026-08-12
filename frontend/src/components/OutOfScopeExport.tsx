@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { copyToClipboard as copyText } from '../utils/clipboard';
 import { Copy, Download, Loader2, ShieldOff } from 'lucide-react';
 import { getOutOfScopeHostList } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -64,12 +65,11 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
   };
 
   const copyToClipboard = async () => {
-    try {
-      await navigator.clipboard.writeText(output);
+    // copyText (utils/clipboard) adds an execCommand fallback for non-secure
+    // (http://) contexts where navigator.clipboard is unavailable.
+    if (await copyText(output)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy to clipboard:', err);
     }
   };
 

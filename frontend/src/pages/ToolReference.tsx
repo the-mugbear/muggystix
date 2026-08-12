@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { Search, ChevronDown, ExternalLink, Copy, Loader2, RefreshCw } from 'lucide-react';
 import {
   Accordion,
@@ -294,9 +295,10 @@ const HostReadinessPanel: React.FC = () => {
         ? `# ${t.tool}\n${cmd}`
         : `# ${t.tool} — no catalog install hint; see the catalogue below`;
     });
-    navigator.clipboard.writeText([header, ...blocks].join('\n')).then(
-      () => toast.success('Install commands copied to clipboard'),
-      () => toast.error('Could not copy to clipboard'),
+    copyToClipboard([header, ...blocks].join('\n')).then((ok) =>
+      ok
+        ? toast.success('Install commands copied to clipboard')
+        : toast.error('Could not copy to clipboard'),
     );
   };
 
@@ -528,9 +530,10 @@ const ToolReference: React.FC = () => {
 
   const copyInstall = (cmd: string, toolName: string) => {
     const trimmed = cmd.split('#')[0].trim();
-    navigator.clipboard.writeText(trimmed).then(
-      () => toast.success(`Copied install command for ${toolName}`, { id: `copy-${toolName}` }),
-      () => toast.error('Could not copy to clipboard'),
+    copyToClipboard(trimmed).then((ok) =>
+      ok
+        ? toast.success(`Copied install command for ${toolName}`, { id: `copy-${toolName}` })
+        : toast.error('Could not copy to clipboard'),
     );
   };
 
@@ -538,9 +541,10 @@ const ToolReference: React.FC = () => {
   // "# or" alternative, and the output flags (-oX / -json / …) are exactly
   // what makes the result ingestible, so we must not strip anything.
   const copyRun = (cmd: string, toolName: string) => {
-    navigator.clipboard.writeText(cmd).then(
-      () => toast.success(`Copied run command for ${toolName}`, { id: `copyrun-${toolName}` }),
-      () => toast.error('Could not copy to clipboard'),
+    copyToClipboard(cmd).then((ok) =>
+      ok
+        ? toast.success(`Copied run command for ${toolName}`, { id: `copyrun-${toolName}` })
+        : toast.error('Could not copy to clipboard'),
     );
   };
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { copyToClipboard as copyText } from '../utils/clipboard';
 import {
   Search,
   Copy,
@@ -126,10 +127,9 @@ const DefaultCredentials: React.FC = () => {
   }, [selectedVendor, searchTerm, rowsPerPage]);
 
   const copyToClipboard = async (text: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(text)) {
       toast.success(`Copied ${label}`, { id: `copy-${label}` });
-    } catch {
+    } else {
       toast.error('Could not copy to clipboard');
     }
   };

@@ -10,6 +10,7 @@
  * /test-plans/:id index redirects to /plan.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { copyToClipboard } from '../../utils/clipboard';
 import {
   NavLink,
   Outlet,
@@ -694,15 +695,13 @@ const TestPlanLayout: React.FC = () => {
     text: string,
     setter: (v: boolean) => void,
   ): Promise<boolean> => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyToClipboard(text)) {
       setter(true);
       setTimeout(() => setter(false), 1500);
       return true;
-    } catch {
-      toast.warning('Could not copy to clipboard.');
-      return false;
     }
+    toast.warning('Could not copy to clipboard.');
+    return false;
   };
 
   if (loading) {
@@ -1078,11 +1077,10 @@ const TestPlanLayout: React.FC = () => {
                   // to operators about a denied/blocked clipboard
                   // permission — they'd dismiss the banner thinking
                   // the key was safe and lose it.
-                  try {
-                    await navigator.clipboard.writeText(newApiKey);
+                  if (await copyToClipboard(newApiKey)) {
                     setRegeneratedKeyCopied(true);
                     toast.success('Copied to clipboard');
-                  } catch {
+                  } else {
                     toast.warning(
                       'Could not copy to clipboard — copy the key manually before dismissing.',
                     );

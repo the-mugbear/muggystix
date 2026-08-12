@@ -18,6 +18,7 @@
  * during the session recovers it.
  */
 import React, { useCallback, useState } from 'react';
+import { copyToClipboard } from '../utils/clipboard';
 import { CheckCircle2, Copy, Loader2, MessageCircleQuestion } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
@@ -103,22 +104,19 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
 
   const copyKey = async () => {
     if (!result) return;
-    try {
-      await navigator.clipboard.writeText(result.api_key);
+    // copyToClipboard falls back to execCommand on http:// / non-secure
+    // contexts where navigator.clipboard is unavailable; the value is also
+    // visible on screen if even that fails.
+    if (await copyToClipboard(result.api_key)) {
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 1500);
-    } catch {
-      /* clipboard may be blocked by sandbox; the value is still visible on screen */
     }
   };
   const copyInstructions = async () => {
     if (!result) return;
-    try {
-      await navigator.clipboard.writeText(result.instructions);
+    if (await copyToClipboard(result.instructions)) {
       setCopiedInstr(true);
       setTimeout(() => setCopiedInstr(false), 1500);
-    } catch {
-      /* clipboard may be blocked by sandbox */
     }
   };
 
