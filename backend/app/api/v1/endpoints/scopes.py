@@ -12,7 +12,7 @@ from app.db.models import Scope, Subnet, HostSubnetMapping, SubnetLabel, SubnetL
 from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
-from app.api.deps import get_current_project, require_project_role
+from app.api.deps import get_current_project, require_project_role, read_upload_capped
 from app.db.models_project import Project, ProjectRole
 from app.schemas.pagination import Paginated
 from app.schemas.schemas import (
@@ -150,16 +150,17 @@ async def upload_subnet_file(
             detail=f"File type not allowed. Supported types: {', '.join(allowed_extensions)}"
         )
 
-    content = await file.read()
-    if len(content) > MAX_SUBNET_FILE_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"File too large ({len(content):,} bytes). "
-                f"Maximum allowed: {MAX_SUBNET_FILE_BYTES:,} bytes "
-                f"(~{MAX_SUBNETS_PER_UPLOAD:,} CIDR entries)."
-            ),
-        )
+    # Bounded read — reject an oversize file before it materializes in memory
+    # (see read_upload_capped; the old ``await file.read()`` + len() check ran
+    # only after the whole upload was already in RAM).
+    content = await read_upload_capped(
+        file,
+        MAX_SUBNET_FILE_BYTES,
+        detail=(
+            f"File too large. Maximum allowed: {MAX_SUBNET_FILE_BYTES:,} bytes "
+            f"(~{MAX_SUBNETS_PER_UPLOAD:,} CIDR entries)."
+        ),
+    )
     try:
         file_content = content.decode('utf-8')
     except UnicodeDecodeError:

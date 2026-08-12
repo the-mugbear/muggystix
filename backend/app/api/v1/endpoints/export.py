@@ -8,9 +8,16 @@ from app.services import scope_coverage
 from app.services.export_service import ExportService
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+# Data egress. The documented policy is that VIEWERs cannot export project
+# data; AUDITOR ("read-only, with audit visibility") and above may. Gate the
+# whole router — every route here is under /projects/{project_id}, so the
+# role check reads project_id from the path like get_current_project does.
+router = APIRouter(dependencies=[
+    Depends(get_current_user),
+    Depends(require_project_role(ProjectRole.AUDITOR)),
+])
 
 _HOST_LIST_RESPONSES = {
     200: {

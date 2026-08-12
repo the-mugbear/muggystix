@@ -23,7 +23,7 @@ from app.db.session import get_db
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.models_agent import Agent, TestPlan
-from app.api.deps import get_current_project, require_project_role
+from app.api.deps import get_current_project, require_project_role, read_upload_capped
 
 logger = logging.getLogger(__name__)
 
@@ -148,12 +148,19 @@ async def import_test_plan_results(
     ``is_final: true`` in the results file when the agent is done to
     transition the session to ``completed``.
     """
+    # Hard cap at 10 MB to prevent accidental log-dump uploads from blowing out
+    # the DB. Read is bounded (see read_upload_capped) so an oversize file is
+    # rejected before it materializes in memory, not after.
+    MAX_BYTES = 10 * 1024 * 1024
     try:
-        file_bytes = await file.read()
-    except Exception as exc:  # noqa: BLE001
-        # Code review nitpick #1: don't leak the raw read exception
-        # (could include tempfile paths, low-level OS errors) to the
-        # client.  Log details server-side.
+        file_bytes = await read_upload_capped(
+            file, MAX_BYTES, detail=f"Results file too large (max {MAX_BYTES:,} bytes)."
+        )
+    except HTTPException:
+        raise  # the 413 cap rejection — surface it as-is
+    except Exception:  # noqa: BLE001
+        # Don't leak the raw read exception (tempfile paths, low-level OS
+        # errors) to the client. Log details server-side.
         logger.exception("Failed to read uploaded results file", extra={"plan_id": plan_id})
         raise HTTPException(
             status_code=400,
@@ -161,15 +168,6 @@ async def import_test_plan_results(
         )
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
-
-    # Hard cap at 10 MB to prevent accidental log-dump uploads from
-    # blowing out the DB.  Legitimate results files are well under this.
-    MAX_BYTES = 10 * 1024 * 1024
-    if len(file_bytes) > MAX_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Results file too large ({len(file_bytes)} bytes, max {MAX_BYTES})",
-        )
 
     from app.services.bundle_import_service import import_results_file, BundleImportError
 

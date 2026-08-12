@@ -152,6 +152,61 @@ def test_assigned_predicate_resolves_username(db_session, test_project, member):
     assert assigned_predicate(db_session, "no-such-user", member) is None
 
 
+# ---------------------------------------------------------------------------
+# Data egress gate: VIEWERs can read the inventory but must not export it or
+# pull reports. AUDITOR ("read-only, with audit visibility") and above may.
+# The documented policy (SystemSettings roles table) is "viewers cannot export
+# data"; before this the export/reports routers gated on membership only, so a
+# viewer could package project data for exfiltration.
+# ---------------------------------------------------------------------------
+
+def _proj(project):
+    return f"/api/v1/projects/{project.id}"
+
+
+def test_viewer_cannot_export_hosts(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "viewer")
+    resp = member_client.get(f"{_proj(test_project)}/export/out-of-scope?format=txt")
+    assert resp.status_code == 403
+
+
+def test_auditor_can_export_hosts(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "auditor")
+    resp = member_client.get(f"{_proj(test_project)}/export/out-of-scope?format=txt")
+    assert resp.status_code != 403, resp.text
+
+
+def test_viewer_cannot_generate_report(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "viewer")
+    resp = member_client.get(f"{_proj(test_project)}/reports/hosts/csv")
+    assert resp.status_code == 403
+
+
+def test_auditor_can_list_report_jobs(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "auditor")
+    resp = member_client.get(f"{_proj(test_project)}/reports/jobs")
+    assert resp.status_code == 200, resp.text
+
+
+def test_viewer_cannot_dismiss_report_job(member_client, db_session, test_project, member):
+    # The gate runs before the job lookup, so a bogus id still 403s for a viewer.
+    _set_role(db_session, test_project, member, "viewer")
+    resp = member_client.post(f"{_proj(test_project)}/reports/jobs/999999/dismiss")
+    assert resp.status_code == 403
+
+
+def test_viewer_cannot_tool_ready_export(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "viewer")
+    resp = member_client.get(f"{_proj(test_project)}/hosts/tool-ready/txt")
+    assert resp.status_code == 403
+
+
+def test_auditor_can_tool_ready_export(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "auditor")
+    resp = member_client.get(f"{_proj(test_project)}/hosts/tool-ready/txt")
+    assert resp.status_code != 403, resp.text
+
+
 def test_analyst_can_bulk_tag(member_client, db_session, test_project, member):
     _set_role(db_session, test_project, member, "analyst")
     host = _host(db_session, test_project)

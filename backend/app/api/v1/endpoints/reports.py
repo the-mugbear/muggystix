@@ -7,7 +7,7 @@ from app.db import models
 from app.core.config import settings
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.hosts import HostFilterParams
 from app.db.models import ReportJob
 # ReportGenerator now lives in the service layer; re-exported here so the
@@ -24,7 +24,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+# Reports package + egress project data (and jobs mutate shared queue state).
+# Same policy as /export: VIEWERs are read-only-inventory and cannot pull
+# reports; AUDITOR and above may. Gate the whole router — every route is under
+# /projects/{project_id}, so the role check reads project_id from the path.
+router = APIRouter(dependencies=[
+    Depends(get_current_user),
+    Depends(require_project_role(ProjectRole.AUDITOR)),
+])
 
 
 @router.get("/hosts/csv")

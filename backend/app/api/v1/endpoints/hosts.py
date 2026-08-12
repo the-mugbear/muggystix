@@ -23,7 +23,7 @@ from sqlalchemy.sql import exists
 from app.db.session import get_db
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.db.models_auth import User, UserRole
 from app.db import models
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory, NetexecResult
@@ -1595,6 +1595,10 @@ def get_host_dns_records(
 
 @router.get(
     "/tool-ready/{format}",
+    # Data egress (scanner-target lists) — same policy as /export and /reports:
+    # VIEWERs read the inventory but cannot export it; AUDITOR and above may.
+    # Route-level (not router-level) because the rest of /hosts is viewer-readable.
+    dependencies=[Depends(require_project_role(ProjectRole.AUDITOR))],
     responses={
         200: {
             "description": "Host list formatted for the target tool. "

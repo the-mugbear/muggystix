@@ -7,10 +7,15 @@ populates/updates the description.
 """
 from __future__ import annotations
 
+import asyncio
 import io
+
+import pytest
+from fastapi import HTTPException, UploadFile
 
 from app.db import models
 from app.db.models import Subnet, SubnetLabel, SubnetLabelAssignment
+from app.api.deps import read_upload_capped
 
 
 def _upload(client, project_id: int, content: str):
@@ -74,3 +79,36 @@ def test_csv_upload_labels_description_and_merge(client, db_session, test_projec
     sub = db_session.query(Subnet).filter(Subnet.scope_id == scope_id, Subnet.cidr == "10.50.0.0/24").one()
     assert sub.description == "Updated DMZ"  # description updates when provided
     assert sub.site == "Manchester DC"  # site updates (last-wins) when provided
+
+
+# ---------------------------------------------------------------------------
+# Bounded upload read (audit: small-file routes read() before checking size).
+# ---------------------------------------------------------------------------
+
+def test_oversize_subnet_upload_is_rejected(client, test_project):
+    """A file past the 2 MB cap is rejected — and, via read_upload_capped, the
+    reject happens without materializing the whole upload in memory."""
+    oversize = b"a" * (2 * 1024 * 1024 + 1)
+    resp = client.post(
+        f"/api/v1/projects/{test_project.id}/scopes/upload-subnets",
+        files={"file": ("subnets.csv", io.BytesIO(oversize), "text/csv")},
+    )
+    assert resp.status_code == 413, resp.text
+
+
+def test_read_upload_capped_rejects_over_the_cap():
+    uf = UploadFile(filename="x.txt", file=io.BytesIO(b"a" * (1024 + 1)))
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(read_upload_capped(uf, 1024))
+    assert ei.value.status_code == 413
+
+
+def test_read_upload_capped_returns_a_small_file_whole():
+    uf = UploadFile(filename="x.txt", file=io.BytesIO(b"hello world"))
+    assert asyncio.run(read_upload_capped(uf, 1024)) == b"hello world"
+
+
+def test_read_upload_capped_allows_exactly_the_cap():
+    # cap is inclusive — exactly max_bytes is fine, max_bytes+1 is not.
+    uf = UploadFile(filename="x.txt", file=io.BytesIO(b"a" * 1024))
+    assert asyncio.run(read_upload_capped(uf, 1024)) == b"a" * 1024

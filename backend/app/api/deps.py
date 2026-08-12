@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Deque, Dict, List, Optional
 
-from fastapi import Depends, Header, HTTPException, Path, Request
+from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
@@ -738,6 +738,40 @@ def require_project_role(required_role: "ProjectRole | str"):
         return current_user
 
     return checker
+
+
+async def read_upload_capped(
+    file: UploadFile, max_bytes: int, *, detail: Optional[str] = None
+) -> bytes:
+    """Read an ``UploadFile`` fully, but abort the moment it exceeds ``max_bytes``.
+
+    ``await file.read()`` with no size pulls the whole upload into Python memory.
+    ``UploadFile`` may spool the request body to disk, but that unbounded read
+    still materializes it — so a post-hoc ``len(content) > cap`` check runs too
+    late: an authenticated multi-GB upload can OOM the container before the
+    check. Reading in bounded chunks and rejecting at ``max_bytes + 1`` caps peak
+    memory at roughly ``max_bytes`` regardless of the actual upload size.
+
+    Raises 413 (Payload Too Large) when the cap is crossed; always closes the
+    upload. Callers keep their own extension/content validation.
+    """
+    chunk_size = 64 * 1024
+    buf = bytearray()
+    try:
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=detail
+                    or f"Uploaded file exceeds the {max_bytes:,}-byte limit.",
+                )
+    finally:
+        await file.close()
+    return bytes(buf)
 
 
 def resolve_project_assignee(
