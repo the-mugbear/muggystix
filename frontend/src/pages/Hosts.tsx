@@ -2345,10 +2345,16 @@ export default function Hosts() {
                   setHosts((prev) => prev.map((h) => (h.id === id ? { ...h, follow } : h)))
                 }
                 onQueryHosts={(q) => {
-                  // Close the sheet so the freshly-filtered list is visible,
-                  // then apply the vuln query through the normal URL-restore path.
+                  // Close the sheet, then REPLACE the filter state with just
+                  // this query. navigate() does NOT work here: the Hosts page
+                  // is already mounted, so its URL→filter restore (init-only)
+                  // won't re-parse the new ?q=, and the URL-write effect would
+                  // clobber it straight back. Setting filter state is the
+                  // in-page path — it drives the refetch, and the write effect
+                  // syncs ?q= to the URL. Replacing (not merging) matches the
+                  // standalone fresh-view behavior.
                   setInspectedHostId(null);
-                  navigate(buildHostsUrl({ q }));
+                  handleFiltersChange({ query: q });
                 }}
               />
             )}
