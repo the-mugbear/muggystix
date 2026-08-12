@@ -29,3 +29,30 @@ def test_auth_success_line_captures_username():
     assert parsed["username"] == "administrator"
     assert parsed["domain"] == "CORP"
     assert parsed["auth_success"] is True
+
+
+def test_port_uses_tcp_transport_with_service_name():
+    """NetExec's smb/ldap/winrm/mssql is the SERVICE, not the IP transport —
+    the Port row must be tcp with the NXC protocol as service_name. Storing it
+    in `protocol` made a physical port (445) collide-then-duplicate against the
+    same port from an nmap tcp scan, inflating open_port_count."""
+    from types import SimpleNamespace
+
+    parser = NetexecParser(db=None)
+    captured: dict = {}
+    parser.dedup_service = SimpleNamespace(
+        find_or_create_port=lambda host_id, scan_id, port_data: (
+            captured.update(port_data) or SimpleNamespace(id=1)
+        )
+    )
+    parser._track_field_confidence = lambda *a, **k: None
+
+    for nxc_proto in ("smb", "ldap", "winrm"):
+        captured.clear()
+        parser._process_port_with_confidence(
+            host_id=1, scan_id=1,
+            host_data={"port": 445, "protocol": nxc_proto}, confidence=None,
+        )
+        assert captured["protocol"] == "tcp", nxc_proto
+        assert captured["service_name"] == nxc_proto
+        assert captured["port_number"] == 445

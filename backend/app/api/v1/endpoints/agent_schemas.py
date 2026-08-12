@@ -81,6 +81,34 @@ class HostDetail(HostBrief):
     ports: List[PortBrief] = Field(default_factory=list)
 
 
+class AssistFinding(BaseModel):
+    """One vulnerability/finding on a host, for evidence-rich assist reporting.
+    Added on agent feedback (v1.45.0): assist previously exposed only severity
+    counts, so a report could cite numbers but not the actual CVEs/evidence."""
+    id: int = Field(..., description="Vulnerability row id.")
+    severity: str = Field(..., description="critical / high / medium / low / info (lowercase).")
+    title: str = Field(..., description="Finding title / plugin name.")
+    cve_id: Optional[str] = Field(None, description="CVE id when the finding carries one.")
+    plugin_id: Optional[str] = Field(None, description="Scanner plugin id (e.g. Nessus).")
+    cvss_score: Optional[float] = Field(None, description="CVSS base score 0–10, when scored.")
+    source: str = Field(..., description="Scanner that reported it (nessus / openvas / …).")
+    exploitable: bool = Field(False, description="Flagged exploitable by the scanner.")
+    port_number: Optional[int] = Field(None, description="Affected port; null for host-level findings.")
+    service_name: Optional[str] = Field(None, description="Service on the affected port, when known.")
+    description: Optional[str] = Field(None, description="Finding description (may be truncated).")
+    solution: Optional[str] = Field(None, description="Remediation guidance, when the scanner provided it.")
+    evidence: Optional[str] = Field(None, description="Scanner plugin output / evidence (may be truncated).")
+
+
+class AssistFindingsResponse(BaseModel):
+    """Paginated host findings. total/has_more let an agent report complete
+    coverage without guessing (unlike the bare host arrays)."""
+    host_id: int
+    total: int
+    has_more: bool
+    findings: List[AssistFinding] = Field(default_factory=list)
+
+
 class PortTuple(BaseModel):
     port: int
     protocol: str

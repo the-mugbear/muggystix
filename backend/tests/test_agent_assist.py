@@ -360,3 +360,88 @@ def test_assist_context_carries_live_prompt_version(client, test_project):
     ctx = client.get("/api/v1/agent/assist/context", headers=headers)
     assert ctx.status_code == 200, ctx.text
     assert ctx.json()["prompt_version"] == PROMPT_VERSION
+
+
+def test_assist_findings_endpoint_returns_evidence(client, test_project, db_session):
+    """The finding-level read (v1.45.0) — assist previously exposed only counts."""
+    from app.db import models
+    from app.db.models_vulnerability import (
+        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+    )
+    host = models.Host(ip_address="10.8.8.8", state="up", project_id=test_project.id)
+    scan = models.Scan(project_id=test_project.id, filename="t.nessus", scan_type="nessus", tool_name="nessus")
+    db_session.add_all([host, scan])
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.refresh(scan)
+    db_session.add_all([
+        Vulnerability(
+            host_id=host.id, scan_id=scan.id, title="Critical RCE", severity=VulnerabilitySeverity.CRITICAL,
+            source=VulnerabilitySource.NESSUS, cve_id="CVE-2024-1", cvss_score=9.8,
+            exploitable=True, solution="Patch it", plugin_output="evidence here",
+        ),
+        Vulnerability(
+            host_id=host.id, scan_id=scan.id, title="Low info", severity=VulnerabilitySeverity.LOW,
+            source=VulnerabilitySource.NESSUS,
+        ),
+    ])
+    db_session.commit()
+
+    body = _start_session(client, test_project.id)
+    resp = client.get(
+        f"/api/v1/agent/assist/hosts/{host.id}/findings",
+        headers=_auth_headers(body["api_key"]),
+    )
+    assert resp.status_code == 200, resp.text
+    d = resp.json()
+    assert d["total"] == 2 and d["has_more"] is False
+    f0 = d["findings"][0]
+    assert f0["severity"] == "critical"     # worst-first ordering
+    assert f0["cve_id"] == "CVE-2024-1"
+    assert f0["exploitable"] is True
+    assert f0["solution"] == "Patch it"
+    assert f0["evidence"] == "evidence here"
+
+
+def test_assist_findings_severity_filter_and_pagination(client, test_project, db_session):
+    from app.db import models
+    from app.db.models_vulnerability import (
+        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+    )
+    host = models.Host(ip_address="10.8.8.9", state="up", project_id=test_project.id)
+    scan = models.Scan(project_id=test_project.id, filename="t2.nessus", scan_type="nessus", tool_name="nessus")
+    db_session.add_all([host, scan])
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.refresh(scan)
+    db_session.add_all([
+        Vulnerability(host_id=host.id, scan_id=scan.id, title=f"c{i}", severity=VulnerabilitySeverity.CRITICAL,
+                      source=VulnerabilitySource.NESSUS)
+        for i in range(3)
+    ] + [
+        Vulnerability(host_id=host.id, scan_id=scan.id, title="lo", severity=VulnerabilitySeverity.LOW,
+                      source=VulnerabilitySource.NESSUS),
+    ])
+    db_session.commit()
+
+    body = _start_session(client, test_project.id)
+    headers = _auth_headers(body["api_key"])
+    # severity filter
+    crit = client.get(
+        f"/api/v1/agent/assist/hosts/{host.id}/findings?severity=critical", headers=headers
+    ).json()
+    assert crit["total"] == 3
+    # pagination
+    page = client.get(
+        f"/api/v1/agent/assist/hosts/{host.id}/findings?limit=2", headers=headers
+    ).json()
+    assert len(page["findings"]) == 2 and page["total"] == 4 and page["has_more"] is True
+
+
+def test_assist_findings_404_for_host_outside_project(client, test_project):
+    body = _start_session(client, test_project.id)
+    resp = client.get(
+        "/api/v1/agent/assist/hosts/999999/findings",
+        headers=_auth_headers(body["api_key"]),
+    )
+    assert resp.status_code == 404

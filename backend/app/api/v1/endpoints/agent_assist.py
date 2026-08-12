@@ -23,7 +23,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload, Query as SAQuery
 
 from app.db.session import get_db
@@ -39,6 +39,8 @@ from app.db.models_auth import User
 from app.api.deps import require_assist_scope
 
 from app.api.v1.endpoints.agent_schemas import (
+    AssistFinding,
+    AssistFindingsResponse,
     EnvironmentProbeRequest,
     EnvironmentProbeResponse,
     EnvironmentSummary,
@@ -49,6 +51,7 @@ from app.api.v1.endpoints.agent_schemas import (
     ScopeBrief,
     VulnCounts,
 )
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.api.v1.endpoints.agent_common import (
     _apply_agent_host_filters,
     _batch_host_enrichment,
@@ -634,6 +637,111 @@ def get_assist_host(
         else None,
         follow=follow_map.get(host.id),
         ports=port_briefs,
+    )
+
+
+_SEVERITY_RANK = case(
+    (Vulnerability.severity == VulnerabilitySeverity.CRITICAL, 0),
+    (Vulnerability.severity == VulnerabilitySeverity.HIGH, 1),
+    (Vulnerability.severity == VulnerabilitySeverity.MEDIUM, 2),
+    (Vulnerability.severity == VulnerabilitySeverity.LOW, 3),
+    (Vulnerability.severity == VulnerabilitySeverity.INFO, 4),
+    else_=5,
+)
+# Keep evidence/description bounded so a single finding can't blow the response.
+_EVIDENCE_CAP = 2000
+_DESC_CAP = 2000
+
+
+@router.get(
+    "/assist/hosts/{host_id}/findings",
+    response_model=AssistFindingsResponse,
+    summary="Read a host's individual findings (CVE/plugin, port, evidence, remediation)",
+)
+def get_assist_host_findings(
+    request: Request,
+    host_id: int = Path(..., gt=0),
+    severity: Optional[str] = Query(
+        None,
+        description="Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
+    ),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """The finding-level read the host DTO's ``vuln_summary`` only counts —
+    added on agent feedback (v1.45.0) so an assist agent can produce an
+    evidence-rich report instead of citing bare counts and deferring to the UI.
+    Read-only; ordered worst-severity first, then CVSS; paginated with
+    ``total``/``has_more`` so coverage can be reported without guessing."""
+    session = _load_assist_session(db, request)
+    # Project scope: the host must belong to this session's project.
+    host_ok = (
+        db.query(models.Host.id)
+        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .first()
+    )
+    if not host_ok:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    q = db.query(Vulnerability).filter(Vulnerability.host_id == host_id)
+    if severity:
+        wanted_values = {s.strip().lower() for s in severity.split(",") if s.strip()}
+        # Compare against enum members (the column is a PG enum; lower() on it
+        # errors). Unknown severity strings simply match nothing.
+        wanted = [m for m in VulnerabilitySeverity if m.value in wanted_values]
+        q = q.filter(Vulnerability.severity.in_(wanted)) if wanted else q.filter(False)
+    total = q.count()
+    rows = (
+        q.order_by(_SEVERITY_RANK, func.coalesce(Vulnerability.cvss_score, 0).desc(), Vulnerability.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # One join-free port lookup for the rows' port_ids → number/service.
+    port_ids = {v.port_id for v in rows if v.port_id is not None}
+    port_map = {}
+    if port_ids:
+        for pid, num, svc in (
+            db.query(models.Port.id, models.Port.port_number, models.Port.service_name)
+            .filter(models.Port.id.in_(port_ids))
+            .all()
+        ):
+            port_map[pid] = (num, svc)
+
+    def _sev(v) -> str:
+        s = v.severity
+        return s.value if hasattr(s, "value") else str(s)
+
+    def _src(v) -> str:
+        s = v.source
+        return s.value if hasattr(s, "value") else str(s)
+
+    findings = []
+    for v in rows:
+        num, svc = port_map.get(v.port_id, (None, None))
+        findings.append(AssistFinding(
+            id=v.id,
+            severity=_sev(v),
+            title=v.title,
+            cve_id=v.cve_id,
+            plugin_id=v.plugin_id,
+            cvss_score=v.cvss_score,
+            source=_src(v),
+            exploitable=bool(v.exploitable),
+            port_number=num,
+            service_name=svc,
+            description=(v.description or None) and v.description[:_DESC_CAP],
+            solution=(v.solution or None) and v.solution[:_DESC_CAP],
+            evidence=(v.plugin_output or None) and v.plugin_output[:_EVIDENCE_CAP],
+        ))
+    return AssistFindingsResponse(
+        host_id=host_id,
+        total=total,
+        has_more=offset + len(rows) < total,
+        findings=findings,
     )
 
 

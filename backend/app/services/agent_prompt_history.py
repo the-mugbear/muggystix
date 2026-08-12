@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.46.0",
+        "app_version": "2.264.0",
+        "summary": (
+            "Assist can now read individual findings, not just counts. New "
+            "`GET /agent/assist/hosts/{id}/findings` returns per-finding "
+            "severity, CVE/plugin id, affected port, exploitability, "
+            "description, remediation, and scanner evidence (severity filter + "
+            "total/has_more pagination) — the prompt directs evidence-rich "
+            "reporting there instead of citing bare vuln_summary counts. Also "
+            "fixed the port double-count: NetExec stored its transport "
+            "(smb/ldap/winrm) in the port `protocol` column, duplicating a "
+            "physical port against a tcp scan and inflating open_port_count; "
+            "protocol is now the IP transport and the NXC value is the service "
+            "name (existing rows migrated)."
+        ),
+    },
+    {
         "version": "1.45.0",
         "app_version": "2.263.0",
         "summary": (

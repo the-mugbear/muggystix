@@ -338,16 +338,23 @@ class NetexecParser:
     ):
         """Process port information with confidence"""
         port_number = host_data.get('port')
-        protocol = host_data.get('protocol', 'tcp')
 
         if not port_number:
             return
 
+        # NetExec's "protocol" (smb/ldap/winrm/mssql/…) is the SERVICE, not the
+        # IP transport — every one of them runs over TCP. Storing that service
+        # string in the transport `protocol` column made a physical port (e.g.
+        # 445) collide in the dedup key (host, port_number, protocol) with the
+        # SAME port from an nmap/masscan TCP scan, producing a duplicate open
+        # row that inflated open_port_count (assist + the /hosts page both count
+        # port rows). Transport is tcp; the NXC protocol is the service name.
+        nxc_service = host_data.get('protocol')  # SMB, LDAP, WinRM, MSSQL, …
         port_data = {
             'port_number': port_number,
-            'protocol': protocol,
+            'protocol': 'tcp',
             'state': 'open',  # netexec only reports open/accessible ports
-            'service_name': host_data.get('protocol'),  # SMB, LDAP, etc.
+            'service_name': nxc_service,
         }
 
         # Find or create port
