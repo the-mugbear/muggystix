@@ -79,6 +79,12 @@ export interface VulnGroup {
   exploitable: boolean;
   /** Distinct affected ports, ascending. Empty for host-level findings. */
   ports: number[];
+  /** Distinct ports carrying an *exploitable* member, ascending. Drives the
+   *  exploit-on-port pivot — a subset of `ports` (empty when the exploitable
+   *  finding is host-level, or nothing is exploitable). Must be every such
+   *  port, not one representative's: a plugin exploitable on 80/443/8080 has to
+   *  pivot on all three, or the button silently queries one arbitrary port. */
+  exploitPorts: number[];
 }
 
 const rank = (severity: string | null | undefined): number =>
@@ -184,6 +190,17 @@ export function groupVulnerabilities(vulns: HostVulnerability[]): VulnGroup[] {
       ),
     ].sort((a, b) => a - b);
 
+    // Ports whose member is itself exploitable — the exploit-on-port pivot must
+    // target every one of these, not the single port of members[0].
+    const exploitPorts = [
+      ...new Set(
+        ordered
+          .filter((m) => m.exploitable === true)
+          .map((m) => m.port_number)
+          .filter((p): p is number => typeof p === 'number'),
+      ),
+    ].sort((a, b) => a - b);
+
     // Collapse rows that are the same detail on different ports. Key on
     // (scanner, plugin) — the same plugin_id has identical description/solution,
     // so re-rendering it per port is pure repetition; different plugins (even
@@ -224,6 +241,7 @@ export function groupVulnerabilities(vulns: HostVulnerability[]): VulnGroup[] {
       severityDisagreement: new Set(reports.map((r) => r.severity)).size > 1,
       exploitable: ordered.some((m) => m.exploitable === true),
       ports,
+      exploitPorts,
     });
   });
 

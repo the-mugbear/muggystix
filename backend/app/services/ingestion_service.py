@@ -8,6 +8,7 @@ processes one job at a time, keeping parsing fully isolated from the API.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import re
@@ -66,6 +67,68 @@ def report_progress(progress: str) -> None:
 
 
 ParserDescriptor = Tuple[str, Type, str]
+
+
+def build_parser_dispatch_map() -> Dict[Type, Type]:
+    """Every parser class the dispatcher can construct, keyed by itself.
+
+    This MUST contain every parser class ``_build_parsing_attempts`` can emit
+    (except ``NessusIntegrationService``, which the executor dispatches on its
+    own path) — a class that is detected but missing here dies at dispatch with
+    "Unsupported parser class".  That is exactly how RDAP and testssl broke:
+    both were wired into detection but never registered for dispatch.
+
+    Kept as one function so detection and dispatch can be checked against each
+    other by ``tests/test_parser_dispatch_contract.py``.  Imports stay lazy
+    (this runs at parse time, not import time) so a parser module that fails to
+    import degrades to "unavailable" instead of breaking the whole service.
+    """
+    from app.parsers.nmap_parser import NmapXMLParser
+    from app.parsers.eyewitness_parser import EyewitnessParser
+    from app.parsers.masscan_parser import MasscanParser
+    from app.parsers.dns_parser import DNSParser
+    from app.parsers.netexec_parser import NetexecParser
+    from app.parsers.naabu_parser import NaabuParser
+    from app.parsers.rustscan_parser import RustScanParser
+    from app.parsers.openvas_parser import OpenVASParser
+    from app.parsers.amass_parser import AmassParser
+    from app.parsers.nikto_parser import NiktoParser
+    from app.parsers.smbmap_parser import SMBMapParser
+    from app.parsers.bloodhound_parser import BloodHoundParser
+
+    dispatch: Dict[Type, Type] = {
+        NmapXMLParser: NmapXMLParser,
+        EyewitnessParser: EyewitnessParser,
+        MasscanParser: MasscanParser,
+        DNSParser: DNSParser,
+        NetexecParser: NetexecParser,
+        NaabuParser: NaabuParser,
+        RustScanParser: RustScanParser,
+        OpenVASParser: OpenVASParser,
+        AmassParser: AmassParser,
+        NiktoParser: NiktoParser,
+        SMBMapParser: SMBMapParser,
+        BloodHoundParser: BloodHoundParser,
+    }
+    # Optional parsers — same set appended in _build_parsing_attempts' JSON /
+    # .gnmap branches.  Keep the two lists in lockstep (the contract test fails
+    # the build if they drift).
+    for module_path, class_name in (
+        ("app.parsers.gnmap_parser", "GnmapParser"),
+        ("app.parsers.dirbuster_parser", "DirBusterParser"),
+        ("app.parsers.httpx_parser", "HttpxParser"),
+        ("app.parsers.dnsx_parser", "DnsxParser"),
+        ("app.parsers.whatweb_parser", "WhatwebParser"),
+        ("app.parsers.testssl_parser", "TestsslParser"),
+        ("app.parsers.rdap_parser", "RdapParser"),
+    ):
+        try:
+            module = importlib.import_module(module_path)
+            cls = getattr(module, class_name)
+            dispatch[cls] = cls
+        except ImportError:
+            pass
+    return dispatch
 
 
 class ParseFailure(RuntimeError):
@@ -897,18 +960,6 @@ class IngestionService:
         parser_class: Type,
         description: str,
     ) -> Dict[str, object]:
-        from app.parsers.nmap_parser import NmapXMLParser
-        from app.parsers.eyewitness_parser import EyewitnessParser
-        from app.parsers.masscan_parser import MasscanParser
-        from app.parsers.dns_parser import DNSParser
-        from app.parsers.netexec_parser import NetexecParser
-        from app.parsers.naabu_parser import NaabuParser
-        from app.parsers.rustscan_parser import RustScanParser
-        from app.parsers.openvas_parser import OpenVASParser
-        from app.parsers.amass_parser import AmassParser
-        from app.parsers.nikto_parser import NiktoParser
-        from app.parsers.smbmap_parser import SMBMapParser
-        from app.parsers.bloodhound_parser import BloodHoundParser
         from app.services.nessus_integration_service import NessusIntegrationService
 
         options = job.options or {}
@@ -968,56 +1019,11 @@ class IngestionService:
                 if w:
                     warnings_parts.append(str(w))
         else:
-            # Map class references back to callable constructors
-            # Lazy-import parsers that may not be in top-level scope
-            _extra_parsers: dict = {}
-            try:
-                from app.parsers.gnmap_parser import GnmapParser as _GnmapParser
-                _extra_parsers[_GnmapParser] = _GnmapParser
-            except ImportError:
-                pass
-            try:
-                from app.parsers.dirbuster_parser import DirBusterParser as _DirBusterParser
-                _extra_parsers[_DirBusterParser] = _DirBusterParser
-            except ImportError:
-                pass
-            # v2.12.0 — register the new httpx parser.  The dispatcher
-            # rejects parser_class entries it doesn't know about (raises
-            # "Unsupported parser class"), so any new parser added to
-            # _build_parsing_attempts must also be registered here.
-            try:
-                from app.parsers.httpx_parser import HttpxParser as _HttpxParser
-                _extra_parsers[_HttpxParser] = _HttpxParser
-            except ImportError:
-                pass
-            # v2.88.0 — register dnsx parser (closes #44).
-            try:
-                from app.parsers.dnsx_parser import DnsxParser as _DnsxParser
-                _extra_parsers[_DnsxParser] = _DnsxParser
-            except ImportError:
-                pass
-            # v2.140.0 — register whatweb parser (promoted to first-class).
-            try:
-                from app.parsers.whatweb_parser import WhatwebParser as _WhatwebParser
-                _extra_parsers[_WhatwebParser] = _WhatwebParser
-            except ImportError:
-                pass
-
-            parser_map = {
-                NmapXMLParser: NmapXMLParser,
-                EyewitnessParser: EyewitnessParser,
-                MasscanParser: MasscanParser,
-                DNSParser: DNSParser,
-                NetexecParser: NetexecParser,
-                NaabuParser: NaabuParser,
-                RustScanParser: RustScanParser,
-                OpenVASParser: OpenVASParser,
-                AmassParser: AmassParser,
-                NiktoParser: NiktoParser,
-                SMBMapParser: SMBMapParser,
-                BloodHoundParser: BloodHoundParser,
-                **_extra_parsers,
-            }
+            # Map class references back to callable constructors.  The registry
+            # lives in build_parser_dispatch_map() so detection and dispatch are
+            # one source of truth a contract test can check (a parser detected
+            # but absent here dies with "Unsupported parser class").
+            parser_map = build_parser_dispatch_map()
             parser_ctor = parser_map.get(parser_class)
             if parser_ctor is None:
                 raise ValueError(f"Unsupported parser class {parser_class}")

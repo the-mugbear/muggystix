@@ -26,14 +26,22 @@ export const buildSameVulnQuery = (vuln: HostVulnerability): string | null => {
 };
 
 /**
- * Vulnerability → "hosts with an exploit ON THIS PORT" host-query DSL predicate.
+ * Vulnerability group → "hosts with an exploit ON THESE PORTS" host-query DSL
+ * predicate.
  *
- * Powers the port-scoped exploit pivot on a host's vuln rows. The backend
- * `exploitport:` field correlates exploitability and port on the SAME finding
- * (not `port:X AND has:exploit`, which matches a host with X open and an exploit
- * on any other port). Only meaningful when the finding is itself flagged
- * exploitable AND carries a port; returns null otherwise (the pivot is hidden).
- * The value is a bare port number, so no DSL-string escaping is needed.
+ * Powers the port-scoped exploit pivot on a host's grouped vuln rows. The
+ * backend `exploitport:` field correlates exploitability and port on the SAME
+ * finding (not `port:X AND has:exploit`, which matches a host with X open and an
+ * exploit on any other port), and accepts a comma list as OR-within-field.
+ *
+ * Takes EVERY port that carries an exploitable member of the group — a plugin
+ * exploitable on 80/443/8080 pivots on all three. Previously this read one
+ * representative row's single port, so a multi-port finding queried an arbitrary
+ * one and silently missed the rest. Returns null when the group has no
+ * exploitable-and-ported member (the pivot is then hidden). Values are bare port
+ * numbers, so no DSL-string escaping is needed.
  */
-export const buildExploitOnPortQuery = (vuln: HostVulnerability): string | null =>
-  vuln.exploitable && vuln.port_number != null ? `exploitport:${vuln.port_number}` : null;
+export const buildExploitOnPortsQuery = (ports: number[]): string | null => {
+  const unique = [...new Set(ports.filter((p) => Number.isInteger(p)))].sort((a, b) => a - b);
+  return unique.length ? `exploitport:${unique.join(',')}` : null;
+};

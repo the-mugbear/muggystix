@@ -87,7 +87,7 @@ import type {
   ReviewConclusion,
 } from '../services/api';
 import { buildHostsUrl } from '../utils/drilldownLinks';
-import { buildSameVulnQuery, buildExploitOnPortQuery } from '../utils/vulnQuery';
+import { buildSameVulnQuery, buildExploitOnPortsQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
 import { StructuredTestCard } from './ProposedTestList';
@@ -271,13 +271,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     [onQueryHosts, navigate],
   );
 
-  // Pivot a vuln to the host inventory filtered to every host with an
-  // exploitable finding ON THIS PORT (same-row correlation, not "port open
-  // anywhere AND exploit anywhere"). Same close-sheet-or-navigate contract as
-  // handleQueryHosts. Only wired up when the vuln is exploitable + has a port.
+  // Pivot a vuln GROUP to the host inventory filtered to every host with an
+  // exploitable finding on ANY of the group's exploitable ports (same-row
+  // correlation, not "port open anywhere AND exploit anywhere"). Takes all the
+  // group's exploit ports, not one representative row's — a plugin exploitable
+  // on 80/443/8080 pivots on all three. Same close-sheet-or-navigate contract
+  // as handleQueryHosts.
   const handleQueryExploitPort = useCallback(
-    (vuln: HostVulnerability) => {
-      const q = buildExploitOnPortQuery(vuln);
+    (ports: number[]) => {
+      const q = buildExploitOnPortsQuery(ports);
       if (!q) return;
       if (onQueryHosts) onQueryHosts(q);
       else navigate(buildHostsUrl({ q }));
