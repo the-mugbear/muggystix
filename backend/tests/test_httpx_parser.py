@@ -533,34 +533,21 @@ class TestParserRegistration:
     """
 
     def test_httpx_parser_registered_in_dispatcher(self):
-        """Direct import of the parser_map key check — sanity that
-        HttpxParser is one of the recognized classes."""
+        """HttpxParser must be one of the classes the dispatcher can construct.
+
+        The registry was extracted from ``_execute_parser`` into the module-level
+        ``build_parser_dispatch_map`` (v2.259.2), so this asserts membership in
+        that map directly rather than grepping the function source. The broader
+        detection↔dispatch contract is pinned by
+        ``test_parser_dispatch_contract.py``.
+        """
         from app.parsers.httpx_parser import HttpxParser
-        from app.services.ingestion_service import ingestion_service
+        from app.services.ingestion_service import build_parser_dispatch_map
 
-        # Build a minimal parser_map by exercising the dispatch code
-        # path with a known-bad parser_class to extract the live map.
-        # Easier: construct the map the same way _execute_parser does
-        # and assert HttpxParser is in it.  This test is fragile to the
-        # internal name, which is by design — if the registration moves,
-        # this should fail until the new location is updated.
-        from app.parsers.nmap_parser import NmapXMLParser
-        from app.parsers.eyewitness_parser import EyewitnessParser
-        from app.parsers.masscan_parser import MasscanParser
-        from app.parsers.naabu_parser import NaabuParser
-
-        # The actual parser_map is built inside _execute_parser per call.
-        # The cleanest assertion is "the parser is importable and has the
-        # standard parse_file interface" — and that the dispatcher's
-        # explicit registration block in _execute_parser includes it.
-        # Grep-based check on the source file:
-        import inspect
-        source = inspect.getsource(ingestion_service._execute_parser)
-        assert "HttpxParser" in source, (
-            "HttpxParser must be registered in _execute_parser parser_map. "
-            "If you add a new parser to _build_parsing_attempts, you MUST "
-            "also add it to parser_map or the dispatcher will silently "
-            "fall through and misparse files."
+        assert HttpxParser in build_parser_dispatch_map(), (
+            "HttpxParser must be registered in build_parser_dispatch_map(). "
+            "If you add a parser to _build_parsing_attempts, you MUST also add "
+            "it there or the dispatcher raises 'Unsupported parser class'."
         )
 
 

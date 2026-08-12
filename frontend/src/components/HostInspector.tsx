@@ -1335,8 +1335,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </button>
               )}
             </div>
+          </div>
 
-            <div className="flex flex-wrap items-center gap-sm pt-xxs">
+          {/* Right column: review workflow — status, the state-aware review
+              action, and who else is reviewing. Uses the ~5/12 the overview
+              previously left blank on desktop; on a narrow window it drops
+              below the identity block instead. */}
+          <div className="space-y-sm md:col-span-5 md:border-l md:border-border md:pl-md">
+            <div className="flex flex-wrap items-center gap-sm">
               <div className="flex items-center gap-xs">
                 {followStatus ? (
                   <Bookmark

@@ -252,10 +252,6 @@ _OPENAPI_TAGS = [
         "description": "Download host lists from scopes or scans in txt (one-IP-per-line), CSV, or JSON. Responses include Content-Disposition headers for file downloads.",
     },
     {
-        "name": "dns",
-        "description": "DNS record lookups and zone transfer attempts.",
-    },
-    {
         "name": "parse-errors",
         "description": "Track and manage file-parsing failures with user-friendly error IDs, status workflows (unresolved → reviewed → fixed → ignored), and statistics.",
     },
