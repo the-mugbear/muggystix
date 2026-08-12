@@ -174,7 +174,18 @@ const AuditLogViewer: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {rows.map((r) => {
+                    // `details` is a JSON column — object for structured events
+                    // (login: {"method":"totp"}), string/null otherwise. Coerce
+                    // to a display string so it renders instead of crashing the
+                    // safeFallback/.trim path.
+                    const detailText =
+                      r.details == null
+                        ? null
+                        : typeof r.details === 'string'
+                          ? r.details
+                          : JSON.stringify(r.details);
+                    return (
                     <tr key={r.id} className="border-b border-border/50 align-top">
                       <td className="py-xs pr-xs whitespace-nowrap text-muted-foreground">
                         {when(r.created_at)}
@@ -208,15 +219,16 @@ const AuditLogViewer: React.FC = () => {
                       <td className="py-xs pr-xs">
                         <span
                           className="line-clamp-2 break-words"
-                          title={r.error_message || r.details || undefined}
+                          title={r.error_message || detailText || undefined}
                         >
                           {r.error_message
                             ? <span className="text-destructive">{r.error_message}</span>
-                            : safeFallback(r.details)}
+                            : safeFallback(detailText)}
                         </span>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

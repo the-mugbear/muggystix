@@ -319,7 +319,10 @@ export interface AuditLogRow {
   action: string;
   resource_type: string | null;
   resource_id: string | null;
-  details: string | null;
+  // The backend `audit_logs.details` column is JSON — it arrives as an object
+  // for structured events (e.g. login: {"method":"totp"}) and a string/null
+  // otherwise. Typed accurately so callers coerce it before rendering.
+  details: string | Record<string, unknown> | null;
   success: boolean;
   error_message: string | null;
   ip_address: string | null;

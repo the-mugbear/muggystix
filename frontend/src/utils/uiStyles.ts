@@ -14,7 +14,12 @@
 export const safeFallback = (
   value: string | null | undefined,
   fallback = '—',
-): string => (value && value.trim() ? value : fallback);
+): string =>
+  // typeof guard, not just truthiness: `any`-typed API data (e.g. a JSON
+  // `details` object) can reach here as a non-string, and calling `.trim()`
+  // on it threw and crashed the whole page (audit log render). A "safe"
+  // fallback must never throw — non-strings fall through to the fallback.
+  typeof value === 'string' && value.trim() ? value : fallback;
 
 // ---------------------------------------------------------------------------
 // Sticky positioning helper — read the Layout-published CSS vars so
