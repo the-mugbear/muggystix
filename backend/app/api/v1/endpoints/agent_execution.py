@@ -227,6 +227,9 @@ def record_execution_environment(
         probed_by_user_id=session.environment_probed_by_user_id,
         probed_from_ip=session.environment_probed_from_ip,
         environment=EnvironmentSummary(**session.environment),
+        agent_model=session.generated_by_model,
+        agent_tool=session.generated_by_tool,
+        agent_prompt_version=session.prompt_version,
     )
 
 

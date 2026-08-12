@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.45.0",
+        "app_version": "2.263.0",
+        "summary": (
+            "Assist-agent feedback (v1.44.0) actioned. The 'What this session "
+            "can NOT do' block is now generated from the capability flag, so it "
+            "no longer hard-codes 'strictly read-only' and contradicts the "
+            "Writing section on a write-enabled session; the provenance action "
+            "label now names host-attribute writes too. The /assist/scopes note "
+            "stops claiming the 100-subnet cap is silent — it documents the "
+            "subnet_total / subnets_truncated fields the response actually "
+            "returns. (Companion API changes, not prompt text: /assist/context "
+            "totals gains scan_count; /assist/session echoes capabilities + "
+            "constraint + operator; assist host DTOs carry the operator's follow "
+            "status; the environment probe echoes agent_model/tool/prompt_version.)"
+        ),
+    },
+    {
         "version": "1.44.0",
         "app_version": "2.258.0",
         "summary": (

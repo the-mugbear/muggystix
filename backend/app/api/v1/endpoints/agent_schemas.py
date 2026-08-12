@@ -68,6 +68,11 @@ class HostBrief(BaseModel):
     last_seen: Optional[datetime] = Field(None, description="Timestamp of the most recent scan to see this host.")
     open_port_count: int = Field(0, description="Distinct open-port count across all scans of this host.")
     vuln_summary: Optional[VulnCounts] = Field(None, description="Per-severity vuln counts; null when no vulnerability scan has run.")
+    # Agent feedback (v1.44.0): to avoid clobbering a human's review state on a
+    # follow write, the agent had to run three DSL queries per host. This is the
+    # SESSION OPERATOR's follow status on the host — 'watching' / 'in_review' /
+    # 'reviewed', or null when they don't follow it (equivalent to follow:none).
+    follow: Optional[str] = Field(None, description="The assist session operator's follow status on this host (watching/in_review/reviewed), or null if they don't follow it. Check before writing follow state so you don't overwrite a human review.")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -744,6 +749,13 @@ class EnvironmentProbeResponse(BaseModel):
     probed_by_user_id: Optional[int] = None
     probed_from_ip: Optional[str] = None
     environment: EnvironmentSummary
+    # Agent feedback (v1.44.0): the probe REQUIRES these three attribution
+    # fields but the echo dropped them (they're stamped on separate session
+    # columns, then pruned from `environment`), so the agent couldn't verify
+    # they persisted. Echo them back from the stored columns.
+    agent_model: Optional[str] = None
+    agent_tool: Optional[str] = None
+    agent_prompt_version: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

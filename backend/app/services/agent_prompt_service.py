@@ -743,13 +743,28 @@ def build_assist_instructions(
 
     granted = set(capabilities or [])
     can_write = bool(granted)
+    # Agent feedback (v1.44.0): the "What this session can NOT do" block
+    # hard-coded "cannot create notes / change follow — read-only", which
+    # contradicted the Writing section whenever writes were granted. Drive the
+    # limitations line from the same capability flag so the two can't diverge.
+    # (Assist grants are all-or-nothing — notes+follow+host together — so one
+    # flag suffices.)
+    cannot_writes_line = (
+        f"- **No writes** — cannot create notes, change host follow/review "
+        f"status, or edit host attributes; this session is read-only.\n\n"
+        if not can_write
+        else f"- **Writes are limited to {user_label}'s assigned hosts** — "
+        f"notes, review status, and hostname/OS corrections only (see the "
+        f"Writing section). A write to any other host — or to scans, test "
+        f"plans, or scan-derived fields — is refused.\n\n"
+    )
 
     provenance = build_provenance_block(
         base_url=base_url,
         user_label=user_label,
         user_id=user_id,
         action=(
-            "interactive assist (read + notes/review status on assigned hosts)"
+            "interactive assist (read + notes/review/host-attribute writes on assigned hosts)"
             if can_write
             else "interactive assist (read-only project query)"
         ),
@@ -885,9 +900,10 @@ def build_assist_instructions(
         f"with many open ports; prefer `open_port_count` from the list for "
         f"triage).\n"
         f"   - `GET /agent/assist/scopes` for scope CIDR lists (each scope's "
-        f"CIDR list is capped at 100 subnets, silently — if a scope may have "
-        f"more, say the list is partial; full enumeration needs a recon "
-        f"session).\n"
+        f"CIDR list is capped at 100 subnets; each ScopeBrief carries "
+        f"`subnet_total` (the true count) and `subnets_truncated` (bool) — when "
+        f"`subnets_truncated` is true the CIDR list is a sample, so tell the "
+        f"operator it's partial; full enumeration needs a recon session).\n"
         f"   - `GET /agent/assist/scans` for the recent scan inventory "
         f"(default 100, max 500, newest-first, NO offset — you cannot page "
         f"past the most recent 500; qualify 'all scans' answers accordingly).\n"
@@ -905,8 +921,7 @@ def build_assist_instructions(
         f"session minted from the Scopes page.\n"
         f"- **Cannot create or execute test plans** — point them at the "
         f"Test Plans page UI.\n"
-        f"- **Cannot create notes or change host follow status** — those "
-        f"are writes; v1 of assist is strictly read-only.\n\n"
+        f"{cannot_writes_line}"
         f"### Tone\n\n"
         f"You are a research partner, not an autonomous agent.  Keep "
         f"responses concise, ground every claim in a specific endpoint "

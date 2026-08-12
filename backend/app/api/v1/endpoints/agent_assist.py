@@ -35,6 +35,7 @@ from app.db.models_agent import (
     ReconSession,
 )
 from app.db.models_project import Project
+from app.db.models_auth import User
 from app.api.deps import require_assist_scope
 
 from app.api.v1.endpoints.agent_schemas import (
@@ -164,6 +165,9 @@ def record_assist_environment(
         probed_by_user_id=session.environment_probed_by_user_id,
         probed_from_ip=session.environment_probed_from_ip,
         environment=EnvironmentSummary(**(session.environment or {})),
+        agent_model=session.generated_by_model,
+        agent_tool=session.generated_by_tool,
+        agent_prompt_version=session.prompt_version,
     )
 
 
@@ -248,6 +252,15 @@ def get_assist_context(
         .scalar()
         or 0
     )
+    # Agent feedback (v1.44.0): totals is documented as the authoritative count
+    # source but omitted scan_count, forcing scan-count questions onto a second
+    # call. Include it here alongside the other totals.
+    scan_count_total = (
+        db.query(func.count(models.Scan.id))
+        .filter(models.Scan.project_id == project.id)
+        .scalar()
+        or 0
+    )
 
     return {
         "prompt_version": PROMPT_VERSION,
@@ -269,6 +282,7 @@ def get_assist_context(
             "up_host_count": up_count,
             "open_port_count": open_port_count,
             "scope_count": scope_count_total,
+            "scan_count": scan_count_total,
         },
         "scopes": [
             {
@@ -357,7 +371,31 @@ def _build_assist_host_query(
     return query
 
 
-def _host_to_brief_dict(h: models.Host, port_counts: dict, vuln_map: dict) -> dict:
+def _operator_follow_map(db: Session, host_ids, operator_id) -> dict:
+    """``host_id -> the session operator's follow status`` ('watching' /
+    'in_review' / 'reviewed'). Absent = the operator doesn't follow the host
+    (equivalent to ``follow:none``). Surfaced so an assist agent can check a
+    human's review state before writing follow, instead of running three DSL
+    queries per host (agent feedback, v1.44.0)."""
+    if not host_ids or operator_id is None:
+        return {}
+    rows = (
+        db.query(models.HostFollow.host_id, models.HostFollow.status)
+        .filter(
+            models.HostFollow.host_id.in_(host_ids),
+            models.HostFollow.user_id == operator_id,
+        )
+        .all()
+    )
+    return {
+        host_id: (status.value if hasattr(status, "value") else str(status))
+        for host_id, status in rows
+    }
+
+
+def _host_to_brief_dict(
+    h: models.Host, port_counts: dict, vuln_map: dict, follow_map: dict = None
+) -> dict:
     """Serialize one host to the HostBrief-shaped dict used by the NDJSON stream."""
     vc = vuln_map.get(h.id, {})
     return {
@@ -378,10 +416,11 @@ def _host_to_brief_dict(h: models.Host, port_counts: dict, vuln_map: dict) -> di
         }
         if vc
         else None,
+        "follow": (follow_map or {}).get(h.id),
     }
 
 
-def _iter_assist_hosts_ndjson(db: Session, query: SAQuery):
+def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
     """Yield every matching host as one JSON object per line, paged so a
     project with thousands of hosts streams in bounded memory instead of
     materialising the whole ORM result set (mirrors the recon download valve).
@@ -395,8 +434,9 @@ def _iter_assist_hosts_ndjson(db: Session, query: SAQuery):
             break
         host_ids = [h.id for h in hosts]
         port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+        follow_map = _operator_follow_map(db, host_ids, operator_id)
         for h in hosts:
-            yield json.dumps(_host_to_brief_dict(h, port_counts, vuln_map)) + "\n"
+            yield json.dumps(_host_to_brief_dict(h, port_counts, vuln_map, follow_map)) + "\n"
         if len(hosts) < _PAGE:
             break
         offset += _PAGE
@@ -468,6 +508,7 @@ def list_assist_hosts(
         return []
     host_ids = [h.id for h in hosts]
     port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+    follow_map = _operator_follow_map(db, host_ids, session.started_by_id)
     result = []
     for h in hosts:
         vc = vuln_map.get(h.id, {})
@@ -490,6 +531,7 @@ def list_assist_hosts(
                 )
                 if vc
                 else None,
+                follow=follow_map.get(h.id),
             )
         )
     return result
@@ -536,7 +578,7 @@ def download_assist_hosts_ndjson(
         search=search, q=q,
     )
     return StreamingResponse(
-        _iter_assist_hosts_ndjson(db, query),
+        _iter_assist_hosts_ndjson(db, query, operator_id=session.started_by_id),
         media_type="application/x-ndjson",
         headers={
             "Content-Disposition": f"attachment; filename=assist-project-{session.project_id}-hosts.jsonl"
@@ -571,6 +613,7 @@ def get_assist_host(
     open_count = sum(1 for p in host.ports if p.state == "open")
     _, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
+    follow_map = _operator_follow_map(db, [host.id], session.started_by_id)
     return HostDetail(
         id=host.id,
         ip_address=host.ip_address,
@@ -589,6 +632,7 @@ def get_assist_host(
         )
         if vc
         else None,
+        follow=follow_map.get(host.id),
         ports=port_briefs,
     )
 
@@ -704,6 +748,19 @@ def get_assist_session_self(
         .filter(Project.id == session.project_id)
         .scalar()
     )
+    # Agent feedback (v1.44.0): the agent could only discover its write grants
+    # by *attempting* a write, and had no operator-relative context. Surface the
+    # resolved capabilities, the row-scope constraint, and the bound operator so
+    # it can reason about "what may I write, and to whose rows" up front.
+    caps = getattr(request.state, "key_capabilities", None) or frozenset()
+    constraint = getattr(request.state, "key_capability_constraint", None)
+    operator_id = getattr(request.state, "key_operator_id", None)
+    operator = None
+    if operator_id is not None:
+        operator_name = (
+            db.query(User.username).filter(User.id == operator_id).scalar()
+        )
+        operator = {"id": operator_id, "username": operator_name}
     return {
         "id": session.id,
         "project_id": session.project_id,
@@ -715,4 +772,10 @@ def get_assist_session_self(
         if session.last_activity_at
         else None,
         "environment_probed": session.environment_probed_at is not None,
+        # Read is always granted; capabilities enumerates writes only. Empty
+        # list = read-only. constraint (e.g. "assigned") narrows which rows a
+        # granted write may touch — resolved against `operator`.
+        "capabilities": sorted(caps),
+        "capability_constraint": constraint,
+        "operator": operator,
     }

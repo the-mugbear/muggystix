@@ -198,7 +198,12 @@ def test_environment_probe_returns_valid_response(client, test_project):
     resp = client.post(
         f"/api/v1/agent/assist/sessions/{body['assist_session_id']}/environment",
         headers=headers,
-        json={"os_family": "linux"},
+        json={
+            "os_family": "linux",
+            "agent_model": "gpt-5",
+            "agent_tool": "codex",
+            "agent_prompt_version": "1.44.0",
+        },
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -208,6 +213,76 @@ def test_environment_probe_returns_valid_response(client, test_project):
     # environment echo back — empty input round-trips to an empty
     # EnvironmentSummary, not a 500.
     assert isinstance(data["environment"], dict)
+    # Agent feedback (v1.44.0): the three required attribution fields must be
+    # echoed so the agent can verify they persisted (they land on separate
+    # session columns and were previously dropped from the response).
+    assert data["agent_model"] == "gpt-5"
+    assert data["agent_tool"] == "codex"
+    assert data["agent_prompt_version"] == "1.44.0"
+
+
+def test_context_totals_includes_scan_count(client, test_project):
+    body = _start_session(client, test_project.id)
+    headers = _auth_headers(body["api_key"])
+    ctx = client.get("/api/v1/agent/assist/context", headers=headers)
+    assert ctx.status_code == 200, ctx.text
+    # Agent feedback (v1.44.0): totals is the documented authoritative count
+    # source but omitted scan_count.
+    assert "scan_count" in ctx.json()["totals"]
+
+
+def test_assist_session_exposes_capabilities_and_operator(client, test_project):
+    # Read-only session: no write capabilities, but the bound operator is shown.
+    ro = _start_session(client, test_project.id)
+    ro_sess = client.get(
+        "/api/v1/agent/assist/session", headers=_auth_headers(ro["api_key"])
+    )
+    assert ro_sess.status_code == 200, ro_sess.text
+    d = ro_sess.json()
+    assert d["capabilities"] == []            # read-only
+    assert d["capability_constraint"] is None
+    assert d["operator"] is not None and d["operator"]["id"] is not None
+
+    # Write session: capabilities granted, row-scope constraint present.
+    rw = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "write session", "can_write_assigned": True},
+    )
+    assert rw.status_code == 201, rw.text
+    rw_sess = client.get(
+        "/api/v1/agent/assist/session", headers=_auth_headers(rw.json()["api_key"])
+    ).json()
+    assert rw_sess["capabilities"], "write session should enumerate capabilities"
+    assert rw_sess["capability_constraint"] == "assigned"
+
+
+def test_assist_host_dto_carries_operator_follow_field(client, test_project, db_session):
+    from app.db import models
+    host = models.Host(ip_address="10.7.7.7", state="up", project_id=test_project.id)
+    db_session.add(host)
+    db_session.commit()
+    body = _start_session(client, test_project.id)
+    headers = _auth_headers(body["api_key"])
+    listing = client.get("/api/v1/agent/assist/hosts", headers=headers)
+    assert listing.status_code == 200, listing.text
+    rows = listing.json()
+    assert rows and "follow" in rows[0]  # present (null when the operator doesn't follow)
+    detail = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers)
+    assert detail.status_code == 200
+    assert "follow" in detail.json()
+
+
+def test_write_session_prompt_has_no_read_only_contradiction(client, test_project):
+    """The 'What this session can NOT do' block used to hard-code
+    'cannot create notes / change follow — read-only' even when writes were
+    granted, contradicting the Writing section."""
+    rw = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "write session", "can_write_assigned": True},
+    )
+    instructions = rw.json()["instructions"]
+    assert "strictly read-only" not in instructions
+    assert "Writes are limited to" in instructions
 
 
 def test_assist_session_listing_includes_started_session(client, test_project):
