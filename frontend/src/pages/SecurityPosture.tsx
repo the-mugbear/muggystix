@@ -409,16 +409,22 @@ const RemediationFlow: React.FC<{ data: PostureResponse }> = ({ data }) => {
             Active backlog by age
             <InfoTip text="How long the current active findings have been open (from when each was created). A backlog skewed to the right is aging — remediation is not keeping pace." />
           </p>
-          <div className="mt-xs flex items-end gap-sm" style={{ height: 44 }}>
+          {/* Number (top) + a FIXED-height bar area + label (bottom). The bar
+              lives in its own 36px box so the column can't overflow its parent
+              and spill the number over the header above it (the parent had a
+              44px cap while number+bar+label needed ~68px). */}
+          <div className="mt-xs flex items-end gap-sm">
             {AGE_BAND_LABEL.map((b) => {
               const n = bands[b.key];
               const h = Math.round((n / maxBand) * 36);
               const old = b.key === 'gt_90d' || b.key === 'le_90d';
               return (
-                <div key={b.key} className="flex flex-1 flex-col items-center justify-end gap-xxs">
+                <div key={b.key} className="flex min-w-0 flex-1 flex-col items-center gap-xxs">
                   <span className="text-caption tabular-nums text-muted-foreground">{n}</span>
-                  <div className="w-full rounded-t"
-                    style={{ height: Math.max(2, h), backgroundColor: old && n > 0 ? 'hsl(var(--warning))' : 'hsl(var(--info))' }} />
+                  <div className="flex w-full items-end" style={{ height: 36 }}>
+                    <div className="w-full rounded-t"
+                      style={{ height: Math.max(2, h), backgroundColor: old && n > 0 ? 'hsl(var(--warning))' : 'hsl(var(--info))' }} />
+                  </div>
                   <span className="text-caption text-muted-foreground">{b.label}</span>
                 </div>
               );
