@@ -22,6 +22,7 @@ keeps the user-facing surface small.
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -45,7 +46,7 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
 from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
 from app.services.agent_session_service import create_agent_session
-from app.services.agent_prompt_service import build_assist_instructions
+from app.services.agent_prompt_service import build_assist_instructions, resolve_base_url
 
 router = APIRouter()
 
@@ -112,6 +113,11 @@ class StartAssistResponse(BaseModel):
     agent_id: int
     api_key: str
     instructions: str
+    # Ready-to-paste MCP client config (VS Code Copilot / Claude Code / Cursor
+    # all read this shape) pointing an agent at the /api/v1/mcp endpoint with
+    # this session's key — the lower-friction alternative to the curl recipe.
+    mcp_config: str
+    mcp_url: str
     # What the session may do beyond reading, so the dialog can state it back
     # to the operator rather than assuming its own checkbox took effect.
     capabilities: List[str] = []
@@ -320,6 +326,22 @@ def start_assist_session(
     db.commit()
     db.refresh(assist_session)
 
+    # MCP connection details. resolve_base_url returns ".../api/v1"; the MCP
+    # transport is mounted at /api/v1/mcp, so the endpoint is base_url + "/mcp".
+    mcp_url = f"{resolve_base_url(request)}/mcp"
+    mcp_config = json.dumps(
+        {
+            "servers": {
+                "bluestick-assist": {
+                    "type": "http",
+                    "url": mcp_url,
+                    "headers": {"X-API-Key": raw_key},
+                }
+            }
+        },
+        indent=2,
+    )
+
     return StartAssistResponse(
         assist_session_id=assist_session.id,
         project_id=project.id,
@@ -327,6 +349,8 @@ def start_assist_session(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
+        mcp_config=mcp_config,
+        mcp_url=mcp_url,
         capabilities=capabilities,
         capability_constraint=constraint,
         key_ttl_hours=resolve_ttl_hours(

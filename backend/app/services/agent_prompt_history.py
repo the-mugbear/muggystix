@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.48.0",
+        "app_version": "2.266.0",
+        "summary": (
+            "MCP transport for the assist surface. The same assist reads and "
+            "writes are now exposed as MCP tools over a Streamable-HTTP endpoint "
+            "at `/api/v1/mcp`, so MCP-capable hosts (Copilot, Claude Code, Cursor) "
+            "can call them as native tools instead of shelling `curl` — read tools "
+            "can be marked always-allow and stop prompting. The Start Assist dialog "
+            "emits a ready-to-paste `mcp_config`. Auth/scope/capability/audit are "
+            "unchanged (the MCP layer loops back into `/agent/assist/*` in-process, "
+            "forwarding X-API-Key). The AGENTS.md assist slice documents the tool "
+            "names and notes that the bulk `report-context.ndjson` stream stays a "
+            "curl download, not an MCP tool."
+        ),
+    },
+    {
         "version": "1.47.0",
         "app_version": "2.265.0",
         "summary": (

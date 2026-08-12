@@ -66,6 +66,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const [keyAcknowledged, setKeyAcknowledged] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedInstr, setCopiedInstr] = useState(false);
+  const [copiedMcp, setCopiedMcp] = useState(false);
 
   const reset = useCallback(() => {
     setPurpose('');
@@ -76,6 +77,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     setKeyAcknowledged(false);
     setCopiedKey(false);
     setCopiedInstr(false);
+    setCopiedMcp(false);
   }, []);
 
   const handleStart = async () => {
@@ -117,6 +119,13 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     if (await copyToClipboard(result.instructions)) {
       setCopiedInstr(true);
       setTimeout(() => setCopiedInstr(false), 1500);
+    }
+  };
+  const copyMcp = async () => {
+    if (!result) return;
+    if (await copyToClipboard(result.mcp_config)) {
+      setCopiedMcp(true);
+      setTimeout(() => setCopiedMcp(false), 1500);
     }
   };
 
@@ -299,6 +308,43 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   {result.instructions}
                 </div>
               </div>
+              {result.mcp_config ? (
+                <div>
+                  <div className="mb-xxs flex items-center justify-between gap-sm">
+                    <p className="min-w-0 text-metadata font-semibold">
+                      Connect via MCP (Copilot / Claude Code / Cursor)
+                    </p>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={copyMcp}
+                          aria-label="Copy MCP configuration"
+                        >
+                          {copiedMcp ? (
+                            <CheckCircle2 className="size-4 text-success" aria-hidden />
+                          ) : (
+                            <Copy className="size-4" aria-hidden />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {copiedMcp ? 'Copied!' : 'Copy MCP config'}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <p className="mb-xxs text-caption text-muted-foreground">
+                    Lower-friction alternative to the curl recipe: paste this into your
+                    agent&rsquo;s MCP config (VS Code{' '}
+                    <span className="font-mono">.vscode/mcp.json</span>), then mark the
+                    read tools &ldquo;always allow&rdquo; so queries run without a prompt.
+                  </p>
+                  <div className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control border border-border bg-accent p-sm font-mono text-caption">
+                    {result.mcp_config}
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </DialogBody>

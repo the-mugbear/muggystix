@@ -15,6 +15,10 @@ from app.api.v1.endpoints import (
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
     agent_assist, assist,
+    # MCP (Model Context Protocol) front door onto the assist surface — a
+    # tools-only Streamable-HTTP JSON-RPC endpoint that loops back into the
+    # `/agent/assist/*` endpoints in-process (auth/audit reused, no new dep).
+    mcp_assist,
     # v2.24.0 — human-facing read endpoint for the agent API call log.
     agent_activity,
     # v2.30.0 — unified agent-session timeline (drives v3 UI).
@@ -84,6 +88,10 @@ api_router.include_router(agent_test_plans.router, prefix="/agent", tags=["agent
 api_router.include_router(agent_execution.router, prefix="/agent", tags=["agent-execution"])
 api_router.include_router(agent_recon.router, prefix="/agent", tags=["agent-recon"])
 api_router.include_router(agent_assist.router, prefix="/agent", tags=["agent-assist"])
+# MCP transport lives at /api/v1/mcp — unauthenticated at the FastAPI layer
+# (initialize/tools/list leak nothing); tools/call forwards X-API-Key to the
+# loopback assist endpoints, which enforce auth/scope/capability.
+api_router.include_router(mcp_assist.router, prefix="/mcp", tags=["mcp"])
 # Agent feedback ingest — same API-key auth path as /agent/.
 api_router.include_router(feedback.agent_feedback_router, prefix="/agent", tags=["agent-feedback"])
 # Admin-only feedback triage (JWT).  Lives at /feedback rather than under
