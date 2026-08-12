@@ -64,11 +64,48 @@ const formatAge = (iso: string | null): string | null => {
  *  client evidence that was true six months ago without knowing it. */
 const STALE_DAYS = 180;
 
-const isStale = (iso: string | null): boolean => {
+/** True when an attribution lookup is old enough to re-verify before citing. */
+export const attributionIsStale = (iso: string | null | undefined): boolean => {
   if (!iso) return false;
   const then = new Date(iso).getTime();
   return !Number.isNaN(then) && Date.now() - then > STALE_DAYS * 86_400_000;
 };
+
+/** The cert names one org and the registration another — the scope-validation
+ *  signal. Substring either way, since one is often a parent/brand of the
+ *  other ("Amazon" vs "Amazon.com, Inc."). */
+export function certRegistrationDisagree(
+  attributions: NetworkAttribution[] = [],
+  certOrgs: HostCertOrg[] = [],
+): boolean {
+  const registeredOrgs = attributions
+    .map((a) => a.org_name?.toLowerCase().trim())
+    .filter((v): v is string => !!v);
+  const certOrgNames = certOrgs.map((c) => c.org.toLowerCase().trim());
+  return (
+    registeredOrgs.length > 0 &&
+    certOrgNames.length > 0 &&
+    !certOrgNames.some((cert) =>
+      registeredOrgs.some((reg) => reg.includes(cert) || cert.includes(reg)),
+    )
+  );
+}
+
+/** True when the Provenance card holds MORE than the one-line owner summary the
+ *  host header already shows — so it's worth rendering as its own card. When
+ *  false, a single fresh attribution is fully captured by the header line and
+ *  the card would be redundant chrome. Cert data, a second block, or a stale
+ *  lookup (all things the header omits, and the last a signal to act on) tip it
+ *  back to worth-showing. */
+export function provenanceExceedsSummary(
+  attributions: NetworkAttribution[] = [],
+  certOrgs: HostCertOrg[] = [],
+  certStatus: HostCertStatus[] = [],
+): boolean {
+  if (certOrgs.length > 0 || certStatus.length > 0) return true;
+  if (attributions.length > 1) return true;
+  return attributions.some((a) => attributionIsStale(a.looked_up_at));
+}
 
 export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
   attributions = [],
@@ -81,16 +118,7 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
 
   // Disagreement between an independently-validated cert and a self-declared
   // registration is the signal worth raising.
-  const registeredOrgs = attributions
-    .map((a) => a.org_name?.toLowerCase().trim())
-    .filter((v): v is string => !!v);
-  const certOrgNames = certOrgs.map((c) => c.org.toLowerCase().trim());
-  const disagrees =
-    registeredOrgs.length > 0 &&
-    certOrgNames.length > 0 &&
-    !certOrgNames.some((cert) =>
-      registeredOrgs.some((reg) => reg.includes(cert) || cert.includes(reg)),
-    );
+  const disagrees = certRegistrationDisagree(attributions, certOrgs);
 
   return (
     <Card id="host-detail-provenance">
@@ -138,9 +166,9 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
               {a.registry ? `${a.registry} · ` : ''}
               {a.handle ? `${a.handle} · ` : ''}
               {a.looked_up_at ? (
-                <span className={isStale(a.looked_up_at) ? 'text-warning' : undefined}>
+                <span className={attributionIsStale(a.looked_up_at) ? 'text-warning' : undefined}>
                   looked up {formatAge(a.looked_up_at)}
-                  {isStale(a.looked_up_at) && ' — re-check before citing'}
+                  {attributionIsStale(a.looked_up_at) && ' — re-check before citing'}
                 </span>
               ) : (
                 'lookup date unknown'

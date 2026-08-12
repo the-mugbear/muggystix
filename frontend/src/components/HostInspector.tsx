@@ -100,7 +100,7 @@ import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
-import ProvenanceCard from './host-inspector/ProvenanceCard';
+import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
 import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
 import { groupVulnerabilities } from '../utils/vulnGrouping';
@@ -945,6 +945,31 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   const webLinks: HostWebLink[] = getHostWebLinks(host);
   const primaryWebLink = webLinks[0] ?? null;
+  // RDAP attribution surfaced at identity level. The most-specific block is
+  // returned first, so [0] is the one to headline; the full Provenance card
+  // renders below only when it holds more than this one line.
+  const attributions = host.attributions ?? [];
+  const primaryAttribution = attributions[0] ?? null;
+  const attributionStale = attributionIsStale(primaryAttribution?.looked_up_at);
+  const registeredTooltip = primaryAttribution
+    ? [
+        primaryAttribution.org_name?.trim(),
+        primaryAttribution.asn != null
+          ? `AS${primaryAttribution.asn}${primaryAttribution.as_name ? ` (${primaryAttribution.as_name})` : ''}`
+          : null,
+        primaryAttribution.country,
+        primaryAttribution.registry,
+        primaryAttribution.handle,
+        primaryAttribution.cloud_provider
+          ? `${primaryAttribution.cloud_provider}${primaryAttribution.cloud_region ? ` · ${primaryAttribution.cloud_region}` : ''}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : undefined;
+  const showProvenanceCard = provenanceExceedsSummary(
+    host.attributions, host.cert_orgs, host.cert_status,
+  );
   const openPorts = host.ports.filter((port) => port.state === 'open');
   // connectionHelpersByPort is computed once per host above the early
   // returns (see note near noteThreadGroups) to keep the hook count stable.
@@ -1143,7 +1168,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 reserved for genuine alerts (SMB disabled, unassigned owner). */}
             <dl className="grid gap-x-lg gap-y-sm sm:grid-cols-2">
               <div className="flex gap-sm">
-                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">State</dt>
+                <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">State</dt>
                 <dd className="min-w-0 text-metadata">
                   <span className="capitalize text-foreground">{host.state || 'unknown'}</span>
                   {host.state_reason && (
@@ -1152,7 +1177,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </dd>
               </div>
               <div className="flex gap-sm">
-                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">OS</dt>
+                <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">OS</dt>
                 <dd className="min-w-0 truncate text-metadata text-foreground"
                   title={[
                     [host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · '),
@@ -1185,7 +1210,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </dd>
               </div>
               <div className="flex gap-sm">
-                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">SMB</dt>
+                <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">SMB</dt>
                 <dd className="min-w-0 text-metadata">
                   {host.smb_signing === 'disabled' ? (
                     <span className="inline-flex items-center gap-xxs font-medium text-destructive" title="SMB message signing disabled — NTLM relay-vulnerable">
@@ -1199,7 +1224,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </dd>
               </div>
               <div className="flex gap-sm">
-                <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Owner</dt>
+                <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Assignee</dt>
                 <dd className="min-w-0 truncate text-metadata">
                   {host.assignees && host.assignees.length > 0 ? (
                     <span className="text-foreground" title={host.assignees.map((a) => a.name).join(', ')}>
@@ -1208,9 +1233,47 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   ) : <span className="text-warning">unassigned</span>}
                 </dd>
               </div>
+              {/* Registered owner of the host's netblock (RDAP). Distinct from
+                  "Assignee" above (a person); this is the outside world's answer
+                  to "whose is this?" — the scope-validation signal, surfaced at
+                  identity level. The full Provenance card renders below only
+                  when it holds more than this one line (see
+                  provenanceExceedsSummary). */}
+              {primaryAttribution && (
+                <div className="flex gap-sm sm:col-span-2">
+                  <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Registered</dt>
+                  <dd className="flex min-w-0 flex-wrap items-center gap-xs text-metadata"
+                    title={registeredTooltip}>
+                    <span className="min-w-0 truncate text-foreground">
+                      {primaryAttribution.org_name?.trim() || 'Registrant not published'}
+                    </span>
+                    {primaryAttribution.country && (
+                      <span className="shrink-0 rounded-chip border border-border px-xs text-caption text-muted-foreground">
+                        {primaryAttribution.country}
+                      </span>
+                    )}
+                    {primaryAttribution.asn != null && (
+                      <span className="shrink-0 text-caption text-muted-foreground">
+                        AS{primaryAttribution.asn}
+                      </span>
+                    )}
+                    {primaryAttribution.cloud_provider && (
+                      <span className="shrink-0 rounded-chip border border-info/40 px-xs text-caption text-info">
+                        {primaryAttribution.cloud_provider.toUpperCase()}
+                      </span>
+                    )}
+                    {attributionStale && (
+                      <span className="shrink-0 text-caption text-warning"
+                        title="This registration lookup is over 180 days old — re-check before citing.">
+                        · stale
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              )}
               {host.tags && host.tags.length > 0 && (
                 <div className="flex gap-sm sm:col-span-2">
-                  <dt className="w-14 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Tags</dt>
+                  <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Tags</dt>
                   <dd className="flex min-w-0 flex-wrap gap-xxs">
                     {host.tags.map((tag) => (
                       <span key={tag.id} className="rounded-chip border border-border px-xs text-caption text-foreground"
@@ -1869,12 +1932,17 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       </Dialog>
 
       {/* Where this host is registered and hosted — the outside world's answer
-          to "is this the client's?", vs the scope's own CIDR list. */}
-      <ProvenanceCard
-        attributions={host.attributions}
-        certOrgs={host.cert_orgs}
-        certStatus={host.cert_status}
-      />
+          to "is this the client's?", vs the scope's own CIDR list. A single
+          fresh attribution is already shown as the "Registered" line in the
+          identity block above, so the card renders only when it adds more:
+          cert data, a second block, or a stale lookup to re-verify. */}
+      {showProvenanceCard && (
+        <ProvenanceCard
+          attributions={host.attributions}
+          certOrgs={host.cert_orgs}
+          certStatus={host.cert_status}
+        />
+      )}
 
       {/* This host's findings, inline — appears once a note here is promoted. */}
       <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
