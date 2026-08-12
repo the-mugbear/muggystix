@@ -19,6 +19,8 @@ import {
   downloadReportJob,
   listReportJobs,
   dismissReportJob,
+  retryReportJob,
+  cancelReportJob,
   type AsyncReportFormat,
   type ReportJob,
 } from '../services/api';
@@ -134,6 +136,23 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
       /* non-fatal — the tray just stays as-is */
     }
   }, []);
+
+  // Retry / cancel a job from the recent-jobs tray. A 409 means the job's state
+  // changed under us (e.g. the worker just claimed a queued job) — surface it
+  // and refresh so the row reflects reality.
+  const runJobAction = React.useCallback(
+    async (action: (id: number) => Promise<ReportJob>, jobId: number) => {
+      try {
+        await action(jobId);
+      } catch (e) {
+        const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        setError(detail || 'That action could not be completed — the job may have changed state.');
+      } finally {
+        refreshRecentJobs();
+      }
+    },
+    [refreshRecentJobs],
+  );
 
   // Clear a prior partial-export warning whenever the dialog is reopened, and
   // load the recent-jobs tray.
@@ -451,12 +470,18 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                       <Loader2 className="size-3.5 shrink-0 animate-spin text-info" aria-hidden />
                     ) : job.status === 'completed' ? (
                       <Download className="size-3.5 shrink-0 text-success" aria-hidden />
-                    ) : (
+                    ) : job.status === 'failed' ? (
                       <AlertCircle className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    ) : (
+                      // cancelled / other terminal — neutral, not an error.
+                      <AlertCircle className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     )}
                     <span className="min-w-0 flex-1 truncate">
                       <span className="font-medium">{job.format}</span>{' '}
                       <span className="text-muted-foreground">· {job.report_type}</span>
+                      {(job.retry_count ?? 0) > 0 && (
+                        <span className="text-muted-foreground"> · retried {job.retry_count}×</span>
+                      )}
                       {job.status === 'failed' && (job.error_message || job.last_error) && (
                         <span className="block truncate text-destructive">
                           {job.error_message || job.last_error}
@@ -469,6 +494,8 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                           ? 'success'
                           : job.status === 'failed'
                           ? 'destructive'
+                          : job.status === 'cancelled'
+                          ? 'secondary'
                           : 'info'
                       }
                       className="shrink-0"
@@ -476,6 +503,28 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                       {job.status}
                       {job.truncated ? ' · capped' : ''}
                     </Badge>
+                    {job.status === 'failed' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0"
+                        aria-label={`Retry report job ${job.id}`}
+                        onClick={() => runJobAction(retryReportJob, job.id)}
+                      >
+                        Retry
+                      </Button>
+                    )}
+                    {job.status === 'queued' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0"
+                        aria-label={`Cancel report job ${job.id}`}
+                        onClick={() => runJobAction(cancelReportJob, job.id)}
+                      >
+                        Cancel
+                      </Button>
+                    )}
                     {job.status === 'completed' && (
                       <Button
                         size="sm"

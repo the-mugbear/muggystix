@@ -85,6 +85,65 @@ class ReportJobService:
         finally:
             db.close()
 
+    def retry_job(self, db, *, job_id: int, project_id: int) -> Optional[ReportJob]:
+        """Re-queue a FAILED report job so the worker runs it again.
+
+        Returns None if the job isn't in this project (endpoint → 404). Raises
+        ValueError if it isn't in a retryable ('failed') state (endpoint → 409).
+        Clears the prior error + lifecycle stamps so the row reads as a fresh
+        attempt; retry_count is left intact as the running tally of prior
+        (auto-reap + manual) retries.
+        """
+        job = (
+            db.query(ReportJob)
+            .filter(ReportJob.id == job_id, ReportJob.project_id == project_id)
+            .first()
+        )
+        if job is None:
+            return None
+        if job.status != "failed":
+            raise ValueError(
+                f"Only a failed job can be retried (this one is '{job.status}')."
+            )
+        job.status = "queued"
+        job.message = "Re-queued by operator"
+        job.error_message = None
+        job.last_error = None
+        job.started_at = None
+        job.completed_at = None
+        job.dismissed_at = None
+        db.commit()
+        db.refresh(job)
+        self.enqueue_job(job.id)
+        return job
+
+    def cancel_job(self, db, *, job_id: int, project_id: int) -> Optional[ReportJob]:
+        """Cancel a QUEUED report job before the worker claims it.
+
+        Only 'queued' is cancellable: a 'processing' job is already running on
+        the worker (there's no cooperative-cancel hook), and terminal states are
+        done. ``poll_and_run_one`` claims ``status = 'queued'`` only, so a
+        'cancelled' row is simply never picked up. Returns None if not found in
+        the project (→404); raises ValueError if not queued (→409).
+        """
+        job = (
+            db.query(ReportJob)
+            .filter(ReportJob.id == job_id, ReportJob.project_id == project_id)
+            .first()
+        )
+        if job is None:
+            return None
+        if job.status != "queued":
+            raise ValueError(
+                f"Only a queued job can be cancelled (this one is '{job.status}')."
+            )
+        job.status = "cancelled"
+        job.message = "Cancelled by operator"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(job)
+        return job
+
     # --- worker side ------------------------------------------------------
 
     def poll_and_run_one(self) -> bool:

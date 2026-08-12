@@ -508,7 +508,7 @@ export interface ReportJob {
   project_id: number;
   format: string;
   report_type: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
   message?: string | null;
   error_message?: string | null;
   result_filename?: string | null;
@@ -566,6 +566,19 @@ export const listReportJobs = async (limit = 20): Promise<ReportJob[]> => {
 
 export const dismissReportJob = async (jobId: number): Promise<ReportJob> => {
   const response = await api.post(`${p()}/reports/jobs/${jobId}/dismiss`);
+  return response.data as ReportJob;
+};
+
+// Re-queue a failed report job (409 if it isn't in a failed state).
+export const retryReportJob = async (jobId: number): Promise<ReportJob> => {
+  const response = await api.post(`${p()}/reports/jobs/${jobId}/retry`);
+  return response.data as ReportJob;
+};
+
+// Cancel a queued report job before the worker claims it (409 if already
+// processing or terminal).
+export const cancelReportJob = async (jobId: number): Promise<ReportJob> => {
+  const response = await api.post(`${p()}/reports/jobs/${jobId}/cancel`);
   return response.data as ReportJob;
 };
 

@@ -121,3 +121,61 @@ def test_report_cleanup_removes_expired(db_session, test_project):
     assert service.cleanup_expired() == 1
     assert db_session.query(ReportJob).filter(ReportJob.id == job_id).first() is None
     assert not artifact.exists()
+
+
+# ---------------------------------------------------------------------------
+# Operator recovery actions: retry a failed job, cancel a queued one.
+# ---------------------------------------------------------------------------
+
+def _job(db, project_id, status, **over):
+    job = ReportJob(
+        project_id=project_id, format="json", report_type="comprehensive",
+        filters={}, status=status, **over,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def test_retry_requeues_a_failed_job(db_session, test_project):
+    job = _job(db_session, test_project.id, "failed",
+               error_message="boom", last_error="boom", message="failed")
+    out = ReportJobService().retry_job(db_session, job_id=job.id, project_id=test_project.id)
+    assert out.status == "queued"
+    assert out.error_message is None
+    assert out.last_error is None
+    assert out.completed_at is None
+
+
+def test_retry_rejects_a_non_failed_job(db_session, test_project):
+    job = _job(db_session, test_project.id, "completed")
+    with pytest.raises(ValueError):
+        ReportJobService().retry_job(db_session, job_id=job.id, project_id=test_project.id)
+
+
+def test_retry_unknown_job_returns_none(db_session, test_project):
+    assert ReportJobService().retry_job(
+        db_session, job_id=999999, project_id=test_project.id
+    ) is None
+
+
+def test_cancel_marks_a_queued_job_cancelled(db_session, test_project):
+    job = _job(db_session, test_project.id, "queued")
+    out = ReportJobService().cancel_job(db_session, job_id=job.id, project_id=test_project.id)
+    assert out.status == "cancelled"
+
+
+def test_cancel_rejects_a_processing_job(db_session, test_project):
+    # A processing job is already running on the worker — no cooperative cancel.
+    job = _job(db_session, test_project.id, "processing")
+    with pytest.raises(ValueError):
+        ReportJobService().cancel_job(db_session, job_id=job.id, project_id=test_project.id)
+
+
+def test_cancelled_job_is_not_claimed_by_the_worker(db_session, test_project):
+    # The claim filters status='queued', so a cancelled row is never picked up.
+    job = _job(db_session, test_project.id, "queued")
+    ReportJobService().cancel_job(db_session, job_id=job.id, project_id=test_project.id)
+    db_session.refresh(job)
+    assert job.status == "cancelled"

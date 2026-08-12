@@ -244,3 +244,40 @@ def dismiss_report_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+@router.post("/jobs/{job_id}/retry", response_model=ReportJobSchema)
+def retry_report_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Re-queue a failed report job. 409 if it isn't in a failed state."""
+    service = ReportJobService()
+    try:
+        job = service.retry_job(db, job_id=job_id, project_id=project.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    return job
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=ReportJobSchema)
+def cancel_report_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Cancel a queued report job before the worker claims it. 409 if it's
+    already processing or in a terminal state."""
+    service = ReportJobService()
+    try:
+        job = service.cancel_job(db, job_id=job_id, project_id=project.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    return job
