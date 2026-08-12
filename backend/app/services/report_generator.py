@@ -446,6 +446,52 @@ class ReportGenerator:
 
         yield self._html_tail()
 
+    @staticmethod
+    def _dossier_eager_options():
+        """Eager loads a full per-host dossier needs. Shared so the streamed
+        record path and the HTML path can't drift on what they hydrate."""
+        return (
+            selectinload(models.Host.ports).selectinload(models.Port.scripts),
+            selectinload(models.Host.host_scripts),
+            selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
+            selectinload(models.Host.last_updated_scan),
+            selectinload(models.Host.notes).selectinload(models.Annotation.author),
+            selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
+            selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
+        )
+
+    def iter_host_records(self, host_id_query, chunk_size: int = None):
+        """Yield the full per-host dossier DICT for each host in
+        ``host_id_query`` (a query/subquery yielding already project- and
+        filter-scoped host ids), streamed in id-ordered chunks.
+
+        This is the SAME correlated dossier the HTML/JSON exports build
+        (identity, ports, findings, notes, discoveries, canonical/execution
+        findings, provenance, tags, review state) — exposed so a terminal-side
+        agent can stream it to a file and populate a report template. There is
+        **no MAX_REPORT_HOSTS cap**: coverage must be complete for a report, and
+        it's safe because only one ``chunk_size`` slice is hydrated at a time
+        (``expunge_all`` after each), so a tens-of-thousands-host project streams
+        in bounded memory. The caller downloads it to disk, never into context.
+        """
+        chunk_size = chunk_size or settings.REPORT_STREAM_CHUNK
+        host_ids = [row[0] for row in host_id_query.order_by(models.Host.id).all()]
+        for start in range(0, len(host_ids), chunk_size):
+            chunk_ids = host_ids[start:start + chunk_size]
+            hosts = (
+                self.db.query(models.Host)
+                .filter(models.Host.id.in_(chunk_ids))
+                .options(*self._dossier_eager_options())
+                .all()
+            )
+            order = {hid: i for i, hid in enumerate(chunk_ids)}
+            hosts.sort(key=lambda h: order.get(h.id, 0))
+            context = self._build_export_context(hosts)
+            for host in hosts:
+                yield self._build_host_export_record(host, context, {})
+            # Release the chunk's ORM objects so peak memory stays ~one chunk.
+            self.db.expunge_all()
+
     def _stats_from_records(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Summary aggregates for the non-streaming HTML path, from the records
         already in hand."""

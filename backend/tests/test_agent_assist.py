@@ -16,6 +16,7 @@ Covers the four invariants the workflow boundary depends on:
 
 from datetime import datetime, timezone
 
+import json
 import pytest
 
 
@@ -445,3 +446,37 @@ def test_assist_findings_404_for_host_outside_project(client, test_project):
         headers=_auth_headers(body["api_key"]),
     )
     assert resp.status_code == 404
+
+
+def test_assist_report_context_streams_full_dossier(client, test_project, db_session):
+    """The scale-safe report data source: streams the complete per-host dossier
+    (identity, ports, findings, notes, …) one JSON object per line, uncapped."""
+    from app.db import models
+    from app.db.models_vulnerability import (
+        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+    )
+    host = models.Host(ip_address="10.6.6.6", state="up", project_id=test_project.id)
+    scan = models.Scan(project_id=test_project.id, filename="r.nessus", scan_type="nessus", tool_name="nessus")
+    db_session.add_all([host, scan])
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.refresh(scan)
+    db_session.add(Vulnerability(
+        host_id=host.id, scan_id=scan.id, title="Report vuln",
+        severity=VulnerabilitySeverity.HIGH, source=VulnerabilitySource.NESSUS, cve_id="CVE-2024-9",
+    ))
+    db_session.commit()
+
+    body = _start_session(client, test_project.id)
+    resp = client.get(
+        "/api/v1/agent/assist/report-context.ndjson",
+        headers=_auth_headers(body["api_key"]),
+    )
+    assert resp.status_code == 200, resp.text
+    assert "ndjson" in resp.headers["content-type"]
+    lines = [json.loads(l) for l in resp.text.strip().split("\n") if l]
+    rec = next(r for r in lines if r["host_id"] == host.id)
+    assert rec["identity"]["ip_address"] == "10.6.6.6"
+    assert isinstance(rec["ports"], list)
+    assert len(rec["vulnerabilities"]) >= 1        # the finding is in the dossier
+    assert "dossier_summary" in rec        # full report dossier, not just counts

@@ -21,6 +21,21 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.47.0",
+        "app_version": "2.265.0",
+        "summary": (
+            "Report-generation data source for assist. New "
+            "`GET /agent/assist/report-context.ndjson` streams the COMPLETE "
+            "per-host dossier (identity, ports, findings-with-evidence, notes, "
+            "discoveries, canonical/execution findings, provenance, tags, review "
+            "state) — one JSON object per host, uncapped, memory-bounded — the "
+            "same correlated record the server-side report builds. The prompt "
+            "directs report-writing there (download to a file, populate a "
+            "template) instead of stitching per-host calls, so a project with "
+            "tens of thousands of hosts can be reported completely."
+        ),
+    },
+    {
         "version": "1.46.0",
         "app_version": "2.264.0",
         "summary": (

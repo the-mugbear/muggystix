@@ -745,6 +745,80 @@ def get_assist_host_findings(
     )
 
 
+@router.get(
+    "/assist/report-context.ndjson",
+    summary="Stream the complete per-host report dossier (NDJSON, download to disk)",
+    response_class=StreamingResponse,
+)
+def download_assist_report_context(
+    request: Request,
+    state: Optional[str] = Query(None),
+    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
+    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
+    has_critical_vulns: Optional[bool] = Query(None),
+    has_high_vulns: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    q: Optional[str] = Query(None, description="Boolean query DSL — same vocabulary as /assist/hosts."),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """The data source for agent-driven report generation, at scale.
+
+    Streams the COMPLETE per-host report dossier for every matching host, one
+    JSON object per line, **uncapped** — the same correlated record the
+    server-side report builds: identity, ports (transport + service), findings
+    (severity / CVE / plugin / affected port / evidence / remediation), notes,
+    scan discoveries, canonical + execution findings, provenance, tags, and the
+    operator's review state. Same discrete filters + ``q`` DSL as
+    ``/assist/hosts``.
+
+    Safe on a tens-of-thousands-host project: the server hydrates only one chunk
+    at a time (peak memory ~one chunk), so there is no host cap. Redirect it to
+    a file and populate your report template from that file — do NOT read the
+    stream whole into context: ``curl -sk -H 'X-API-Key: <key>'
+    '<base>/agent/assist/report-context.ndjson' -o report-context.jsonl``.
+    """
+    from app.services.report_generator import ReportGenerator  # heavy stack — lazy
+
+    session = _load_assist_session(db, request)
+    operator = (
+        db.query(User).filter(User.id == session.started_by_id).first()
+        if session.started_by_id else None
+    )
+    if operator is None:
+        # The dossier's review state is operator-relative; without a bound
+        # operator there's nobody to resolve it against (mirrors the follow:/
+        # assigned: DSL guard).
+        raise HTTPException(
+            status_code=400,
+            detail="Assist session has no bound operator; cannot build report context.",
+        )
+
+    query = _build_assist_host_query(
+        db, session,
+        state=state, ports=ports, services=services, subnets=subnets,
+        has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
+        search=search, q=q,
+    )
+    host_id_query = query.with_entities(models.Host.id)
+    generator = ReportGenerator(db, current_user=operator, project_id=session.project_id)
+
+    def _stream():
+        for record in generator.iter_host_records(host_id_query):
+            yield json.dumps(record, default=str) + "\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=assist-project-{session.project_id}-report-context.jsonl"
+            ),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scopes — list
 # ---------------------------------------------------------------------------
