@@ -200,3 +200,63 @@ def test_the_list_filters_by_effective_status(client, db_session, test_project):
     assert live in [r["id"] for r in active]
     assert dead not in [r["id"] for r in active]
     assert dead in [r["id"] for r in ended]
+
+
+def test_status_filter_paginates_rather_than_slicing_a_prefix(
+    client, db_session, test_project
+):
+    """The filter and the pagination have to agree. The first shape took the
+    newest N rows, derived the status in Python, then sliced — so on a project
+    with more sessions than that window, an older `ended` one was unreachable,
+    silently. Deriving in SQL means offset/limit page the filtered set."""
+    from app.db.models_auth import APIKey
+
+    ids = [_start(client, test_project.id)["assist_session_id"] for _ in range(5)]
+    # Kill the two OLDEST sessions' keys — the ones a prefix-slice would miss.
+    db_session.query(APIKey).filter(APIKey.assist_session_id.in_(ids[:2])).update(
+        {"expires_at": datetime.now(timezone.utc)}, synchronize_session=False
+    )
+    db_session.commit()
+
+    def page(**params):
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        return client.get(
+            f"/api/v1/projects/{test_project.id}/assist/sessions?{qs}"
+        ).json()
+
+    # Paging the filtered set: one row per page, and the two pages differ.
+    first = page(status="ended", limit=1, offset=0)
+    second = page(status="ended", limit=1, offset=1)
+    assert len(first) == 1 and len(second) == 1
+    assert first[0]["id"] != second[0]["id"]
+    assert {first[0]["id"], second[0]["id"]} == set(ids[:2])
+    assert all(r["status"] == "ended" for r in first + second)
+
+    # And the live ones are reachable through the same paging on the other side.
+    active = page(status="active", limit=50, offset=0)
+    assert {r["id"] for r in active} == set(ids[2:])
+
+
+def test_one_definition_of_active_across_list_and_detail(
+    client, db_session, test_project
+):
+    """List and detail briefly derived this separately. Two surfaces disagreeing
+    about whether a session is live is the failure that matters — the panel says
+    you hold a live key, the page says the session is over."""
+    from app.db.models_auth import APIKey
+
+    sid = _start(client, test_project.id)["assist_session_id"]
+    db_session.query(APIKey).filter(APIKey.assist_session_id == sid).update(
+        {"expires_at": datetime.now(timezone.utc)}, synchronize_session=False
+    )
+    db_session.commit()
+
+    listed = next(
+        r
+        for r in client.get(
+            f"/api/v1/projects/{test_project.id}/assist/sessions"
+        ).json()
+        if r["id"] == sid
+    )
+    detail = _detail(client, test_project.id, sid)
+    assert listed["status"] == detail["status"] == "ended"

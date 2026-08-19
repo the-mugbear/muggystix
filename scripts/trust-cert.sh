@@ -114,6 +114,41 @@ CERT_HASH="$(openssl x509 -hash -noout -in "$CERT_DEST")"
 cp "$CERT_DEST" "$HASH_DIR/bluestick.pem"
 ln -sf bluestick.pem "$HASH_DIR/$CERT_HASH.0"
 
+# SSL_CERT_DIR is read by EVERY OpenSSL-linked program in the shell that exports
+# it — curl, git, python — not just the MCP client. Whether OpenSSL treats it as
+# an addition to the compiled-in default or a replacement depends on how each
+# binary was built, so a directory holding only our certificate is a loaded gun:
+# on a build that replaces, public TLS breaks for every tool in that shell, and
+# the export was recommended for a shell profile.
+#
+# Mirroring the system anchors in here makes the directory a SUPERSET either
+# way, so the behaviour no longer has to be guessed per binary. Symlinks, so
+# a system trust-store update is picked up without re-running this.
+SYSTEM_CERT_DIR=""
+for candidate in \
+    "$(openssl version -d 2>/dev/null | sed -n 's/^OPENSSLDIR: "\(.*\)"$/\1/p')/certs" \
+    /etc/ssl/certs \
+    /etc/pki/tls/certs
+do
+    if [[ -d "$candidate" ]] && compgen -G "$candidate/*.0" >/dev/null 2>&1; then
+        SYSTEM_CERT_DIR="$candidate"
+        break
+    fi
+done
+
+MIRRORED=0
+if [[ -n "$SYSTEM_CERT_DIR" && "$SYSTEM_CERT_DIR" != "$HASH_DIR" ]]; then
+    for link in "$SYSTEM_CERT_DIR"/*.0; do
+        target="$(readlink -f "$link" 2>/dev/null || echo "$link")"
+        [[ -f "$target" ]] || continue
+        name="$(basename "$link")"
+        # Never shadow our own hash link if a system anchor collides with it.
+        [[ "$name" == "$CERT_HASH.0" ]] && continue
+        ln -sfn "$target" "$HASH_DIR/$name"
+        MIRRORED=$((MIRRORED + 1))
+    done
+fi
+
 SUBJECT="$(openssl x509 -in "$CERT_DEST" -noout -subject | sed 's/^subject=//')"
 EXPIRES="$(openssl x509 -in "$CERT_DEST" -noout -enddate | sed 's/^notAfter=//')"
 # The check that makes a fetched certificate trustworthy: compare this against
@@ -133,6 +168,18 @@ Installed this deployment's certificate:
 
 Compare that sha256 against the one on the deployment's /reference/mcp page
 before you rely on this — especially if the certificate was downloaded.
+$(if [[ "$MIRRORED" -gt 0 ]]; then
+    echo "  The $MIRRORED system trust anchors from $SYSTEM_CERT_DIR are mirrored"
+    echo "  into that directory, so SSL_CERT_DIR ADDS this certificate rather than"
+    echo "  replacing your system trust — public TLS keeps working."
+  else
+    echo "  ⚠ Could not find a system trust directory to mirror, so this directory"
+    echo "  holds only BlueStick's certificate. Some OpenSSL builds treat"
+    echo "  SSL_CERT_DIR as a REPLACEMENT, which would break public TLS for every"
+    echo "  program in a shell that exports it. Prefer scoping it to the client:"
+    echo "      SSL_CERT_DIR=$HASH_DIR codex"
+    echo "  rather than exporting it in your shell profile."
+  fi)
 
 Add these to your shell profile (~/.bashrc, ~/.zshrc):
 

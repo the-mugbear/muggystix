@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -33,18 +33,41 @@ from app.db.models_auth import APIKey
 logger = logging.getLogger(__name__)
 
 
-def lapse_expired_assist_sessions(db: Session) -> int:
-    """End every active assist session whose keys have all expired.
+def effective_status(
+    stored_status: str,
+    key_expires_at: Optional[datetime],
+    now: Optional[datetime] = None,
+) -> str:
+    """What the session's status *is*, given the state of its key.
 
-    Returns the number ended.  Idempotent: a session already `ended` is not
-    matched, so concurrent sweepers can't double-end one.
+    The stored column is only eventually correct: the sweep below converges it
+    hourly, so between a key expiring and the next pass the row still reads
+    `active` while nothing can use it.  Callers therefore report the derived
+    value, and the API is authoritative over the column.
+
+    Lives here, next to the sweep that writes the column, because this is the
+    definition of "active" — the UI filters on it, the start dialog counts it,
+    and the sweep converges toward it.  It was briefly implemented twice in
+    ``assist.py`` (list and detail), which is one edit away from two surfaces
+    disagreeing about whether a session is live.
     """
-    now = datetime.now(timezone.utc)
+    if stored_status != AssistSessionStatus.ACTIVE.value:
+        return stored_status
+    now = now or datetime.now(timezone.utc)
+    if key_expires_at is None or key_expires_at <= now:
+        return AssistSessionStatus.ENDED.value
+    return stored_status
 
-    # Latest expiry across the session's still-active keys.  A session can hold
-    # more than one (a re-mint on resume), and access stops when the LAST one
-    # dies — taking the earliest would end sessions that are still usable.
-    live_expiry = (
+
+def live_key_expiry_subquery(db: Session):
+    """Per-session ``max(expires_at)`` across still-active keys, as a subquery.
+
+    A session can hold more than one key (a re-mint on resume) and access stops
+    when the LAST one dies, so MAX — taking the earliest would call a usable
+    session dead.  Exposed as a subquery so callers can JOIN it and filter on
+    the derived status in SQL rather than fetching rows to filter in Python.
+    """
+    return (
         db.query(
             APIKey.assist_session_id.label("session_id"),
             func.max(APIKey.expires_at).label("expires_at"),
@@ -56,6 +79,17 @@ def lapse_expired_assist_sessions(db: Session) -> int:
         .group_by(APIKey.assist_session_id)
         .subquery()
     )
+
+
+def lapse_expired_assist_sessions(db: Session) -> int:
+    """End every active assist session whose keys have all expired.
+
+    Returns the number ended.  Idempotent: a session already `ended` is not
+    matched, so concurrent sweepers can't double-end one.
+    """
+    now = datetime.now(timezone.utc)
+
+    live_expiry = live_key_expiry_subquery(db)
 
     rows = (
         db.query(AssistSession, live_expiry.c.expires_at)

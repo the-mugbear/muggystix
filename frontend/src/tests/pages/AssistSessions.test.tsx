@@ -12,7 +12,8 @@
  * thing that carries the operator's name.
  */
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -147,6 +148,29 @@ describe('AssistSessions', () => {
     // Provenance the audit answer needs: which machine, which agent.
     expect(screen.getByText(/linux · bash/)).toBeInTheDocument();
     expect(screen.getByText(/claude-opus-5 · claude-code/)).toBeInTheDocument();
+  });
+
+  it('pages rather than silently showing the newest 100', async () => {
+    // A full page means there may be more. Showing it with no marker reads as
+    // "these are all your sessions", and someone hunting an older one concludes
+    // it isn't there.
+    const full = Array.from({ length: 100 }, (_, i) => row({ id: 1000 + i }));
+    listAssistSessions.mockResolvedValueOnce(full);
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/Showing the 100 most recent/)).toBeInTheDocument());
+
+    listAssistSessions.mockResolvedValueOnce([row({ id: 2000, purpose: 'Older one' })]);
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+    });
+
+    // Appended, not replaced — and the second call asked for the next offset.
+    expect(screen.getByText('Older one')).toBeInTheDocument();
+    expect(listAssistSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ limit: 100, offset: 100 }),
+    );
+    // A short page ends the list, and the page says so.
+    expect(screen.getByText(/101 sessions — all of them/)).toBeInTheDocument();
   });
 
   it('says plainly when a session produced nothing', async () => {

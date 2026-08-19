@@ -59,6 +59,10 @@ import { safeFallback } from '../utils/uiStyles';
 
 type StatusFilter = '' | 'active' | 'ended';
 
+/** One page. Matches the API's own default; the page appends rather than
+ *  raising it, so a project with thousands of sessions stays responsive. */
+const PAGE_SIZE = 100;
+
 const STATUS_OPTIONS: Array<{ value: StatusFilter; label: string }> = [
   { value: '', label: 'All sessions' },
   { value: 'active', label: 'Active' },
@@ -325,23 +329,44 @@ const AssistSessions: React.FC = () => {
   const [rows, setRows] = useState<AssistSessionRow[]>([]);
   const [status, setStatus] = useState<StatusFilter>('');
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setRows(await listAssistSessions(status ? { status } : {}));
-      setError(null);
-    } catch (e) {
-      setError(formatApiError(e, 'Could not load assist sessions.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [status]);
+  // The API caps a page (default 100). Asking for a page and appending is the
+  // difference between "these are your sessions" and "these are your newest 100
+  // sessions" — the second is a lie the page has no way to signal otherwise, and
+  // silent truncation on a review surface means a session someone is looking for
+  // simply isn't there.
+  const load = useCallback(
+    async (append = false) => {
+      setLoading(true);
+      try {
+        const offset = append ? rows.length : 0;
+        const page = await listAssistSessions({
+          ...(status ? { status } : {}),
+          limit: PAGE_SIZE,
+          offset,
+        });
+        setRows((prev) => (append ? [...prev, ...page] : page));
+        // A short page means the end; a full one means there may be more.
+        setHasMore(page.length === PAGE_SIZE);
+        setError(null);
+      } catch (e) {
+        setError(formatApiError(e, 'Could not load assist sessions.'));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [status, rows.length],
+  );
 
   useEffect(() => {
-    if (!sessionId) void load();
-  }, [load, sessionId]);
+    // Deliberately keyed on the filter, not on `load` — `load` closes over
+    // rows.length so it changes every append, and depending on it here would
+    // re-fetch page one the moment more rows arrive.
+    if (!sessionId) void load(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, status]);
 
   const selectedId = sessionId ? Number(sessionId) : null;
   const activeCount = useMemo(
@@ -390,7 +415,7 @@ const AssistSessions: React.FC = () => {
             ))}
           </SelectContent>
         </Select>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button variant="outline" size="sm" onClick={() => void load(false)} disabled={loading}>
           {loading ? (
             <Loader2 className="size-4 animate-spin" aria-hidden />
           ) : (
@@ -494,6 +519,32 @@ const AssistSessions: React.FC = () => {
               ))}
             </TableBody>
           </Table>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="mt-sm flex items-center gap-sm">
+          {hasMore ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void load(true)}
+              disabled={loading}
+            >
+              {loading ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : null}
+              Load more
+            </Button>
+          ) : null}
+          {/* Say what is on screen either way. A review surface that shows the
+              newest N with no marker reads as "these are all your sessions",
+              and someone looking for an older one concludes it doesn't exist. */}
+          <span className="text-caption text-muted-foreground">
+            {hasMore
+              ? `Showing the ${rows.length} most recent.`
+              : `${rows.length} session${rows.length === 1 ? '' : 's'} — all of them.`}
+          </span>
         </div>
       )}
     </div>
