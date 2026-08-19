@@ -815,9 +815,9 @@
   },
   {
     "name": "testssl",
-    "description": "TLS/SSL configuration scanner: reports protocol versions, cipher suites, certificate validity and expiry, and known TLS vulnerabilities for a service. Use it to confirm weak-crypto findings that a port scan only hints at.",
+    "description": "Specialized TLS and SSL auditing script that enumerates supported protocols, ciphers, certificates, and common HTTPS misconfigurations. A strong follow-up when scans report weak TLS settings. Invoked as testssl.sh; the recon catalogue and this registry key it as `testssl`, which is the name a reported command is matched against.",
     "category": "Web Analysis",
-    "ports": "443, any TLS service",
+    "ports": "443, 8443, 9443",
     "install": "apt install testssl.sh",
     "url": "https://testssl.sh/",
     "kali": true,
@@ -829,21 +829,6 @@
     "requires_privileges": true,
     "output_format": "json",
     "ingestible": true
-  },
-  {
-    "name": "testssl.sh",
-    "description": "Specialized TLS and SSL auditing script that enumerates supported protocols, ciphers, certificates, and common HTTPS misconfigurations. A strong follow-up when scans report weak TLS settings.",
-    "category": "Web Analysis",
-    "ports": "443, 8443, 9443",
-    "install": "apt install testssl.sh",
-    "url": "https://testssl.sh/",
-    "kali": true,
-    "status": "reference",
-    "phases": [],
-    "intrusive": null,
-    "requires_privileges": null,
-    "output_format": null,
-    "ingestible": false
   },
   {
     "name": "unicornscan",

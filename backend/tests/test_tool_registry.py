@@ -155,11 +155,11 @@ def test_suggesting_an_approved_tool_does_not_downgrade_it(db_session):
     assert "nmap" in registry.approved_tool_names(db_session)
 
 
-def test_registry_covers_every_tool_the_reference_page_documents(db_session):
-    """The page is being migrated onto this registry in a follow-up commit.
-    Until it is, the two can still drift — so pin the direction that matters:
-    anything the human catalogue documents must exist in the registry, or the
-    page will lose entries the moment it switches over.
+def test_reference_page_no_longer_carries_its_own_catalogue(db_session):
+    """The page renders this registry (v5.167.0). Re-introducing a hardcoded
+    array there would recreate exactly the drift this table exists to end — a
+    human list the policy layer cannot see — so guard the direction rather than
+    trusting the migration to stay done.
 
     Reads the TSX the same way test_tool_command_consistency does.
     """
@@ -175,12 +175,13 @@ def test_registry_covers_every_tool_the_reference_page_documents(db_session):
     if tsx is None:
         pytest.skip("frontend source not mounted — run with the repo root mounted")
 
-    documented = set(re.findall(r"\{ name: '([^']+)'", tsx))
-    assert documented, "could not parse the reference page catalogue"
+    hardcoded = set(re.findall(r"\{ name: '([^']+)'", tsx))
+    assert not hardcoded, f"reference page has re-grown a local tool list: {sorted(hardcoded)}"
+    assert "getToolRegistry" in tsx, "reference page no longer reads the registry endpoint"
 
+    # And the endpoint it reads still returns the curated set.
     _seed(db_session)
-    known = {t.name for t in registry.list_tools(db_session)}
-    assert documented <= known, f"documented but not in the registry: {documented - known}"
+    assert len(registry.list_tools(db_session)) > 50
 
 
 def test_endpoint_serves_the_registry_and_filters_by_status(client, db_session):
