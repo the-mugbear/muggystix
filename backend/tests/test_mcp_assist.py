@@ -426,9 +426,18 @@ def test_reference_catalog_classifies_reads_and_writes(client):
 
     # Every tool carries what the page renders: a description, the underlying
     # route, and a JSON-Schema object for its parameters.
+    #
+    # Routes live under /agent/* with one deliberate exception: the approved-tool
+    # listing is the public reference endpoint, because the approved set is
+    # documentation an agent checks itself against — the same list a human reads
+    # at /reference/tools. Reading it through a project-scoped route would imply
+    # the set is per-project, which it is not.
     for tool in tools.values():
         assert tool["description"]
-        assert tool["method"] and tool["path"].startswith("/api/v1/agent/")
+        assert tool["method"]
+        assert tool["path"].startswith("/api/v1/agent/") or tool["path"] == (
+            "/api/v1/references/tools"
+        ), f"{tool['name']} points at an unexpected route: {tool['path']}"
         assert tool["input_schema"]["type"] == "object"
 
 

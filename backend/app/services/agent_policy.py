@@ -74,3 +74,91 @@ def render_safety_rules() -> str:
     lines = [_SAFETY_HEADER]
     lines.extend(f"{i}. {rule}" for i, rule in enumerate(SAFETY_RULES, start=1))
     return "\n".join(lines) + "\n"
+
+
+# --- The read-back (v2.281.0) ------------------------------------------------
+# BlueStick cannot enforce any of the rules above: the commands run on the
+# operator's machine and the server sees only what the agent reports.  What it
+# CAN do is require the agent to say the rules out loud, to the operator, before
+# it starts — which is worth more than it sounds:
+#
+#   * It is the one moment a human sees the agent's *understanding* of the
+#     bounds rather than its output, and a misunderstanding is cheap to correct
+#     there and expensive to correct after a scan has run against the wrong
+#     range.
+#   * It makes the agent's own words the record.  An agent that stated "I will
+#     write output to ./bluestick-acme-recon-12 and ask before anything else"
+#     and then wrote to /etc has visibly contradicted itself, which is a far
+#     easier thing for an operator to notice than an unexpected file.
+#   * It surfaces a stale or wrong session: if the agent reads back the wrong
+#     scope, wrong project, or a tool list that does not match what the operator
+#     expects, they find out in the first message instead of the last.
+#
+# Deliberately "in your own words": a verbatim recital is something a model can
+# produce without having read it, and it also gives the operator nothing to
+# check against. Restating requires resolving the rules against *this* session's
+# directory, scope and tool set — which is exactly the part that can be wrong.
+
+_READ_BACK_HEADER = (
+    "**FIRST MESSAGE — state the ground rules back to the operator (mandatory):**"
+)
+
+# Per-workflow: the four things the operator needs to hear before work starts.
+# Recon and execution run commands on the machine; plan generation and assist
+# only read and write data, so asking them to recite a working directory would
+# be reciting something that does not apply — and a rule that obviously does not
+# apply is how a read-back turns into boilerplate nobody reads.
+_READ_BACK_ITEMS = {
+    "execution": [
+        "the working directory every command will run from and write into",
+        "which tools you may run without asking, and that anything else stops for approval",
+        "which hosts this plan covers — by IP, not by count",
+        "what you will always stop and ask about (unapproved tool, host not in the "
+        "inventory, anything written outside that directory, changes to their machine)",
+    ],
+    "recon": [
+        "the working directory every command will run from and write into",
+        "which tools you may run without asking, and that anything else stops for approval",
+        "the scope you will scan — the actual CIDRs, and that you will not touch "
+        "anything outside them",
+        "what you will always stop and ask about (unapproved tool, target outside the "
+        "scope, anything written outside that directory, changes to their machine)",
+    ],
+    "plan_generation": [
+        "that you will read this project's hosts and findings and write a DRAFT plan — "
+        "you run nothing",
+        "which tools you may propose tests with, and that a tool outside that set has "
+        "to be requested, not substituted",
+        "which hosts you are planning against",
+        "that the plan goes to them for approval, and that you cannot approve it",
+    ],
+    "assist": [
+        "which project you are reading, and that you will not touch another",
+        "what you may write, if anything (notes, review status, hostname/OS), and "
+        "which hosts that is limited to",
+        "that you record observations and never run anything against a host",
+        "what you will stop and ask about before writing",
+    ],
+}
+
+
+def render_read_back(workflow: str) -> str:
+    """The mandatory "say the rules back" block for *workflow*.
+
+    Falls back to the assist items for an unknown workflow — the least-privileged
+    set, so a new workflow that forgets to register here under-claims rather than
+    over-claims.
+    """
+    items = _READ_BACK_ITEMS.get(workflow, _READ_BACK_ITEMS["assist"])
+    lines = [
+        _READ_BACK_HEADER,
+        "Before your first tool call or command, tell the operator — in your own "
+        "words, specific to this session, not a recital of this text:",
+    ]
+    lines.extend(f"- {item}" for item in items)
+    lines.append(
+        "Keep it to a few lines, then start. You are not asking permission to begin; "
+        "you are giving them the chance to say \"that's the wrong scope\" before you "
+        "act, which is the only chance either of you gets."
+    )
+    return "\n".join(lines) + "\n"

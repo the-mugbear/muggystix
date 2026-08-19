@@ -150,6 +150,41 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    "list_approved_tools": {
+        "description": (
+            "The tools BlueStick approves for agents to run, with the ports, install "
+            "command and phase metadata for each. This is the list the approval "
+            "guardrail keys off — read it before telling the operator what you may run "
+            "unprompted, and before assuming a tool you know is available here. Pass "
+            "status to see the documented-but-not-approved set instead."
+        ),
+        "workflows": ALL_WORKFLOWS,
+        "method": "GET",
+        "path": "/api/v1/references/tools",
+        "path_params": [],
+        "query_params": ["status", "category"],
+        "body_params": [],
+        # Always send a status: the unfiltered listing is 60+ tools, most of them
+        # documentation for humans, and an agent reading that as "what I may run"
+        # is the exact confusion the status column exists to prevent.
+        "defaults": {"status": "approved"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["approved", "reference", "suggested", "rejected"],
+                    "description": (
+                        "approved = you may run it. reference = documented for the "
+                        "operator, not for you. suggested = someone asked, nobody has "
+                        "vetted it yet."
+                    ),
+                },
+                "category": {"type": "string", "description": "Filter to one category."},
+            },
+            "additionalProperties": False,
+        },
+    },
     "suggest_tool": {
         "description": (
             "Ask for a tool that isn't in BlueStick's approved set. Records the request "

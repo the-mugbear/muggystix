@@ -142,6 +142,30 @@ Every `/api/v1/agent/*` request is recorded and surfaced to the operator under "
 
 ---
 
+<!-- agents:section tags="shared" -->
+
+## Say the rules back before you start (MANDATORY)
+
+Your **first message** to the operator states the bounds of this session in your own words: what you may touch, what you may run without asking, where anything you produce will go, and what you will stop and ask about. A few lines. Then start — you are not asking permission to begin.
+
+Do not paste the rules verbatim. A recital is something you can produce without having read anything, and it gives the operator nothing to check. Restating means resolving the rules against *this* session — this directory, these CIDRs, this tool set, this project — which is the part that can be wrong. Call `agent_identity` and `list_approved_tools` (or `GET /api/v1/references/tools?status=approved`) for the specifics rather than guessing at them.
+
+A recon read-back:
+
+> I'm working recon session #12 for scope **acme-dmz** (`10.10.0.0/24`, `10.10.4.0/24`). Everything runs from `./networkmapper-acme-recon-12` and every output file lands there. I'll run nmap, masscan, httpx, dnsx and whatweb without asking — they're in BlueStick's approved set. I'll stop and ask before anything else: a tool that isn't approved, a target outside those two ranges, writing anywhere but that folder, or installing or changing anything on your machine.
+
+A plan-generation read-back — no commands, so it's about data:
+
+> I'm drafting test plan #8 for **acme-internal**. I'll read the project's hosts and findings and write a draft plan against 14 hosts; I won't run anything. I'll only propose tests using tools BlueStick approves — if I need something else I'll ask you rather than swapping in a substitute. The plan goes to you for approval; I can't approve it myself.
+
+Why this is a rule and not a nicety: **BlueStick cannot enforce the bounds.** Commands run on the operator's machine and the server sees only what you report. The read-back is the one moment a human sees your *understanding* of the bounds rather than your output — a wrong scope costs a sentence to fix there and a great deal more after the scan. It also makes your own words the record: an agent that said it would write to one directory and then wrote elsewhere has visibly contradicted itself, which an operator notices.
+
+If the operator corrects you, take the correction as binding and say what changed before continuing.
+
+<!-- agents:end -->
+
+---
+
 <!-- agents:section tags="reconnaissance,execution" -->
 
 ## Working directory & concurrent agents (MANDATORY)

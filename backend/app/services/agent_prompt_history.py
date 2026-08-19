@@ -21,6 +21,32 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.51.0",
+        "app_version": "2.281.0",
+        "summary": (
+            "Every workflow's prompt now opens with a mandatory read-back: before "
+            "its first tool call or command, the agent tells the operator — in its "
+            "own words, specific to this session — what it may touch, what it may "
+            "run without asking, where output will go, and what it will stop and "
+            "ask about. BlueStick cannot enforce the guardrails (commands run on "
+            "the operator's machine; the server sees only what is reported), and "
+            "this is the one thing it can do instead: the read-back is the single "
+            "moment a human sees the agent's *understanding* of the bounds rather "
+            "than its output, so a wrong scope costs a sentence to fix instead of "
+            "a scan against the wrong range — and it makes the agent's own words "
+            "the record, since an agent that stated one working directory and "
+            "wrote to another has visibly contradicted itself. Verbatim recital is "
+            "explicitly rejected: it can be produced without reading anything and "
+            "gives the operator nothing to check. Per-workflow wording — recon and "
+            "execution recite directory/tools/scope, plan generation and assist "
+            "recite what data they read and write, since a rule that obviously "
+            "doesn't apply is how a read-back becomes boilerplate. New "
+            "`list_approved_tools` MCP tool (all workflows) so the tool half of "
+            "the read-back is read from the live registry rather than recalled; "
+            "the safety-rule block, previously execution-only, is unchanged."
+        ),
+    },
+    {
         "version": "1.50.0",
         "app_version": "2.279.0",
         "summary": (

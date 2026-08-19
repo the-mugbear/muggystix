@@ -29,7 +29,7 @@ from app.core.config import settings
 # be a trailing comment on this constant now lives as structured data in
 # agent_prompt_history.
 from app.services.agent_prompt_history import PROMPT_VERSION
-from app.services.agent_policy import render_safety_rules
+from app.services.agent_policy import render_read_back, render_safety_rules
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +287,8 @@ def build_plan_generation_instructions(
         provenance +
         f"## Agent Instructions\n\n"
         f"You have been assigned to populate a test plan in BlueStick.\n\n"
-        f"**Workflow-scoped guide:** {agents_guide_url}\n"
+        + render_read_back("plan_generation") + "\n"
+        + f"**Workflow-scoped guide:** {agents_guide_url}\n"
         f"Fetch with `curl -sk '{agents_guide_url}'` for the endpoint schemas, "
         f"entry format, attribution requirements, and examples you need for "
         f"plan generation.  The URL includes a workflow filter so you only "
@@ -623,6 +624,7 @@ def build_recon_ingest_instructions(
         f"generates the test plan separately — **you do not build test plans here**.\n\n"
         f"**Scope:** {scope_name} (id {scope_id}) · **Recon session:** #{recon_session_id}\n"
         f"**Subnets:**\n{scope_list}\n\n"
+        + render_read_back("recon") + "\n"
         f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
         f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"
         f"Self-signed cert — `curl` always needs `-sk`. If curl is blocked by your "
@@ -841,6 +843,7 @@ def build_assist_instructions(
     instructions = (
         provenance +
         authority_block +
+        render_read_back("assist") + "\n"
         f"{purpose_line}"
         f"**Assist session:** #{assist_session_id} · **Project:** {project_name}\n"
         f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
@@ -1021,6 +1024,7 @@ def build_execution_instructions(
         provenance +
         f"## Agent Execution Instructions\n\n"
         f"You are executing approved tests from a test plan in BlueStick.\n\n"
+        + render_read_back("execution") + "\n"
         + render_safety_rules() + "\n"
         + f"**Workflow-scoped guide:** {agents_guide_url}\n"
         f"Fetch with `curl -sk '{agents_guide_url}'` for the execution "

@@ -317,6 +317,36 @@ def test_plan_generation_workflow_over_mcp(client, test_project, db_session):
     assert stored.entries and stored.entries[0].host_id == host.id
 
 
+def test_the_approved_set_is_readable_from_every_workflow(
+    client, test_project, scope_with_subnets, db_session
+):
+    """The agent is asked to tell the operator which tools it may run before it
+    starts. Without a tool for it, that half of the read-back is recalled rather
+    than read — and the set changes when an admin vets a suggestion."""
+    from app.services import tool_registry_service as registry
+
+    registry.seed_registry(db_session)
+    recon = _recon_key(client, test_project, scope_with_subnets)
+    headers = {"X-API-Key": recon["api_key"]}
+
+    assert "list_approved_tools" in _tool_names(client, headers)
+
+    result = _call(client, headers, "list_approved_tools")
+    assert result["isError"] is False, result
+    body = result["structuredContent"]
+    assert body["count"] > 0
+    # Defaulted to the approved set: handing a model 60 rows of
+    # human-documentation and letting it infer which it may run is the confusion
+    # the status column exists to prevent.
+    assert {t["status"] for t in body["tools"]} == {"approved"}
+    assert "nmap" in {t["name"] for t in body["tools"]}
+
+    # The other statuses are reachable, so an agent can check whether the tool
+    # it wants was already declined before suggesting it again.
+    declined = _call(client, headers, "list_approved_tools", {"status": "reference"})
+    assert {t["status"] for t in declined["structuredContent"]["tools"]} == {"reference"}
+
+
 # ---------------------------------------------------------------------------
 # Connecting a client to a non-assist session
 # ---------------------------------------------------------------------------
