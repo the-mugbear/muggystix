@@ -420,19 +420,29 @@ def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
     assert "--sandbox" not in codex_plan["hint"]
 
     # Every recipe still warns about the self-signed certificate, which is the
-    # failure every client hits first — but with the fix that actually applies
-    # to it. NODE_EXTRA_CA_CERTS is a Node variable; Codex is a Rust binary and
-    # reads nothing of the sort, so telling its operators to export it was
-    # advice that could only ever fail (v2.282.0, verified against 0.147.0).
+    # failure every client hits first — but with the mechanism that actually
+    # applies to it. Node clients read NODE_EXTRA_CA_CERTS; Codex is a Rust
+    # binary that reads SSL_CERT_DIR, and telling its operators to export the
+    # Node variable was advice that could only ever fail (v2.282.0). Claiming
+    # it could not be pinned at all was wrong too — v2.285.0 verified
+    # SSL_CERT_DIR against codex 0.147.0.
     for body in (recon, plan):
         for setup in body["mcp_clients"]:
             if setup["id"] == "codex":
-                assert "does nothing here" in setup["hint"], (
-                    "the Codex recipe must say the Node workaround doesn't apply"
+                assert "SSL_CERT_DIR" in setup["hint"]
+                assert "NODE_EXTRA_CA_CERTS does nothing" in setup["hint"], (
+                    "the Codex recipe must say the Node variable doesn't apply"
                 )
-                assert "CA-trusted certificate" in setup["hint"]
+                assert "CA-trusted certificate" not in setup["hint"], (
+                    "a self-hosted deployment will never have one — telling an "
+                    "operator to get one is a dead end, not a fix"
+                )
             else:
                 assert "NODE_EXTRA_CA_CERTS" in setup["hint"]
+            # Both recipes point at the helper that installs it, and say the
+            # variable is read at startup — the step operators actually miss.
+            assert "trust-cert.sh" in setup["hint"]
+            assert "RESTART" in setup["hint"]
 
 
 # ---------------------------------------------------------------------------

@@ -76,23 +76,20 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     assert f"export {codex['payload'].split()[1]}=" not in codex["payload"]
 
     # Every recipe warns about the self-signed certificate, which blocks every
-    # client before it sends a request — but with the remedy that applies to it.
-    # The Node-based clients get the pin (verification stays on, scoped to this
-    # certificate) rather than a global opt-out. Codex gets told the truth: it
-    # is a Rust binary, NODE_EXTRA_CA_CERTS is not a thing it reads, and there
-    # is no pin — so the recipe cannot work against a self-signed deployment
-    # (v2.282.0, verified against 0.147.0). Handing its operators the Node
-    # workaround was advice that could only ever fail.
+    # client before it sends a request — but with the mechanism that applies to
+    # it, and none of them by switching verification off. BlueStick is
+    # self-hosted on a private address and will never hold a CA-signed cert, so
+    # "pin this one" is the only fix that exists (v2.285.0).
     for entry in body["mcp_clients"]:
         if entry["id"] == "codex":
-            assert "does nothing here" in entry["hint"]
-            assert "CA-trusted certificate" in entry["hint"]
-            assert "/references/tls-certificate" not in entry["hint"], (
-                "pointing Codex at the cert implies a pin it cannot perform"
-            )
+            # Rust binary: reads SSL_CERT_DIR, not the Node variable, and not
+            # SSL_CERT_FILE either (both verified against codex 0.147.0).
+            assert "SSL_CERT_DIR" in entry["hint"]
+            assert "NODE_EXTRA_CA_CERTS does nothing" in entry["hint"]
         else:
             assert "NODE_EXTRA_CA_CERTS" in entry["hint"], entry["id"]
-            assert "/references/tls-certificate" in entry["hint"], entry["id"]
+        # Every recipe can still fetch the cert from a remote deployment.
+        assert "/references/tls-certificate" in entry["hint"], entry["id"]
         assert "NODE_TLS_REJECT_UNAUTHORIZED" not in entry["hint"], entry["id"]
 
     # Every entry is renderable: label, hint, payload all present.

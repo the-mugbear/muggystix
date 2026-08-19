@@ -83,7 +83,7 @@ const CLIENTS: ClientRecipe[] = [
     path: null,
     snippet: (endpoint) =>
       `read -rs BLUESTICK_ASSIST_KEY && export BLUESTICK_ASSIST_KEY   # paste the key, then Enter\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
-    note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile. Note the TLS limitation above: against a self-signed deployment this configures correctly and still cannot connect.',
+    note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile. See the TLS note above: Codex pins with SSL_CERT_DIR, not NODE_EXTRA_CA_CERTS.',
   },
 ];
 
@@ -349,6 +349,12 @@ const McpReference: React.FC = () => {
             export NODE_EXTRA_CA_CERTS=$PWD/bluestick.pem
           </span>
           <span className="mt-xxs block">
+            <span className="font-mono">./scripts/trust-cert.sh</span> does both steps and prints
+            the exports. Either way the client reads them at <em>startup</em> — export them, then
+            restart it; setting them inside a running client changes nothing, which is the reason
+            a pin usually looks like it &ldquo;didn&rsquo;t work&rdquo;.
+          </span>
+          <span className="mt-xxs block">
             Fetching it over the untrusted connection is trust-on-first-use — on a network you
             don&rsquo;t control, copy{' '}
             <span className="font-mono">ssl/certs/networkmapper.crt</span> off the deployment host
@@ -357,14 +363,20 @@ const McpReference: React.FC = () => {
           </span>
         </AlertDescription>
       </Alert>
-      <Alert variant="destructive" className="mb-sm">
-        <AlertDescription>
-          <strong>Codex will not connect to a self-signed deployment.</strong> Codex is a Rust
-          binary, so <span className="font-mono">NODE_EXTRA_CA_CERTS</span> above does nothing for
-          it and there is no equivalent way to pin this deployment&rsquo;s certificate (verified
-          against Codex 0.147.0). Its bearer-token setup below is correct and will work the moment
-          the certificate does — until then, give BlueStick a CA-trusted certificate, or use VS
-          Code or Claude Code, which can pin.
+            <Alert variant="warning" className="mb-sm">   <AlertDescription>
+          <strong>Codex pins differently — it is not a Node client.</strong> Codex is a Rust
+          binary, so <span className="font-mono">NODE_EXTRA_CA_CERTS</span> does nothing for it,
+          and <span className="font-mono">SSL_CERT_FILE</span> does not take effect either (tested
+          on 0.147.0). It reads <span className="font-mono">SSL_CERT_DIR</span>, which wants a
+          directory of hash-named symlinks rather than a file:
+          <span className="mt-xxs block font-mono text-caption">
+            export SSL_CERT_DIR=$HOME/.bluestick/certs.d
+          </span>
+          <span className="mt-xxs block">
+            <span className="font-mono">./scripts/trust-cert.sh</span> builds that directory and
+            prints both exports. Verified against 0.147.0: pinning this way still validates public
+            hosts normally, so it adds trust rather than replacing it.
+          </span>
         </AlertDescription>
       </Alert>
       <Alert variant="warning" className="mb-sm">

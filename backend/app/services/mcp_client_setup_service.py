@@ -60,38 +60,50 @@ def _mcp_server_entry(mcp_url: str, raw_key: str) -> Dict[str, Any]:
     }
 
 
-# Deployments default to a self-signed certificate, which every client here
-# rejects before any request is made — but the fix is NOT the same for all of
-# them, and pretending it was is how the Codex recipe shipped advertising a
-# workaround that does nothing (v2.282.0).
+# BlueStick is self-hosted on a private address, so its certificate is
+# self-signed and always will be — "get one from a public CA" is not an option
+# for something that only ever listens on 127.0.0.1 or a LAN address. Every MCP
+# client therefore refuses the connection until told to trust THIS certificate,
+# and the way to tell it differs by client:
 #
-# VS Code and Claude Code are Node/Electron: they ignore the OS trust store, so
-# "trust it in Keychain" doesn't help, and NODE_EXTRA_CA_CERTS pins this one
-# deployment while leaving verification ON for every other host the process
-# talks to (unlike NODE_TLS_REJECT_UNAUTHORIZED=0).
+#   * VS Code and Claude Code are Node/Electron. Node ignores the OS trust
+#     store, so installing the cert system-wide does nothing; NODE_EXTRA_CA_CERTS
+#     takes a single PEM file.
+#   * Codex is a Rust binary built against native-tls (OpenSSL). It reads
+#     SSL_CERT_DIR — a directory of hash-named symlinks, not a file.
 #
-# Codex is a Rust binary. NODE_EXTRA_CA_CERTS is not read by anything in it, so
-# the note was advice that could only ever fail — verified against Codex
-# 0.147.0. There is no equivalent knob to point at, so the honest thing is to
-# say the recipe does not work against a self-signed deployment and name the two
-# ways out, rather than leave an operator debugging a TLS error against a
-# variable nothing reads.
+# v2.282.0 told Codex operators to export NODE_EXTRA_CA_CERTS, which nothing in
+# a Rust binary reads, and then concluded there was "no supported way to pin" and
+# they needed a CA-signed certificate. Both halves were wrong. Verified against
+# codex 0.147.0: SSL_CERT_FILE alone does NOT take effect, SSL_CERT_DIR does, and
+# a client pinned this way still validates public hosts normally — so this ADDS
+# trust rather than replacing it, unlike NODE_TLS_REJECT_UNAUTHORIZED=0.
+#
+# Both variables are read at process START. That is the failure operators
+# actually hit: exporting them inside a running client changes nothing, which
+# reads as "the pin doesn't work".
 def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
     cert_url = mcp_url.rsplit("/mcp", 1)[0] + "/references/tls-certificate"
+    common = (
+        " Run ./scripts/trust-cert.sh on the machine running the client — it "
+        "installs the certificate and prints the exports — then RESTART the "
+        f"client, which reads them at startup. Remote host? Fetch the cert first: "
+        f"curl -sk {cert_url} -o bluestick.pem"
+    )
     if client_id == "codex":
         return (
-            "⚠ Self-signed cert? This will NOT connect. Codex (verified against "
-            "0.147.0) is a Rust binary — NODE_EXTRA_CA_CERTS is a Node variable and "
-            "does nothing here, and there is no supported way to pin a deployment "
-            "certificate. Either give BlueStick a CA-trusted certificate, or use the "
-            "VS Code / Claude Code recipe, which can pin this one. The bearer-token "
-            "setup above is correct and will work once the certificate does."
+            "Self-signed cert? Codex refuses it until pinned. Codex is a Rust "
+            "binary: NODE_EXTRA_CA_CERTS does nothing for it, and SSL_CERT_FILE "
+            "does not take effect either (tested on 0.147.0) — it reads "
+            "SSL_CERT_DIR, a directory of hash-named symlinks."
+            + common
         )
     return (
-        "Self-signed cert? Node-based clients refuse it. Fetch the deployment cert "
-        f"(curl -sk {cert_url} -o bluestick.pem) and export "
-        "NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem in the shell you launch the client "
-        "from — that trusts this deployment without turning verification off."
+        "Self-signed cert? Node-based clients refuse it — Node ignores the OS "
+        "trust store, so trusting it system-wide won't help. Export "
+        "NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem, which trusts this one "
+        "deployment and leaves verification on everywhere else."
+        + common
     )
 
 

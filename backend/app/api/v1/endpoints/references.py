@@ -106,11 +106,16 @@ def tls_certificate():
     ``NODE_TLS_REJECT_UNAUTHORIZED=0``, disables verification for every host
     that process talks to.
 
-    **Not every client can use this.**  Codex is a Rust binary with no
-    equivalent knob (verified against 0.147.0), so a self-signed deployment
-    cannot be reached from it at all — that needs a CA-trusted certificate.
-    The MCP reference page says so on the Codex tab rather than handing over a
-    workaround that could only ever fail.
+    **The variable differs per client.**  Codex is a Rust binary built against
+    native-tls; it reads ``SSL_CERT_DIR`` (a directory of hash-named symlinks),
+    not ``NODE_EXTRA_CA_CERTS``, and not ``SSL_CERT_FILE`` either — all three
+    verified against codex 0.147.0.  ``scripts/trust-cert.sh`` installs this
+    certificate in both shapes and prints the exports; both are read at process
+    start, so the client has to be restarted afterwards.
+
+    v2.282.0 claimed Codex could not pin at all and needed a CA-signed
+    certificate.  That was wrong, and it was also a dead end: an application
+    that only ever listens on a private address cannot obtain one.
 
     This is the certificate the server already presents in every TLS handshake,
     so publishing it discloses nothing new.  Fetching it over the same untrusted
@@ -370,11 +375,11 @@ async def references_index():
         "tls_certificate": {
             "url": "/api/v1/references/tls-certificate",
             "description": (
-                "The deployment's public TLS certificate (PEM). Pin it with "
-                "NODE_EXTRA_CA_CERTS so Node-based MCP clients (VS Code, "
-                "Claude Code) trust this deployment without disabling "
-                "certificate verification. Codex cannot pin — it needs a "
-                "CA-trusted certificate."
+                "The deployment's public TLS certificate (PEM). Pin it so MCP "
+                "clients trust this deployment without disabling certificate "
+                "verification: NODE_EXTRA_CA_CERTS for the Node-based clients "
+                "(VS Code, Claude Code), SSL_CERT_DIR for Codex. "
+                "scripts/trust-cert.sh sets up both."
             ),
         },
         "tools": {
