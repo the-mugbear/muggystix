@@ -492,12 +492,28 @@ def list_assist_sessions(
             )
         }
 
+    # A session whose keys have all expired is not usable by anything, so it is
+    # reported as ended even before the hourly sweep converges the stored value
+    # (v2.283.0).  Deriving it here rather than leaving it to each caller means
+    # the operator's "active sessions" list is correct the moment they open it,
+    # instead of up to an hour stale — and no consumer has to re-derive
+    # "active AND key still live" for itself and get it subtly different.
+    now = datetime.now(timezone.utc)
+
+    def _effective_status(session) -> str:
+        if session.status != AssistSessionStatus.ACTIVE.value:
+            return session.status
+        expires_at = expiry_by_session.get(session.id)
+        if expires_at is None or expires_at <= now:
+            return AssistSessionStatus.ENDED.value
+        return session.status
+
     return [
         AssistSessionRow(
             id=s.id,
             project_id=s.project_id,
             purpose=s.purpose,
-            status=s.status,
+            status=_effective_status(s),
             started_by_id=s.started_by_id,
             started_by_username=username,
             started_at=s.started_at,

@@ -96,3 +96,96 @@ def test_expiry_lookup_does_not_scale_with_session_count(
     # Guard against the assertion passing vacuously (listener not wired to the
     # connection the request actually used) — there must be exactly one.
     assert len(selects) == 1, f"expected a single grouped lookup, saw {len(selects)}"
+
+
+# ---------------------------------------------------------------------------
+# Lapsing (v2.283.0)
+#
+# `status` only ever left 'active' when an operator pressed End, so the Start
+# AI Assist dialog's "you have N active sessions" panel accumulated every
+# session they had ever started — rows badged `key expired`, listed as active,
+# that no agent could use. The operator's question ("am I supposed to remove
+# these myself?") should answer itself: no.
+# ---------------------------------------------------------------------------
+
+def _expire_keys(db_session, session_id, *, when=None):
+    """Age the session's key out, the way the TTL would."""
+    db_session.query(APIKey).filter(APIKey.assist_session_id == session_id).update(
+        {"expires_at": when or (datetime.now(timezone.utc) - timedelta(minutes=5))},
+        synchronize_session=False,
+    )
+    db_session.commit()
+
+
+def test_a_session_whose_key_expired_is_not_reported_active(
+    client, db_session, test_project,
+):
+    """The listing is what the operator's session panel filters on, so it has
+    to be right the moment they open the dialog — an hour-stale sweep would
+    show them dead sessions to tidy up by hand."""
+    sid = _start(client, test_project.id)["assist_session_id"]
+    assert next(r for r in _list(client, test_project.id) if r["id"] == sid)["status"] == "active"
+
+    _expire_keys(db_session, sid)
+
+    row = next(r for r in _list(client, test_project.id) if r["id"] == sid)
+    assert row["status"] == "ended", (
+        "a session with no usable key is not active; reporting it as active is "
+        "what made the operator's list accumulate"
+    )
+
+
+def test_a_live_session_is_left_alone(client, db_session, test_project):
+    """The sweep must not end sessions an agent is still using — that would
+    revoke work in progress on a timer nobody asked for."""
+    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.db.models_agent import AssistSession
+
+    sid = _start(client, test_project.id, ttl_hours=6)["assist_session_id"]
+    assert lapse_expired_assist_sessions(db_session) == 0
+
+    db_session.expire_all()
+    assert db_session.get(AssistSession, sid).status == "active"
+
+
+def test_the_sweep_ends_lapsed_sessions_and_dates_them_honestly(
+    client, db_session, test_project,
+):
+    """`ended_at` records when access actually stopped — the key's expiry, not
+    when the hourly sweep happened to run, which would misdate every lapse by
+    up to an hour."""
+    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.db.models_agent import AssistSession
+
+    sid = _start(client, test_project.id)["assist_session_id"]
+    expired_at = datetime.now(timezone.utc) - timedelta(hours=3)
+    _expire_keys(db_session, sid, when=expired_at)
+
+    assert lapse_expired_assist_sessions(db_session) == 1
+
+    db_session.expire_all()
+    session = db_session.get(AssistSession, sid)
+    assert session.status == "ended"
+    assert session.ended_at is not None
+    assert abs((session.ended_at - expired_at).total_seconds()) < 2, (
+        "ended_at should be when the key died, not when the sweep ran"
+    )
+
+    # Idempotent: a second pass finds nothing, so concurrent workers can't
+    # double-end or rewrite the timestamp.
+    assert lapse_expired_assist_sessions(db_session) == 0
+
+
+def test_the_sweep_keeps_the_session_record(client, db_session, test_project):
+    """Lapsing is a status change, not a delete — the audit trail is the reason
+    the row exists after the key is gone."""
+    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.db.models_agent import AssistSession
+
+    sid = _start(client, test_project.id, purpose="ftp sweep")["assist_session_id"]
+    _expire_keys(db_session, sid)
+    lapse_expired_assist_sessions(db_session)
+
+    db_session.expire_all()
+    session = db_session.get(AssistSession, sid)
+    assert session is not None and session.purpose == "ftp sweep"

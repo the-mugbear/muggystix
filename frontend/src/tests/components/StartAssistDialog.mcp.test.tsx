@@ -129,4 +129,34 @@ describe('StartAssistDialog — MCP setup', () => {
     await screen.findByText('Run this command');
     expect(screen.getByText(/^claude mcp add --transport http/)).toBeInTheDocument();
   });
+
+  it('puts the curl prompt behind a tab rather than above the MCP setup', async () => {
+    await openAndStart();
+    // Stacked, the multi-KB prompt sat between the operator and the MCP config,
+    // so the path we recommend was the one they had to scroll past the other to
+    // reach — and the dialog was long enough to hide its own footer.
+    expect(screen.queryByText('prompt text')).not.toBeInTheDocument();
+
+    await switchTab('Paste the prompt');
+    expect(await screen.findByText('prompt text')).toBeInTheDocument();
+    // And the key stays visible in both — it is shown exactly once, so it must
+    // not be the thing hidden behind a tab.
+    expect(screen.getByText(KEY)).toBeInTheDocument();
+  });
+
+  it('falls back to the prompt alone when the server sent no MCP setup', async () => {
+    startAssistSession.mockResolvedValue({ ...result(), mcp_clients: [] });
+    render(
+      <TooltipProvider>
+        <StartAssistDialog open onOpenChange={vi.fn()} />
+      </TooltipProvider>,
+    );
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: /start session/i }));
+    });
+
+    // No empty "Connect via MCP" tab to open onto.
+    expect(await screen.findByText('prompt text')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Connect via MCP' })).not.toBeInTheDocument();
+  });
 });

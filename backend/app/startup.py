@@ -89,6 +89,7 @@ async def expired_session_cleanup_loop() -> None:
     """
     from app.db.session import SessionLocal
     from app.core.security import cleanup_expired_sessions
+    from app.services.assist_session_service import lapse_expired_assist_sessions
 
     while True:
         try:
@@ -98,10 +99,19 @@ async def expired_session_cleanup_loop() -> None:
                     continue  # another worker is the leader this pass
                 try:
                     reaped = cleanup_expired_sessions(db)
+                    # v2.283.0 — assist sessions rode the same "expired means
+                    # done" idea and had nothing enforcing it: only the End
+                    # button ever changed their status, so the operator's
+                    # "active sessions" list accumulated dead ones forever.
+                    # Same loop rather than a third task: one hourly sweep, one
+                    # advisory lock, one place to look when reaping misbehaves.
+                    lapsed = lapse_expired_assist_sessions(db)
                 finally:
                     _release_housekeeping_leader(db, _LEADER_LOCK_EXPIRED_SESSIONS)
                 if reaped:
                     logger.info("Reaped %d expired user sessions", reaped)
+                if lapsed:
+                    logger.info("Lapsed %d expired assist sessions", lapsed)
         except asyncio.CancelledError:
             raise
         except Exception:

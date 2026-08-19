@@ -110,8 +110,9 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
         </p>
       </div>
       <p className="text-caption text-muted-foreground">
-        Each one is a live agent key. End any you&rsquo;re finished with rather
-        than waiting for it to expire.
+        Each one is a live agent key. Ending a session revokes its key
+        immediately; one you leave drops off this list when its key expires, so
+        there is nothing here to tidy up by hand.
       </p>
 
       <ul className="flex flex-col gap-xs">

@@ -34,6 +34,7 @@ import {
 } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { startAssistSession, type AssistSessionRow, type StartAssistResponse } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
@@ -102,6 +103,9 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   // checkbox — the two can diverge (e.g. a future policy that refuses the
   // grant), and the operator needs to know which one they got.
   const grantedWrite = (result?.capabilities?.length ?? 0) > 0;
+  // A backend that predates the per-client MCP setup returns none; the prompt
+  // tab then stands alone rather than opening on an empty tab.
+  const hasMcp = (result?.mcp_clients?.length ?? 0) > 0;
 
   const copyKey = async () => {
     if (!result) return;
@@ -273,41 +277,59 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   {result.api_key}
                 </div>
               </div>
-              <div>
-                <div className="mb-xxs flex items-center justify-between">
-                  <p className="text-metadata font-semibold">Instructions</p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={copyInstructions}
-                        aria-label="Copy assist instructions"
-                      >
-                        {copiedInstr ? (
-                          <CheckCircle2 className="size-4 text-success" aria-hidden />
-                        ) : (
-                          <Copy className="size-4" aria-hidden />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {copiedInstr ? 'Copied!' : 'Copy instructions'}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                  {result.instructions}
-                </div>
-              </div>
-              <McpConnectPanel
-                clients={result.mcp_clients ?? []}
-                blurb={
-                  'Lower-friction alternative to the curl recipe — the read tools can be ' +
-                  'marked “always allow” so queries run without a prompt. Each client wants ' +
-                  'a different shape, so pick yours:'
-                }
-              />
+              {/* Two ways to hand this session to an agent, as tabs rather
+                  than stacked (v5.172.0). Stacked, the multi-KB prompt sat
+                  between the operator and the MCP config, so the path we
+                  recommend was the one they had to scroll past the other to
+                  find. They pick one — showing both at once only makes the
+                  dialog long enough to hide its own footer. */}
+              <Tabs defaultValue={hasMcp ? 'mcp' : 'prompt'}>
+                <TabsList className="mb-xs">
+                  {hasMcp && <TabsTrigger value="mcp">Connect via MCP</TabsTrigger>}
+                  <TabsTrigger value="prompt">Paste the prompt</TabsTrigger>
+                </TabsList>
+                {hasMcp && (
+                  <TabsContent value="mcp">
+                    <McpConnectPanel
+                      clients={result.mcp_clients ?? []}
+                      blurb={
+                        'The tools appear natively in your client, and the read tools can be ' +
+                        'marked “always allow” so queries run without a prompt. Each client ' +
+                        'wants a different shape, so pick yours:'
+                      }
+                    />
+                  </TabsContent>
+                )}
+                <TabsContent value="prompt">
+                  <div className="mb-xxs flex items-center justify-between">
+                    <p className="text-metadata text-muted-foreground">
+                      Paste this into a terminal agent — it drives the same session with curl.
+                    </p>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={copyInstructions}
+                          aria-label="Copy assist instructions"
+                        >
+                          {copiedInstr ? (
+                            <CheckCircle2 className="size-4 text-success" aria-hidden />
+                          ) : (
+                            <Copy className="size-4" aria-hidden />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {copiedInstr ? 'Copied!' : 'Copy instructions'}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
+                    {result.instructions}
+                  </div>
+                </TabsContent>
+              </Tabs>
             </div>
           )}
         </DialogBody>

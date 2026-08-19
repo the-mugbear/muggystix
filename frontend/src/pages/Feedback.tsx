@@ -56,12 +56,17 @@ import {
 import { cn } from '../utils/cn';
 
 const STATUS_OPTIONS = ['new', 'reviewed', 'actioned', 'dismissed'] as const;
+// Must stay in step with AgentFeedbackSource in app/db/models_agent.py. `assist`
+// was added there in backend 2.85.0 and never reached this list, so feedback
+// from assist sessions landed in the table filterable only as "All sources" —
+// invisible to anyone narrowing by the workflow they were investigating.
 const SOURCE_OPTIONS = [
   { value: '', label: 'All sources' },
   { value: 'plan_generation', label: 'Plan Generation' },
   { value: 'reconnaissance', label: 'Reconnaissance' },
   { value: 'in_session_execution', label: 'In-Session Execution' },
   { value: 'exported_execution', label: 'Exported Execution' },
+  { value: 'assist', label: 'AI Assist' },
 ];
 
 const STATUS_VARIANT: Record<string, 'default' | 'success' | 'warning' | 'muted'> = {
