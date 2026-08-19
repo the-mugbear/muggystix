@@ -26,16 +26,19 @@ import secrets
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_project, require_project_role
+from app.db.models import Annotation, Host
 from app.db.models_agent import (
     ASSIST_GRANTABLE_CAPABILITIES,
     Agent,
+    AgentApiCall,
     AgentCapabilityConstraint,
+    AgentFeedback,
     AgentSessionWorkflow,
     AssistSession,
     AssistSessionStatus,
@@ -191,6 +194,43 @@ class AssistSessionRow(BaseModel):
     # Audit: which sessions carried write authority, and how narrowly.
     capabilities: List[str] = []
     capability_constraint: Optional[str] = None
+    # v2.284.0 — how much the session actually did, so the list answers "which
+    # of these is worth opening?" without a round trip per row.  A session that
+    # made no calls is the common dead end (key minted, prompt never pasted) and
+    # should be visibly distinguishable from one that did the work.
+    call_count: int = 0
+    note_count: int = 0
+
+
+class AssistSessionNote(BaseModel):
+    """A note this session's agent wrote, for the review page.
+
+    Notes are the session's durable output — everything else it did was a read.
+    They are attributed to the operator with an agent badge, so "what did the
+    agent put my name on" is the question this answers.
+    """
+    id: int
+    host_id: Optional[int] = None
+    host_ip: Optional[str] = None
+    hostname: Optional[str] = None
+    body: str
+    status: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class AssistSessionDetail(AssistSessionRow):
+    """One session, with the material an operator reviews after the fact."""
+    # The operator's machine as the agent saw it — the same probe the prompts
+    # mandate, kept because "which host was this run from" is part of the
+    # audit answer, not just live context.
+    environment: Optional[dict] = None
+    environment_probed_at: Optional[datetime] = None
+    agent_model: Optional[str] = None
+    agent_tool: Optional[str] = None
+    prompt_version: Optional[str] = None
+    notes: List[AssistSessionNote] = []
+    # Feedback the agent left about this session, if it closed the loop.
+    feedback_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -454,22 +494,40 @@ def end_assist_session(
     summary="List recent assist sessions in this project",
 )
 def list_assist_sessions(
+    status: Optional[str] = Query(
+        None, description="Filter by effective status (active / ended)."
+    ),
+    mine: bool = Query(False, description="Only sessions this user started."),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     current_user: User = Depends(require_project_role(ProjectRole.VIEWER)),
 ):
     """All assist sessions for the project, newest first.  Visible to
-    viewers (read-only view of audit metadata; no key material).  Cap
-    at 100 — v1 doesn't paginate this list, but most projects will
-    have only a handful of recent sessions.
+    viewers (read-only view of audit metadata; no key material).
+
+    v2.284.0 — paginated and filterable, because this now backs a review page
+    rather than only the start dialog's "do I already have one running?" panel.
+    The `status` filter runs against the EFFECTIVE status (a session whose key
+    has expired reads as ended), so it agrees with what the caller is shown
+    rather than with a stored value the sweep may not have converged yet.
     """
-    rows = (
+    q = (
         db.query(AssistSession, User.username)
         .options(joinedload(AssistSession.agent_session))
         .outerjoin(User, AssistSession.started_by_id == User.id)
         .filter(AssistSession.project_id == project.id)
-        .order_by(AssistSession.started_at.desc())
-        .limit(100)
+    )
+    if mine:
+        q = q.filter(AssistSession.started_by_id == current_user.id)
+    rows = (
+        q.order_by(AssistSession.started_at.desc())
+        # Status is filtered after the effective-status derivation below, so
+        # over-fetch when it is set rather than paginating a list we are about
+        # to filter — correctness first; the cap keeps it bounded.
+        .limit(500 if status else limit)
+        .offset(0 if status else offset)
         .all()
     )
 
@@ -508,7 +566,10 @@ def list_assist_sessions(
             return AssistSessionStatus.ENDED.value
         return session.status
 
-    return [
+    calls_by_session = _call_counts(db, session_ids)
+    notes_by_session = _note_counts(db, [s for s, _ in rows])
+
+    out = [
         AssistSessionRow(
             id=s.id,
             project_id=s.project_id,
@@ -525,6 +586,177 @@ def list_assist_sessions(
             capability_constraint=(
                 s.agent_session.capability_constraint if s.agent_session else None
             ),
+            call_count=calls_by_session.get(s.id, 0),
+            note_count=notes_by_session.get(s.id, 0),
         )
         for s, username in rows
     ]
+    if status:
+        out = [r for r in out if r.status == status]
+        out = out[offset : offset + limit]
+    return out
+
+
+def _call_counts(db: Session, session_ids: List[int]) -> dict:
+    """Audited call count per session, in one grouped query.
+
+    The list is the entry point to the review page, so "did this session do
+    anything?" has to be answerable without opening each one — a session with
+    zero calls is the common dead end (key minted, prompt never pasted) and
+    reads identically to a busy one without this.
+    """
+    if not session_ids:
+        return {}
+    return {
+        sid: count
+        for sid, count in (
+            db.query(AgentApiCall.assist_session_id, func.count(AgentApiCall.id))
+            .filter(AgentApiCall.assist_session_id.in_(session_ids))
+            .group_by(AgentApiCall.assist_session_id)
+            .all()
+        )
+    }
+
+
+def _note_counts(db: Session, sessions: List[AssistSession]) -> dict:
+    """Notes written per assist session.
+
+    Annotations hang off the unified ``AgentSession``, not the assist row, so
+    this maps back through ``agent_session_id`` — a session started before that
+    binding existed simply has none to find.
+    """
+    agent_session_ids = {
+        s.agent_session_id: s.id for s in sessions if s.agent_session_id is not None
+    }
+    if not agent_session_ids:
+        return {}
+    counts = (
+        db.query(Annotation.agent_session_id, func.count(Annotation.id))
+        .filter(Annotation.agent_session_id.in_(list(agent_session_ids)))
+        .group_by(Annotation.agent_session_id)
+        .all()
+    )
+    return {agent_session_ids[asid]: count for asid, count in counts}
+
+
+@router.get(
+    "/sessions/{session_id}",
+    response_model=AssistSessionDetail,
+    summary="One assist session, with what it produced",
+)
+def get_assist_session(
+    session_id: int = Path(..., gt=0),
+    note_limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _user: User = Depends(require_project_role(ProjectRole.VIEWER)),
+):
+    """The review view for a finished (or running) assist session.
+
+    v2.284.0 — assist was the one workflow with no way to look back at what an
+    agent did: plans and recon sessions each have a detail page, assist had a
+    start dialog that listed live sessions and nothing else.  That is backwards
+    for the workflow that runs interactively and can write notes under the
+    operator's own name.
+
+    Notes are included inline rather than behind another endpoint because they
+    are the session's only durable output — everything else it did was a read,
+    and the read trail is the separate api-activity feed.
+    """
+    session = (
+        db.query(AssistSession)
+        .options(joinedload(AssistSession.agent_session))
+        .filter(
+            AssistSession.id == session_id,
+            # Scope to the path project: an assist session id from another
+            # project must 404 here, not leak its purpose and note bodies.
+            AssistSession.project_id == project.id,
+        )
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Assist session not found")
+
+    username = (
+        db.query(User.username).filter(User.id == session.started_by_id).scalar()
+        if session.started_by_id
+        else None
+    )
+    key_expires_at = (
+        db.query(func.max(APIKey.expires_at))
+        .filter(
+            APIKey.assist_session_id == session.id,
+            APIKey.is_active.is_(True),
+        )
+        .scalar()
+    )
+    now = datetime.now(timezone.utc)
+    effective_status = session.status
+    if session.status == AssistSessionStatus.ACTIVE.value and (
+        key_expires_at is None or key_expires_at <= now
+    ):
+        effective_status = AssistSessionStatus.ENDED.value
+
+    notes: List[AssistSessionNote] = []
+    note_total = 0
+    if session.agent_session_id is not None:
+        note_q = (
+            db.query(Annotation, Host.ip_address, Host.hostname)
+            .outerjoin(Host, Annotation.host_id == Host.id)
+            .filter(Annotation.agent_session_id == session.agent_session_id)
+        )
+        note_total = note_q.count()
+        notes = [
+            AssistSessionNote(
+                id=a.id,
+                host_id=a.host_id,
+                host_ip=ip,
+                hostname=hostname,
+                body=a.body,
+                status=a.status.value if hasattr(a.status, "value") else a.status,
+                created_at=a.created_at,
+            )
+            for a, ip, hostname in (
+                note_q.order_by(Annotation.created_at.desc()).limit(note_limit).all()
+            )
+        ]
+
+    call_count = (
+        db.query(func.count(AgentApiCall.id))
+        .filter(AgentApiCall.assist_session_id == session.id)
+        .scalar()
+    ) or 0
+    feedback_count = (
+        db.query(func.count(AgentFeedback.id))
+        .filter(AgentFeedback.assist_session_id == session.id)
+        .scalar()
+    ) or 0
+
+    return AssistSessionDetail(
+        id=session.id,
+        project_id=session.project_id,
+        purpose=session.purpose,
+        status=effective_status,
+        started_by_id=session.started_by_id,
+        started_by_username=username,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        last_activity_at=session.last_activity_at,
+        environment_probed=session.environment_probed_at is not None,
+        key_expires_at=key_expires_at,
+        capabilities=(
+            session.agent_session.capabilities or [] if session.agent_session else []
+        ),
+        capability_constraint=(
+            session.agent_session.capability_constraint if session.agent_session else None
+        ),
+        call_count=call_count,
+        note_count=note_total,
+        environment=session.environment,
+        environment_probed_at=session.environment_probed_at,
+        agent_model=session.generated_by_model,
+        agent_tool=session.generated_by_tool,
+        prompt_version=session.prompt_version,
+        notes=notes,
+        feedback_count=feedback_count,
+    )

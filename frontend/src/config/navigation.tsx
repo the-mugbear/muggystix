@@ -21,6 +21,7 @@ import {
   Folder,
   Gauge,
   KeyRound,
+  MessageCircleQuestion,
   MessageSquareHeart,
   Network as NetworkIcon,
   Settings as SettingsIcon,
@@ -186,6 +187,13 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm'], order: 5 },
+  },
+  {
+    // Separate from Agent Runs on purpose: that timeline covers recon, plan
+    // generation and execution, and assist is not in it. Until it is, assist
+    // needs its own entry or the workflow has no home in the nav at all.
+    id: 'assist-sessions', path: '/assist-sessions', label: 'AI Assist', requiredRole: 'viewer', hub: 'workflows',
+    palette: { Icon: MessageCircleQuestion, keywords: ['assist', 'ask', 'agent', 'session', 'chat', 'review'], order: 9.5 },
   },
 
   // Collaboration hub

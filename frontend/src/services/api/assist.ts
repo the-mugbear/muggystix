@@ -74,6 +74,41 @@ export interface AssistSessionRow {
   // Audit: which sessions carried write authority, and how narrowly.
   capabilities: string[];
   capability_constraint: string | null;
+  /** How much the session actually did. A session with zero calls is the
+   *  common dead end — key minted, prompt never pasted — and reads identically
+   *  to a busy one without these. */
+  call_count: number;
+  note_count: number;
+}
+
+/** A note this session's agent wrote — its only durable output; everything
+ *  else it did was a read. */
+export interface AssistSessionNote {
+  id: number;
+  host_id: number | null;
+  host_ip: string | null;
+  hostname: string | null;
+  body: string;
+  status: string | null;
+  created_at: string | null;
+}
+
+export interface AssistSessionDetail extends AssistSessionRow {
+  /** The operator's machine as the agent reported it. */
+  environment: Record<string, unknown> | null;
+  environment_probed_at: string | null;
+  agent_model: string | null;
+  agent_tool: string | null;
+  prompt_version: string | null;
+  notes: AssistSessionNote[];
+  feedback_count: number;
+}
+
+export interface AssistSessionFilters {
+  status?: string;
+  mine?: boolean;
+  limit?: number;
+  offset?: number;
 }
 
 export const startAssistSession = async (
@@ -90,7 +125,20 @@ export const endAssistSession = async (sessionId: number): Promise<void> => {
   await api.post(`${p()}/assist/sessions/${sessionId}/end`);
 };
 
-export const listAssistSessions = async (): Promise<AssistSessionRow[]> => {
-  const res = await api.get<AssistSessionRow[]>(`${p()}/assist/sessions`);
+export const listAssistSessions = async (
+  filters: AssistSessionFilters = {},
+): Promise<AssistSessionRow[]> => {
+  const res = await api.get<AssistSessionRow[]>(`${p()}/assist/sessions`, {
+    params: filters,
+  });
+  return res.data;
+};
+
+export const getAssistSession = async (
+  sessionId: number,
+): Promise<AssistSessionDetail> => {
+  const res = await api.get<AssistSessionDetail>(
+    `${p()}/assist/sessions/${sessionId}`,
+  );
   return res.data;
 };

@@ -502,6 +502,20 @@ export const getReconSessionApiActivity = async (
   return response.data;
 };
 
+/** The audit feed for one assist session (v5.173.0). Assist was the only
+ *  workflow without one, so the interactive workflow — the one that can write
+ *  notes under the operator's own name — was the one nobody could review. */
+export const getAssistSessionApiActivity = async (
+  assistSessionId: number,
+  filters: AgentActivityFilters = {},
+): Promise<AgentApiCallListResponse> => {
+  const response = await api.get<AgentApiCallListResponse>(
+    `${p()}/assist-sessions/${assistSessionId}/api-activity`,
+    { params: filters },
+  );
+  return response.data;
+};
+
 export const deleteTestPlan = async (planId: number): Promise<void> => {
   await api.delete(`${p()}/test-plans/${planId}`);
 };

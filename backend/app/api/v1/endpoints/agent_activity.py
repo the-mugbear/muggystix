@@ -391,6 +391,52 @@ def get_agent_activity_summary(
 
 
 @router.get(
+    "/assist-sessions/{assist_session_id}/api-activity",
+    response_model=AgentApiCallListResponse,
+    summary="List the agent's API calls for this assist session",
+)
+def list_assist_session_activity(
+    project_id: int = Path(..., gt=0),
+    assist_session_id: int = Path(..., gt=0),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    method: Optional[str] = Query(None),
+    status_min: Optional[int] = Query(None, ge=100, le=599),
+    status_max: Optional[int] = Query(None, ge=100, le=599),
+    host_id: Optional[int] = Query(None),
+    target_ip: Optional[str] = Query(None),
+    mine: bool = Query(False, description="Only calls made by agents the current user owns."),
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """What an assist session actually did (v2.284.0).
+
+    Plans and recon sessions have had this since the audit log existed; assist
+    did not, so the one workflow an operator runs interactively — and the only
+    one that can write notes under their own name — was the one whose activity
+    they could not review anywhere in the app.  The rows were being recorded the
+    whole time; nothing read them back.
+    """
+    # get_current_project enforces ProjectMembership for the path project_id
+    # (see list_plan_activity) — guards the same cross-tenant read.
+    q = _base_query(
+        db, project_id=project.id, test_plan_id=None, recon_session_id=None,
+        method=method, status_min=status_min, status_max=status_max,
+        host_id=host_id, target_ip=target_ip, since=since, until=until,
+        mine_owner_id=current_user.id if mine else None,
+    ).filter(AgentApiCall.assist_session_id == assist_session_id)
+    total = q.count()
+    rows = (
+        q.order_by(AgentApiCall.created_at.desc())
+        .offset(offset).limit(limit).all()
+    )
+    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))
+
+
+@router.get(
     "/recon-sessions/{recon_session_id}/api-activity",
     response_model=AgentApiCallListResponse,
     summary="List the agent's API calls for this recon session",

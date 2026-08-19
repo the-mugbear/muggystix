@@ -123,6 +123,7 @@ const AgentsGuide = lazy(() => import('./pages/userguide/AgentsGuide'));
 const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
 const McpReference = lazy(() => import('./pages/McpReference'));
+const AssistSessions = lazy(() => import('./pages/AssistSessions'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const LLMSettings = lazy(() => import('./pages/LLMSettings'));
 const IntegrationSettings = lazy(() => import('./pages/IntegrationSettings'));
@@ -401,6 +402,24 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <Activity />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* v5.173.0 — AI Assist review. Two paths, one page:
+                          the list, and the per-session detail its rows open. */}
+                      <Route
+                        path="/assist-sessions"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <AssistSessions />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/assist-sessions/:sessionId"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <AssistSessions />
                           </ProtectedRoute>
                         }
                       />

@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import {
   AgentApiCallRow,
   AgentActivityFilters,
+  getAssistSessionApiActivity,
   getPlanApiActivity,
   getReconSessionApiActivity,
 } from '../services/api';
@@ -33,7 +34,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 type Source =
   | { kind: 'plan'; planId: number }
-  | { kind: 'recon'; reconSessionId: number };
+  | { kind: 'recon'; reconSessionId: number }
+  // v5.173.0 — assist sessions were the one workflow with no activity feed,
+  // so the same filter UI now serves all three rather than a third component
+  // diverging from these two.
+  | { kind: 'assist'; assistSessionId: number };
 
 interface AgentActivityLogProps {
   source: Source;
@@ -52,6 +57,12 @@ interface AgentActivityLogProps {
    *  project-wide firehose; the in-tab toggle flips to "All". */
   defaultMineOnly?: boolean;
 }
+
+const SOURCE_LABEL: Record<Source['kind'], string> = {
+  plan: 'plan',
+  recon: 'recon session',
+  assist: 'assist session',
+};
 
 const STATUS_PRESETS: Array<{ label: string; min?: number; max?: number }> = [
   { label: 'All' },
@@ -288,7 +299,9 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
       const result =
         source.kind === 'plan'
           ? await getPlanApiActivity(source.planId, filters)
-          : await getReconSessionApiActivity(source.reconSessionId, filters);
+          : source.kind === 'recon'
+            ? await getReconSessionApiActivity(source.reconSessionId, filters)
+            : await getAssistSessionApiActivity(source.assistSessionId, filters);
       setRows(result.items);
       setTotal(result.total);
     } catch (e: unknown) {
@@ -316,7 +329,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
               {subtitle ?? (
                 <>
                   Every request the agent made to BlueStick for this{' '}
-                  {source.kind === 'plan' ? 'plan' : 'recon session'}. Filter by host or IP to
+                  {SOURCE_LABEL[source.kind]}. Filter by host or IP to
                   verify the agent queried what you expected.
                 </>
               )}
@@ -433,7 +446,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
                 <TableRow>
                   <TableCell colSpan={8} className="py-md text-metadata text-muted-foreground">
                     No matching API calls. The agent may not have started this{' '}
-                    {source.kind === 'plan' ? 'plan' : 'recon session'} yet, or your filters
+                    {SOURCE_LABEL[source.kind]} yet, or your filters
                     excluded every call.
                     {mineOnly && (
                       <>

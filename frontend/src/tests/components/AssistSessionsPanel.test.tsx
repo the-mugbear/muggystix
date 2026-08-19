@@ -31,6 +31,8 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
   capabilities: [],
   capability_constraint: null,
+  call_count: 0,
+  note_count: 0,
   ...over,
 });
 
