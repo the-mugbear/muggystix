@@ -92,6 +92,21 @@ def test_refused_tool_call_records_the_endpoint_status(client, test_project, db_
     assert row.error_code == 403
 
 
+def test_the_401_path_still_records_which_tool_was_attempted(client, db_session):
+    """Converting an auth failure to a real HTTP 401 must not lose the row —
+    "which tools are agents trying without a working key" is exactly the kind of
+    misconfiguration this table exists to surface."""
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_get_host", "arguments": {"host_id": 1}},
+    })
+    assert resp.status_code == 401
+
+    row = _rows(db_session, tool_name="assist_get_host")[0]
+    assert row.outcome == "tool_error"
+    assert row.error_code == 401
+
+
 def test_transport_rejections_are_recorded(client, db_session):
     """These never reach a handler, so before telemetry a client stuck on an
     unsupported protocol version failed silently from our side."""

@@ -366,8 +366,12 @@ const McpReference: React.FC = () => {
               and records an audit row, exactly as it would for a curl.
             </li>
             <li>
-              The response comes back as the tool result. A 401 or 403 is surfaced to the agent
-              verbatim as an error result, so it can see <em>why</em> it was refused.
+              The response comes back as the tool result. A <strong>403</strong> — valid key,
+              but this session may not do that — is surfaced to the agent verbatim as an error
+              result, so it can see why and work around it. A <strong>401</strong> is different:
+              no usable credential is a fact about the connection, not the call, so the transport
+              answers a real HTTP 401 with a bearer challenge and the client can prompt for a key
+              instead of retrying forever.
             </li>
           </ol>
         </CardContent>

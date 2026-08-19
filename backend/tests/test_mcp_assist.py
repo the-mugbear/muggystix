@@ -193,16 +193,42 @@ def test_tool_call_with_real_key_reads_context(client, test_project):
     assert f'"id": {test_project.id}' in text or f'"id":{test_project.id}' in text
 
 
-def test_tool_call_without_key_is_forbidden(client, test_project):
-    """No key on the MCP connection -> the read tool surfaces the endpoint's 403.
-    The MCP layer is not an auth bypass."""
+def test_tool_call_without_key_answers_a_real_401(client, test_project):
+    """No credential -> HTTP 401 with a bearer challenge (v2.276.0).
+
+    This used to be HTTP 200 carrying an isError result: a request that
+    succeeded at the transport layer and failed inside. That reads fine to a
+    model and not at all to a client — nothing in the exchange said "you are
+    unauthenticated", so a client could not prompt for a key, surface a
+    connection error, or stop retrying. The MCP layer is still not an auth
+    bypass; it just says so in the status code now.
+    """
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 11, "method": "tools/call",
         "params": {"name": "assist_get_context", "arguments": {}},
     })
-    result = resp.json()["result"]
-    assert result["isError"] is True
-    assert "403" in result["content"][0]["text"] or "401" in result["content"][0]["text"]
+    assert resp.status_code == 401
+    challenge = resp.headers["WWW-Authenticate"]
+    assert challenge.startswith("Bearer ")
+    # No `resource_metadata=` — that is how MCP bootstraps OAuth discovery, and
+    # advertising it when this server is not an OAuth resource server would send
+    # capable clients into a flow that dead-ends.
+    assert "resource_metadata" not in challenge
+    # Nothing was authenticated, so the client is not told its token is bad.
+    assert "invalid_token" not in challenge
+    body = resp.json()
+    assert body["id"] == 11 and body["error"]["code"] == -32001
+
+
+def test_rejected_key_says_the_token_is_the_problem(client):
+    """A key that was sent but isn't usable gets `error="invalid_token"`, so the
+    client knows to re-authenticate rather than assume it forgot the header."""
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_get_context", "arguments": {}},
+    }, headers={"X-API-Key": "nm_agent_not_a_real_key"})
+    assert resp.status_code == 401
+    assert 'error="invalid_token"' in resp.headers["WWW-Authenticate"]
 
 
 def test_write_tool_blocked_for_readonly_key(client, test_project):
@@ -222,16 +248,41 @@ def test_write_tool_blocked_for_readonly_key(client, test_project):
     assert "403" in result["content"][0]["text"]
 
 
-def test_write_tool_without_key_reports_missing_key(client):
-    """A write tool with no key at all short-circuits with a clear message
-    before any loopback."""
+def test_capability_refusal_stays_a_tool_result_not_a_transport_error(client, test_project):
+    """The line between 401 and isError.
+
+    A capability or row-scope refusal is a per-call outcome the model should
+    read and work around ("that host isn't assigned to you"). Promoting it to a
+    transport status would tell the client to re-authenticate over something no
+    amount of re-authenticating fixes — the key is fine, the action isn't
+    allowed. Only *authentication* failures become HTTP 401.
+    """
+    body = _start_session(client, test_project.id)  # read-only key
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 13, "method": "tools/call",
+        "params": {"name": "assist_set_follow", "arguments": {"host_id": 1, "status": "watching"}},
+    }, headers={"X-API-Key": body["api_key"]})
+
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["isError"] is True
+    assert "403" in result["content"][0]["text"]
+
+
+def test_write_tool_without_key_also_answers_401(client):
+    """Every missing-credential case takes one path (v2.276.0).
+
+    Writes used to short-circuit with a hand-written "you need an X-API-Key"
+    message before any loopback, which meant one auth failure looked different
+    from the others. The endpoint's own 401 says it better, and uniformity is
+    what lets the transport turn all of them into a real status.
+    """
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 13, "method": "tools/call",
         "params": {"name": "assist_set_follow", "arguments": {"host_id": 1, "status": "watching"}},
     })
-    result = resp.json()["result"]
-    assert result["isError"] is True
-    assert "X-API-Key" in result["content"][0]["text"]
+    assert resp.status_code == 401
+    assert "X-API-Key" in resp.json()["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -573,12 +624,12 @@ def test_unauthenticated_calls_write_no_audit_row(client, caplog):
     from app.db.models_agent import AgentApiCall
 
     with caplog.at_level(logging.ERROR):
-        result = _rpc(client, {
+        resp = _rpc(client, {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "assist_get_context", "arguments": {}},
-        }).json()["result"]
+        })
 
-    assert result["isError"] is True  # the agent still learns it was refused
+    assert resp.status_code == 401  # the caller still learns it was refused
     assert not [m for m in caplog.messages if "agent_api_call write failed" in m]
 
 

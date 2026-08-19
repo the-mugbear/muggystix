@@ -32,9 +32,23 @@ context — so we point at it in the server ``instructions`` instead.
 Auth model
 ----------
 ``initialize`` / ``tools/list`` / ``ping`` need no key (static, leak nothing).
-``tools/call`` reads ``X-API-Key`` from the POST request and forwards it to the
-loopback endpoint; a missing/invalid/wrong-scope key surfaces as the real
-endpoint's 401/403 wrapped in an ``isError`` tool result.
+``tools/call`` reads the key from ``X-API-Key`` or ``Authorization: Bearer`` and
+forwards it to the loopback endpoint, which decides.  The outcome splits on
+*why* a call was refused:
+
+* **No usable credential** (missing or invalid key) → a real **HTTP 401** with a
+  bare ``WWW-Authenticate: Bearer`` challenge.  That is a fact about the
+  connection, and a client can act on it: prompt for a key, show a connection
+  error, stop retrying.
+* **A valid key that may not do this** (capability missing, host not assigned)
+  → an ``isError`` tool result carrying the endpoint's 403.  That is a fact
+  about one call, which the model should read and work around; re-authenticating
+  would not change it.
+
+The challenge is deliberately bare — MCP's authorization spec uses 401 plus
+``resource_metadata`` to bootstrap OAuth discovery, and this server is not an
+OAuth resource server (see /reference/mcp).  Advertising discovery we don't
+implement would send capable clients into a dead end.
 """
 
 from __future__ import annotations
@@ -701,12 +715,10 @@ async def _dispatch_tool(
     }
     json_body = body if (spec["method"] != "GET" ) else None
 
-    if spec["method"] != "GET" and not api_key:
-        return _tool_text_result(
-            "This tool writes and needs an X-API-Key with the required capability; "
-            "none was provided on the MCP connection.",
-            is_error=True,
-        )
+    # No short-circuit for "write tool, no key" (removed v2.276.0): the endpoint
+    # answers 401 with a better message than we can synthesise, and letting it
+    # do so means every missing-credential case takes one path — which is what
+    # lets the transport turn them all into a real HTTP 401 below.
 
     try:
         resp = await _loopback(
@@ -1068,6 +1080,62 @@ def _telemetry_event(
     )
 
 
+def _auth_failure_detail(response: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The endpoint's message when a call failed for want of a usable credential.
+
+    Only 401 — *authentication*, a fact about the connection: there is no key,
+    or the one presented isn't valid here.  A 403 stays an ordinary tool result
+    on purpose: capability and row-scope refusals are per-call outcomes the
+    model should read and work around ("that host isn't assigned to you"), not
+    a signal that the whole connection is unusable.  Promoting those to a
+    transport status would tell the client to re-authenticate over something it
+    can't fix by re-authenticating.
+    """
+    if not response:
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict) or not result.get("isError"):
+        return None
+    content = result.get("content") or [{}]
+    text = content[0].get("text", "") if isinstance(content[0], dict) else ""
+    match = _HTTP_STATUS_IN_TOOL_ERROR.match(text)
+    return text if match and match.group(1) == "401" else None
+
+
+def _unauthorized(
+    detail: str, msg_id: Any, *, key_supplied: bool, events: List[Dict[str, Any]]
+) -> JSONResponse:
+    """A real HTTP 401 for a call that needs a credential (v2.276.0).
+
+    Until now this came back as HTTP 200 carrying an ``isError`` result — a
+    request that succeeded at the transport layer and failed inside.  That reads
+    fine to a model and not at all to a client: nothing in the exchange said
+    "you are unauthenticated", so a client had no way to prompt for a key,
+    surface a connection error, or stop retrying.
+
+    ``WWW-Authenticate`` is deliberately bare.  MCP's authorization spec uses a
+    401 plus ``resource_metadata`` to bootstrap OAuth discovery; advertising
+    that when this server is not an OAuth resource server would send capable
+    clients into a discovery flow that dead-ends.  A plain ``Bearer`` challenge
+    (RFC 6750) says "authenticate with a bearer token" and stops there, which is
+    exactly true.
+    """
+    challenge = 'Bearer realm="BlueStick assist"'
+    if key_supplied:
+        # The client sent something; tell it the credential is the problem
+        # rather than letting it assume it forgot the header.
+        challenge += ', error="invalid_token"'
+    response = JSONResponse(
+        # -32001 is in JSON-RPC's implementation-defined server-error range;
+        # the spec reserves no code for authorization.
+        _rpc_error(msg_id, -32001, detail),
+        status_code=401,
+        headers={"WWW-Authenticate": challenge},
+    )
+    response.background = BackgroundTask(mcp_telemetry.write_events, events)
+    return response
+
+
 def _rejected(
     request: Request, status: int, detail: str, *, api_key: Optional[str] = None
 ) -> JSONResponse:
@@ -1207,6 +1275,21 @@ async def mcp_post(request: Request) -> Response:
             events.append(event)
         if resp is not None:
             responses.append(resp)
+
+    # A single call that failed for want of a credential answers as a real HTTP
+    # 401 rather than a 200 carrying an error (v2.276.0).  Single messages only:
+    # a batch has no way to say "this one was unauthorized" in a status code, and
+    # collapsing the whole batch to 401 would misreport the messages that
+    # succeeded.  Batching is a 2025-03-26-only path anyway.
+    if not isinstance(payload, list) and len(responses) == 1:
+        detail = _auth_failure_detail(responses[0])
+        if detail:
+            return _unauthorized(
+                detail,
+                payload.get("id") if isinstance(payload, dict) else None,
+                key_supplied=bool(api_key),
+                events=events,
+            )
 
     # Notification-only POST -> 202 Accepted, no body.  A batch collapses to one
     # response array; a single message answers on its own, as before.
