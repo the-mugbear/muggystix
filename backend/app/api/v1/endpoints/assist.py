@@ -150,12 +150,18 @@ def _mcp_server_entry(mcp_url: str, raw_key: str) -> dict:
 
 # Deployments default to a self-signed certificate, and every MCP client here is
 # Node/Electron — which rejects it with DEPTH_ZERO_SELF_SIGNED_CERT before any
-# request is made.  Verified live; without this the connection just fails and the
-# error names TLS, not the config, so operators debug the wrong thing.
-_TLS_NOTE = (
-    "Self-signed cert? Export NODE_TLS_REJECT_UNAUTHORIZED=0 in the shell you launch "
-    "the client from, or trust the deployment's certificate first."
-)
+# request is made (verified against a real client).  Node ignores the OS trust
+# store, so "trust it in Keychain" doesn't help; pinning the certificate with
+# NODE_EXTRA_CA_CERTS does, and unlike NODE_TLS_REJECT_UNAUTHORIZED=0 it leaves
+# verification ON for every other host that process talks to.
+def _tls_note(mcp_url: str) -> str:
+    cert_url = mcp_url.rsplit("/mcp", 1)[0] + "/references/tls-certificate"
+    return (
+        "Self-signed cert? Node-based clients refuse it. Fetch the deployment cert "
+        f"(curl -sk {cert_url} -o bluestick.pem) and export "
+        "NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem in the shell you launch the client "
+        "from — that trusts this deployment without turning verification off."
+    )
 
 
 def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
@@ -170,7 +176,7 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             hint=(
                 "Save as .vscode/mcp.json in your workspace, then start the server from the "
                 "Copilot MCP panel. The file holds a live key — keep it out of version control. "
-                + _TLS_NOTE
+                + _tls_note(mcp_url)
             ),
         ),
         McpClientSetup(
@@ -185,7 +191,7 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             hint=(
                 "Run in your project directory. -s local keeps the key in your own config; "
                 "-s project writes .mcp.json into the repo, so do not use it with a live key. "
-                + _TLS_NOTE
+                + _tls_note(mcp_url)
             ),
         ),
         McpClientSetup(
@@ -201,7 +207,7 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             hint=(
                 "Codex keeps the key out of config.toml — it reads the env var at run time. "
                 "`read -rs` keeps it out of your shell history too; re-run it in each new shell "
-                "rather than writing the key into a profile. " + _TLS_NOTE
+                "rather than writing the key into a profile. " + _tls_note(mcp_url)
             ),
         ),
         McpClientSetup(
@@ -212,7 +218,7 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             payload=json.dumps({"mcpServers": entry}, indent=2),
             hint=(
                 "Save as .cursor/mcp.json in your project, or ~/.cursor/mcp.json to keep it out "
-                "of the repo entirely. The file holds a live key — do not commit it. " + _TLS_NOTE
+                "of the repo entirely. The file holds a live key — do not commit it. " + _tls_note(mcp_url)
             ),
         ),
     ]

@@ -187,6 +187,9 @@ const McpReference: React.FC = () => {
   // The endpoint is server-resolved; fall back to a relative path so the
   // connect snippets still read correctly if the catalog call failed.
   const endpoint = catalog?.endpoint ?? '/api/v1/mcp';
+  // Same origin as the MCP endpoint the server resolved, so the command is
+  // copy-pasteable rather than something the operator has to adapt.
+  const certUrl = `${endpoint.replace(/\/mcp$/, '')}/references/tls-certificate`;
 
   const toolRows = (tools: McpToolDoc[]) => (
     <Table style={{ tableLayout: 'fixed' }}>
@@ -305,12 +308,24 @@ const McpReference: React.FC = () => {
       </p>
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
-          <strong>Self-signed certificate?</strong> Every MCP client here is Node-based and will
-          refuse the default deployment certificate with{' '}
-          <span className="font-mono">DEPTH_ZERO_SELF_SIGNED_CERT</span> before it sends a single
-          request. Either trust the certificate on your machine, or export{' '}
-          <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span> in the shell you launch
-          the client from. The error names TLS, not your config — so this is worth ruling out first.
+          <strong>Self-signed certificate? Pin it — don&rsquo;t disable verification.</strong>{' '}
+          Every MCP client here is Node-based, and Node ignores the OS trust store, so
+          &ldquo;trust it in Keychain&rdquo; won&rsquo;t help: the client refuses the connection
+          with <span className="font-mono">DEPTH_ZERO_SELF_SIGNED_CERT</span> before it sends a
+          request. Fetch this deployment&rsquo;s certificate and point Node at it — verification
+          stays on, scoped to this one certificate:
+          <span className="mt-xxs block font-mono text-caption">
+            curl -sk {certUrl} -o bluestick.pem
+            <br />
+            export NODE_EXTRA_CA_CERTS=$PWD/bluestick.pem
+          </span>
+          <span className="mt-xxs block">
+            Fetching it over the untrusted connection is trust-on-first-use — on a network you
+            don&rsquo;t control, copy{' '}
+            <span className="font-mono">ssl/certs/networkmapper.crt</span> off the deployment host
+            instead. <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span> also works
+            but switches verification off for every host that process talks to, so prefer the pin.
+          </span>
         </AlertDescription>
       </Alert>
       <Alert variant="warning" className="mb-sm">

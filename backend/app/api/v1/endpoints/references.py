@@ -6,6 +6,7 @@ environment tooling, not sensitive data — same stance as ``/agents-guide``):
   * ``GET /api/v1/references/preflight-script`` — bash preflight script
   * ``GET /api/v1/references/sbom``             — software bill of materials
   * ``GET /api/v1/references/mcp-tools``        — MCP tool catalog
+  * ``GET /api/v1/references/tls-certificate``  — deployment TLS cert (PEM)
   * ``GET /api/v1/references/``                 — listing of references above
   * ``GET /api/v1/agents-guide``                — AGENTS.md slice
 
@@ -84,6 +85,44 @@ def sbom():
     """
     from app.services.sbom_service import get_sbom
     return get_sbom(settings.APP_VERSION)
+
+
+# The deployment's own certificate, mounted read-only (public half only — the
+# private key is never mounted into this container).  Serving it lets an operator
+# pin it via NODE_EXTRA_CA_CERTS instead of switching TLS verification off.
+_TLS_CERT_PATH = Path("/certs/networkmapper.crt")
+
+
+@router.get("/references/tls-certificate", response_class=PlainTextResponse)
+def tls_certificate():
+    """Serve the deployment's public TLS certificate as PEM.
+
+    Deployments default to a self-signed certificate, and every MCP client is
+    Node-based — Node ignores the OS trust store, so "trust it in Keychain"
+    doesn't help.  What does work is ``NODE_EXTRA_CA_CERTS=<this file>``, which
+    trusts THIS certificate and nothing else, leaving verification on.  The
+    alternative operators reach for, ``NODE_TLS_REJECT_UNAUTHORIZED=0``,
+    disables verification for every host that process talks to.
+
+    This is the certificate the server already presents in every TLS handshake,
+    so publishing it discloses nothing new.  Fetching it over the same untrusted
+    connection is trust-on-first-use, with TOFU's usual caveat: on a network you
+    don't trust, copy the file off the deployment host instead.
+    """
+    if not _TLS_CERT_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No certificate is mounted in this container. Deployments that "
+                "terminate TLS elsewhere (a reverse proxy, a load balancer) "
+                "should distribute that endpoint's certificate instead."
+            ),
+        )
+    return PlainTextResponse(
+        _TLS_CERT_PATH.read_text(),
+        media_type="application/x-pem-file",
+        headers={"Content-Disposition": 'attachment; filename="bluestick.pem"'},
+    )
 
 
 @router.get("/references/mcp-tools")
@@ -186,6 +225,14 @@ async def references_index():
                 "Software bill of materials — every backend Python and "
                 "frontend npm component bundled with this build, tagged "
                 "direct vs transitive.  For operational CVE triage."
+            ),
+        },
+        "tls_certificate": {
+            "url": "/api/v1/references/tls-certificate",
+            "description": (
+                "The deployment's public TLS certificate (PEM). Pin it with "
+                "NODE_EXTRA_CA_CERTS so Node-based MCP clients trust this "
+                "deployment without disabling certificate verification."
             ),
         },
         "mcp_tools": {

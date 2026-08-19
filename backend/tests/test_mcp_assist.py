@@ -81,9 +81,12 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     assert f"export {codex['payload'].split()[1]}=" not in codex["payload"]
 
     # Every recipe warns about the self-signed certificate, which blocks every
-    # Node-based client before it sends a request.
+    # Node-based client before it sends a request — and points at pinning the
+    # cert rather than switching verification off globally.
     for entry in body["mcp_clients"]:
-        assert "NODE_TLS_REJECT_UNAUTHORIZED" in entry["hint"], entry["id"]
+        assert "NODE_EXTRA_CA_CERTS" in entry["hint"], entry["id"]
+        assert "/references/tls-certificate" in entry["hint"], entry["id"]
+        assert "NODE_TLS_REJECT_UNAUTHORIZED" not in entry["hint"], entry["id"]
 
     # Every entry is renderable: label, hint, payload all present.
     for c in body["mcp_clients"]:
