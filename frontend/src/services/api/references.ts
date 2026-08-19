@@ -54,6 +54,43 @@ export const getSbom = async (): Promise<SbomResponse> => {
 };
 
 
+
+// --- MCP tool catalog ---
+// Drives the /reference/mcp page. Read off the live server registry so the
+// page describes what this deployment actually serves. Public endpoint,
+// consistent with the rest of /api/v1/references/* — the same catalog is
+// already reachable via an unauthenticated MCP `tools/list`.
+
+export interface McpToolDoc {
+  name: string;
+  description: string;
+  /** 'write' iff the underlying endpoint gates the call on a capability. */
+  kind: 'read' | 'write';
+  capability: string | null;
+  method: string;
+  path: string;
+  input_schema: {
+    type: string;
+    properties?: Record<string, { type?: string; description?: string; enum?: string[] }>;
+    required?: string[];
+    [k: string]: unknown;
+  };
+}
+
+export interface McpCatalog {
+  server_name: string;
+  protocol_version: string;
+  endpoint: string;
+  max_request_bytes: number;
+  max_batch_messages: number;
+  tools: McpToolDoc[];
+}
+
+export const getMcpTools = async (): Promise<McpCatalog> => {
+  const response = await api.get<McpCatalog>('/references/mcp-tools');
+  return response.data;
+};
+
 // --- Host tool readiness ---
 // The agent tool catalog cross-referenced against the calling user's
 // most recent environment probe.  Authenticated (reflects *your* host),

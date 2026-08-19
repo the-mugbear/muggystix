@@ -113,6 +113,9 @@ describe('navigation manifest', () => {
     '/reference/user-guide/agents',
     '/reference/user-guide/admin',
     '/reference/sbom',
+    // Reached from the Reference hub (and cross-linked from the agents
+    // user-guide section), not the sidebar — same stance as the SBOM page.
+    '/reference/mcp',
   ]);
 
   it('no static top-level route is missing from the manifest', () => {

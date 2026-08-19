@@ -8,6 +8,7 @@ import {
   FileCode,
   Bot,
   Package,
+  Plug,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Card, CardContent } from '../components/ui/card';
@@ -40,6 +41,15 @@ const sections: ReferenceSection[] = [
   // risk scoring is in a broken state (HostRiskAssessment is unpopulated).
   // Restore it when risk scoring is reworked (admin-tunable weights). See
   // TODO.md and frontend/src/config/featureFlags.ts.
+  {
+    title: 'MCP for AI Assist',
+    description:
+      'Connect an AI assistant as native tools instead of curl — setup per client, the tool catalog, and what a session may do.',
+    Icon: Plug,
+    path: '/reference/mcp',
+    tone: 'primary',
+    group: 'Guides',
+  },
   {
     title: 'Default Credentials',
     description: 'Searchable database of vendor default credentials for security testing.',

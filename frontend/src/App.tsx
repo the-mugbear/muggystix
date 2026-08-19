@@ -122,6 +122,7 @@ const TriageGuide = lazy(() => import('./pages/userguide/TriageGuide'));
 const AgentsGuide = lazy(() => import('./pages/userguide/AgentsGuide'));
 const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
+const McpReference = lazy(() => import('./pages/McpReference'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const LLMSettings = lazy(() => import('./pages/LLMSettings'));
 const IntegrationSettings = lazy(() => import('./pages/IntegrationSettings'));
@@ -665,6 +666,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <AdminGuide />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/mcp"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <McpReference />
                           </ProtectedRoute>
                         }
                       />

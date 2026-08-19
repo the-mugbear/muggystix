@@ -326,6 +326,39 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
+    """The MCP surface, described for the in-app reference page.
+
+    Derived from the same ``_TOOLS`` registry the server dispatches from, so
+    the documentation cannot drift from what the server actually exposes — add
+    a tool and it appears on the page with no second edit.  Everything here is
+    already readable without a key (``initialize`` / ``tools/list`` are
+    unauthenticated), so serving it from the public references router leaks
+    nothing new.
+    """
+    return {
+        "server_name": _SERVER_NAME,
+        "protocol_version": _PREFERRED_PROTOCOL_VERSION,
+        "endpoint": endpoint_url,
+        "max_request_bytes": _MAX_REQUEST_BYTES,
+        "max_batch_messages": _MAX_BATCH_MESSAGES,
+        "tools": [
+            {
+                "name": name,
+                "description": spec["description"],
+                # A tool is a write iff the underlying endpoint gates it on a
+                # capability — the same fact, not a hand-maintained second list.
+                "kind": "write" if spec.get("capability") else "read",
+                "capability": spec.get("capability"),
+                "method": spec["method"],
+                "path": spec["path"],
+                "input_schema": spec["input_schema"],
+            }
+            for name, spec in _TOOLS.items()
+        ],
+    }
+
+
 def _tool_list_payload() -> List[Dict[str, Any]]:
     """The ``tools`` array for a ``tools/list`` response."""
     return [

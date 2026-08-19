@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Bot, Radar, ClipboardCheck, TerminalSquare, MessagesSquare } from 'lucide-react';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import {
@@ -121,7 +122,7 @@ const sections: GuideSection[] = [
     id: 'assist',
     title: 'AI Assist — ask anything about your project',
     Icon: MessagesSquare,
-    summary: 'A read-only agent that answers ad-hoc questions over all your project data.',
+    summary: 'An agent that answers ad-hoc questions over all your project data — read-only unless you grant narrow writes.',
     content: (
       <div>
         <Para>
@@ -145,11 +146,19 @@ const sections: GuideSection[] = [
         </UnorderedList>
         <Subhead>How it's bounded</Subhead>
         <UnorderedList>
-          <li><strong>Read-only</strong> — every write endpoint rejects the assist key; it can never change follow status, notes, or plans.</li>
+          <li><strong>Read-only unless you say otherwise</strong> — by default every write endpoint rejects the assist key. Ticking the write box when you start a session grants exactly three narrow writes (add a note, set review status, correct hostname/OS), and only on hosts <em>assigned to you</em>. Scanning, plan creation, and execution are never available.</li>
           <li><strong>Project-scoped</strong> — it sees all hosts in the one project you started it from, and nothing in other projects.</li>
           <li><strong>Short-lived</strong> — assist keys expire quickly (4h by default) and can be ended at any time.</li>
           <li><strong>Who can start one</strong> — analyst role or above (auditors/viewers cannot mint a key).</li>
         </UnorderedList>
+        <Subhead>Connecting without the prompts</Subhead>
+        <Para>
+          Driving Assist over <Mono>curl</Mono> means your assistant asks permission for every
+          single command, including pure reads. Connect it over <strong>MCP</strong> instead and the
+          read tools can be marked "always allow" once — see{' '}
+          <Link to="/reference/mcp" className="underline">MCP for AI Assist</Link> for the setup and
+          the full tool list.
+        </Para>
         <Alert variant="info" className="mt-sm">
           <AlertDescription>
             Assist runs on any OS — its "commands" are HTTPS API calls, so Windows, macOS, and Linux

@@ -313,3 +313,64 @@ def test_trailing_slash_is_served_not_redirected(client):
     )
     assert resp.status_code == 200
     assert resp.json()["result"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Reference catalog (v2.270.0)
+#
+# The /reference/mcp page documents this surface. It reads the catalog off the
+# live registry rather than restating it, so the docs can't drift from the
+# server — these tests pin that they really are the same source.
+# ---------------------------------------------------------------------------
+
+def test_reference_catalog_matches_what_agents_see(client):
+    """The documented tool set is exactly the tool set tools/list returns.
+
+    A hand-maintained doc list would silently omit a newly added tool; this
+    fails instead.
+    """
+    catalog = client.get("/api/v1/references/mcp-tools")
+    assert catalog.status_code == 200, catalog.text
+    documented = {t["name"] for t in catalog.json()["tools"]}
+
+    served = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert documented == {t["name"] for t in served.json()["result"]["tools"]}
+
+
+def test_reference_catalog_classifies_reads_and_writes(client):
+    """`kind` is derived from the capability the endpoint requires, so a write
+    can never be documented as a safe-to-always-allow read."""
+    tools = {t["name"]: t for t in client.get("/api/v1/references/mcp-tools").json()["tools"]}
+
+    for name in ("assist_get_context", "assist_list_hosts", "assist_get_host_findings"):
+        assert tools[name]["kind"] == "read"
+        assert tools[name]["capability"] is None
+
+    assert tools["assist_add_note"]["capability"] == "write:notes"
+    assert tools["assist_set_follow"]["capability"] == "write:follow"
+    assert tools["assist_patch_host"]["capability"] == "write:host"
+    for name in ("assist_add_note", "assist_set_follow", "assist_patch_host"):
+        assert tools[name]["kind"] == "write"
+
+    # Every tool carries what the page renders: a description, the underlying
+    # route, and a JSON-Schema object for its parameters.
+    for tool in tools.values():
+        assert tool["description"]
+        assert tool["method"] and tool["path"].startswith("/api/v1/agent/")
+        assert tool["input_schema"]["type"] == "object"
+
+
+def test_reference_catalog_reports_the_live_transport_facts(client):
+    """Endpoint, protocol version, and the pre-auth ceilings come from the
+    server, so the page can't advertise a limit the server doesn't enforce."""
+    from app.api.v1.endpoints.mcp_assist import (
+        _MAX_BATCH_MESSAGES,
+        _MAX_REQUEST_BYTES,
+        _PREFERRED_PROTOCOL_VERSION,
+    )
+
+    body = client.get("/api/v1/references/mcp-tools").json()
+    assert body["endpoint"].endswith("/api/v1/mcp")
+    assert body["protocol_version"] == _PREFERRED_PROTOCOL_VERSION
+    assert body["max_request_bytes"] == _MAX_REQUEST_BYTES
+    assert body["max_batch_messages"] == _MAX_BATCH_MESSAGES

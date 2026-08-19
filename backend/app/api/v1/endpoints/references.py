@@ -5,6 +5,7 @@ environment tooling, not sensitive data — same stance as ``/agents-guide``):
 
   * ``GET /api/v1/references/preflight-script`` — bash preflight script
   * ``GET /api/v1/references/sbom``             — software bill of materials
+  * ``GET /api/v1/references/mcp-tools``        — MCP tool catalog
   * ``GET /api/v1/references/``                 — listing of references above
   * ``GET /api/v1/agents-guide``                — AGENTS.md slice
 
@@ -83,6 +84,22 @@ def sbom():
     """
     from app.services.sbom_service import get_sbom
     return get_sbom(settings.APP_VERSION)
+
+
+@router.get("/references/mcp-tools")
+def mcp_tools(request: Request):
+    """The MCP tool catalog, for the in-app MCP reference page.
+
+    Read straight off the live ``_TOOLS`` registry in ``mcp_assist`` — the page
+    describes what this deployment actually serves rather than a hand-copied
+    list that goes stale the first time a tool is added.  Unauthenticated like
+    the rest of this router: the same catalog is already available to anyone
+    who can POST ``tools/list`` to /api/v1/mcp without a key.
+    """
+    from app.api.v1.endpoints.mcp_assist import tool_catalog
+    from app.services.agent_prompt_service import resolve_base_url
+
+    return tool_catalog(f"{resolve_base_url(request)}/mcp")
 
 
 @router.get("/references/tool-readiness")
@@ -169,6 +186,14 @@ async def references_index():
                 "Software bill of materials — every backend Python and "
                 "frontend npm component bundled with this build, tagged "
                 "direct vs transitive.  For operational CVE triage."
+            ),
+        },
+        "mcp_tools": {
+            "url": "/api/v1/references/mcp-tools",
+            "description": (
+                "The MCP tool catalog this deployment serves — every tool "
+                "name, its input schema, and the write capability it needs. "
+                "Drives the in-app MCP reference page."
             ),
         },
         "tool_readiness": {
