@@ -162,6 +162,15 @@ export interface McpCatalog {
   /** SHA-256 of the deployment certificate, for checking a downloaded copy.
    *  Null when the certificate isn't mounted in the backend container. */
   tls_fingerprint_sha256?: string | null;
+  /** What the deployment actually presents. Self-signed is this project's
+   *  default, not a guarantee — an operator can mount an internal-CA or
+   *  DNS-validated certificate, and pinning is then likely unnecessary. */
+  tls_certificate?: {
+    fingerprint_sha256: string | null;
+    self_signed: boolean | null;
+    subject: string | null;
+    expires_at: string | null;
+  };
 }
 
 export const getMcpTools = async (): Promise<McpCatalog> => {

@@ -50,7 +50,8 @@ from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
 from app.services.agent_session_service import create_agent_session
 from app.services.assist_session_service import (
     effective_status,
-    live_key_expiry_subquery,
+    has_live_key,
+    key_expiry_for_sessions,
 )
 from app.services.agent_prompt_service import build_assist_instructions, resolve_base_url
 from app.services.mcp_client_setup_service import build_mcp_clients
@@ -517,35 +518,36 @@ def list_assist_sessions(
     has expired reads as ended), so it agrees with what the caller is shown
     rather than with a stored value the sweep may not have converged yet.
     """
-    # The derived status is computed in SQL rather than after the fetch, so the
-    # filter and the pagination agree with each other.  The previous shape —
-    # take the newest 500, derive in Python, then slice — meant a project with
-    # more than 500 sessions could not reach an older `ended` one at all, and it
-    # failed silently.  Joining the expiry subquery also removes the separate
-    # per-page key-expiry query.
-    live_expiry = live_key_expiry_subquery(db)
+    # The derived status is filtered in SQL rather than after the fetch, so the
+    # filter and the pagination agree.  An earlier shape took the newest 500,
+    # derived in Python, then sliced — past 500 sessions an older `ended` one was
+    # unreachable, silently.
+    #
+    # The filter is a correlated EXISTS, not a grouped subquery: an aggregate
+    # over api_keys has no access to this query's project or page, so it scaled
+    # with the deployment's whole key history on every request.  The expiry we
+    # *display* is fetched for the page's ids only, below.
     now = datetime.now(timezone.utc)
-    is_live = live_expiry.c.expires_at > now
+    live_key = has_live_key(now)
     stored_active = AssistSession.status == AssistSessionStatus.ACTIVE.value
 
     q = (
-        db.query(AssistSession, User.username, live_expiry.c.expires_at)
+        db.query(AssistSession, User.username)
         .options(joinedload(AssistSession.agent_session))
         .outerjoin(User, AssistSession.started_by_id == User.id)
-        .outerjoin(live_expiry, live_expiry.c.session_id == AssistSession.id)
         .filter(AssistSession.project_id == project.id)
     )
     if mine:
         q = q.filter(AssistSession.started_by_id == current_user.id)
     if status == AssistSessionStatus.ACTIVE.value:
-        q = q.filter(stored_active, is_live)
+        q = q.filter(stored_active, live_key)
     elif status:
-        # Everything that is not effectively active — including a row still
-        # stored as `active` whose key has died and the sweep hasn't caught yet.
-        q = q.filter(~(stored_active & is_live))
+        # Everything not effectively active — including a row still stored as
+        # `active` whose key has died and the sweep hasn't caught yet.
+        q = q.filter(~(stored_active & live_key))
         if status != AssistSessionStatus.ENDED.value:
-            # A specific non-active status (e.g. a future one) still filters on
-            # the stored value; only `active`/`ended` are derived.
+            # A specific non-active status still filters on the stored value;
+            # only `active`/`ended` are derived.
             q = q.filter(AssistSession.status == status)
 
     rows = (
@@ -555,23 +557,24 @@ def list_assist_sessions(
         .all()
     )
 
-    session_ids = [s.id for s, _, _ in rows]
+    session_ids = [s.id for s, _ in rows]
+    expiry_by_session = key_expiry_for_sessions(db, session_ids)
     calls_by_session = _call_counts(db, session_ids)
-    notes_by_session = _note_counts(db, [s for s, _, _ in rows])
+    notes_by_session = _note_counts(db, [s for s, _ in rows])
 
     return [
         AssistSessionRow(
             id=s.id,
             project_id=s.project_id,
             purpose=s.purpose,
-            status=effective_status(s.status, expires_at, now),
+            status=effective_status(s.status, expiry_by_session.get(s.id), now),
             started_by_id=s.started_by_id,
             started_by_username=username,
             started_at=s.started_at,
             ended_at=s.ended_at,
             last_activity_at=s.last_activity_at,
             environment_probed=s.environment_probed_at is not None,
-            key_expires_at=expires_at,
+            key_expires_at=expiry_by_session.get(s.id),
             capabilities=(s.agent_session.capabilities or []) if s.agent_session else [],
             capability_constraint=(
                 s.agent_session.capability_constraint if s.agent_session else None
@@ -579,7 +582,7 @@ def list_assist_sessions(
             call_count=calls_by_session.get(s.id, 0),
             note_count=notes_by_session.get(s.id, 0),
         )
-        for s, username, expires_at in rows
+        for s, username in rows
     ]
 
 

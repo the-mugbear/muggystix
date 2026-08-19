@@ -30,6 +30,12 @@ const catalog = (): McpCatalog => ({
   trust_script_url: 'https://bluestick.example/api/v1/references/trust-cert-script',
   tls_certificate_url: 'https://bluestick.example/api/v1/references/tls-certificate',
   tls_fingerprint_sha256: 'AA:BB:CC:DD',
+  tls_certificate: {
+    fingerprint_sha256: 'AA:BB:CC:DD',
+    self_signed: true,
+    subject: 'CN=127.0.0.1',
+    expires_at: '2027-04-08T20:19:47+00:00',
+  },
   tools: [
     {
       name: 'assist_list_hosts',
@@ -164,6 +170,42 @@ describe('McpReference', () => {
 
     // The fingerprint is what makes a downloaded certificate checkable.
     expect(screen.getByText('AA:BB:CC:DD')).toBeInTheDocument();
+  });
+
+  it('softens the pinning section when the deployment has a CA-issued cert', async () => {
+    // Self-signed is this project's default, not an invariant — an operator can
+    // mount an internal-CA or DNS-validated certificate, and telling them to pin
+    // one their clients already trust is busywork.
+    getMcpTools.mockResolvedValue({
+      ...catalog(),
+      tls_certificate: {
+        fingerprint_sha256: 'AA:BB:CC:DD',
+        self_signed: false,
+        subject: 'CN=bluestick.internal',
+        expires_at: '2027-01-01T00:00:00+00:00',
+      },
+    });
+    renderPage();
+
+    expect(await screen.findByText(/CA-issued/)).toBeInTheDocument();
+    expect(screen.getByText(/try connecting first/)).toBeInTheDocument();
+    // The recipe stays available — an internal CA the client doesn't know is
+    // exactly the case where pinning is still needed.
+    expect(screen.getByText(/bash trust-cert\.sh --url/)).toBeInTheDocument();
+  });
+
+  it('keeps the setup command runnable when the catalog fetch failed', async () => {
+    // The fallback is a bare path, and `curl -sk /api/v1/...` has no host.
+    getMcpTools.mockRejectedValue(new Error('boom'));
+    renderPage();
+
+    const block = await screen.findByText(/curl -sk .*trust-cert-script -o trust-cert\.sh/);
+    // Absolute against the page's own origin, whatever that is.
+    expect(block.textContent).toContain(
+      `curl -sk ${window.location.origin}/api/v1/references/trust-cert-script`,
+    );
+    expect(block.textContent).toContain(`bash trust-cert.sh --url ${window.location.origin}`);
+    expect(block.textContent).not.toMatch(/curl -sk \/api/);
   });
 
   it('degrades to the static guidance when the catalog cannot be loaded', async () => {

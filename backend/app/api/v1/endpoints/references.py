@@ -134,8 +134,31 @@ def sbom():
 _TLS_CERT_PATH = Path("/certs/networkmapper.crt")
 
 
-def tls_certificate_fingerprint() -> Optional[str]:
-    """SHA-256 of the deployment certificate, or None when it isn't mounted.
+class TlsCertificateInfo(BaseModel):
+    """What the deployment is actually presenting, for the connect instructions.
+
+    v2.288.0 — the page used to assert that BlueStick's certificate is
+    self-signed "and always will be".  That is the *default* this project ships,
+    not an invariant: an operator can mount an internal-CA or a DNS-validated
+    public certificate, and ``ssl-nginx.conf`` already contemplates one (its
+    OCSP-stapling block).  Telling that operator to pin a certificate their
+    clients already trust is busywork, and the fingerprint they were asked to
+    compare was silently null for them — see ``fingerprint``.
+    """
+
+    # None when the certificate isn't mounted into the backend container.
+    fingerprint_sha256: Optional[str] = None
+    # True when the leaf is its own issuer.  False means a CA issued it, in
+    # which case pinning may be unnecessary — the page softens rather than
+    # skips, because "a CA issued it" does not prove the CLIENT trusts that CA
+    # (an internal CA is exactly the case where it might not).
+    self_signed: Optional[bool] = None
+    subject: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+def tls_certificate_info() -> TlsCertificateInfo:
+    """Describe the mounted certificate: fingerprint, and whether it's self-signed.
 
     Published so an operator who downloaded the certificate over the untrusted
     connection has something to check it against.  Reading the fingerprint from
@@ -143,19 +166,37 @@ def tls_certificate_fingerprint() -> Optional[str]:
     browser, where the operator can also inspect the certificate the padlock
     shows, and it detects the ordinary failure (fetched the wrong host) even
     when it cannot prove the extraordinary one.
+
+    Parses the FIRST certificate in the file.  A CA-issued deployment usually
+    mounts leaf-plus-intermediate in one PEM, and the previous implementation
+    passed the whole file to ``ssl.PEM_cert_to_DER_cert``, which raises
+    ``binascii.Error`` on a chain (reproduced) — swallowed by the except below
+    into a silent ``None``.  So the operators most likely to have a *correct*
+    certificate were the ones shown no fingerprint at all.
     """
     if not _TLS_CERT_PATH.is_file():
-        return None
+        return TlsCertificateInfo()
     try:
-        import hashlib
-        import ssl
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
 
-        der = ssl.PEM_cert_to_DER_cert(_TLS_CERT_PATH.read_text(encoding="utf-8"))
-        digest = hashlib.sha256(der).hexdigest().upper()
-        return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+        pem = _TLS_CERT_PATH.read_bytes()
+        # load_pem_x509_certificate takes the leaf and ignores what follows,
+        # which is what we want: the leaf is the certificate the client
+        # actually validates and the one an operator would pin.
+        cert = x509.load_pem_x509_certificate(pem)
+        digest = cert.fingerprint(hashes.SHA256()).hex().upper()
+        return TlsCertificateInfo(
+            fingerprint_sha256=":".join(
+                digest[i : i + 2] for i in range(0, len(digest), 2)
+            ),
+            self_signed=cert.issuer == cert.subject,
+            subject=cert.subject.rfc4514_string(),
+            expires_at=cert.not_valid_after_utc.isoformat(),
+        )
     except Exception:  # pragma: no cover - defensive; a bad cert must not 500
-        logger.exception("could not fingerprint the deployment certificate")
-        return None
+        logger.exception("could not read the deployment certificate")
+        return TlsCertificateInfo()
 
 
 @router.get("/references/tls-certificate", response_class=PlainTextResponse)
@@ -356,7 +397,11 @@ def mcp_tools(request: Request):
     # has to go and find is a fingerprint nobody checks.
     catalog["trust_script_url"] = f"{base_url}/references/trust-cert-script"
     catalog["tls_certificate_url"] = f"{base_url}/references/tls-certificate"
-    catalog["tls_fingerprint_sha256"] = tls_certificate_fingerprint()
+    info = tls_certificate_info()
+    catalog["tls_fingerprint_sha256"] = info.fingerprint_sha256
+    # What the deployment actually presents, so the page can stop asserting
+    # "self-signed, always" at an operator who mounted a CA-issued certificate.
+    catalog["tls_certificate"] = info.model_dump()
     return catalog
 
 

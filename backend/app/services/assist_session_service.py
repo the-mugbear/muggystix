@@ -24,7 +24,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models_agent import AssistSession, AssistSessionStatus
@@ -59,15 +59,69 @@ def effective_status(
     return stored_status
 
 
-def live_key_expiry_subquery(db: Session):
-    """Per-session ``max(expires_at)`` across still-active keys, as a subquery.
+def has_live_key(now: Optional[datetime] = None):
+    """Correlated EXISTS: does this session still hold an unexpired active key.
 
-    A session can hold more than one key (a re-mint on resume) and access stops
-    when the LAST one dies, so MAX — taking the earliest would call a usable
-    session dead.  Exposed as a subquery so callers can JOIN it and filter on
-    the derived status in SQL rather than fetching rows to filter in Python.
+    v2.288.0 — this replaced a grouped subquery (``session_id, max(expires_at)``
+    GROUP BY) that was LEFT JOINed for filtering.  The aggregate had no access
+    to the outer query's project or page, so it grouped every assist key in the
+    deployment on every list request; expired keys keep ``is_active=True``, so
+    that workload grew with total historical sessions rather than with the page
+    being asked for.
+
+    EXISTS is correlated to the row being tested, so it short-circuits on the
+    first matching key and rides ``api_keys.assist_session_id``'s index.  Use
+    this for the *filter*; use :func:`key_expiry_for_sessions` for the value to
+    display, which only needs the ids on the page.
     """
+    now = now or datetime.now(timezone.utc)
     return (
+        select(APIKey.id)
+        .where(
+            APIKey.assist_session_id == AssistSession.id,
+            APIKey.is_active.is_(True),
+            APIKey.expires_at.isnot(None),
+            APIKey.expires_at > now,
+        )
+        .exists()
+    )
+
+
+def key_expiry_for_sessions(db: Session, session_ids: List[int]) -> dict:
+    """``{session_id: max(expires_at)}`` for the given sessions, one query.
+
+    Scoped to the page's ids rather than the deployment's history.  MAX because
+    a session can hold more than one key (a re-mint on resume) and access stops
+    when the LAST one dies — the earliest would call a usable session dead.
+    """
+    if not session_ids:
+        return {}
+    return {
+        sid: expires_at
+        for sid, expires_at in (
+            db.query(APIKey.assist_session_id, func.max(APIKey.expires_at))
+            .filter(
+                APIKey.assist_session_id.in_(session_ids),
+                APIKey.is_active.is_(True),
+            )
+            .group_by(APIKey.assist_session_id)
+            .all()
+        )
+    }
+
+
+def lapse_expired_assist_sessions(db: Session) -> int:
+    """End every active assist session whose keys have all expired.
+
+    Returns the number ended.  Idempotent: a session already `ended` is not
+    matched, so concurrent sweepers can't double-end one.
+    """
+    now = datetime.now(timezone.utc)
+
+    # The sweep DOES want the deployment-wide aggregate: it is looking at every
+    # active session, once an hour, off the request path. That is the opposite
+    # of the list endpoint's need, which is why they no longer share a query.
+    live_expiry = (
         db.query(
             APIKey.assist_session_id.label("session_id"),
             func.max(APIKey.expires_at).label("expires_at"),
@@ -79,17 +133,6 @@ def live_key_expiry_subquery(db: Session):
         .group_by(APIKey.assist_session_id)
         .subquery()
     )
-
-
-def lapse_expired_assist_sessions(db: Session) -> int:
-    """End every active assist session whose keys have all expired.
-
-    Returns the number ended.  Idempotent: a session already `ended` is not
-    matched, so concurrent sweepers can't double-end one.
-    """
-    now = datetime.now(timezone.utc)
-
-    live_expiry = live_key_expiry_subquery(db)
 
     rows = (
         db.query(AssistSession, live_expiry.c.expires_at)

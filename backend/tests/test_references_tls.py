@@ -78,25 +78,18 @@ def test_catalog_carries_the_trust_script_and_fingerprint(client):
     assert "tls_fingerprint_sha256" in body
 
 
-def test_fingerprint_matches_the_served_certificate(tmp_path, monkeypatch):
-    """A fingerprint that doesn't match the PEM would be worse than none: an
-    operator comparing them would 'verify' a certificate that isn't this one."""
-    import hashlib
-    import ssl
+def _self_signed_pem(tmp_path, cn="127.0.0.1"):
+    """A real certificate, generated rather than mocked — the behaviour under
+    test is PEM parsing, which a fake string would skip."""
+    import datetime
 
-    from app.api.v1.endpoints import references
-
-    pem = (tmp_path / "cert.pem")
-    # A real self-signed cert, generated here rather than mocked — the point of
-    # the check is the DER conversion, which a fake string would skip.
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import NameOID
-    import datetime
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
         x509.CertificateBuilder()
@@ -108,21 +101,96 @@ def test_fingerprint_matches_the_served_certificate(tmp_path, monkeypatch):
         .not_valid_after(now + datetime.timedelta(days=1))
         .sign(key, hashes.SHA256())
     )
+    pem = tmp_path / f"{cn}.pem"
     pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return pem, cert
+
+
+def test_fingerprint_matches_the_served_certificate(tmp_path, monkeypatch):
+    """A fingerprint that doesn't match the PEM would be worse than none: an
+    operator comparing them would 'verify' a certificate that isn't this one."""
+    from cryptography.hazmat.primitives import hashes
+
+    from app.api.v1.endpoints import references
+
+    pem, cert = _self_signed_pem(tmp_path)
     monkeypatch.setattr(references, "_TLS_CERT_PATH", pem)
 
-    expected = hashlib.sha256(
-        ssl.PEM_cert_to_DER_cert(pem.read_text())
-    ).hexdigest().upper()
-    got = references.tls_certificate_fingerprint()
-    assert got is not None
-    assert got.replace(":", "") == expected
+    info = references.tls_certificate_info()
+    expected = cert.fingerprint(hashes.SHA256()).hex().upper()
+    assert info.fingerprint_sha256 is not None
+    assert info.fingerprint_sha256.replace(":", "") == expected
+    assert info.self_signed is True
 
 
-def test_missing_certificate_reports_no_fingerprint(tmp_path, monkeypatch):
+def test_a_certificate_chain_still_fingerprints_the_leaf(tmp_path, monkeypatch):
+    """A CA-issued deployment mounts leaf-plus-intermediate in one PEM. The
+    first implementation passed the whole file to ssl.PEM_cert_to_DER_cert,
+    which raises on a chain — swallowed into a silent None, so the operators
+    most likely to hold a *correct* certificate saw no fingerprint at all."""
+    from cryptography.hazmat.primitives import hashes
+
+    from app.api.v1.endpoints import references
+
+    leaf_pem, leaf = _self_signed_pem(tmp_path, cn="leaf.example")
+    issuer_pem, _ = _self_signed_pem(tmp_path, cn="intermediate.example")
+    chained = tmp_path / "chain.pem"
+    chained.write_bytes(leaf_pem.read_bytes() + issuer_pem.read_bytes())
+    monkeypatch.setattr(references, "_TLS_CERT_PATH", chained)
+
+    info = references.tls_certificate_info()
+    # The LEAF is what a client validates and what an operator would pin.
+    assert info.fingerprint_sha256 is not None, "a chain must not read as 'no certificate'"
+    assert (
+        info.fingerprint_sha256.replace(":", "")
+        == leaf.fingerprint(hashes.SHA256()).hex().upper()
+    )
+
+
+def test_a_ca_issued_certificate_is_reported_as_not_self_signed(tmp_path, monkeypatch):
+    """Self-signed is this project's DEFAULT, not an invariant — an operator can
+    mount an internal-CA or DNS-validated certificate. Telling them to pin one
+    their clients already trust is busywork, so the page needs to know."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    from app.api.v1.endpoints import references
+
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Internal CA")])
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "bluestick.internal")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(leaf_name)
+        .issuer_name(ca_name)          # issued BY the CA, not by itself
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=30))
+        .sign(ca_key, hashes.SHA256())
+    )
+    pem = tmp_path / "ca-issued.pem"
+    pem.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+    monkeypatch.setattr(references, "_TLS_CERT_PATH", pem)
+
+    info = references.tls_certificate_info()
+    assert info.self_signed is False
+    assert info.subject and "bluestick.internal" in info.subject
+    assert info.expires_at is not None
+
+
+def test_missing_certificate_reports_nothing_rather_than_crashing(tmp_path, monkeypatch):
     """Absent is a real state (the cert isn't mounted in every container), and
-    it must read as 'unknown' rather than crashing the catalog the page needs."""
+    it must read as 'unknown' rather than breaking the catalog the page needs."""
     from app.api.v1.endpoints import references
 
     monkeypatch.setattr(references, "_TLS_CERT_PATH", tmp_path / "nope.pem")
-    assert references.tls_certificate_fingerprint() is None
+    info = references.tls_certificate_info()
+    assert info.fingerprint_sha256 is None
+    assert info.self_signed is None

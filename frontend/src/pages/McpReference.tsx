@@ -212,8 +212,17 @@ const McpReference: React.FC = () => {
   // and the fingerprint to check a download against. Falls back to relative
   // paths so the commands still read correctly if the catalog call failed.
   const fingerprint = catalog?.tls_fingerprint_sha256 ?? null;
-  const trustScriptUrl =
-    catalog?.trust_script_url ?? '/api/v1/references/trust-cert-script';
+  // Self-signed is the shipped default, not an invariant: an operator can mount
+  // an internal-CA or DNS-validated certificate. `null` means we couldn't read
+  // the certificate, which is not the same as "it is self-signed" — so the
+  // pinning block stays for null and only softens on an explicit `false`.
+  const selfSigned = catalog?.tls_certificate?.self_signed ?? null;
+  // Absolute, because the fallback is a bare path and `curl -sk /api/v1/...`
+  // is not a runnable command — it has no host.
+  const trustScriptUrl = new URL(
+    catalog?.trust_script_url ?? '/api/v1/references/trust-cert-script',
+    window.location.origin,
+  ).toString();
   // Origin of the deployment, which is what the script needs to fetch the cert.
   const deploymentUrl = trustScriptUrl.replace(/\/api\/v1\/references\/.*$/, '');
   const trustScriptCommands = [
@@ -358,10 +367,21 @@ const McpReference: React.FC = () => {
                 First: trust this deployment&rsquo;s certificate
               </p>
               <p className="mt-xxs text-caption text-muted-foreground">
-                BlueStick is self-hosted, so its certificate is self-signed and always will be —
-                there is no public CA to issue one for a private address. Every client refuses the
-                connection until it trusts this certificate, and{' '}
-                <strong className="text-foreground">the variable differs per client</strong>:
+                {selfSigned === false ? (
+                  <>
+                    This deployment presents a <strong className="text-foreground">CA-issued</strong>{' '}
+                    certificate, so a client whose trust store includes that CA connects with no
+                    setup at all — skip this section and try connecting first. If the CA is an
+                    internal one your client doesn&rsquo;t know, pin it exactly as below.
+                  </>
+                ) : (
+                  <>
+                    BlueStick defaults to a self-signed certificate, and no public CA will issue one
+                    for a private address. Until the client trusts it, every connection is refused.
+                  </>
+                )}{' '}
+                The variable{' '}
+                <strong className="text-foreground">differs per client</strong>:
                 VS Code and Claude Code are Node-based and read{' '}
                 <span className="font-mono">NODE_EXTRA_CA_CERTS</span> (a file); Codex is a Rust
                 binary and reads <span className="font-mono">SSL_CERT_DIR</span> (a directory of
