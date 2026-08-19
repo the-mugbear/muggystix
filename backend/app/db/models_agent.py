@@ -1416,3 +1416,70 @@ class AgentApiCall(Base):
             name="ck_agent_api_calls_attribution_or_error",
         ),
     )
+
+
+class McpToolCall(Base):
+    """One MCP request, recorded at the transport layer (v2.275.0).
+
+    ``agent_api_calls`` only sees requests that reach ``/agent/*``, so everything
+    the MCP layer rejects — an unknown tool, arguments that don't fit the
+    schema, a refused batch, a bad protocol version — left **no trace anywhere**.
+    That blind spot hid a real defect: for two releases the environment-probe
+    tool rejected the very fields the assist prompt tells agents to send, which
+    blocked every conforming agent, and nothing in the system could show it.
+
+    This is the telemetry that answers the questions the agent-feedback loop can
+    only ask about: which tools are never called, which fail repeatedly, which
+    arguments agents keep getting wrong, and which clients are connecting.
+
+    **Deliberately FK-free.**  It is transport diagnostics, not project data: it
+    has to survive the session, key, and project it describes (the most useful
+    question is "why were agents failing last week", asked after the fact).
+    Attribution is by ``api_key_prefix``, which maps to a session in practice
+    without holding key material or a reference that cascades away.
+    """
+    __tablename__ = "mcp_tool_calls"
+
+    id = Column(BigInteger, primary_key=True)
+
+    # JSON-RPC method: initialize / tools/list / tools/call / ping / …
+    rpc_method = Column(String(64), nullable=True, index=True)
+    # Populated for tools/call only — including calls naming a tool that does
+    # not exist, which is exactly the signal we want to see.
+    tool_name = Column(String(64), nullable=True, index=True)
+
+    # ok            — the tool ran and returned success
+    # tool_error    — the tool ran and the endpoint refused it (401/403/404/…)
+    # protocol_error— malformed request, unknown tool, bad arguments (-326xx)
+    # rejected      — refused by a transport guard before dispatch
+    #                 (origin, body cap, batch cap, protocol version)
+    outcome = Column(String(16), nullable=False, index=True)
+    # JSON-RPC error code, or the HTTP status for transport rejections.
+    error_code = Column(Integer, nullable=True)
+    detail = Column(String(500), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    # Who — prefix only, never the raw key.  NULL for unauthenticated requests,
+    # which are themselves signal (a client that never got a working key).
+    api_key_prefix = Column(String(16), nullable=True, index=True)
+    source_ip = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+
+    # From initialize's clientInfo — which client, on which protocol revision.
+    client_name = Column(String(128), nullable=True)
+    client_version = Column(String(64), nullable=True)
+    protocol_version = Column(String(32), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        # "What went wrong lately" and "which tool is failing" are the two
+        # queries this table exists to answer.
+        Index("idx_mcp_tool_call_outcome_created", "outcome", "created_at"),
+        Index("idx_mcp_tool_call_tool_created", "tool_name", "created_at"),
+    )

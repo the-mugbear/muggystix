@@ -33,17 +33,19 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     actually reads.
 
     v2.269.0 — this used to be one `mcp_config` blob in VS Code's shape handed
-    to VS Code, Claude Code, and Cursor alike. The clients disagree: VS Code
-    wraps servers under `servers`, Claude Code and Cursor under `mcpServers`,
-    so two of the three silently ignored the server the dialog told the
-    operator to paste. This pins the wrapper key per client.
+    to every client alike. They disagree: VS Code wraps servers under `servers`
+    where Claude Code uses `mcpServers`, so a client silently ignored the server
+    the dialog told the operator to paste. This pins the shape per client.
+
+    v2.275.0 — Cursor removed. It was the one recipe never verified against a
+    real install, and inference is how the original bug shipped.
     """
     import json
 
     body = _start_session(client, test_project.id)
     assert body["mcp_url"].endswith("/api/v1/mcp")
     clients = {c["id"]: c for c in body["mcp_clients"]}
-    assert set(clients) == {"vscode", "claude_code", "codex", "cursor"}
+    assert set(clients) == {"vscode", "claude_code", "codex"}
 
     # VS Code: `servers`, workspace-local file.
     vscode = clients["vscode"]
@@ -52,13 +54,6 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     assert server["type"] == "http"
     assert server["url"] == body["mcp_url"]
     assert server["headers"]["X-API-Key"] == body["api_key"]
-
-    # Cursor: same entry, DIFFERENT wrapper key.
-    cursor = clients["cursor"]
-    assert cursor["kind"] == "file" and cursor["path"] == ".cursor/mcp.json"
-    cursor_cfg = json.loads(cursor["payload"])
-    assert "servers" not in cursor_cfg, "Cursor reads mcpServers, not servers"
-    assert cursor_cfg["mcpServers"]["bluestick-assist"] == server
 
     # Claude Code: a CLI command, not a file — `claude mcp add` writes the
     # entry itself, so there is no wrapper key for the operator to get wrong.

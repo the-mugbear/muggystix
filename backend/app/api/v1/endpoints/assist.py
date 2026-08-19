@@ -210,18 +210,12 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
                 "rather than writing the key into a profile. " + _tls_note(mcp_url)
             ),
         ),
-        McpClientSetup(
-            id="cursor",
-            label="Cursor",
-            kind="file",
-            path=".cursor/mcp.json",
-            payload=json.dumps({"mcpServers": entry}, indent=2),
-            hint=(
-                "Save as .cursor/mcp.json in your project, or ~/.cursor/mcp.json to keep it out "
-                "of the repo entirely. The file holds a live key — do not commit it. " + _tls_note(mcp_url)
-            ),
-        ),
     ]
+    # No Cursor recipe (removed v2.275.0).  The original feature advertised it,
+    # but nobody here uses Cursor and it was the one client whose config shape
+    # was never verified against a real install — inference is exactly how the
+    # original wrapper-key bug shipped.  Better to offer three recipes that are
+    # known to work than four where one is a guess.
 
 
 class StartAssistResponse(BaseModel):

@@ -42,13 +42,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 
+from app.services import mcp_telemetry_service as mcp_telemetry
 from app.services.agent_prompt_service import resolve_base_url
 
 logger = logging.getLogger(__name__)
@@ -988,6 +991,111 @@ def _origin_rejected(request: Request) -> bool:
     return origin.rstrip("/") not in allowed
 
 
+# ---------------------------------------------------------------------------
+# Telemetry (v2.275.0)
+#
+# Derived at the boundary, from the message we received and the response we
+# produced, rather than threaded through every branch of the handler — one place
+# to read, and the request-handling logic stays untouched by observability.
+# ---------------------------------------------------------------------------
+
+_HTTP_STATUS_IN_TOOL_ERROR = re.compile(r"^HTTP (\d{3}) from ")
+
+
+def _classify(message: Any, response: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Outcome, error code and detail for one message/response pair."""
+    if not isinstance(message, dict):
+        return {"outcome": mcp_telemetry.PROTOCOL_ERROR, "error_code": -32600,
+                "detail": "Invalid Request: message was not an object"}
+
+    if response is None:  # notification — nothing was answered, nothing can fail
+        return {}
+
+    error = response.get("error")
+    if error:
+        return {
+            "outcome": mcp_telemetry.PROTOCOL_ERROR,
+            "error_code": error.get("code"),
+            "detail": error.get("message"),
+        }
+
+    result = response.get("result") or {}
+    if isinstance(result, dict) and result.get("isError"):
+        content = result.get("content") or [{}]
+        text = content[0].get("text", "") if isinstance(content[0], dict) else ""
+        match = _HTTP_STATUS_IN_TOOL_ERROR.match(text)
+        return {
+            "outcome": mcp_telemetry.TOOL_ERROR,
+            # Lift the endpoint's status out of the message so failures group by
+            # cause (403 capability vs 404 missing host) instead of by string.
+            "error_code": int(match.group(1)) if match else None,
+            "detail": text,
+        }
+    return {"outcome": mcp_telemetry.OK}
+
+
+def _telemetry_event(
+    message: Any,
+    response: Optional[Dict[str, Any]],
+    *,
+    duration_ms: int,
+    api_key: Optional[str],
+    caller: Optional[Tuple[str, int]],
+    user_agent: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    classified = _classify(message, response)
+    if not classified:
+        return None
+
+    method = message.get("method") if isinstance(message, dict) else None
+    params = message.get("params") if isinstance(message, dict) else None
+    params = params if isinstance(params, dict) else {}
+    tool_name = params.get("name") if method == "tools/call" else None
+    client = params.get("clientInfo") if method == "initialize" else None
+    client = client if isinstance(client, dict) else {}
+
+    return mcp_telemetry.build_event(
+        rpc_method=method if isinstance(method, str) else None,
+        tool_name=tool_name if isinstance(tool_name, str) else None,
+        duration_ms=duration_ms,
+        api_key=api_key,
+        source_ip=caller[0] if caller else None,
+        user_agent=user_agent,
+        client_name=client.get("name"),
+        client_version=client.get("version"),
+        protocol_version=params.get("protocolVersion") if method == "initialize" else None,
+        **classified,
+    )
+
+
+def _rejected(
+    request: Request, status: int, detail: str, *, api_key: Optional[str] = None
+) -> JSONResponse:
+    """A transport-level refusal, recorded as it is returned.
+
+    These never reach a handler, so before v2.275.0 they were invisible: a
+    client stuck on an unsupported protocol version, or one whose config sends
+    a body we refuse, failed silently from our side.
+    """
+    caller = request.client.host if request.client else None
+    response = JSONResponse(_rpc_error(None, -32600, detail), status_code=status)
+    response.background = BackgroundTask(
+        mcp_telemetry.write_events,
+        [
+            mcp_telemetry.build_event(
+                rpc_method=None,
+                outcome=mcp_telemetry.REJECTED,
+                error_code=status,
+                detail=detail,
+                api_key=api_key,
+                source_ip=caller,
+                user_agent=request.headers.get("user-agent"),
+            )
+        ],
+    )
+    return response
+
+
 @router.post("")
 # Same handler on the trailing-slash path: FastAPI would otherwise 307 it, and a
 # client that drops the body on redirect fails the handshake with no useful
@@ -999,22 +1107,17 @@ async def mcp_post(request: Request) -> Response:
     every tool here is request/response, so the spec permits a direct JSON reply.
     """
     if _origin_rejected(request):
-        return JSONResponse(
-            _rpc_error(None, -32600, "Origin not allowed"), status_code=403
-        )
+        return _rejected(request, 403, "Origin not allowed")
 
     # The spec requires rejecting a version we don't implement rather than
     # carrying on and hoping the shapes line up (v2.271.0).
     negotiated = request.headers.get("MCP-Protocol-Version")
     if negotiated and negotiated not in _SUPPORTED_PROTOCOL_VERSIONS:
-        return JSONResponse(
-            _rpc_error(
-                None,
-                -32600,
-                f"Unsupported MCP-Protocol-Version: {negotiated}. "
-                f"Supported: {', '.join(sorted(_SUPPORTED_PROTOCOL_VERSIONS))}",
-            ),
-            status_code=400,
+        return _rejected(
+            request,
+            400,
+            f"Unsupported MCP-Protocol-Version: {negotiated}. "
+            f"Supported: {', '.join(sorted(_SUPPORTED_PROTOCOL_VERSIONS))}",
         )
 
     api_key = _api_key_from(request)
@@ -1028,20 +1131,31 @@ async def mcp_post(request: Request) -> Response:
     base_url = resolve_base_url(request)
     raw = await _read_capped_body(request)
     if raw is None:
-        return JSONResponse(
-            _rpc_error(
-                None,
-                -32600,
-                f"Request body exceeds the {_MAX_REQUEST_BYTES}-byte limit.",
-            ),
-            status_code=413,
+        return _rejected(
+            request,
+            413,
+            f"Request body exceeds the {_MAX_REQUEST_BYTES}-byte limit.",
+            api_key=api_key,
         )
     try:
         payload = json.loads(raw)
     except Exception:
-        return JSONResponse(
-            _rpc_error(None, -32700, "Parse error"), status_code=200
+        response = JSONResponse(_rpc_error(None, -32700, "Parse error"), status_code=200)
+        response.background = BackgroundTask(
+            mcp_telemetry.write_events,
+            [
+                mcp_telemetry.build_event(
+                    rpc_method=None,
+                    outcome=mcp_telemetry.PROTOCOL_ERROR,
+                    error_code=-32700,
+                    detail="Parse error",
+                    api_key=api_key,
+                    source_ip=caller[0] if caller else None,
+                    user_agent=user_agent,
+                )
+            ],
         )
+        return response
 
     # A JSON-RPC batch (array) was allowed pre-2025-06-18; handle it for older
     # clients. A single object is the modern shape.
@@ -1052,50 +1166,61 @@ async def mcp_post(request: Request) -> Response:
         # that dropped it.  Older revisions (2025-03-26) still allow it, so the
         # gate is the version the client declared, not a blanket refusal.
         if negotiated == "2025-06-18":
-            return JSONResponse(
-                _rpc_error(
-                    None,
-                    -32600,
-                    "JSON-RPC batching was removed in protocol 2025-06-18. "
-                    "Send one message per request, or declare 2025-03-26.",
-                ),
-                status_code=400,
+            return _rejected(
+                request,
+                400,
+                "JSON-RPC batching was removed in protocol 2025-06-18. "
+                "Send one message per request, or declare 2025-03-26.",
+                api_key=api_key,
             )
         if not payload:
-            return JSONResponse(
-                _rpc_error(None, -32600, "Invalid Request: empty batch"),
-                status_code=400,
-            )
+            return _rejected(request, 400, "Invalid Request: empty batch", api_key=api_key)
         if len(payload) > _MAX_BATCH_MESSAGES:
-            return JSONResponse(
-                _rpc_error(
-                    None,
-                    -32600,
-                    f"Batch of {len(payload)} messages exceeds the "
-                    f"{_MAX_BATCH_MESSAGES}-message limit.",
-                ),
-                status_code=413,
+            return _rejected(
+                request,
+                413,
+                f"Batch of {len(payload)} messages exceeds the "
+                f"{_MAX_BATCH_MESSAGES}-message limit.",
+                api_key=api_key,
             )
-        responses: List[Dict[str, Any]] = []
-        for msg in payload:
-            resp = await _handle_message(
-                request.app, msg, api_key, base_url,
-                caller=caller, user_agent=user_agent,
-            )
-            if resp is not None:
-                responses.append(resp)
-        if not responses:
-            return Response(status_code=202)
-        return JSONResponse(responses)
+        messages = list(payload)
+    else:
+        messages = [payload]
 
-    resp = await _handle_message(
-        request.app, payload, api_key, base_url,
-        caller=caller, user_agent=user_agent,
-    )
-    if resp is None:
-        # Notification-only POST -> 202 Accepted, no body.
-        return Response(status_code=202)
-    return JSONResponse(resp)
+    responses: List[Dict[str, Any]] = []
+    events: List[Dict[str, Any]] = []
+    for msg in messages:
+        started = time.monotonic()
+        resp = await _handle_message(
+            request.app, msg, api_key, base_url,
+            caller=caller, user_agent=user_agent,
+        )
+        event = _telemetry_event(
+            msg,
+            resp,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            api_key=api_key,
+            caller=caller,
+            user_agent=user_agent,
+        )
+        if event:
+            events.append(event)
+        if resp is not None:
+            responses.append(resp)
+
+    # Notification-only POST -> 202 Accepted, no body.  A batch collapses to one
+    # response array; a single message answers on its own, as before.
+    if not responses:
+        response: Response = Response(status_code=202)
+    elif isinstance(payload, list):
+        response = JSONResponse(responses)
+    else:
+        response = JSONResponse(responses[0])
+
+    # After the response is sent, on the background path — telemetry must never
+    # add latency to, or be able to fail, the request it describes.
+    response.background = BackgroundTask(mcp_telemetry.write_events, events)
+    return response
 
 
 @router.get("")

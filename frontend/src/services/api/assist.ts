@@ -25,7 +25,7 @@ export interface StartAssistResponse {
   api_key: string;
   instructions: string;
   // Per-client MCP setup. Not one blob: VS Code wraps servers under `servers`
-  // while Claude Code and Cursor use `mcpServers`, and each wants the file in a
+  // while Claude Code uses `mcpServers` and Codex takes neither, each wanting a
   // different place — so the backend emits the shape each host actually reads.
   mcp_clients: McpClientSetup[];
   mcp_url: string;

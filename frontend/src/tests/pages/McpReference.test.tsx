@@ -98,7 +98,10 @@ describe('McpReference', () => {
     const vscode = screen.getByText(/"servers"/);
     expect(vscode).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Claude Code' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Cursor' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Codex' })).toBeInTheDocument();
+    // Cursor was dropped in v2.275.0 — it was the one recipe never verified
+    // against a real install, and nobody here uses it.
+    expect(screen.queryByRole('tab', { name: 'Cursor' })).not.toBeInTheDocument();
   });
 
   it('degrades to the static guidance when the catalog cannot be loaded', async () => {

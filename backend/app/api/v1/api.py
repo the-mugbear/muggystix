@@ -19,6 +19,8 @@ from app.api.v1.endpoints import (
     # tools-only Streamable-HTTP JSON-RPC endpoint that loops back into the
     # `/agent/assist/*` endpoints in-process (auth/audit reused, no new dep).
     mcp_assist,
+    # Admin read surface for that transport's telemetry.
+    mcp_telemetry,
     # v2.24.0 — human-facing read endpoint for the agent API call log.
     agent_activity,
     # v2.30.0 — unified agent-session timeline (drives v3 UI).
@@ -92,6 +94,12 @@ api_router.include_router(agent_assist.router, prefix="/agent", tags=["agent-ass
 # (initialize/tools/list leak nothing); tools/call forwards X-API-Key to the
 # loopback assist endpoints, which enforce auth/scope/capability.
 api_router.include_router(mcp_assist.router, prefix="/mcp", tags=["mcp"])
+# Admin-only telemetry for that transport (v2.275.0).  Global rather than
+# project-scoped: an MCP request is accepted or refused before any project is
+# known, so the rows carry no project attribution to filter on.
+api_router.include_router(
+    mcp_telemetry.router, prefix="/mcp-telemetry", tags=["mcp-telemetry"]
+)
 # Agent feedback ingest — same API-key auth path as /agent/.
 api_router.include_router(feedback.agent_feedback_router, prefix="/agent", tags=["agent-feedback"])
 # Admin-only feedback triage (JWT).  Lives at /feedback rather than under

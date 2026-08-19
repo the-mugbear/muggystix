@@ -2,11 +2,11 @@
  * The MCP setup block in the Start Assist dialog.
  *
  * v2.269.0 fixed a defect this pins: the dialog used to show ONE config, in
- * VS Code's `servers` shape, while telling the operator it worked for VS Code,
- * Claude Code, and Cursor. The latter two read `mcpServers`, so pasting that
- * JSON produced a server the client silently ignored — no error, the tools just
- * never appeared. Each client now gets its own tab, and this asserts the
- * operator can reach each one and that the payloads stay distinct.
+ * VS Code's `servers` shape, while telling the operator it worked for several
+ * clients. Claude Code reads `mcpServers`, so pasting that JSON produced a
+ * server the client silently ignored — no error, the tools just never appeared.
+ * Each client now gets its own tab, and this asserts the operator can reach
+ * each one and that the payloads stay distinct.
  */
 import React from 'react';
 import { act, render, screen } from '@testing-library/react';
@@ -59,12 +59,12 @@ const result = (): StartAssistResponse => ({
       hint: 'Run in your project directory.',
     },
     {
-      id: 'cursor',
-      label: 'Cursor',
-      kind: 'file',
-      path: '.cursor/mcp.json',
-      payload: JSON.stringify({ mcpServers: entry }, null, 2),
-      hint: 'Save as .cursor/mcp.json in your project.',
+      id: 'codex',
+      label: 'Codex',
+      kind: 'command',
+      path: '',
+      payload: `read -rs BLUESTICK_ASSIST_KEY && export BLUESTICK_ASSIST_KEY\ncodex mcp add bluestick-assist --url ${URL} --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
+      hint: 'Codex reads the env var at run time.',
     },
   ],
   capabilities: [],
@@ -104,7 +104,7 @@ describe('StartAssistDialog — MCP setup', () => {
 
   it('offers a tab per client and defaults to the first', async () => {
     await openAndStart();
-    for (const label of ['VS Code Copilot', 'Claude Code', 'Cursor']) {
+    for (const label of ['VS Code Copilot', 'Claude Code', 'Codex']) {
       expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
     }
     // Default tab is VS Code — `servers`, and the file path is stated.
@@ -112,12 +112,14 @@ describe('StartAssistDialog — MCP setup', () => {
     expect(screen.getByText('.vscode/mcp.json')).toBeInTheDocument();
   });
 
-  it('shows Cursor the mcpServers wrapper, not VS Code’s servers', async () => {
+  it('keeps each client’s payload distinct rather than reusing one shape', async () => {
     await openAndStart();
-    await switchTab('Cursor');
-    await screen.findByText('.cursor/mcp.json');
-    const shown = screen.getByText(/"mcpServers"/).textContent ?? '';
-    expect(shown).toContain('"mcpServers"');
+    // VS Code's tab shows `servers`; Codex gets a command with no wrapper key
+    // at all. Reusing one shape across clients is the bug this file exists for.
+    await switchTab('Codex');
+    await screen.findByText('Run this command');
+    const shown = screen.getByText(/^read -rs BLUESTICK_ASSIST_KEY/).textContent ?? '';
+    expect(shown).toContain('--bearer-token-env-var');
     expect(shown).not.toContain('"servers"');
   });
 

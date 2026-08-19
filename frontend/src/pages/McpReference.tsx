@@ -43,10 +43,11 @@ type ClientRecipe = {
   note: React.ReactNode;
 };
 
-// Same three shapes the Start Assist dialog emits — kept here as a *reference*
+// The same recipes the Start Assist dialog emits — kept here as a *reference*
 // (placeholder key, no session), so an operator can see what they're signing up
-// for before starting a session. The wrapper key genuinely differs per client:
-// VS Code reads `servers`, Claude Code and Cursor read `mcpServers`.
+// for before starting a session. Each was verified against the real client:
+// Claude Code and Codex against their installed CLIs, VS Code against the shape
+// this deployment was already using.
 const CLIENTS: ClientRecipe[] = [
   {
     id: 'vscode',
@@ -83,26 +84,6 @@ const CLIENTS: ClientRecipe[] = [
     snippet: (endpoint) =>
       `read -rs BLUESTICK_ASSIST_KEY && export BLUESTICK_ASSIST_KEY   # paste the key, then Enter\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
     note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile.',
-  },
-  {
-    id: 'cursor',
-    label: 'Cursor',
-    path: '.cursor/mcp.json',
-    snippet: (endpoint) =>
-      JSON.stringify(
-        {
-          mcpServers: {
-            'bluestick-assist': {
-              type: 'http',
-              url: endpoint,
-              headers: { 'X-API-Key': KEY_PLACEHOLDER },
-            },
-          },
-        },
-        null,
-        2,
-      ),
-    note: 'Use ~/.cursor/mcp.json instead to make the server available in every project.',
   },
 ];
 
@@ -300,11 +281,11 @@ const McpReference: React.FC = () => {
       {/* --- Connect --- */}
       <h2 className="text-section-title">Connecting a client</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
-        The clients disagree on the wrapper key — VS Code reads{' '}
-        <span className="font-mono">servers</span>, Claude Code and Cursor read{' '}
-        <span className="font-mono">mcpServers</span> — so use your own client&rsquo;s snippet
-        rather than adapting another&rsquo;s. Starting an assist session emits these with the key
-        already filled in; the placeholder below is only for reading.
+        Clients disagree on config shape — VS Code reads{' '}
+        <span className="font-mono">servers</span> where Claude Code reads{' '}
+        <span className="font-mono">mcpServers</span>, and Codex takes neither — so use your own
+        client&rsquo;s snippet rather than adapting another&rsquo;s. Starting an assist session
+        emits these with the key already filled in; the placeholder below is only for reading.
       </p>
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
@@ -330,11 +311,12 @@ const McpReference: React.FC = () => {
       </Alert>
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
-          <strong>The key in these files is a live credential.</strong> A project-scoped config
-          (<span className="font-mono">.vscode/mcp.json</span>,{' '}
-          <span className="font-mono">.cursor/mcp.json</span>,{' '}
-          <span className="font-mono">.mcp.json</span>) sits inside your repo — add it to{' '}
-          <span className="font-mono">.gitignore</span>, or use the user-scoped location instead.
+          <strong>The key is a live credential.</strong> A project-scoped config
+          (<span className="font-mono">.vscode/mcp.json</span>, or{' '}
+          <span className="font-mono">.mcp.json</span> from{' '}
+          <span className="font-mono">claude mcp add -s project</span>) sits inside your repo — add
+          it to <span className="font-mono">.gitignore</span>, or use the user-scoped location
+          instead. Codex avoids the question entirely by reading the key from the environment.
           Keys expire on the session TTL and can be revoked by ending the session, but a committed
           key is a committed key until then.
         </AlertDescription>
