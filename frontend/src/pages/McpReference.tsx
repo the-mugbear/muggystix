@@ -77,6 +77,14 @@ const CLIENTS: ClientRecipe[] = [
     note: 'Run it in your project directory. Add -s project to share it via .mcp.json, or -s user for every project.',
   },
   {
+    id: 'codex',
+    label: 'Codex',
+    path: null,
+    snippet: (endpoint) =>
+      `export BLUESTICK_ASSIST_KEY=${KEY_PLACEHOLDER}\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
+    note: 'Codex reads the key from the environment rather than storing it in config.toml — the one client where the credential never lands on disk in plaintext.',
+  },
+  {
     id: 'cursor',
     label: 'Cursor',
     path: '.cursor/mcp.json',
@@ -295,6 +303,17 @@ const McpReference: React.FC = () => {
         rather than adapting another&rsquo;s. Starting an assist session emits these with the key
         already filled in; the placeholder below is only for reading.
       </p>
+      <Alert variant="warning" className="mb-sm">
+        <AlertDescription>
+          <strong>The key in these files is a live credential.</strong> A project-scoped config
+          (<span className="font-mono">.vscode/mcp.json</span>,{' '}
+          <span className="font-mono">.cursor/mcp.json</span>,{' '}
+          <span className="font-mono">.mcp.json</span>) sits inside your repo — add it to{' '}
+          <span className="font-mono">.gitignore</span>, or use the user-scoped location instead.
+          Keys expire on the session TTL and can be revoked by ending the session, but a committed
+          key is a committed key until then.
+        </AlertDescription>
+      </Alert>
       <Tabs defaultValue={CLIENTS[0].id} className="mb-lg">
         <TabsList className="mb-xs">
           {CLIENTS.map((c) => (
@@ -352,7 +371,11 @@ const McpReference: React.FC = () => {
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
         Read live from this deployment&rsquo;s server registry, so it always matches what your
         agent will see from <span className="font-mono">tools/list</span>. Required parameters are
-        marked <span className="font-mono">*</span>.
+        marked <span className="font-mono">*</span>. Every tool carries MCP annotations
+        (<span className="font-mono">readOnlyHint</span> and friends) so a client can offer
+        &ldquo;always allow&rdquo; on the reads without you classifying them by hand, and results
+        come back as <span className="font-mono">structuredContent</span> as well as text.
+        Connecting <em>with</em> a key narrows the list to what your session may actually do.
       </p>
 
       {loading ? (

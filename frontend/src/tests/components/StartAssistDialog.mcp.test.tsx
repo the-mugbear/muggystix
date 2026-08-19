@@ -9,7 +9,7 @@
  * operator can reach each one and that the payloads stay distinct.
  */
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 // Radix tab triggers activate on pointer events, not the synthetic click
 // fireEvent dispatches — use userEvent so the switch actually happens.
 import userEvent from '@testing-library/user-event';
@@ -78,8 +78,22 @@ const openAndStart = async () => {
       <StartAssistDialog open onOpenChange={vi.fn()} />
     </TooltipProvider>,
   );
-  fireEvent.click(screen.getByRole('button', { name: /start session/i }));
-  await waitFor(() => expect(screen.getByText('VS Code Copilot')).toBeInTheDocument());
+  // findBy* is act-aware, so the async state update that follows the start
+  // call settles inside act() and the run stays free of act() warnings — the
+  // rest of this suite is clean, and noise here would hide a real one.
+  await act(async () => {
+    await userEvent.click(screen.getByRole('button', { name: /start session/i }));
+  });
+  await screen.findByText('VS Code Copilot');
+};
+
+
+/** Radix activates a tab on pointer events, which cascade into controlled-state
+ *  updates; act() keeps those inside React's batch so the run stays warning-free. */
+const switchTab = async (label: string) => {
+  await act(async () => {
+    await userEvent.click(screen.getByRole('tab', { name: label }));
+  });
 };
 
 describe('StartAssistDialog — MCP setup', () => {
@@ -100,8 +114,8 @@ describe('StartAssistDialog — MCP setup', () => {
 
   it('shows Cursor the mcpServers wrapper, not VS Code’s servers', async () => {
     await openAndStart();
-    await userEvent.click(screen.getByRole('tab', { name: 'Cursor' }));
-    await waitFor(() => expect(screen.getByText('.cursor/mcp.json')).toBeInTheDocument());
+    await switchTab('Cursor');
+    await screen.findByText('.cursor/mcp.json');
     const shown = screen.getByText(/"mcpServers"/).textContent ?? '';
     expect(shown).toContain('"mcpServers"');
     expect(shown).not.toContain('"servers"');
@@ -109,8 +123,8 @@ describe('StartAssistDialog — MCP setup', () => {
 
   it('gives Claude Code a command instead of a file to place', async () => {
     await openAndStart();
-    await userEvent.click(screen.getByRole('tab', { name: 'Claude Code' }));
-    await waitFor(() => expect(screen.getByText('Run this command')).toBeInTheDocument());
+    await switchTab('Claude Code');
+    await screen.findByText('Run this command');
     expect(screen.getByText(/^claude mcp add --transport http/)).toBeInTheDocument();
   });
 });

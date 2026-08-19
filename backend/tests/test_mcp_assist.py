@@ -43,7 +43,7 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     body = _start_session(client, test_project.id)
     assert body["mcp_url"].endswith("/api/v1/mcp")
     clients = {c["id"]: c for c in body["mcp_clients"]}
-    assert set(clients) == {"vscode", "claude_code", "cursor"}
+    assert set(clients) == {"vscode", "claude_code", "codex", "cursor"}
 
     # VS Code: `servers`, workspace-local file.
     vscode = clients["vscode"]
@@ -67,6 +67,14 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     assert cc["payload"].startswith("claude mcp add --transport http bluestick-assist ")
     assert body["mcp_url"] in cc["payload"]
     assert f'--header "X-API-Key: {body["api_key"]}"' in cc["payload"]
+
+    # Codex: a command too, but it reads the key from the environment rather
+    # than writing it into config.toml — the one client where the credential
+    # never lands on disk in plaintext.
+    codex = clients["codex"]
+    assert codex["kind"] == "command"
+    assert "BLUESTICK_ASSIST_KEY" in codex["payload"]
+    assert "--bearer-token-env-var BLUESTICK_ASSIST_KEY" in codex["payload"]
 
     # Every entry is renderable: label, hint, payload all present.
     for c in body["mcp_clients"]:
@@ -98,8 +106,10 @@ def test_initialize_handshake(client):
     assert "{base}" not in instructions
     assert "https://" in instructions or "http://" in instructions
     assert "/api/v1/agent/assist/report-context.ndjson" in instructions
-    # A session id is issued on initialize.
-    assert resp.headers.get("Mcp-Session-Id")
+    # v2.271.0 — NO session id. The server is stateless; it used to mint an
+    # Mcp-Session-Id and then ignore it, which tells a client state exists when
+    # none does (it accepted any id, and DELETE was a no-op).
+    assert resp.headers.get("Mcp-Session-Id") is None
 
 
 def test_initialize_defaults_protocol_when_absent(client):
@@ -142,14 +152,18 @@ def test_unknown_method_is_jsonrpc_error(client):
     assert err["code"] == -32601
 
 
-def test_unknown_tool_is_tool_error(client):
+def test_unknown_tool_is_a_protocol_error(client):
+    """v2.271.0 — an unknown tool is a malformed request, not a tool that ran
+    and failed. The spec puts it in the JSON-RPC error channel; `isError` is
+    reserved for execution failures the model should reason about."""
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 6, "method": "tools/call",
         "params": {"name": "nope", "arguments": {}},
     })
-    result = resp.json()["result"]
-    assert result["isError"] is True
-    assert "Unknown tool" in result["content"][0]["text"]
+    body = resp.json()
+    assert "result" not in body
+    assert body["error"]["code"] == -32602
+    assert "Unknown tool" in body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +388,248 @@ def test_reference_catalog_reports_the_live_transport_facts(client):
     assert body["protocol_version"] == _PREFERRED_PROTOCOL_VERSION
     assert body["max_request_bytes"] == _MAX_REQUEST_BYTES
     assert body["max_batch_messages"] == _MAX_BATCH_MESSAGES
+
+
+# ---------------------------------------------------------------------------
+# Protocol conformance (v2.271.0)
+#
+# All four came out of an external review of the 2.269.0 deployment.
+# ---------------------------------------------------------------------------
+
+def test_initialize_negotiates_instead_of_echoing_any_version(client):
+    """A version we don't implement must not be reported as negotiated.
+
+    Pre-fix the server echoed whatever it was asked for, so `2099-99-99` came
+    back as agreed and the client believed it was talking a revision nobody
+    implements.
+    """
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2099-99-99"},
+    })
+    assert resp.json()["result"]["protocolVersion"] == "2025-06-18"
+
+    # A version we DO implement is still honoured.
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26"},
+    })
+    assert resp.json()["result"]["protocolVersion"] == "2025-03-26"
+
+
+def test_unsupported_protocol_version_header_is_rejected(client):
+    resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                headers={"MCP-Protocol-Version": "2099-99-99"})
+    assert resp.status_code == 400
+    assert "Unsupported MCP-Protocol-Version" in resp.json()["error"]["message"]
+
+    ok = _rpc(client, {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+              headers={"MCP-Protocol-Version": "2025-06-18"})
+    assert ok.status_code == 200
+
+
+def test_malformed_params_are_invalid_params_not_a_500(client):
+    """`params` as a string used to reach `.get()` and surface as an
+    application HTTP 500 with an AttributeError."""
+    for method in ("initialize", "tools/call"):
+        resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": method, "params": "nope"})
+        assert resp.status_code == 200, f"{method} -> HTTP {resp.status_code}"
+        assert resp.json()["error"]["code"] == -32602
+
+    # Same for arguments that aren't an object.
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "assist_get_context", "arguments": "nope"},
+    })
+    assert resp.json()["error"]["code"] == -32602
+
+
+def test_arguments_are_checked_against_the_advertised_schema(client):
+    """The schemas say additionalProperties:false, so an unknown argument is a
+    protocol error — not silently dropped, which would let a model believe a
+    filter applied when it never reached the endpoint."""
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_list_hosts", "arguments": {"nonsense": 1}},
+    })
+    err = resp.json()["error"]
+    assert err["code"] == -32602 and "nonsense" in err["message"]
+
+    # Missing required argument, likewise.
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "assist_get_host", "arguments": {}},
+    })
+    assert resp.json()["error"]["code"] == -32602
+
+
+# ---------------------------------------------------------------------------
+# Client-facing metadata
+# ---------------------------------------------------------------------------
+
+def test_tools_carry_annotations_so_clients_can_default_approvals(client):
+    tools = {t["name"]: t for t in _rpc(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]}
+
+    # readOnlyHint is what lets a host offer "always allow" on the reads —
+    # the entire friction argument for MCP over curl.
+    assert tools["assist_list_hosts"]["annotations"]["readOnlyHint"] is True
+    assert tools["assist_add_note"]["annotations"]["readOnlyHint"] is False
+    assert tools["assist_add_note"]["annotations"]["destructiveHint"] is False
+    # A note is a new note each time; setting follow twice converges.
+    assert tools["assist_add_note"]["annotations"]["idempotentHint"] is False
+    assert tools["assist_set_follow"]["annotations"]["idempotentHint"] is True
+
+
+def test_tools_list_hides_writes_a_session_cannot_perform(client, test_project):
+    """A read-only key shouldn't be shown three tools it will only ever be
+    refused for."""
+    body = _start_session(client, test_project.id)
+    resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                headers={"X-API-Key": body["api_key"]})
+    names = {t["name"] for t in resp.json()["result"]["tools"]}
+    assert "assist_list_hosts" in names
+    assert not {"assist_add_note", "assist_set_follow", "assist_patch_host"} & names
+
+    # Without a key the full catalogue is still listed — that's the docs view.
+    anon = {t["name"] for t in _rpc(
+        client, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+    ).json()["result"]["tools"]}
+    assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= anon
+
+
+def test_write_tools_appear_for_a_granted_session(client, test_project):
+    resp = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "granted", "can_write_assigned": True},
+    )
+    key = resp.json()["api_key"]
+    names = {t["name"] for t in _rpc(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers={"X-API-Key": key},
+    ).json()["result"]["tools"]}
+    assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= names
+
+
+def test_successful_reads_carry_structured_content(client, test_project):
+    """Clients that understand structured results shouldn't have to re-parse a
+    JSON string out of a text block."""
+    body = _start_session(client, test_project.id)
+    result = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_get_context", "arguments": {}},
+    }, headers={"X-API-Key": body["api_key"]}).json()["result"]
+
+    assert result["isError"] is False
+    assert result["content"][0]["type"] == "text"        # still there for older clients
+    assert result["structuredContent"]["project"]["id"] == test_project.id
+
+
+# ---------------------------------------------------------------------------
+# Audit fidelity (v2.271.0)
+# ---------------------------------------------------------------------------
+
+def test_audit_records_the_real_caller_not_the_loopback(client, test_project, db_session):
+    """MCP-driven calls used to be audited as 127.0.0.1 / python-httpx — the
+    in-process loopback's own identity — which makes the activity log useless
+    for the one question it answers: who did this.
+
+    The identity is captured server-side from the inbound request, so it can't
+    be spoofed by a caller-supplied header.
+    """
+    from app.db.models_agent import AgentApiCall
+
+    body = _start_session(client, test_project.id)
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_get_context", "arguments": {}},
+    }, headers={"X-API-Key": body["api_key"], "User-Agent": "acme-mcp-client/2.1"})
+    assert resp.json()["result"]["isError"] is False
+
+    row = (
+        db_session.query(AgentApiCall)
+        .filter(AgentApiCall.path == "/api/v1/agent/assist/context")
+        .order_by(AgentApiCall.id.desc())
+        .first()
+    )
+    assert row is not None
+    assert row.user_agent == "acme-mcp-client/2.1"
+    assert "httpx" not in (row.user_agent or "")
+
+
+def test_unauthenticated_calls_write_no_audit_row(client, caplog):
+    """A request rejected before auth has no attribution, and the table's CHECK
+    requires attribution or an error_class — so the insert was rejected and the
+    failure logged as an ERROR traceback on every anonymous probe."""
+    import logging
+    from app.db.models_agent import AgentApiCall
+
+    with caplog.at_level(logging.ERROR):
+        result = _rpc(client, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "assist_get_context", "arguments": {}},
+        }).json()["result"]
+
+    assert result["isError"] is True  # the agent still learns it was refused
+    assert not [m for m in caplog.messages if "agent_api_call write failed" in m]
+
+
+def test_environment_probe_tool_resolves_the_session_from_the_key(client, test_project):
+    """The guide makes the environment probe the mandatory first step, but no
+    tool exposed it — an MCP-only client had to fall back to curl for the one
+    call it must make first (v2.271.0).
+
+    The session id is resolved from the key rather than made the model's
+    problem: the key is already bound to exactly one assist session.
+    """
+    body = _start_session(client, test_project.id)
+    result = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "assist_record_environment",
+            "arguments": {"os_family": "linux", "shell": "bash"},
+        },
+    }, headers={"X-API-Key": body["api_key"]}).json()["result"]
+
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["environment"]["os_family"] == "linux"
+    assert result["structuredContent"]["session_type"] == "assist"
+
+    # And the session now reports it as probed, so the agent's context reflects it.
+    info = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "assist_session_info", "arguments": {}},
+    }, headers={"X-API-Key": body["api_key"]}).json()["result"]
+    assert info["structuredContent"]["environment_probed"] is True
+
+
+def test_mcp_page_size_defaults_are_smaller_than_the_download_defaults(client, test_project):
+    """500 hosts is right for a file download and a lot of tokens for a model
+    that usually wants the first handful."""
+    from app.api.v1.endpoints.mcp_assist import _TOOLS
+
+    assert _TOOLS["assist_list_hosts"]["defaults"]["limit"] == 100
+    assert _TOOLS["assist_get_host_findings"]["defaults"]["limit"] == 50
+
+    # An explicit limit still wins.
+    body = _start_session(client, test_project.id)
+    result = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_list_hosts", "arguments": {"limit": 3}},
+    }, headers={"X-API-Key": body["api_key"]}).json()["result"]
+    assert result["isError"] is False
+
+
+def test_bearer_token_authenticates_an_mcp_call(client, test_project):
+    """Codex sends the key as `Authorization: Bearer`, which the agent auth layer
+    has always accepted — but the MCP layer only read X-API-Key, so a Codex
+    client authenticated as nobody (v2.271.0)."""
+    body = _start_session(client, test_project.id)
+    result = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_get_context", "arguments": {}},
+    }, headers={"Authorization": f"Bearer {body['api_key']}"}).json()["result"]
+
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["project"]["id"] == test_project.id

@@ -21,6 +21,28 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.49.0",
+        "app_version": "2.271.0",
+        "summary": (
+            "MCP surface hardened after an external protocol review. New "
+            "`assist_record_environment` tool covers the MANDATORY environment "
+            "probe, which previously had no tool — an MCP-only client had to "
+            "shell out to curl for the one call it must make first; it resolves "
+            "the session from your key, so no `session_id` argument. "
+            "`tools/list` now hides writes your session lacks the capability "
+            "for (so an unseen write is a missing grant, not a missing "
+            "feature), every tool carries MCP annotations (`readOnlyHint` and "
+            "friends) so hosts can auto-approve reads, and successful calls "
+            "return `structuredContent` as well as text. `Authorization: "
+            "Bearer` now works at the MCP layer alongside `X-API-Key` (Codex "
+            "reads its key from an env var and sends bearer). Protocol "
+            "conformance: version negotiation no longer echoes versions we "
+            "don't implement, malformed params answer -32602 instead of a 500, "
+            "unknown tools/arguments are protocol errors, and the server no "
+            "longer mints an Mcp-Session-Id it ignored."
+        ),
+    },
+    {
         "version": "1.48.0",
         "app_version": "2.266.0",
         "summary": (

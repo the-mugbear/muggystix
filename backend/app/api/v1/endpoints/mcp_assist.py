@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -54,10 +53,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The newest protocol revision we implement.  We echo the client's requested
-# version when it is a string (maximises cross-client compatibility); otherwise
-# we advertise this one.
+# The protocol revisions we actually implement.  The tools-only Streamable-HTTP
+# subset is identical across these two; 2024-11-05 is deliberately absent because
+# it specified the older HTTP+SSE transport, which this server does not serve.
+#
+# Pre-v2.271.0 the server echoed back whatever version the client asked for, so
+# `initialize` with "2099-99-99" was reported as successfully negotiated — the
+# client then believes it is talking a revision nobody implements.  The spec
+# requires responding with a version the server supports.
 _PREFERRED_PROTOCOL_VERSION = "2025-06-18"
+_SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26"})
 
 _SERVER_NAME = "bluestick-assist"
 
@@ -153,6 +158,9 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
             "has_critical_vulns", "has_high_vulns", "limit", "offset",
         ],
         "body_params": [],
+        # The endpoint's own default is 500 — right for a file download, a lot
+        # of tokens for a model that usually wants the first handful.
+        "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -195,6 +203,7 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
         "path_params": ["host_id"],
         "query_params": ["severity", "limit", "offset"],
         "body_params": [],
+        "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -226,6 +235,7 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
         "path_params": [],
         "query_params": ["limit"],
         "body_params": [],
+        "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
@@ -244,6 +254,56 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
         "query_params": [],
         "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_record_environment": {
+        "description": (
+            "Record the operator's environment (OS family, shell) on this assist "
+            "session. REQUIRED FIRST STEP — the guide mandates it before other work, "
+            "so BlueStick's guidance matches the machine you're actually on. The "
+            "session is resolved from your key; you do not need to pass session_id."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/assist/sessions/{session_id}/environment",
+        "path_params": ["session_id"],
+        # Filled from the key when omitted — see _resolve_session_id.
+        "session_param": "session_id",
+        "query_params": [],
+        # Field names mirror EnvironmentSummary exactly — the schema advertises
+        # additionalProperties:false and we now reject unknown arguments, so a
+        # name that doesn't exist server-side would be a hard error, not a
+        # silently dropped field.
+        "body_params": [
+            "os_family", "os_release", "arch", "shell",
+            "powershell_version", "powershell_execution_policy",
+            "python", "python_version", "wsl_available", "notes",
+        ],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Usually omit — resolved from your API key.",
+                },
+                "os_family": {"type": "string", "enum": ["windows", "darwin", "linux"]},
+                "os_release": {"type": "string"},
+                "arch": {"type": "string"},
+                "shell": {"type": "string", "description": "e.g. bash, zsh, powershell."},
+                "powershell_version": {"type": "string"},
+                "powershell_execution_policy": {
+                    "type": "string",
+                    "description": "Windows only — e.g. RemoteSigned, Restricted.",
+                },
+                "python": {"type": "string", "description": "Path or command that runs a real Python."},
+                "python_version": {"type": "string"},
+                "wsl_available": {"type": "boolean"},
+                "notes": {"type": "string"},
+            },
+            # Assist only needs os_family + shell (see AGENTS.md); the rest are
+            # accepted so a probe built for recon/execution posts unchanged.
+            "required": ["os_family"],
+            "additionalProperties": False,
+        },
     },
     # --- writes (capability-gated by the underlying endpoint) ---
     "assist_add_note": {
@@ -346,9 +406,10 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
             {
                 "name": name,
                 "description": spec["description"],
-                # A tool is a write iff the underlying endpoint gates it on a
-                # capability — the same fact, not a hand-maintained second list.
-                "kind": "write" if spec.get("capability") else "read",
+                # Mutation is decided by HTTP method, matching readOnlyHint —
+                # the environment probe is a capability-free POST, and calling
+                # that a "read" on the reference page would be a lie.
+                "kind": "read" if spec["method"] == "GET" else "write",
                 "capability": spec.get("capability"),
                 "method": spec["method"],
                 "path": spec["path"],
@@ -359,16 +420,85 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
     }
 
 
-def _tool_list_payload() -> List[Dict[str, Any]]:
-    """The ``tools`` array for a ``tools/list`` response."""
+def _annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+    """MCP tool annotations — hints a client uses to pick approval defaults.
+
+    Without these a host has no way to tell a read from a mutation except by
+    reading the description, so it must prompt for everything (v2.271.0).
+    ``readOnlyHint`` is the one that earns the feature: it's what lets a client
+    offer "always allow" on the reads.
+    """
+    # A tool is read-only iff it doesn't mutate — method, not capability.
+    # The environment probe is a POST with no capability gate (it writes session
+    # metadata, not project data), so keying off `capability` alone would
+    # advertise a mutation as safe to auto-approve.
+    is_write = spec["method"] != "GET"
+    ann: Dict[str, Any] = {
+        "readOnlyHint": not is_write,
+        # Nothing here deletes or overwrites scan-derived data: notes append,
+        # follow/host edits are operator-curated fields that can be set again.
+        "destructiveHint": False,
+        # Re-sending the same follow status, host patch, or environment probe
+        # converges; a note is a new note each time.
+        "idempotentHint": name != "assist_add_note",
+        "openWorldHint": False,
+    }
+    if spec.get("capability"):
+        ann["title"] = f"{name} (requires {spec['capability']})"
+    return ann
+
+
+def _tool_list_payload(granted: Optional[set] = None) -> List[Dict[str, Any]]:
+    """The ``tools`` array for a ``tools/list`` response.
+
+    ``granted`` is the session's capability set when the caller supplied a key;
+    writes it cannot perform are omitted.  ``None`` means "no key" — list
+    everything, which is the documentation view.
+    """
     return [
         {
             "name": name,
             "description": spec["description"],
             "inputSchema": spec["input_schema"],
+            "annotations": _annotations(name, spec),
         }
         for name, spec in _TOOLS.items()
+        if granted is None
+        or not spec.get("capability")
+        or spec["capability"] in granted
     ]
+
+
+async def _granted_capabilities(
+    app,
+    api_key: Optional[str],
+    *,
+    caller: Optional[Tuple[str, int]] = None,
+    user_agent: Optional[str] = None,
+) -> Optional[set]:
+    """The capabilities this key holds, or None when there's no usable key.
+
+    Returning None on any failure means an unauthenticated or broken-key
+    tools/list still returns the full catalog — discovery degrades to the
+    documentation view rather than to an empty tool list.
+    """
+    if not api_key:
+        return None
+    try:
+        resp = await _loopback(
+            app,
+            method="GET",
+            path="/api/v1/agent/assist/session",
+            api_key=api_key,
+            caller=caller,
+            user_agent=user_agent,
+        )
+        if resp.status_code != 200:
+            return None
+        return set(resp.json().get("capabilities") or [])
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("MCP could not read capabilities for tools/list")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -402,16 +532,31 @@ async def _loopback(
     api_key: Optional[str],
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
+    caller: Optional[Tuple[str, int]] = None,
+    user_agent: Optional[str] = None,
 ) -> httpx.Response:
     """Call this app's own endpoint in-process via ASGI (no socket, no nginx).
 
     Runs the full middleware stack, so the agent-API audit log records the call
     and ``require_assist_scope`` enforces auth exactly as for an external curl.
+
+    ``caller`` / ``user_agent`` carry the ORIGINAL client's identity into the
+    loopback (v2.271.0).  Without them every MCP-driven call was audited as
+    ``127.0.0.1`` / ``python-httpx`` — the loopback's own identity — which made
+    the agent-activity log useless for the one question it exists to answer:
+    who did this.  These are taken from the real inbound request server-side,
+    never from a caller-supplied header, so they can't be spoofed.
     """
     headers = {}
     if api_key:
         headers["X-API-Key"] = api_key
-    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    transport = httpx.ASGITransport(
+        app=app,
+        raise_app_exceptions=False,
+        **({"client": caller} if caller else {}),
+    )
     async with httpx.AsyncClient(
         transport=transport, base_url="http://mcp.loopback"
     ) as client:
@@ -421,23 +566,51 @@ async def _loopback(
 
 
 async def _dispatch_tool(
-    app, name: str, arguments: Dict[str, Any], api_key: Optional[str]
+    app,
+    name: str,
+    arguments: Dict[str, Any],
+    api_key: Optional[str],
+    *,
+    caller: Optional[Tuple[str, int]] = None,
+    user_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run one ``tools/call`` -> loopback endpoint, return an MCP tool result."""
-    spec = _TOOLS.get(name)
-    if spec is None:
-        return _tool_text_result(f"Unknown tool: {name}", is_error=True)
+    """Run one ``tools/call`` -> loopback endpoint, return an MCP tool result.
 
-    arguments = arguments or {}
+    Unknown tools and malformed arguments are rejected earlier as protocol
+    errors; by the time we get here the call is well-formed and anything that
+    goes wrong is a tool-execution failure (``isError``).
+    """
+    spec = _TOOLS[name]
+    arguments = dict(arguments or {})
+
+    # Page-size defaults (v2.271.0).  The underlying endpoints default to sizes
+    # tuned for a file download (500 hosts, 200 findings); dropped whole into a
+    # model's context that is a lot of tokens for a question that usually wants
+    # the first handful.  Inject a smaller MCP-side default, still overridable.
+    for arg, default in spec.get("defaults", {}).items():
+        arguments.setdefault(arg, default)
 
     # Path params (e.g. host_id) -> substitute into the path template.
     path = spec["path"]
     for pname in spec["path_params"]:
-        if pname not in arguments or arguments[pname] is None:
+        value = arguments.get(pname)
+        if value is None and spec.get("session_param") == pname:
+            # Resolve the session from the key instead of making the model carry
+            # it: the key is already bound to exactly one assist session.
+            value = await _resolve_session_id(
+                app, api_key, caller=caller, user_agent=user_agent
+            )
+            if value is None:
+                return _tool_text_result(
+                    "Could not resolve this key's assist session — call "
+                    "assist_session_info and pass its `id` explicitly.",
+                    is_error=True,
+                )
+        if value is None:
             return _tool_text_result(
                 f"Missing required argument: {pname}", is_error=True
             )
-        path = path.replace("{" + pname + "}", str(arguments[pname]))
+        path = path.replace("{" + pname + "}", str(value))
 
     # Query params (skip omitted).
     params = {
@@ -468,6 +641,8 @@ async def _dispatch_tool(
             api_key=api_key,
             params=params,
             json_body=json_body,
+            caller=caller,
+            user_agent=user_agent,
         )
     except Exception:  # pragma: no cover - defensive; loopback should not raise
         logger.exception("MCP loopback failed for tool %s", name)
@@ -486,7 +661,94 @@ async def _dispatch_tool(
     # 204 (follow) has no body — report success explicitly.
     if resp.status_code == 204 or not text:
         return _tool_text_result("OK")
-    return _tool_text_result(text)
+
+    # Every endpoint here answers JSON, so hand it back as `structuredContent`
+    # as well as text (v2.271.0).  Clients that understand structured results
+    # get parsed data instead of re-parsing a string; the text block stays for
+    # those that don't.  A JSON array is wrapped — structuredContent must be an
+    # object per the spec.
+    result = _tool_text_result(text)
+    try:
+        parsed = resp.json()
+    except ValueError:
+        return result
+    result["structuredContent"] = parsed if isinstance(parsed, dict) else {"items": parsed}
+    return result
+
+
+async def _resolve_session_id(
+    app,
+    api_key: Optional[str],
+    *,
+    caller: Optional[Tuple[str, int]] = None,
+    user_agent: Optional[str] = None,
+) -> Optional[int]:
+    """This key's assist-session id, via the session endpoint the key already
+    has access to.  Returns None when the key is missing/invalid — the caller
+    turns that into a tool error rather than guessing an id."""
+    if not api_key:
+        return None
+    try:
+        resp = await _loopback(
+            app,
+            method="GET",
+            path="/api/v1/agent/assist/session",
+            api_key=api_key,
+            caller=caller,
+            user_agent=user_agent,
+        )
+        if resp.status_code != 200:
+            return None
+        value = resp.json().get("id")
+        return int(value) if value is not None else None
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("MCP could not resolve the assist session for a key")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Request validation
+#
+# Malformed params used to reach the handlers unchecked: `params: "nope"` made
+# `params.get(...)` raise AttributeError, which surfaced as an application HTTP
+# 500.  A malformed request is a protocol error (-32602), never a 500.
+# ---------------------------------------------------------------------------
+
+class _InvalidParams(Exception):
+    """Raised for anything that should answer JSON-RPC -32602."""
+
+
+def _require_params(message: Dict[str, Any]) -> Dict[str, Any]:
+    """The message's ``params`` object, or ``{}`` when absent."""
+    params = message.get("params")
+    if params is None:
+        return {}
+    if not isinstance(params, dict):
+        raise _InvalidParams("Invalid params: expected an object")
+    return params
+
+
+def _validate_arguments(name: str, spec: Dict[str, Any], arguments: Dict[str, Any]) -> None:
+    """Check arguments against the schema we advertised for this tool.
+
+    Deliberately shallow — required-present and no-unknown-properties, the two
+    the schemas actually promise (`additionalProperties: false`).  Type coercion
+    stays the underlying endpoint's job: it already validates with pydantic and
+    returns a far better message than a hand-rolled checker would.
+    """
+    schema = spec["input_schema"]
+    allowed = set(schema.get("properties", {}))
+    unknown = sorted(set(arguments) - allowed)
+    if unknown:
+        raise _InvalidParams(
+            f"Invalid params for {name}: unknown argument(s) {', '.join(unknown)}. "
+            f"Accepted: {', '.join(sorted(allowed)) or 'none'}"
+        )
+    missing = sorted(a for a in schema.get("required", []) if arguments.get(a) is None)
+    if missing:
+        raise _InvalidParams(
+            f"Invalid params for {name}: missing required argument(s) {', '.join(missing)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -494,16 +756,21 @@ async def _dispatch_tool(
 # ---------------------------------------------------------------------------
 
 async def _handle_message(
-    app, message: Dict[str, Any], api_key: Optional[str], base_url: str,
-) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    app,
+    message: Dict[str, Any],
+    api_key: Optional[str],
+    base_url: str,
+    *,
+    caller: Optional[Tuple[str, int]] = None,
+    user_agent: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Process one JSON-RPC message.
 
-    Returns ``(response, new_session_id)``.  ``response`` is None for
-    notifications (no reply).  ``new_session_id`` is set only by ``initialize``.
+    Returns the response, or None for a notification (no reply).
     """
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
         return _rpc_error(message.get("id") if isinstance(message, dict) else None,
-                          -32600, "Invalid Request"), None
+                          -32600, "Invalid Request")
 
     method = message.get("method")
     msg_id = message.get("id")
@@ -511,13 +778,21 @@ async def _handle_message(
 
     # Notifications (initialized, cancelled, progress, ...) get no response.
     if is_notification:
-        return None, None
+        return None
 
     if method == "initialize":
-        params = message.get("params") or {}
+        try:
+            params = _require_params(message)
+        except _InvalidParams as exc:
+            return _rpc_error(msg_id, -32602, str(exc))
         requested = params.get("protocolVersion")
+        # Negotiate: echo the client's version only when we implement it,
+        # otherwise answer with ours and let the client decide whether to
+        # continue (the spec's prescribed behaviour).
         protocol_version = (
-            requested if isinstance(requested, str) and requested else _PREFERRED_PROTOCOL_VERSION
+            requested
+            if isinstance(requested, str) and requested in _SUPPORTED_PROTOCOL_VERSIONS
+            else _PREFERRED_PROTOCOL_VERSION
         )
         from app.core.config import settings
 
@@ -527,24 +802,47 @@ async def _handle_message(
             "serverInfo": {"name": _SERVER_NAME, "version": settings.APP_VERSION},
             "instructions": _server_instructions(base_url),
         }
-        return _rpc_result(msg_id, result), uuid.uuid4().hex
+        return _rpc_result(msg_id, result)
 
     if method == "ping":
-        return _rpc_result(msg_id, {}), None
+        return _rpc_result(msg_id, {})
 
     if method == "tools/list":
-        return _rpc_result(msg_id, {"tools": _tool_list_payload()}), None
+        # With a key, hide the writes this session cannot perform (v2.271.0).
+        # Advertising all three writes to a read-only session invites the model
+        # to try them and read a 403 as a bug in itself.  Without a key we list
+        # everything — that's the documentation view.
+        granted = await _granted_capabilities(
+            app, api_key, caller=caller, user_agent=user_agent
+        )
+        return _rpc_result(msg_id, {"tools": _tool_list_payload(granted)})
 
     if method == "tools/call":
-        params = message.get("params") or {}
-        name = params.get("name")
-        arguments = params.get("arguments") or {}
-        if not isinstance(name, str):
-            return _rpc_error(msg_id, -32602, "Invalid params: 'name' is required"), None
-        tool_result = await _dispatch_tool(app, name, arguments, api_key)
-        return _rpc_result(msg_id, tool_result), None
+        try:
+            params = _require_params(message)
+            name = params.get("name")
+            if not isinstance(name, str) or not name:
+                raise _InvalidParams("Invalid params: 'name' must be a tool name")
+            arguments = params.get("arguments")
+            if arguments is None:
+                arguments = {}
+            if not isinstance(arguments, dict):
+                raise _InvalidParams("Invalid params: 'arguments' must be an object")
+            # An unknown tool, or arguments that don't fit the advertised schema,
+            # are PROTOCOL errors — the request was never valid — not tool
+            # results.  isError is for a tool that ran and failed.
+            spec = _TOOLS.get(name)
+            if spec is None:
+                raise _InvalidParams(f"Unknown tool: {name}")
+            _validate_arguments(name, spec, arguments)
+        except _InvalidParams as exc:
+            return _rpc_error(msg_id, -32602, str(exc))
+        tool_result = await _dispatch_tool(
+            app, name, arguments, api_key, caller=caller, user_agent=user_agent
+        )
+        return _rpc_result(msg_id, tool_result)
 
-    return _rpc_error(msg_id, -32601, f"Method not found: {method}"), None
+    return _rpc_error(msg_id, -32601, f"Method not found: {method}")
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +864,26 @@ async def _read_capped_body(request: Request) -> Optional[bytes]:
             return None
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _api_key_from(request: Request) -> Optional[str]:
+    """The agent key, from either header the agent API accepts.
+
+    ``X-API-Key`` is what most clients send. Codex reads its credential from an
+    environment variable and sends it as ``Authorization: Bearer`` — the agent
+    auth layer has always accepted that form, but the MCP layer only looked at
+    ``X-API-Key``, so a Codex client authenticated as nobody (v2.271.0).
+    Supporting bearer is also what lets a client keep the key out of its config
+    file entirely.
+    """
+    direct = request.headers.get("X-API-Key")
+    if direct:
+        return direct
+    auth = request.headers.get("Authorization") or ""
+    scheme, _, value = auth.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return None
 
 
 def _origin_rejected(request: Request) -> bool:
@@ -605,7 +923,25 @@ async def mcp_post(request: Request) -> Response:
             _rpc_error(None, -32600, "Origin not allowed"), status_code=403
         )
 
-    api_key = request.headers.get("X-API-Key")
+    # The spec requires rejecting a version we don't implement rather than
+    # carrying on and hoping the shapes line up (v2.271.0).
+    negotiated = request.headers.get("MCP-Protocol-Version")
+    if negotiated and negotiated not in _SUPPORTED_PROTOCOL_VERSIONS:
+        return JSONResponse(
+            _rpc_error(
+                None,
+                -32600,
+                f"Unsupported MCP-Protocol-Version: {negotiated}. "
+                f"Supported: {', '.join(sorted(_SUPPORTED_PROTOCOL_VERSIONS))}",
+            ),
+            status_code=400,
+        )
+
+    api_key = _api_key_from(request)
+    # The real caller, captured server-side and carried into every loopback so
+    # the audit log records who actually called rather than the loopback itself.
+    caller = (request.client.host, request.client.port or 0) if request.client else None
+    user_agent = request.headers.get("user-agent")
     # Same resolution the assist-start dialog uses for its curl recipe, so the
     # URL we hand the agent is the one an operator would reach the app on (a
     # container hostname would be useless to a terminal-side agent).
@@ -641,24 +977,25 @@ async def mcp_post(request: Request) -> Response:
                 status_code=413,
             )
         responses: List[Dict[str, Any]] = []
-        session_id: Optional[str] = None
         for msg in payload:
-            resp, sid = await _handle_message(request.app, msg, api_key, base_url)
-            if sid:
-                session_id = sid
+            resp = await _handle_message(
+                request.app, msg, api_key, base_url,
+                caller=caller, user_agent=user_agent,
+            )
             if resp is not None:
                 responses.append(resp)
         if not responses:
             return Response(status_code=202)
-        headers = {"Mcp-Session-Id": session_id} if session_id else None
-        return JSONResponse(responses, headers=headers)
+        return JSONResponse(responses)
 
-    resp, session_id = await _handle_message(request.app, payload, api_key, base_url)
+    resp = await _handle_message(
+        request.app, payload, api_key, base_url,
+        caller=caller, user_agent=user_agent,
+    )
     if resp is None:
         # Notification-only POST -> 202 Accepted, no body.
         return Response(status_code=202)
-    headers = {"Mcp-Session-Id": session_id} if session_id else None
-    return JSONResponse(resp, headers=headers)
+    return JSONResponse(resp)
 
 
 @router.get("")
@@ -670,6 +1007,8 @@ async def mcp_get() -> Response:
 
 @router.delete("")
 async def mcp_delete() -> Response:
-    """Session termination. The server is effectively stateless, so accept and
-    no-op."""
+    """Session termination.  This server is stateless — it issues no
+    ``Mcp-Session-Id`` (v2.271.0: it used to mint one and then ignore it, which
+    told clients state existed when none did), so there is nothing to tear
+    down.  Accept and no-op for clients that send it unconditionally."""
     return Response(status_code=204)

@@ -135,6 +135,9 @@ class McpClientSetup(BaseModel):
 # mcp add` writes the entry itself, which is fewer steps than editing JSON and
 # can't be pasted into the wrong place.
 _MCP_SERVER_NAME = "bluestick-assist"
+# Codex reads the credential from the environment instead of the config file,
+# which is the one client where the key never has to touch disk in plaintext.
+_MCP_KEY_ENV_VAR = "BLUESTICK_ASSIST_KEY"
 
 
 def _mcp_server_entry(mcp_url: str, raw_key: str) -> dict:
@@ -154,7 +157,10 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             kind="file",
             path=".vscode/mcp.json",
             payload=json.dumps({"servers": entry}, indent=2),
-            hint="Save as .vscode/mcp.json in your workspace, then start the server from the Copilot MCP panel.",
+            hint=(
+                "Save as .vscode/mcp.json in your workspace, then start the server from the "
+                "Copilot MCP panel. The file holds a live key — keep it out of version control."
+            ),
         ),
         McpClientSetup(
             id="claude_code",
@@ -165,7 +171,25 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
                 f"claude mcp add --transport http {_MCP_SERVER_NAME} {mcp_url} "
                 f'--header "X-API-Key: {raw_key}"'
             ),
-            hint="Run in your project directory. Add -s project to share it via .mcp.json, or -s user for every project.",
+            hint=(
+                "Run in your project directory. -s user keeps the key in your own config; "
+                "-s project writes .mcp.json into the repo, so do not use it with a live key."
+            ),
+        ),
+        McpClientSetup(
+            id="codex",
+            label="Codex",
+            kind="command",
+            path="",
+            payload=(
+                f"export {_MCP_KEY_ENV_VAR}={raw_key}\n"
+                f"codex mcp add {_MCP_SERVER_NAME} --url {mcp_url} "
+                f"--bearer-token-env-var {_MCP_KEY_ENV_VAR}"
+            ),
+            hint=(
+                "Codex reads the key from the environment variable rather than storing it in "
+                "config.toml — put the export in your shell profile so it survives a new shell."
+            ),
         ),
         McpClientSetup(
             id="cursor",
@@ -173,7 +197,10 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             kind="file",
             path=".cursor/mcp.json",
             payload=json.dumps({"mcpServers": entry}, indent=2),
-            hint="Save as .cursor/mcp.json in your project (or ~/.cursor/mcp.json for every project).",
+            hint=(
+                "Save as .cursor/mcp.json in your project, or ~/.cursor/mcp.json to keep it out "
+                "of the repo entirely. The file holds a live key — do not commit it."
+            ),
         ),
     ]
 

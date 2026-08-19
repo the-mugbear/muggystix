@@ -604,6 +604,17 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                     request.state, "unhandled_exception_class", None
                 )
 
+            # v2.271.0 — an unauthenticated call has no attribution, and the
+            # table's CHECK requires attribution OR an error_class.  We used to
+            # attempt the INSERT anyway: Postgres rejected it and _safe_write_row
+            # logged a full IntegrityError traceback, so every anonymous probe of
+            # an /agent/* path produced an ERROR-level stack trace that looked
+            # like a real fault.  A rejected-before-auth request is not an audit
+            # record; the correct row is no row.  5xx still gets one (that's the
+            # pre-auth crash audit the error_class column exists for).
+            if not ((agent_id is not None and project_id is not None) or error_class):
+                return
+
             row = AgentApiCall(
                 agent_id=agent_id,
                 api_key_id=api_key_id,
