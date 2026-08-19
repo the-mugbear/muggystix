@@ -174,3 +174,105 @@ def test_write_tool_without_key_reports_missing_key(client):
     result = resp.json()["result"]
     assert result["isError"] is True
     assert "X-API-Key" in result["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Pre-auth ceilings (v2.268.0)
+#
+# /api/v1/mcp takes no key at the FastAPI layer, so an anonymous caller must
+# not be able to make the server do unbounded work before auth runs.
+# ---------------------------------------------------------------------------
+
+def test_oversize_body_is_rejected_before_parsing(client):
+    """A body over the cap gets 413 — it is never materialised in memory.
+
+    nginx allows 2 GB on /api/, so without this an anonymous POST could pin a
+    worker's memory the same way the pre-v2.240.2 audit middleware could.
+    """
+    from app.api.v1.endpoints.mcp_assist import _MAX_REQUEST_BYTES
+
+    payload = b'{"jsonrpc":"2.0","id":1,"method":"ping","pad":"' + b"a" * (
+        _MAX_REQUEST_BYTES + 1024
+    ) + b'"}'
+    resp = client.post(
+        "/api/v1/mcp", content=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+    assert "exceeds" in resp.json()["error"]["message"]
+
+
+def test_oversize_body_rejected_when_content_length_lies(client):
+    """The cap is on bytes actually read, so a false Content-Length or a
+    chunked body can't smuggle a large payload past it."""
+    from app.api.v1.endpoints.mcp_assist import _MAX_REQUEST_BYTES
+
+    def _chunks():
+        # No Content-Length at all — httpx sends this chunked.
+        yield b'{"jsonrpc":"2.0","id":1,"method":"ping","pad":"'
+        for _ in range((_MAX_REQUEST_BYTES // 1024) + 2):
+            yield b"a" * 1024
+        yield b'"}'
+
+    resp = client.post(
+        "/api/v1/mcp", content=_chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+
+
+def test_oversize_batch_is_rejected(client):
+    """Each batch element costs a full in-process loopback, so the array is
+    length-capped: one anonymous request must not buy unbounded server work."""
+    from app.api.v1.endpoints.mcp_assist import _MAX_BATCH_MESSAGES
+
+    batch = [
+        {"jsonrpc": "2.0", "id": i, "method": "tools/call",
+         "params": {"name": "assist_get_context", "arguments": {}}}
+        for i in range(_MAX_BATCH_MESSAGES + 1)
+    ]
+    resp = client.post("/api/v1/mcp", json=batch)
+    assert resp.status_code == 413
+    assert "Batch" in resp.json()["error"]["message"]
+
+
+def test_batch_at_the_limit_still_works(client):
+    """The cap is a ceiling, not a ban — a legal batch is still served."""
+    from app.api.v1.endpoints.mcp_assist import _MAX_BATCH_MESSAGES
+
+    batch = [
+        {"jsonrpc": "2.0", "id": i, "method": "ping"}
+        for i in range(_MAX_BATCH_MESSAGES)
+    ]
+    resp = client.post("/api/v1/mcp", json=batch)
+    assert resp.status_code == 200
+    assert len(resp.json()) == _MAX_BATCH_MESSAGES
+
+
+def test_untrusted_browser_origin_is_rejected(client):
+    """MCP's transport spec asks for Origin validation (DNS-rebinding
+    defence).  Real clients send no Origin; a hostile page does."""
+    resp = client.post(
+        "/api/v1/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert resp.status_code == 403
+    assert "Origin" in resp.json()["error"]["message"]
+
+
+def test_no_origin_header_is_allowed(client):
+    """The check must not break the actual clients, which send no Origin."""
+    resp = client.post("/api/v1/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert resp.status_code == 200
+
+
+def test_trailing_slash_is_served_not_redirected(client):
+    """A POST to /api/v1/mcp/ is handled in place — a 307 would strand clients
+    that drop the body on redirect."""
+    resp = client.post(
+        "/api/v1/mcp/", json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["result"] == {}

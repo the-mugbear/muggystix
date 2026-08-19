@@ -74,6 +74,19 @@ def _assign(db_session, host_id, user_id):
 # route fails this test until someone decides which bucket it belongs in —
 # that forced decision is the point.
 ASSIST_PERMITTED_WRITES = {
+    # The MCP transport (v2.268.0).  Mutation-capable — a tools/call can add a
+    # note, set review status, or patch a host — but it makes no authority
+    # decision of its own: every call loops back into the guarded /agent/*
+    # endpoint below, so the capability gate runs there, on the real route,
+    # against the same key.  Sending it a capability-less key therefore yields
+    # a tool result carrying the endpoint's 403 rather than a bare HTTP 403,
+    # which is why it can't satisfy the sweep below.  That behaviour is pinned
+    # by test_mcp_assist.py::test_write_tool_blocked_for_readonly_key.
+    ("POST", "/api/v1/mcp"),
+    # MCP session termination.  DELETE by verb, but the server is stateless —
+    # it stores no session, so this is a 204 no-op that touches no project data
+    # and no key material.
+    ("DELETE", "/api/v1/mcp"),
     # Records the operator's OS/shell onto the session's own row.  Session
     # metadata, not project data.
     ("POST", "/api/v1/agent/assist/sessions/{session_id}/environment"),
@@ -83,8 +96,11 @@ ASSIST_PERMITTED_WRITES = {
 }
 
 
+MCP_TRANSPORT_PATH = "/api/v1/mcp"
+
+
 def _agent_write_routes():
-    """Every mutating route mounted under /api/v1/agent.
+    """Every mutating route mounted under /api/v1/agent (plus the MCP transport).
 
     Enumerated from the OpenAPI schema, not by iterating ``app.routes``:
     FastAPI 0.141 stores an included router as a single ``_IncludedRouter``
@@ -97,7 +113,10 @@ def _agent_write_routes():
 
     seen = []
     for path, operations in app.openapi().get("paths", {}).items():
-        if not path.startswith("/api/v1/agent"):
+        # v2.268.0 — the MCP transport is not under /agent but IS
+        # mutation-capable (tools/call reaches the write endpoints), so it has
+        # to face this completeness check like any other write surface.
+        if not (path.startswith("/api/v1/agent") or path == MCP_TRANSPORT_PATH):
             continue
         for method in operations:
             if method.upper() in ("POST", "PUT", "PATCH", "DELETE"):

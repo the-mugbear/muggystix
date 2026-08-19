@@ -24,7 +24,6 @@ import re
 from pathlib import Path
 
 import pytest
-from fastapi.routing import APIRoute
 
 from app.main import app, _OPENAPI_TAGS
 from app.services.agents_guide_service import slice_agents_md
@@ -125,6 +124,8 @@ def test_slice_with_no_workflow_returns_full_file():
 # 2. OpenAPI tag coherence
 # ---------------------------------------------------------------------------
 
+_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
+
 # Enumerate from the OpenAPI schema rather than iterating ``app.routes``:
 # FastAPI 0.141 stores an included router as a single ``_IncludedRouter`` node
 # instead of flattening its sub-routes into ``app.routes``, so flat iteration
@@ -215,7 +216,11 @@ def _actual_agent_routes() -> set[tuple[str, str]]:
             continue
         norm = _norm(path)
         for m in operations:
-            out.add((m.upper(), norm))
+            # Path items carry only method keys today, but the spec also allows
+            # "parameters"/"summary" at this level — filter so a future schema
+            # shape can't inject a phantom ("PARAMETERS", path) route here.
+            if m.upper() in _HTTP_METHODS:
+                out.add((m.upper(), norm))
     return out
 
 

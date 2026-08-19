@@ -2,12 +2,18 @@
 
 Why this is hand-rolled instead of using the ``mcp`` SDK
 --------------------------------------------------------
-The official ``mcp`` package hard-requires ``starlette>=1.0``; the backend is
-pinned to FastAPI 0.117 / ``starlette 0.48`` (``starlette<0.49``).  Installing
-the SDK would forcibly bump starlette and break the running app.  So this module
-implements the small, stable *tools-only* subset of the **Streamable HTTP**
-transport (JSON-RPC 2.0 over a single POST endpoint, plain ``application/json``
-responses — no SSE) directly as a FastAPI route.  That keeps the whole thing
+Originally a hard constraint: the official ``mcp`` package requires
+``starlette>=1.0`` and the backend was pinned to ``starlette<0.49``, so
+installing it would have broken the running app.  **That constraint is gone as
+of v2.267.0** (FastAPI 0.141 / starlette 1.6) — the SDK is now installable.  It
+stays unadopted on purpose: what we need is the small, stable *tools-only*
+subset of the **Streamable HTTP** transport (JSON-RPC 2.0 over a single POST
+endpoint, plain ``application/json`` responses — no SSE) against a frozen wire
+format, and taking the SDK would add a dependency (with its own transitive
+starlette/anyio pins) plus a second ASGI app to mount, for no capability this
+doesn't already have.  Revisit that trade if we ever need SSE streaming,
+sampling, or the resources/prompts surfaces.  Implemented directly as a FastAPI
+route, which keeps the whole thing
 **in-process**, which is the important property: every tool call loops straight
 back into the app's own ``/api/v1/agent/assist/*`` (and ``/agent/hosts/*``)
 endpoints via an ASGI transport, so authentication (``require_assist_scope`` +
@@ -33,6 +39,7 @@ endpoint's 401/403 wrapped in an ``isError`` tool result.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -51,6 +58,26 @@ router = APIRouter()
 _PREFERRED_PROTOCOL_VERSION = "2025-06-18"
 
 _SERVER_NAME = "bluestick-assist"
+
+# --- pre-auth request ceilings ---------------------------------------------
+# This endpoint is UNAUTHENTICATED at the FastAPI layer (initialize / tools/list
+# / ping need no key), so everything that runs before a key is checked has to be
+# bounded:
+#
+#   * The body is read through a **capped stream**, never ``request.json()``.
+#     nginx allows 2 GB on /api/ (large scan uploads need it), so a pre-auth
+#     ``await request.json()`` would let an anonymous caller materialise 2 GB
+#     per worker — the same shape removed from the /agent/* audit middleware in
+#     v2.240.2.  Capping bytes *actually read* (not the declared
+#     Content-Length) means a lying header or a chunked body can't get past it.
+#   * A JSON-RPC batch is **length-capped**.  Every element costs a full
+#     in-process ASGI loopback (~3 ms measured), so an uncapped array converts
+#     one cheap anonymous request into unbounded server work.
+#
+# Both ceilings sit far above any real client: the largest legitimate message is
+# a tools/call with a note body, and no MCP client batches at all today.
+_MAX_REQUEST_BYTES = 1024 * 1024  # 1 MiB
+_MAX_BATCH_MESSAGES = 50
 
 # Guidance handed to the agent at initialize time (clients surface this).  The
 # bulk report stream lives here, not as a tool, on purpose — see module docstring.
@@ -280,6 +307,9 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
                 "os_name": {"type": "string", "maxLength": 255},
             },
             "required": ["host_id"],
+            # host_id on its own is a no-op the endpoint rejects with 400 — say
+            # "send at least one field" in the schema so the client catches it.
+            "anyOf": [{"required": ["hostname"]}, {"required": ["os_name"]}],
             "additionalProperties": False,
         },
     },
@@ -478,15 +508,73 @@ async def _handle_message(
 # HTTP endpoints (Streamable HTTP transport, JSON-only)
 # ---------------------------------------------------------------------------
 
+async def _read_capped_body(request: Request) -> Optional[bytes]:
+    """The request body, or ``None`` if it exceeds ``_MAX_REQUEST_BYTES``.
+
+    Reads the ASGI stream chunk by chunk and bails the moment the running total
+    crosses the cap, so peak memory is bounded by the cap regardless of what the
+    headers claim.  See the ceiling note at the top of this module.
+    """
+    total = 0
+    chunks: List[bytes] = []
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _MAX_REQUEST_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _origin_rejected(request: Request) -> bool:
+    """True when a browser-supplied ``Origin`` is not one we already trust.
+
+    The MCP transport spec asks servers to validate ``Origin`` as a
+    DNS-rebinding defence.  Real MCP clients are not browsers and send no
+    Origin at all, so this only fires on a web page trying to drive the
+    endpoint out of a user's browser — never legitimate here.  We reuse the
+    CORS allowlist rather than inventing a second notion of "trusted origin".
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    from app.core.config import settings
+
+    allowed = {
+        o.rstrip("/")
+        for o in (settings.CORS_ORIGINS or [])
+        if o and "*" not in o
+    }
+    return origin.rstrip("/") not in allowed
+
+
 @router.post("")
+# Same handler on the trailing-slash path: FastAPI would otherwise 307 it, and a
+# client that drops the body on redirect fails the handshake with no useful
+# error.  Hidden from the schema so /docs shows one canonical path.
+@router.post("/", include_in_schema=False)
 async def mcp_post(request: Request) -> Response:
     """Single Streamable-HTTP endpoint. Accepts one JSON-RPC message (or a
     legacy array), replies with ``application/json``. No SSE stream is offered —
     every tool here is request/response, so the spec permits a direct JSON reply.
     """
+    if _origin_rejected(request):
+        return JSONResponse(
+            _rpc_error(None, -32600, "Origin not allowed"), status_code=403
+        )
+
     api_key = request.headers.get("X-API-Key")
+    raw = await _read_capped_body(request)
+    if raw is None:
+        return JSONResponse(
+            _rpc_error(
+                None,
+                -32600,
+                f"Request body exceeds the {_MAX_REQUEST_BYTES}-byte limit.",
+            ),
+            status_code=413,
+        )
     try:
-        payload = await request.json()
+        payload = json.loads(raw)
     except Exception:
         return JSONResponse(
             _rpc_error(None, -32700, "Parse error"), status_code=200
@@ -495,6 +583,16 @@ async def mcp_post(request: Request) -> Response:
     # A JSON-RPC batch (array) was allowed pre-2025-06-18; handle it for older
     # clients. A single object is the modern shape.
     if isinstance(payload, list):
+        if len(payload) > _MAX_BATCH_MESSAGES:
+            return JSONResponse(
+                _rpc_error(
+                    None,
+                    -32600,
+                    f"Batch of {len(payload)} messages exceeds the "
+                    f"{_MAX_BATCH_MESSAGES}-message limit.",
+                ),
+                status_code=413,
+            )
         responses: List[Dict[str, Any]] = []
         session_id: Optional[str] = None
         for msg in payload:
