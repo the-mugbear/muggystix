@@ -317,6 +317,33 @@ def test_plan_generation_workflow_over_mcp(client, test_project, db_session):
     assert stored.entries and stored.entries[0].host_id == host.id
 
 
+def test_the_guide_is_reachable_over_mcp_and_sliced_to_the_caller(
+    client, test_project, scope_with_subnets
+):
+    """AGENTS.md is called binding by the prompts, and an MCP-only agent used to
+    have no way to reach it: the guide pointer lives in the instructions block an
+    operator pastes, which a client wired up purely over MCP never sees."""
+    recon = _recon_key(client, test_project, scope_with_subnets)
+    plan = _plan_key(client, test_project)
+
+    recon_guide = _call(client, {"X-API-Key": recon["api_key"]}, "read_agent_guide")
+    assert recon_guide["isError"] is False, recon_guide
+    recon_text = recon_guide["content"][0]["text"]
+
+    plan_guide = _call(client, {"X-API-Key": plan["api_key"]}, "read_agent_guide")
+    plan_text = plan_guide["content"][0]["text"]
+
+    # Sliced from the key, not from an argument a model has to name — the one
+    # wrong answer there hands an agent another workflow's instructions.
+    assert "Workflow C — Populate Host Data" in recon_text
+    assert "Workflow C — Populate Host Data" not in plan_text
+    assert "Workflow A — Build a Test Plan" in plan_text
+
+    # The shared rules ride along in every slice.
+    for text in (recon_text, plan_text):
+        assert "Say the rules back before you start" in text
+
+
 def test_the_approved_set_is_readable_from_every_workflow(
     client, test_project, scope_with_subnets, db_session
 ):
@@ -393,10 +420,19 @@ def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
     assert "--sandbox" not in codex_plan["hint"]
 
     # Every recipe still warns about the self-signed certificate, which is the
-    # failure every Node-based client hits first.
+    # failure every client hits first — but with the fix that actually applies
+    # to it. NODE_EXTRA_CA_CERTS is a Node variable; Codex is a Rust binary and
+    # reads nothing of the sort, so telling its operators to export it was
+    # advice that could only ever fail (v2.282.0, verified against 0.147.0).
     for body in (recon, plan):
         for setup in body["mcp_clients"]:
-            assert "NODE_EXTRA_CA_CERTS" in setup["hint"]
+            if setup["id"] == "codex":
+                assert "does nothing here" in setup["hint"], (
+                    "the Codex recipe must say the Node workaround doesn't apply"
+                )
+                assert "CA-trusted certificate" in setup["hint"]
+            else:
+                assert "NODE_EXTRA_CA_CERTS" in setup["hint"]
 
 
 # ---------------------------------------------------------------------------

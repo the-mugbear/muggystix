@@ -76,11 +76,23 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     assert f"export {codex['payload'].split()[1]}=" not in codex["payload"]
 
     # Every recipe warns about the self-signed certificate, which blocks every
-    # Node-based client before it sends a request — and points at pinning the
-    # cert rather than switching verification off globally.
+    # client before it sends a request — but with the remedy that applies to it.
+    # The Node-based clients get the pin (verification stays on, scoped to this
+    # certificate) rather than a global opt-out. Codex gets told the truth: it
+    # is a Rust binary, NODE_EXTRA_CA_CERTS is not a thing it reads, and there
+    # is no pin — so the recipe cannot work against a self-signed deployment
+    # (v2.282.0, verified against 0.147.0). Handing its operators the Node
+    # workaround was advice that could only ever fail.
     for entry in body["mcp_clients"]:
-        assert "NODE_EXTRA_CA_CERTS" in entry["hint"], entry["id"]
-        assert "/references/tls-certificate" in entry["hint"], entry["id"]
+        if entry["id"] == "codex":
+            assert "does nothing here" in entry["hint"]
+            assert "CA-trusted certificate" in entry["hint"]
+            assert "/references/tls-certificate" not in entry["hint"], (
+                "pointing Codex at the cert implies a pin it cannot perform"
+            )
+        else:
+            assert "NODE_EXTRA_CA_CERTS" in entry["hint"], entry["id"]
+            assert "/references/tls-certificate" in entry["hint"], entry["id"]
         assert "NODE_TLS_REJECT_UNAUTHORIZED" not in entry["hint"], entry["id"]
 
     # Every entry is renderable: label, hint, payload all present.
@@ -427,16 +439,18 @@ def test_reference_catalog_classifies_reads_and_writes(client):
     # Every tool carries what the page renders: a description, the underlying
     # route, and a JSON-Schema object for its parameters.
     #
-    # Routes live under /agent/* with one deliberate exception: the approved-tool
-    # listing is the public reference endpoint, because the approved set is
-    # documentation an agent checks itself against — the same list a human reads
-    # at /reference/tools. Reading it through a project-scoped route would imply
-    # the set is per-project, which it is not.
+    # Routes live under /agent/* with two deliberate exceptions, both of them
+    # deployment-wide documentation rather than project data: the approved-tool
+    # listing (the same list a human reads at /reference/tools) and the guide.
+    # Serving either through a project-scoped route would imply it varies per
+    # project, which neither does.
+    documentation_routes = {"/api/v1/references/tools", "/api/v1/agents-guide"}
     for tool in tools.values():
         assert tool["description"]
         assert tool["method"]
-        assert tool["path"].startswith("/api/v1/agent/") or tool["path"] == (
-            "/api/v1/references/tools"
+        assert (
+            tool["path"].startswith("/api/v1/agent/")
+            or tool["path"] in documentation_routes
         ), f"{tool['name']} points at an unexpected route: {tool['path']}"
         assert tool["input_schema"]["type"] == "object"
 

@@ -150,6 +150,37 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    "read_agent_guide": {
+        "description": (
+            "AGENTS.md — the authoritative guide for how to work with BlueStick: the "
+            "approval and sanity-check protocol, the working-directory rules, endpoint "
+            "body shapes, upload formats, exit criteria. Sliced to your own workflow, "
+            "resolved from your key. READ THIS FIRST, once, before your first "
+            "substantive call. The tool descriptions here are a skeleton; the guide is "
+            "the part that tells you how, and it is binding."
+        ),
+        "workflows": ALL_WORKFLOWS,
+        "method": "GET",
+        "path": "/api/v1/agents-guide",
+        "path_params": [],
+        "query_params": ["workflow"],
+        # Filled from the caller's identity: the slice you want is the workflow
+        # your key belongs to, and asking a model to name it invites the one
+        # answer that returns another workflow's instructions.
+        "auto_params": {"workflow": "workflow"},
+        "body_params": [],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workflow": {
+                    "type": "string",
+                    "enum": ["plan_generation", "execution", "reconnaissance", "assist"],
+                    "description": "Usually omit — resolved from your API key.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
     "list_approved_tools": {
         "description": (
             "The tools BlueStick approves for agents to run, with the ports, install "

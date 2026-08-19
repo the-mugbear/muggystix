@@ -60,14 +60,33 @@ def _mcp_server_entry(mcp_url: str, raw_key: str) -> Dict[str, Any]:
     }
 
 
-# Deployments default to a self-signed certificate, and every MCP client here is
-# Node/Electron — which rejects it with DEPTH_ZERO_SELF_SIGNED_CERT before any
-# request is made (verified against a real client).  Node ignores the OS trust
-# store, so "trust it in Keychain" doesn't help; pinning the certificate with
-# NODE_EXTRA_CA_CERTS does, and unlike NODE_TLS_REJECT_UNAUTHORIZED=0 it leaves
-# verification ON for every other host that process talks to.
-def tls_note(mcp_url: str) -> str:
+# Deployments default to a self-signed certificate, which every client here
+# rejects before any request is made — but the fix is NOT the same for all of
+# them, and pretending it was is how the Codex recipe shipped advertising a
+# workaround that does nothing (v2.282.0).
+#
+# VS Code and Claude Code are Node/Electron: they ignore the OS trust store, so
+# "trust it in Keychain" doesn't help, and NODE_EXTRA_CA_CERTS pins this one
+# deployment while leaving verification ON for every other host the process
+# talks to (unlike NODE_TLS_REJECT_UNAUTHORIZED=0).
+#
+# Codex is a Rust binary. NODE_EXTRA_CA_CERTS is not read by anything in it, so
+# the note was advice that could only ever fail — verified against Codex
+# 0.147.0. There is no equivalent knob to point at, so the honest thing is to
+# say the recipe does not work against a self-signed deployment and name the two
+# ways out, rather than leave an operator debugging a TLS error against a
+# variable nothing reads.
+def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
     cert_url = mcp_url.rsplit("/mcp", 1)[0] + "/references/tls-certificate"
+    if client_id == "codex":
+        return (
+            "⚠ Self-signed cert? This will NOT connect. Codex (verified against "
+            "0.147.0) is a Rust binary — NODE_EXTRA_CA_CERTS is a Node variable and "
+            "does nothing here, and there is no supported way to pin a deployment "
+            "certificate. Either give BlueStick a CA-trusted certificate, or use the "
+            "VS Code / Claude Code recipe, which can pin this one. The bearer-token "
+            "setup above is correct and will work once the certificate does."
+        )
     return (
         "Self-signed cert? Node-based clients refuse it. Fetch the deployment cert "
         f"(curl -sk {cert_url} -o bluestick.pem) and export "
@@ -132,7 +151,7 @@ def build_mcp_clients(
             "hint": (
                 "Save as .vscode/mcp.json in your workspace, then start the server from the "
                 "Copilot MCP panel. The file holds a live key — keep it out of version control. "
-                + tls_note(mcp_url)
+                + tls_note(mcp_url, "vscode")
                 + sandbox_note(workflow, "vscode")
             ),
         },
@@ -148,7 +167,7 @@ def build_mcp_clients(
             "hint": (
                 "Run in your project directory. -s local keeps the key in your own config; "
                 "-s project writes .mcp.json into the repo, so do not use it with a live key. "
-                + tls_note(mcp_url)
+                + tls_note(mcp_url, "claude_code")
                 + sandbox_note(workflow, "claude_code")
             ),
         },
@@ -166,7 +185,7 @@ def build_mcp_clients(
                 "Codex keeps the key out of config.toml — it reads the env var at run time. "
                 "`read -rs` keeps it out of your shell history too; re-run it in each new shell "
                 "rather than writing the key into a profile. "
-                + tls_note(mcp_url)
+                + tls_note(mcp_url, "codex")
                 + sandbox_note(workflow, "codex")
             ),
         },

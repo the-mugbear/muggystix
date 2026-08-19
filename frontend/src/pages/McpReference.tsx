@@ -83,7 +83,7 @@ const CLIENTS: ClientRecipe[] = [
     path: null,
     snippet: (endpoint) =>
       `read -rs BLUESTICK_ASSIST_KEY && export BLUESTICK_ASSIST_KEY   # paste the key, then Enter\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
-    note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile.',
+    note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile. Note the TLS limitation above: against a self-signed deployment this configures correctly and still cannot connect.',
   },
 ];
 
@@ -338,7 +338,7 @@ const McpReference: React.FC = () => {
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
           <strong>Self-signed certificate? Pin it — don&rsquo;t disable verification.</strong>{' '}
-          Every MCP client here is Node-based, and Node ignores the OS trust store, so
+          VS Code and Claude Code are Node-based, and Node ignores the OS trust store, so
           &ldquo;trust it in Keychain&rdquo; won&rsquo;t help: the client refuses the connection
           with <span className="font-mono">DEPTH_ZERO_SELF_SIGNED_CERT</span> before it sends a
           request. Fetch this deployment&rsquo;s certificate and point Node at it — verification
@@ -355,6 +355,16 @@ const McpReference: React.FC = () => {
             instead. <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span> also works
             but switches verification off for every host that process talks to, so prefer the pin.
           </span>
+        </AlertDescription>
+      </Alert>
+      <Alert variant="destructive" className="mb-sm">
+        <AlertDescription>
+          <strong>Codex will not connect to a self-signed deployment.</strong> Codex is a Rust
+          binary, so <span className="font-mono">NODE_EXTRA_CA_CERTS</span> above does nothing for
+          it and there is no equivalent way to pin this deployment&rsquo;s certificate (verified
+          against Codex 0.147.0). Its bearer-token setup below is correct and will work the moment
+          the certificate does — until then, give BlueStick a CA-trusted certificate, or use VS
+          Code or Claude Code, which can pin.
         </AlertDescription>
       </Alert>
       <Alert variant="warning" className="mb-sm">

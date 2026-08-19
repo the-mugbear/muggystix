@@ -98,12 +98,19 @@ _TLS_CERT_PATH = Path("/certs/networkmapper.crt")
 def tls_certificate():
     """Serve the deployment's public TLS certificate as PEM.
 
-    Deployments default to a self-signed certificate, and every MCP client is
-    Node-based — Node ignores the OS trust store, so "trust it in Keychain"
-    doesn't help.  What does work is ``NODE_EXTRA_CA_CERTS=<this file>``, which
-    trusts THIS certificate and nothing else, leaving verification on.  The
-    alternative operators reach for, ``NODE_TLS_REJECT_UNAUTHORIZED=0``,
-    disables verification for every host that process talks to.
+    Deployments default to a self-signed certificate, and the Node-based MCP
+    clients (VS Code, Claude Code) ignore the OS trust store, so "trust it in
+    Keychain" doesn't help.  What does work is ``NODE_EXTRA_CA_CERTS=<this
+    file>``, which trusts THIS certificate and nothing else, leaving
+    verification on.  The alternative operators reach for,
+    ``NODE_TLS_REJECT_UNAUTHORIZED=0``, disables verification for every host
+    that process talks to.
+
+    **Not every client can use this.**  Codex is a Rust binary with no
+    equivalent knob (verified against 0.147.0), so a self-signed deployment
+    cannot be reached from it at all — that needs a CA-trusted certificate.
+    The MCP reference page says so on the Codex tab rather than handing over a
+    workaround that could only ever fail.
 
     This is the certificate the server already presents in every TLS handshake,
     so publishing it discloses nothing new.  Fetching it over the same untrusted
@@ -364,8 +371,10 @@ async def references_index():
             "url": "/api/v1/references/tls-certificate",
             "description": (
                 "The deployment's public TLS certificate (PEM). Pin it with "
-                "NODE_EXTRA_CA_CERTS so Node-based MCP clients trust this "
-                "deployment without disabling certificate verification."
+                "NODE_EXTRA_CA_CERTS so Node-based MCP clients (VS Code, "
+                "Claude Code) trust this deployment without disabling "
+                "certificate verification. Codex cannot pin — it needs a "
+                "CA-trusted certificate."
             ),
         },
         "tools": {
