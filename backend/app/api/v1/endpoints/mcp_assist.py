@@ -48,6 +48,8 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.services.agent_prompt_service import resolve_base_url
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -81,17 +83,25 @@ _MAX_BATCH_MESSAGES = 50
 
 # Guidance handed to the agent at initialize time (clients surface this).  The
 # bulk report stream lives here, not as a tool, on purpose — see module docstring.
-_SERVER_INSTRUCTIONS = (
-    "BlueStick AI-Assist. Use these tools to read the project's hosts, findings, "
-    "scopes and scans, and (when your key was granted write access) to add notes, "
-    "set a host's review status, or correct a host's hostname/OS. All calls are "
-    "audited and scoped to the assist session your key belongs to.\n\n"
-    "To write a report over MANY hosts, do NOT page the tools — download the full "
-    "per-host dossier stream to a file instead: "
-    "GET {base}/api/v1/agent/assist/report-context.ndjson with your X-API-Key "
-    "header (one JSON object per host, uncapped), then read the file locally. "
-    "The tools are for targeted lookups and writes."
-)
+def _server_instructions(base_url: str) -> str:
+    """Instructions text with the report-stream URL resolved for this caller.
+
+    ``base_url`` must be a real, externally-reachable ``…/api/v1`` — the agent
+    is expected to paste the URL into a curl.  Pre-v2.268.1 this was a module
+    constant carrying a literal ``{base}`` that nothing ever substituted, so
+    every client was handed an unusable URL.
+    """
+    return (
+        "BlueStick AI-Assist. Use these tools to read the project's hosts, findings, "
+        "scopes and scans, and (when your key was granted write access) to add notes, "
+        "set a host's review status, or correct a host's hostname/OS. All calls are "
+        "audited and scoped to the assist session your key belongs to.\n\n"
+        "To write a report over MANY hosts, do NOT page the tools — download the full "
+        "per-host dossier stream to a file instead: "
+        f"GET {base_url}/agent/assist/report-context.ndjson with your X-API-Key "
+        "header (one JSON object per host, uncapped), then read the file locally. "
+        "The tools are for targeted lookups and writes."
+    )
 
 # ---------------------------------------------------------------------------
 # Tool registry — declarative map from MCP tool -> loopback HTTP call.
@@ -451,7 +461,7 @@ async def _dispatch_tool(
 # ---------------------------------------------------------------------------
 
 async def _handle_message(
-    app, message: Dict[str, Any], api_key: Optional[str]
+    app, message: Dict[str, Any], api_key: Optional[str], base_url: str,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Process one JSON-RPC message.
 
@@ -482,7 +492,7 @@ async def _handle_message(
             "protocolVersion": protocol_version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": _SERVER_NAME, "version": settings.APP_VERSION},
-            "instructions": _SERVER_INSTRUCTIONS,
+            "instructions": _server_instructions(base_url),
         }
         return _rpc_result(msg_id, result), uuid.uuid4().hex
 
@@ -563,6 +573,10 @@ async def mcp_post(request: Request) -> Response:
         )
 
     api_key = request.headers.get("X-API-Key")
+    # Same resolution the assist-start dialog uses for its curl recipe, so the
+    # URL we hand the agent is the one an operator would reach the app on (a
+    # container hostname would be useless to a terminal-side agent).
+    base_url = resolve_base_url(request)
     raw = await _read_capped_body(request)
     if raw is None:
         return JSONResponse(
@@ -596,7 +610,7 @@ async def mcp_post(request: Request) -> Response:
         responses: List[Dict[str, Any]] = []
         session_id: Optional[str] = None
         for msg in payload:
-            resp, sid = await _handle_message(request.app, msg, api_key)
+            resp, sid = await _handle_message(request.app, msg, api_key, base_url)
             if sid:
                 session_id = sid
             if resp is not None:
@@ -606,7 +620,7 @@ async def mcp_post(request: Request) -> Response:
         headers = {"Mcp-Session-Id": session_id} if session_id else None
         return JSONResponse(responses, headers=headers)
 
-    resp, session_id = await _handle_message(request.app, payload, api_key)
+    resp, session_id = await _handle_message(request.app, payload, api_key, base_url)
     if resp is None:
         # Notification-only POST -> 202 Accepted, no body.
         return Response(status_code=202)

@@ -59,8 +59,14 @@ def test_initialize_handshake(client):
     assert result["protocolVersion"] == "2025-06-18"
     assert result["capabilities"]["tools"] == {"listChanged": False}
     assert result["serverInfo"]["name"] == "bluestick-assist"
-    # The bulk report stream is advertised in instructions, not as a tool.
-    assert "report-context.ndjson" in result["instructions"]
+    # The bulk report stream is advertised in instructions, not as a tool —
+    # with a REAL url. v2.268.1: this carried a literal "{base}" placeholder
+    # that nothing substituted, so every client got an unusable curl.
+    instructions = result["instructions"]
+    assert "report-context.ndjson" in instructions
+    assert "{base}" not in instructions
+    assert "https://" in instructions or "http://" in instructions
+    assert "/api/v1/agent/assist/report-context.ndjson" in instructions
     # A session id is issued on initialize.
     assert resp.headers.get("Mcp-Session-Id")
 
