@@ -318,6 +318,58 @@ def test_plan_generation_workflow_over_mcp(client, test_project, db_session):
 
 
 # ---------------------------------------------------------------------------
+# Connecting a client to a non-assist session
+# ---------------------------------------------------------------------------
+
+def test_every_session_start_emits_client_setup(client, test_project, scope_with_subnets):
+    """The tools exist for all four workflows; the connection recipe used to
+    exist for one. An operator starting recon was handed a curl block and left
+    to work out the client config themselves."""
+    plan = _plan_key(client, test_project)
+    recon = _recon_key(client, test_project, scope_with_subnets)
+
+    for body in (plan, recon):
+        assert body["mcp_url"].endswith("/mcp")
+        ids = {c["id"] for c in body["mcp_clients"]}
+        assert ids == {"vscode", "claude_code", "codex"}
+
+    # Distinct server names, so connecting a recon session and a plan session to
+    # the same client leaves two servers rather than one overwriting the other.
+    plan_payloads = " ".join(c["payload"] for c in plan["mcp_clients"])
+    recon_payloads = " ".join(c["payload"] for c in recon["mcp_clients"])
+    assert "bluestick-plan" in plan_payloads and "bluestick-recon" not in plan_payloads
+    assert "bluestick-recon" in recon_payloads and "bluestick-plan" not in recon_payloads
+
+    # And each carries its own live key, not a shared one.
+    assert plan["api_key"] in plan_payloads
+    assert recon["api_key"] in recon_payloads
+
+
+def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
+    client, test_project, scope_with_subnets
+):
+    """The working-directory boundary is enforced by the client, not by us — so
+    the flags that set it belong in the recipe for the workflows that actually
+    execute things. Attaching them to plan generation, which only calls the API,
+    would train operators to ignore them."""
+    recon = _recon_key(client, test_project, scope_with_subnets)
+    plan = _plan_key(client, test_project)
+
+    codex_recon = next(c for c in recon["mcp_clients"] if c["id"] == "codex")
+    assert "--sandbox workspace-write" in codex_recon["hint"]
+    assert "--ask-for-approval" in codex_recon["hint"]
+
+    codex_plan = next(c for c in plan["mcp_clients"] if c["id"] == "codex")
+    assert "--sandbox" not in codex_plan["hint"]
+
+    # Every recipe still warns about the self-signed certificate, which is the
+    # failure every Node-based client hits first.
+    for body in (recon, plan):
+        for setup in body["mcp_clients"]:
+            assert "NODE_EXTRA_CA_CERTS" in setup["hint"]
+
+
+# ---------------------------------------------------------------------------
 # Asking for a tool that isn't approved
 # ---------------------------------------------------------------------------
 

@@ -31,6 +31,8 @@ from app.schemas.schemas import (
 )
 from app.parsers.subnet_parser import SubnetParser
 from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
+from app.services.agent_prompt_service import resolve_base_url
+from app.services.mcp_client_setup_service import build_mcp_clients
 from app.services.subnet_correlation import SubnetCorrelationService
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -925,6 +927,12 @@ class StartReconResponse(BaseModel):
     # the actual expiry without hardcoding a value that drifts when
     # AGENT_KEY_TTL_HOURS is overridden in .env.
     key_ttl_hours: int
+    # v2.279.0 — per-client MCP setup, the same shape assist emits.  Recon has
+    # had MCP tools since 2.278.0; without this the operator was told about a
+    # curl recipe and left to work out the client config themselves.  The hints
+    # carry the sandbox flags, because recon runs scanners on their machine.
+    mcp_clients: List[dict] = []
+    mcp_url: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1125,6 +1133,7 @@ def start_recon_session(
     db.commit()
     db.refresh(recon_session)
 
+    mcp_url = f"{resolve_base_url(request)}/mcp"
     return StartReconResponse(
         recon_session_id=recon_session.id,
         scope_id=scope.id,
@@ -1134,6 +1143,8 @@ def start_recon_session(
         api_key=raw_key,
         instructions=instructions,
         key_ttl_hours=resolve_ttl_hours(None),
+        mcp_url=mcp_url,
+        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="recon"),
     )
 
 
@@ -1273,6 +1284,7 @@ def resume_recon_session(
     db.commit()
     db.refresh(recon_session)
 
+    mcp_url = f"{resolve_base_url(request)}/mcp"
     return StartReconResponse(
         recon_session_id=recon_session.id,
         scope_id=scope.id,
@@ -1282,4 +1294,6 @@ def resume_recon_session(
         api_key=raw_key,
         instructions=instructions,
         key_ttl_hours=resolve_ttl_hours(None),
+        mcp_url=mcp_url,
+        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="recon"),
     )

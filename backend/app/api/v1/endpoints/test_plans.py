@@ -42,7 +42,9 @@ from app.services.test_plan_service import TestPlanService
 from app.services.agent_prompt_service import (
     build_plan_generation_instructions,
     build_execution_instructions,
+    resolve_base_url,
 )
+from app.services.mcp_client_setup_service import build_mcp_clients
 from app.schemas.schemas import ProposedTest, ProposedTestItem
 # Shared test-plan schemas live in app/schemas/test_plan_schemas.py (CLAUDE.md
 # file-size policy).  Single-use response models stay inline below, next to
@@ -229,6 +231,11 @@ class GeneratePlanResponse(BaseModel):
     agent_id: int
     api_key: str
     instructions: str
+    # v2.279.0 — per-client MCP setup, same shape assist emits. Plan generation
+    # got MCP tools in 2.278.0; without this the operator was handed a curl
+    # recipe and left to work out the client config themselves.
+    mcp_clients: List[dict] = []
+    mcp_url: str = ""
 
 
 @router.post(
@@ -399,6 +406,7 @@ def generate_test_plan(
     # NOTE: raw_key is returned once for user display and must never appear
     # in server logs.  Do not add response-body logging middleware without
     # redacting the api_key field from this endpoint's output.
+    mcp_url = f"{resolve_base_url(request)}/mcp"
     return GeneratePlanResponse(
         plan_id=plan.id,
         plan_title=plan.title,
@@ -406,6 +414,8 @@ def generate_test_plan(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
+        mcp_url=mcp_url,
+        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="plan_generation"),
     )
 
 
@@ -1007,6 +1017,7 @@ def resume_plan_generation(
     db.commit()
     db.refresh(plan)
 
+    mcp_url = f"{resolve_base_url(request)}/mcp"
     return GeneratePlanResponse(
         plan_id=plan.id,
         plan_title=plan.title,
@@ -1014,6 +1025,8 @@ def resume_plan_generation(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
+        mcp_url=mcp_url,
+        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="plan_generation"),
     )
 
 
@@ -1668,6 +1681,11 @@ class ExecuteResponse(BaseModel):
     agent_id: int
     api_key: str
     instructions: str
+    # v2.279.0 — per-client MCP setup. The hints carry the client sandbox flags
+    # for this one: execution runs the plan's commands on the operator's own
+    # machine, and the working-directory boundary is enforced there, not here.
+    mcp_clients: List[dict] = []
+    mcp_url: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1935,6 +1953,7 @@ def execute_test_plan(
 
     db.commit()
 
+    mcp_url = f"{resolve_base_url(request)}/mcp"
     return ExecuteResponse(
         execution_session_id=session.id,
         plan_id=plan.id,
@@ -1942,6 +1961,8 @@ def execute_test_plan(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
+        mcp_url=mcp_url,
+        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="execution"),
     )
 
 
@@ -2094,6 +2115,7 @@ def resume_execution_session(
 
     db.commit()
 
+    mcp_url = f"{resolve_base_url(request)}/mcp"
     return ExecuteResponse(
         execution_session_id=session.id,
         plan_id=plan.id,
@@ -2101,6 +2123,8 @@ def resume_execution_session(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
+        mcp_url=mcp_url,
+        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="execution"),
     )
 
 

@@ -9,6 +9,7 @@
  * ``../services/api`` unchanged.
  */
 import { api, p } from './client';
+import type { McpClientSetup } from '../../components/McpConnectPanel';
 
 
 // ---------------------------------------------------------------------------
@@ -539,7 +540,11 @@ export interface GeneratePlanResponse {
   plan_status: string;
   agent_id: number;
   api_key: string;
-  instructions: string;
+  instructions: string;  // v5.169.0 — per-client MCP setup, the same payload the assist dialog
+  // renders. The workflow's tools have existed since backend 2.278.0; without
+  // this the dialog could only offer the curl recipe.
+  mcp_clients?: McpClientSetup[];
+  mcp_url?: string;
 }
 
 export const generateTestPlan = async (
@@ -597,7 +602,11 @@ export interface ExecuteResponse {
   plan_title: string;
   agent_id: number;
   api_key: string;
-  instructions: string;
+  instructions: string;  // v5.169.0 — per-client MCP setup, the same payload the assist dialog
+  // renders. The workflow's tools have existed since backend 2.278.0; without
+  // this the dialog could only offer the curl recipe.
+  mcp_clients?: McpClientSetup[];
+  mcp_url?: string;
 }
 
 export const executeTestPlan = async (planId: number): Promise<ExecuteResponse> => {
@@ -660,6 +669,11 @@ export interface StartReconResponse {
   // actual key expiry without hardcoding a value that drifts when
   // AGENT_KEY_TTL_HOURS is overridden in .env.
   key_ttl_hours: number;
+  // v5.169.0 — per-client MCP setup, the same payload the assist dialog
+  // renders. The workflow's tools have existed since backend 2.278.0; without
+  // this the dialog could only offer the curl recipe.
+  mcp_clients?: McpClientSetup[];
+  mcp_url?: string;
 }
 
 /**

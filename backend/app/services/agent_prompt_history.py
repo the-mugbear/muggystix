@@ -21,6 +21,32 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.50.0",
+        "app_version": "2.279.0",
+        "summary": (
+            "Approval model changed from 'ask before every command' to a bounded "
+            "exception, and MCP now covers all three agentic workflows. An agent "
+            "may run a command WITHOUT waiting when three things hold: the tool "
+            "is in BlueStick's approved set, the target is a host already in the "
+            "project's inventory, and every file it writes lands in the session's "
+            "working directory. Everything else — unapproved tool, target outside "
+            "the inventory, reads or writes outside that directory, changes to "
+            "settings/software/credentials — still stops and asks. Commands are "
+            "shown either way. Blanket approval was the safe-sounding rule that "
+            "trained operators to click through fifty routine prompts, so the one "
+            "command that mattered arrived looking like the other forty-nine; "
+            "naming the bounds is what makes the remaining prompts mean "
+            "something. An agent that needs an unapproved tool now has somewhere "
+            "to say so (`suggest_tool` / POST /agent/tool-suggestions) instead of "
+            "substituting one nobody vetted. The guide states plainly that "
+            "BlueStick cannot enforce any of this — the client's sandbox is the "
+            "real boundary, and the server's contribution is the record. MCP: "
+            "recon, plan generation and execution have tools now, scoped to the "
+            "caller's own workflow (`agent_identity` reports which), with the "
+            "bulk file-shaped endpoints deliberately still curl."
+        ),
+    },
+    {
         "version": "1.49.0",
         "app_version": "2.271.0",
         "summary": (

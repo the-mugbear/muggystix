@@ -22,7 +22,6 @@ keeps the user-facing surface small.
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -47,6 +46,7 @@ from app.db.session import get_db
 from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
 from app.services.agent_session_service import create_agent_session
 from app.services.agent_prompt_service import build_assist_instructions, resolve_base_url
+from app.services.mcp_client_setup_service import build_mcp_clients
 
 router = APIRouter()
 
@@ -130,92 +130,17 @@ class McpClientSetup(BaseModel):
 
 
 # --- MCP client setup -------------------------------------------------------
-# The wrapper key differs by host and the file path differs by host, so a single
-# blob can't serve all three.  Claude Code gets its CLI instead of a file: `claude
-# mcp add` writes the entry itself, which is fewer steps than editing JSON and
-# can't be pasted into the wrong place.
-_MCP_SERVER_NAME = "bluestick-assist"
-# Codex reads the credential from the environment instead of the config file,
-# which is the one client where the key never has to touch disk in plaintext.
-_MCP_KEY_ENV_VAR = "BLUESTICK_ASSIST_KEY"
-
-
-def _mcp_server_entry(mcp_url: str, raw_key: str) -> dict:
-    return {
-        "type": "http",
-        "url": mcp_url,
-        "headers": {"X-API-Key": raw_key},
-    }
-
-
-# Deployments default to a self-signed certificate, and every MCP client here is
-# Node/Electron — which rejects it with DEPTH_ZERO_SELF_SIGNED_CERT before any
-# request is made (verified against a real client).  Node ignores the OS trust
-# store, so "trust it in Keychain" doesn't help; pinning the certificate with
-# NODE_EXTRA_CA_CERTS does, and unlike NODE_TLS_REJECT_UNAUTHORIZED=0 it leaves
-# verification ON for every other host that process talks to.
-def _tls_note(mcp_url: str) -> str:
-    cert_url = mcp_url.rsplit("/mcp", 1)[0] + "/references/tls-certificate"
-    return (
-        "Self-signed cert? Node-based clients refuse it. Fetch the deployment cert "
-        f"(curl -sk {cert_url} -o bluestick.pem) and export "
-        "NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem in the shell you launch the client "
-        "from — that trusts this deployment without turning verification off."
-    )
+# The recipes moved to ``services/mcp_client_setup_service.py`` in v2.279.0, when
+# recon / plan / execution sessions started emitting them too.  One builder means
+# a fix to a client recipe lands on every workflow at once — the divergence that
+# replaces is why two of the three original recipes silently didn't work.
 
 
 def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
-    entry = {_MCP_SERVER_NAME: _mcp_server_entry(mcp_url, raw_key)}
     return [
-        McpClientSetup(
-            id="vscode",
-            label="VS Code Copilot",
-            kind="file",
-            path=".vscode/mcp.json",
-            payload=json.dumps({"servers": entry}, indent=2),
-            hint=(
-                "Save as .vscode/mcp.json in your workspace, then start the server from the "
-                "Copilot MCP panel. The file holds a live key — keep it out of version control. "
-                + _tls_note(mcp_url)
-            ),
-        ),
-        McpClientSetup(
-            id="claude_code",
-            label="Claude Code",
-            kind="command",
-            path="",
-            payload=(
-                f"claude mcp add --transport http {_MCP_SERVER_NAME} {mcp_url} "
-                f'--header "X-API-Key: {raw_key}"'
-            ),
-            hint=(
-                "Run in your project directory. -s local keeps the key in your own config; "
-                "-s project writes .mcp.json into the repo, so do not use it with a live key. "
-                + _tls_note(mcp_url)
-            ),
-        ),
-        McpClientSetup(
-            id="codex",
-            label="Codex",
-            kind="command",
-            path="",
-            payload=(
-                f"read -rs {_MCP_KEY_ENV_VAR} && export {_MCP_KEY_ENV_VAR}   # paste the key, then Enter\n"
-                f"codex mcp add {_MCP_SERVER_NAME} --url {mcp_url} "
-                f"--bearer-token-env-var {_MCP_KEY_ENV_VAR}"
-            ),
-            hint=(
-                "Codex keeps the key out of config.toml — it reads the env var at run time. "
-                "`read -rs` keeps it out of your shell history too; re-run it in each new shell "
-                "rather than writing the key into a profile. " + _tls_note(mcp_url)
-            ),
-        ),
+        McpClientSetup(**client)
+        for client in build_mcp_clients(mcp_url, raw_key, workflow="assist")
     ]
-    # No Cursor recipe (removed v2.275.0).  The original feature advertised it,
-    # but nobody here uses Cursor and it was the one client whose config shape
-    # was never verified against a real install — inference is exactly how the
-    # original wrapper-key bug shipped.  Better to offer three recipes that are
-    # known to work than four where one is a guess.
 
 
 class StartAssistResponse(BaseModel):

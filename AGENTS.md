@@ -44,6 +44,15 @@ No login, no password, no `project_id` in the URL — the key is pre-scoped to e
 
 If your key stops working (401 expired/revoked, or 403 scoped to a different plan), see the 401/403 rows in **Error Handling** below — the short version is ask the user to re-run Generate/Execute for the same plan; you cannot rotate a key yourself.
 
+### MCP (optional — same endpoints, native tools)
+
+If your client speaks MCP, the operator can hand you the same session as a set of **tools** instead of curl recipes; the session-start dialog emits the config for VS Code, Claude Code and Codex. Every tool call loops back into the endpoints described in this guide with the same key and the same checks, so nothing here changes — you just stop shelling out for the interactive calls.
+
+Two things to know:
+
+- **You see only your own workflow's tools.** A recon key gets the recon tools, a plan key the planning tools. That is deliberate; there is no key that spans workflows. `agent_identity` tells you which one you are, what you may write, and when your key expires.
+- **Bulk data is not a tool.** The NDJSON streams, target-file downloads and `recon/upload` stay curl on purpose — they belong in a file on disk, not in your context. `GET /api/v1/references/mcp-tools` lists everything the server exposes.
+
 ### HTTPS / self-signed certs
 
 The API uses HTTPS with a self-signed certificate. All `curl` commands require `-sk` (silent + insecure) to skip verification. If your execution environment blocks localhost/HTTPS, request approval once for the first `curl` call and continue automatically after approval. If that isn't possible, ask the user to run the commands for you or to provide an alternate reachable URL.
@@ -156,6 +165,20 @@ Why this matters: two agents both writing `targets.txt`/`nmap.xml` into a shared
 
 Do not delete the directory when you finish — the operator may want the raw tool output. Cleanup is their call.
 
+### The working directory is also the approval boundary
+
+That directory is not just for tidiness — it is where "you may proceed" stops. A command runs **without waiting for approval** only when all three hold:
+
+1. **The tool is approved.** It appears in BlueStick's approved set — the recon tool catalogue, or `GET /api/v1/references/tools?status=approved`. If what you need is not there, ask for it (`suggest_tool`, or `POST /api/v1/agent/tool-suggestions` with your reasoning) rather than reaching for a substitute nobody vetted. A recorded ask is how the set grows; a silent substitution is how it stops meaning anything.
+2. **The target is in the inventory.** The host is one this project already knows about — from the scope you were given, or a host id you read from the API. Never a host you inferred, and never one outside the scope.
+3. **The output lands here.** Every file the command writes goes into this working directory. `-oX nmap.xml`, not `-oX /tmp/nmap.xml`; no writes to a home directory, a system path, or another session's folder.
+
+**Anything else stops and asks first.** Reading or writing outside this directory, installing software, changing settings or credentials, touching a host that is not in the inventory, running an unapproved tool — present it, explain why you need it, and wait.
+
+Show every command either way, including the ones you run under the exception. The point of the exception is not to hide work; it is that fifty approval prompts for fifty routine scans teach the operator to click through, and then the one command that genuinely mattered arrives looking like the other forty-nine.
+
+**Do not expect BlueStick to stop you.** The commands run on the operator's machine; the server sees only what you report. The real boundary is your client's sandbox — the operator was given the flags that set it when they started this session. Report accurately, including when you went outside the bounds and why: the audit trail is the thing a human actually reviews.
+
 <!-- agents:end -->
 
 ---
@@ -245,11 +268,14 @@ GET /agent/test-plans/{plan_id}/execution-context
 #        If the check fails → STOP and ask the user for guidance.
 
 #    2b. For each test in the entry:
-#        PRESENT the command to the user:
-#          "Tool: nmap  Command: nmap --script smb-enum-shares -p 445 10.0.1.5
-#           Expected: List of shares with access levels.
-#           Shall I run this? [yes / modify / skip / abort]"
-#        WAIT for user response. Do NOT proceed without approval.
+#        PRESENT the command to the user, always:
+#          "Tool: nmap  Command: nmap --script smb-enum-shares -p 445 -oX smb.xml 10.0.1.5
+#           Expected: List of shares with access levels."
+#        In-policy (approved tool + host in inventory + output in the working
+#        directory — see "The working directory is also the approval boundary"):
+#        run it, and say that you are.
+#        Out of policy: add "Shall I run this? [yes / modify / skip / abort]"
+#        and WAIT. Do NOT proceed without approval.
 #        After execution, record:
 #        POST /agent/test-plans/{plan_id}/entries/{entry_id}/test-results
 #        {

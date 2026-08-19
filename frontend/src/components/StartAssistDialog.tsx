@@ -34,11 +34,11 @@ import {
 } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { startAssistSession, type AssistSessionRow, type StartAssistResponse } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import AssistSessionsPanel from './AssistSessionsPanel';
+import McpConnectPanel from './McpConnectPanel';
 
 export interface StartAssistDialogProps {
   open: boolean;
@@ -67,10 +67,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const [keyAcknowledged, setKeyAcknowledged] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedInstr, setCopiedInstr] = useState(false);
-  const [copiedMcp, setCopiedMcp] = useState(false);
-  // Which client's setup is shown. Defaults to the first the API returns;
-  // the operator's choice survives re-renders but resets with the dialog.
-  const [mcpClientId, setMcpClientId] = useState<string | null>(null);
 
   const reset = useCallback(() => {
     setPurpose('');
@@ -81,8 +77,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     setKeyAcknowledged(false);
     setCopiedKey(false);
     setCopiedInstr(false);
-    setCopiedMcp(false);
-    setMcpClientId(null);
   }, []);
 
   const handleStart = async () => {
@@ -124,12 +118,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     if (await copyToClipboard(result.instructions)) {
       setCopiedInstr(true);
       setTimeout(() => setCopiedInstr(false), 1500);
-    }
-  };
-  const copyMcp = async (payload: string) => {
-    if (await copyToClipboard(payload)) {
-      setCopiedMcp(true);
-      setTimeout(() => setCopiedMcp(false), 1500);
     }
   };
 
@@ -312,69 +300,14 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   {result.instructions}
                 </div>
               </div>
-              {result.mcp_clients?.length ? (
-                <div>
-                  <p className="mb-xxs text-metadata font-semibold">Connect via MCP</p>
-                  <p className="mb-xs text-caption text-muted-foreground">
-                    Lower-friction alternative to the curl recipe — the read tools can be
-                    marked &ldquo;always allow&rdquo; so queries run without a prompt. Each
-                    client wants a different shape, so pick yours:
-                  </p>
-                  <Tabs
-                    value={mcpClientId ?? result.mcp_clients[0].id}
-                    onValueChange={setMcpClientId}
-                  >
-                    <TabsList className="mb-xs">
-                      {result.mcp_clients.map((c) => (
-                        <TabsTrigger key={c.id} value={c.id}>
-                          {c.label}
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                    {result.mcp_clients.map((client) => (
-                      <TabsContent key={client.id} value={client.id}>
-                        <div className="mb-xxs flex items-center justify-between gap-sm">
-                          <p className="min-w-0 truncate text-caption text-muted-foreground">
-                            {client.kind === 'file' ? (
-                              <>
-                                Save as{' '}
-                                <span className="font-mono">{client.path}</span>
-                              </>
-                            ) : (
-                              'Run this command'
-                            )}
-                          </p>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => copyMcp(client.payload)}
-                                aria-label={`Copy ${client.label} MCP setup`}
-                              >
-                                {copiedMcp ? (
-                                  <CheckCircle2 className="size-4 text-success" aria-hidden />
-                                ) : (
-                                  <Copy className="size-4" aria-hidden />
-                                )}
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {copiedMcp ? 'Copied!' : `Copy ${client.label} setup`}
-                            </TooltipContent>
-                          </Tooltip>
-                        </div>
-                        <div className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                          {client.payload}
-                        </div>
-                        <p className="mt-xxs text-caption text-muted-foreground">
-                          {client.hint}
-                        </p>
-                      </TabsContent>
-                    ))}
-                  </Tabs>
-                </div>
-              ) : null}
+              <McpConnectPanel
+                clients={result.mcp_clients ?? []}
+                blurb={
+                  'Lower-friction alternative to the curl recipe — the read tools can be ' +
+                  'marked “always allow” so queries run without a prompt. Each client wants ' +
+                  'a different shape, so pick yours:'
+                }
+              />
             </div>
           )}
         </DialogBody>

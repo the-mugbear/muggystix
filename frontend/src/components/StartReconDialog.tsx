@@ -33,6 +33,7 @@ import {
 } from './ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import InAppAgentPanel from './InAppAgentPanel';
+import McpConnectPanel from './McpConnectPanel';
 import type { useReconPlan } from '../hooks/useReconPlan';
 
 export interface StartReconDialogProps {
@@ -195,6 +196,14 @@ export const StartReconDialog: React.FC<StartReconDialogProps> = ({ recon }) => 
                   {recon.result.instructions}
                 </div>
               </div>
+              <McpConnectPanel
+                clients={recon.result.mcp_clients ?? []}
+                blurb={
+                  'Or connect this session to your MCP client — the recon tools appear ' +
+                  'natively instead of as curl recipes. Scanners still run on your machine: ' +
+                  'launch the client from the directory you want the output in.'
+                }
+              />
               <div>
                 <p className="mb-xxs text-metadata font-semibold">Run with In-App Agent</p>
                 <InAppAgentPanel

@@ -49,6 +49,7 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import InAppAgentPanel from '../components/InAppAgentPanel';
+import McpConnectPanel from '../components/McpConnectPanel';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -776,6 +777,15 @@ const TestPlans: React.FC = () => {
                   {genResult.instructions}
                 </div>
               </div>
+
+              <McpConnectPanel
+                clients={genResult.mcp_clients ?? []}
+                blurb={
+                  'Or connect this session to your MCP client — the planning tools appear ' +
+                  'natively instead of as curl recipes. Plan generation only reads and ' +
+                  'proposes; nothing runs until you approve the plan.'
+                }
+              />
 
               <div>
                 <p className="mb-xxs text-metadata font-semibold">Run with In-App Agent</p>

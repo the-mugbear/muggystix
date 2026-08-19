@@ -60,6 +60,7 @@ import {
   updateTestPlanMetadata,
 } from '../../services/api';
 import InAppAgentPanel from '../../components/InAppAgentPanel';
+import McpConnectPanel from '../../components/McpConnectPanel';
 import { NextStepBanner } from '../../components/NextStepBanner';
 import { DetailSkeleton } from '../../components/PageSkeleton';
 import { useAuth } from '../../contexts/AuthContext';
@@ -1483,6 +1484,15 @@ const TestPlanLayout: React.FC = () => {
                 </div>
               </div>
 
+              <McpConnectPanel
+                clients={executeResult.mcp_clients ?? []}
+                blurb={
+                  'Or connect this session to your MCP client — the execution tools appear ' +
+                  'natively instead of as curl recipes. The tests run on your machine, so ' +
+                  'launch the client from the directory the run should write into.'
+                }
+              />
+
               <div>
                 <p className="mb-xxs text-metadata font-semibold">Run with In-App Agent</p>
                 <InAppAgentPanel
@@ -1867,6 +1877,13 @@ const TestPlanLayout: React.FC = () => {
                   {resumeGenResult.instructions}
                 </div>
               </div>
+              <McpConnectPanel
+                clients={resumeGenResult.mcp_clients ?? []}
+                blurb={
+                  'The resumed session mints a fresh key, so an MCP client configured for ' +
+                  'the previous one needs this entry to replace it.'
+                }
+              />
             </div>
           )}
           </DialogBody>
