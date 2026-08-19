@@ -28,18 +28,49 @@ def _rpc(client, body, headers=None):
     return client.post("/api/v1/mcp", json=body, headers=headers or {})
 
 
-def test_start_session_emits_valid_mcp_config(client, test_project):
-    """The assist-start response carries a ready-to-paste MCP client config
-    pointing at /api/v1/mcp with this session's key."""
+def test_start_session_emits_per_client_mcp_setup(client, test_project):
+    """The assist-start response carries MCP setup in the shape each client
+    actually reads.
+
+    v2.269.0 — this used to be one `mcp_config` blob in VS Code's shape handed
+    to VS Code, Claude Code, and Cursor alike. The clients disagree: VS Code
+    wraps servers under `servers`, Claude Code and Cursor under `mcpServers`,
+    so two of the three silently ignored the server the dialog told the
+    operator to paste. This pins the wrapper key per client.
+    """
     import json
 
     body = _start_session(client, test_project.id)
     assert body["mcp_url"].endswith("/api/v1/mcp")
-    cfg = json.loads(body["mcp_config"])
-    server = cfg["servers"]["bluestick-assist"]
+    clients = {c["id"]: c for c in body["mcp_clients"]}
+    assert set(clients) == {"vscode", "claude_code", "cursor"}
+
+    # VS Code: `servers`, workspace-local file.
+    vscode = clients["vscode"]
+    assert vscode["kind"] == "file" and vscode["path"] == ".vscode/mcp.json"
+    server = json.loads(vscode["payload"])["servers"]["bluestick-assist"]
     assert server["type"] == "http"
     assert server["url"] == body["mcp_url"]
     assert server["headers"]["X-API-Key"] == body["api_key"]
+
+    # Cursor: same entry, DIFFERENT wrapper key.
+    cursor = clients["cursor"]
+    assert cursor["kind"] == "file" and cursor["path"] == ".cursor/mcp.json"
+    cursor_cfg = json.loads(cursor["payload"])
+    assert "servers" not in cursor_cfg, "Cursor reads mcpServers, not servers"
+    assert cursor_cfg["mcpServers"]["bluestick-assist"] == server
+
+    # Claude Code: a CLI command, not a file — `claude mcp add` writes the
+    # entry itself, so there is no wrapper key for the operator to get wrong.
+    cc = clients["claude_code"]
+    assert cc["kind"] == "command" and cc["path"] == ""
+    assert cc["payload"].startswith("claude mcp add --transport http bluestick-assist ")
+    assert body["mcp_url"] in cc["payload"]
+    assert f'--header "X-API-Key: {body["api_key"]}"' in cc["payload"]
+
+    # Every entry is renderable: label, hint, payload all present.
+    for c in body["mcp_clients"]:
+        assert c["label"] and c["hint"] and c["payload"]
 
 
 # ---------------------------------------------------------------------------

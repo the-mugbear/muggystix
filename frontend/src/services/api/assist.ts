@@ -6,6 +6,17 @@
  */
 import { api, p } from './client';
 
+export interface McpClientSetup {
+  id: string;
+  /** Client name as the operator knows it — the tab label. */
+  label: string;
+  /** 'file' → `payload` is JSON to save at `path`; 'command' → a shell command to run. */
+  kind: 'file' | 'command';
+  path: string;
+  payload: string;
+  hint: string;
+}
+
 export interface StartAssistResponse {
   assist_session_id: number;
   project_id: number;
@@ -13,10 +24,10 @@ export interface StartAssistResponse {
   agent_id: number;
   api_key: string;
   instructions: string;
-  // Ready-to-paste MCP client config (VS Code Copilot / Claude Code / Cursor)
-  // pointing an agent at the /api/v1/mcp endpoint with this session's key — the
-  // lower-friction alternative to driving the curl recipe by hand.
-  mcp_config: string;
+  // Per-client MCP setup. Not one blob: VS Code wraps servers under `servers`
+  // while Claude Code and Cursor use `mcpServers`, and each wants the file in a
+  // different place — so the backend emits the shape each host actually reads.
+  mcp_clients: McpClientSetup[];
   mcp_url: string;
   // v2.65.0 — resolved at mint time; dialog reads this instead of
   // hardcoding "4 h" so an env override (or future ASSIST_KEY_TTL

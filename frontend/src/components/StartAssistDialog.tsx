@@ -34,6 +34,7 @@ import {
 } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { startAssistSession, type AssistSessionRow, type StartAssistResponse } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
@@ -67,6 +68,9 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedInstr, setCopiedInstr] = useState(false);
   const [copiedMcp, setCopiedMcp] = useState(false);
+  // Which client's setup is shown. Defaults to the first the API returns;
+  // the operator's choice survives re-renders but resets with the dialog.
+  const [mcpClientId, setMcpClientId] = useState<string | null>(null);
 
   const reset = useCallback(() => {
     setPurpose('');
@@ -78,6 +82,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     setCopiedKey(false);
     setCopiedInstr(false);
     setCopiedMcp(false);
+    setMcpClientId(null);
   }, []);
 
   const handleStart = async () => {
@@ -121,9 +126,8 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
       setTimeout(() => setCopiedInstr(false), 1500);
     }
   };
-  const copyMcp = async () => {
-    if (!result) return;
-    if (await copyToClipboard(result.mcp_config)) {
+  const copyMcp = async (payload: string) => {
+    if (await copyToClipboard(payload)) {
       setCopiedMcp(true);
       setTimeout(() => setCopiedMcp(false), 1500);
     }
@@ -308,41 +312,67 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   {result.instructions}
                 </div>
               </div>
-              {result.mcp_config ? (
+              {result.mcp_clients?.length ? (
                 <div>
-                  <div className="mb-xxs flex items-center justify-between gap-sm">
-                    <p className="min-w-0 text-metadata font-semibold">
-                      Connect via MCP (Copilot / Claude Code / Cursor)
-                    </p>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={copyMcp}
-                          aria-label="Copy MCP configuration"
-                        >
-                          {copiedMcp ? (
-                            <CheckCircle2 className="size-4 text-success" aria-hidden />
-                          ) : (
-                            <Copy className="size-4" aria-hidden />
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {copiedMcp ? 'Copied!' : 'Copy MCP config'}
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <p className="mb-xxs text-caption text-muted-foreground">
-                    Lower-friction alternative to the curl recipe: paste this into your
-                    agent&rsquo;s MCP config (VS Code{' '}
-                    <span className="font-mono">.vscode/mcp.json</span>), then mark the
-                    read tools &ldquo;always allow&rdquo; so queries run without a prompt.
+                  <p className="mb-xxs text-metadata font-semibold">Connect via MCP</p>
+                  <p className="mb-xs text-caption text-muted-foreground">
+                    Lower-friction alternative to the curl recipe — the read tools can be
+                    marked &ldquo;always allow&rdquo; so queries run without a prompt. Each
+                    client wants a different shape, so pick yours:
                   </p>
-                  <div className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                    {result.mcp_config}
-                  </div>
+                  <Tabs
+                    value={mcpClientId ?? result.mcp_clients[0].id}
+                    onValueChange={setMcpClientId}
+                  >
+                    <TabsList className="mb-xs">
+                      {result.mcp_clients.map((c) => (
+                        <TabsTrigger key={c.id} value={c.id}>
+                          {c.label}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
+                    {result.mcp_clients.map((client) => (
+                      <TabsContent key={client.id} value={client.id}>
+                        <div className="mb-xxs flex items-center justify-between gap-sm">
+                          <p className="min-w-0 truncate text-caption text-muted-foreground">
+                            {client.kind === 'file' ? (
+                              <>
+                                Save as{' '}
+                                <span className="font-mono">{client.path}</span>
+                              </>
+                            ) : (
+                              'Run this command'
+                            )}
+                          </p>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => copyMcp(client.payload)}
+                                aria-label={`Copy ${client.label} MCP setup`}
+                              >
+                                {copiedMcp ? (
+                                  <CheckCircle2 className="size-4 text-success" aria-hidden />
+                                ) : (
+                                  <Copy className="size-4" aria-hidden />
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {copiedMcp ? 'Copied!' : `Copy ${client.label} setup`}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                        <div className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control border border-border bg-accent p-sm font-mono text-caption">
+                          {client.payload}
+                        </div>
+                        <p className="mt-xxs text-caption text-muted-foreground">
+                          {client.hint}
+                        </p>
+                      </TabsContent>
+                    ))}
+                  </Tabs>
                 </div>
               ) : null}
             </div>

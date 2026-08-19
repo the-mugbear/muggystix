@@ -50,7 +50,6 @@ from app.services.agent_prompt_service import build_assist_instructions, resolve
 
 router = APIRouter()
 
-
 # Assist keys are issued with a deliberately shorter TTL than the
 # default agent-key (24h).  Assist sessions are conversational; an
 # operator who hasn't pinged the API in 4h has either finished or
@@ -106,6 +105,79 @@ class StartAssistRequest(BaseModel):
     )
 
 
+class McpClientSetup(BaseModel):
+    """How one MCP-capable host connects to this session's /api/v1/mcp endpoint.
+
+    v2.269.0 — this used to be a single `mcp_config` string in VS Code's shape,
+    handed to operators on VS Code, Claude Code, AND Cursor alike.  The clients
+    do not agree: VS Code's `.vscode/mcp.json` wraps servers under `servers`,
+    while Claude Code and Cursor use `mcpServers` — so two of the three named
+    hosts silently ignored the server the dialog told the operator to paste.
+    The file path differs per client too, which is why `path` is part of the
+    payload rather than something the dialog hardcodes.
+    """
+
+    id: str
+    # Client name as the operator knows it, for the dialog's tab.
+    label: str
+    # "file"    -> `payload` is JSON to write at `path`
+    # "command" -> `payload` is a shell command to run; `path` is empty
+    kind: str
+    path: str
+    payload: str
+    # One line under the payload: what to do with it.
+    hint: str
+
+
+# --- MCP client setup -------------------------------------------------------
+# The wrapper key differs by host and the file path differs by host, so a single
+# blob can't serve all three.  Claude Code gets its CLI instead of a file: `claude
+# mcp add` writes the entry itself, which is fewer steps than editing JSON and
+# can't be pasted into the wrong place.
+_MCP_SERVER_NAME = "bluestick-assist"
+
+
+def _mcp_server_entry(mcp_url: str, raw_key: str) -> dict:
+    return {
+        "type": "http",
+        "url": mcp_url,
+        "headers": {"X-API-Key": raw_key},
+    }
+
+
+def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
+    entry = {_MCP_SERVER_NAME: _mcp_server_entry(mcp_url, raw_key)}
+    return [
+        McpClientSetup(
+            id="vscode",
+            label="VS Code Copilot",
+            kind="file",
+            path=".vscode/mcp.json",
+            payload=json.dumps({"servers": entry}, indent=2),
+            hint="Save as .vscode/mcp.json in your workspace, then start the server from the Copilot MCP panel.",
+        ),
+        McpClientSetup(
+            id="claude_code",
+            label="Claude Code",
+            kind="command",
+            path="",
+            payload=(
+                f"claude mcp add --transport http {_MCP_SERVER_NAME} {mcp_url} "
+                f'--header "X-API-Key: {raw_key}"'
+            ),
+            hint="Run in your project directory. Add -s project to share it via .mcp.json, or -s user for every project.",
+        ),
+        McpClientSetup(
+            id="cursor",
+            label="Cursor",
+            kind="file",
+            path=".cursor/mcp.json",
+            payload=json.dumps({"mcpServers": entry}, indent=2),
+            hint="Save as .cursor/mcp.json in your project (or ~/.cursor/mcp.json for every project).",
+        ),
+    ]
+
+
 class StartAssistResponse(BaseModel):
     assist_session_id: int
     project_id: int
@@ -113,10 +185,9 @@ class StartAssistResponse(BaseModel):
     agent_id: int
     api_key: str
     instructions: str
-    # Ready-to-paste MCP client config (VS Code Copilot / Claude Code / Cursor
-    # all read this shape) pointing an agent at the /api/v1/mcp endpoint with
-    # this session's key — the lower-friction alternative to the curl recipe.
-    mcp_config: str
+    # Per-client MCP setup, in the shape each host actually reads — see
+    # McpClientSetup.  The lower-friction alternative to the curl recipe.
+    mcp_clients: List[McpClientSetup] = []
     mcp_url: str
     # What the session may do beyond reading, so the dialog can state it back
     # to the operator rather than assuming its own checkbox took effect.
@@ -329,18 +400,7 @@ def start_assist_session(
     # MCP connection details. resolve_base_url returns ".../api/v1"; the MCP
     # transport is mounted at /api/v1/mcp, so the endpoint is base_url + "/mcp".
     mcp_url = f"{resolve_base_url(request)}/mcp"
-    mcp_config = json.dumps(
-        {
-            "servers": {
-                "bluestick-assist": {
-                    "type": "http",
-                    "url": mcp_url,
-                    "headers": {"X-API-Key": raw_key},
-                }
-            }
-        },
-        indent=2,
-    )
+    mcp_clients = _build_mcp_clients(mcp_url, raw_key)
 
     return StartAssistResponse(
         assist_session_id=assist_session.id,
@@ -349,7 +409,7 @@ def start_assist_session(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
-        mcp_config=mcp_config,
+        mcp_clients=mcp_clients,
         mcp_url=mcp_url,
         capabilities=capabilities,
         capability_constraint=constraint,
