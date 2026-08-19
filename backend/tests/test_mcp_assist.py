@@ -857,21 +857,21 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
 
 
 def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):
-    """Capability filtering is server-initiated plumbing on an audited endpoint,
-    so a client that re-lists tools each turn used to add a /assist/session row
-    to the operator's activity view every time (3 of 7 rows in the 2.273.0
-    end-to-end run were these). Cached for the session's benefit, not ours."""
-    from app.api.v1.endpoints.mcp_assist import _capability_cache
+    """Workflow + capability filtering is server-initiated plumbing on an audited
+    endpoint, so a client that re-lists tools each turn used to add a row to the
+    operator's activity view every time (3 of 7 rows in the 2.273.0 end-to-end
+    run were these). Cached for the session's benefit, not ours."""
+    from app.api.v1.endpoints.mcp_assist import _identity_cache
     from app.db.models_agent import AgentApiCall
 
-    _capability_cache.clear()
+    _identity_cache.clear()
     body = _start_session(client, test_project.id)
     headers = {"X-API-Key": body["api_key"]}
 
     def session_rows():
         return (
             db_session.query(AgentApiCall)
-            .filter(AgentApiCall.path == "/api/v1/agent/assist/session")
+            .filter(AgentApiCall.path == "/api/v1/agent/identity")
             .count()
         )
 

@@ -338,6 +338,10 @@ def get_current_agent(
     request.state.agent_project_id = agent.project_id
     request.state.api_key_id = api_key_obj.id
     request.state.api_key_prefix = api_key_obj.key_prefix
+    # Surfaced by /agent/identity so a long-running agent can see its own TTL
+    # instead of discovering it as a mid-run 401.  Read-only signal — the
+    # expiry check itself already happened above.
+    request.state.key_expires_at = api_key_obj.expires_at
 
     # v2.26.0 — debounce last_used / last_activity_at writes.
     # Previously every authenticated agent request triggered an

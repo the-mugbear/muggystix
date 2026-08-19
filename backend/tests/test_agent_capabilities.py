@@ -93,6 +93,14 @@ ASSIST_PERMITTED_WRITES = {
     # Agent feedback about the prompt itself; `source` is forced to "assist"
     # and agent_id/project_id come from the key, not the payload.
     ("POST", "/api/v1/agent/feedback"),
+    # Records "I wanted a tool you don't approve" (v2.278.0).  Deliberately
+    # ungated: the row lands as `suggested`, which no approval rule reads, so it
+    # grants nothing — and gating it would silence exactly the sessions most
+    # likely to hit the edge of the approved set, which is the one thing this
+    # route exists to capture.  Attribution comes from the key, and the stored
+    # rationale is length-capped so repeat asks can't grow a column without
+    # bound.
+    ("POST", "/api/v1/agent/tool-suggestions"),
 }
 
 

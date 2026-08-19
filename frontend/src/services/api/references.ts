@@ -111,6 +111,9 @@ export interface McpToolDoc {
   capability: string | null;
   method: string;
   path: string;
+  /** Which key workflows see this tool in `tools/list` — a session only ever
+   *  gets its own workflow's tools, so the page has to say which is which. */
+  workflows: string[];
   input_schema: {
     type: string;
     properties?: Record<string, { type?: string; description?: string; enum?: string[] }>;

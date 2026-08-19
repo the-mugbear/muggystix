@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "tool_registry_seed.json"
 
+# Ceiling on the accumulated rationale for one suggested tool.  Roughly a dozen
+# max-length asks — far more than a reviewer will read, far less than an
+# unbounded column.
+_MAX_RATIONALE_CHARS = 20_000
+
 
 def load_seed() -> List[Dict[str, Any]]:
     if not SEED_PATH.exists():  # pragma: no cover - packaging guard
@@ -101,7 +106,15 @@ def record_suggestion(
         if entry.status == TOOL_SUGGESTED and rationale:
             prior = entry.suggested_rationale or ""
             if rationale not in prior:
-                entry.suggested_rationale = f"{prior}\n---\n{rationale}".strip()
+                merged = f"{prior}\n---\n{rationale}".strip()
+                # Bounded: the ask is agent-supplied and the route that reaches
+                # here is ungated by design, so an unbounded append is a text
+                # column any authenticated agent could grow forever.  Keep the
+                # most recent asks — a reviewer reads the latest demand, and the
+                # earliest one is already reflected in the row existing at all.
+                if len(merged) > _MAX_RATIONALE_CHARS:
+                    merged = merged[-_MAX_RATIONALE_CHARS:]
+                entry.suggested_rationale = merged
                 db.commit()
         return entry
 

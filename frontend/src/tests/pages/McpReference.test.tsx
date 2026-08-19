@@ -35,6 +35,7 @@ const catalog = (): McpCatalog => ({
       capability: null,
       method: 'GET',
       path: '/api/v1/agent/assist/hosts',
+      workflows: ['assist'],
       input_schema: { type: 'object', properties: { q: { type: 'string' } }, required: [] },
     },
     {
@@ -44,10 +45,35 @@ const catalog = (): McpCatalog => ({
       capability: 'write:notes',
       method: 'POST',
       path: '/api/v1/agent/hosts/{host_id}/notes',
+      workflows: ['assist'],
       input_schema: {
         type: 'object',
         properties: { host_id: { type: 'integer' }, body: { type: 'string' } },
         required: ['host_id', 'body'],
+      },
+    },
+    {
+      name: 'plan_submit',
+      description: 'Submit the draft for human approval.',
+      kind: 'write',
+      capability: null,
+      method: 'POST',
+      path: '/api/v1/agent/test-plans/{plan_id}/submit',
+      workflows: ['plan_generation'],
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'suggest_tool',
+      description: "Ask for a tool that isn't approved yet.",
+      kind: 'write',
+      capability: null,
+      method: 'POST',
+      path: '/api/v1/agent/tool-suggestions',
+      workflows: ['assist', 'plan_generation', 'execution', 'recon'],
+      input_schema: {
+        type: 'object',
+        properties: { name: { type: 'string' }, rationale: { type: 'string' } },
+        required: ['name', 'rationale'],
       },
     },
   ],
@@ -80,6 +106,23 @@ describe('McpReference', () => {
     // Required params are marked; optional ones are not.
     expect(screen.getByTitle('host_id (required)')).toBeInTheDocument();
     expect(screen.getByTitle('q')).toBeInTheDocument();
+  });
+
+  it('groups tools by the workflow whose key gets them', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
+
+    // A session only ever sees its own workflow's tools, so the page has to
+    // answer "will my agent get this one?" — a flat read/write split can't.
+    expect(screen.getByRole('heading', { name: 'Assist' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Plan generation' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Every workflow' })).toBeInTheDocument();
+    // Workflows with no tools in this catalog aren't advertised as empty.
+    expect(screen.queryByRole('heading', { name: 'Reconnaissance' })).not.toBeInTheDocument();
+
+    // The cross-workflow tool is filed once, under "Every workflow" — not
+    // repeated into each of the four groups it belongs to.
+    expect(screen.getAllByText('suggest_tool')).toHaveLength(1);
   });
 
   it('shows the transport facts the server reported', async () => {

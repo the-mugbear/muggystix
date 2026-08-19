@@ -91,7 +91,43 @@ const CAPABILITY_LABEL: Record<string, string> = {
   'write:notes': 'write:notes',
   'write:follow': 'write:follow',
   'write:host': 'write:host',
+  'write:execution': 'write:execution',
 };
+
+/** The workflow a key belongs to decides which tools it is offered. Order
+ *  follows the engagement: recon feeds planning, planning feeds execution. */
+const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
+  {
+    key: 'recon',
+    label: 'Reconnaissance',
+    blurb:
+      'Populates host data from scanners run on your machine. Bulk uploads and target-file downloads stay curl — see below.',
+  },
+  {
+    key: 'plan_generation',
+    label: 'Plan generation',
+    blurb:
+      'Proposes tests against what recon found, then hands the draft to a human. Nothing here runs anything.',
+  },
+  {
+    key: 'execution',
+    label: 'Execution',
+    blurb:
+      'Works an approved plan and records what each test produced. The commands run on your machine, under your client’s sandbox.',
+  },
+  {
+    key: 'assist',
+    label: 'Assist',
+    blurb:
+      'Interactive read over the existing inventory, plus the three writes an operator can grant.',
+  },
+  {
+    key: 'shared',
+    label: 'Every workflow',
+    blurb:
+      'Offered to every session: what am I, and how do I ask for a tool you don’t approve.',
+  },
+];
 
 const formatBytes = (bytes: number): string =>
   bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MiB` : `${Math.round(bytes / 1024)} KiB`;
@@ -157,12 +193,19 @@ const McpReference: React.FC = () => {
     };
   }, []);
 
-  const { reads, writes } = useMemo(() => {
+  // Grouped by workflow rather than read/write (v5.168.0). A session sees only
+  // its own workflow's tools, so "which of these will my agent actually get?"
+  // is the first question the table has to answer; read-vs-write is a per-row
+  // property and shows as a badge.
+  const groups = useMemo(() => {
     const tools = catalog?.tools ?? [];
-    return {
-      reads: tools.filter((t) => t.kind === 'read'),
-      writes: tools.filter((t) => t.kind === 'write'),
-    };
+    const shared = tools.filter((t) => t.workflows?.length >= 4);
+    const byWorkflow = (wf: string) =>
+      tools.filter((t) => t.workflows?.includes(wf) && !shared.includes(t));
+    return WORKFLOW_GROUPS.map((g) => ({
+      ...g,
+      tools: g.key === 'shared' ? shared : byWorkflow(g.key),
+    })).filter((g) => g.tools.length > 0);
   }, [catalog]);
 
   // The endpoint is server-resolved; fall back to a relative path so the
@@ -189,11 +232,16 @@ const McpReference: React.FC = () => {
                 <p className="truncate font-mono text-caption font-semibold" title={tool.name}>
                   {tool.name}
                 </p>
-                {tool.capability ? (
-                  <Badge variant="outline" className="mt-xxs">
-                    {CAPABILITY_LABEL[tool.capability] ?? tool.capability}
+                <div className="mt-xxs flex flex-wrap gap-xxs">
+                  <Badge variant={tool.kind === 'read' ? 'secondary' : 'warning'}>
+                    {tool.kind}
                   </Badge>
-                ) : null}
+                  {tool.capability ? (
+                    <Badge variant="outline" className="max-w-full truncate">
+                      {CAPABILITY_LABEL[tool.capability] ?? tool.capability}
+                    </Badge>
+                  ) : null}
+                </div>
               </div>
             </TableCell>
             <TableCell className="align-top">
@@ -381,7 +429,10 @@ const McpReference: React.FC = () => {
       <h2 className="text-section-title">Available tools</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
         Read live from this deployment&rsquo;s server registry, so it always matches what your
-        agent will see from <span className="font-mono">tools/list</span>. Required parameters are
+        agent will see from <span className="font-mono">tools/list</span>.{' '}
+        <strong className="text-foreground">A session is offered only its own workflow&rsquo;s
+        tools</strong> — the key you connect with decides the group, and there is no key that spans
+        them. Required parameters are
         marked <span className="font-mono">*</span>. Every tool carries MCP annotations
         (<span className="font-mono">readOnlyHint</span> and friends) so a client can offer
         &ldquo;always allow&rdquo; on the reads without you classifying them by hand, and results
@@ -402,29 +453,21 @@ const McpReference: React.FC = () => {
         </Alert>
       ) : (
         <>
-          <div className="mb-md">
-            <div className="mb-xxs flex items-center gap-xs">
-              <Radio className="size-4 text-info" aria-hidden />
-              <h3 className="text-metadata font-semibold">Reads</h3>
-              <Badge variant="secondary">{reads.length}</Badge>
-              <span className="text-caption text-muted-foreground">
-                Available to every assist session. Safe to mark &ldquo;always allow&rdquo;.
-              </span>
+          {groups.map((group) => (
+            <div key={group.key} className="mb-lg">
+              <div className="mb-xxs flex flex-wrap items-center gap-xs">
+                {group.key === 'shared' ? (
+                  <Radio className="size-4 text-info" aria-hidden />
+                ) : (
+                  <Lock className="size-4 text-warning" aria-hidden />
+                )}
+                <h3 className="text-metadata font-semibold">{group.label}</h3>
+                <Badge variant="secondary">{group.tools.length}</Badge>
+              </div>
+              <p className="mb-xs max-w-4xl text-caption text-muted-foreground">{group.blurb}</p>
+              <div className="overflow-x-auto">{toolRows(group.tools)}</div>
             </div>
-            <div className="overflow-x-auto">{toolRows(reads)}</div>
-          </div>
-
-          <div className="mb-lg">
-            <div className="mb-xxs flex items-center gap-xs">
-              <Lock className="size-4 text-warning" aria-hidden />
-              <h3 className="text-metadata font-semibold">Writes</h3>
-              <Badge variant="secondary">{writes.length}</Badge>
-              <span className="text-caption text-muted-foreground">
-                Refused unless the session was granted the matching capability.
-              </span>
-            </div>
-            <div className="overflow-x-auto">{toolRows(writes)}</div>
-          </div>
+          ))}
         </>
       )}
 

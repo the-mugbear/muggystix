@@ -252,6 +252,75 @@ class ProjectInfo(BaseModel):
     agent_name: Optional[str] = None
 
 
+class AgentIdentityOperator(BaseModel):
+    id: int
+    username: Optional[str] = None
+
+
+class AgentIdentity(BaseModel):
+    """What this API key is, answerable by *any* agent key.
+
+    Every other self-introspection endpoint is behind a workflow gate
+    (``/agent/assist/session`` needs an assist key, planning context needs a
+    plan key), so a caller holding an unknown key could only discover what it
+    was by trying surfaces until one stopped returning 403.  That is fine for a
+    human with the UI open and useless for a client that has to decide, before
+    its first call, which tools to even offer — which is exactly what the MCP
+    server does at ``tools/list`` time.
+    """
+    # The fine-grained workflow (plan_generation / execution / recon / assist).
+    # None for a legacy unscoped global key.
+    workflow: Optional[str] = None
+    # The coarse family the auth guards actually branch on — plan_generation
+    # and execution collapse to "plan" there, and a caller reasoning about
+    # which endpoints it may reach needs the same collapse.
+    workflow_family: Optional[str] = None
+    session_id: Optional[int] = None
+    # The id this workflow's own URLs are keyed by — ExecutionSession /
+    # ReconSession / AssistSession, which are separate rows from the unified
+    # AgentSession above.  Without it a caller that knows its session_id would
+    # still guess wrong on POST /agent/recon/sessions/{id}/environment; None for
+    # plan_generation, which has no per-workflow session row.
+    workflow_session_id: Optional[int] = None
+    plan_id: Optional[int] = None
+    scope_id: Optional[int] = None
+    project_id: int
+    project_name: Optional[str] = None
+    agent_id: int
+    agent_name: Optional[str] = None
+    # Writes only — read is implicit for every authenticated key.
+    capabilities: List[str] = Field(default_factory=list)
+    capability_constraint: Optional[str] = None
+    operator: Optional[AgentIdentityOperator] = None
+    environment_probed: bool = False
+    # Agent keys are short-lived (24h for plan keys). An agent that knows when
+    # its credential dies can finish or hand back cleanly instead of failing
+    # mid-run on a 401 it has no way to anticipate.
+    key_expires_at: Optional[datetime] = None
+
+
+class AgentToolSuggestionRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    rationale: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="What you needed it for and why the approved set doesn't cover it.",
+    )
+    category: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = Field(None, max_length=2000)
+
+
+class AgentToolSuggestionResponse(BaseModel):
+    name: str
+    status: str
+    # True when the "suggestion" turns out to name a tool the agent already has.
+    # Saying so beats returning a bare 201 the agent reads as "wait for a human"
+    # while the tool sits in its own approved list.
+    already_approved: bool = False
+    message: str
+
+
 class AgentDashboard(BaseModel):
     host_count: int
     up_host_count: int

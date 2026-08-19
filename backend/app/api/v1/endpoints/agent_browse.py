@@ -28,20 +28,33 @@ from sqlalchemy.orm import Session, joinedload
 from app.db.session import get_db
 from app.db import models
 from app.db.models import NoteStatus, FollowStatus
-from app.db.models_agent import ActorType, Agent, AgentCapability
+from app.db.models_agent import (
+    ActorType,
+    Agent,
+    AgentCapability,
+    AgentSession,
+    AssistSession,
+    ExecutionSession,
+    ReconSession,
+)
+from app.db.models_auth import User
 from app.db.models_project import Project
 from app.api.deps import (
     check_agent_rate_limit,
     enforce_capability_row_scope,
     require_capability,
 )
+from app.db.models_tools import TOOL_APPROVED
 from app.services.host_follow_service import HostFollowService
+from app.services.tool_registry_service import record_suggestion
 
 from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
     ScanBrief, ScopeBrief, ProjectInfo, AgentDashboard,
+    AgentIdentity, AgentIdentityOperator,
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest,
     AgentHostUpdate, AgentHostUpdateResponse,
+    AgentToolSuggestionRequest, AgentToolSuggestionResponse,
 )
 from app.api.v1.endpoints.agent_common import (
     _scoped_host_ids_subq, _scoped_scan_ids_subq,
@@ -115,6 +128,151 @@ def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
 # ---------------------------------------------------------------------------
 # Data-read endpoints
 # ---------------------------------------------------------------------------
+
+def _workflow_session_id(db: Session, request: Request, session) -> Optional[int]:
+    """The per-workflow session row's id, which is what that workflow's URLs use.
+
+    ``AgentSession`` unified the *binding*; the workflow tables it points at were
+    kept (composition, not inheritance), so `/agent/recon/sessions/{id}/…` and
+    `/agent/execution-sessions/{id}/…` are keyed by ReconSession / ExecutionSession
+    ids — different numbers from the AgentSession id a key resolves to. Returning
+    both is the difference between a caller filling that path itself and getting
+    a 404 it can't diagnose.
+    """
+    if session is not None:
+        model = {
+            "assist": AssistSession,
+            "recon": ReconSession,
+            "execution": ExecutionSession,
+        }.get(session.workflow)
+        if model is not None:
+            found = (
+                db.query(model.id)
+                .filter(model.agent_session_id == session.id)
+                .scalar()
+            )
+            if found is not None:
+                return found
+    # Legacy keys minted before the unified binding carry the id on the key row
+    # itself. plan_generation has no per-workflow session at all — None is the
+    # honest answer there, not a fallback to something unrelated.
+    return getattr(request.state, "scoped_assist_session_id", None) or getattr(
+        request.state, "scoped_recon_session_id", None
+    )
+
+
+@router.get("/identity", response_model=AgentIdentity, summary="What this API key is")
+def get_agent_identity(
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Self-introspection for *any* agent key, whatever workflow it belongs to.
+
+    Deliberately not behind a workflow guard — that is the whole point.  Every
+    other introspection route requires the workflow it describes, so a caller
+    holding a key of unknown provenance can only classify it by trying surfaces
+    until one stops returning 403.  A client that must decide *before its first
+    call* which tools to offer (the MCP server, at ``tools/list``) cannot work
+    that way, and probing with real calls would write audit noise into whichever
+    surface it guessed wrong.
+
+    It discloses nothing the key can't already reach: the bound project and
+    session are what every other call is scoped to, and the capability list is
+    what the key's own writes would reveal one 403 at a time.
+    """
+    # No legacy-hit log here: unlike the browse routes below, this one is
+    # meant to be called by every workflow, so an unscoped caller is not a
+    # deprecation signal.
+    workflow_family = getattr(request.state, "key_workflow", None)
+    session_id = getattr(request.state, "agent_session_id", None)
+    session = (
+        db.query(AgentSession).filter(AgentSession.id == session_id).first()
+        if session_id is not None
+        else None
+    )
+
+    operator_id = getattr(request.state, "key_operator_id", None)
+    operator = None
+    if operator_id is not None:
+        operator = AgentIdentityOperator(
+            id=operator_id,
+            username=db.query(User.username).filter(User.id == operator_id).scalar(),
+        )
+
+    return AgentIdentity(
+        # Fall back to the coarse family for a legacy key with no session row —
+        # it is the most specific thing that is still true.
+        workflow=(session.workflow if session is not None else workflow_family),
+        workflow_family=workflow_family,
+        session_id=session_id,
+        workflow_session_id=_workflow_session_id(db, request, session),
+        plan_id=getattr(request.state, "key_plan_id", None),
+        scope_id=getattr(request.state, "scoped_scope_id", None),
+        project_id=agent.project_id,
+        project_name=(
+            db.query(Project.name).filter(Project.id == agent.project_id).scalar()
+        ),
+        agent_id=agent.id,
+        agent_name=agent.name,
+        capabilities=sorted(getattr(request.state, "key_capabilities", None) or []),
+        capability_constraint=getattr(request.state, "key_capability_constraint", None),
+        operator=operator,
+        environment_probed=(
+            session is not None and session.environment_probed_at is not None
+        ),
+        key_expires_at=getattr(request.state, "key_expires_at", None),
+    )
+
+
+@router.post(
+    "/tool-suggestions",
+    response_model=AgentToolSuggestionResponse,
+    status_code=201,
+    summary="Suggest a tool BlueStick doesn't approve yet",
+)
+def suggest_tool(
+    body: AgentToolSuggestionRequest,
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Record an agent asking for a tool outside the approved set.
+
+    Open to every workflow and gated by no capability, deliberately: the whole
+    value is that an agent which hits the edge of the approved set *says so*
+    rather than silently substituting something, and a capability gate would
+    mean the sessions most likely to hit that edge are the ones that can't
+    report it.  It grants nothing — the row lands as ``suggested``, which no
+    approval rule reads, and a human decides.
+
+    Recording it is the point: without this, the only trace of "the approved
+    set was missing something" is a test that didn't happen.
+    """
+    entry = record_suggestion(
+        db,
+        name=body.name.strip(),
+        rationale=body.rationale.strip(),
+        agent_id=agent.id,
+        project_id=agent.project_id,
+        description=body.description,
+        category=body.category,
+    )
+    already_approved = entry.status == TOOL_APPROVED
+    return AgentToolSuggestionResponse(
+        name=entry.name,
+        status=entry.status,
+        already_approved=already_approved,
+        message=(
+            f"{entry.name} is already approved — you may use it."
+            if already_approved
+            else (
+                f"Recorded. {entry.name} is NOT approved yet: do not run it. "
+                "A human reviews suggestions; use an approved tool for now."
+            )
+        ),
+    )
+
 
 @router.get("/project", response_model=ProjectInfo, summary="Get project metadata")
 def get_project_info(

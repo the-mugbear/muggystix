@@ -24,10 +24,16 @@ decide.
 
 What it exposes
 ---------------
-A tool per interactive assist endpoint (reads + the three capability-gated
-writes).  The bulk ``report-context.ndjson`` stream is deliberately *not* a tool
-— it is meant to be downloaded to a file, not materialised into the model's
-context — so we point at it in the server ``instructions`` instead.
+A tool per interactive endpoint across all four agent workflows — assist,
+reconnaissance, plan generation, execution (v2.278.0; it was assist-only
+before).  ``tools/list`` shows the caller's own workflow, resolved from their
+key: three separate entry points the operator starts deliberately, not one
+merged surface.  The bulk, file-shaped endpoints (``report-context.ndjson``,
+the recon target lists, ``recon/upload``) are deliberately *not* tools — they
+are meant to move between disk and the server, not through a model's context —
+so the server ``instructions`` point at them with curl instead.
+
+The registry itself lives in ``mcp_tools.py``; this module is the transport.
 
 Auth model
 ----------
@@ -65,6 +71,11 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 
+from app.api.v1.endpoints.mcp_tools import (
+    TOOLS,
+    advertised_schema,
+    tool_list_payload,
+)
 from app.services import mcp_telemetry_service as mcp_telemetry
 from app.services.agent_prompt_service import resolve_base_url
 
@@ -116,317 +127,43 @@ def _server_instructions(base_url: str) -> str:
     every client was handed an unusable URL.
     """
     return (
-        "BlueStick AI-Assist. Use these tools to read the project's hosts, findings, "
-        "scopes and scans, and (when your key was granted write access) to add notes, "
-        "set a host's review status, or correct a host's hostname/OS. All calls are "
-        "audited and scoped to the assist session your key belongs to.\n\n"
-        "To write a report over MANY hosts, do NOT page the tools — download the full "
-        "per-host dossier stream to a file instead: "
-        f"GET {base_url}/agent/assist/report-context.ndjson with your X-API-Key "
-        "header (one JSON object per host, uncapped), then read the file locally. "
-        "The tools are for targeted lookups and writes."
+        "BlueStick. Your API key belongs to exactly one workflow, and the tools you "
+        "can see are that workflow's — call agent_identity if you are unsure which. "
+        "Reconnaissance populates host data from scanners run on this machine; plan "
+        "generation proposes tests a human then approves; execution works an approved "
+        "plan; assist is interactive read (plus writes, when granted) over what is "
+        "already there. Each is a separate session the operator starts deliberately: "
+        "there is no key that does all four, and no tool here escalates to another "
+        "workflow. All calls are audited.\n\n"
+        "Run tools on hosts that are in the project's inventory, using tools "
+        "BlueStick has approved (see /reference/tools), and write output into the "
+        "directory the session is working in. Anything that reads or writes outside "
+        "that directory, or changes machine settings, is for the operator to approve "
+        "in your client — not something to do quietly. If you need a tool that is not "
+        "approved, call suggest_tool with your reasoning instead of substituting one.\n\n"
+        "Bulk data is file-shaped and deliberately not a tool — fetch it with curl "
+        "and your X-API-Key header, then read the file locally:\n"
+        f"  report over many hosts: GET {base_url}/agent/assist/report-context.ndjson\n"
+        f"  recon target list:      GET {base_url}/agent/recon/live-hosts.txt\n"
+        f"  recon web targets:      GET {base_url}/agent/recon/web-targets.txt\n"
+        f"  recon full host dump:   GET {base_url}/agent/recon/hosts.ndjson\n"
+        f"  upload scanner output:  POST {base_url}/agent/recon/upload (multipart file)\n"
+        "The tools are for targeted lookups and for recording what you did."
     )
 
-# ---------------------------------------------------------------------------
-# Tool registry — declarative map from MCP tool -> loopback HTTP call.
-#
-# Each entry:
-#   description  : shown to the model in tools/list
-#   method       : HTTP verb of the underlying endpoint
-#   path         : loopback path; ``{name}`` placeholders filled from path_params
-#   path_params  : argument names substituted into the path
-#   query_params : argument names sent as querystring (GET filters/pagination)
-#   body_params  : argument names sent in the JSON body (writes)
-#   input_schema : JSON Schema advertised to the client
-#   capability   : the write capability the underlying endpoint requires (docs only)
-# ---------------------------------------------------------------------------
-
-_HOST_ID_PROP = {
-    "host_id": {
-        "type": "integer",
-        "minimum": 1,
-        "description": "Numeric host id (from assist_list_hosts).",
-    }
-}
-
-_TOOLS: Dict[str, Dict[str, Any]] = {
-    "assist_get_context": {
-        "description": (
-            "Project orientation for this assist session: host/port/scope/scan "
-            "totals, the scope list (capped at 50), and recent scans. It carries "
-            "NO findings — use assist_list_hosts to locate hosts and "
-            "assist_get_host_findings for the findings on one. Call this first."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/assist/context",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    "assist_list_hosts": {
-        "description": (
-            "List/filter hosts in the project. Prefer the `q` boolean DSL (same "
-            "vocabulary as the Hosts page: port:, os:, service:, subnet:, tag:, "
-            "cve:, vuln:, tech:, has:, follow:, assigned:me — combine with AND/OR/"
-            "NOT and parentheses). Paginate with limit/offset. Returns host briefs."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/assist/hosts",
-        "path_params": [],
-        "query_params": [
-            "q", "search", "state", "ports", "services", "subnets",
-            "has_critical_vulns", "has_high_vulns", "limit", "offset",
-        ],
-        "body_params": [],
-        # The endpoint's own default is 500 — right for a file download, a lot
-        # of tokens for a model that usually wants the first handful.
-        "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Boolean query DSL (see tool description)."},
-                "search": {"type": "string", "description": "Substring match on IP, hostname, or OS."},
-                "state": {"type": "string", "description": "Host state filter (e.g. up)."},
-                "ports": {"type": "string", "description": "Comma-separated port numbers."},
-                "services": {"type": "string", "description": "Comma-separated service names."},
-                "subnets": {"type": "string", "description": "Comma-separated CIDR blocks."},
-                "has_critical_vulns": {"type": "boolean"},
-                "has_high_vulns": {"type": "boolean"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "assist_get_host": {
-        "description": (
-            "Full detail for one host: identity, OS, per-port service detail, "
-            "severity counts, and your review status. Notes and individual "
-            "findings are separate — use assist_get_host_findings for findings."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/assist/hosts/{host_id}",
-        "path_params": ["host_id"],
-        "query_params": [],
-        "body_params": [],
-        "input_schema": {
-            "type": "object",
-            "properties": dict(_HOST_ID_PROP),
-            "required": ["host_id"],
-            "additionalProperties": False,
-        },
-    },
-    "assist_get_host_findings": {
-        "description": (
-            "Every finding on a host with evidence: severity, CVE/plugin id, title, "
-            "affected port/service, CVSS, description, remediation, scanner evidence. "
-            "Worst-severity first. Use this to cite specifics in a report, not just counts."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/assist/hosts/{host_id}/findings",
-        "path_params": ["host_id"],
-        "query_params": ["severity", "limit", "offset"],
-        "body_params": [],
-        "defaults": {"limit": 50},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **_HOST_ID_PROP,
-                "severity": {
-                    "type": "string",
-                    "description": "Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
-                },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "required": ["host_id"],
-            "additionalProperties": False,
-        },
-    },
-    "assist_list_scopes": {
-        "description": "List the network scopes (CIDR boundaries) defined for this project.",
-        "method": "GET",
-        "path": "/api/v1/agent/assist/scopes",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    "assist_list_scans": {
-        "description": "List the scans ingested into this project (most recent first).",
-        "method": "GET",
-        "path": "/api/v1/agent/assist/scans",
-        "path_params": [],
-        "query_params": ["limit"],
-        "body_params": [],
-        "defaults": {"limit": 50},
-        "input_schema": {
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
-            "additionalProperties": False,
-        },
-    },
-    "assist_session_info": {
-        "description": (
-            "This assist session's identity: bound project, granted write capabilities, "
-            "row-scope constraint, and the operator you act on behalf of. Call this to "
-            "learn whether you may write and to whom `assigned:me` refers."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/assist/session",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    "assist_record_environment": {
-        "description": (
-            "Record the operator's environment (OS family, shell) on this assist "
-            "session. REQUIRED FIRST STEP — the guide mandates it before other work, "
-            "so BlueStick's guidance matches the machine you're actually on. The "
-            "session is resolved from your key; you do not need to pass session_id."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/assist/sessions/{session_id}/environment",
-        "path_params": ["session_id"],
-        # Filled from the key when omitted — see _resolve_session_id.
-        "session_param": "session_id",
-        "query_params": [],
-        # Field names mirror EnvironmentSummary exactly — the schema advertises
-        # additionalProperties:false and we now reject unknown arguments, so a
-        # name that doesn't exist server-side would be a hard error, not a
-        # silently dropped field.
-        "body_params": [
-            "os_family", "os_release", "arch", "shell",
-            "powershell_version", "powershell_execution_policy",
-            "python", "python_version", "wsl_available", "notes",
-            # The assist prompt tells agents to send these for audit symmetry.
-            # They were missing here, and since v2.271.0 rejects unknown
-            # arguments, an agent following its own instructions got -32602.
-            "agent_model", "agent_tool", "agent_prompt_version",
-        ],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Usually omit — resolved from your API key.",
-                },
-                "os_family": {"type": "string", "enum": ["windows", "darwin", "linux"]},
-                "os_release": {"type": "string"},
-                "arch": {"type": "string"},
-                "shell": {"type": "string", "description": "e.g. bash, zsh, powershell."},
-                "powershell_version": {"type": "string"},
-                "powershell_execution_policy": {
-                    "type": "string",
-                    "description": "Windows only — e.g. RemoteSigned, Restricted.",
-                },
-                "python": {"type": "string", "description": "Path or command that runs a real Python."},
-                "python_version": {"type": "string"},
-                "wsl_available": {"type": "boolean"},
-                "notes": {"type": "string"},
-                "agent_model": {"type": "string", "description": "Model you are running as."},
-                "agent_tool": {"type": "string", "description": "Harness you run in (e.g. claude-code)."},
-                "agent_prompt_version": {
-                    "type": "string",
-                    "description": "PROMPT_VERSION from your session's instructions.",
-                },
-            },
-            # Assist only needs os_family + shell (see AGENTS.md); the rest are
-            # accepted so a probe built for recon/execution posts unchanged.
-            "required": ["os_family"],
-            "additionalProperties": False,
-        },
-    },
-    # --- writes (capability-gated by the underlying endpoint) ---
-    "assist_add_note": {
-        "description": (
-            "Add a note to a host. Requires the write:notes capability on your key. "
-            "Notes are stamped agent-authored and appear in the operator's UI and in "
-            "client-facing reports — record observations tied to host/port/finding "
-            "evidence, mark inferences as inferences."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/hosts/{host_id}/notes",
-        "path_params": ["host_id"],
-        "query_params": [],
-        "body_params": ["body", "status"],
-        "capability": "write:notes",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **_HOST_ID_PROP,
-                "body": {"type": "string", "minLength": 1, "description": "Note text."},
-                "status": {
-                    "type": "string",
-                    "enum": ["open", "in_progress", "resolved"],
-                    "default": "open",
-                },
-            },
-            "required": ["host_id", "body"],
-            "additionalProperties": False,
-        },
-    },
-    "assist_set_follow": {
-        "description": (
-            "Set a host's review status. Requires the write:follow capability. Do NOT "
-            "mark a host `reviewed` on your own initiative — reviewed is a human "
-            "judgement with client-reportable weight; confirm with the operator first."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/hosts/{host_id}/follow",
-        "path_params": ["host_id"],
-        "query_params": [],
-        "body_params": ["status"],
-        "capability": "write:follow",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **_HOST_ID_PROP,
-                "status": {"type": "string", "enum": ["watching", "in_review", "reviewed"]},
-            },
-            "required": ["host_id", "status"],
-            "additionalProperties": False,
-        },
-    },
-    "assist_patch_host": {
-        "description": (
-            "Correct a host's hostname and/or OS after investigation. Requires the "
-            "write:host capability. Only these two operator-curated fields are editable "
-            "— scan-derived facts (ports, services, vulns) are never mutated here. Send "
-            "just the field you're fixing."
-        ),
-        "method": "PATCH",
-        "path": "/api/v1/agent/hosts/{host_id}",
-        "path_params": ["host_id"],
-        "query_params": [],
-        "body_params": ["hostname", "os_name"],
-        "capability": "write:host",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **_HOST_ID_PROP,
-                "hostname": {"type": "string", "maxLength": 255},
-                "os_name": {"type": "string", "maxLength": 255},
-            },
-            "required": ["host_id"],
-            # host_id on its own is a no-op the endpoint rejects with 400 — say
-            # "send at least one field" in the schema so the client catches it.
-            "anyOf": [{"required": ["hostname"]}, {"required": ["os_name"]}],
-            "additionalProperties": False,
-        },
-    },
-}
+# The tool registry moved to ``mcp_tools.py`` in v2.278.0 — see that module for
+# the entry format, and for why workflow filtering is presentational.  This file
+# is the transport: framing, auth, dispatch, telemetry.  The alias keeps the
+# name the dispatcher and the telemetry summary already read.
+_TOOLS = TOOLS
 
 
 def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
     """The MCP surface, described for the in-app reference page.
 
-    Derived from the same ``_TOOLS`` registry the server dispatches from, so
-    the documentation cannot drift from what the server actually exposes — add
-    a tool and it appears on the page with no second edit.  Everything here is
+    Derived from the same registry the server dispatches from, so the
+    documentation cannot drift from what the server actually exposes — add a
+    tool and it appears on the page with no second edit.  Everything here is
     already readable without a key (``initialize`` / ``tools/list`` are
     unauthenticated), so serving it from the public references router leaks
     nothing new.
@@ -448,146 +185,73 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "capability": spec.get("capability"),
                 "method": spec["method"],
                 "path": spec["path"],
-                "input_schema": _advertised_schema(spec),
+                # Which session type sees this tool.  The page documents four
+                # workflows now; without this a reader can't tell why their
+                # client lists eight tools and the page shows thirty.
+                "workflows": sorted(spec["workflows"]),
+                "input_schema": advertised_schema(spec),
             }
             for name, spec in _TOOLS.items()
         ],
     }
 
 
-def _advertised_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """The tool's input schema with the MCP-side defaults folded in.
-
-    v2.272.0 — the registry injects smaller page sizes than the endpoints' own
-    defaults, but the schema still advertised the endpoint values (500 hosts
-    where 100 is actually applied).  A client reading the schema was told one
-    thing and got another, and /references/mcp-tools published the wrong number.
-    Deriving the advertised default from the injected one means they can't drift.
-    """
-    defaults = spec.get("defaults")
-    if not defaults:
-        return spec["input_schema"]
-    schema = dict(spec["input_schema"])
-    props = {k: dict(v) for k, v in schema.get("properties", {}).items()}
-    for arg, value in defaults.items():
-        if arg in props:
-            props[arg]["default"] = value
-    schema["properties"] = props
-    return schema
-
-
-def _annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
-    """MCP tool annotations — hints a client uses to pick approval defaults.
-
-    Without these a host has no way to tell a read from a mutation except by
-    reading the description, so it must prompt for everything (v2.271.0).
-    ``readOnlyHint`` is the one that earns the feature: it's what lets a client
-    offer "always allow" on the reads.
-    """
-    # A tool is read-only iff it doesn't mutate — method, not capability.
-    # The environment probe is a POST with no capability gate (it writes session
-    # metadata, not project data), so keying off `capability` alone would
-    # advertise a mutation as safe to auto-approve.
-    is_write = spec["method"] != "GET"
-    ann: Dict[str, Any] = {
-        "readOnlyHint": not is_write,
-        # The spec defines destructiveHint:false as "additive updates only".
-        # Only assist_add_note is additive — setting follow, patching a host,
-        # and re-probing the environment each REPLACE a stored value, so
-        # claiming otherwise understated the risk to a client deciding whether
-        # to auto-approve (v2.272.0).  Nothing here deletes project data.
-        "destructiveHint": is_write and name != "assist_add_note",
-        # The operative question is whether a retry is safe.  Re-sending the
-        # same follow status, host patch, or probe converges on the same state;
-        # a second add_note is a second note.
-        "idempotentHint": name != "assist_add_note",
-        "openWorldHint": False,
-    }
-    if spec.get("capability"):
-        ann["title"] = f"{name} (requires {spec['capability']})"
-    return ann
-
-
-def _tool_list_payload(granted: Optional[set] = None) -> List[Dict[str, Any]]:
-    """The ``tools`` array for a ``tools/list`` response.
-
-    ``granted`` is the session's capability set when the caller supplied a key;
-    writes it cannot perform are omitted.  ``None`` means "no key" — list
-    everything, which is the documentation view.
-    """
-    return [
-        {
-            "name": name,
-            "description": spec["description"],
-            "inputSchema": _advertised_schema(spec),
-            "annotations": _annotations(name, spec),
-        }
-        for name, spec in _TOOLS.items()
-        if granted is None
-        or not spec.get("capability")
-        or spec["capability"] in granted
-    ]
-
-
-# Capability lookups are server-initiated plumbing, not agent activity, but they
+# Identity lookups are server-initiated plumbing, not agent activity, but they
 # ride the same audited endpoint — so a client that re-lists tools each turn fills
-# the operator's activity view with /assist/session rows nobody asked for (3 of 7
-# rows in the v2.273.0 end-to-end run).  A short in-process cache collapses those
-# to one per key.  Keyed by a hash so raw key material never sits in the cache,
-# and short-lived so an ended session stops being listed as writable quickly —
+# the operator's activity view with rows nobody asked for (3 of 7 rows in the
+# v2.273.0 end-to-end run).  A short in-process cache collapses those to one per
+# key.  Keyed by a hash so raw key material never sits in the cache, and
+# short-lived so an ended session stops being listed as writable quickly —
 # staleness here is cosmetic anyway, since every actual call re-checks auth.
-_CAPABILITY_TTL_SECONDS = 60
-_capability_cache: Dict[str, Tuple[float, Optional[frozenset]]] = {}
+_IDENTITY_TTL_SECONDS = 60
+_identity_cache: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
 
 
 def _cache_key(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()
 
 
-def _cached_capabilities(api_key: str) -> Optional[Tuple[float, Optional[frozenset]]]:
-    entry = _capability_cache.get(_cache_key(api_key))
-    if entry and (time.monotonic() - entry[0]) < _CAPABILITY_TTL_SECONDS:
-        return entry
-    return None
-
-
-async def _granted_capabilities(
+async def _key_identity(
     app,
     api_key: Optional[str],
     *,
     caller: Optional[Tuple[str, int]] = None,
     user_agent: Optional[str] = None,
-) -> Optional[set]:
-    """The capabilities this key holds, or None when there's no usable key.
+) -> Optional[Dict[str, Any]]:
+    """What this key is — workflow, capabilities, bound plan/session ids.
 
-    Returning None on any failure means an unauthenticated or broken-key
-    tools/list still returns the full catalog — discovery degrades to the
-    documentation view rather than to an empty tool list.
+    One lookup answers both questions the server has about a caller: which
+    workflow's tools to list, and which arguments it can fill in on the caller's
+    behalf.  Before v2.278.0 this read ``/agent/assist/session``, which only an
+    assist key could reach — workable while assist was the whole surface, and
+    useless for a recon or plan key.
+
+    Returns None when there is no usable key or the lookup fails, which keeps an
+    unauthenticated ``tools/list`` returning the full catalog: discovery degrades
+    to the documentation view rather than to an empty tool list.
     """
     if not api_key:
         return None
-    cached = _cached_capabilities(api_key)
-    if cached is not None:
+    cached = _identity_cache.get(_cache_key(api_key))
+    if cached is not None and (time.monotonic() - cached[0]) < _IDENTITY_TTL_SECONDS:
         return cached[1]
     try:
         resp = await _loopback(
             app,
             method="GET",
-            path="/api/v1/agent/assist/session",
+            path="/api/v1/agent/identity",
             api_key=api_key,
             caller=caller,
             user_agent=user_agent,
         )
-        granted = (
-            frozenset(resp.json().get("capabilities") or [])
-            if resp.status_code == 200
-            else None
-        )
+        identity = resp.json() if resp.status_code == 200 else None
+        if not isinstance(identity, dict):
+            identity = None
     except Exception:  # pragma: no cover - defensive
-        logger.exception("MCP could not read capabilities for tools/list")
+        logger.exception("MCP could not read the caller's identity")
         return None
-    _capability_cache[_cache_key(api_key)] = (time.monotonic(), granted)
-    return granted
+    _identity_cache[_cache_key(api_key)] = (time.monotonic(), identity)
+    return identity
 
 
 # ---------------------------------------------------------------------------
@@ -679,23 +343,33 @@ async def _dispatch_tool(
     for arg, default in spec.get("defaults", {}).items():
         arguments.setdefault(arg, default)
 
+    # Arguments the caller's own key already answers — the session id its probe
+    # posts to, the plan it is bound to.  Filling these server-side is not a
+    # convenience: a model asked to supply them guesses, and a guessed session id
+    # is a 404 (or another session's row) rather than an obvious error.  An
+    # explicitly-passed value always wins, so a legitimately unbound key can
+    # still say which one it means.
+    auto = spec.get("auto_params") or {}
+    if auto and any(arguments.get(a) is None for a in auto):
+        identity = await _key_identity(
+            app, api_key, caller=caller, user_agent=user_agent
+        ) or {}
+        for arg, field in auto.items():
+            if arguments.get(arg) is None and identity.get(field) is not None:
+                arguments[arg] = identity[field]
+
     # Path params (e.g. host_id) -> substitute into the path template.
     path = spec["path"]
     for pname in spec["path_params"]:
         value = arguments.get(pname)
-        if value is None and spec.get("session_param") == pname:
-            # Resolve the session from the key instead of making the model carry
-            # it: the key is already bound to exactly one assist session.
-            value = await _resolve_session_id(
-                app, api_key, caller=caller, user_agent=user_agent
-            )
-            if value is None:
+        if value is None:
+            if pname in auto:
                 return _tool_text_result(
-                    "Could not resolve this key's assist session — call "
-                    "assist_session_info and pass its `id` explicitly.",
+                    f"Could not resolve `{pname}` from your API key — call "
+                    f"agent_identity to see what your key is bound to, and pass "
+                    f"`{pname}` explicitly.",
                     is_error=True,
                 )
-        if value is None:
             return _tool_text_result(
                 f"Missing required argument: {pname}", is_error=True
             )
@@ -761,36 +435,6 @@ async def _dispatch_tool(
         return result
     result["structuredContent"] = parsed if isinstance(parsed, dict) else {"items": parsed}
     return result
-
-
-async def _resolve_session_id(
-    app,
-    api_key: Optional[str],
-    *,
-    caller: Optional[Tuple[str, int]] = None,
-    user_agent: Optional[str] = None,
-) -> Optional[int]:
-    """This key's assist-session id, via the session endpoint the key already
-    has access to.  Returns None when the key is missing/invalid — the caller
-    turns that into a tool error rather than guessing an id."""
-    if not api_key:
-        return None
-    try:
-        resp = await _loopback(
-            app,
-            method="GET",
-            path="/api/v1/agent/assist/session",
-            api_key=api_key,
-            caller=caller,
-            user_agent=user_agent,
-        )
-        if resp.status_code != 200:
-            return None
-        value = resp.json().get("id")
-        return int(value) if value is not None else None
-    except Exception:  # pragma: no cover - defensive
-        logger.exception("MCP could not resolve the assist session for a key")
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -903,14 +547,22 @@ async def _handle_message(
         return _rpc_result(msg_id, {})
 
     if method == "tools/list":
-        # With a key, hide the writes this session cannot perform (v2.271.0).
-        # Advertising all three writes to a read-only session invites the model
-        # to try them and read a 403 as a bug in itself.  Without a key we list
-        # everything — that's the documentation view.
-        granted = await _granted_capabilities(
+        # With a key, list only what this session can actually do: its own
+        # workflow's tools (v2.278.0), minus the writes its capabilities don't
+        # cover (v2.271.0).  Advertising the rest invites the model to try them
+        # and read a 403 as a bug in itself.  Without a key we list everything —
+        # that's the documentation view.
+        identity = await _key_identity(
             app, api_key, caller=caller, user_agent=user_agent
         )
-        return _rpc_result(msg_id, {"tools": _tool_list_payload(granted)})
+        workflow = identity.get("workflow") if identity else None
+        granted = (
+            frozenset(identity.get("capabilities") or []) if identity else None
+        )
+        return _rpc_result(
+            msg_id,
+            {"tools": tool_list_payload(workflow=workflow, granted=granted)},
+        )
 
     if method == "tools/call":
         try:
