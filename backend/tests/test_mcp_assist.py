@@ -753,3 +753,85 @@ def test_params_are_shape_checked_on_every_method(client):
     string `params` sailed through."""
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": "invalid"})
     assert resp.json()["error"]["code"] == -32602
+
+
+def test_granted_writes_land_through_mcp(client, test_project, test_user, db_session):
+    """All three project-data writes, end to end through the transport.
+
+    Committed late (v2.274.0): the suite covered refusals and the environment
+    probe, so the body-forwarding path for project writes was only ever verified
+    by hand. A silent regression there would have looked like a working server.
+    """
+    from datetime import datetime, timezone
+    from app.db.models import Annotation, Host, HostFollow, FollowStatus
+
+    now = datetime.now(timezone.utc)
+    host = Host(project_id=test_project.id, ip_address="10.77.0.5", state="up",
+                first_seen=now, last_seen=now)
+    db_session.add(host); db_session.commit(); db_session.refresh(host)
+    db_session.add(HostFollow(host_id=host.id, user_id=test_user.id,
+                              status=FollowStatus.IN_REVIEW, assigned_at=now,
+                              assigned_by_id=test_user.id))
+    db_session.commit()
+
+    key = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "write path", "can_write_assigned": True},
+    ).json()["api_key"]
+    headers = {"X-API-Key": key}
+
+    def call(name, args):
+        return _rpc(client, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": args},
+        }, headers=headers).json()["result"]
+
+    note = call("assist_add_note", {"host_id": host.id, "body": "vsftpd 2.3.4 on 21"})
+    assert note["isError"] is False, note
+    assert note["structuredContent"]["actor_type"] == "agent"
+
+    follow = call("assist_set_follow", {"host_id": host.id, "status": "reviewed"})
+    # 204 has no body to structure — the result is a plain OK, and the page says so.
+    assert follow["isError"] is False and follow["content"][0]["text"] == "OK"
+    assert "structuredContent" not in follow
+
+    patch = call("assist_patch_host", {"host_id": host.id, "hostname": "ftp01.corp"})
+    assert patch["isError"] is False, patch
+    assert patch["structuredContent"]["changed"] == ["hostname"]
+
+    # Each one actually reached the database, not just a 2xx.
+    db_session.expire_all()
+    assert db_session.query(Annotation).filter(
+        Annotation.host_id == host.id, Annotation.body == "vsftpd 2.3.4 on 21"
+    ).count() == 1
+    assert db_session.get(Host, host.id).hostname == "ftp01.corp"
+    assert db_session.query(HostFollow).filter(
+        HostFollow.host_id == host.id, HostFollow.user_id == test_user.id
+    ).one().status == FollowStatus.REVIEWED
+
+
+def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):
+    """Capability filtering is server-initiated plumbing on an audited endpoint,
+    so a client that re-lists tools each turn used to add a /assist/session row
+    to the operator's activity view every time (3 of 7 rows in the 2.273.0
+    end-to-end run were these). Cached for the session's benefit, not ours."""
+    from app.api.v1.endpoints.mcp_assist import _capability_cache
+    from app.db.models_agent import AgentApiCall
+
+    _capability_cache.clear()
+    body = _start_session(client, test_project.id)
+    headers = {"X-API-Key": body["api_key"]}
+
+    def session_rows():
+        return (
+            db_session.query(AgentApiCall)
+            .filter(AgentApiCall.path == "/api/v1/agent/assist/session")
+            .count()
+        )
+
+    before = session_rows()
+    for _ in range(4):
+        resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
+        assert "assist_list_hosts" in {t["name"] for t in resp.json()["result"]["tools"]}
+
+    assert session_rows() - before == 1, "each tools/list logged its own lookup"

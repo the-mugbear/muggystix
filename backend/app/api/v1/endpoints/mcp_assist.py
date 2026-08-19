@@ -39,8 +39,10 @@ endpoint's 401/403 wrapped in an ``isError`` tool result.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -510,6 +512,28 @@ def _tool_list_payload(granted: Optional[set] = None) -> List[Dict[str, Any]]:
     ]
 
 
+# Capability lookups are server-initiated plumbing, not agent activity, but they
+# ride the same audited endpoint — so a client that re-lists tools each turn fills
+# the operator's activity view with /assist/session rows nobody asked for (3 of 7
+# rows in the v2.273.0 end-to-end run).  A short in-process cache collapses those
+# to one per key.  Keyed by a hash so raw key material never sits in the cache,
+# and short-lived so an ended session stops being listed as writable quickly —
+# staleness here is cosmetic anyway, since every actual call re-checks auth.
+_CAPABILITY_TTL_SECONDS = 60
+_capability_cache: Dict[str, Tuple[float, Optional[frozenset]]] = {}
+
+
+def _cache_key(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def _cached_capabilities(api_key: str) -> Optional[Tuple[float, Optional[frozenset]]]:
+    entry = _capability_cache.get(_cache_key(api_key))
+    if entry and (time.monotonic() - entry[0]) < _CAPABILITY_TTL_SECONDS:
+        return entry
+    return None
+
+
 async def _granted_capabilities(
     app,
     api_key: Optional[str],
@@ -525,6 +549,9 @@ async def _granted_capabilities(
     """
     if not api_key:
         return None
+    cached = _cached_capabilities(api_key)
+    if cached is not None:
+        return cached[1]
     try:
         resp = await _loopback(
             app,
@@ -534,12 +561,16 @@ async def _granted_capabilities(
             caller=caller,
             user_agent=user_agent,
         )
-        if resp.status_code != 200:
-            return None
-        return set(resp.json().get("capabilities") or [])
+        granted = (
+            frozenset(resp.json().get("capabilities") or [])
+            if resp.status_code == 200
+            else None
+        )
     except Exception:  # pragma: no cover - defensive
         logger.exception("MCP could not read capabilities for tools/list")
         return None
+    _capability_cache[_cache_key(api_key)] = (time.monotonic(), granted)
+    return granted
 
 
 # ---------------------------------------------------------------------------
