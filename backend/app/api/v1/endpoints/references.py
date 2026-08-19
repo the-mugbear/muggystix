@@ -125,6 +125,51 @@ def tls_certificate():
     )
 
 
+@router.get("/references/tools")
+def tool_registry(
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """The tool registry — every tool BlueStick knows about (v2.277.0).
+
+    One source for two views: the reference page renders all of it as a human
+    knowledge repo, and the agent catalogue is the ``approved`` subset.  Before
+    this, those were separate lists in separate languages that had already
+    drifted — ``testssl`` was agent-usable with no human entry.
+
+    ``status`` is a policy fact (may an agent run it) and ``ingestible`` an
+    engineering one (does a parser exist for its output); they are independent,
+    and a tool can be entirely safe to run without BlueStick parsing a word of
+    its output.
+    """
+    from app.services import tool_registry_service
+
+    tools = tool_registry_service.list_tools(db, status=status, category=category)
+    return {
+        "count": len(tools),
+        "tools": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "category": t.category,
+                "ports": t.ports,
+                "install": t.install,
+                "url": t.url,
+                "kali": t.kali,
+                "status": t.status,
+                "phases": t.phases or [],
+                "intrusive": t.intrusive,
+                "requires_privileges": t.requires_privileges,
+                "output_format": t.output_format,
+                "ingestible": t.ingestible,
+                "suggested_rationale": t.suggested_rationale,
+            }
+            for t in tools
+        ],
+    }
+
+
 @router.get("/references/mcp-tools")
 def mcp_tools(request: Request):
     """The MCP tool catalog, for the in-app MCP reference page.
@@ -233,6 +278,15 @@ async def references_index():
                 "The deployment's public TLS certificate (PEM). Pin it with "
                 "NODE_EXTRA_CA_CERTS so Node-based MCP clients trust this "
                 "deployment without disabling certificate verification."
+            ),
+        },
+        "tools": {
+            "url": "/api/v1/references/tools",
+            "description": (
+                "The tool registry — every tool BlueStick knows about, with "
+                "install/usage knowledge for humans and, for the approved "
+                "subset, the phase/intrusiveness metadata agents key off. "
+                "Filter with ?status=approved|reference|suggested."
             ),
         },
         "mcp_tools": {

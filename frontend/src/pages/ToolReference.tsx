@@ -109,11 +109,14 @@ const CATEGORIES = [
   'General Purpose',
 ] as const;
 
-type Category = (typeof CATEGORIES)[number];
+// Categories the curated set uses, in the order they should render. A tool
+// whose category isn't listed here (a vetted-in suggestion, say) still shows —
+// see `orderedCategories` — rather than disappearing from the page.
+type Category = string;
 
 type CategoryTone = 'default' | 'destructive' | 'warning' | 'success' | 'secondary' | 'info' | 'muted' | 'outline';
 
-const CATEGORY_TONE: Record<Category, CategoryTone> = {
+const CATEGORY_TONE: Record<string, CategoryTone> = {
   'Web Content Discovery': 'default',
   'Web Analysis': 'info',
   'Port Scanning': 'destructive',

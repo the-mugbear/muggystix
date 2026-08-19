@@ -55,6 +55,48 @@ export const getSbom = async (): Promise<SbomResponse> => {
 
 
 
+// --- Tool registry ---
+// One source of truth for every tool BlueStick knows about. The reference page
+// renders all of it as a human knowledge repo; the agent catalogue is the
+// `approved` subset. Previously these were two lists in two languages that had
+// already drifted (`testssl` was agent-usable with no human entry), and only
+// the smaller backend one could gate anything.
+
+export interface ToolRegistryEntry {
+  name: string;
+  description: string;
+  category: string;
+  ports: string | null;
+  install: string | null;
+  url: string | null;
+  kali: boolean;
+  /** Policy: may an agent run it. `suggested` is awaiting human vetting. */
+  status: 'approved' | 'reference' | 'suggested' | 'rejected';
+  phases: string[];
+  intrusive: boolean | null;
+  requires_privileges: boolean | null;
+  output_format: string | null;
+  /** Engineering: does BlueStick have a parser for its output. Independent of
+   *  `status` — a tool can be safe to run with no parser at all. */
+  ingestible: boolean;
+  suggested_rationale: string | null;
+}
+
+export interface ToolRegistryResponse {
+  count: number;
+  tools: ToolRegistryEntry[];
+}
+
+export const getToolRegistry = async (
+  status?: string,
+): Promise<ToolRegistryResponse> => {
+  const response = await api.get<ToolRegistryResponse>('/references/tools', {
+    params: status ? { status } : undefined,
+  });
+  return response.data;
+};
+
+
 // --- MCP tool catalog ---
 // Drives the /reference/mcp page. Read off the live server registry so the
 // page describes what this deployment actually serves. Public endpoint,

@@ -564,6 +564,7 @@ async def _run_startup_sequence() -> None:
     seed_default_admin()
     ensure_default_project()
     seed_system_identity()
+    _seed_tool_registry()
     _warn_if_pool_undersized()
     # Hourly housekeeping: mark expired UserSession rows as revoked so they
     # stop accumulating. Idempotent — if multiple uvicorn workers each fire
@@ -606,6 +607,27 @@ def _warn_if_pool_undersized() -> None:
 # --- _seed_default_admin, _ensure_default_project, _seed_system_identity,
 # --- _get_instance_id, _cached_instance_id, _slice_agents_md, plus the
 # --- /api/v1/agents-guide and /api/v1/references/* endpoints.
+
+def _seed_tool_registry() -> None:
+    """Populate the tool registry on boot from the checked-in seed (v2.277.0).
+
+    Additive only — an operator's approval decision or edited description must
+    survive a redeploy, so existing rows are never overwritten.  Failure is
+    logged and swallowed: a missing tool catalogue degrades the reference page,
+    it does not justify refusing to serve the app.
+    """
+    from app.db.session import SessionLocal
+    from app.services.tool_registry_service import seed_registry
+
+    db = SessionLocal()
+    try:
+        seed_registry(db)
+    except Exception:
+        logger.exception("tool registry seeding failed; continuing startup")
+        db.rollback()
+    finally:
+        db.close()
+
 
 @app.get('/')
 async def root():
