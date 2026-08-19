@@ -73,8 +73,17 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     # never lands on disk in plaintext.
     codex = clients["codex"]
     assert codex["kind"] == "command"
-    assert "BLUESTICK_ASSIST_KEY" in codex["payload"]
     assert "--bearer-token-env-var BLUESTICK_ASSIST_KEY" in codex["payload"]
+    # `read -rs` rather than a literal export: the key stays out of shell
+    # history, and out of the shell profile the hint used to recommend —
+    # which contradicted the "never lands on disk" claim beside it.
+    assert "read -rs BLUESTICK_ASSIST_KEY" in codex["payload"]
+    assert f"export {codex['payload'].split()[1]}=" not in codex["payload"]
+
+    # Every recipe warns about the self-signed certificate, which blocks every
+    # Node-based client before it sends a request.
+    for entry in body["mcp_clients"]:
+        assert "NODE_TLS_REJECT_UNAUTHORIZED" in entry["hint"], entry["id"]
 
     # Every entry is renderable: label, hint, payload all present.
     for c in body["mcp_clients"]:
@@ -633,3 +642,111 @@ def test_bearer_token_authenticates_an_mcp_call(client, test_project):
 
     assert result["isError"] is False, result
     assert result["structuredContent"]["project"]["id"] == test_project.id
+
+
+# ---------------------------------------------------------------------------
+# Registry ↔ API contract (v2.272.0)
+#
+# "Read off the live registry" only guarantees the docs match the registry —
+# the registry itself still restates the API by hand. These pin it to the
+# actual routes and to the behaviour the schemas advertise.
+# ---------------------------------------------------------------------------
+
+def test_every_tool_targets_a_route_that_exists():
+    """A tool whose path or method doesn't exist is a 404 the agent can't act
+    on, and the reference page would document it as real."""
+    from app.api.v1.endpoints.mcp_assist import _TOOLS
+    from app.main import app
+
+    paths = app.openapi()["paths"]
+    for name, spec in _TOOLS.items():
+        assert spec["path"] in paths, f"{name} targets unknown path {spec['path']}"
+        assert spec["method"].lower() in paths[spec["path"]], (
+            f"{name} uses {spec['method']} on {spec['path']}, which does not accept it"
+        )
+
+
+def test_advertised_defaults_match_what_the_server_injects(client):
+    """The registry injected smaller page sizes while the schema still
+    advertised the endpoint's own — so a client read 500 and got 100, and
+    /references/mcp-tools published the wrong number."""
+    from app.api.v1.endpoints.mcp_assist import _TOOLS
+
+    tools = {t["name"]: t for t in _rpc(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]}
+
+    for name, spec in _TOOLS.items():
+        for arg, injected in spec.get("defaults", {}).items():
+            advertised = tools[name]["inputSchema"]["properties"][arg].get("default")
+            assert advertised == injected, (
+                f"{name}.{arg}: advertises {advertised}, server applies {injected}"
+            )
+
+    # And the reference page publishes the same corrected numbers.
+    catalog = {t["name"]: t for t in client.get("/api/v1/references/mcp-tools").json()["tools"]}
+    assert catalog["assist_list_hosts"]["input_schema"]["properties"]["limit"]["default"] == 100
+
+
+def test_probe_accepts_the_attribution_fields_the_prompt_asks_for(client, test_project):
+    """The assist prompt tells agents to send agent_model / agent_tool /
+    agent_prompt_version. The tool omitted them, and since unknown arguments
+    became an error an agent following its instructions got -32602."""
+    body = _start_session(client, test_project.id)
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "assist_record_environment",
+            "arguments": {
+                "os_family": "linux", "shell": "bash",
+                "agent_model": "claude-opus-5",
+                "agent_tool": "claude-code",
+                "agent_prompt_version": "1.49.0",
+            },
+        },
+    }, headers={"X-API-Key": body["api_key"]}).json()
+
+    assert "error" not in resp, resp
+    assert resp["result"]["isError"] is False, resp
+
+
+def test_overwriting_tools_are_not_advertised_as_additive(client):
+    """destructiveHint:false means "additive updates only" per the spec. Only
+    add_note is additive; the others replace a stored value."""
+    tools = {t["name"]: t["annotations"] for t in _rpc(
+        client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]}
+
+    assert tools["assist_add_note"]["destructiveHint"] is False
+    for name in ("assist_set_follow", "assist_patch_host", "assist_record_environment"):
+        assert tools[name]["destructiveHint"] is True, name
+    # Reads are never destructive.
+    assert tools["assist_list_hosts"]["destructiveHint"] is False
+
+
+# ---------------------------------------------------------------------------
+# Remaining 2025-06-18 conformance
+# ---------------------------------------------------------------------------
+
+def test_batching_is_refused_under_the_revision_that_removed_it(client):
+    batch = [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
+    resp = _rpc(client, batch, headers={"MCP-Protocol-Version": "2025-06-18"})
+    assert resp.status_code == 400
+    assert "batching was removed" in resp.json()["error"]["message"]
+
+    # 2025-03-26 still permits it, so a client that declared that version works.
+    ok = _rpc(client, batch, headers={"MCP-Protocol-Version": "2025-03-26"})
+    assert ok.status_code == 200 and len(ok.json()) == 1
+
+
+def test_empty_batch_is_an_invalid_request(client):
+    resp = _rpc(client, [])
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == -32600
+
+
+def test_params_are_shape_checked_on_every_method(client):
+    """Only initialize and tools/call used to look, so `tools/list` with a
+    string `params` sailed through."""
+    resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": "invalid"})
+    assert resp.json()["error"]["code"] == -32602

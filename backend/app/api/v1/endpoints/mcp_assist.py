@@ -133,8 +133,10 @@ _HOST_ID_PROP = {
 _TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_get_context": {
         "description": (
-            "Project overview for this assist session: counts, top findings, and "
-            "orientation. Call this first to understand the engagement."
+            "Project orientation for this assist session: host/port/scope/scan "
+            "totals, the scope list (capped at 50), and recent scans. It carries "
+            "NO findings — use assist_list_hosts to locate hosts and "
+            "assist_get_host_findings for the findings on one. Call this first."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
@@ -179,7 +181,11 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
         },
     },
     "assist_get_host": {
-        "description": "Full detail for one host: ports, services, findings summary, notes, review state.",
+        "description": (
+            "Full detail for one host: identity, OS, per-port service detail, "
+            "severity counts, and your review status. Notes and individual "
+            "findings are separate — use assist_get_host_findings for findings."
+        ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
         "path_params": ["host_id"],
@@ -276,6 +282,10 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
             "os_family", "os_release", "arch", "shell",
             "powershell_version", "powershell_execution_policy",
             "python", "python_version", "wsl_available", "notes",
+            # The assist prompt tells agents to send these for audit symmetry.
+            # They were missing here, and since v2.271.0 rejects unknown
+            # arguments, an agent following its own instructions got -32602.
+            "agent_model", "agent_tool", "agent_prompt_version",
         ],
         "input_schema": {
             "type": "object",
@@ -298,6 +308,12 @@ _TOOLS: Dict[str, Dict[str, Any]] = {
                 "python_version": {"type": "string"},
                 "wsl_available": {"type": "boolean"},
                 "notes": {"type": "string"},
+                "agent_model": {"type": "string", "description": "Model you are running as."},
+                "agent_tool": {"type": "string", "description": "Harness you run in (e.g. claude-code)."},
+                "agent_prompt_version": {
+                    "type": "string",
+                    "description": "PROMPT_VERSION from your session's instructions.",
+                },
             },
             # Assist only needs os_family + shell (see AGENTS.md); the rest are
             # accepted so a probe built for recon/execution posts unchanged.
@@ -413,11 +429,32 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "capability": spec.get("capability"),
                 "method": spec["method"],
                 "path": spec["path"],
-                "input_schema": spec["input_schema"],
+                "input_schema": _advertised_schema(spec),
             }
             for name, spec in _TOOLS.items()
         ],
     }
+
+
+def _advertised_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """The tool's input schema with the MCP-side defaults folded in.
+
+    v2.272.0 — the registry injects smaller page sizes than the endpoints' own
+    defaults, but the schema still advertised the endpoint values (500 hosts
+    where 100 is actually applied).  A client reading the schema was told one
+    thing and got another, and /references/mcp-tools published the wrong number.
+    Deriving the advertised default from the injected one means they can't drift.
+    """
+    defaults = spec.get("defaults")
+    if not defaults:
+        return spec["input_schema"]
+    schema = dict(spec["input_schema"])
+    props = {k: dict(v) for k, v in schema.get("properties", {}).items()}
+    for arg, value in defaults.items():
+        if arg in props:
+            props[arg]["default"] = value
+    schema["properties"] = props
+    return schema
 
 
 def _annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -435,11 +472,15 @@ def _annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     is_write = spec["method"] != "GET"
     ann: Dict[str, Any] = {
         "readOnlyHint": not is_write,
-        # Nothing here deletes or overwrites scan-derived data: notes append,
-        # follow/host edits are operator-curated fields that can be set again.
-        "destructiveHint": False,
-        # Re-sending the same follow status, host patch, or environment probe
-        # converges; a note is a new note each time.
+        # The spec defines destructiveHint:false as "additive updates only".
+        # Only assist_add_note is additive — setting follow, patching a host,
+        # and re-probing the environment each REPLACE a stored value, so
+        # claiming otherwise understated the risk to a client deciding whether
+        # to auto-approve (v2.272.0).  Nothing here deletes project data.
+        "destructiveHint": is_write and name != "assist_add_note",
+        # The operative question is whether a retry is safe.  Re-sending the
+        # same follow status, host patch, or probe converges on the same state;
+        # a second add_note is a second note.
         "idempotentHint": name != "assist_add_note",
         "openWorldHint": False,
     }
@@ -459,7 +500,7 @@ def _tool_list_payload(granted: Optional[set] = None) -> List[Dict[str, Any]]:
         {
             "name": name,
             "description": spec["description"],
-            "inputSchema": spec["input_schema"],
+            "inputSchema": _advertised_schema(spec),
             "annotations": _annotations(name, spec),
         }
         for name, spec in _TOOLS.items()
@@ -780,6 +821,14 @@ async def _handle_message(
     if is_notification:
         return None
 
+    # Shape-check params for every method.  Previously only initialize and
+    # tools/call looked, so `tools/list` with `params: "invalid"` sailed through
+    # (v2.272.0).
+    try:
+        _require_params(message)
+    except _InvalidParams as exc:
+        return _rpc_error(msg_id, -32602, str(exc))
+
     if method == "initialize":
         try:
             params = _require_params(message)
@@ -966,6 +1015,26 @@ async def mcp_post(request: Request) -> Response:
     # A JSON-RPC batch (array) was allowed pre-2025-06-18; handle it for older
     # clients. A single object is the modern shape.
     if isinstance(payload, list):
+        # JSON-RPC batching was REMOVED in the 2025-06-18 revision.  A client
+        # that declared that version and then batches is out of spec, and
+        # accepting it lets a client believe batching is available on a protocol
+        # that dropped it.  Older revisions (2025-03-26) still allow it, so the
+        # gate is the version the client declared, not a blanket refusal.
+        if negotiated == "2025-06-18":
+            return JSONResponse(
+                _rpc_error(
+                    None,
+                    -32600,
+                    "JSON-RPC batching was removed in protocol 2025-06-18. "
+                    "Send one message per request, or declare 2025-03-26.",
+                ),
+                status_code=400,
+            )
+        if not payload:
+            return JSONResponse(
+                _rpc_error(None, -32600, "Invalid Request: empty batch"),
+                status_code=400,
+            )
         if len(payload) > _MAX_BATCH_MESSAGES:
             return JSONResponse(
                 _rpc_error(

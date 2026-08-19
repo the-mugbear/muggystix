@@ -148,6 +148,16 @@ def _mcp_server_entry(mcp_url: str, raw_key: str) -> dict:
     }
 
 
+# Deployments default to a self-signed certificate, and every MCP client here is
+# Node/Electron — which rejects it with DEPTH_ZERO_SELF_SIGNED_CERT before any
+# request is made.  Verified live; without this the connection just fails and the
+# error names TLS, not the config, so operators debug the wrong thing.
+_TLS_NOTE = (
+    "Self-signed cert? Export NODE_TLS_REJECT_UNAUTHORIZED=0 in the shell you launch "
+    "the client from, or trust the deployment's certificate first."
+)
+
+
 def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
     entry = {_MCP_SERVER_NAME: _mcp_server_entry(mcp_url, raw_key)}
     return [
@@ -159,7 +169,8 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             payload=json.dumps({"servers": entry}, indent=2),
             hint=(
                 "Save as .vscode/mcp.json in your workspace, then start the server from the "
-                "Copilot MCP panel. The file holds a live key — keep it out of version control."
+                "Copilot MCP panel. The file holds a live key — keep it out of version control. "
+                + _TLS_NOTE
             ),
         ),
         McpClientSetup(
@@ -172,8 +183,9 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
                 f'--header "X-API-Key: {raw_key}"'
             ),
             hint=(
-                "Run in your project directory. -s user keeps the key in your own config; "
-                "-s project writes .mcp.json into the repo, so do not use it with a live key."
+                "Run in your project directory. -s local keeps the key in your own config; "
+                "-s project writes .mcp.json into the repo, so do not use it with a live key. "
+                + _TLS_NOTE
             ),
         ),
         McpClientSetup(
@@ -182,13 +194,14 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             kind="command",
             path="",
             payload=(
-                f"export {_MCP_KEY_ENV_VAR}={raw_key}\n"
+                f"read -rs {_MCP_KEY_ENV_VAR} && export {_MCP_KEY_ENV_VAR}   # paste the key, then Enter\n"
                 f"codex mcp add {_MCP_SERVER_NAME} --url {mcp_url} "
                 f"--bearer-token-env-var {_MCP_KEY_ENV_VAR}"
             ),
             hint=(
-                "Codex reads the key from the environment variable rather than storing it in "
-                "config.toml — put the export in your shell profile so it survives a new shell."
+                "Codex keeps the key out of config.toml — it reads the env var at run time. "
+                "`read -rs` keeps it out of your shell history too; re-run it in each new shell "
+                "rather than writing the key into a profile. " + _TLS_NOTE
             ),
         ),
         McpClientSetup(
@@ -199,7 +212,7 @@ def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
             payload=json.dumps({"mcpServers": entry}, indent=2),
             hint=(
                 "Save as .cursor/mcp.json in your project, or ~/.cursor/mcp.json to keep it out "
-                "of the repo entirely. The file holds a live key — do not commit it."
+                "of the repo entirely. The file holds a live key — do not commit it. " + _TLS_NOTE
             ),
         ),
     ]

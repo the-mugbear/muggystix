@@ -66,7 +66,7 @@ const CLIENTS: ClientRecipe[] = [
         null,
         2,
       ),
-    note: 'Start the server from the Copilot MCP panel once the file is saved.',
+    note: 'Start the server from the Copilot MCP panel once the file is saved. To keep the key out of the file entirely, VS Code supports a password input: declare an `inputs` entry and reference it as ${input:...} in place of the key.',
   },
   {
     id: 'claude_code',
@@ -81,8 +81,8 @@ const CLIENTS: ClientRecipe[] = [
     label: 'Codex',
     path: null,
     snippet: (endpoint) =>
-      `export BLUESTICK_ASSIST_KEY=${KEY_PLACEHOLDER}\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
-    note: 'Codex reads the key from the environment rather than storing it in config.toml — the one client where the credential never lands on disk in plaintext.',
+      `read -rs BLUESTICK_ASSIST_KEY && export BLUESTICK_ASSIST_KEY   # paste the key, then Enter\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
+    note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile.',
   },
   {
     id: 'cursor',
@@ -305,6 +305,16 @@ const McpReference: React.FC = () => {
       </p>
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
+          <strong>Self-signed certificate?</strong> Every MCP client here is Node-based and will
+          refuse the default deployment certificate with{' '}
+          <span className="font-mono">DEPTH_ZERO_SELF_SIGNED_CERT</span> before it sends a single
+          request. Either trust the certificate on your machine, or export{' '}
+          <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span> in the shell you launch
+          the client from. The error names TLS, not your config — so this is worth ruling out first.
+        </AlertDescription>
+      </Alert>
+      <Alert variant="warning" className="mb-sm">
+        <AlertDescription>
           <strong>The key in these files is a live credential.</strong> A project-scoped config
           (<span className="font-mono">.vscode/mcp.json</span>,{' '}
           <span className="font-mono">.cursor/mcp.json</span>,{' '}
@@ -374,7 +384,9 @@ const McpReference: React.FC = () => {
         marked <span className="font-mono">*</span>. Every tool carries MCP annotations
         (<span className="font-mono">readOnlyHint</span> and friends) so a client can offer
         &ldquo;always allow&rdquo; on the reads without you classifying them by hand, and results
-        come back as <span className="font-mono">structuredContent</span> as well as text.
+        come back as <span className="font-mono">structuredContent</span> as well as text —
+        except where the endpoint answers 204 with no body (setting review status), which reports a
+        plain <span className="font-mono">OK</span>.
         Connecting <em>with</em> a key narrows the list to what your session may actually do.
       </p>
 
@@ -430,9 +442,14 @@ const McpReference: React.FC = () => {
           <div className="flex gap-sm">
             <Lock className="mt-xxs size-4 shrink-0 text-warning" aria-hidden />
             <p className="text-caption text-muted-foreground">
-              <strong className="text-foreground">Writes are capability-gated and row-scoped.</strong>{' '}
-              A granted session may only write to hosts <em>assigned to the operator who started
-              it</em> — a note on any other host is refused, through MCP or otherwise.
+              <strong className="text-foreground">Project writes are capability-gated and
+              row-scoped.</strong>{' '}
+              The three that touch project data — notes, review status, hostname/OS — need the
+              matching capability <em>and</em> a host assigned to the operator who started the
+              session; anything else is refused, through MCP or otherwise. The one exception is
+              <span className="font-mono"> assist_record_environment</span>, which writes session
+              metadata (your OS and shell) rather than project data and is therefore open to every
+              session.
             </p>
           </div>
           <div className="flex gap-sm">
