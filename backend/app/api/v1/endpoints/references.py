@@ -21,11 +21,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.core.config import settings
-from app.db.models_auth import User
+from app.db.models_auth import User, UserRole
 from app.db.session import get_db
 from app.services.agents_guide_service import slice_agents_md
 from app.services.agent_prompt_history import PROMPT_VERSION
@@ -167,6 +168,93 @@ def tool_registry(
             }
             for t in tools
         ],
+    }
+
+
+class ToolRegistryUpdate(BaseModel):
+    """What an admin may change when vetting a tool.
+
+    ``ingestible`` is deliberately absent: it records whether BlueStick has a
+    parser for the tool's output, which is a fact about this codebase, not a
+    decision an operator gets to make.  Editing it here would let the UI claim
+    an upload will work when nothing can read the file.
+    """
+
+    status: Optional[str] = Field(
+        None,
+        description="approved (agents may run it) / reference / rejected.",
+    )
+    description: Optional[str] = Field(None, max_length=4000)
+    category: Optional[str] = Field(None, max_length=100)
+    ports: Optional[str] = Field(None, max_length=200)
+    install: Optional[str] = Field(None, max_length=500)
+    url: Optional[str] = Field(None, max_length=500)
+    kali: Optional[bool] = None
+
+
+@router.patch("/references/tools/{name}")
+def update_tool_registry_entry(
+    name: str,
+    body: ToolRegistryUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_role(UserRole.ADMIN)),
+):
+    """Vet a tool — the other half of ``suggest_tool`` (v2.280.0).
+
+    An agent can record "I needed a tool you don't approve" since 2.278.0, and
+    until now nothing could act on it: the suggestions accumulated in a table
+    with no way to approve one short of a SQL prompt.  Vetting is a status
+    change on the same row, which is why suggestions were stored as rows rather
+    than as notes in a separate store.
+
+    Approving usually means writing real prose too — a suggested row's
+    description is the agent's rationale, which reads badly as documentation on
+    a page humans use to learn about tools — so the human-facing fields are
+    editable in the same call.
+
+    Admin-only, and global rather than project-scoped: the registry is one
+    deployment-wide list, so approving a tool in one project approves it
+    everywhere, which is exactly what an operator vetting it intends.
+    """
+    from app.db.models_tools import (
+        TOOL_APPROVED,
+        TOOL_REFERENCE,
+        TOOL_REJECTED,
+        ToolRegistryEntry,
+    )
+
+    entry = (
+        db.query(ToolRegistryEntry).filter(ToolRegistryEntry.name == name).one_or_none()
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No registered tool named {name!r}")
+
+    fields = body.model_dump(exclude_unset=True)
+    status = fields.pop("status", None)
+    if status is not None:
+        allowed = {TOOL_APPROVED, TOOL_REFERENCE, TOOL_REJECTED}
+        if status not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"status must be one of {sorted(allowed)} — 'suggested' is what an "
+                    "agent's ask produces, not a decision you can set."
+                ),
+            )
+        entry.status = status
+    for field, value in fields.items():
+        setattr(entry, field, value)
+    db.commit()
+    db.refresh(entry)
+    return {
+        "name": entry.name,
+        "status": entry.status,
+        "description": entry.description,
+        "category": entry.category,
+        "ports": entry.ports,
+        "install": entry.install,
+        "url": entry.url,
+        "kali": entry.kali,
     }
 
 

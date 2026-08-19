@@ -19,13 +19,20 @@ import type { ToolRegistryEntry } from '../../services/api/references';
 
 const getToolRegistry = vi.fn();
 const getToolReadiness = vi.fn();
+const updateToolRegistryEntry = vi.fn();
 vi.mock('../../services/api/references', () => ({
   getToolRegistry: () => getToolRegistry(),
   getToolReadiness: () => getToolReadiness(),
+  updateToolRegistryEntry: (...args: unknown[]) => updateToolRegistryEntry(...args),
 }));
 
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
+}));
+
+const hasRole = vi.fn();
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ hasRole: (role: string) => hasRole(role) }),
 }));
 
 const tool = (over: Partial<ToolRegistryEntry> = {}): ToolRegistryEntry => ({
@@ -57,6 +64,9 @@ describe('ToolReference', () => {
   beforeEach(() => {
     getToolRegistry.mockReset();
     getToolReadiness.mockReset();
+    updateToolRegistryEntry.mockReset();
+    hasRole.mockReset();
+    hasRole.mockReturnValue(false);
     getToolRegistry.mockResolvedValue({ count: 1, tools: [tool()] });
     // The readiness panel is a separate concern; give it the "never probed"
     // shape so it renders its own empty state and stays out of the way.
@@ -120,6 +130,31 @@ describe('ToolReference', () => {
     // No install command and no URL are ordinary states for a suggestion.
     expect(within(row).getByText('No install command recorded')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /ligolo-ng/ })).not.toBeInTheDocument();
+  });
+
+  it('offers vetting to admins only, and surfaces what is waiting', async () => {
+    const suggestion = tool({
+      name: 'ligolo-ng',
+      status: 'suggested',
+      suggested_rationale: 'Pivoting the approved set cannot do.',
+    });
+    getToolRegistry.mockResolvedValue({ count: 2, tools: [tool(), suggestion] });
+
+    const { unmount } = renderPage();
+    await waitFor(() => expect(screen.getByText('nmap')).toBeInTheDocument());
+    // A non-admin sees the suggestion, but no way to act on it — approving a
+    // tool decides what agents may run on every project in the deployment.
+    expect(screen.getByText('ligolo-ng')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/awaiting review/)).not.toBeInTheDocument();
+    unmount();
+
+    hasRole.mockReturnValue(true);
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/1 tool awaiting review/)).toBeInTheDocument());
+    // The banner names it, so a pending ask isn't something you find by
+    // scrolling the catalogue.
+    expect(screen.getByRole('button', { name: 'Review' })).toBeInTheDocument();
   });
 
   it('says so when the catalogue cannot be loaded', async () => {

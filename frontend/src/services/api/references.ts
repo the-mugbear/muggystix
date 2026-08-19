@@ -96,6 +96,31 @@ export const getToolRegistry = async (
   return response.data;
 };
 
+/** Fields an admin may change when vetting. `ingestible` is absent on purpose:
+ *  it records whether a parser exists in the codebase, not an operator call. */
+export interface ToolRegistryUpdate {
+  status?: 'approved' | 'reference' | 'rejected';
+  description?: string;
+  category?: string;
+  ports?: string;
+  install?: string;
+  url?: string;
+  kali?: boolean;
+}
+
+/** Admin-only. Vetting a suggestion is a status change on the same row — which
+ *  is why an agent's ask is stored as a row rather than a note elsewhere. */
+export const updateToolRegistryEntry = async (
+  name: string,
+  update: ToolRegistryUpdate,
+): Promise<ToolRegistryEntry> => {
+  const response = await api.patch<ToolRegistryEntry>(
+    `/references/tools/${encodeURIComponent(name)}`,
+    update,
+  );
+  return response.data;
+};
+
 
 // --- MCP tool catalog ---
 // Drives the /reference/mcp page. Read off the live server registry so the

@@ -26,6 +26,8 @@ import {
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
+import ToolVettingDialog from '../components/ToolVettingDialog';
 import {
   getToolReadiness,
   getToolRegistry,
@@ -466,6 +468,8 @@ const ToolReference: React.FC = () => {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [vetting, setVetting] = useState<ToolEntry | null>(null);
+  const { hasRole } = useAuth();
 
   useEffect(() => {
     let cancelled = false;
@@ -487,6 +491,16 @@ const ToolReference: React.FC = () => {
   }, []);
 
   const documentedNames = useMemo(() => new Set(tools.map((t) => t.name)), [tools]);
+
+  // Vetting is admin-only and deployment-wide (approving a tool approves it on
+  // every project), so the affordance only exists for admins — the read view is
+  // unchanged for everyone else.
+  const isAdmin = hasRole('admin');
+  const pending = useMemo(() => tools.filter((t) => t.status === 'suggested'), [tools]);
+
+  const applyUpdate = (updated: ToolEntry) => {
+    setTools((prev) => prev.map((t) => (t.name === updated.name ? { ...t, ...updated } : t)));
+  };
 
   const lowerFilter = filter.toLowerCase();
   const filtered = tools.filter(
@@ -556,6 +570,19 @@ const ToolReference: React.FC = () => {
         you to run yourself, and <span className="font-medium text-foreground">Suggested</span> tools
         were proposed by an agent and are waiting on review.
       </p>
+
+      {isAdmin && pending.length > 0 ? (
+        <Alert variant="warning" className="mb-md">
+          <AlertDescription>
+            <span className="font-medium">
+              {pending.length} tool{pending.length === 1 ? '' : 's'} awaiting review
+            </span>{' '}
+            — an agent asked for {pending.map((t) => t.name).join(', ')}. Until one is
+            approved, agents are told not to run it. Use{' '}
+            <span className="font-medium">Review</span> on the row to decide.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <HostReadinessPanel documentedNames={documentedNames} />
 
@@ -661,6 +688,16 @@ const ToolReference: React.FC = () => {
                                   </TooltipContent>
                                 </Tooltip>
                               )}
+                              {isAdmin && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-auto px-0 text-caption"
+                                  onClick={() => setVetting(tool)}
+                                >
+                                  {tool.status === 'suggested' ? 'Review' : 'Edit'}
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell>
@@ -748,6 +785,15 @@ const ToolReference: React.FC = () => {
           ))}
         </Accordion>
       )}
+
+      <ToolVettingDialog
+        tool={vetting}
+        open={vetting !== null}
+        onOpenChange={(open) => {
+          if (!open) setVetting(null);
+        }}
+        onSaved={applyUpdate}
+      />
     </div>
   );
 };

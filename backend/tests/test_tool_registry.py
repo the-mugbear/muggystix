@@ -184,6 +184,131 @@ def test_reference_page_no_longer_carries_its_own_catalogue(db_session):
     assert len(registry.list_tools(db_session)) > 50
 
 
+def test_vetting_a_suggestion_is_a_status_change(client, db_session):
+    """The other half of `suggest_tool`. Without this the suggestions pile up in
+    a table with no way to act on one short of a SQL prompt — which is the same
+    as not capturing them."""
+    _seed(db_session)
+    registry.record_suggestion(
+        db_session, name="ligolo-ng", rationale="Pivoting the approved set can't do."
+    )
+    assert "ligolo-ng" not in registry.approved_tool_names(db_session)
+
+    resp = client.patch(
+        "/api/v1/references/tools/ligolo-ng",
+        json={
+            "status": TOOL_APPROVED,
+            # Approving usually means writing real prose: the suggested row's
+            # description is the agent's rationale, which reads badly as
+            # documentation on a page humans use to learn about tools.
+            "description": "Reverse tunneling / pivoting tool for reaching segmented networks.",
+            "category": "Remote Access",
+            "install": "go install github.com/nicocha30/ligolo-ng/cmd/agent@latest",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == TOOL_APPROVED
+
+    db_session.expire_all()
+    assert "ligolo-ng" in registry.approved_tool_names(db_session)
+    row = db_session.query(ToolRegistryEntry).filter_by(name="ligolo-ng").one()
+    assert row.description.startswith("Reverse tunneling")
+    assert row.category == "Remote Access"
+
+
+def test_declining_keeps_the_row(client, db_session):
+    """A declined tool stays in the table so the next agent that asks gets the
+    same answer instead of re-opening a decision someone already made."""
+    _seed(db_session)
+    registry.record_suggestion(db_session, name="metasploit", rationale="Exploitation.")
+    resp = client.patch(
+        "/api/v1/references/tools/metasploit", json={"status": "rejected"}
+    )
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    row = db_session.query(ToolRegistryEntry).filter_by(name="metasploit").one()
+    assert row.status == "rejected"
+    assert "metasploit" not in registry.approved_tool_names(db_session)
+    # Still listed — the page shows it as declined rather than pretending the
+    # ask never happened.
+    assert "metasploit" in {t.name for t in registry.list_tools(db_session)}
+
+
+def test_suggested_is_not_a_status_an_operator_can_set(client, db_session):
+    """`suggested` means "an agent asked for this". Letting the UI write it
+    would put a row in the review queue that nobody asked for."""
+    _seed(db_session)
+    resp = client.patch("/api/v1/references/tools/nmap", json={"status": "suggested"})
+    assert resp.status_code == 422
+    assert "suggested" in resp.json()["detail"]
+
+
+def test_vetting_an_unknown_tool_is_a_404(client, db_session):
+    _seed(db_session)
+    resp = client.patch("/api/v1/references/tools/not-a-tool", json={"status": "approved"})
+    assert resp.status_code == 404
+
+
+def test_vetting_is_gated_on_the_admin_role():
+    """Approving a tool decides what an agent may run against the network, on
+    every project in the deployment.
+
+    Asserted structurally because the ``client`` fixture authenticates as an
+    admin, so an HTTP call can only ever show the allowed path.
+    """
+    from app.api.v1.endpoints import references
+    from app.db.models_auth import UserRole
+
+    route = next(
+        r for r in references.router.routes
+        if getattr(r, "path", None) == "/references/tools/{name}"
+    )
+    gates = [
+        d.call
+        for d in route.dependant.dependencies
+        if getattr(d.call, "__closure__", None)
+    ]
+    enforced = [
+        cell.cell_contents for gate in gates for cell in (gate.__closure__ or ())
+    ]
+    assert UserRole.ADMIN in enforced, "the vetting route must require the admin role"
+
+    # And the read path stays open — it is documentation, and an agent checks
+    # the approved set against it without a user token.
+    listing = next(
+        r for r in references.router.routes
+        if getattr(r, "path", None) == "/references/tools"
+    )
+    assert not [
+        d for d in listing.dependant.dependencies
+        if getattr(d.call, "__closure__", None)
+    ]
+
+
+def test_ingestibility_is_not_operator_editable(client, db_session):
+    """It records whether a parser exists in this codebase, not a decision an
+    operator makes — editing it would let the UI promise an upload that nothing
+    can read."""
+    _seed(db_session)
+    # A tool with no parser — the case where flipping the flag would be a lie.
+    target = next(
+        t for t in registry.list_tools(db_session) if not t.ingestible
+    ).name
+
+    resp = client.patch(
+        f"/api/v1/references/tools/{target}",
+        json={"ingestible": True, "status": "approved"},
+    )
+    # Unknown fields are ignored by the schema rather than rejected, so assert
+    # on the effect: the status change lands, the flag does not.
+    assert resp.status_code == 200
+    db_session.expire_all()
+    row = db_session.query(ToolRegistryEntry).filter_by(name=target).one()
+    assert row.status == TOOL_APPROVED
+    assert row.ingestible is False
+
+
 def test_endpoint_serves_the_registry_and_filters_by_status(client, db_session):
     _seed(db_session)
     body = client.get("/api/v1/references/tools").json()
