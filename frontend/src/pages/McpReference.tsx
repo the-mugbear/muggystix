@@ -208,12 +208,23 @@ const McpReference: React.FC = () => {
     })).filter((g) => g.tools.length > 0);
   }, [catalog]);
 
+  // The certificate story, resolved from the same catalog call: the script URL
+  // and the fingerprint to check a download against. Falls back to relative
+  // paths so the commands still read correctly if the catalog call failed.
+  const fingerprint = catalog?.tls_fingerprint_sha256 ?? null;
+  const trustScriptUrl =
+    catalog?.trust_script_url ?? '/api/v1/references/trust-cert-script';
+  // Origin of the deployment, which is what the script needs to fetch the cert.
+  const deploymentUrl = trustScriptUrl.replace(/\/api\/v1\/references\/.*$/, '');
+  const trustScriptCommands = [
+    `curl -sk ${trustScriptUrl} -o trust-cert.sh`,
+    'less trust-cert.sh          # it installs a trust anchor — read it first',
+    `bash trust-cert.sh --url ${deploymentUrl || 'https://<this-host>'}`,
+  ].join('\n');
+
   // The endpoint is server-resolved; fall back to a relative path so the
   // connect snippets still read correctly if the catalog call failed.
   const endpoint = catalog?.endpoint ?? '/api/v1/mcp';
-  // Same origin as the MCP endpoint the server resolved, so the command is
-  // copy-pasteable rather than something the operator has to adapt.
-  const certUrl = `${endpoint.replace(/\/mcp$/, '')}/references/tls-certificate`;
 
   const toolRows = (tools: McpToolDoc[]) => (
     <Table style={{ tableLayout: 'fixed' }}>
@@ -335,50 +346,55 @@ const McpReference: React.FC = () => {
         client&rsquo;s snippet rather than adapting another&rsquo;s. Starting an assist session
         emits these with the key already filled in; the placeholder below is only for reading.
       </p>
-      <Alert variant="warning" className="mb-sm">
-        <AlertDescription>
-          <strong>Self-signed certificate? Pin it — don&rsquo;t disable verification.</strong>{' '}
-          VS Code and Claude Code are Node-based, and Node ignores the OS trust store, so
-          &ldquo;trust it in Keychain&rdquo; won&rsquo;t help: the client refuses the connection
-          with <span className="font-mono">DEPTH_ZERO_SELF_SIGNED_CERT</span> before it sends a
-          request. Fetch this deployment&rsquo;s certificate and point Node at it — verification
-          stays on, scoped to this one certificate:
-          <span className="mt-xxs block font-mono text-caption">
-            curl -sk {certUrl} -o bluestick.pem
-            <br />
-            export NODE_EXTRA_CA_CERTS=$PWD/bluestick.pem
-          </span>
-          <span className="mt-xxs block">
-            <span className="font-mono">./scripts/trust-cert.sh</span> does both steps and prints
-            the exports. Either way the client reads them at <em>startup</em> — export them, then
-            restart it; setting them inside a running client changes nothing, which is the reason
-            a pin usually looks like it &ldquo;didn&rsquo;t work&rdquo;.
-          </span>
-          <span className="mt-xxs block">
-            Fetching it over the untrusted connection is trust-on-first-use — on a network you
-            don&rsquo;t control, copy{' '}
-            <span className="font-mono">ssl/certs/networkmapper.crt</span> off the deployment host
-            instead. <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span> also works
-            but switches verification off for every host that process talks to, so prefer the pin.
-          </span>
-        </AlertDescription>
-      </Alert>
-            <Alert variant="warning" className="mb-sm">   <AlertDescription>
-          <strong>Codex pins differently — it is not a Node client.</strong> Codex is a Rust
-          binary, so <span className="font-mono">NODE_EXTRA_CA_CERTS</span> does nothing for it,
-          and <span className="font-mono">SSL_CERT_FILE</span> does not take effect either (tested
-          on 0.147.0). It reads <span className="font-mono">SSL_CERT_DIR</span>, which wants a
-          directory of hash-named symlinks rather than a file:
-          <span className="mt-xxs block font-mono text-caption">
-            export SSL_CERT_DIR=$HOME/.bluestick/certs.d
-          </span>
-          <span className="mt-xxs block">
-            <span className="font-mono">./scripts/trust-cert.sh</span> builds that directory and
-            prints both exports. Verified against 0.147.0: pinning this way still validates public
-            hosts normally, so it adds trust rather than replacing it.
-          </span>
-        </AlertDescription>
-      </Alert>
+      {/* Every client fails here first, and each needs a different variable —
+          so the page leads with the one command that handles both rather than
+          six steps an operator has to translate for their client. */}
+      <Card className="mb-sm border-warning/40">
+        <CardContent className="space-y-sm p-md">
+          <div className="flex gap-sm">
+            <ShieldCheck className="mt-xxs size-4 shrink-0 text-warning" aria-hidden />
+            <div className="min-w-0">
+              <p className="text-metadata font-semibold text-foreground">
+                First: trust this deployment&rsquo;s certificate
+              </p>
+              <p className="mt-xxs text-caption text-muted-foreground">
+                BlueStick is self-hosted, so its certificate is self-signed and always will be —
+                there is no public CA to issue one for a private address. Every client refuses the
+                connection until it trusts this certificate, and{' '}
+                <strong className="text-foreground">the variable differs per client</strong>:
+                VS Code and Claude Code are Node-based and read{' '}
+                <span className="font-mono">NODE_EXTRA_CA_CERTS</span> (a file); Codex is a Rust
+                binary and reads <span className="font-mono">SSL_CERT_DIR</span> (a directory of
+                hash-named symlinks). This script installs both and prints the exports:
+              </p>
+            </div>
+          </div>
+          <CodeBlock
+            text={trustScriptCommands}
+            label="certificate trust setup"
+          />
+          <p className="text-caption text-muted-foreground">
+            Read it before running it — it installs a trust anchor, which is not something to pipe
+            from a download straight into a shell.
+            {fingerprint ? (
+              <>
+                {' '}The script prints the certificate&rsquo;s SHA-256; it should match{' '}
+                <span className="break-all font-mono text-foreground">{fingerprint}</span>. If it
+                doesn&rsquo;t, you fetched a different host — stop.
+              </>
+            ) : null}
+          </p>
+          <p className="text-caption text-muted-foreground">
+            <strong className="text-foreground">Then restart the client.</strong> Both variables
+            are read at process startup, so exporting them inside a running client changes
+            nothing — that is the usual reason a pin looks like it didn&rsquo;t work. Verified
+            against Codex 0.147.0: pinning adds this certificate to the client&rsquo;s existing
+            trust, so it keeps validating public hosts normally. That is the difference from{' '}
+            <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span>, which switches
+            verification off for everything the process talks to.
+          </p>
+        </CardContent>
+      </Card>
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
           <strong>The key is a live credential.</strong> A project-scoped config

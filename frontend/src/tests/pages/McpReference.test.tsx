@@ -27,6 +27,9 @@ const catalog = (): McpCatalog => ({
   endpoint: 'https://bluestick.example/api/v1/mcp',
   max_request_bytes: 1048576,
   max_batch_messages: 50,
+  trust_script_url: 'https://bluestick.example/api/v1/references/trust-cert-script',
+  tls_certificate_url: 'https://bluestick.example/api/v1/references/tls-certificate',
+  tls_fingerprint_sha256: 'AA:BB:CC:DD',
   tools: [
     {
       name: 'assist_list_hosts',
@@ -145,6 +148,22 @@ describe('McpReference', () => {
     // Cursor was dropped in v2.275.0 — it was the one recipe never verified
     // against a real install, and nobody here uses it.
     expect(screen.queryByRole('tab', { name: 'Cursor' })).not.toBeInTheDocument();
+  });
+
+  it('hands over a runnable certificate-trust command, not six manual steps', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
+
+    // Every client fails on the self-signed cert first, and each needs a
+    // different variable — so the page leads with the script that does both.
+    const block = screen.getByText(/curl -sk .*trust-cert-script -o trust-cert\.sh/);
+    expect(block.textContent).toContain('bash trust-cert.sh --url https://bluestick.example');
+    // Read-then-run, never piped: this one installs a trust anchor.
+    expect(block.textContent).toContain('less trust-cert.sh');
+    expect(block.textContent).not.toContain('| bash');
+
+    // The fingerprint is what makes a downloaded certificate checkable.
+    expect(screen.getByText('AA:BB:CC:DD')).toBeInTheDocument();
   });
 
   it('degrades to the static guidance when the catalog cannot be loaded', async () => {

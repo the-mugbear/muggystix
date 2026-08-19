@@ -154,6 +154,14 @@ export interface McpCatalog {
   max_request_bytes: number;
   max_batch_messages: number;
   tools: McpToolDoc[];
+  /** Connecting is the other half of this page's job, and every client fails at
+   *  the certificate first. These ride along with the catalog so the page has
+   *  them exactly when it needs them. */
+  trust_script_url?: string;
+  tls_certificate_url?: string;
+  /** SHA-256 of the deployment certificate, for checking a downloaded copy.
+   *  Null when the certificate isn't mounted in the backend container. */
+  tls_fingerprint_sha256?: string | null;
 }
 
 export const getMcpTools = async (): Promise<McpCatalog> => {

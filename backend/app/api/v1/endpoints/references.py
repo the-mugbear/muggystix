@@ -15,6 +15,7 @@ same "things-agents-curl-once" surface, not because of route prefix.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -30,6 +31,8 @@ from app.db.models_auth import User, UserRole
 from app.db.session import get_db
 from app.services.agents_guide_service import slice_agents_md
 from app.services.agent_prompt_history import PROMPT_VERSION
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -66,6 +69,43 @@ async def preflight_script():
     raise HTTPException(status_code=404, detail="preflight.sh not found in deployment")
 
 
+@router.get("/references/trust-cert-script", include_in_schema=True)
+async def trust_cert_script():
+    """Serve scripts/trust-cert.sh as text/x-shellscript (v2.286.0).
+
+    Pinning this deployment's certificate takes a different variable per client
+    (``NODE_EXTRA_CA_CERTS`` for the Node-based ones, ``SSL_CERT_DIR`` — a
+    directory of hash-named symlinks — for Codex), and the operator running the
+    client usually has no reason to have this repository checked out.  Serving
+    the script from the deployment is the difference between "follow these six
+    steps" and "run this once"::
+
+        curl -sk https://<host>/api/v1/references/trust-cert-script -o trust-cert.sh
+        less trust-cert.sh
+        bash trust-cert.sh --url https://<host>
+
+    Deliberately NOT advertised as ``curl … | bash``, unlike the preflight
+    script: this one installs a trust anchor, and piping an unverified download
+    straight into a shell is exactly the habit that makes trust-on-first-use
+    dangerous.  The script prints the certificate's SHA-256 so it can be
+    compared against the fingerprint the reference page shows.
+    """
+    candidates = [
+        Path("/app/scripts/trust-cert.sh"),
+        Path(__file__).resolve().parents[4] / "scripts" / "trust-cert.sh",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return PlainTextResponse(
+                p.read_text(encoding="utf-8"),
+                media_type="text/x-shellscript; charset=utf-8",
+                headers={
+                    "Content-Disposition": 'attachment; filename="trust-cert.sh"',
+                },
+            )
+    raise HTTPException(status_code=404, detail="trust-cert.sh not found in deployment")
+
+
 @router.get("/references/sbom")
 def sbom():
     """Software bill of materials for the deployed app.
@@ -92,6 +132,30 @@ def sbom():
 # private key is never mounted into this container).  Serving it lets an operator
 # pin it via NODE_EXTRA_CA_CERTS instead of switching TLS verification off.
 _TLS_CERT_PATH = Path("/certs/networkmapper.crt")
+
+
+def tls_certificate_fingerprint() -> Optional[str]:
+    """SHA-256 of the deployment certificate, or None when it isn't mounted.
+
+    Published so an operator who downloaded the certificate over the untrusted
+    connection has something to check it against.  Reading the fingerprint from
+    the same connection proves nothing on its own — but it is displayed in the
+    browser, where the operator can also inspect the certificate the padlock
+    shows, and it detects the ordinary failure (fetched the wrong host) even
+    when it cannot prove the extraordinary one.
+    """
+    if not _TLS_CERT_PATH.is_file():
+        return None
+    try:
+        import hashlib
+        import ssl
+
+        der = ssl.PEM_cert_to_DER_cert(_TLS_CERT_PATH.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(der).hexdigest().upper()
+        return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+    except Exception:  # pragma: no cover - defensive; a bad cert must not 500
+        logger.exception("could not fingerprint the deployment certificate")
+        return None
 
 
 @router.get("/references/tls-certificate", response_class=PlainTextResponse)
@@ -283,7 +347,17 @@ def mcp_tools(request: Request):
     from app.api.v1.endpoints.mcp_assist import tool_catalog
     from app.services.agent_prompt_service import resolve_base_url
 
-    return tool_catalog(f"{resolve_base_url(request)}/mcp")
+    base_url = resolve_base_url(request)
+    catalog = tool_catalog(f"{base_url}/mcp")
+    # Connecting is the other half of what this page is for, and every client
+    # fails at the certificate first (v2.286.0).  The script URL and the
+    # fingerprint ride along here rather than in a second fetch: the page needs
+    # both exactly when it needs the tool list, and a fingerprint the operator
+    # has to go and find is a fingerprint nobody checks.
+    catalog["trust_script_url"] = f"{base_url}/references/trust-cert-script"
+    catalog["tls_certificate_url"] = f"{base_url}/references/tls-certificate"
+    catalog["tls_fingerprint_sha256"] = tls_certificate_fingerprint()
+    return catalog
 
 
 @router.get("/references/tool-readiness")
@@ -370,6 +444,16 @@ async def references_index():
                 "Software bill of materials — every backend Python and "
                 "frontend npm component bundled with this build, tagged "
                 "direct vs transitive.  For operational CVE triage."
+            ),
+        },
+        "trust_cert_script": {
+            "url": "/api/v1/references/trust-cert-script",
+            "description": (
+                "Shell script that installs this deployment's certificate in "
+                "both shapes MCP clients need (NODE_EXTRA_CA_CERTS for VS Code "
+                "/ Claude Code, SSL_CERT_DIR for Codex) and prints the exports. "
+                "Download and read it before running — it installs a trust "
+                "anchor: `bash trust-cert.sh --url https://<host>`."
             ),
         },
         "tls_certificate": {
