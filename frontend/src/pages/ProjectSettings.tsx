@@ -1,12 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { copyToClipboard } from '../utils/clipboard';
-import {
-  Trash2,
-  Copy,
-  Bot,
-  RefreshCw,
-  Loader2,
-} from 'lucide-react';
+import { Trash2, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
 import {
@@ -14,10 +7,6 @@ import {
   createProject,
   updateProject,
   Project,
-  AgentResponse,
-  getProjectAgents,
-  deactivateAgent,
-  rotateAgentKey,
 } from '../services/api';
 import api from '../services/api';
 import { useToast } from '../contexts/ToastContext';
@@ -36,7 +25,6 @@ import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Separator } from '../components/ui/separator';
 import {
   Select,
   SelectContent,
@@ -153,15 +141,6 @@ const ProjectSettings: React.FC = () => {
   const [userDirectory, setUserDirectory] = useState<DirectoryEntry[]>([]);
   const [directoryLoading, setDirectoryLoading] = useState(false);
 
-  // Agent
-  const [agent, setAgent] = useState<AgentResponse | null>(null);
-  const [allAgents, setAllAgents] = useState<AgentResponse[]>([]);
-  const [agentLoading, setAgentLoading] = useState(false);
-  // Still set by key rotation, which is the one path that surfaces a new
-  // plaintext key now that agent creation has no UI.
-  const [newApiKey, setNewApiKey] = useState<string | null>(null);
-  const [apiKeyCopied, setApiKeyCopied] = useState(false);
-
   const loadProjects = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -193,7 +172,6 @@ const ProjectSettings: React.FC = () => {
     if (initial) {
       setSelectedProject(initial);
       loadMembers(initial.id);
-      loadAgent(initial.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects, currentProject?.id]);
@@ -212,104 +190,9 @@ const ProjectSettings: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadAgent = useCallback(
-    async (_projectId: number) => {
-      setAgentLoading(true);
-      try {
-        const agents = await getProjectAgents();
-        setAllAgents(agents);
-        setAgent(agents.find((a) => a.owner_id === user?.id) || null);
-      } catch (err: unknown) {
-        toast.error(formatApiError(err, 'Failed to load agent.'));
-        setAgent(null);
-        setAllAgents([]);
-      } finally {
-        setAgentLoading(false);
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    },
-    [user?.id],
-  );
-
   const handleSelectProject = (project: Project) => {
     setSelectedProject(project);
     loadMembers(project.id);
-    loadAgent(project.id);
-  };
-
-  // Agent management
-  const handleDeactivateAgent = async () => {
-    if (!agent) return;
-    const ok = await confirm({
-      title: 'Deactivate agent',
-      body: "The agent's API key will be revoked immediately. Any test plans or recon runs still using it will stop working.",
-      resourceName: agent.name,
-      severity: 'danger',
-      confirmLabel: 'Deactivate',
-    });
-    if (!ok) return;
-    try {
-      await deactivateAgent(agent.id);
-      setAgent(null);
-      toast.success('Agent deactivated.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to deactivate agent.'));
-    }
-  };
-
-  // Project admins (and global admins) can stop another member's agent —
-  // the backend DELETE /agents/{id} already authorises owner-or-project-admin;
-  // this surfaces that kill-switch in the UI so a runaway agent can be
-  // stopped without a DB poke.
-  const isProjectAdmin =
-    user?.role === 'admin' ||
-    members.some((m) => m.user_id === user?.id && m.role === 'admin');
-
-  const handleDeactivateTeamAgent = async (a: AgentResponse) => {
-    const ok = await confirm({
-      title: 'Deactivate agent',
-      body: "This revokes the agent's API key immediately. Any test plans or recon runs still using it will stop working. As a project admin you can stop another member's agent.",
-      resourceName: a.name,
-      severity: 'danger',
-      confirmLabel: 'Deactivate',
-    });
-    if (!ok) return;
-    try {
-      await deactivateAgent(a.id);
-      setAllAgents((prev) =>
-        prev.map((x) => (x.id === a.id ? { ...x, is_active: false } : x)),
-      );
-      toast.success(`Agent "${a.name}" deactivated.`);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to deactivate agent.'));
-    }
-  };
-
-  const handleRotateKey = async () => {
-    if (!agent) return;
-    const ok = await confirm({
-      title: 'Rotate agent API key',
-      body: 'A new key will be generated and the current one will be revoked immediately. Any running agents using the old key will stop working and must be given the new key.',
-      resourceName: agent.name,
-      severity: 'warning',
-      confirmLabel: 'Generate new key',
-    });
-    if (!ok) return;
-    try {
-      const result = await rotateAgentKey(agent.id);
-      setNewApiKey(result.api_key);
-      toast.success('New API key generated.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to rotate key.'));
-    }
-  };
-
-  const handleCopyApiKey = async () => {
-    if (!newApiKey) return;
-    if (await copyToClipboard(newApiKey)) {
-      setApiKeyCopied(true);
-      setTimeout(() => setApiKeyCopied(false), 2000);
-    }
   };
 
   // Create project
@@ -692,135 +575,6 @@ const ProjectSettings: React.FC = () => {
                     ))}
                   </TableBody>
                 </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Agent section */}
-      {selectedProject && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="flex items-center gap-xs">
-              <Bot className="size-5" aria-hidden /> AI Agents
-              {allAgents.length > 0 && <Badge variant="muted">{allAgents.length}</Badge>}
-            </CardTitle>
-            {/* No "create" affordance by design (v5.181.0). Every workflow —
-                assist, recon, plan generation, execution — auto-provisions the
-                per-user agent row on first session start, so nothing here ever
-                needed to be clicked first. What the button actually did was
-                mint an UNSCOPED key: one bound to no session and no plan, which
-                `require_plan_scope` still admits to every /agent/test-plans/*
-                endpoint for any plan in the project. That is wider authority
-                than the session dialogs hand out, offered under a label that
-                read like setup. This card stays as the place to see, rotate and
-                revoke what exists. */}
-          </CardHeader>
-          <CardContent>
-            {newApiKey && (
-              <Alert variant="success" className="mb-md">
-                <AlertDescription>
-                  <div className="flex flex-col gap-xs">
-                    <p className="font-semibold">API Key (shown once only):</p>
-                    <p className="break-all font-mono text-caption">{newApiKey}</p>
-                    <div>
-                      <Button size="sm" variant="outline" onClick={handleCopyApiKey}>
-                        <Copy className="size-3.5" aria-hidden />
-                        {apiKeyCopied ? 'Copied!' : 'Copy'}
-                      </Button>
-                    </div>
-                  </div>
-                </AlertDescription>
-              </Alert>
-            )}
-            {agentLoading ? (
-              <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />
-            ) : agent ? (
-              <div>
-                <div className="mb-md grid grid-cols-1 gap-sm sm:grid-cols-2">
-                  <div>
-                    <p className="text-caption text-muted-foreground">Name</p>
-                    <p className="text-metadata font-medium text-foreground">{agent.name}</p>
-                  </div>
-                  <div>
-                    <p className="text-caption text-muted-foreground">Status</p>
-                    <Badge variant={agent.is_active ? 'success' : 'muted'}>
-                      {agent.is_active ? 'Active' : 'Inactive'}
-                    </Badge>
-                  </div>
-                  <div>
-                    <p className="text-caption text-muted-foreground">Key Prefix</p>
-                    <p className="font-mono text-metadata text-foreground">
-                      {safeFallback(agent.api_key_prefix)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-caption text-muted-foreground">Last Active</p>
-                    <p className="text-metadata text-foreground">
-                      {agent.last_activity_at
-                        ? new Date(agent.last_activity_at).toLocaleString()
-                        : 'Never'}
-                    </p>
-                  </div>
-                  {agent.description && (
-                    <div className="sm:col-span-2">
-                      <p className="text-caption text-muted-foreground">Description</p>
-                      <p className="text-metadata text-foreground">{agent.description}</p>
-                    </div>
-                  )}
-                </div>
-                <div className="flex gap-xs">
-                  <Button variant="outline" size="sm" onClick={handleRotateKey}>
-                    <RefreshCw className="size-3.5" aria-hidden /> Rotate Key
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleDeactivateAgent}
-                    className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                  >
-                    Deactivate
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <p className="text-metadata text-muted-foreground">
-                You don't have an agent for this project yet.
-              </p>
-            )}
-
-            {allAgents.filter((a) => a.owner_id !== user?.id).length > 0 && (
-              <div className="mt-md border-t border-border pt-md">
-                <p className="mb-xs text-caption font-semibold text-muted-foreground">Team Agents</p>
-                <div className="flex flex-col gap-xxs">
-                  {allAgents
-                    .filter((a) => a.owner_id !== user?.id)
-                    .map((a) => (
-                      <div key={a.id} className="flex items-center gap-sm text-metadata">
-                        <span className="min-w-0 truncate">{a.name}</span>
-                        <Badge variant={a.is_active ? 'success' : 'muted'}>
-                          {a.is_active ? 'Active' : 'Inactive'}
-                        </Badge>
-                        <span className="text-caption text-muted-foreground">
-                          Last active:{' '}
-                          {a.last_activity_at
-                            ? new Date(a.last_activity_at).toLocaleDateString()
-                            : 'Never'}
-                        </span>
-                        {isProjectAdmin && a.is_active && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="ml-auto text-destructive"
-                            onClick={() => handleDeactivateTeamAgent(a)}
-                          >
-                            Deactivate
-                          </Button>
-                        )}
-                      </div>
-                    ))}
-                </div>
               </div>
             )}
           </CardContent>

@@ -30,7 +30,10 @@ export { api, setCurrentProjectId, getCurrentProjectId };
 //     final flat namespace.  Keep this list alphabetically organised.
 export * from './api/activity';
 export * from './api/agent-sessions';
-export * from './api/agents';
+// './api/agents' removed in v5.182.0 with the AI Agents card — the project
+// agent row is auto-provisioned by every workflow and managed through session
+// lifecycle, so nothing in the UI called it. The /agents/ endpoints remain
+// server-side for scripts.
 export * from './api/assist';
 export * from './api/coverage';
 export * from './api/dashboard';
