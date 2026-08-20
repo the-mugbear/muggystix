@@ -460,6 +460,67 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/coverage",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    "assist_get_host_testing": {
+        "description": (
+            "What has been PLANNED or RUN against this host by the team: "
+            "approved plan entries, the tests proposed for each, and the "
+            "recorded results (command, outcome, findings, severity). This is "
+            "how you tell a scanner's claim from something a human confirmed — "
+            "say which it is when you report a finding. Only entries from "
+            "approved plans, never rejected ones."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/hosts/{host_id}/testing",
+        "path_params": ["host_id"],
+        "input_schema": {
+            "type": "object",
+            "properties": dict(HOST_ID_PROP),
+            "required": ["host_id"],
+            "additionalProperties": False,
+        },
+    },
+    "assist_list_segments": {
+        "description": (
+            "Per-subnet rollup — hosts, critical/high counts and how many are "
+            "unassigned — sorted worst-first. Use it for \"where should we "
+            "look?\" and \"which segment is worst?\" instead of running a "
+            "count per subnet and comparing them yourself."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/segments",
+        "query_params": ["limit"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "assist_list_recent_notes": {
+        "description": (
+            "Recent notes across the whole project, newest first — what the "
+            "team has been working on, as opposed to what a scanner found. "
+            "Filter by status (open notes are the outstanding-work list this "
+            "project actually keeps) or by author ('me' or a username)."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/notes",
+        "query_params": ["limit", "status", "author"],
+        "defaults": {"limit": 25},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
+                "status": {"type": "string", "enum": ["open", "in_progress", "resolved"]},
+                "author": {"type": "string", "description": "Username, or 'me'."},
+            },
+            "additionalProperties": False,
+        },
+    },
     "assist_list_scopes": {
         "description": "List the network scopes (CIDR boundaries) defined for this project.",
         "workflows": _ASSIST,

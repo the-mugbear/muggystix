@@ -785,3 +785,183 @@ def test_coverage_is_reachable_so_completeness_can_be_qualified(
     headers = _assist(client, test_project.id)
     body = client.get("/api/v1/agent/assist/coverage", headers=headers).json()
     assert "domains" in body and "total_hosts" in body
+
+
+def test_testing_history_distinguishes_a_scanner_claim_from_a_confirmed_one(
+    client, db_session, test_project, test_user
+):
+    """v2.293.0. Assist could see what scanners reported and nothing about what
+    the team did, so it could not tell a finding nobody has looked at from one a
+    tester confirmed by hand — and every answer implicitly claimed the former."""
+    from app.db.models import Host
+    from app.db.models_agent import (
+        Agent as AgentModel,
+        ExecutionSession,
+        TestExecutionResult,
+        TestPlan,
+        TestPlanEntry,
+    )
+
+    host = Host(project_id=test_project.id, ip_address="10.8.3.1", state="up")
+    agent_row = AgentModel(project_id=test_project.id, name="a", owner_id=test_user.id)
+    db_session.add_all([host, agent_row])
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.refresh(agent_row)
+
+    plan = TestPlan(
+        project_id=test_project.id, title="Approved plan", status="approved",
+        agent_id=agent_row.id, created_by_user_id=test_user.id,
+    )
+    hidden = TestPlan(
+        # version 2: (project_id, version) is unique, and a second plan in the
+        # same project is exactly the case that constraint governs.
+        project_id=test_project.id, title="Still a draft", status="draft",
+        version=2, agent_id=agent_row.id, created_by_user_id=test_user.id,
+    )
+    # A third plan: (test_plan_id, host_id) is unique, so the rejected entry
+    # cannot share a plan with the completed one — it needs its own, and it is
+    # approved, so exclusion has to come from the ENTRY status rather than the
+    # plan's.
+    rejected_plan = TestPlan(
+        project_id=test_project.id, title="Approved, entry rejected",
+        status="approved", version=3, agent_id=agent_row.id,
+        created_by_user_id=test_user.id,
+    )
+    db_session.add_all([plan, hidden, rejected_plan])
+    db_session.commit()
+
+    entry = TestPlanEntry(
+        test_plan_id=plan.id, host_id=host.id, priority="high",
+        test_phase="enumeration", status="completed",
+        rationale="FTP banner suggests anonymous login",
+        proposed_tests=[{"tool": "nmap", "description": "confirm ftp"}],
+    )
+    rejected = TestPlanEntry(
+        test_plan_id=rejected_plan.id, host_id=host.id, priority="low",
+        test_phase="enumeration", status="rejected",
+        rationale="decided against", proposed_tests=[],
+    )
+    draft_entry = TestPlanEntry(
+        test_plan_id=hidden.id, host_id=host.id, priority="low",
+        test_phase="enumeration", status="proposed",
+        rationale="not approved yet", proposed_tests=[],
+    )
+    db_session.add_all([entry, rejected, draft_entry])
+    db_session.commit()
+
+    exec_session = ExecutionSession(
+        test_plan_id=plan.id, agent_id=agent_row.id, started_by_id=test_user.id,
+        status="completed",
+    )
+    db_session.add(exec_session)
+    db_session.commit()
+    db_session.add(
+        TestExecutionResult(
+            execution_session_id=exec_session.id, entry_id=entry.id, test_index=0,
+            status="executed", command_run="nmap -p21 -sV 10.8.3.1",
+            findings_summary="Anonymous login accepted", severity="critical",
+            is_finding=True,
+        )
+    )
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get(
+        f"/api/v1/agent/assist/hosts/{host.id}/testing", headers=headers
+    ).json()
+
+    # The approved, non-rejected entry only: a draft plan's entries never leak,
+    # and a rejected entry is an explicit "do not test this" that an agent must
+    # not re-litigate as outstanding work.
+    assert len(body) == 1
+    e = body[0]
+    assert e["status"] == "completed" and e["plan_title"] == "Approved plan"
+    assert e["proposed_tests"][0]["tool"] == "nmap"
+    # The part that makes a claim citable: what was actually run, and what it showed.
+    assert e["results"][0]["command_run"] == "nmap -p21 -sV 10.8.3.1"
+    assert e["results"][0]["is_finding"] is True
+    assert e["results"][0]["severity"] == "critical"
+
+
+def test_segments_rank_the_network_so_the_agent_does_not_have_to(
+    client, db_session, test_project
+):
+    """"Which segment is worst?" was a count per subnet reassembled client-side
+    — arithmetic an agent does silently and sometimes wrongly. The ordering is
+    the answer, so the server does it."""
+    from app.db import models
+    from app.db.models import Host, Scope, Subnet, HostSubnetMapping
+    from app.db.models_vulnerability import (
+        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+    )
+
+    scope = Scope(name="s", project_id=test_project.id)
+    db_session.add(scope)
+    db_session.commit()
+    quiet = Subnet(scope_id=scope.id, cidr="10.20.0.0/24", description="quiet")
+    noisy = Subnet(scope_id=scope.id, cidr="10.21.0.0/24", description="noisy")
+    scan = models.Scan(project_id=test_project.id, filename="s.xml", tool_name="nmap")
+    db_session.add_all([quiet, noisy, scan])
+    db_session.commit()
+
+    for subnet, ip, critical in (
+        (quiet, "10.20.0.5", False), (noisy, "10.21.0.5", True), (noisy, "10.21.0.6", True),
+    ):
+        h = Host(project_id=test_project.id, ip_address=ip, state="up")
+        db_session.add(h)
+        db_session.commit()
+        db_session.refresh(h)
+        db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=subnet.id))
+        if critical:
+            db_session.add(
+                Vulnerability(
+                    host_id=h.id, scan_id=scan.id, title=f"c-{ip}",
+                    severity=VulnerabilitySeverity.CRITICAL,
+                    source=VulnerabilitySource.NESSUS, plugin_id=f"p-{ip}",
+                )
+            )
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    segments = client.get("/api/v1/agent/assist/segments", headers=headers).json()
+    by_cidr = {s["cidr"]: s for s in segments}
+
+    assert by_cidr["10.21.0.0/24"]["critical_hosts"] == 2
+    assert by_cidr["10.20.0.0/24"]["critical_hosts"] == 0
+    # Worst first — the ordering IS the answer to "where should we look?".
+    assert segments[0]["cidr"] == "10.21.0.0/24"
+    # Nobody owns any of them yet, which is the other half of the question.
+    assert by_cidr["10.21.0.0/24"]["unassigned_hosts"] == 2
+
+
+def test_recent_notes_answer_what_the_team_has_been_doing(
+    client, db_session, test_project, test_user
+):
+    """Per-host notes answer "what about THIS host"; picking an engagement back
+    up is a question about the work, not one asset."""
+    from app.db.models import Annotation, Host, NoteStatus
+
+    host = Host(project_id=test_project.id, ip_address="10.8.4.1", state="up")
+    db_session.add(host)
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.add_all([
+        Annotation(host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+                   body="Still chasing the vendor", status=NoteStatus.OPEN, actor_type="user"),
+        Annotation(host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+                   body="Closed this one out", status=NoteStatus.RESOLVED, actor_type="user"),
+    ])
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    all_notes = client.get("/api/v1/agent/assist/notes", headers=headers).json()
+    assert len(all_notes) == 2
+    # The host is resolved so the agent can say which asset without another call.
+    assert all_notes[0]["host_ip"] == "10.8.4.1"
+
+    # Open notes are the outstanding-work list the project actually keeps.
+    open_only = client.get(
+        "/api/v1/agent/assist/notes", params={"status": "open"}, headers=headers
+    ).json()
+    assert [n["body"] for n in open_only] == ["Still chasing the vendor"]

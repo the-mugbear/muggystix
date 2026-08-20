@@ -1121,6 +1121,293 @@ def assist_coverage(
     return compute_evidence_coverage(db, session.project_id)
 
 
+def _sev_name(value) -> str:
+    """Severity as a lowercase string, whatever the column handed back.
+
+    The column is an enum, but a raw string arrives from some ingest paths and
+    from SQLite in tests — comparing the two shapes directly is how a rollup
+    silently counts zero criticals on a project that has plenty.
+    """
+    raw = value.value if hasattr(value, "value") else value
+    return str(raw or "").lower()
+
+
+class AssistTestResult(BaseModel):
+    """One thing that was actually run, and what it showed."""
+    status: str
+    command_run: Optional[str] = None
+    findings_summary: Optional[str] = None
+    severity: Optional[str] = None
+    is_finding: bool = False
+    executed_at: Optional[datetime] = None
+
+
+class AssistHostTesting(BaseModel):
+    """Whether this host was tested, by whom, and with what result."""
+    entry_id: int
+    plan_id: int
+    plan_title: Optional[str] = None
+    plan_status: Optional[str] = None
+    priority: Optional[str] = None
+    test_phase: Optional[str] = None
+    status: str
+    rationale: Optional[str] = None
+    findings: Optional[str] = None
+    proposed_tests: List[dict] = []
+    results: List[AssistTestResult] = []
+
+
+@router.get(
+    "/assist/hosts/{host_id}/testing",
+    response_model=List[AssistHostTesting],
+    summary="What has been planned or run against this host",
+)
+def list_assist_host_testing(
+    request: Request,
+    host_id: int = Path(..., gt=0),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """"Has anyone tested this, and what happened?"
+
+    v2.293.0.  Assist could see what scanners reported and nothing about what
+    the team actually did — so it could not tell a finding nobody has looked at
+    from one a tester confirmed by hand, and every answer implicitly claimed the
+    former. That distinction is most of what an analyst wants from a colleague.
+
+    Mirrors the human host page: only entries from plans a human approved
+    (`approved` / `in_progress` / `completed`), and never `rejected` entries —
+    a reviewer flipping an entry to rejected is an explicit "do not test this",
+    and an agent reporting it as outstanding work would be re-litigating a
+    decision that has already been made.
+    """
+    session = _load_assist_session(db, request)
+    from app.db.models_agent import (
+        TestExecutionResult,
+        TestPlan,
+        TestPlanEntry,
+    )
+
+    host = (
+        db.query(models.Host)
+        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .first()
+    )
+    if host is None:
+        raise HTTPException(status_code=404, detail="Host not found in this project")
+
+    entries = (
+        db.query(TestPlanEntry, TestPlan)
+        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+        .filter(
+            TestPlanEntry.host_id == host_id,
+            TestPlan.project_id == session.project_id,
+            TestPlan.status.in_(("approved", "in_progress", "completed")),
+            TestPlanEntry.status != "rejected",
+        )
+        .order_by(TestPlanEntry.id.desc())
+        .all()
+    )
+    if not entries:
+        return []
+
+    entry_ids = [e.id for e, _ in entries]
+    results_by_entry: dict = {}
+    for r in (
+        db.query(TestExecutionResult)
+        .filter(TestExecutionResult.entry_id.in_(entry_ids))
+        .order_by(TestExecutionResult.test_index)
+        .all()
+    ):
+        results_by_entry.setdefault(r.entry_id, []).append(
+            AssistTestResult(
+                status=r.status.value if hasattr(r.status, "value") else str(r.status),
+                command_run=r.command_run,
+                findings_summary=r.findings_summary,
+                severity=r.severity,
+                is_finding=bool(r.is_finding),
+                executed_at=r.executed_at,
+            )
+        )
+
+    def _value(v):
+        return v.value if hasattr(v, "value") else v
+
+    return [
+        AssistHostTesting(
+            entry_id=e.id,
+            plan_id=plan.id,
+            plan_title=plan.title,
+            plan_status=_value(plan.status),
+            priority=_value(e.priority),
+            test_phase=_value(e.test_phase),
+            status=_value(e.status),
+            rationale=e.rationale,
+            findings=e.findings,
+            # Normalised: entries carry either strings (legacy) or objects, and
+            # an agent should not have to branch on which era wrote the row.
+            proposed_tests=[
+                t if isinstance(t, dict) else {"description": str(t)}
+                for t in (e.proposed_tests or [])
+            ],
+            results=results_by_entry.get(e.id, []),
+        )
+        for e, plan in entries
+    ]
+
+
+class AssistSegment(BaseModel):
+    """One subnet, with the numbers that decide where to look next."""
+    cidr: str
+    description: Optional[str] = None
+    scope_name: Optional[str] = None
+    labels: List[str] = []
+    host_count: int = 0
+    critical_hosts: int = 0
+    high_hosts: int = 0
+    unassigned_hosts: int = 0
+
+
+@router.get(
+    "/assist/segments",
+    response_model=List[AssistSegment],
+    summary="Per-subnet rollup — where the problems are concentrated",
+)
+def list_assist_segments(
+    request: Request,
+    limit: int = Query(100, ge=1, le=500),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """"Which part of the network is worst?"
+
+    v2.293.0.  Assist could list scope CIDRs and count hosts one query at a
+    time, so comparing segments meant a query per subnet and reassembling the
+    comparison client-side — the sort of arithmetic an agent does silently and
+    sometimes wrongly. Sorted worst-first (criticals, then highs, then size),
+    because the ordering IS the answer to the question.
+    """
+    session = _load_assist_session(db, request)
+    pid = session.project_id
+
+    subnets = (
+        db.query(models.Subnet, models.Scope.name)
+        .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
+        .filter(models.Scope.project_id == pid)
+        .limit(limit)
+        .all()
+    )
+    if not subnets:
+        return []
+
+    out: List[AssistSegment] = []
+    for subnet, scope_name in subnets:
+        host_ids = [
+            hid for (hid,) in db.query(models.HostSubnetMapping.host_id)
+            .filter(models.HostSubnetMapping.subnet_id == subnet.id).all()
+        ]
+        critical = high = unassigned = 0
+        if host_ids:
+            sev_rows = (
+                db.query(Vulnerability.host_id, Vulnerability.severity)
+                .filter(Vulnerability.host_id.in_(host_ids))
+                .distinct()
+                .all()
+            )
+            critical = len({h for h, sev in sev_rows if _sev_name(sev) == "critical"})
+            high = len({h for h, sev in sev_rows if _sev_name(sev) == "high"})
+            assigned = {
+                h for (h,) in db.query(models.HostFollow.host_id)
+                .filter(
+                    models.HostFollow.host_id.in_(host_ids),
+                    models.HostFollow.assigned_at.isnot(None),
+                ).all()
+            }
+            unassigned = len(set(host_ids) - assigned)
+        out.append(
+            AssistSegment(
+                cidr=subnet.cidr,
+                description=subnet.description,
+                scope_name=scope_name,
+                labels=sorted(
+                    {a.label.name for a in (subnet.label_assignments or [])
+                     if a.label and a.label.name}
+                ),
+                host_count=len(host_ids),
+                critical_hosts=critical,
+                high_hosts=high,
+                unassigned_hosts=unassigned,
+            )
+        )
+    out.sort(key=lambda s: (-s.critical_hosts, -s.high_hosts, -s.host_count))
+    return out
+
+
+class AssistRecentNote(BaseModel):
+    id: int
+    host_id: Optional[int] = None
+    host_ip: Optional[str] = None
+    body: str
+    status: Optional[str] = None
+    author: Optional[str] = None
+    actor_type: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+@router.get(
+    "/assist/notes",
+    response_model=List[AssistRecentNote],
+    summary="Recent notes across the project — what the team has been doing",
+)
+def list_assist_recent_notes(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None, description="open / in_progress / resolved."),
+    author: Optional[str] = Query(None, description="Username, or 'me'."),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """"What has the team been working on?" — newest first.
+
+    v2.293.0.  Per-host notes answered "what do we know about THIS host"; this
+    answers the question an analyst asks when they pick the engagement back up,
+    which is about the work rather than about one asset. Open notes are the
+    outstanding-work list the project actually keeps.
+    """
+    session = _load_assist_session(db, request)
+    q = (
+        db.query(models.Annotation, User.username, models.Host.ip_address)
+        .outerjoin(User, models.Annotation.user_id == User.id)
+        .outerjoin(models.Host, models.Annotation.host_id == models.Host.id)
+        .filter(models.Annotation.project_id == session.project_id)
+    )
+    if status:
+        q = q.filter(models.Annotation.status == status)
+    if author:
+        if author.lower() == "me":
+            q = q.filter(models.Annotation.user_id == session.started_by_id)
+        else:
+            row = db.query(User.id).filter(func.lower(User.username) == author.lower()).first()
+            if row is None:
+                raise HTTPException(status_code=400, detail=f"No user named {author!r}")
+            q = q.filter(models.Annotation.user_id == row[0])
+
+    rows = q.order_by(models.Annotation.created_at.desc()).limit(limit).all()
+    return [
+        AssistRecentNote(
+            id=a.id,
+            host_id=a.host_id,
+            host_ip=ip,
+            body=a.body,
+            status=a.status.value if hasattr(a.status, "value") else a.status,
+            author=username,
+            actor_type=a.actor_type,
+            created_at=a.created_at,
+        )
+        for a, username, ip in rows
+    ]
+
+
 @router.get(
     "/assist/scopes",
     response_model=List[ScopeBrief],

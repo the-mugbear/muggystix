@@ -21,6 +21,28 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.54.0",
+        "app_version": "2.293.0",
+        "summary": (
+            "Three more analyst questions assist could not answer. TESTING "
+            "HISTORY (`/assist/hosts/<id>/testing`): it could see what scanners "
+            "reported and nothing about what the team did, so it could not "
+            "distinguish a finding nobody has looked at from one a tester "
+            "confirmed by hand — and every answer implicitly claimed the "
+            "former. Only entries from approved plans, never rejected ones: a "
+            "reviewer flipping an entry to rejected has already decided, and an "
+            "agent reporting it as outstanding work re-litigates that. SEGMENTS "
+            "(`/assist/segments`): per-subnet hosts/criticals/highs/unassigned, "
+            "sorted worst-first, because 'which segment is worst?' was "
+            "otherwise a count per subnet reassembled by the agent — arithmetic "
+            "it does silently and sometimes wrongly, and the ordering IS the "
+            "answer. RECENT NOTES (`/assist/notes`): per-host notes answer "
+            "'what about THIS host'; picking an engagement back up is a "
+            "question about the work, and open notes are the outstanding-work "
+            "list the project actually keeps."
+        ),
+    },
+    {
         "version": "1.53.0",
         "app_version": "2.292.0",
         "summary": (

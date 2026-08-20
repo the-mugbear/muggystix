@@ -61,8 +61,11 @@ What that takes, beyond "which hosts match X":
 | "What do we already know about this host?" | `assist_get_host_notes` |
 | "Which tags/sites/people exist here?" | `assist_get_vocabulary` |
 | "How much of this did we actually assess?" | `assist_get_coverage` |
+| "Has anyone tested this host, and what happened?" | `assist_get_host_testing` |
+| "Which segment is worst?" | `assist_list_segments` — ranked worst-first |
+| "What has the team been working on?" | `assist_list_recent_notes` (`status=open` = outstanding work) |
 
-Two of those exist because their absence produced *confident wrong answers*
+Several of these exist because their absence produced *confident wrong answers*
 rather than errors: rebuilding the findings spine from per-host calls counts one
 finding once per affected host, and a guessed tag name returns zero hosts rather
 than failing, so "nothing is tagged production" looks like an answer.
