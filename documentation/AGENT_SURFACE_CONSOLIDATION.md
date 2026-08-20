@@ -362,10 +362,28 @@ UI-wired, and the agent-facing self-renewal is what the failure mode required.
 * Independently valuable: fixes a live gap for recon runs over 24h, and can land
   before any other phase.
 
-### Phase 3 — Target declaration
-* Generalise `scope_id` / host-set as the session's declared target.
-* Surface it on Agent Runs so a second analyst can see the range is taken.
-* Record out-of-scope ingest against the session; do not reject.
+### Phase 3 — Target declaration ✅ **Shipped in 2.306.0 / 5.187.0**
+There was no target model to build — `scope_id` / `plan_id` already carried it.
+The gap was that the timeline showed **ids**, and "Scope #3" cannot tell a
+second analyst that a range is already being scanned, which is the entire
+reason a session declares a target.
+
+* Sessions now carry a `target_label`: the scope name plus its CIDRs (capped at
+  3, then "+N more") for recon, the plan title for plan work, and nothing for
+  assist — which is project-wide by design, so an empty target is the honest
+  answer rather than a fabricated one.
+* Resolved in **two batched queries** per page, not one per row.
+* Surfaced on both Agent Runs and Project Activity, with the id as fallback for
+  a deleted scope or a deployment mid-upgrade.
+
+**Deferred:** recording out-of-scope ingest against the session. It is an audit
+refinement — visibility is what prevents the duplicated work, and that is now
+in place. Worth doing when the ingest path is next touched.
+
+*Measured while testing:* the timeline resolves agent and user names once per
+**distinct** object via the identity map, so its query count is bounded by how
+many people work a project rather than by page size — 17 rows in 8 queries on
+real data. A test pins that adding rows which share an agent adds no queries.
 
 ### Phase 4 — Single session-start flow
 * One dialog replacing three, declaring intent (label) + target.

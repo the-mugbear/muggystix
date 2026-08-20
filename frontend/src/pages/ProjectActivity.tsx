@@ -566,13 +566,24 @@ const ProjectActivity: React.FC = () => {
                       )}
                     </TableCell>
                     <TableCell>
-                      {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
-                      {(r.kind === 'plan_generation' || r.kind === 'execution') &&
-                        r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
-                      {r.kind === 'assist' && (
-                        <span className="text-caption text-muted-foreground">
-                          Project-wide
+                      {/* v5.187.0 — the declared target in words where we have
+                          it; ids are the fallback. A colleague scanning this
+                          list needs the ranges, not "Scope #3". */}
+                      {r.target_label ? (
+                        <span className="block max-w-full truncate" title={r.target_label}>
+                          {r.target_label}
                         </span>
+                      ) : (
+                        <>
+                          {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
+                          {(r.kind === 'plan_generation' || r.kind === 'execution') &&
+                            r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
+                          {r.kind === 'assist' && (
+                            <span className="text-caption text-muted-foreground">
+                              Project-wide
+                            </span>
+                          )}
+                        </>
                       )}
                     </TableCell>
                     <TableCell>

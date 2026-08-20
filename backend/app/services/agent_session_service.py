@@ -117,6 +117,14 @@ class AgentSessionRow:
     # at the service layer so the UI doesn't have to round-trip.
     agent_name: Optional[str] = None
     user_username: Optional[str] = None
+    # v2.306.0 — what this session declared it is working on, in words.
+    #
+    # The ids above have always been here, but "Scope #3" tells a second
+    # analyst nothing, and the whole reason a session declares a target is so
+    # somebody else can see the range is taken before duplicating hours of
+    # scanning. Recon resolves to the scope name plus its CIDRs; plan work
+    # resolves to the plan title; assist is project-wide and has none.
+    target_label: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -135,6 +143,7 @@ class AgentSessionRow:
             "test_plan_id": self.test_plan_id,
             "agent_name": self.agent_name,
             "user_username": self.user_username,
+            "target_label": self.target_label,
         }
 
 
@@ -291,6 +300,64 @@ def count_agent_sessions(
         total += q.scalar() or 0
 
     return total
+
+
+#: CIDRs listed in a target label before it truncates. A scope with 40 subnets
+#: should identify itself, not fill the row.
+_TARGET_CIDR_CAP = 3
+
+
+def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
+    """Fill ``target_label`` for a page of rows, in two queries.
+
+    v2.306.0.  Batched deliberately: this runs on the Agent Runs list, and a
+    per-row lookup would put the timeline back into N+1 for a purely cosmetic
+    field. Two IN() queries regardless of page size.
+    """
+    from app.db import models
+
+    scope_ids = {r.scope_id for r in rows if r.scope_id is not None}
+    plan_ids = {r.test_plan_id for r in rows if r.test_plan_id is not None}
+
+    scope_labels: dict[int, str] = {}
+    if scope_ids:
+        names = dict(
+            db.query(models.Scope.id, models.Scope.name)
+            .filter(models.Scope.id.in_(scope_ids)).all()
+        )
+        cidrs: dict[int, List[str]] = {}
+        for sid, cidr in (
+            db.query(models.Subnet.scope_id, models.Subnet.cidr)
+            .filter(models.Subnet.scope_id.in_(scope_ids))
+            .order_by(models.Subnet.cidr)
+            .all()
+        ):
+            cidrs.setdefault(sid, []).append(cidr)
+        for sid in scope_ids:
+            ranges = cidrs.get(sid, [])
+            shown = ", ".join(ranges[:_TARGET_CIDR_CAP])
+            if len(ranges) > _TARGET_CIDR_CAP:
+                shown += f" +{len(ranges) - _TARGET_CIDR_CAP} more"
+            name = names.get(sid)
+            # The CIDRs are the part another analyst needs; the scope name is
+            # context. Show both when they differ, ranges alone when there is
+            # no name to add.
+            scope_labels[sid] = f"{name} — {shown}" if name and shown else (shown or name or "")
+
+    plan_labels: dict[int, str] = {}
+    if plan_ids:
+        plan_labels = dict(
+            db.query(TestPlan.id, TestPlan.title)
+            .filter(TestPlan.id.in_(plan_ids)).all()
+        )
+
+    for r in rows:
+        if r.scope_id is not None:
+            r.target_label = scope_labels.get(r.scope_id) or None
+        elif r.test_plan_id is not None:
+            r.target_label = plan_labels.get(r.test_plan_id) or None
+        # assist: project-wide by design — no target, and saying so is the UI's
+        # job, not a fake label here.
 
 
 def list_agent_sessions(
@@ -461,6 +528,8 @@ def list_agent_sessions(
                 agent_name=a.agent.name if a.agent else None,
                 user_username=a.started_by.username if a.started_by else None,
             ))
+
+    _attach_target_labels(db, rows)
 
     # Stable ordering: most-recent started_at first; nulls last;
     # then by (kind, id) so two rows with identical timestamps

@@ -530,8 +530,13 @@ const RUNS_STATUS_OPTIONS: Array<{ value: RunsStatusFilter; label: string }> = [
 
 const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) => {
   const navigate = useNavigate();
+  // v5.187.0 — prefer the declared target in words. "Scope #3" cannot tell a
+  // second analyst that a range is already being scanned, which is the whole
+  // reason a session declares one. Falls back to the id when a label can't be
+  // resolved (deleted scope, or a deployment mid-upgrade).
   const subject =
-    session.kind === 'recon'
+    session.target_label
+    || (session.kind === 'recon'
       ? session.scope_id
         ? `Scope #${session.scope_id}`
         : '—'
@@ -543,7 +548,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
       // the point of the workflow rather than missing data.
       : session.kind === 'assist'
       ? 'Project-wide'
-      : '—';
+      : '—');
 
   const handleOpen = () => {
     if (session.kind === 'recon') {

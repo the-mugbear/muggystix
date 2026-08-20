@@ -28,6 +28,11 @@ export interface AgentSessionRow {
   generated_by_tool?: string | null;
   prompt_version?: string | null;
   scope_id?: number | null;
+  /** v5.187.0 — what this session declared it is working on: scope name +
+   *  CIDRs for recon, the plan title for plan work. Null for assist, which is
+   *  project-wide by design. An id alone can't tell a colleague that a range is
+   *  already being scanned, which is the reason a session declares a target. */
+  target_label?: string | null;
   test_plan_id?: number | null;
 }
 

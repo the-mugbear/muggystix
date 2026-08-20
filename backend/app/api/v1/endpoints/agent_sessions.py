@@ -60,6 +60,10 @@ class AgentSessionRowResponse(BaseModel):
     prompt_version: Optional[str] = None
     scope_id: Optional[int] = None
     test_plan_id: Optional[int] = None
+    # v2.306.0 — the session's declared target in words (scope name + CIDRs, or
+    # the plan title). "Scope #3" cannot tell a second analyst that a range is
+    # already being worked, which is the reason a session declares one.
+    target_label: Optional[str] = None
 
 
 class AgentSessionListResponse(BaseModel):
