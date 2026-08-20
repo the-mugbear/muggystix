@@ -5,6 +5,36 @@ what's intentionally left for later.)
 
 ---
 
+## AI Assist tool surface — plan, 2026-08-19
+
+The assist tool set is now derived from the analyst's job rather than added
+question by question: **[documentation/ASSIST_TOOLS.md](documentation/ASSIST_TOOLS.md)**.
+
+Queued there, in order:
+
+- [ ] **P1 `assist_get_patterns`** — systemic insights (blind spots, segment
+  outliers, condition spread). The "which subnet is worse than the others"
+  analysis already exists in `systemic_insight_service`; assist can't reach it.
+- [ ] **P1 `assist_get_finding`** — one finding with its evidence note, comment
+  thread and attachment references. This is what the report stage turns on:
+  screenshots live on note attachments, and the agent currently can't reach the
+  evidence behind a promoted finding.
+- [ ] **P1 `assist_get_posture`** — headline condition + signals + remediation
+  flow, from `posture_service`.
+- [ ] **P1 `assist_get_attention`** — exposure vs neglect, from
+  `attention_service`.
+- [ ] **P2** — subnet insights, ingestion issues (so "no data" can be told from
+  "the upload didn't parse"), site-level attention, web-interface screenshots.
+- [ ] **P3 (build, don't wrap)** — time-series. "What changed since last week"
+  has no implementation for humans either; the existing insight services are
+  deliberately cross-sectional because engagements run 6–8 weeks.
+
+Rule of thumb recorded there: a new tool must be a distinct *question shape*.
+`q=` filters, file-shaped downloads, and rollups an existing service computes
+are not tools.
+
+---
+
 ## Deferred from the MCP / assist work — 2026-08-19
 
 Each of these was found while building something else, judged real, and left
