@@ -64,11 +64,32 @@ What that takes, beyond "which hosts match X":
 | "Has anyone tested this host, and what happened?" | `assist_get_host_testing` |
 | "Which segment is worst?" | `assist_list_segments` — ranked worst-first |
 | "What has the team been working on?" | `assist_list_recent_notes` (`status=open` = outstanding work) |
+| "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
+| "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
+| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshots |
 
 Several of these exist because their absence produced *confident wrong answers*
 rather than errors: rebuilding the findings spine from per-host calls counts one
 finding once per affected host, and a guessed tag name returns zero hosts rather
 than failing, so "nothing is tagged production" looks like an answer.
+
+Two payload fields carry that same hazard and are called out in their tool
+descriptions, because the reassuring reading of each is the wrong one:
+`assist_get_posture`'s `label=insufficient_evidence` means the estate has not
+been assessed enough to judge, not that it is clean; `assist_get_patterns`'
+`adopted=false` means the analysis could not run for want of scoped subnets, not
+that it ran and found nothing.
+
+**`assist_get_patterns` compares across the estate, not over time.** Its
+outliers and blind spots are cross-sectional — *this* subnet against the others,
+*this* condition's spread — because an engagement runs weeks and there is no
+baseline to compare a quarter against. Nothing in the assist surface answers
+"what changed since last week"; an agent that phrases these as trends is making
+a claim the data does not support.
+
+The full derivation of this tool set from the analyst's workflow — including
+what is deliberately *not* a tool, and what is still queued — is in
+[ASSIST_TOOLS.md](ASSIST_TOOLS.md).
 
 Two things an assist agent is routinely asked for, and how each is served:
 
@@ -102,11 +123,15 @@ gets that endpoint's answer. Three separate entry points exist because the
 operator starts each session deliberately — there is no key that spans them.
 
 **Bulk data is deliberately not a tool.** `report-context.ndjson`,
-`recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt` and
-`POST recon/upload` are file-shaped: they belong on disk, not materialised into
-a model's context. A 40k-host target list read through a tool call is the same
-data, minus the ability to pipe it into the next scanner, plus the token bill.
-The server `instructions` point at them with `curl`.
+`recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt`,
+`assist/attachments/{id}` and `POST recon/upload` are file-shaped: they belong
+on disk, not materialised into a model's context. A 40k-host target list read
+through a tool call is the same data, minus the ability to pipe it into the next
+scanner, plus the token bill. A screenshot is worse — base64 in a tool result
+costs thousands of tokens for an image the model cannot show anyone, and the
+report needs the file on disk beside it regardless, which is why
+`assist_get_finding` hands out `download_path` references rather than bytes.
+The server `instructions` point at all of them with `curl`.
 
 ---
 

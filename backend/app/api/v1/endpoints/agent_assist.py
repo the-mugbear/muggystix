@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload, Query as SAQuery
@@ -60,6 +60,8 @@ from app.api.v1.endpoints.agent_common import (
 )
 from app.services.agent_environment_probe_service import apply_environment_probe
 from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.posture_service import compute_posture
+from app.services.systemic_insight_service import compute_systemic_insights
 
 router = APIRouter()
 
@@ -1546,3 +1548,421 @@ def get_assist_session_self(
         "capability_constraint": constraint,
         "operator": operator,
     }
+
+
+# ---------------------------------------------------------------------------
+# Posture + patterns — the two analysis reads (v2.294.0)
+#
+# Both wrap services that already compute these for the Posture hub rather
+# than re-deriving them here.  That is the point: an agent that recomputed
+# "how exposed is this project" from raw counts would quote different numbers
+# than the page a manager is looking at, and the disagreement would surface as
+# the agent being wrong.  One computation, two presentations.
+#
+# The split between them is state vs analysis, and it is why there is no
+# separate `attention` tool: compute_posture already folds
+# compute_project_attention and compute_site_attention in, so a third endpoint
+# would be the same numbers under a third name.
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/assist/posture",
+    summary="The project's security condition — the headline, and why",
+)
+def get_assist_posture(
+    request: Request,
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """"Where is this project?" in one call.
+
+    v2.294.0.  Assist could count things but had no read on the project's
+    overall condition, so "how are we doing?" — the first question of any
+    session, and the one a report's executive summary answers — had to be
+    assembled from a dozen counts and a judgment the agent invented.
+
+    Deliberately trimmed against what the UI receives:
+
+    * ``heatmap`` (the condition-family x site grid) is dropped — it is a
+      display artefact, and rendering it as JSON spends context to describe a
+      picture the agent cannot show anyone.
+    * the full ``systemic`` block (every condition and blind spot) is dropped
+      in favour of the counts in ``headline.systemic``; the analysis itself
+      lives on ``/assist/patterns``, which also carries the segment comparison
+      that this payload has never included.
+
+    ``label`` is one of ``action_required`` / ``needs_assessment`` /
+    ``insufficient_evidence`` / ``no_urgent_signals``.  The third is the one
+    worth reading carefully: it means the estate has not been assessed enough
+    to judge, which is NOT the same as the estate being clean, and an answer
+    that reports it as "no issues found" is wrong.
+    """
+    session = _load_assist_session(db, request)
+    p = compute_posture(db, session.project_id)
+    return {
+        "label": p["label"],
+        "conclusion": p["conclusion"],
+        "reasons": p["reasons"],
+        "headline": p["headline"],
+        "evidence": p["evidence"],
+        "remediation_flow": p["remediation_flow"],
+        "priorities": p["priorities"],
+        "decisions": p["decisions"],
+        "disposition": p["disposition"],
+        "sites": p["sites"],
+    }
+
+
+@router.get(
+    "/assist/patterns",
+    summary="Cross-sectional analysis — what this estate has a problem with",
+)
+def get_assist_patterns(
+    request: Request,
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """"Is this systemic, or is it one box?" — and "which segment is worse?".
+
+    v2.294.0.  This is the analysis that turns an inventory into an
+    assessment, and assist could not reach any of it.  Everything here is
+    ``compute_systemic_insights``, which already backs the Patterns page:
+
+    * ``blind_spots`` — conditions that span the estate, worst-first.  These
+      are the "the inventory is all on an out-of-date OS" claims, and each
+      carries the spread evidence that justifies stating it that broadly.
+    * ``segment_outliers`` — subnets whose issue density is an outlier against
+      the estate median.  This is the "hosts on this subnet look worse than
+      the rest" claim, with the ratio behind it.  ``times_median`` is null when
+      the estate has no non-zero baseline to compare against (a mostly-clean
+      project), in which case the outlier was picked on absolute density —
+      say so rather than quoting a multiple that does not exist.
+    * ``conditions`` — every condition with its spread and classification
+      (``isolated`` / ``recurring`` / ``estate_wide``).
+    * ``family_summary`` — per pattern-family rollup carrying a root-cause
+      hypothesis and a program-level control, which is what a recommendation
+      section should be built from rather than a list of hosts.
+    * ``diagnostic_profiles`` — per-subnet condition sets and root cause.
+
+    **This is comparison across the estate, not change over time.**  Nothing
+    here says "worse than last week"; the analysis is deliberately
+    cross-sectional because an engagement runs weeks, not quarters.  Do not
+    describe these as trends.
+
+    ``adopted=False`` means the project has no scoped subnets, so the analysis
+    cannot run at all — report that as "not assessable", never as "no patterns
+    found".
+    """
+    session = _load_assist_session(db, request)
+    ins = compute_systemic_insights(db, session.project_id)
+    if not ins.get("adopted"):
+        return {
+            "adopted": False,
+            "reason": (
+                "No scoped subnets for this project, so cross-sectional "
+                "analysis has nothing to segment by. Define a scope with "
+                "subnets to enable it."
+            ),
+        }
+    return {
+        "adopted": True,
+        "estate": ins.get("estate", {}),
+        "blind_spots": ins.get("blind_spots", []),
+        "segment_outliers": ins.get("segment_outliers", []),
+        "conditions": ins.get("conditions", []),
+        "family_summary": ins.get("family_summary", []),
+        "diagnostic_profiles": ins.get("diagnostic_profiles", []),
+        # family_matrix is omitted on purpose — it is the UI's heatmap grid.
+    }
+
+
+# ---------------------------------------------------------------------------
+# Finding detail — the evidence behind one finding (v2.294.0)
+# ---------------------------------------------------------------------------
+
+class AssistAttachment(BaseModel):
+    """An image attached to a note — a reference, never the bytes.
+
+    ``download_path`` is relative; join it to the BlueStick base URL the
+    session already uses and fetch it with the same ``X-API-Key``.  The bytes
+    stay out of the tool result deliberately: a base64 screenshot costs
+    thousands of tokens, and a report needs the file on disk beside it anyway.
+    """
+    id: int
+    filename: str
+    content_type: str
+    size_bytes: int
+    download_path: str
+    uploaded_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class AssistFindingNote(BaseModel):
+    id: int
+    body: str
+    status: Optional[str] = None
+    note_type: Optional[str] = None
+    author: Optional[str] = None
+    created_at: Optional[datetime] = None
+    attachments: List[AssistAttachment] = []
+
+
+class AssistFindingHost(BaseModel):
+    host_id: int
+    ip_address: Optional[str] = None
+    hostname: Optional[str] = None
+    host_status: str
+
+
+class AssistFindingDetail(BaseModel):
+    id: int
+    title: str
+    severity: str
+    status: str
+    source: str
+    owner_username: Optional[str] = None
+    created_by_username: Optional[str] = None
+    created_at: Optional[datetime] = None
+    host_count: int = 0
+    hosts: List[AssistFindingHost] = []
+    hosts_truncated: bool = False
+    # The note that justified promotion (note-sourced findings only).
+    evidence_note: Optional[AssistFindingNote] = None
+    # The finding's own discussion thread.
+    comments: List[AssistFindingNote] = []
+    # Provenance for scanner- and execution-sourced findings.
+    scanner_evidence: List[dict] = []
+    execution_evidence: Optional[dict] = None
+
+
+_FINDING_HOST_CAP = 100
+
+
+def _serialize_finding_note(note, attachments_by_note) -> "AssistFindingNote":
+    return AssistFindingNote(
+        id=note.id,
+        body=note.body,
+        status=note.status.value if hasattr(note.status, "value") else note.status,
+        note_type=note.note_type,
+        author=note.author.username if note.author else None,
+        created_at=note.created_at,
+        attachments=[
+            AssistAttachment(
+                id=a.id,
+                filename=a.filename,
+                content_type=a.content_type,
+                size_bytes=a.size_bytes,
+                download_path=f"/api/v1/agent/assist/attachments/{a.id}",
+                uploaded_by=a.uploaded_by.username if a.uploaded_by else None,
+                created_at=a.created_at,
+            )
+            for a in attachments_by_note.get(note.id, [])
+        ],
+    )
+
+
+@router.get(
+    "/assist/findings/{finding_id}",
+    response_model=AssistFindingDetail,
+    summary="One finding with its evidence — the note, the thread, the screenshots",
+)
+def get_assist_finding(
+    request: Request,
+    finding_id: int = Path(..., ge=1),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """The material a write-up cites, for one finding.
+
+    v2.294.0.  ``/assist/findings`` lists what exists; this is what is behind
+    one of them.  A promoted finding carries an ``evidence_annotation_id`` —
+    the note a human wrote to justify promoting it — plus its own comment
+    thread, and screenshots hang off both as note attachments.  Until now none
+    of that was reachable from assist, so an agent asked to write findings up
+    had the titles and the severities and none of the evidence.
+
+    Attachments come back as references (filename, type, size, path), not
+    bytes.  Fetch each from ``download_path`` with the session's API key.
+
+    ``scanner_evidence`` / ``execution_evidence`` carry the other two
+    provenances: which scanner rows evidence this finding, and what command a
+    tester actually ran.  Report which one a claim rests on — "Nessus reported"
+    and "a tester confirmed" are different assertions, and conflating them is
+    how a report overstates its own confidence.
+    """
+    from app.db.models_findings import Finding, FindingHost, FindingVulnerability
+
+    session = _load_assist_session(db, request)
+    finding = (
+        db.query(Finding)
+        .options(joinedload(Finding.owner), joinedload(Finding.created_by))
+        .filter(Finding.id == finding_id, Finding.project_id == session.project_id)
+        .first()
+    )
+    if finding is None:
+        # Project-scoped 404: a finding in another project must be
+        # indistinguishable from one that does not exist.
+        raise HTTPException(status_code=404, detail="Finding not found in this project")
+
+    # --- affected hosts ---------------------------------------------------
+    host_rows = (
+        db.query(FindingHost, models.Host)
+        .join(models.Host, FindingHost.host_id == models.Host.id)
+        .filter(FindingHost.finding_id == finding.id)
+        .order_by(models.Host.ip_address)
+        .all()
+    )
+    hosts = [
+        AssistFindingHost(
+            host_id=h.id,
+            ip_address=h.ip_address,
+            hostname=h.hostname,
+            host_status=fh.host_status,
+        )
+        for fh, h in host_rows[:_FINDING_HOST_CAP]
+    ]
+
+    # --- notes: the evidence note (thread root + its replies) and the
+    #     finding's own comment thread, fetched together so attachments are
+    #     one query rather than one per note.
+    note_q = db.query(models.Annotation).options(joinedload(models.Annotation.author))
+    comment_notes = (
+        note_q.filter(models.Annotation.finding_id == finding.id)
+        .order_by(models.Annotation.created_at.asc())
+        .all()
+    )
+    evidence_note = None
+    if finding.evidence_annotation_id:
+        evidence_note = (
+            db.query(models.Annotation)
+            .options(joinedload(models.Annotation.author))
+            .filter(models.Annotation.id == finding.evidence_annotation_id)
+            .first()
+        )
+
+    note_ids = [n.id for n in comment_notes]
+    if evidence_note is not None:
+        note_ids.append(evidence_note.id)
+    attachments_by_note: dict = {}
+    if note_ids:
+        for att in (
+            db.query(models.NoteAttachment)
+            .options(joinedload(models.NoteAttachment.uploaded_by))
+            .filter(models.NoteAttachment.annotation_id.in_(note_ids))
+            .order_by(models.NoteAttachment.created_at)
+            .all()
+        ):
+            attachments_by_note.setdefault(att.annotation_id, []).append(att)
+
+    # --- scanner / execution provenance ----------------------------------
+    scanner_evidence: List[dict] = []
+    vuln_ids = [
+        row[0] for row in
+        db.query(FindingVulnerability.vuln_id)
+        .filter(FindingVulnerability.finding_id == finding.id)
+        .all()
+    ]
+    if finding.vuln_id and finding.vuln_id not in vuln_ids:
+        vuln_ids.append(finding.vuln_id)
+    if vuln_ids:
+        for v in (
+            db.query(Vulnerability)
+            .filter(Vulnerability.id.in_(vuln_ids))
+            .all()
+        ):
+            scanner_evidence.append({
+                "vuln_id": v.id,
+                "source": v.source.value if hasattr(v.source, "value") else v.source,
+                "plugin_id": v.plugin_id,
+                "title": v.title,
+                "severity": v.severity.value if hasattr(v.severity, "value") else v.severity,
+                "cve_id": v.cve_id,
+            })
+
+    execution_evidence = None
+    if finding.exec_result_id:
+        from app.db.models_agent import TestExecutionResult
+
+        res = (
+            db.query(TestExecutionResult)
+            .filter(TestExecutionResult.id == finding.exec_result_id)
+            .first()
+        )
+        if res is not None:
+            execution_evidence = {
+                "result_id": res.id,
+                "command_run": res.command_run,
+                "findings_summary": res.findings_summary,
+                "severity": res.severity,
+                # Output is capped at the source but can still be large; a
+                # write-up quotes a line or two, so send the head and say so.
+                "output_excerpt": (res.raw_output or "")[:2000],
+                "output_truncated": len(res.raw_output or "") > 2000,
+            }
+
+    return AssistFindingDetail(
+        id=finding.id,
+        title=finding.title,
+        severity=finding.severity,
+        status=finding.status,
+        source=finding.source,
+        owner_username=finding.owner.username if finding.owner else None,
+        created_by_username=finding.created_by.username if finding.created_by else None,
+        created_at=finding.created_at,
+        host_count=len(host_rows),
+        hosts=hosts,
+        hosts_truncated=len(host_rows) > _FINDING_HOST_CAP,
+        evidence_note=(
+            _serialize_finding_note(evidence_note, attachments_by_note)
+            if evidence_note is not None else None
+        ),
+        comments=[_serialize_finding_note(n, attachments_by_note) for n in comment_notes],
+        scanner_evidence=scanner_evidence,
+        execution_evidence=execution_evidence,
+    )
+
+
+@router.get(
+    "/assist/attachments/{attachment_id}",
+    summary="Download a note image attachment (project-scoped)",
+)
+def download_assist_attachment(
+    request: Request,
+    attachment_id: int = Path(..., ge=1),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """Serve the bytes behind an attachment reference.
+
+    v2.294.0.  Deliberately NOT an MCP tool — it returns an image, and the
+    agent's job with it is to save it next to the report, not to read it into
+    context.  ``assist_get_finding`` hands out the paths; this is what those
+    paths resolve to for a key-authenticated caller (the operator-facing
+    equivalent under ``/projects/...`` requires a JWT, which an agent does not
+    have).
+
+    Scoped to the session's project, and path-checked against the attachments
+    root so a crafted ``storage_path`` cannot escape it.
+    """
+    from app.services.note_attachment_service import _attachments_root
+
+    session = _load_assist_session(db, request)
+    att = (
+        db.query(models.NoteAttachment)
+        .filter(
+            models.NoteAttachment.id == attachment_id,
+            models.NoteAttachment.project_id == session.project_id,
+        )
+        .first()
+    )
+    if att is None:
+        raise HTTPException(status_code=404, detail="Attachment not found in this project")
+    base = _attachments_root()
+    try:
+        target = (base / att.storage_path).resolve()
+        target.relative_to(base.resolve())
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="Attachment path invalid")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Attachment file missing on disk")
+    return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)

@@ -499,6 +499,71 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "assist_get_posture": {
+        "description": (
+            "The project's overall security condition — the headline label, "
+            "the plain-language conclusion, the reasons behind it, the "
+            "prioritised next actions, exposure/ownership/review coverage, and "
+            "remediation flow. Start here for \"where is this project?\" and "
+            "build a report's executive summary from it rather than inventing "
+            "a judgement from counts. Note that label='insufficient_evidence' "
+            "means the estate has NOT been assessed enough to judge — it is "
+            "not a clean bill of health, and reporting it as one is wrong."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/posture",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_get_patterns": {
+        "description": (
+            "Cross-sectional analysis of the estate: blind spots (conditions "
+            "spanning the whole estate, e.g. 'nearly everything is on an "
+            "end-of-life OS'), segment outliers (subnets whose issue density "
+            "is an outlier against the estate median — the 'this subnet looks "
+            "worse than the rest' claim, with the ratio behind it), each "
+            "condition's spread, per-family root-cause hypotheses with a "
+            "recommended control, and per-subnet diagnostic profiles. This is "
+            "what turns an inventory into an assessment. IMPORTANT: it is "
+            "comparison ACROSS the estate, not change over time — do not "
+            "describe these as trends or say anything got better or worse. "
+            "adopted=false means no scoped subnets, so the analysis cannot "
+            "run: report 'not assessable', never 'no patterns found'."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/patterns",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_get_finding": {
+        "description": (
+            "One finding with the evidence behind it — the note a human wrote "
+            "to justify promoting it, the comment thread, the affected hosts, "
+            "and references to any attached screenshots. Use this when writing "
+            "a finding up: assist_list_findings gives you titles and "
+            "severities, this gives you what to cite. Screenshots come back as "
+            "references (filename, size, download_path), not bytes — fetch "
+            "each from its download_path with the session's API key and save "
+            "it beside the report. scanner_evidence and execution_evidence say "
+            "whether a claim rests on a scanner's output or on a command a "
+            "tester actually ran; state which, they are different assertions."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/findings/{finding_id}",
+        "path_params": ["finding_id"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "finding_id": {
+                    "type": "integer",
+                    "description": "Finding id, from assist_list_findings.",
+                },
+            },
+            "required": ["finding_id"],
+            "additionalProperties": False,
+        },
+    },
     "assist_list_recent_notes": {
         "description": (
             "Recent notes across the whole project, newest first — what the "

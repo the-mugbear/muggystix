@@ -21,6 +21,35 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.55.0",
+        "app_version": "2.294.0",
+        "summary": (
+            "The analysis stage of the analyst's job, which assist had no read "
+            "on at all. POSTURE (`/assist/posture`): the project's overall "
+            "condition, wrapping the same computation the Posture page shows a "
+            "manager — an agent deriving 'how exposed are we' from raw counts "
+            "would quote different numbers than the page, and the disagreement "
+            "surfaces as the agent being wrong. The prompt calls out "
+            "`insufficient_evidence` explicitly: it means the estate has not "
+            "been assessed enough to judge, and reporting it as a clean bill of "
+            "health is the most damaging wrong thing an agent could say about "
+            "an engagement. PATTERNS (`/assist/patterns`): blind spots, segment "
+            "outliers, condition spread and per-family root causes — the "
+            "'hosts on this subnet look worse than the rest' and 'the inventory "
+            "is all end-of-life' claims, with the evidence that justifies "
+            "stating them that broadly. The prompt forbids calling these "
+            "trends: the analysis is cross-sectional by design (an engagement "
+            "runs weeks), and 'got worse' is a claim the data cannot support. "
+            "FINDING EVIDENCE (`/assist/findings/<id>`): the note a human wrote "
+            "to justify promoting a finding, its comment thread, and its "
+            "screenshots. An agent asked to write findings up previously had "
+            "titles and severities and none of the evidence. Screenshots are "
+            "handed over as download paths, not bytes — a base64 image costs "
+            "thousands of tokens and cannot be shown to anyone, and the report "
+            "needs the file on disk beside it regardless."
+        ),
+    },
+    {
         "version": "1.54.0",
         "app_version": "2.293.0",
         "summary": (

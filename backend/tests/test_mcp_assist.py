@@ -901,3 +901,35 @@ def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project
         assert "assist_list_hosts" in {t["name"] for t in resp.json()["result"]["tools"]}
 
     assert session_rows() - before == 1, "each tools/list logged its own lookup"
+
+
+def test_the_analysis_tools_round_trip_through_the_loopback(client, test_project):
+    """v2.294.0 — posture, patterns and finding-detail over MCP.
+
+    The registry restates each endpoint by hand (path, method, param split), so
+    a tool can be well-formed, pass the route-exists contract test, and still
+    fail on the first real call — a path parameter declared as a query one, say.
+    These drive all three the way a client does.
+    """
+    body = _start_session(client, test_project.id)
+    headers = {"X-API-Key": body["api_key"]}
+
+    def call(name, args=None, rid=1):
+        return _rpc(client, {
+            "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+            "params": {"name": name, "arguments": args or {}},
+        }, headers=headers).json()["result"]
+
+    posture = call("assist_get_posture", rid=40)
+    assert posture["isError"] is False, posture
+    assert "label" in posture["content"][0]["text"]
+
+    patterns = call("assist_get_patterns", rid=41)
+    assert patterns["isError"] is False, patterns
+    assert "adopted" in patterns["content"][0]["text"]
+
+    # A path parameter has to reach the URL, not the query string — a miswired
+    # one 404s or, worse, silently returns a different finding.
+    missing = call("assist_get_finding", {"finding_id": 999_999}, rid=42)
+    assert missing["isError"] is True
+    assert "not found" in missing["content"][0]["text"].lower()

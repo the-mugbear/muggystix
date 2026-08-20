@@ -10,21 +10,29 @@ what's intentionally left for later.)
 The assist tool set is now derived from the analyst's job rather than added
 question by question: **[documentation/ASSIST_TOOLS.md](documentation/ASSIST_TOOLS.md)**.
 
-Queued there, in order:
+**P1 shipped in 2.294.0** (prompt 1.55.0) — as three tools, not four:
 
-- [ ] **P1 `assist_get_patterns`** — systemic insights (blind spots, segment
-  outliers, condition spread). The "which subnet is worse than the others"
-  analysis already exists in `systemic_insight_service`; assist can't reach it.
-- [ ] **P1 `assist_get_finding`** — one finding with its evidence note, comment
-  thread and attachment references. This is what the report stage turns on:
-  screenshots live on note attachments, and the agent currently can't reach the
-  evidence behind a promoted finding.
-- [ ] **P1 `assist_get_posture`** — headline condition + signals + remediation
+- [x] **`assist_get_patterns`** — systemic insights (blind spots, segment
+  outliers, condition spread, per-family root cause). The "which subnet is
+  worse than the others" analysis already existed in
+  `systemic_insight_service`; assist simply could not reach it.
+- [x] **`assist_get_finding`** — one finding with its evidence note, comment
+  thread and attachment references, plus `GET /assist/attachments/{id}` so the
+  agent can actually fetch the screenshots with its key (the operator-facing
+  download needs a JWT).
+- [x] **`assist_get_posture`** — headline condition + signals + remediation
   flow, from `posture_service`.
-- [ ] **P1 `assist_get_attention`** — exposure vs neglect, from
-  `attention_service`.
-- [ ] **P2** — subnet insights, ingestion issues (so "no data" can be told from
-  "the upload didn't parse"), site-level attention, web-interface screenshots.
+- [x] ~~**`assist_get_attention`**~~ — **dropped, not deferred.**
+  `compute_posture` already folds `compute_project_attention` and
+  `compute_site_attention` in, so this would have been the same numbers under a
+  second name — the "tools the agent has to combine" failure the plan's own
+  review rule exists to prevent.
+
+Still queued:
+
+- [ ] **P2** — subnet insights (per-subnet EOL / TLS / SMB-signing / weak-auth
+  detail), ingestion issues (so "no data" can be told from "the upload didn't
+  parse"), web-interface screenshot references.
 - [ ] **P3 (build, don't wrap)** — time-series. "What changed since last week"
   has no implementation for humans either; the existing insight services are
   deliberately cross-sectional because engagements run 6–8 weeks.

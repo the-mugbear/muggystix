@@ -22,8 +22,8 @@ Every tool is text in the model's context on every session.
 
 | | tools | payload |
 |---|---|---|
-| Full catalog (all workflows) | 44 | ~37 KB (~9.3k tokens) |
-| An assist session sees | 23 | ~18 KB (~4.5k tokens) |
+| Full catalog (all workflows) | 47 | ~40 KB (~10k tokens) |
+| An assist session sees | 26 | ~21 KB (~5.2k tokens) |
 
 That is affordable now and it grows linearly with the tool count. So the test
 for a new tool is **"is this a distinct question shape?"** — not "is this a
@@ -55,7 +55,7 @@ returning from leave.
 |---|---|---|
 | Totals, scopes, recent scans | `assist_get_context` | **have** |
 | How much has actually been assessed | `assist_get_coverage` | **have** |
-| What's the headline condition, and why | `assist_get_posture` | **queue P1** |
+| What's the headline condition, and why | `assist_get_posture` | **have** (2.294.0) |
 | How many hosts match X | `assist_count_hosts` | **have** |
 
 **`assist_get_posture`** wraps `posture_service` — the executive condition, the
@@ -63,6 +63,16 @@ signals behind it, and the remediation flow. It is the single call that answers
 "where are we?" with the same numbers the Posture page shows a manager, which
 matters: an agent and a page disagreeing about the headline is worse than the
 agent not having one.
+
+Trimmed against what the UI receives: the condition-family × site `heatmap` is
+dropped (it is a picture, and describing it in JSON spends context on something
+the agent cannot show anyone), as is the full `systemic` block, which
+duplicates `assist_get_patterns`. The counts survive in `headline.systemic`.
+
+Watch `label`: `insufficient_evidence` means the estate has not been assessed
+enough to judge. The prompt and the tool description both say so, because
+reporting it as "no issues found" is the most damaging wrong sentence an agent
+could write about an engagement.
 
 ---
 
@@ -72,15 +82,22 @@ agent not having one.
 |---|---|---|
 | Which segment is worst | `assist_list_segments` | **have** |
 | What has nobody picked up | `assist_list_findings?unowned=true`, `assist_count_hosts` with `assigned:none` | **have** |
-| What is the project's attention profile — exposure vs neglect | `assist_get_attention` | **queue P1** |
-| What's gone stale — untriaged backlog, unreviewed hosts | `assist_get_attention` (same call) | **queue P1** |
-| Which site is worst (multi-site engagements) | `assist_get_attention?by=site` | **queue P2** |
+| What is the project's attention profile — exposure vs neglect | `assist_get_posture` | **have** (2.294.0) |
+| What's gone stale — untriaged backlog, unreviewed hosts | `assist_get_posture` | **have** (2.294.0) |
+| Which site is worst (multi-site engagements) | `assist_get_posture` → `sites` | **have** (2.294.0) |
 
-**`assist_get_attention`** wraps `compute_project_attention` /
-`compute_site_attention`, which already score exposure (severity-weighted active
-findings) against neglect (staleness, untriaged backlog, unreviewed hosts).
-"Where do I focus?" is exactly what that computation was built to answer, and an
-agent recomputing it from raw counts would get a different number than the UI.
+### `assist_get_attention` was planned, then dropped — deliberately
+
+The first cut of this document queued a separate attention tool wrapping
+`compute_project_attention` / `compute_site_attention`. Building it showed that
+`compute_posture` **already folds both of them in**: exposure by severity,
+unowned backlog, review coverage, scan staleness and the per-site decomposition
+are all in the posture payload, and posture's `priorities` are a strictly richer
+version of attention's single `recommended_action`.
+
+A second endpoint would have been the same numbers under a second name — the
+exact "five tools the agent has to combine" failure this document's review rule
+exists to prevent. One tool, and the review rule caught its own violation.
 
 ---
 
@@ -112,15 +129,22 @@ Posture hub.
 
 | Question | Tool | Status |
 |---|---|---|
-| Estate-wide weaknesses, worst-first ("everything is on an EOL OS") | `assist_get_patterns` → `blind_spots` | **queue P1** |
-| Subnets whose issue density is an outlier ("this subnet is worse than the rest") | `assist_get_patterns` → `segment_outliers` | **queue P1** |
-| How far each condition has spread (systemic vs isolated) | `assist_get_patterns` → `conditions` | **queue P1** |
-| Per-subnet diagnostic profile | `assist_get_patterns` → `diagnostic_profiles` | **queue P1** |
+| Estate-wide weaknesses, worst-first ("everything is on an EOL OS") | `assist_get_patterns` → `blind_spots` | **have** (2.294.0) |
+| Subnets whose issue density is an outlier ("this subnet is worse than the rest") | `assist_get_patterns` → `segment_outliers` | **have** (2.294.0) |
+| How far each condition has spread (systemic vs isolated) | `assist_get_patterns` → `conditions` | **have** (2.294.0) |
+| Root cause + recommended control, per condition family | `assist_get_patterns` → `family_summary` | **have** (2.294.0) |
+| Per-subnet diagnostic profile | `assist_get_patterns` → `diagnostic_profiles` | **have** (2.294.0) |
 | Per-subnet hygiene detail — EOL OS, weak TLS, SMB signing, weak auth | `assist_get_subnet_insights` | **queue P2** |
 
-One tool (`assist_get_patterns`) rather than four: `compute_systemic_insights`
-returns all of it in one pass, and splitting it would make the agent issue four
-calls to reassemble a single analysis.
+One tool (`assist_get_patterns`) rather than five: `compute_systemic_insights`
+returns all of it in one pass, and splitting it would make the agent issue five
+calls to reassemble a single analysis. `family_matrix` is omitted — like
+posture's `heatmap`, it is the UI's grid.
+
+`adopted=false` (no scoped subnets) means the analysis **could not run**. Both
+the endpoint and the tool description spell out that this is "not assessable"
+rather than "no patterns found"; the two are indistinguishable to an agent
+otherwise, and the wrong one is reassuring.
 
 ### A distinction worth being honest about
 
@@ -148,9 +172,9 @@ The template lives on the operator's machine and the agent fills it there
 | Every host's full dossier, at scale | `report-context.ndjson` (curl to disk) | **have** |
 | Findings with severity/status/owner | `assist_list_findings` | **have** |
 | The numbers a summary quotes | `assist_count_hosts`, `assist_get_coverage` | **have** |
-| The synopsis material — condition, patterns | `assist_get_posture`, `assist_get_patterns` | **queue P1** |
-| **A promoted finding's write-up: its evidence note, comment thread, and attachments** | `assist_get_finding` | **queue P1** |
-| **The screenshots themselves** | attachment metadata + download URL on `assist_get_finding`; the agent `curl`s each to disk | **queue P1** |
+| The synopsis material — condition, patterns | `assist_get_posture`, `assist_get_patterns` | **have** (2.294.0) |
+| **A promoted finding's write-up: its evidence note, comment thread, and attachments** | `assist_get_finding` | **have** (2.294.0) |
+| **The screenshots themselves** | `GET /agent/assist/attachments/{id}` — curl, not a tool | **have** (2.294.0) |
 
 **`assist_get_finding`** is the tool the report stage turns on. A promoted
 finding carries an `evidence_annotation_id` (the note that justified promotion),
@@ -160,10 +184,17 @@ evidence attached to a specific finding, which is precisely the material a
 write-up cites.
 
 **Screenshots are references, not payloads.** The tool returns filename, media
-type, size and a URL; the agent downloads what it needs to its working directory
-and references the file from the report. Base64 in a tool result would spend
-thousands of tokens on an image the model cannot usefully read anyway, and the
-finished report needs a *file on disk* next to it regardless.
+type, size and a `download_path`; the agent downloads what it needs to its
+working directory and references the file from the report. Base64 in a tool
+result would spend thousands of tokens on an image the model cannot usefully
+read anyway, and the finished report needs a *file on disk* next to it
+regardless.
+
+`GET /agent/assist/attachments/{id}` is that download, and it exists because the
+operator-facing equivalent under `/projects/...` requires a JWT — an agent has a
+key, not a session. It is project-scoped and path-checked against the
+attachments root, and deliberately **not** an MCP tool: it returns an image, and
+the agent's job with it is to save it, not to read it into context.
 
 Web-interface screenshots (Eyewitness) are a second, separate store
 (`web_interfaces.screenshot_path`) — same treatment, queued with P2.
@@ -172,29 +203,28 @@ Web-interface screenshots (Eyewitness) are a second, separate store
 
 ## The queue
 
-**P1 — the analyst's actual loop, and the report stage.** Six tools, all
-wrapping services that already exist:
+**P1 — the analyst's actual loop, and the report stage. ✅ Shipped in 2.294.0**
+(backend 2.294.0, prompt 1.55.0), as three tools rather than four:
 
-1. `assist_get_patterns` — systemic insights: blind spots, segment outliers, condition spread.
-2. `assist_get_finding` — one finding with its evidence note, thread and attachment references.
-3. `assist_get_posture` — headline condition + signals + remediation flow.
-4. `assist_get_attention` — exposure vs neglect, project-level.
+1. ✅ `assist_get_patterns` — systemic insights: blind spots, segment outliers, condition spread, family root causes.
+2. ✅ `assist_get_finding` — one finding with its evidence note, thread and attachment references, plus `GET /assist/attachments/{id}` to fetch the images.
+3. ✅ `assist_get_posture` — headline condition + signals + remediation flow + per-site decomposition.
+4. ❌ `assist_get_attention` — **dropped**, subsumed by posture (see Stage 2).
 
 **P2 — completeness of the picture.**
 
 5. `assist_get_subnet_insights` — per-subnet EOL / TLS / SMB-signing / weak-auth detail.
 6. `assist_list_ingestion_issues` — parse failures, so "no data" can be told from "no successful upload".
-7. `assist_get_attention?by=site` — site-level, for multi-site engagements.
-8. Web-interface screenshot references.
+7. Web-interface screenshot references (`web_interfaces.screenshot_path`).
 
 **P3 — needs design, not a wrapper.**
 
-9. Time-series: "what changed since the last scan / last week". Buildable from
+8. Time-series: "what changed since the last scan / last week". Buildable from
    `HostScanHistory` + finding status history; nothing computes it today.
 
-That lands the assist surface at roughly **31 tools / ~24 KB**, which is the
-ceiling I would want to stop at without revisiting the specific-vs-general
-trade-off in §"context is not free".
+The surface now sits at **26 tools / ~21 KB**, and P2 would land it near 29.
+That is the ceiling I would want to stop at without revisiting the
+specific-vs-general trade-off in §"context is not free".
 
 ---
 

@@ -965,3 +965,208 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
         "/api/v1/agent/assist/notes", params={"status": "open"}, headers=headers
     ).json()
     assert [n["body"] for n in open_only] == ["Still chasing the vendor"]
+
+
+# ---------------------------------------------------------------------------
+# v2.294.0 — posture, patterns, and the evidence behind a finding
+# ---------------------------------------------------------------------------
+
+def test_posture_gives_the_agent_the_same_headline_the_ui_shows(
+    client, db_session, test_project
+):
+    """"Where is this project?" must resolve to ONE answer.
+
+    The agent and the Posture page have to quote the same condition — an
+    agent that recomputed exposure from raw counts would disagree with the
+    page a manager is reading, and the disagreement would surface as the
+    agent being wrong. So this asserts the endpoint returns what
+    compute_posture computed, not a second derivation of it.
+    """
+    from app.services.posture_service import compute_posture
+
+    headers = _assist(client, test_project.id)
+    resp = client.get("/api/v1/agent/assist/posture", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    truth = compute_posture(db_session, test_project.id, use_cache=False)
+    assert body["label"] == truth["label"]
+    assert body["headline"]["active_exposure"] == truth["headline"]["active_exposure"]
+    assert body["evidence"]["scan_count"] == truth["evidence"]["scan_count"]
+
+    # The trims are deliberate, not accidental: the UI heatmap is a picture,
+    # and the full systemic block belongs to /assist/patterns.
+    assert "heatmap" not in body
+    assert "systemic" not in body
+    assert "systemic" in body["headline"]  # the counts survive
+
+
+def test_posture_never_reports_an_unassessed_estate_as_clean(client, test_project):
+    """A project with nothing in it must not read 'no_urgent_signals'.
+
+    Absence of findings is absence of assessment here, and an agent that
+    reports it as a clean bill of health is stating the most damaging wrong
+    thing it could say about an engagement. Which non-clean label it lands on
+    ('needs_assessment' when a signal fires, 'insufficient_evidence' when the
+    evidence gate catches it) is the posture model's business — this pins only
+    that the reassuring one is unreachable without evidence.
+    """
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/posture", headers=headers).json()
+    assert body["label"] != "no_urgent_signals"
+    assert body["conclusion"]
+
+
+def test_patterns_says_not_assessable_rather_than_nothing_found(
+    client, test_project
+):
+    """Without scoped subnets the cross-sectional analysis cannot run at all.
+    That has to be distinguishable from 'it ran and found nothing' — the two
+    read identically to an agent unless the payload says so."""
+    headers = _assist(client, test_project.id)
+    resp = client.get("/api/v1/agent/assist/patterns", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["adopted"] is False
+    assert "scope" in body["reason"].lower()
+
+
+def test_patterns_surfaces_the_subnet_comparison_posture_does_not(
+    client, db_session, test_project
+):
+    """The 'this subnet looks worse than the others' claim lives only here —
+    compute_posture carries conditions and blind spots but has never carried
+    segment_outliers, which is exactly the comparison an analyst asks for."""
+    from app.db.models import Scope, Subnet
+
+    scope = Scope(project_id=test_project.id, name="Corp")
+    db_session.add(scope)
+    db_session.commit()
+    db_session.add(Subnet(scope_id=scope.id, cidr="10.9.0.0/24"))
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/patterns", headers=headers).json()
+    assert body["adopted"] is True
+    for key in ("estate", "blind_spots", "segment_outliers", "conditions",
+                "family_summary", "diagnostic_profiles"):
+        assert key in body, key
+    # The UI's heatmap grid is not the agent's business.
+    assert "family_matrix" not in body
+
+
+def test_finding_detail_reaches_the_evidence_a_writeup_cites(
+    client, db_session, test_project, test_user
+):
+    """The report stage turns on this: a promoted finding's justification note
+    and its screenshots. Listing findings gives titles and severities; without
+    the evidence an agent asked to 'write up the findings' has nothing to cite
+    but the title it was already given."""
+    from app.db.models import Annotation, Host, NoteAttachment, NoteStatus
+    from app.db.models_findings import Finding, FindingHost
+
+    host = Host(project_id=test_project.id, ip_address="10.9.0.5", state="up")
+    db_session.add(host)
+    db_session.commit()
+    db_session.refresh(host)
+
+    note = Annotation(
+        host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+        body="Confirmed anonymous bind on the LDAP service; screenshot attached.",
+        status=NoteStatus.OPEN, note_type="finding",
+    )
+    db_session.add(note)
+    db_session.commit()
+    db_session.refresh(note)
+
+    db_session.add(NoteAttachment(
+        annotation_id=note.id, project_id=test_project.id,
+        filename="ldap-anon-bind.png", content_type="image/png",
+        size_bytes=48_213, storage_path=f"{note.id}/ldap-anon-bind.png",
+        uploaded_by_id=test_user.id,
+    ))
+    finding = Finding(
+        project_id=test_project.id, title="LDAP allows anonymous bind",
+        severity="high", status="confirmed", source="note",
+        evidence_annotation_id=note.id, created_by_id=test_user.id,
+    )
+    db_session.add(finding)
+    db_session.commit()
+    db_session.add(FindingHost(finding_id=finding.id, host_id=host.id))
+    # The finding's own discussion thread — a second, separate note path.
+    db_session.add(Annotation(
+        finding_id=finding.id, user_id=test_user.id,
+        body="Retest after the vendor patch lands.", status=NoteStatus.OPEN,
+    ))
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    resp = client.get(f"/api/v1/agent/assist/findings/{finding.id}", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["title"] == "LDAP allows anonymous bind"
+    assert body["host_count"] == 1
+    assert body["hosts"][0]["ip_address"] == "10.9.0.5"
+
+    # The justification note, and the comment thread, are distinct things.
+    assert "anonymous bind" in body["evidence_note"]["body"]
+    assert [c["body"] for c in body["comments"]] == ["Retest after the vendor patch lands."]
+
+    # Screenshots are references, not bytes: a base64 payload would cost
+    # thousands of tokens for an image the model cannot show anyone, and the
+    # report needs the file on disk beside it regardless.
+    att = body["evidence_note"]["attachments"][0]
+    assert att["filename"] == "ldap-anon-bind.png"
+    assert att["size_bytes"] == 48_213
+    assert att["download_path"] == f"/api/v1/agent/assist/attachments/{att['id']}"
+    assert "data" not in att and "content" not in att
+
+
+def test_finding_detail_is_project_scoped(client, db_session, test_project):
+    """A finding in another project must be indistinguishable from one that
+    does not exist — 403-vs-404 leaks that the id is real."""
+    from app.db.models_project import Project
+    from app.db.models_findings import Finding
+
+    other = Project(name="Someone else's engagement", slug="other-engagement-a")
+    db_session.add(other)
+    db_session.commit()
+    foreign = Finding(
+        project_id=other.id, title="Not yours", severity="critical",
+        status="open", source="manual",
+    )
+    db_session.add(foreign)
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    resp = client.get(f"/api/v1/agent/assist/findings/{foreign.id}", headers=headers)
+    assert resp.status_code == 404
+
+
+def test_attachment_download_is_project_scoped(client, db_session, test_project, test_user):
+    """The download path handed out by assist_get_finding is key-authenticated
+    and project-scoped; it must not become a way to read another engagement's
+    evidence by guessing an id."""
+    from app.db.models import Annotation, NoteAttachment, NoteStatus
+    from app.db.models_project import Project
+
+    other = Project(name="Other engagement", slug="other-engagement-b")
+    db_session.add(other)
+    db_session.commit()
+    note = Annotation(
+        project_id=other.id, user_id=test_user.id, body="theirs",
+        status=NoteStatus.OPEN,
+    )
+    db_session.add(note)
+    db_session.commit()
+    att = NoteAttachment(
+        annotation_id=note.id, project_id=other.id, filename="theirs.png",
+        content_type="image/png", size_bytes=10, storage_path=f"{note.id}/theirs.png",
+    )
+    db_session.add(att)
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    resp = client.get(f"/api/v1/agent/assist/attachments/{att.id}", headers=headers)
+    assert resp.status_code == 404
