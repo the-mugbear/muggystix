@@ -107,14 +107,21 @@ A correction to an earlier draft: `AgentSession.scope_id` and `plan_id` were
 marked for deletion as workflow scaffolding. They are not — **they are this
 declaration**, and they survive with a clearer purpose.
 
-One constraint rules out the obvious alternative: **recon cannot be scoped by
-host assignment, because the hosts do not exist yet.** Recon discovers them. So:
+Host-based scoping is incoherent for recon: recon's whole job is to **act on a
+scope and populate host entries from what it finds**. The hosts do not exist to
+be assigned until it has run. So the target is the scope, and host-level
+targeting only applies to phases that operate on known inventory:
 
-| Work shape | Target |
-|---|---|
-| Discovery (recon) | scope / subnet set — `scope_id` |
-| Testing against known inventory | host set, or the plan's entries — `plan_id` |
-| Review / assist | project-wide, no target |
+| Work shape | Target | Already exists as |
+|---|---|---|
+| Discovery (recon) | scope / subnet set | `scope_id` |
+| Testing known inventory | the plan, which names its hosts | `plan_id` |
+| Review / assist | project-wide, no target | (neither set) |
+
+**So there is no target model to build.** `scope_id` and `plan_id` already carry
+it. The work in Phase 3 is *surfacing* the declared target on Agent Runs so a
+second analyst can see the range is taken, and recording what a session actually
+touched against it.
 
 **Out-of-scope ingest is recorded, not rejected.** A soft warning nobody can act
 on is noise, and rejection recreates the friction this change removes. The
@@ -216,18 +223,29 @@ scopes the catalog. It simply stops pretending to be security.
 * status is **derived live** from `TestPlan.status` via
   `_plan_generation_status()`, and nothing copies it to the base row;
 * the backfill migration `b8e1f37a92c4` creates base rows for execution, recon
-  and assist — **but not plan_generation**, so historical plans have none;
-* it lists **every** plan, including ones a human wrote by hand with no agent
-  involved.
+  and assist — **but not plan_generation**, so historical plans have none.
 
 `/test-plans/generate` already creates a real `plan_generation` `AgentSession`.
 It is half-built; the reader ignores it.
 
-**Open question for the owner:** switching to read that session row makes
-plan-generation symmetric with the other three, and **manually-created plans
-stop appearing on Agent Runs**. That is arguably correct — a human-authored plan
-is not an agent run — but it changes what the page means. Decision required
-before Phase 4.
+**A "manually created plan" is not a thing this product has.** An earlier draft
+of this document claimed switching the reader would drop hand-written plans from
+Agent Runs. That was wrong. There are exactly two callers of
+`TestPlanService.create_plan`: `/test-plans/generate`, and an orphaned
+`POST /test-plans/` that the frontend **never calls** — every UI path to a plan
+goes through `/generate`. Bundle import does not create plans either. So every
+plan a user can actually produce already has a `plan_generation` session, and
+the reader switch drops nothing user-visible.
+
+What remains is narrower and purely mechanical: **plans predating the R5 expand
+have no base row**, and the backfill skips them. That needs one migration, not a
+product decision.
+
+The orphaned `POST /test-plans/` endpoint (analyst-gated, `agent_id=None`) can
+stay as deliberately API-only — same treatment as `createFinding` in `TODO.md`.
+It is then the only way to produce a plan with no session, and such a plan
+simply will not appear on Agent Runs. That is the correct answer: a plan created
+by curl with no agent involved is not an agent run.
 
 ---
 
@@ -245,10 +263,19 @@ can reach, so authorization must be in place first, and the deletions come last.
   is what Phase 1's tests must characterise.
 
 ### Phase 2 — Session-bound keys and renewal
-* Add renew (not rotate) on the session; same token, later deadline.
+**Decided: renewal, not rotation.**
+* Add renew on the session; same token, later deadline. The agent does not
+  re-bootstrap, which is the whole point for a job that outlives its key.
 * Bind key lifetime to session activity with an absolute cap.
 * Teach the prompt to check `key_expires_at` and renew *before* long operations.
-* Independently valuable: fixes a live gap for recon runs over 24h.
+* **Replace `/{plan_id}/rotate-key` with renew.** It is the last key endpoint
+  standing, and its documented purpose — *"the original 24h key expired but the
+  user wants to keep working on the same plan"* — **is** the renewal case. It
+  only used rotation because renewal did not exist for plan keys. Rotation has
+  exactly one honest use left (the secret is believed compromised), which is a
+  revoke-and-restart, not a mid-run continuation.
+* Independently valuable: fixes a live gap for recon runs over 24h, and can land
+  before any other phase.
 
 ### Phase 3 — Target declaration
 * Generalise `scope_id` / host-set as the session's declared target.
@@ -295,11 +322,20 @@ in the session dialog, stated plainly rather than buried:
 
 ---
 
+## Settled
+
+* **Renewal, not rotation** (Phase 2). Rotation survives only as a
+  revoke-and-restart for a compromised secret, if at all.
+* **`plan_generation` semantics.** No decision needed — manually created plans
+  are not functionality this product has, so nothing user-visible is lost by
+  reading the session row. One backfill migration for pre-R5 plans.
+* **Recon targets a scope, not hosts.** Recon acts on a scope and populates host
+  entries from what it finds; there are no hosts to assign until it runs. No
+  target model to build — `scope_id` / `plan_id` already carry it.
+
 ## Open questions
 
-1. **`plan_generation` semantics** — should manually-created plans disappear
-   from Agent Runs? (Blocks Phase 4.)
-2. **Auditors** — read-only by role, so their agent is read-only automatically.
+1. **Auditors** — read-only by role, so their agent is read-only automatically.
    Intended, or should auditors get no agent at all?
-3. **Absolute key cap** — with session-bound lifetime, what is the maximum a
+2. **Absolute key cap** — with session-bound lifetime, what is the maximum a
    session may live before it must be restarted? 168h is today's cap.
