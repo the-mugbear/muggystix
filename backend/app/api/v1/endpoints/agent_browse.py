@@ -69,6 +69,17 @@ from app.api.v1.endpoints.agent_common import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# v2.305.0 — key renewal is mounted on its own router, deliberately OUTSIDE the
+# operator-access gate applied to every other agent route. That gate runs the
+# normal authentication chain, which rejects an expired key — which would defeat
+# the one endpoint whose entire purpose is accepting one.
+#
+# Safe because renewal grants no authority: it extends a deadline and nothing
+# else. The renewed key still passes through the operator gate on every real
+# request, so an operator who lost project membership can renew a key that can
+# then do nothing with it.
+renewal_router = APIRouter()
+
 
 # v2.295.0 — ``_log_unscoped_legacy_hit`` removed.  It was deprecation
 # instrumentation (v2.65.0) that fired only for a key with no scope binding at
@@ -157,7 +168,7 @@ class SessionRenewResponse(BaseModel):
     )
 
 
-@router.post(
+@renewal_router.post(
     "/session/renew",
     response_model=SessionRenewResponse,
     summary="Extend this key's deadline (accepts an already-expired key)",

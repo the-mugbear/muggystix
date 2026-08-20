@@ -44,12 +44,39 @@ const sections: GuideSection[] = [
           Reference page; the deployment-specific URL is baked into each instructions block). You
           authenticate with <Mono>X-API-Key: nm_agent_…</Mono>.
         </Para>
+        <Subhead>What a key is allowed to do</Subhead>
+        <Para>
+          A key carries <strong>your</strong> permissions on the project, re-checked on every single
+          call — not frozen at the moment it was minted. If your project role changes, or you are
+          removed from the project, or your account is disabled, the key follows immediately rather
+          than staying powerful until it expires. An auditor's or viewer's agent is read-only for
+          the same reason yours is not: because that is what <em>they</em> can do.
+        </Para>
+        <Para>
+          Treat the key itself like a password with an expiry date. It is as capable as you are.
+        </Para>
+        <Subhead>When a key expires mid-run</Subhead>
+        <Para>
+          Recon in particular can outlive its key: the agent starts nmap, masscan, or Nessus, waits
+          hours for it to finish, and only discovers the key has lapsed when it tries to upload the
+          results — with all the scanning already done.
+        </Para>
+        <Para>
+          That case is handled and <strong>no work is lost</strong>. While the session is still open,
+          the agent renews the key itself — same key, later deadline — and retries the upload. You do
+          not have to do anything, and the agent should never re-run a scan because of it. Renewal
+          keeps working until the session reaches its maximum lifetime (7 days by default); after
+          that, or once you end the session, the key is finished and you start a new one.
+        </Para>
+        <Para>
+          <strong>Ending the session is what revokes a key</strong> — it takes effect immediately.
+          Waiting for expiry is not a revocation, because an open session can renew past it.
+        </Para>
         <Alert variant="info" className="mt-sm">
           <AlertDescription>
             Every <Mono>/agent/*</Mono> call is logged and surfaced back to you (filterable by host,
-            target IP, and status code), so you can verify exactly what the agent did. Keys are
-            time-limited and can be revoked at any time; agents can never approve their own plans or
-            reach user/admin surfaces.
+            target IP, and status code), so you can verify exactly what the agent did. Agents can
+            never approve their own plans or reach user/admin surfaces.
           </AlertDescription>
         </Alert>
       </div>
@@ -148,8 +175,9 @@ const sections: GuideSection[] = [
         <UnorderedList>
           <li><strong>Read-only unless you say otherwise</strong> — by default every write endpoint rejects the assist key. Ticking the write box when you start a session grants exactly three narrow writes (add a note, set review status, correct hostname/OS), and only on hosts <em>assigned to you</em>. Scanning, plan creation, and execution are never available.</li>
           <li><strong>Project-scoped</strong> — it sees all hosts in the one project you started it from, and nothing in other projects.</li>
-          <li><strong>Short-lived</strong> — assist keys expire quickly (4h by default) and can be ended at any time.</li>
+          <li><strong>Short-lived, but recoverable</strong> — assist keys expire quickly (4h by default) and can be ended at any time. If a key lapses while the session is still open, the agent renews it itself and carries on — see <em>When a key expires mid-run</em> below.</li>
           <li><strong>Who can start one</strong> — analyst role or above (auditors/viewers cannot mint a key).</li>
+          <li><strong>It can only do what you can do</strong> — the key acts with <em>your</em> permissions on the project, re-checked on every call. If your role changes or you leave the project, the key follows immediately.</li>
         </UnorderedList>
         <Subhead>Connecting without the prompts</Subhead>
         <Para>

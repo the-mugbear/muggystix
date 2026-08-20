@@ -303,13 +303,33 @@ by curl with no agent involved is not an agent run.
 Ordering is not negotiable. Removing the workflow guards **widens** what any key
 can reach, so authorization must be in place first, and the deletions come last.
 
-### Phase 1 — Make the key act as its operator *(additive, no behaviour change)*
-* Resolve the operator's project role at agent-key auth. `key_operator_id` is
-  already set at auth time; it just is not used for authorization.
-* Apply the existing role dependencies to the agent routers **alongside** the
-  workflow guards. Both active: a request must satisfy both.
-* Reversible. Nothing widens; some things may narrow — which is the point, and
-  is what Phase 1's tests must characterise.
+### Phase 1 — Make the key act as its operator ✅ **Shipped in 2.305.0**
+Applied as **one router-level dependency** (`enforce_agent_operator_access`)
+rather than 19 per-route edits — so it covers the whole surface and cannot be
+forgotten on a new endpoint. Both gates run: a request must satisfy the
+workflow guard *and* the operator's role.
+
+* Reads require current project membership; writes additionally require
+  `ANALYST`, except the six **session-metadata writes** (key renewal, the three
+  environment probes, feedback, tool suggestions) which record something about
+  the session rather than project data.
+* Operator resolved from the session's `started_by_id`, **falling back to
+  `Agent.owner_id`**. Same person in practice — an `Agent` is unique per
+  (user, project) — but `started_by_id` is `ON DELETE SET NULL` and absent on
+  pre-binding keys, so reading only the session would deny keys whose operator
+  is perfectly identifiable.
+* Global admins bypass, matching `require_project_role`.
+* **Key renewal is mounted outside this gate**, on its own router. The gate
+  authenticates normally, which rejects an expired key — and accepting an
+  expired key is that route's entire purpose. Safe because renewal grants no
+  authority: the renewed key still passes the gate on every real request, so an
+  operator who lost membership can renew a key that can then do nothing.
+
+**Nothing narrowed.** Every session-start endpoint already required `ANALYST`,
+so no viewer or auditor keys exist. What changed is that the role now *stays*
+true: a demotion, a removed membership, or a deactivated account reaches keys
+already in the field, immediately. v2.304.0 made keys renewable, which had
+widened that window rather than closing it.
 
 ### Phase 2 — Session-bound keys and renewal ✅ **Shipped in 2.304.0** (prompt 1.57.0)
 **Decided: renewal, not rotation.**

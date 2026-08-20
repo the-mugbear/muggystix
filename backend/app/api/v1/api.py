@@ -54,6 +54,7 @@ from app.api.v1.endpoints import (
     system_metrics,
 )
 from app.api.v1.endpoints.auth import require_password_changed
+from app.api.deps import enforce_agent_operator_access
 
 api_router = APIRouter()
 
@@ -85,11 +86,40 @@ api_router.include_router(system_metrics.router, prefix="/system", tags=["system
 # the password-change gate — that dependency requires a JWT user.  Each
 # of the four workflow routers below is mounted under /agent with its
 # own tag (see _OPENAPI_TAGS in main.py for the sequences).
-api_router.include_router(agent_browse.router, prefix="/agent", tags=["agent-browse"])
-api_router.include_router(agent_test_plans.router, prefix="/agent", tags=["agent-plan-generation"])
-api_router.include_router(agent_execution.router, prefix="/agent", tags=["agent-execution"])
-api_router.include_router(agent_recon.router, prefix="/agent", tags=["agent-recon"])
-api_router.include_router(agent_assist.router, prefix="/agent", tags=["agent-assist"])
+# v2.305.0 — one router-level dependency gives every agent route the operator's
+# own permissions, checked per request. The agent surface previously performed
+# NO project-role checks at all: authorization was "which workflow is this key
+# scoped to", an entirely separate model from the one the rest of the product
+# uses. Applied here rather than on 19 individual routes so it covers the whole
+# surface and cannot be forgotten on a new endpoint.
+_agent_operator_access = [Depends(enforce_agent_operator_access)]
+
+api_router.include_router(
+    agent_browse.router, prefix="/agent", tags=["agent-browse"],
+    dependencies=_agent_operator_access,
+)
+# Renewal is mounted WITHOUT the operator gate — that gate authenticates
+# normally, which rejects an expired key, and accepting an expired key is the
+# entire point of this route. It does its own checks and grants no authority.
+api_router.include_router(
+    agent_browse.renewal_router, prefix="/agent", tags=["agent-browse"],
+)
+api_router.include_router(
+    agent_test_plans.router, prefix="/agent", tags=["agent-plan-generation"],
+    dependencies=_agent_operator_access,
+)
+api_router.include_router(
+    agent_execution.router, prefix="/agent", tags=["agent-execution"],
+    dependencies=_agent_operator_access,
+)
+api_router.include_router(
+    agent_recon.router, prefix="/agent", tags=["agent-recon"],
+    dependencies=_agent_operator_access,
+)
+api_router.include_router(
+    agent_assist.router, prefix="/agent", tags=["agent-assist"],
+    dependencies=_agent_operator_access,
+)
 # MCP transport lives at /api/v1/mcp — unauthenticated at the FastAPI layer
 # (initialize/tools/list leak nothing); tools/call forwards X-API-Key to the
 # loopback assist endpoints, which enforce auth/scope/capability.
@@ -101,7 +131,10 @@ api_router.include_router(
     mcp_telemetry.router, prefix="/mcp-telemetry", tags=["mcp-telemetry"]
 )
 # Agent feedback ingest — same API-key auth path as /agent/.
-api_router.include_router(feedback.agent_feedback_router, prefix="/agent", tags=["agent-feedback"])
+api_router.include_router(
+    feedback.agent_feedback_router, prefix="/agent", tags=["agent-feedback"],
+    dependencies=_agent_operator_access,
+)
 # Admin-only feedback triage (JWT).  Lives at /feedback rather than under
 # /projects/{project_id}/... because feedback is cross-project in scope.
 api_router.include_router(

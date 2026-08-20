@@ -648,6 +648,135 @@ def check_agent_rate_limit(
     return agent
 
 
+# ---------------------------------------------------------------------------
+# Operator-derived authorization (v2.305.0 — consolidation Phase 1)
+#
+# Mutating agent routes that are NOT project-data writes. They record something
+# about the session itself — its environment, its key deadline, feedback about
+# the prompt — so they stay available to any key whose operator is still a
+# member, regardless of role. A read-only operator needs to renew a key and
+# report its environment exactly as much as anyone else.
+#
+# Everything else that mutates requires the operator to hold ANALYST on the
+# project, evaluated PER REQUEST.
+# ---------------------------------------------------------------------------
+
+AGENT_SESSION_METADATA_WRITES = frozenset({
+    ("POST", "/api/v1/agent/session/renew"),
+    ("POST", "/api/v1/agent/assist/sessions/{session_id}/environment"),
+    ("POST", "/api/v1/agent/execution-sessions/{session_id}/environment"),
+    ("POST", "/api/v1/agent/recon/sessions/{session_id}/environment"),
+    ("POST", "/api/v1/agent/feedback"),
+    ("POST", "/api/v1/agent/tool-suggestions"),
+})
+
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def enforce_agent_operator_access(
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+) -> Agent:
+    """An agent key may do what its operator may do — checked on every request.
+
+    v2.305.0.  The agent surface performed **zero** project-role checks: it had
+    an entirely separate authorization model built on which workflow a key was
+    scoped to. Two consequences, both real:
+
+    * **Role changes did not reach live keys.** Demote an analyst to viewer, or
+      remove them from the project, and their agent kept its old powers until
+      the key expired. v2.304.0 made keys renewable, which widened that window
+      rather than closing it.
+    * It produced a whole bug class of its own — v2.90.3 fixed a viewer minting
+      an agent key to bypass the analyst gate on the user-side plan routes. When
+      the key carries the operator's role, that is unrepresentable rather than
+      merely patched.
+
+    Applied as a router-level dependency, so it covers every agent route without
+    19 per-route edits and cannot be forgotten on a new one. Reads require
+    current membership; writes additionally require ANALYST, except for the
+    session-metadata writes above.
+
+    A global admin bypasses, matching ``require_project_role``.
+    """
+    method = request.method.upper()
+    route = request.scope.get("route")
+    path = getattr(route, "path", "") or ""
+    is_write = method not in _READ_METHODS
+    is_project_write = is_write and (method, path) not in AGENT_SESSION_METADATA_WRITES
+
+    # Prefer the session's own starter; fall back to the agent's owner.
+    #
+    # These are the same person in practice — an Agent is unique per
+    # (user, project) and a session is started by the user whose agent it is —
+    # but they fail differently. ``started_by_id`` is ON DELETE SET NULL and is
+    # absent on keys minted before the unified session binding, whereas
+    # ``Agent.owner_id`` is set at creation and always present. Reading only the
+    # session would make this gate deny keys whose operator is perfectly
+    # identifiable, which is a worse answer than the one it replaces.
+    operator_id = getattr(request.state, "key_operator_id", None) or agent.owner_id
+    if operator_id is None:
+        # Both gone: the operator's account was deleted, which is deliberately
+        # non-destructive to the audit trail. Reads continue; writes stop,
+        # because there is no longer anyone whose authority this key acts under.
+        if is_project_write:
+            logger.warning(
+                "agent key %s has no resolvable operator — refusing %s %s",
+                getattr(request.state, "api_key_prefix", "?"), method, path,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This key's operator no longer exists, so it cannot write. "
+                    "Ask an active project member to start a new session."
+                ),
+            )
+        return agent
+
+    operator = db.query(User).filter(User.id == operator_id).first()
+    if operator is None or not operator.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This key's operator is no longer an active user. Ask an active "
+                "project member to start a new session."
+            ),
+        )
+    request.state.key_operator_is_admin = operator.role == UserRole.ADMIN
+    if operator.role == UserRole.ADMIN:
+        return agent
+
+    membership = (
+        db.query(ProjectMembership)
+        .filter(
+            ProjectMembership.project_id == agent.project_id,
+            ProjectMembership.user_id == operator.id,
+        )
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This key's operator is no longer a member of the project. The "
+                "key cannot act on a project its operator has left."
+            ),
+        )
+    request.state.key_operator_role = membership.role
+
+    if is_project_write and not check_permissions(membership.role, ProjectRole.ANALYST.value):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"This key acts for a project {membership.role}, which is "
+                "read-only. An agent can only do what the operator who started "
+                "its session can do."
+            ),
+        )
+    return agent
+
+
 def require_plan_scope(
     request: Request,
     plan_id: int = Path(..., gt=0),

@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11)
+> **Last verified against:** backend 2.305.0 / frontend 5.186.0 (2026-08-20)
 
 Base path: `/api/v1`
 
@@ -46,12 +46,16 @@ Agents get a short-lived key via one of these flows:
 - **Plan generation** — user clicks "Generate with AI" on the Test Plans page → `POST /api/v1/projects/{id}/test-plans/generate` mints a `plan_generation`-scoped key.
 - **Execution** — user approves a plan and clicks "Execute with AI" → `POST /api/v1/projects/{id}/test-plans/{plan_id}/execute` mints a plan-scoped `execution` key bound to that exact plan.
 - **Assist** — user starts a read-only Q&A session → `POST /api/v1/projects/{id}/assist/start` mints an `assist`-scoped key (v2.64.0). Read-only; rejected on plan/recon/execution endpoints.
-- **Rotate** — when a per-plan key expires (24h TTL) but the user wants to continue, `POST /api/v1/projects/{id}/test-plans/{plan_id}/rotate-key` mints a fresh key and revokes the prior ones (v2.19.0).
+- **Renew (agent-facing, v2.304.0)** — `POST /api/v1/agent/session/renew`, called by the agent with its **own** key. Same key, later deadline. It deliberately **accepts an already-expired key** while the session is active and under `AGENT_SESSION_MAX_LIFETIME_HOURS` (168h), because the failure it exists for is discovered late: an agent blocks for hours on nmap / masscan / Nessus and only learns its key lapsed when it tries to upload, with the scanning already done. No path parameter — the key identifies its own session.
+- **Rotate** — `POST /api/v1/projects/{id}/test-plans/{plan_id}/rotate-key` mints a fresh per-plan key and revokes the prior ones (v2.19.0). Superseded in practice by renewal: rotation issues a *new secret*, so an agent part-way through a job has to be re-bootstrapped.
 
 Keys are:
 - **Hashed at rest** in `agent_api_keys` (the plaintext is returned to the user **exactly once**, never stored).
-- **Time-bound** — default 24h TTL, controlled by `settings.AGENT_API_KEY_TTL_HOURS`.
+- **Time-bound but renewable** — default 24h TTL (`settings.AGENT_KEY_TTL_HOURS`), extendable by the agent itself while the session lives. **Ending the session, not expiry, is the revocation control**: an open session can renew past its key's deadline, so waiting for expiry is not a revocation.
+- **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, environment probe, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
 - **Scoped** — each key declares its workflow (`plan_generation`, `execution`, `reconnaissance`, `assist`) and, for execution keys, a specific `test_plan_id`. Scope-mismatched calls return 403.
+
+A 401 from an expired key carries a **structured body**: `recoverable: true` means renew with the same key and retry the failed request, `false` means the session is finished and the output should be saved to a file. "Expired" and "revoked" are the same status code but opposite situations, and the caller is usually holding output it cannot cheaply reproduce.
 
 Every `/api/v1/agent/*` request must include:
 
@@ -59,7 +63,7 @@ Every `/api/v1/agent/*` request must include:
 X-API-Key: nm_agent_<plaintext>
 ```
 
-The `require_plan_scope` dependency validates the key, loads the bound agent + plan, and makes them available to the handler. `deny_scoped_keys` is the inverse — used on endpoints that must not accept plan-scoped keys (e.g. listing every plan in the project).
+The `require_plan_scope` dependency validates the key, loads the bound agent + plan, and makes them available to the handler. (`deny_scoped_keys` was removed in v2.295.0 along with the unscoped global key — it admitted only that credential, so every endpoint behind it had become unreachable.)
 
 ### 1.3 Sessions
 

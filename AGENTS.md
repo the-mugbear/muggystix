@@ -6,7 +6,11 @@
 
 You are an AI assistant (Claude Code, Codex, ChatGPT, etc.) assigned to a workflow in BlueStick. This file is the entire surface you are authorized to use. Follow it literally — the surrounding scaffolding (human approval, per-session key scope, audit trail) depends on you behaving as described.
 
-Everything below is reachable through one auth mechanism: the API key the user pasted to you. Do not attempt to log in, reach admin surfaces, rotate keys, create new agents, or touch endpoints outside `/api/v1/agent/*`. They are not available to you and calling them will return 401/403.
+Everything below is reachable through one auth mechanism: the API key the user pasted to you. Do not attempt to log in, reach admin surfaces, mint new keys, create new agents, or touch endpoints outside `/api/v1/agent/*`. They are not available to you and calling them will return 401/403.
+
+One exception, and it matters: you **can** extend your own key's deadline via `POST /api/v1/agent/session/renew`. That is renewal, not rotation — same key, later expiry — and it is how you survive a long-running scan outliving your credential. See **If your key expires** below.
+
+Your key carries the permissions of the operator who started your session, re-checked on every call. If you get a 403 saying the key is read-only or the operator has left the project, that is not a bug and retrying will not help — tell the user.
 
 > **Context optimization:** this file supports `?workflow=plan_generation|execution|reconnaissance|assist` on the `/api/v1/agents-guide` endpoint to return only the sections relevant to your workflow. The prompt you were given already includes the right URL. A workflow slice is roughly a third of the full file (the assist slice is smaller because the assist surface is intentionally small).
 
@@ -42,7 +46,12 @@ No login, no password, no `project_id` in the URL — the key is pre-scoped to e
 
 > Both `X-API-Key: nm_agent_...` and `Authorization: Bearer nm_agent_...` are accepted. Prefer `X-API-Key`.
 
-If your key stops working (401 expired/revoked, or 403 scoped to a different plan), see the 401/403 rows in **Error Handling** below — the short version is ask the user to re-run Generate/Execute for the same plan; you cannot rotate a key yourself.
+If your key stops working, read the 401 body before doing anything else. It tells you which case you are in:
+
+* `recoverable: true` — your key expired but the session is still open. `POST` to the `renew_path` in that body **with the same key**, then **retry the exact request that failed**. Do not re-run a scan or command whose output you are already holding, and do not ask the user for a new key.
+* `recoverable: false` — the session ended or passed its maximum lifetime. Save anything you are holding to a file in your working directory, then ask the user to start a new session.
+
+A 403 is different: it means your key is valid but not allowed to do that. Do not retry it.
 
 ### MCP (optional — same endpoints, native tools)
 
@@ -1096,7 +1105,8 @@ Use the `status` field meaningfully:
 
 | Status | Meaning | Action |
 |--------|---------|--------|
-| 401 | API key expired, revoked, or invalid | Ask the user to re-run Generate/Execute for this plan and paste the new key. Do not attempt to rotate or refresh the key yourself. |
+| 401 | API key expired, revoked, or invalid | Read the body. `recoverable: true` → POST to `renew_path` with the same key and retry the failed request; never re-run work you already have output for. `recoverable: false` → save your output to a file and ask the user to start a new session. |
+| 403 (read-only / not a member) | Your key acts for its operator, and their role changed, or they left the project | Not retryable. Tell the user — only they can fix it. |
 | 403 — "scoped to a different test plan" | Your per-plan key was used against another plan's endpoint | Check the `plan_id` in your URL matches the one in your instructions block. If you need a different plan, ask the user for a new key. |
 | 403 — other | The operation isn't available to agent keys (e.g. creating new plans from a scoped key) | Use the endpoints documented in this guide. Scoped keys cannot spawn new plans. |
 | 404 | Resource not found | Verify the `plan_id`, `entry_id`, or `host_id`. The resource may have been deleted. |
