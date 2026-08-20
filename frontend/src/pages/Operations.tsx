@@ -65,6 +65,9 @@ const kindTone = (kind: string): Tone => {
   if (kind === 'recon') return 'secondary';
   if (kind === 'plan_generation') return 'default';
   if (kind === 'execution') return 'success';
+  // v5.185.0 — assist is a fourth kind on this timeline. It used to be absent
+  // entirely: an operator with a live assist key saw nothing on Agent Runs.
+  if (kind === 'assist') return 'info';
   return 'muted';
 };
 
@@ -536,6 +539,10 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
       ? session.test_plan_id
         ? `Plan #${session.test_plan_id}`
         : '—'
+      // Assist is project-scoped — it has no plan or scope to name, which is
+      // the point of the workflow rather than missing data.
+      : session.kind === 'assist'
+      ? 'Project-wide'
       : '—';
 
   const handleOpen = () => {
@@ -545,6 +552,8 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
       navigate(`/executions/${session.id}`);
     } else if (session.kind === 'plan_generation' && session.test_plan_id) {
       navigate(`/test-plans/${session.test_plan_id}`);
+    } else if (session.kind === 'assist') {
+      navigate(`/assist-sessions/${session.id}`);
     }
   };
 

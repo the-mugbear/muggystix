@@ -52,6 +52,9 @@ const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
   { value: 'recon', label: 'Recon' },
   { value: 'plan_generation', label: 'Plan generation' },
   { value: 'execution', label: 'Execution' },
+  // v5.185.0 — the fourth workflow. Its absence here meant "All workflows"
+  // was not all of them.
+  { value: 'assist', label: 'Assist' },
 ];
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline' | 'muted';
@@ -64,6 +67,8 @@ function kindBadgeVariant(kind: AgentSessionKind): BadgeVariant {
       return 'info';
     case 'execution':
       return 'success';
+    case 'assist':
+      return 'warning';
   }
 }
 
@@ -130,6 +135,7 @@ const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ row
                 <TableHead className="w-20 text-right">Recon</TableHead>
                 <TableHead className="w-24 text-right">Plan-gen</TableHead>
                 <TableHead className="w-24 text-right">Execution</TableHead>
+                <TableHead className="w-20 text-right">Assist</TableHead>
                 <TableHead className="w-20 text-right">Total</TableHead>
               </TableRow>
             </TableHeader>
@@ -149,6 +155,7 @@ const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ row
                   <TableCell className="text-right">{r.recon}</TableCell>
                   <TableCell className="text-right">{r.plan_generation}</TableCell>
                   <TableCell className="text-right">{r.execution}</TableCell>
+                  <TableCell className="text-right">{r.assist}</TableCell>
                   <TableCell className="text-right font-semibold">{r.total}</TableCell>
                 </TableRow>
               ))}
@@ -387,6 +394,8 @@ const ProjectActivity: React.FC = () => {
       navigate(`/test-plans/${row.test_plan_id}`);
     } else if (row.kind === 'recon') {
       navigate(`/recon/runs/${row.id}`);
+    } else if (row.kind === 'assist') {
+      navigate(`/assist-sessions/${row.id}`);
     }
   };
 
@@ -560,6 +569,11 @@ const ProjectActivity: React.FC = () => {
                       {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
                       {(r.kind === 'plan_generation' || r.kind === 'execution') &&
                         r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
+                      {r.kind === 'assist' && (
+                        <span className="text-caption text-muted-foreground">
+                          Project-wide
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Tooltip>
@@ -570,7 +584,15 @@ const ProjectActivity: React.FC = () => {
                             onClick={() => drillInto(r)}
                             aria-label={`Open ${r.kind} session ${r.id}`}
                             disabled={
-                              r.kind === 'recon' ? r.scope_id == null : r.test_plan_id == null
+                              // Assist has its own detail page and no target
+                              // id — keyed off the session id alone. Without
+                              // this branch the row's Open button was disabled
+                              // because test_plan_id is (correctly) null.
+                              r.kind === 'assist'
+                                ? false
+                                : r.kind === 'recon'
+                                ? r.scope_id == null
+                                : r.test_plan_id == null
                             }
                           >
                             <ExternalLink className="size-4" aria-hidden />

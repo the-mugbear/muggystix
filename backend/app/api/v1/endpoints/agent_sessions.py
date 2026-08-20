@@ -33,7 +33,10 @@ from app.services.agent_session_service import (
 router = APIRouter()
 
 
-SessionKindLiteral = Literal["recon", "plan_generation", "execution"]
+# v2.303.0 — assist was missing here, so the surface that calls itself the
+# unified agent-session timeline omitted a whole workflow: an operator could
+# have a live assist key and see nothing on Agent Runs.
+SessionKindLiteral = Literal["recon", "plan_generation", "execution", "assist"]
 
 
 class AgentSessionRowResponse(BaseModel):
@@ -74,6 +77,7 @@ class ModelToolSummaryRow(BaseModel):
     recon: int = 0
     plan_generation: int = 0
     execution: int = 0
+    assist: int = 0
     total: int = 0
 
 
@@ -92,8 +96,8 @@ def get_agent_sessions(
     kind: Optional[SessionKindLiteral] = Query(
         None,
         description=(
-            "Narrow to one workflow kind.  Omit to get all three "
-            "(recon, plan_generation, execution)."
+            "Narrow to one workflow kind.  Omit to get all four "
+            "(recon, plan_generation, execution, assist)."
         ),
     ),
     agent_id: Optional[int] = Query(None, description="Filter by agent."),
@@ -116,7 +120,9 @@ def get_agent_sessions(
             "'active' / 'paused' / 'completed' / 'failed' / 'abandoned'; "
             "plan_generation uses TestPlan.status — 'draft' / "
             "'pending_review' / 'approved' / 'in_progress' / 'completed' / "
-            "'rejected'.  Pass 'active' for the in-flight-runs banner."
+            "'rejected'; assist uses 'active' / 'ended' / 'expired'.  Pass "
+            "'active' for the in-flight-runs banner — it is the one value "
+            "every kind shares."
         ),
     ),
     limit: int = Query(200, ge=1, le=1000),
@@ -125,7 +131,7 @@ def get_agent_sessions(
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ):
-    """Return every agent session (recon + plan generation + execution)
+    """Return every agent session (recon + plan generation + execution + assist)
     for this project, ordered newest-started first.
 
     Filterable by kind, agent, model, tool, user, status.  Drives the
@@ -134,7 +140,7 @@ def get_agent_sessions(
     this project" passes ``?model=claude-opus-4-7``.
     """
     # v2.43.3 (AUD-O1): total now comes from `count_agent_sessions` —
-    # three SELECT COUNT(*) queries against each underlying table — and
+    # one SELECT COUNT(*) per kind against each underlying table — and
     # the row list is paginated at the SQL layer.  Pre-fix the endpoint
     # fetched up to 10_000 rows, computed total from `len()`, and
     # sliced in memory, which silently truncated long-lived projects'
@@ -176,7 +182,7 @@ def get_agent_session_summary(
     _user: User = Depends(get_current_user),
 ):
     """Per-(generated_by_model, generated_by_tool) rollup of session
-    counts across the three workflows.  Drives the v3 "compare
+    counts across the four workflows.  Drives the v3 "compare
     models" card on the project dashboard."""
     summary = summarise_by_model_tool(db, project.id)
     return ModelToolSummaryResponse(

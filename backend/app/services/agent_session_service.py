@@ -28,13 +28,24 @@ from sqlalchemy.orm import Session
 
 from app.db.models_agent import (
     AgentSession,
+    AssistSession,
     ExecutionSession,
     ReconSession,
     TestPlan,
 )
 
 
-SessionKind = Literal["recon", "plan_generation", "execution"]
+# v2.303.0 — assist joins the timeline. The model docstring has always said
+# "one row per plan-generation / execution / recon / assist session", but this
+# service enumerated three, so an active assist key was invisible on the very
+# surface that exists to answer "what are the agents doing?". See
+# ``_apply_assist_filters`` for why assist is sourced from AssistSession rather
+# than from the unified AgentSession base row.
+SessionKind = Literal["recon", "plan_generation", "execution", "assist"]
+
+#: The default kind set. Named once so the three call sites can't drift — the
+#: bug this fixes was exactly that kind of drift.
+ALL_SESSION_KINDS = {"recon", "plan_generation", "execution", "assist"}
 
 
 def create_agent_session(
@@ -191,6 +202,30 @@ def _plan_generation_status(plan_status: str) -> str:
     return plan_status
 
 
+def _apply_assist_filters(q, *, agent_id, model, tool, user_id, status):
+    """Assist rows come from ``AssistSession``, not from the unified
+    ``AgentSession`` base row, for the same reason the other three do: the
+    detail table is where the workflow's own lifecycle lives.
+
+    A full collapse onto ``AgentSession`` is a bigger change than it looks —
+    plan_generation rows are keyed by ``TestPlan.id`` (so switching would
+    change every id the UI links on) and their status is derived live from
+    ``TestPlan.status``, which nothing copies onto the base row. Adding the
+    missing kind is the part that was actually load-bearing.
+    """
+    if agent_id is not None:
+        q = q.filter(AssistSession.agent_id == agent_id)
+    if model is not None:
+        q = q.filter(AssistSession.generated_by_model == model)
+    if tool is not None:
+        q = q.filter(AssistSession.generated_by_tool == tool)
+    if user_id is not None:
+        q = q.filter(AssistSession.started_by_id == user_id)
+    if status is not None:
+        q = q.filter(AssistSession.status == status)
+    return q
+
+
 def _apply_execution_filters(q, *, agent_id, model, tool, user_id, status):
     if agent_id is not None:
         q = q.filter(ExecutionSession.agent_id == agent_id)
@@ -225,7 +260,7 @@ def count_agent_sessions(
     from sqlalchemy import func as _func
 
     total = 0
-    want = set(kinds) if kinds is not None else {"recon", "plan_generation", "execution"}
+    want = set(kinds) if kinds is not None else set(ALL_SESSION_KINDS)
 
     if "recon" in want:
         q = db.query(_func.count(ReconSession.id)).filter(
@@ -246,6 +281,13 @@ def count_agent_sessions(
             .filter(TestPlan.project_id == project_id)
         )
         q = _apply_execution_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
+        total += q.scalar() or 0
+
+    if "assist" in want:
+        q = db.query(_func.count(AssistSession.id)).filter(
+            AssistSession.project_id == project_id
+        )
+        q = _apply_assist_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
         total += q.scalar() or 0
 
     return total
@@ -290,7 +332,7 @@ def list_agent_sessions(
     endpoint calls ``count_agent_sessions()`` separately.
     """
     rows: List[AgentSessionRow] = []
-    want = set(kinds) if kinds is not None else {"recon", "plan_generation", "execution"}
+    want = set(kinds) if kinds is not None else set(ALL_SESSION_KINDS)
     # Each per-kind query needs at least (offset + limit) rows so that
     # after merge-sort we can correctly slice the requested page; the
     # discarded slop is small relative to fetching the whole table.
@@ -390,6 +432,36 @@ def list_agent_sessions(
                 user_username=e.started_by.username if e.started_by else None,
             ))
 
+    if "assist" in want:
+        # v2.303.0. Assist is project-scoped — no plan, no scope — so both
+        # target ids stay null. `purpose` (the operator's stated reason for
+        # the session) has no home on the shared row shape; the assist-session
+        # surface at /assist-sessions carries it.
+        q = db.query(AssistSession).filter(AssistSession.project_id == project_id)
+        q = _apply_assist_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
+        for a in q.order_by(AssistSession.started_at.desc()).limit(per_kind_cap).all():
+            rows.append(AgentSessionRow(
+                kind="assist",
+                id=a.id,
+                project_id=a.project_id,
+                agent_id=a.agent_id,
+                user_id=a.started_by_id,
+                # AssistSessionStatus is an enum column; the other three kinds
+                # store plain strings, and the row shape is a string.
+                status=a.status.value if hasattr(a.status, "value") else str(a.status),
+                started_at=a.started_at,
+                # Assist calls its completion `ended_at`; the timeline calls it
+                # completed_at. Same event.
+                completed_at=a.ended_at,
+                generated_by_model=a.generated_by_model,
+                generated_by_tool=a.generated_by_tool,
+                prompt_version=a.prompt_version,
+                scope_id=None,
+                test_plan_id=None,
+                agent_name=a.agent.name if a.agent else None,
+                user_username=a.started_by.username if a.started_by else None,
+            ))
+
     # Stable ordering: most-recent started_at first; nulls last;
     # then by (kind, id) so two rows with identical timestamps
     # don't flip-flop between calls.
@@ -420,7 +492,7 @@ def summarise_by_model_tool(
     v2.43.3 (AUD-O1): aggregation pushed to SQL ``GROUP BY``.  The
     pre-fix path fetched up to 10_000 rows via list_agent_sessions and
     counted in Python, which silently truncated long-lived projects'
-    rollups.  Three small GROUP BY queries with the same project_id
+    rollups.  Four small GROUP BY queries with the same project_id
     filter are cheap (each table has the index) and complete.
     """
     from sqlalchemy import func as _func
@@ -435,6 +507,7 @@ def summarise_by_model_tool(
             "recon": 0,
             "plan_generation": 0,
             "execution": 0,
+            "assist": 0,
             "total": 0,
         })
         bucket[kind] += int(n)
@@ -479,6 +552,21 @@ def summarise_by_model_tool(
     )
     for model, tool, n in exec_rows:
         _bucket(model, tool, "execution", n)
+
+    # v2.303.0 — assist counts here too, or the rollup card silently
+    # under-reports what a given model/tool has been doing on the project.
+    assist_rows = (
+        db.query(
+            AssistSession.generated_by_model,
+            AssistSession.generated_by_tool,
+            _func.count(AssistSession.id),
+        )
+        .filter(AssistSession.project_id == project_id)
+        .group_by(AssistSession.generated_by_model, AssistSession.generated_by_tool)
+        .all()
+    )
+    for model, tool, n in assist_rows:
+        _bucket(model, tool, "assist", n)
 
     # Sort: tuples with reported attribution first, total DESC.
     out = sorted(
