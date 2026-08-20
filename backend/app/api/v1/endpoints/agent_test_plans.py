@@ -14,13 +14,13 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import Agent, TestPlanEntry
-from app.api.deps import check_agent_rate_limit, deny_scoped_keys, require_plan_scope
+from app.api.deps import check_agent_rate_limit, require_plan_scope
 from app.services.test_plan_service import TestPlanService
 from app.services.agent_prompt_history import PROMPT_VERSION
 
 from app.api.v1.endpoints.agent_schemas import (
     VulnCounts, VulnBrief, PortTuple, CandidateHost, PlanningContext,
-    PlanCreate, PlanUpdate, EntryBatch, EntryCreate, AgentEntryUpdate,
+    PlanUpdate, EntryBatch, EntryCreate, AgentEntryUpdate,
     PlanResponse, EntryResponse, PlanDetailResponse,
     EntryBatchResponse, CoverageInfo, PreSubmitReport,
 )
@@ -107,30 +107,13 @@ def _entry_response(entry: TestPlanEntry) -> EntryResponse:
     )
 
 
-@router.post("/test-plans", response_model=PlanResponse, status_code=201, summary="Create a test plan")
-def create_test_plan(
-    body: PlanCreate,
-    agent: Agent = Depends(deny_scoped_keys),
-    db: Session = Depends(get_db),
-):
-    """Create a test plan (unscoped keys only).
-
-    Per-plan-scoped keys (minted by ``/test-plans/generate`` or
-    ``/test-plans/{id}/execute``) are rejected here: a key that belongs
-    to an existing plan has no business spawning a new one.  Use a
-    JWT-authenticated ``POST /projects/{id}/test-plans/generate`` or an
-    unscoped agent key instead.
-    """
-    svc = TestPlanService(db)
-    plan = svc.create_plan(
-        project_id=agent.project_id,
-        agent_id=agent.id,
-        title=body.title,
-        description=body.description,
-        actor_type="agent",
-        actor_id=agent.id,
-    )
-    return _plan_response(plan, db)
+# v2.295.0 — ``POST /test-plans`` removed.  It was gated on
+# ``deny_scoped_keys``, which admitted only the unscoped global key; that
+# credential is abolished, so the route could not be called by any key this
+# deployment can mint.  Plan creation stays where it always effectively was:
+# the operator creates the plan over JWT (``POST /projects/{id}/test-plans``
+# or ``/test-plans/generate``) and the agent fills it in through
+# ``plan_update`` / ``plan_add_entry``.
 
 
 @router.get("/test-plans", response_model=List[PlanResponse], summary="List own test plans")

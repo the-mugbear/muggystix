@@ -93,18 +93,40 @@ def test_recon_resume_backfills_a_missing_agent_session(
     assert key.agent_session_id == legacy.agent_session_id
 
 
-def test_global_agent_key_is_deliberately_unbound(client, db_session, test_project):
-    """The one key that legitimately has no session — this is what makes
-    ``agent_session_id IS NULL`` a usable definition of 'unscoped'."""
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/agents/",
-        json={"name": "binding-test-agent"},
+def test_no_route_mints_an_unscoped_key(client, db_session, test_project):
+    """v2.295.0 — there is no longer an endpoint that produces an unbound key.
+
+    ``POST /agents/`` and ``POST /agents/{id}/rotate-key`` were the only two,
+    and the whole /agents router went with them.  Asserted against the live
+    OpenAPI surface rather than by grepping imports, so re-registering the
+    router anywhere would fail this."""
+    paths = client.app.openapi()["paths"]
+    offenders = [p for p in paths if "/agents/" in p or p.endswith("/agents")]
+    assert offenders == [], (
+        f"an /agents route is mounted again: {offenders}. That surface minted "
+        "the unscoped global key, which reached every plan in the project."
     )
-    assert resp.status_code == 201, resp.text
-    key = _key_for(db_session, agent_id=resp.json()["id"])
-    assert key is not None
-    assert key.agent_session_id is None
-    assert key.test_plan_id is None
-    assert key.scope_id is None
-    assert key.recon_session_id is None
-    assert key.assist_session_id is None
+
+
+def test_an_unscoped_key_cannot_authenticate(client, db_session, test_project, test_agent):
+    """Fail closed for a key that predates the removal.
+
+    Stopping the minting is not enough on its own: a legacy unbound key would
+    otherwise keep full write authority over every plan, with no UI and no API
+    left to rotate or revoke it.  Authentication rejects it outright."""
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+
+    raw = "nm_agent_orphaned_global_key_fixture"
+    db_session.add(APIKey(
+        agent_id=test_agent.id,
+        name="orphaned-global",
+        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
+        key_prefix=raw[:14],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    ))
+    db_session.commit()
+
+    resp = client.get("/api/v1/agent/project", headers={"X-API-Key": raw})
+    assert resp.status_code == 403, resp.text
+    assert "unscoped" in resp.json()["detail"].lower()

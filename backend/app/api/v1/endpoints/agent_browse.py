@@ -65,34 +65,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _log_unscoped_legacy_hit(request: Request, agent: Agent, endpoint: str) -> None:
-    """v2.65.0 — record unscoped global-key hits on these legacy endpoints.
-
-    Fires only when the caller's key has no scope binding at all
-    (no plan_id, no scope_id, no assist_session_id).  Recon-scoped
-    and assist-scoped calls have legitimate uses for some of these
-    endpoints (recon goes through /dashboard etc. as part of its
-    in-context flow), so we don't log them — we want signal on the
-    "truly unscoped global key" surface that the four-workflow
-    split was meant to replace.
-
-    Log at INFO (not WARNING) — these aren't errors, they're
-    intentional fallbacks during the deprecation window.  After 30
-    days of no INFO hits in production, the endpoints can be removed.
-    """
-    scoped = (
-        getattr(request.state, "scoped_plan_id", None) is not None
-        or getattr(request.state, "scoped_scope_id", None) is not None
-        or getattr(request.state, "scoped_assist_session_id", None) is not None
-    )
-    if scoped:
-        return
-    logger.info(
-        "legacy unscoped /agent/%s hit by agent_id=%s project_id=%s — "
-        "prefer the workflow-scoped variant (/agent/assist/* for read-only, "
-        "/agent/recon/* for ingest, /agent/test-plans/* for plan work)",
-        endpoint, agent.id, agent.project_id,
-    )
+# v2.295.0 — ``_log_unscoped_legacy_hit`` removed.  It was deprecation
+# instrumentation (v2.65.0) that fired only for a key with no scope binding at
+# all, to answer "is the unscoped global key still being used?".  That key can
+# no longer authenticate, so the probe could never fire again — and a silent
+# probe reads as "nothing uses these endpoints", which is the opposite of what
+# it would mean.  The browse routes below stay: scoped keys reach them.
 
 
 def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
@@ -276,11 +254,9 @@ def suggest_tool(
 
 @router.get("/project", response_model=ProjectInfo, summary="Get project metadata")
 def get_project_info(
-    request: Request,
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    _log_unscoped_legacy_hit(request, agent, "project")
     project = db.query(Project).filter(Project.id == agent.project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -310,7 +286,6 @@ def get_dashboard(
     leakage and matches what /agent/recon/summary reports for the same
     recon session.
     """
-    _log_unscoped_legacy_hit(request, agent, "dashboard")
     pid = agent.project_id
     scoped_scope = getattr(request.state, "scoped_scope_id", None)
 
@@ -377,7 +352,6 @@ def list_hosts(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    _log_unscoped_legacy_hit(request, agent, "hosts")
     q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
     # Recon-scoped keys only see hosts correlated into their scope via
     # HostSubnetMapping.  Pre-v2.13.0 this endpoint returned project-wide
@@ -405,7 +379,6 @@ def get_host(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    _log_unscoped_legacy_hit(request, agent, f"hosts/{host_id}")
     q = (
         db.query(models.Host)
         .options(joinedload(models.Host.ports))
@@ -478,7 +451,6 @@ def list_scans(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    _log_unscoped_legacy_hit(request, agent, "scans")
     q = db.query(models.Scan).filter(models.Scan.project_id == agent.project_id)
     # Recon-scoped keys only see scans that came from IngestionJobs under
     # their scope's ReconSessions.  Matches the host-list scoping and
@@ -519,11 +491,9 @@ def list_scans(
 
 @router.get("/scopes", response_model=List[ScopeBrief], summary="List scopes")
 def list_scopes(
-    request: Request,
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    _log_unscoped_legacy_hit(request, agent, "scopes")
     scopes = (
         db.query(models.Scope)
         .options(joinedload(models.Scope.subnets))

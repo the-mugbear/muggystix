@@ -142,10 +142,12 @@ decisions (surface it or remove it), not cleanup.
       authoritative NS, reads as active recon, and takes an unvalidated domain with no
       scope check or throttle. Recorded in the handler docstring so a later sweep doesn't
       re-flag it as an orphan.
-- [ ] **`POST /agents/{id}/renew-key`** — no UI. Extends an *unscoped* agent key's TTL
-      without rotating the secret (plan/recon keys have their own regenerate paths). Small
-      button wherever agents are managed; worth confirming unscoped agent keys are
-      actually used first.
+- [x] **DONE (2.295.0) — and the answer was "delete the credential", not "build the UI".**
+      The question this item asked to settle first ("are unscoped agent keys actually
+      used?") answered itself: zero in prod, no minting outside `POST /agents/`, and no
+      workflow that needs one. So the whole `/agents/*` router went, along with
+      `deny_scoped_keys` + `POST /agent/test-plans` (reachable only by that key) and the
+      v2.65.0 legacy-hit probe. Unscoped keys are rejected at authentication.
 - [x] **DONE (2.244.0).** Orphaned `createFinding` client removed; the route is KEPT and
       documented as deliberately API-only. Closing off manual creation would narrow the
       product without anyone asking.

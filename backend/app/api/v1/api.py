@@ -5,7 +5,7 @@ from app.api.v1.endpoints import (
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, parse_errors, reports, report_drafts, auth, two_factor,
     audit, users, projects, notifications,
-    portfolio, agents, test_plans, test_plan_bundles, feedback, llm_providers,
+    portfolio, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
     # Per-workflow agent routers (split out of agent_api.py in v2.16.0).
     # Mounted individually below so each gets its own Swagger/Redoc tag —
@@ -183,7 +183,12 @@ project_router.include_router(reports.router, prefix="/reports", tags=["reports"
 # /reports prefix; separate file keeps the non-deterministic LLM concern out of
 # the deterministic export renderers.
 project_router.include_router(report_drafts.router, prefix="/reports", tags=["reports"])
-project_router.include_router(agents.router, prefix="/agents", tags=["agents"])
+# v2.295.0 — the /agents CRUD surface is gone.  It existed to mint and manage
+# the *unscoped* global agent key, the one credential that reached every plan
+# in a project with full write authority.  Agent rows are auto-provisioned by
+# each workflow's own start endpoint, and every key those mint is bound to one
+# AgentSession, so nothing here was load-bearing.  Unscoped keys are now
+# rejected at authentication (see deps.py).
 project_router.include_router(test_plans.router, prefix="/test-plans", tags=["test-plans"])
 # Offline-bundle sub-surface carved out of test_plans.py — same prefix so the
 # export-bundle / import-results paths are unchanged.

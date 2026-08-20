@@ -181,67 +181,8 @@ def test_execution_progress_empty_session_zeros(
 
 # ---------------------------------------------------------------------------
 # NEW H — list_agents batched APIKey lookup
+#
+# Test removed in v2.295.0 along with the /agents router.  It asserted that
+# GET /agents/ returned the right key prefix per agent after the N+1 batching
+# fix; there is no longer an endpoint to list agents.
 # ---------------------------------------------------------------------------
-
-
-def test_list_agents_returns_key_prefix_per_agent(client, db_session, test_project):
-    """Seed 3 agents in the project (each owned by a distinct user, per
-    the uq_agent_per_user_project unique constraint), each with its
-    own active APIKey, and assert ``list_agents`` returns the right
-    key prefix for each.  Pre-fix this worked but fired 4 queries
-    (1 + 3); post-fix it's 2 queries.  The endpoint contract is
-    what we care about here — that the batched dict-lookup returns
-    the same per-agent prefixes the per-agent .first() did."""
-    from app.db.models_agent import Agent
-    from app.db.models_auth import APIKey, User, UserRole
-
-    prefixes = ["nm_agent_X1_x", "nm_agent_Y2_y", "nm_agent_Z3_z"]
-    for i, pre in enumerate(prefixes):
-        _USER_ID_SEQ[0] += 1
-        owner = User(
-            id=_USER_ID_SEQ[0],
-            username=f"perfH-owner-{i}",
-            email=f"perfH-owner-{i}@example.com",
-            full_name=f"PerfH Owner {i}",
-            hashed_password="$2b$12$abcdefghijklmnopqrstuv",
-            role=UserRole.MEMBER,
-            is_active=True,
-            is_verified=True,
-            created_at=datetime.now(timezone.utc),
-        )
-        db_session.add(owner)
-        db_session.flush()
-        a = Agent(
-            name=f"agent-{i}",
-            project_id=test_project.id,
-            owner_id=owner.id,
-            description=f"perf-H agent {i}",
-            is_active=True,
-        )
-        db_session.add(a)
-        db_session.flush()
-        raw = pre + "_active_key_padding_" + str(i)
-        db_session.add(APIKey(
-            agent_id=a.id,
-            name=f"key-{i}",
-            key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-            key_prefix=raw[:14],
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-        ))
-    db_session.commit()
-
-    r = client.get(f"/api/v1/projects/{test_project.id}/agents/")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    # The test_agent fixture also creates an Agent on this project,
-    # so we filter to just the ones we seeded by name.
-    seeded = [row for row in body if row["name"].startswith("agent-")]
-    assert len(seeded) == 3
-    returned_prefixes = sorted(row["api_key_prefix"] for row in seeded)
-    # The raw key is `${pre}_active_key_padding_${i}`; the stored
-    # prefix is the first 14 chars, which lands one char past
-    # `pre` (a trailing underscore).
-    expected_prefixes = sorted(
-        (f"{pre}_active_key_padding_{i}")[:14] for i, pre in enumerate(prefixes)
-    )
-    assert returned_prefixes == expected_prefixes

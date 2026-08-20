@@ -86,24 +86,11 @@ def test_create_agent_requires_analyst_role(db_session, test_project):
     assert returned.id == analyst.id
 
 
-def test_create_agent_endpoint_wires_analyst_dependency():
-    """The route handler depends on require_project_role("analyst") —
-    structural assertion that the v2.90.3 wiring is intact and a
-    future refactor can't silently revert the gate."""
-    from app.api.v1.endpoints.agents import create_agent
-    import inspect
-
-    sig = inspect.signature(create_agent)
-    current_user_param = sig.parameters.get("current_user")
-    assert current_user_param is not None
-    # Depends() wraps a closure named `checker` returned by the
-    # require_project_role factory; the closure's __qualname__
-    # contains the factory name, which is the stable identifier
-    # across FastAPI versions.
-    dep = current_user_param.default
-    inner = getattr(dep, "dependency", None)
-    assert inner is not None, f"Expected Depends() wrapper, got {dep!r}"
-    assert "require_project_role" in inner.__qualname__
+# ``test_create_agent_endpoint_wires_analyst_dependency`` removed in v2.295.0.
+# It asserted that POST /agents/ was gated on require_project_role("analyst"),
+# the v2.90.3 fix for a viewer minting an unscoped key.  The endpoint is gone,
+# which closes that escalation path outright rather than gating it — see
+# test_agent_key_session_binding.py for the replacement invariants.
 
 
 # ---------------------------------------------------------------------------
@@ -131,26 +118,11 @@ def test_is_project_admin_false_for_analyst(db_session, test_project):
     assert is_project_admin(db_session, test_project.id, user) is False
 
 
-def test_agents_py_no_longer_compares_global_role(db_session):
-    """Belt-and-suspenders: scan the source of agents.py for any
-    remaining ``current_user.role != "admin"`` comparisons in CODE
-    (not comments).  Code-review NEW G replaced all four
-    occurrences with is_project_admin(...).  If a future PR
-    reintroduces the pattern this test will catch it before a
-    viewer-level user runs into a project-admin gate."""
-    from pathlib import Path
-    import app.api.v1.endpoints.agents as mod
-
-    source = Path(mod.__file__).read_text()
-    # Strip full-line comments to avoid false matches on the
-    # explanatory note left at each replaced site.
-    code_lines = [
-        ln for ln in source.splitlines()
-        if not ln.lstrip().startswith("#")
-    ]
-    code = "\n".join(code_lines)
-    assert 'current_user.role != "admin"' not in code
-    assert source.count("is_project_admin(") >= 4
+# ``test_agents_py_no_longer_compares_global_role`` removed in v2.295.0 with
+# agents.py.  It scanned that file for the ``current_user.role != "admin"``
+# pattern (code-review NEW G), which mistook a project-admin for a global one.
+# The two tests above still pin ``is_project_admin`` itself, which is what the
+# remaining callers use.
 
 
 # ---------------------------------------------------------------------------

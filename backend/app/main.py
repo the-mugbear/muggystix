@@ -279,10 +279,9 @@ _OPENAPI_TAGS = [
         "name": "portfolio",
         "description": "Cross-project summary surface — health, staleness, host counts, and review state for every project the current user belongs to. Used by the Portfolio page.",
     },
-    {
-        "name": "agents",
-        "description": "AI agent identity and API key management within a project. Create agents, rotate keys, set rate limits. Distinct from `agent-api` (which is what an agent *uses*); this surface is what an admin uses to *provision* agents.",
-    },
+    # The "agents" provisioning tag went with its router in v2.295.0.  There is
+    # nothing to provision: agent rows are created by each workflow's own start
+    # endpoint, and every key is bound to one session.
     {
         "name": "test-plans",
         "description": "Human-facing test plan management — list, view, approve, reject, generate (with AI), edit entries, delete. The agent-facing flip side of this surface is documented under `agent-api`. See the workflow explainer on the Test Plans page or AGENTS.md for the five-phase lifecycle (draft → proposed → approved → in_progress → completed).",

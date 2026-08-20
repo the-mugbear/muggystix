@@ -376,16 +376,27 @@ server-side lookup/AXFR endpoint. Stored DNS records are read per host/scan via
 | PUT | `/parse-errors/{error_id}/status` | Update status (acknowledged, resolved). |
 | DELETE | `/parse-errors/{error_id}` | Analyst+. |
 
-### 4.10 Agents (project-scoped)
+### 4.10 Agents (project-scoped) — **removed in v2.295.0**
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/agents/` | List agents for this project. |
-| POST | `/agents/` | Create an agent. Mints a one-time API key and returns the plaintext **exactly once**. |
-| GET | `/agents/{agent_id}` | Agent detail. |
-| PATCH | `/agents/{agent_id}` | Update metadata. |
-| DELETE | `/agents/{agent_id}` | Deactivate agent and revoke all keys. |
-| POST | `/agents/{agent_id}/rotate-key` | Mint a new key and revoke the prior one. |
+There is no agent CRUD surface. The `/agents/*` routes (list, create, detail,
+update, delete, rotate-key, renew-key) existed to manage the **unscoped global
+agent key** — a credential bound to no session that reached every test plan in
+the project with full write authority.
+
+Agent rows are auto-provisioned by each workflow's own start endpoint, and every
+key those mint is bound to exactly one `AgentSession`. Get a key by starting a
+session:
+
+| Workflow | Mint a key with |
+|---|---|
+| Plan generation | `POST /test-plans/generate` |
+| Execution | `POST /test-plans/{plan_id}/execute` |
+| Recon | `POST /scopes/{scope_id}/recon/start` |
+| Assist | `POST /assist/start` |
+
+Revoke by ending the session from that workflow's page. A key with no session
+binding is now **rejected at authentication** (403), so any credential predating
+the removal is inert.
 
 ### 4.11 Test plans
 
@@ -860,7 +871,7 @@ Callers should be aware of these enforced constraints — they're documented her
 
 - **Schema management.** Tables are owned by **Alembic**. Every backend boot runs `alembic upgrade head` before serving traffic. Migrations live in `backend/alembic/versions/`; baseline at `b46cd59c17f5_baseline_schema`. The previous startup-DDL path has been retired — the model is the schema, and Alembic enforces it.
 - **Upload flow is async.** `POST /upload/` returns a queued `IngestionJob` — poll `GET /upload/jobs/{id}` for status. Don't expect a parsed scan in the upload response.
-- **API keys are shown once.** Every `/generate`, `/execute`, and `/agents/{id}/rotate-key` response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `agent_api_keys`.
+- **API keys are shown once.** Every `/generate`, `/execute`, `/recon/start`, and `/assist/start` response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `agent_api_keys`.
 - **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than 3× `INGESTION_JOB_TIMEOUT` are transitioned to `failed` by the worker's reaper loop (~1 min cadence). Users see a clear "worker likely crashed" message in the UI with `retry_count` incremented.
 - **Workflow-scoped AGENTS.md.** Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution`, `reconnaissance`, or `assist`) to get the workflow-sliced subset. The `workflow` enum now carries `assist` as a fourth value. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
 - **Health probes.** `GET /health` on the backend; `/health.html` on the nginx frontend.

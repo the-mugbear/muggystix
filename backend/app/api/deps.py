@@ -309,8 +309,32 @@ def get_current_agent(
         request.state.key_workflow = "assist"
         request.state.key_plan_id = None
     else:
-        request.state.key_workflow = None
-        request.state.key_plan_id = None
+        # v2.295.0 — unscoped ("global") agent keys are abolished.  A key with
+        # no session and no legacy scope column used to be the MOST privileged
+        # agent credential in the system: it reached every plan in the project
+        # (require_plan_scope let it through), passed deny_scoped_keys, and
+        # resolved to LEGACY_WRITE_CAPABILITIES.  Its only mint paths were
+        # POST /agents/ and POST /agents/{id}/rotate-key, both removed with the
+        # /agents router; every surviving mint path binds an AgentSession.
+        #
+        # Fail CLOSED rather than merely stopping the minting: an orphaned
+        # legacy key would otherwise keep full authority with no UI and no API
+        # left to rotate or revoke it.  Deployments holding one must start a
+        # session from the workflow's own page to get a scoped key.
+        logger.warning(
+            "rejecting unscoped agent key %s (agent_id=%s) — global keys were "
+            "removed in v2.295.0; start a workflow session to mint a scoped key",
+            api_key_obj.key_prefix, api_key_obj.agent_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This is an unscoped global agent key. Those were removed — "
+                "every key is now bound to one workflow session. Start a "
+                "plan-generation, execution, recon, or assist session from "
+                "the project UI to mint a scoped key."
+            ),
+        )
     request.state.agent_session_id = (
         agent_session.id if agent_session is not None else None
     )
@@ -463,8 +487,11 @@ def require_plan_scope(
     Use on any agent endpoint that takes a ``plan_id`` path parameter.
     If the caller's API key is scoped to a specific test plan (the
     normal case for keys minted by ``/generate`` or ``/execute``), the
-    request ``plan_id`` must match — otherwise 403.  Unscoped keys
-    (legacy global agent keys) pass through unchanged.
+    request ``plan_id`` must match — otherwise 403.
+
+    v2.295.0 — unscoped global keys no longer reach this check at all;
+    they are rejected during authentication.  This guard previously let
+    them through to *every* plan in the project.
 
     **Also rejects scope-bound (recon) keys outright** — recon keys
     have no business touching test plans.  Use ``require_recon_scope``
@@ -603,31 +630,12 @@ def require_assist_scope(
     return agent
 
 
-async def deny_scoped_keys(
-    request: Request,
-    agent: Agent = Depends(check_agent_rate_limit),
-) -> Agent:
-    """Block scope-bound keys (plan OR recon) from global endpoints.
-
-    Use on mutating endpoints that are not tied to a specific plan or
-    scope but should not be callable by a scope-bound key (e.g.
-    creating a new test plan — a per-plan key already belongs to a
-    different plan and has no business spawning another; a recon key
-    has no business creating plans at all).  Unscoped keys pass
-    through.
-    """
-    workflow = getattr(request.state, "key_workflow", None)
-    if workflow is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a single test plan, recon "
-                "session, or assist session and cannot act on other "
-                "workflows. Use an unscoped agent key or call "
-                "/projects/{id}/test-plans/ with JWT auth instead."
-            ),
-        )
-    return agent
+# v2.295.0 — ``deny_scoped_keys`` is gone with the unscoped global key.  It
+# admitted only keys whose workflow was None, which is now a rejected
+# credential, so every endpoint behind it was unreachable by definition.  Its
+# one consumer, ``POST /agent/test-plans``, went with it: plans are created by
+# the operator (JWT) and filled in by the agent, which is what the MCP surface
+# already assumed.
 
 
 # ---------------------------------------------------------------------------

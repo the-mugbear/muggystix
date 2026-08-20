@@ -333,9 +333,8 @@ class AgentDashboard(BaseModel):
 # Schemas — test plans
 # ---------------------------------------------------------------------------
 
-class PlanCreate(BaseModel):
-    title: str = Field(..., max_length=200, min_length=1)
-    description: Optional[str] = None
+# ``PlanCreate`` removed in v2.295.0 with ``POST /agent/test-plans`` — the
+# agent no longer creates plans, it fills in one the operator created.
 
 
 class PlanUpdate(BaseModel):
