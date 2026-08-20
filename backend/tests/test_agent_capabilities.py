@@ -101,6 +101,19 @@ ASSIST_PERMITTED_WRITES = {
     # rationale is length-capped so repeat asks can't grow a column without
     # bound.
     ("POST", "/api/v1/agent/tool-suggestions"),
+    # Extends the caller's OWN key deadline (v2.304.0).  A write by verb — it
+    # updates api_keys.expires_at — but it touches no project data and grants no
+    # new authority: the key keeps exactly the permissions it already had, for
+    # longer.  It must stay ungated precisely because a read-only assist key
+    # needs it as much as any other: this is the recovery path for an agent that
+    # blocked on a long operation and found its credential lapsed. Gating it
+    # behind a write capability would deny recovery to the sessions least able
+    # to afford it.
+    #
+    # The controls that matter are enforced inside the route rather than by a
+    # capability: a revoked key is refused, and renewal stops at the session's
+    # maximum lifetime.  See test_agent_key_renewal.py.
+    ("POST", "/api/v1/agent/session/renew"),
 }
 
 

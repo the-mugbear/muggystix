@@ -196,7 +196,8 @@ def test_expired_agent_key_rejected(
         "/api/v1/agent/recon/context", headers={"X-API-Key": aware_raw},
     )
     assert r.status_code == 401, r.text
-    assert "expired" in r.json()["detail"].lower()
+    # v2.304.0 — detail is structured now; branch on the field callers use.
+    assert r.json()["detail"]["error"] == "key_expired"
 
     # tz-naive, in the past — must also 401 (not 500).
     naive_raw = "nm_agent_expired_naive_" + "n" * 24

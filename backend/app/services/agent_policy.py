@@ -162,3 +162,39 @@ def render_read_back(workflow: str) -> str:
         "act, which is the only chance either of you gets."
     )
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Key expiry (v2.304.0)
+# ---------------------------------------------------------------------------
+
+def render_key_expiry_guidance() -> str:
+    """How to survive your own credential expiring mid-job.
+
+    This exists for one specific, expensive failure: the agent launches a
+    long-running scanner, blocks for hours, its key lapses while it waits, and
+    it only finds out when it tries to upload — with the scanning already done.
+    An agent that treats a 401 as terminal there throws that work away.
+
+    Kept short and imperative. The two things that matter are *don't discard
+    output* and *retry the same request*; everything else is detail the agent
+    can read off the 401 body.
+    """
+    return (
+        "### If your key expires\n\n"
+        "Agent keys are short-lived, and a long scan can outlast one. Two rules:\n\n"
+        "1. **Before starting anything that will run for hours**, check "
+        "`key_expires_at` from `GET <base>/agent/identity`. If your key would "
+        "lapse during it, POST to `renew_path` (also on that response) first. "
+        "This is the cheap path.\n"
+        "2. **If you get a 401 anyway** — which is the normal outcome when a "
+        "scan runs long, because you cannot make requests while blocked — read "
+        "the response body. `recoverable: true` means your session is still "
+        "alive: POST to `renew_path` with the **same key**, then **retry the "
+        "exact request that failed**.\n\n"
+        "**Never re-run a scan or command because of a 401, and never discard "
+        "output you are holding.** Renewal keeps the same key, so nothing needs "
+        "re-bootstrapping — the request that failed will simply work. If the "
+        "body says `recoverable: false`, save what you have to a file in your "
+        "working directory and tell the operator you need a new session.\n"
+    )

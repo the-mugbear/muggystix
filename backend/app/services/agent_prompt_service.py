@@ -29,7 +29,7 @@ from app.core.config import settings
 # be a trailing comment on this constant now lives as structured data in
 # agent_prompt_history.
 from app.services.agent_prompt_history import PROMPT_VERSION
-from app.services.agent_policy import render_read_back, render_safety_rules
+from app.services.agent_policy import render_read_back, render_key_expiry_guidance, render_safety_rules
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +308,7 @@ def build_plan_generation_instructions(
         f"```\n"
         f"X-API-Key: {raw_api_key}\n"
         f"```\n\n"
+        + render_key_expiry_guidance() + "\n"
         f"**Your Task (complete all steps without stopping):**\n"
         f"1. `GET {base_url}/agent/test-plans/{plan_id}/context`\n"
         f"   Fetch candidate hosts. **This endpoint is paginated** — it returns at "
@@ -633,6 +634,7 @@ def build_recon_ingest_instructions(
         f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"
         f"Self-signed cert — `curl` always needs `-sk`. If curl is blocked by your "
         f"sandbox, ask the user to run it for you.\n\n"
+        + render_key_expiry_guidance() + "\n"
         f"### Read the guide first — it is binding\n\n"
         f"```\n"
         f"curl -sk '{agents_guide_url}'\n"
@@ -853,6 +855,7 @@ def build_assist_instructions(
         f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
         f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"
         f"Self-signed cert — every request must skip TLS verification.\n\n"
+        + render_key_expiry_guidance() + "\n"
         f"### Invocation — assist runs on any OS\n\n"
         f"Your \"commands\" here are HTTPS API calls, not shell tools, so this "
         f"session works the same on **Windows, macOS, and Linux** — only the "
@@ -1146,6 +1149,7 @@ def build_execution_instructions(
         f"```\n"
         f"X-API-Key: {raw_api_key}\n"
         f"```\n\n"
+        + render_key_expiry_guidance() + "\n"
         + resume_notice
         + "**Your Task (complete all steps, in order):**\n\n"
         f"### Step 0 — Probe the environment (v2.23.0, MANDATORY before any other action)\n"

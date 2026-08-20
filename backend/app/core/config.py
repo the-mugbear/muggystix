@@ -90,6 +90,22 @@ class Settings:
     # an acceptable excuse.  Raise via env var for engagements that
     # genuinely need it.
     AGENT_KEY_MAX_TTL_HOURS: int = int(os.getenv("AGENT_KEY_MAX_TTL_HOURS", "168"))
+    # v2.304.0 — maximum wall-clock life of an agent SESSION, measured from
+    # when it started.  Within this window a key may be renewed at any point,
+    # **including after it has expired**, because the failure this exists for
+    # is discovered late: an agent blocks for hours on nmap / masscan / Nessus,
+    # its key lapses while it waits, and it only finds out when it tries to
+    # upload — with the scanning already done.  Losing that work to a lapsed
+    # credential is not an acceptable outcome, so expiry is recoverable while
+    # the session lives.
+    #
+    # This subsumes what would otherwise be a separate "renewal grace window":
+    # the grace IS the remaining session lifetime.  Past this cap expiry is
+    # genuinely terminal and the operator starts a new session.  Same 168h as
+    # the per-key cap above — not a new number, a new meaning.
+    AGENT_SESSION_MAX_LIFETIME_HOURS: int = int(
+        os.getenv("AGENT_SESSION_MAX_LIFETIME_HOURS", "168")
+    )
     # Max bytes of raw command output stored per test execution result.
     # Default 100KB.  Configurable because some tools (Nessus, nmap scripts)
     # produce verbose output that operators may want to retain in full.

@@ -297,6 +297,13 @@ class AgentIdentity(BaseModel):
     # its credential dies can finish or hand back cleanly instead of failing
     # mid-run on a 401 it has no way to anticipate.
     key_expires_at: Optional[datetime] = None
+    # v2.304.0 — where to extend it, and how long extending stays possible.
+    # Surfaced here so an agent about to block on a long scan can renew FIRST,
+    # rather than discovering the lapse at upload time with the work already
+    # done. Renewal also works after expiry (see /agent/session/renew), so this
+    # is the cheap path, not the only one.
+    renew_path: Optional[str] = None
+    renewable_until: Optional[datetime] = None
 
 
 class AgentToolSuggestionRequest(BaseModel):

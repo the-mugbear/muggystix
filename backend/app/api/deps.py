@@ -25,6 +25,7 @@ from app.db.models_agent import (
     LEGACY_WRITE_CAPABILITIES,
 )
 from app.api.v1.endpoints.auth import get_current_user
+from app.core.config import settings
 from app.core.security import check_permissions
 
 # Sentinels: request.state.scoped_plan_id and request.state.scoped_scope_id
@@ -67,6 +68,159 @@ _AGENT_RATE_WINDOW_SECONDS = 60.0
 # per-request delete: the statement is indexed and small, but on the hot path
 # "small and pointless" still costs a round trip.
 _AGENT_RATE_SWEEP_EVERY = 500
+
+
+#: Path an agent posts to in order to renew its own key. Named once so the
+#: 401 payload and the route can never drift.
+AGENT_SESSION_RENEW_PATH = "/api/v1/agent/session/renew"
+
+
+def _as_utc(value):
+    """Normalise a possibly tz-naive datetime to UTC-aware.
+
+    Some drivers hand back naive datetimes even for ``DateTime(timezone=True)``
+    columns; comparing one to an aware ``now()`` raises TypeError and 500s the
+    request.
+    """
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def session_renewal_deadline(agent_session) -> Optional[datetime]:
+    """When this session stops being renewable — ``started_at`` + the cap.
+
+    Returns None when there is no session to measure from, which makes the key
+    non-renewable rather than immortal.
+    """
+    if agent_session is None:
+        return None
+    started = _as_utc(getattr(agent_session, "started_at", None))
+    if started is None:
+        return None
+    return started + timedelta(hours=settings.AGENT_SESSION_MAX_LIFETIME_HOURS)
+
+
+def key_is_renewable(agent_session) -> bool:
+    """Can a key bound to this session still be renewed?
+
+    v2.304.0.  Deliberately independent of whether the key has already expired:
+    an agent that blocked for six hours on a scan discovers the lapse only when
+    it tries to upload, and refusing it there discards work that has already
+    been done. Renewal stays open while the SESSION is alive and under its
+    maximum lifetime; past that, expiry is terminal and the operator starts a
+    new session.
+    """
+    if agent_session is None:
+        return False
+    status = getattr(agent_session, "status", None)
+    status = status.value if hasattr(status, "value") else status
+    if status != "active":
+        return False
+    deadline = session_renewal_deadline(agent_session)
+    if deadline is None:
+        return False
+    return datetime.now(timezone.utc) < deadline
+
+
+def _expired_key_detail(api_key_obj) -> Dict[str, object]:
+    """The body of a 401 raised for an expired key.
+
+    Structured because the caller is usually mid-workflow holding output it
+    cannot reproduce cheaply, and "expired" vs "revoked" are the same status
+    code but opposite situations. ``recoverable`` is the field an agent
+    branches on.
+    """
+    session = getattr(api_key_obj, "agent_session", None)
+    if key_is_renewable(session):
+        return {
+            "error": "key_expired",
+            "recoverable": True,
+            "renew_path": AGENT_SESSION_RENEW_PATH,
+            "message": (
+                "Your API key expired, but its session is still active. POST to "
+                f"{AGENT_SESSION_RENEW_PATH} with this same key to extend it, "
+                "then RETRY the request you were making. Do not re-run any scan "
+                "or command whose output you are already holding."
+            ),
+        }
+    return {
+        "error": "key_expired",
+        "recoverable": False,
+        "message": (
+            "Your API key expired and its session is no longer renewable "
+            "(ended, or past its maximum lifetime). Ask the operator to start a "
+            "new session. Save any output you are holding to a file first — a "
+            "new key will not bring this one back."
+        ),
+    }
+
+
+def authenticate_for_renewal(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_agent_bearer),
+) -> APIKey:
+    """Authenticate a key for renewal ONLY, tolerating expiry.
+
+    v2.304.0.  This is the one place an expired key is accepted, and it exists
+    because the alternative is discarding work: an agent blocks for hours on a
+    scan, its key lapses while it waits, and it finds out at upload time. Every
+    other check still applies — the key must be active, its agent must be
+    active, and its session must be alive and under its maximum lifetime.
+
+    Deliberately NOT a general auth dependency. It grants exactly one action:
+    extending the deadline on the key that was presented. It cannot read or
+    write project data.
+    """
+    token = x_api_key or (credentials.credentials if credentials else None)
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing agent API key — provide X-API-Key or Authorization: Bearer header",
+        )
+    key_hash = hashlib.sha256(token.encode()).hexdigest()
+    api_key_obj = (
+        db.query(APIKey)
+        .options(joinedload(APIKey.agent_session))
+        .filter(
+            APIKey.key_hash == key_hash,
+            APIKey.is_active.is_(True),
+            APIKey.agent_id.isnot(None),
+        )
+        .first()
+    )
+    # A revoked key is gone for good — is_active is the operator's kill switch
+    # and renewal must never route around it.
+    if not api_key_obj:
+        raise HTTPException(status_code=401, detail="Invalid or revoked agent API key")
+
+    agent = (
+        db.query(Agent)
+        .filter(Agent.id == api_key_obj.agent_id, Agent.is_active.is_(True))
+        .first()
+    )
+    if not agent:
+        raise HTTPException(status_code=401, detail="Agent inactive or not found")
+
+    if not key_is_renewable(api_key_obj.agent_session):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "session_not_renewable",
+                "recoverable": False,
+                "message": (
+                    "This key's session has ended or passed its maximum "
+                    "lifetime, so it cannot be renewed. Save any output you are "
+                    "holding to a file and ask the operator to start a new "
+                    "session."
+                ),
+            },
+        )
+    request.state.agent_id = agent.id
+    request.state.api_key_prefix = api_key_obj.key_prefix
+    return api_key_obj
 
 
 def resolve_capabilities(*, workflow, agent_session) -> tuple[frozenset, str | None]:
@@ -227,7 +381,16 @@ def get_current_agent(
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at < datetime.now(timezone.utc):
-            raise HTTPException(status_code=401, detail="Agent API key expired")
+            # v2.304.0 — a structured 401, because "expired" and "revoked" are
+            # the same status code but completely different situations for the
+            # caller, and the caller is usually holding hours of scan output at
+            # this point.  Flat prose gave it no way to tell whether retrying
+            # was worth anything.  ``recoverable`` says: renew with THIS key and
+            # try again.
+            raise HTTPException(
+                status_code=401,
+                detail=_expired_key_detail(api_key_obj),
+            )
 
     agent = (
         db.query(Agent)

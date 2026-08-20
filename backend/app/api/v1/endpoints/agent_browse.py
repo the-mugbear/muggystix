@@ -20,9 +20,11 @@ intentionally a fallback for those, and the deprecation is only
 about the truly-unscoped callers.
 """
 import logging
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
@@ -40,9 +42,12 @@ from app.db.models_agent import (
 from app.db.models_auth import User
 from app.db.models_project import Project
 from app.api.deps import (
+    AGENT_SESSION_RENEW_PATH,
+    authenticate_for_renewal,
     check_agent_rate_limit,
     enforce_capability_row_scope,
     require_capability,
+    session_renewal_deadline,
 )
 from app.db.models_tools import TOOL_APPROVED
 from app.services.host_follow_service import HostFollowService
@@ -139,6 +144,74 @@ def _workflow_session_id(db: Session, request: Request, session) -> Optional[int
     )
 
 
+class SessionRenewResponse(BaseModel):
+    """The new deadline on the SAME token — nothing to re-bootstrap."""
+    expires_at: datetime
+    #: When renewal stops being possible: the session's start plus its maximum
+    #: lifetime. Past this, expiry is terminal.
+    renewable_until: datetime
+    session_id: int
+    message: str = (
+        "Key extended. Retry the request you were making — do not re-run work "
+        "whose output you already hold."
+    )
+
+
+@router.post(
+    "/session/renew",
+    response_model=SessionRenewResponse,
+    summary="Extend this key's deadline (accepts an already-expired key)",
+)
+def renew_session_key(
+    api_key_obj=Depends(authenticate_for_renewal),
+    db: Session = Depends(get_db),
+):
+    """Push this key's expiry out, keeping the same secret.
+
+    v2.304.0.  **Renewal, not rotation.** The token is unchanged, so an agent
+    part-way through a job does not have to be re-bootstrapped — which is the
+    entire point, because the caller is typically holding scan output it cannot
+    reproduce cheaply.
+
+    It deliberately **accepts an expired key**. The failure this exists for is
+    discovered late: an agent launches nmap / masscan / Nessus, blocks for
+    hours, its key lapses while it waits, and it only finds out when it tries to
+    upload. Refusing renewal there would discard completed work over a lapsed
+    credential. Prevention cannot cover this on its own — a blocked agent issues
+    no requests, so no heartbeat can fire, and scan durations are not
+    predictable.
+
+    Bounded by the session: renewal works while the session is active and under
+    ``AGENT_SESSION_MAX_LIFETIME_HOURS`` from its start. Ending the session
+    revokes the key immediately, and that — not expiry — is the control.
+
+    No path parameter: the key identifies its own session, so an agent can
+    always call this without knowing any ids.
+    """
+    from app.services.agent_key_ttl import resolve_expires_at
+
+    session = api_key_obj.agent_session
+    deadline = session_renewal_deadline(session)
+    new_expiry = resolve_expires_at(None)
+    # Never let a renewal outlive the session cap — otherwise the cap would be
+    # a formality that any renewal could step past.
+    if deadline is not None and new_expiry > deadline:
+        new_expiry = deadline
+    api_key_obj.expires_at = new_expiry
+    db.commit()
+
+    logger.info(
+        "agent key %s renewed until %s (session %s, renewable until %s)",
+        api_key_obj.key_prefix, new_expiry.isoformat(),
+        session.id, deadline.isoformat() if deadline else "n/a",
+    )
+    return SessionRenewResponse(
+        expires_at=new_expiry,
+        renewable_until=deadline,
+        session_id=session.id,
+    )
+
+
 @router.get("/identity", response_model=AgentIdentity, summary="What this API key is")
 def get_agent_identity(
     request: Request,
@@ -200,6 +273,8 @@ def get_agent_identity(
             session is not None and session.environment_probed_at is not None
         ),
         key_expires_at=getattr(request.state, "key_expires_at", None),
+        renew_path=AGENT_SESSION_RENEW_PATH,
+        renewable_until=session_renewal_deadline(session),
     )
 
 

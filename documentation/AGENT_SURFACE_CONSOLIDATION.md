@@ -311,8 +311,19 @@ can reach, so authorization must be in place first, and the deletions come last.
 * Reversible. Nothing widens; some things may narrow — which is the point, and
   is what Phase 1's tests must characterise.
 
-### Phase 2 — Session-bound keys and renewal
+### Phase 2 — Session-bound keys and renewal ✅ **Shipped in 2.304.0** (prompt 1.57.0)
 **Decided: renewal, not rotation.**
+
+Delivered: `POST /agent/session/renew` (no path param — the key identifies its
+own session), accepting an already-expired key while the session is active and
+under `AGENT_SESSION_MAX_LIFETIME_HOURS`; a structured 401 splitting recoverable
+from terminal; `renew_path` + `renewable_until` on `/agent/identity`; and the
+recovery loop in all four workflow prompts. Revoked keys, ended sessions and
+past-lifetime sessions are all refused.
+
+**Deferred:** replacing the operator-facing `/{plan_id}/rotate-key`. It is
+UI-wired, and the agent-facing self-renewal is what the failure mode required.
+
 * Add renew on the session; same token, later deadline. The agent does not
   re-bootstrap, which is the whole point for a job that outlives its key.
 * Bind key lifetime to session activity with an absolute cap.
@@ -387,13 +398,17 @@ in the session dialog, stated plainly rather than buried:
   entries from what it finds; there are no hosts to assign until it runs. No
   target model to build — `scope_id` / `plan_id` already carry it.
 
+* **Auditors get a read-only agent.** The automatic consequence of role-based
+  auth, and the desired one — an auditor's agent is read-only because the
+  auditor is, everywhere and permanently, with no agent-specific rule to keep in
+  sync.
+* **One lifetime knob, not two.** "Renewal grace window" and "absolute cap"
+  collapse into the same number once lifetime is session-bound: a key may be
+  renewed at any point — expired or not — while its session is active and under
+  its maximum lifetime. Past that, expiry is genuinely terminal and the operator
+  starts a new session. **Maximum session lifetime: 168h**, matching today's
+  `AGENT_KEY_MAX_TTL_HOURS` — not a new value, a new meaning.
+
 ## Open questions
 
-1. **Auditors** — read-only by role, so their agent is read-only automatically.
-   Intended, or should auditors get no agent at all?
-2. **Absolute key cap** — with session-bound lifetime, what is the maximum a
-   session may live before it must be restarted? 168h is today's cap.
-3. **Renewal grace window** — how long after expiry may an expired key still
-   renew itself while its session is active? This bounds how long an abandoned
-   key stays recoverable. A long Nessus run against a large scope is the case to
-   size it against, so it wants to be generous — days, not hours.
+None blocking. Phase 2 is in progress.

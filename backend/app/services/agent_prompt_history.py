@@ -21,6 +21,25 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.57.0",
+        "app_version": "2.304.0",
+        "summary": (
+            "Surviving your own key expiring mid-job. Every workflow prompt now "
+            "carries the same short block, because the failure is the same "
+            "everywhere and it is expensive: an agent launches a long scanner, "
+            "blocks for hours, its key lapses while it waits, and it discovers "
+            "that only when it tries to upload — with the scanning already "
+            "done. Two rules, in order of preference: before starting anything "
+            "long, check `key_expires_at` from /agent/identity and POST to the "
+            "`renew_path` it now returns; and if you get a 401 anyway — the "
+            "normal outcome, since a blocked agent cannot make requests — read "
+            "the body, and on `recoverable: true` renew with the SAME key and "
+            "retry the exact request that failed. The prompt states the part "
+            "that actually costs money if an agent gets it wrong: never re-run "
+            "a scan because of a 401, and never discard output you are holding."
+        ),
+    },
+    {
         "version": "1.56.0",
         "app_version": "2.297.0",
         "summary": (
