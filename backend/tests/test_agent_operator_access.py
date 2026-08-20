@@ -70,16 +70,22 @@ def _assist_key(db, project, user):
     )
     db.add(base)
     db.flush()
-    db.add(AssistSession(
+    detail = AssistSession(
         project_id=project.id, agent_id=agent.id, started_by_id=user.id,
         status=AssistSessionStatus.ACTIVE, agent_session_id=base.id,
         purpose="operator access test",
-    ))
+    )
+    db.add(detail)
+    db.flush()
     raw = "nm_agent_" + secrets.token_urlsafe(32)
     db.add(APIKey(
         agent_id=agent.id, name=f"opaccess-{user.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14], agent_session_id=base.id,
+        # Bind the assist scope too, or the workflow guard refuses these routes
+        # for an unrelated reason and the test proves nothing about the
+        # operator gate.
+        assist_session_id=detail.id,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
     ))
     db.commit()
@@ -240,3 +246,87 @@ def test_a_global_admin_operator_bypasses_membership(
         headers=headers, json={"body": "admin agent note"},
     )
     assert wrote.status_code in (200, 201), wrote.text
+
+
+def test_every_metadata_write_path_template_actually_matches_a_route():
+    """The allowlist is matched by exact (method, path-template) pair.
+
+    A typo, or a route whose path later changes, would silently drop an entry
+    out of the allowlist — and the failure is invisible in the direction that
+    matters: the route simply starts requiring ANALYST, so a read-only
+    operator loses the ability to renew a key or report its environment, with
+    nothing to indicate why.
+    """
+    import app.main  # noqa: F401 - registers the routes
+    from app.main import app
+    from app.api.deps import AGENT_SESSION_METADATA_WRITES
+
+    # Entries are router-relative (what request.scope["route"].path returns);
+    # the OpenAPI map is keyed by the mounted path. Each entry must resolve to
+    # exactly one mounted agent route.
+    mounted = [
+        (method.upper(), path)
+        for path, ops in app.openapi()["paths"].items()
+        for method in ops
+        if path.startswith("/api/v1/agent")
+    ]
+    for method, rel in sorted(AGENT_SESSION_METADATA_WRITES):
+        matches = [p for m, p in mounted if m == method and p.endswith(rel)]
+        assert len(matches) == 1, (
+            f"metadata-write allowlist entry {method} {rel!r} matched "
+            f"{len(matches)} mounted routes ({matches}). Zero means that route "
+            "now silently requires ANALYST; more than one means the entry is "
+            "ambiguous."
+        )
+
+
+@pytest.mark.parametrize(
+    "probe_path",
+    [
+        "/api/v1/agent/assist/sessions/{session_id}/environment",
+        "/api/v1/agent/feedback",
+        "/api/v1/agent/tool-suggestions",
+    ],
+)
+def test_a_read_only_operator_reaches_the_gated_metadata_writes(
+    client, db_session, test_project, probe_path
+):
+    """The five gated exceptions, exercised through the gate itself.
+
+    The earlier version of this test called only renewal — which is mounted
+    OUTSIDE ``enforce_agent_operator_access`` — so it proved nothing about the
+    allowlist. These paths do run through the gate, so they show that an
+    auditor's agent is not refused for being read-only.
+
+    Asserted as "not 403-from-the-operator-gate" rather than a specific success
+    code: these routes have their own validation, and a 404/422 from *inside*
+    the handler still proves the gate let the request through, which is the
+    only thing this test is about.
+    """
+    from app.db.models_agent import AssistSession
+
+    user = _member(db_session, test_project, ProjectRole.AUDITOR.value)
+    raw, agent = _assist_key(db_session, test_project, user)
+    headers = {"X-API-Key": raw}
+
+    if "{session_id}" in probe_path:
+        session_id = (
+            db_session.query(AssistSession.id)
+            .filter(AssistSession.agent_id == agent.id)
+            .scalar()
+        )
+        probe_path = probe_path.replace("{session_id}", str(session_id))
+        body = {"os_family": "linux", "shell": "bash"}
+    elif probe_path.endswith("/feedback"):
+        body = {"category": "prompt", "message": "feedback from a restricted operator"}
+    else:
+        body = {"name": "nuclei", "rationale": "not in the approved set"}
+
+    resp = client.post(probe_path, headers=headers, json=body)
+    # Assert on WHICH gate answered. These routes have their own validation, so
+    # a 404/422 from inside the handler still proves the operator gate let the
+    # request through — which is the only thing this test is about.
+    assert "read-only" not in resp.text, (
+        f"{probe_path} was refused by the OPERATOR gate for a read-only "
+        f"operator: {resp.text}. It is on the metadata-write allowlist."
+    )

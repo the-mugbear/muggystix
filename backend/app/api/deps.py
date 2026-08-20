@@ -218,8 +218,29 @@ def authenticate_for_renewal(
                 ),
             },
         )
+    # v2.307.0 — stamp the FULL attribution set, not just agent + prefix.
+    #
+    # The audit middleware discards any non-5xx request that lacks both an
+    # agent id and a project id (agent_api_log_service — the table's CHECK
+    # requires attribution or an error class). Renewal is mounted outside the
+    # normal dependency chain, so nothing else fills these in: stamping only
+    # agent_id meant renewals wrote **no audit row at all**, while the plan
+    # claimed every renewal was audited. A credential-extending call is exactly
+    # the kind that has to be answerable after the fact.
     request.state.agent_id = agent.id
+    request.state.agent_project_id = agent.project_id
+    request.state.api_key_id = api_key_obj.id
     request.state.api_key_prefix = api_key_obj.key_prefix
+    session = api_key_obj.agent_session
+    request.state.agent_session_id = session.id if session is not None else None
+    # Per-workflow attribution, so a renewal lands on the same timeline as the
+    # calls around it rather than as an orphan row.
+    if session is not None:
+        if session.workflow in ("plan_generation", "execution"):
+            request.state.scoped_plan_id = session.plan_id
+        elif session.workflow == "recon":
+            request.state.scoped_scope_id = session.scope_id
+    request.state.scoped_assist_session_id = api_key_obj.assist_session_id
     return api_key_obj
 
 
@@ -661,13 +682,27 @@ def check_agent_rate_limit(
 # project, evaluated PER REQUEST.
 # ---------------------------------------------------------------------------
 
+# Paths here are **router-relative**, which is what ``request.scope["route"].path``
+# returns — FastAPI 0.141 keeps included routers as a single node, so the matched
+# route object is the one registered on the sub-router and carries its own path,
+# not the mounted `/api/v1/agent/...` one. v2.307.0 fixed exactly this: the
+# entries were written as full paths, matched nothing, and every one of these
+# routes was silently gated as a project write — so a read-only operator could
+# not report an environment probe or file feedback. Nothing failed loudly,
+# because the failure direction is a 403 that looks deliberate.
+#
+# ``tests/test_agent_operator_access.py`` pins each entry to exactly one mounted
+# route, so a renamed path can't quietly drop out of the allowlist again.
 AGENT_SESSION_METADATA_WRITES = frozenset({
-    ("POST", "/api/v1/agent/session/renew"),
-    ("POST", "/api/v1/agent/assist/sessions/{session_id}/environment"),
-    ("POST", "/api/v1/agent/execution-sessions/{session_id}/environment"),
-    ("POST", "/api/v1/agent/recon/sessions/{session_id}/environment"),
-    ("POST", "/api/v1/agent/feedback"),
-    ("POST", "/api/v1/agent/tool-suggestions"),
+    # Mounted outside this gate entirely (its own router, so an expired key can
+    # reach it). Listed for completeness — if it were ever moved back under the
+    # gate, it must not become a project write.
+    ("POST", "/session/renew"),
+    ("POST", "/assist/sessions/{session_id}/environment"),
+    ("POST", "/execution-sessions/{session_id}/environment"),
+    ("POST", "/recon/sessions/{session_id}/environment"),
+    ("POST", "/feedback"),
+    ("POST", "/tool-suggestions"),
 })
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})

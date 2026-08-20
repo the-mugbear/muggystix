@@ -191,3 +191,44 @@ def test_a_live_key_learns_where_to_renew_before_it_needs_to(
     assert body["renew_path"] == "/api/v1/agent/session/renew"
     assert body["key_expires_at"] is not None
     assert body["renewable_until"] is not None
+
+
+def test_a_renewal_is_recorded_in_the_audit_log(
+    client, db_session, test_project, test_agent, test_user
+):
+    """A call that extends a credential has to be answerable after the fact.
+
+    v2.307.0 — it was not. Renewal is mounted outside the normal dependency
+    chain, and its authenticator stamped only ``agent_id`` and the key prefix.
+    The audit middleware discards any non-5xx request lacking BOTH an agent id
+    and a project id (the table's CHECK requires attribution or an error
+    class), so renewals wrote **no row at all** — while the plan claimed every
+    renewal was audited.
+    """
+    from app.db.models_agent import AgentApiCall
+
+    raw, _key, base = _mint(
+        db_session, test_project, test_agent, test_user, expires_in_hours=-1,
+    )
+    before = db_session.query(AgentApiCall).count()
+
+    resp = client.post("/api/v1/agent/session/renew", headers={"X-API-Key": raw})
+    assert resp.status_code == 200, resp.text
+
+    rows = (
+        db_session.query(AgentApiCall)
+        .filter(AgentApiCall.path.like("%/session/renew"))
+        .all()
+    )
+    assert db_session.query(AgentApiCall).count() > before, (
+        "renewing a key wrote no audit row — a credential-extending call has to "
+        "be attributable"
+    )
+    assert rows, "the renewal row is missing its path"
+    row = rows[-1]
+    assert row.agent_id == test_agent.id
+    assert row.project_id == test_project.id, (
+        "no project attribution — this is the field whose absence made the "
+        "audit writer discard the row entirely"
+    )
+    assert row.api_key_id is not None

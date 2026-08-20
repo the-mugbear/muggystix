@@ -392,9 +392,61 @@ real data. A test pins that adding rows which share an agent adds no queries.
 
 ### Phase 5 — The fail-closed flip *(the sharp edge)*
 * Delete `LEGACY_WRITE_CAPABILITIES` and the capability machinery.
-* **Breaks every legacy key the moment it lands.** Short TTLs mean the blast
-  radius is hours, not weeks, but this is the step to land deliberately and
-  announce.
+* **Breaks every legacy key the moment it lands.**
+
+#### ⚠️ Phase 5 would WIDEN live assist keys — this needs solving first
+
+Flagged by external review, and it is the most dangerous thing in this plan.
+
+Assist keys are the one credential that is genuinely restricted today: they
+default to **no capabilities**, and may be further narrowed to the operator's
+assigned hosts (`AgentCapabilityConstraint.ASSIGNED`). They are also started by
+**analysts** — so under the Phase 1 gate their operator passes the ANALYST
+check.
+
+Delete capability enforcement, and a live read-only assist key stops being
+read-only. It would pass the router gate on its operator's analyst role and gain
+**project-wide write**. That is the opposite of a fail-closed flip: for this one
+key type it fails *open*.
+
+The earlier claim that "short TTLs mean the blast radius is hours" was also
+wrong, and Phase 2 is why: keys are renewable up to
+`AGENT_SESSION_MAX_LIFETIME_HOURS`, so the real exposure is **up to 168 hours**.
+
+Phase 5 therefore needs a drain strategy before it can land. Options, roughly in
+order of preference:
+
+1. **Drain**: refuse to start new capability-less sessions, wait for live assist
+   sessions to end or hit their lifetime cap, then flip. Bounded by 168h.
+2. **Version the keys**: stamp a model version on the session at mint time and
+   keep enforcing capabilities for pre-flip keys only.
+3. **Flip and revoke**: end every live assist session as part of the deploy.
+   Honest and immediate, but it interrupts work in progress.
+
+Whichever is chosen, **the read-only property of assist has to survive the
+consolidation** — an operator who deliberately started a read-only session must
+not have it silently upgraded by a refactor.
+
+### Phase 4 must also decide the minimum role to start a session
+"Auditors get a read-only agent" is settled, but **nothing implements it**: all
+four session-start endpoints still require `ANALYST`, assist included. Until the
+unified dialog lowers that floor, the auditor/viewer path is theory. Phase 4
+therefore owns:
+
+* the minimum role for starting a session (and whether it differs by intent), and
+* a viewer/auditor **route matrix test** — every agent route × every role,
+  asserting the expected allow/deny.
+
+### The end state needs per-route READ roles, not just read-vs-write
+The Phase 1 gate treats every `GET` as available to any current member. That is
+correct *today* because no viewer or auditor keys exist, but it does not survive
+Phase 4.
+
+Concretely: `/assist/report-context.ndjson` is an uncapped export of project
+data, while the equivalent JWT export surface requires **AUDITOR**. Once viewer
+keys are possible and the workflow guards are gone, a viewer's agent would have
+data egress its own JWT session is denied. The end state needs a minimum *read*
+role per route, not a single membership check.
 
 ### Phase 6 — Delete the split
 * Remove the workflow guards; `workflow` becomes a label.
@@ -449,4 +501,9 @@ in the session dialog, stated plainly rather than buried:
 
 ## Open questions
 
-None blocking. Phase 2 is in progress.
+1. **Phase 5 drain strategy** — which of the three options above, to stop live
+   read-only assist keys being widened by the flip. Blocking for Phase 5.
+2. **Minimum role to start a session** (Phase 4) — the floor that makes
+   auditor/viewer agents real.
+3. **Per-route minimum read roles** — needed before viewer keys exist; today's
+   single membership check would give a viewer's agent auditor-level egress.
