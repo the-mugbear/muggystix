@@ -480,3 +480,130 @@ def test_assist_report_context_streams_full_dossier(client, test_project, db_ses
     assert isinstance(rec["ports"], list)
     assert len(rec["vulnerabilities"]) >= 1        # the finding is in the dossier
     assert "dossier_summary" in rec        # full report dossier, not just counts
+
+
+# ---------------------------------------------------------------------------
+# Counting questions (v2.291.0)
+#
+# "How many hosts have critical findings and no assignee?" is a work-allocation
+# question an operator actually asks, and it was the shape assist answered
+# worst: /assist/hosts returns a bare list with no total, so the count could
+# only come from paging to exhaustion — and an agent that stops at page one
+# reports a confident wrong number. `assigned:none` didn't exist either, though
+# the sibling `follow:none` did.
+# ---------------------------------------------------------------------------
+
+def test_counting_hosts_nobody_owns(client, db_session, test_project, test_user):
+    """The user's question, end to end: critical findings, no assignee."""
+    from datetime import datetime, timezone
+
+    from app.db import models
+    from app.db.models import Host, HostFollow, FollowStatus
+    from app.db.models_vulnerability import (
+        Vulnerability,
+        VulnerabilitySeverity,
+        VulnerabilitySource,
+    )
+
+    scan = models.Scan(project_id=test_project.id, filename="assist-count.xml", tool_name="nmap")
+    db_session.add(scan)
+    db_session.commit()
+    db_session.refresh(scan)
+
+    def _host(ip, *, critical: bool, assigned: bool):
+        h = Host(project_id=test_project.id, ip_address=ip, state="up")
+        db_session.add(h)
+        db_session.commit()
+        db_session.refresh(h)
+        if critical:
+            db_session.add(
+                Vulnerability(
+                    host_id=h.id, scan_id=scan.id, title=f"crit on {ip}",
+                    severity=VulnerabilitySeverity.CRITICAL,
+                    source=VulnerabilitySource.NESSUS, plugin_id=f"p-{ip}",
+                )
+            )
+        if assigned:
+            db_session.add(
+                HostFollow(
+                    host_id=h.id, user_id=test_user.id,
+                    status=FollowStatus.IN_REVIEW,
+                    assigned_at=datetime.now(timezone.utc),
+                    assigned_by_id=test_user.id,
+                )
+            )
+        db_session.commit()
+        return h
+
+    _host("10.9.0.1", critical=True, assigned=False)   # the answer
+    _host("10.9.0.2", critical=True, assigned=False)   # the answer
+    _host("10.9.0.3", critical=True, assigned=True)    # owned — excluded
+    _host("10.9.0.4", critical=False, assigned=False)  # nothing critical
+
+    started = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start", json={}
+    ).json()
+    headers = {"X-API-Key": started["api_key"]}
+
+    resp = client.get(
+        "/api/v1/agent/assist/hosts/count",
+        params={"q": "has:critical AND assigned:none"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 2, body
+    # The query is echoed so the agent can quote what it actually asked.
+    assert body["query"] == "has:critical AND assigned:none"
+
+    # The count agrees with the list it summarises — two answers to the same
+    # question disagreeing is what a separately-built query would eventually do.
+    listed = client.get(
+        "/api/v1/agent/assist/hosts",
+        params={"q": "has:critical AND assigned:none"},
+        headers=headers,
+    ).json()
+    assert len(listed) == body["count"]
+    assert {h["ip_address"] for h in listed} == {"10.9.0.1", "10.9.0.2"}
+
+
+def test_assigned_none_is_the_complement_of_assigned_any(
+    client, db_session, test_project, test_user
+):
+    """`none` has to mean exactly "not any" — if the two overlap or leave a gap,
+    an operator dividing work by assignment silently loses hosts."""
+    from datetime import datetime, timezone
+
+    from app.db.models import Host, HostFollow, FollowStatus
+
+    for ip, assigned in (("10.9.1.1", True), ("10.9.1.2", False), ("10.9.1.3", False)):
+        h = Host(project_id=test_project.id, ip_address=ip, state="up")
+        db_session.add(h)
+        db_session.commit()
+        db_session.refresh(h)
+        if assigned:
+            db_session.add(
+                HostFollow(
+                    host_id=h.id, user_id=test_user.id,
+                    status=FollowStatus.IN_REVIEW,
+                    assigned_at=datetime.now(timezone.utc),
+                    assigned_by_id=test_user.id,
+                )
+            )
+    db_session.commit()
+
+    started = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start", json={}
+    ).json()
+    headers = {"X-API-Key": started["api_key"]}
+
+    def count(q):
+        return client.get(
+            "/api/v1/agent/assist/hosts/count", params={"q": q}, headers=headers
+        ).json()["count"]
+
+    total = count("")
+    assert count("assigned:any") + count("assigned:none") == total
+    # And it agrees with the phrasing that already worked, so the two ways of
+    # asking can't diverge.
+    assert count("assigned:none") == count("NOT assigned:any")

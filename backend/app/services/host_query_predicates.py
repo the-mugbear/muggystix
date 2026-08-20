@@ -626,17 +626,27 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
 
 
 def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[ColumnElement]:
-    """Assignment predicate: ``any`` → assigned to anyone, ``me`` → the caller,
-    a **username** (the normal case — user ids aren't surfaced in the UI), or a
-    numeric user id.  Returns ``None`` for an unusable value so callers skip the
+    """Assignment predicate: ``any`` → assigned to anyone, ``none`` → assigned
+    to nobody, ``me`` → the caller, a **username** (the normal case — user ids
+    aren't surfaced in the UI), or a numeric user id.  Returns ``None`` for an unusable value so callers skip the
     filter (legacy parity).
 
     "Assigned" keys on ``assigned_at`` (cleared on unassign).  Taking a host
     In Review now sets ``assigned_at`` too (see the review-status write path),
     so "review it = it's yours" holds without conflating the two here."""
-    if value == "any":
+    if value in ("any", "none"):
         assigned = db.query(HostFollow.host_id).filter(HostFollow.assigned_at.isnot(None))
-        return models.Host.id.in_(assigned)
+        # `none` is the complement, and it is the half operators actually reach
+        # for: "critical findings nobody owns" is a work-allocation question,
+        # where "assigned to someone" is rarely the interesting set. Its absence
+        # made that question expressible only as `NOT assigned:any`, while the
+        # sibling `follow:` field accepted `none` — so the obvious phrasing
+        # errored on one field and worked on the other (v2.291.0).
+        return (
+            models.Host.id.in_(assigned)
+            if value == "any"
+            else ~models.Host.id.in_(assigned)
+        )
     if value == "me":
         assignee_id: Optional[int] = current_user.id
     elif value.isdigit():

@@ -23,6 +23,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload, Query as SAQuery
 
@@ -445,6 +446,59 @@ def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
         offset += _PAGE
         # Detach the page so the session doesn't accumulate every host.
         db.expunge_all()
+
+
+class AssistHostCount(BaseModel):
+    """Answer to a "how many hosts …?" question."""
+    count: int
+    # Echoed so the agent can quote the question it actually asked when it
+    # reports the number — and so a wrong answer is traceable to a wrong query.
+    query: Optional[str] = None
+
+
+@router.get(
+    "/assist/hosts/count",
+    response_model=AssistHostCount,
+    summary="Count hosts matching a filter — without paging them",
+)
+def count_assist_hosts(
+    request: Request,
+    state: Optional[str] = Query(None),
+    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
+    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
+    has_critical_vulns: Optional[bool] = Query(None),
+    has_high_vulns: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    q: Optional[str] = Query(None, description="Boolean query DSL — see /assist/hosts."),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """How many hosts match — the whole answer to a counting question.
+
+    v2.291.0.  ``/assist/hosts`` returns a bare list with no total, so "how many
+    hosts have critical findings and no assignee?" could only be answered by
+    paging to exhaustion.  That is expensive, and its failure mode is the worst
+    possible one for a question whose entire answer is a number: an agent that
+    stops at the first page reports a confident, wrong count.  A COUNT(*) makes
+    the question one call and the answer exact.
+
+    Shares ``_build_assist_host_query`` with the list endpoint, so the filters,
+    the DSL, and the session's row scope cannot drift between "which hosts" and
+    "how many hosts" — two answers to the same question disagreeing is precisely
+    what a separate query here would eventually produce.
+    """
+    session = _load_assist_session(db, request)
+    query = _build_assist_host_query(
+        db, session,
+        state=state, ports=ports, services=services, subnets=subnets,
+        has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
+        search=search, q=q,
+    )
+    return AssistHostCount(
+        count=query.with_entities(func.count(models.Host.id.distinct())).scalar() or 0,
+        query=q,
+    )
 
 
 @router.get(

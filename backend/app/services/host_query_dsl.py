@@ -454,7 +454,10 @@ def _b_assigned(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     for v in values:
         pred = P.assigned_predicate(ctx.db, v, ctx.current_user)
         if pred is None:
-            raise DSLError(f"Invalid assigned value '{v}' (use me, any, or a user id)")
+            raise DSLError(
+                f"Invalid assigned value '{v}' (use me, any, none, a username, "
+                "or a user id)"
+            )
         preds.append(pred)
     return or_(*preds)
 
@@ -536,7 +539,7 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any."),
     FieldSpec("assigned", _b_assigned, aliases=["assignee"],
-              description="Host assignment — “me”, “any”, a username, or a user id."),
+              description="Host assignment — “me”, “any”, “none”, a username, or a user id."),
     FieldSpec("scan", _b_scan, value_source="scan",
               description="A scan that observed the host — by numeric id."),
     FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS),

@@ -264,8 +264,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "List/filter hosts in the project. Prefer the `q` boolean DSL (same "
             "vocabulary as the Hosts page: port:, os:, service:, subnet:, tag:, "
-            "cve:, vuln:, tech:, has:, follow:, assigned:me — combine with AND/OR/"
-            "NOT and parentheses). Paginate with limit/offset. Returns host briefs."
+            "cve:, vuln:, tech:, has:, follow:, assigned: — combine with AND/OR/"
+            "NOT and parentheses). assigned: takes me / any / none / a username, "
+            "so 'has:critical AND assigned:none' is 'critical findings nobody "
+            "owns'. Paginate with limit/offset — but for a COUNT use "
+            "assist_count_hosts, not the length of a page. Returns host briefs."
         ),
         "workflows": _ASSIST,
         "method": "GET",
@@ -290,6 +293,37 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "has_high_vulns": {"type": "boolean"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "assist_count_hosts": {
+        "description": (
+            "How many hosts match a filter — the whole answer to a counting "
+            "question, in one call. Use this instead of paging assist_list_hosts "
+            "and counting: a page is not the total, and a count that stopped at "
+            "the first page is wrong in a way nobody can see. Same `q` DSL as "
+            "assist_list_hosts (e.g. 'has:critical AND assigned:none' — critical "
+            "findings nobody owns)."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/hosts/count",
+        "query_params": [
+            "q", "search", "state", "ports", "services", "subnets",
+            "has_critical_vulns", "has_high_vulns",
+        ],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "q": {"type": "string", "description": "Boolean query DSL (see assist_list_hosts)."},
+                "search": {"type": "string"},
+                "state": {"type": "string"},
+                "ports": {"type": "string"},
+                "services": {"type": "string"},
+                "subnets": {"type": "string"},
+                "has_critical_vulns": {"type": "boolean"},
+                "has_high_vulns": {"type": "boolean"},
             },
             "additionalProperties": False,
         },

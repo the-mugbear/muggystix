@@ -48,6 +48,28 @@ resolved from their key via `GET /api/v1/agent/identity`:
 | `execution` | Execute with AI on an approved plan | execution context, sanity checks, test results, entry/session completion |
 | `assist` | Operations → AI Assist | interactive reads over the inventory, plus the three capability-gated writes |
 
+### Assist: answering questions, and filling in a report
+
+Two things an assist agent is routinely asked for, and how each is served:
+
+* **"How many hosts …?"** — `assist_count_hosts` takes the same `q=` DSL and
+  returns a total. Counting a page of `assist_list_hosts` is the wrong answer to
+  a counting question: a page is not a total, and an agent that stops at the
+  first one reports a confident wrong number. `assigned:` accepts
+  `me` / `any` / `none` / a username, so *"critical findings nobody owns"* is
+  `has:critical AND assigned:none`.
+* **"Fill in this report template."** — the template is a file **on the
+  operator's machine**, in the working directory the agent already reads and
+  writes. BlueStick hosts no templates and stores no finished report; its job is
+  the data (`assist_count_hosts` for numbers, `assist_list_hosts` with a `q=` to
+  isolate a set, `assist_get_host_findings` for the evidence behind a claim, and
+  the `report-context.ndjson` download when the report spans more hosts than is
+  sensible one at a time). The finished document is written next to the template.
+  Copyable starting points live in [report-templates/](report-templates/).
+
+  A placeholder the agent could not source is left visibly unfilled rather than
+  invented — a number nobody can trace is worse than a gap somebody can see.
+
 Two tools are offered to every workflow: **`agent_identity`** (what am I, what
 may I write, when does my key expire) and **`suggest_tool`** (record a request
 for a tool the approved set doesn't cover). `read_agent_guide` and

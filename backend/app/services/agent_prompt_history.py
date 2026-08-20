@@ -21,6 +21,27 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.52.0",
+        "app_version": "2.291.0",
+        "summary": (
+            "Assist gains what it needed to answer questions and to fill in a "
+            "report. COUNTING: `GET /agent/assist/hosts/count` returns the total "
+            "for any filter — the host list is a bare array with no total, so "
+            "'how many hosts have critical findings and no assignee?' could only "
+            "be answered by paging to exhaustion, and an agent that stopped at "
+            "the first page reported a confident wrong number. `assigned:` also "
+            "accepts `none` now (it took me/any/username/id while the sibling "
+            "`follow:` accepted `none`, so the obvious phrasing errored on one "
+            "field and worked on the other). REPORTS: the prompt now says where "
+            "a report template lives — a file on the OPERATOR's machine, in the "
+            "working directory the agent already reads and writes. BlueStick "
+            "hosts no templates and stores no finished report; its job is the "
+            "data, and the agent's is to replace each placeholder with a value "
+            "it actually fetched, leaving anything it could not source visibly "
+            "unfilled rather than inventing a number."
+        ),
+    },
+    {
         "version": "1.51.0",
         "app_version": "2.281.0",
         "summary": (
