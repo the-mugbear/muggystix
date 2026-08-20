@@ -707,6 +707,38 @@ AGENT_SESSION_METADATA_WRITES = frozenset({
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Reads that are bulk **exports** of project data, and therefore need the same
+# minimum role their JWT equivalents do (`export.py` and `reports.py` both gate
+# their whole router on AUDITOR).
+#
+# v2.308.0, flagged by external review. Without this the gate treats every GET
+# as available to any project member — which is harmless while only analysts can
+# start a session, but stops being harmless the moment the role floor drops.
+# A viewer's agent would otherwise have data egress the viewer's own JWT session
+# is refused, which is precisely the escalation shape this consolidation exists
+# to remove.
+#
+# Router-relative paths, matching AGENT_SESSION_METADATA_WRITES (see the note
+# there on why full paths do not work).
+AGENT_READ_ROLE_OVERRIDES = {
+    # The whole-project dossier: every host, its findings, notes and evidence.
+    ("GET", "/assist/report-context.ndjson"): ProjectRole.AUDITOR,
+    # Bulk inventory + target lists — the same data an export would hand over,
+    # in a shape built for piping into another tool.
+    ("GET", "/assist/hosts.ndjson"): ProjectRole.AUDITOR,
+    ("GET", "/recon/hosts.ndjson"): ProjectRole.AUDITOR,
+    ("GET", "/recon/live-hosts.txt"): ProjectRole.AUDITOR,
+    ("GET", "/recon/web-targets.txt"): ProjectRole.AUDITOR,
+    # Evidence files. Individually small, but they are the artefacts a report
+    # cites, and the operator-facing equivalents sit behind the export gate.
+    ("GET", "/assist/attachments/{attachment_id}"): ProjectRole.AUDITOR,
+    ("GET", "/assist/web-interfaces/{interface_id}/screenshot"): ProjectRole.AUDITOR,
+}
+
+#: Everything else a member may read. Viewers can already see hosts, scans and
+#: findings in the UI, so their agent may too.
+_DEFAULT_READ_ROLE = ProjectRole.VIEWER
+
 
 def enforce_agent_operator_access(
     request: Request,
@@ -800,13 +832,28 @@ def enforce_agent_operator_access(
         )
     request.state.key_operator_role = membership.role
 
-    if is_project_write and not check_permissions(membership.role, ProjectRole.ANALYST.value):
+    if is_project_write:
+        if not check_permissions(membership.role, ProjectRole.ANALYST.value):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"This key acts for a project {membership.role}, which is "
+                    "read-only. An agent can only do what the operator who "
+                    "started its session can do."
+                ),
+            )
+        return agent
+
+    # Reads: most need only membership, but bulk exports match their JWT
+    # equivalents' floor.
+    required_read = AGENT_READ_ROLE_OVERRIDES.get((method, path), _DEFAULT_READ_ROLE)
+    if not check_permissions(membership.role, required_read.value):
         raise HTTPException(
             status_code=403,
             detail=(
-                f"This key acts for a project {membership.role}, which is "
-                "read-only. An agent can only do what the operator who started "
-                "its session can do."
+                f"This key acts for a project {membership.role}. Bulk export of "
+                f"project data requires {required_read.value}, the same role the "
+                "equivalent report/export surface requires of a person."
             ),
         )
     return agent

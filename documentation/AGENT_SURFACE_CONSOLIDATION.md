@@ -427,6 +427,31 @@ Whichever is chosen, **the read-only property of assist has to survive the
 consolidation** — an operator who deliberately started a read-only session must
 not have it silently upgraded by a refactor.
 
+### Phase 4 (partial) ✅ **Shipped in 2.308.0** — role floor + per-route read roles
+Landed in the only safe order: **read roles first, then the floor.** Lowering
+the floor while every GET was member-accessible would have handed a lower-tier
+operator's agent an export their own session is refused.
+
+* `AGENT_READ_ROLE_OVERRIDES` gives bulk exports the `AUDITOR` floor their JWT
+  equivalents already carry (`export.py` and `reports.py` gate their whole
+  routers on it): the project dossier, the host dumps, the recon target lists,
+  and evidence downloads. Everything else needs membership only — a viewer can
+  see hosts and scans in the UI, so their agent may too.
+* **Assist session-start lowered `ANALYST` → `AUDITOR`**, which is what finally
+  makes "auditors get a read-only agent" real. Recon, plan generation and
+  execution stay at `ANALYST`: they exist to change project state.
+* A **role × route matrix test** covers the four decisions the gate actually
+  makes — ordinary read, bulk export, project write, session metadata — against
+  each role. Two structural tests cover what a sample cannot: every override
+  names a real route, and no export-shaped read route is left on the default.
+  *That second one immediately caught `/assist/hosts.ndjson`, which I had
+  missed.*
+
+**Still owed by Phase 4:** the single session-start dialog (three collapse into
+one), and the plan-generation backfill migration — deferred because its only
+consumer is the timeline reader switch, which is itself blocked on the three
+issues recorded above.
+
 ### Phase 4 must also decide the minimum role to start a session
 "Auditors get a read-only agent" is settled, but **nothing implements it**: all
 four session-start endpoints still require `ANALYST`, assist included. Until the

@@ -49,8 +49,14 @@ const sections: GuideSection[] = [
           A key carries <strong>your</strong> permissions on the project, re-checked on every single
           call — not frozen at the moment it was minted. If your project role changes, or you are
           removed from the project, or your account is disabled, the key follows immediately rather
-          than staying powerful until it expires. An auditor's or viewer's agent is read-only for
-          the same reason yours is not: because that is what <em>they</em> can do.
+          than staying powerful until it expires. An auditor's agent is read-only for the same
+          reason yours is not: because that is what <em>they</em> can do.
+        </Para>
+        <Para>
+          Bulk exports are held to the same bar a person is. Pulling the whole-project dossier, a
+          host dump, or evidence files needs <strong>auditor</strong> — the role the equivalent
+          Reports and Export pages already require. An agent cannot be used to get data its
+          operator would be refused in the UI.
         </Para>
         <Para>
           Treat the key itself like a password with an expiry date. It is as capable as you are.
@@ -176,7 +182,7 @@ const sections: GuideSection[] = [
           <li><strong>Read-only unless you say otherwise</strong> — by default every write endpoint rejects the assist key. Ticking the write box when you start a session grants exactly three narrow writes (add a note, set review status, correct hostname/OS), and only on hosts <em>assigned to you</em>. Scanning, plan creation, and execution are never available.</li>
           <li><strong>Project-scoped</strong> — it sees all hosts in the one project you started it from, and nothing in other projects.</li>
           <li><strong>Short-lived, but recoverable</strong> — assist keys expire quickly (4h by default) and can be ended at any time. If a key lapses while the session is still open, the agent renews it itself and carries on — see <em>When a key expires mid-run</em> below.</li>
-          <li><strong>Who can start one</strong> — analyst role or above (auditors/viewers cannot mint a key).</li>
+          <li><strong>Who can start one</strong> — auditor role or above. Recon, plan generation and execution still require analyst, because they exist to change project state.</li>
           <li><strong>It can only do what you can do</strong> — the key acts with <em>your</em> permissions on the project, re-checked on every call. If your role changes or you leave the project, the key follows immediately.</li>
         </UnorderedList>
         <Subhead>Connecting without the prompts</Subhead>

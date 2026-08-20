@@ -336,7 +336,17 @@ def start_assist_session(
     request: Request,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    # v2.308.0 — AUDITOR, not ANALYST. "Auditors get a read-only agent" was a
+    # settled decision that nothing implemented: every session-start endpoint
+    # still required analyst, so the auditor path was theory. Assist is the
+    # right workflow to lower first — it is read-only by default, and an
+    # auditor's key now carries the auditor's own permissions on every call
+    # (see enforce_agent_operator_access), so it cannot write project data or
+    # pull a bulk export it would be refused in the UI.
+    #
+    # Recon / plan / execution stay at ANALYST: they exist to change project
+    # state, which is exactly what an auditor may not do.
+    current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
 ):
     """Create an AssistSession and mint a project-scoped, read-only
     agent API key.  The key grants access to ``/agent/assist/*`` only;
