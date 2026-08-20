@@ -250,4 +250,28 @@ describe('McpReference', () => {
     expect(screen.getByRole('heading', { name: 'Connecting a client' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'What a session may do' })).toBeInTheDocument();
   });
+
+  it('gives both file-shaped downloads, not just the dossier stream', async () => {
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Writing the engagement up' })).toBeInTheDocument(),
+    );
+    // Screenshots are the second thing a report needs off disk, and the page
+    // documented only the first — leaving an operator to guess how an agent
+    // fetches evidence images with a key rather than a login.
+    expect(screen.getByText(/report-context\.ndjson/)).toBeInTheDocument();
+    expect(screen.getByText(/agent\/assist\/attachments/)).toBeInTheDocument();
+  });
+
+  it('states plainly that the analysis is not a trend', async () => {
+    renderPage();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'What these tools do not answer' }),
+      ).toBeInTheDocument(),
+    );
+    // The most likely way to misread this output is as change over time, and
+    // the page should say so where someone reading the results will see it.
+    expect(screen.getByText(/changed since last week/)).toBeInTheDocument();
+  });
 });

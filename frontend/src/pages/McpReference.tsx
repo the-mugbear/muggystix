@@ -63,7 +63,7 @@ const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
     key: 'assist',
     label: 'Assist',
     blurb:
-      'Interactive read over the existing inventory, plus the three writes an operator can grant.',
+      'Interactive read over the existing inventory — what is here, what state it is in, what the estate has a systemic problem with, and the evidence behind a finding when the engagement is written up. Plus the three writes an operator can grant.',
   },
   {
     key: 'shared',
@@ -512,22 +512,63 @@ const McpReference: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* --- The deliberate omission --- */}
-      <h2 className="text-section-title">Writing a report over many hosts</h2>
+      {/* --- The deliberate omissions --- */}
+      <h2 className="text-section-title">Writing the engagement up</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
-        The full per-host dossier stream is deliberately <strong>not</strong> an MCP tool. It is a
-        download-to-file, not a context load: paging thousands of hosts through tool results would
-        fill the model&rsquo;s context with data it should be reading off disk. Fetch it with curl
-        and point the agent at the file.
+        Most of a report comes through tools: <span className="font-mono">assist_get_posture</span>{' '}
+        for the condition an executive summary states,{' '}
+        <span className="font-mono">assist_get_patterns</span> for what the estate has a systemic
+        problem with, and <span className="font-mono">assist_get_finding</span> for the note a
+        colleague wrote to justify a finding. Two things are deliberately{' '}
+        <strong>not</strong> tools, because they belong on disk rather than in the
+        model&rsquo;s context.
+      </p>
+      <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
+        <strong className="text-foreground">The per-host dossier stream.</strong> Paging thousands
+        of hosts through tool results would fill the context with data the agent should be reading
+        off a file. Fetch it with curl and point the agent at the file.
       </p>
       <CodeBlock
         text={`curl -sk -H "X-API-Key: ${keyPlaceholder}" \\\n  ${endpoint.replace(/\/mcp$/, '')}/agent/assist/report-context.ndjson \\\n  -o report-context.ndjson`}
         label="report-context download"
       />
-      <p className="mt-xxs text-caption text-muted-foreground">
+      <p className="mt-xxs mb-sm text-caption text-muted-foreground">
         One JSON object per host, uncapped — identity, ports, findings with evidence, notes, tags,
         and review state.
       </p>
+      <p className="mt-sm mb-sm max-w-4xl text-caption text-muted-foreground">
+        <strong className="text-foreground">Evidence screenshots.</strong>{' '}
+        <span className="font-mono">assist_get_finding</span> returns each attachment as a
+        reference — filename, type, size and a{' '}
+        <span className="font-mono">download_path</span> — never as image bytes. A base64
+        screenshot would cost thousands of tokens for a picture the model cannot show anyone, and
+        the finished report needs the file sitting next to it either way. The agent saves each one
+        into its working directory and links to it.
+      </p>
+      <CodeBlock
+        text={`curl -sk -H "X-API-Key: ${keyPlaceholder}" \\\n  ${endpoint.replace(/\/mcp$/, '')}/agent/assist/attachments/<attachment-id> \\\n  -o evidence-<attachment-id>.png`}
+        label="evidence attachment download"
+      />
+      <p className="mt-xxs text-caption text-muted-foreground">
+        Project-scoped and key-authenticated — the same attachment is served to the browser under{' '}
+        <span className="font-mono">/projects/…</span>, but that path wants a login session an
+        agent does not have.
+      </p>
+
+      {/* --- The limit worth stating plainly --- */}
+      <h2 className="mt-lg text-section-title">What these tools do not answer</h2>
+      <Alert variant="info" className="mt-xs">
+        <AlertDescription className="text-caption">
+          <span className="font-mono">assist_get_patterns</span> compares{' '}
+          <strong>across the estate</strong>, not over time — this subnet against the others, this
+          condition&rsquo;s spread across the whole inventory. Nothing here answers &ldquo;what
+          changed since last week&rdquo;: an engagement runs weeks, so there is no baseline to
+          compare a quarter against, and the analysis is cross-sectional by design. If an agent
+          phrases these findings as trends, or says something got better or worse, it is making a
+          claim the data cannot support. The tool descriptions say so, but it is worth knowing when
+          you read the output.
+        </AlertDescription>
+      </Alert>
     </div>
   );
 };
