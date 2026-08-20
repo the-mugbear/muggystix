@@ -372,6 +372,94 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "assist_list_findings": {
+        "description": (
+            "Findings across the WHOLE project — the spine an analyst reasons "
+            "about, not one host's slice. Filter by severity, status, source, "
+            "owner (`me` or a username), `unowned=true` (findings nobody owns), "
+            "host_id, or a title substring. Returns `total` and a "
+            "`severity_counts` breakdown for the filter you asked about, so "
+            "\"how many criticals are open?\" is one call. A finding can span "
+            "many hosts — `host_count` is how big it is; counting rows is not."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/findings",
+        "query_params": [
+            "status", "severity", "source", "host_id", "unowned", "owner",
+            "search", "limit", "offset",
+        ],
+        "defaults": {"limit": 25},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "open / triaged / confirmed / remediated / closed / false_positive, or 'all'.",
+                },
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+                "source": {"type": "string"},
+                "host_id": {"type": "integer", "minimum": 1},
+                "unowned": {"type": "boolean", "description": "Only findings with no owner."},
+                "owner": {"type": "string", "description": "Username, or 'me' for this session's operator."},
+                "search": {"type": "string", "maxLength": 200},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 25},
+                "offset": {"type": "integer", "minimum": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "assist_get_host_notes": {
+        "description": (
+            "What the team has already written about this host. Read this "
+            "BEFORE adding a note — a colleague may have recorded the same "
+            "observation an hour ago — and before answering \"what do we know "
+            "about X\", where the answer often lives in a note rather than in "
+            "scan data. Notes carry who wrote them and whether an agent did."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
+        "path_params": ["host_id"],
+        "query_params": ["limit"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **HOST_ID_PROP,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            },
+            "required": ["host_id"],
+            "additionalProperties": False,
+        },
+    },
+    "assist_get_vocabulary": {
+        "description": (
+            "The values THIS project uses for tag:, label:, site:, scope: and "
+            "assigned: — plus the valid finding statuses and severities. Call "
+            "it before writing a query with any of those predicates: a guessed "
+            "tag doesn't error, it returns zero hosts, and \"nothing is tagged "
+            "production\" is a confidently wrong answer to what was really "
+            "\"what are the tags called here?\"."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/vocabulary",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_get_coverage": {
+        "description": (
+            "How much of this project has actually been assessed, per domain "
+            "(port discovery, service detection, vulnerability assessment, web, "
+            "TLS…). Every other tool reports what WAS found; this is what stops "
+            "\"no critical findings\" being reported as \"no critical "
+            "exposure\". Cite it whenever a report or an answer implies "
+            "completeness."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/coverage",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
     "assist_list_scopes": {
         "description": "List the network scopes (CIDR boundaries) defined for this project.",
         "workflows": _ASSIST,

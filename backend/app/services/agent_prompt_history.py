@@ -21,6 +21,29 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.53.0",
+        "app_version": "2.292.0",
+        "summary": (
+            "Assist becomes a place an analyst can ask anything, rather than "
+            "only 'which hosts match X'. Four questions it could not answer: "
+            "(1) FINDINGS across the project — it could see them one host at a "
+            "time, so the spine had to be rebuilt by walking hosts, which "
+            "counts a finding once per affected host; `/assist/findings` "
+            "returns the real total plus a severity breakdown for whatever "
+            "filter was asked, including `unowned=true`. (2) NOTES — assist "
+            "could write them and not read them, so 'what do we already know "
+            "about this host?' was unanswerable and an agent could duplicate a "
+            "colleague's note from an hour earlier. (3) VOCABULARY — the DSL "
+            "accepts tag:/label:/site:/assigned:<user> and nothing told the "
+            "agent which values exist, so it guessed; a guessed tag returns "
+            "zero hosts rather than an error, making 'nothing is tagged "
+            "production' a confident wrong answer. (4) COVERAGE — every other "
+            "surface reports what WAS found, and without per-domain assessment "
+            "coverage 'no critical findings' reads as 'no critical exposure'. "
+            "The prompt now names all four and says when to reach for each."
+        ),
+    },
+    {
         "version": "1.52.0",
         "app_version": "2.291.0",
         "summary": (

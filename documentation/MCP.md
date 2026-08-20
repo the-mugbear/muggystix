@@ -50,6 +50,23 @@ resolved from their key via `GET /api/v1/agent/identity`:
 
 ### Assist: answering questions, and filling in a report
 
+The assist surface is meant to answer whatever an analyst asks about a project.
+What that takes, beyond "which hosts match X":
+
+| Question | Tool |
+|---|---|
+| "How many hosts …?" | `assist_count_hosts` — a total, not a page |
+| "What are our critical findings?" | `assist_list_findings` — project-wide, with `severity_counts` |
+| "What has nobody picked up?" | `assist_list_findings?unowned=true`, `assist_count_hosts` with `assigned:none` |
+| "What do we already know about this host?" | `assist_get_host_notes` |
+| "Which tags/sites/people exist here?" | `assist_get_vocabulary` |
+| "How much of this did we actually assess?" | `assist_get_coverage` |
+
+Two of those exist because their absence produced *confident wrong answers*
+rather than errors: rebuilding the findings spine from per-host calls counts one
+finding once per affected host, and a guessed tag name returns zero hosts rather
+than failing, so "nothing is tagged production" looks like an answer.
+
 Two things an assist agent is routinely asked for, and how each is served:
 
 * **"How many hosts …?"** — `assist_count_hosts` takes the same `q=` DSL and

@@ -19,6 +19,7 @@ behind their own approval/confirmation surface.
 """
 
 import json
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -35,7 +36,7 @@ from app.db.models_agent import (
     AssistSessionStatus,
     ReconSession,
 )
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectMembership
 from app.db.models_auth import User
 from app.api.deps import require_assist_scope
 
@@ -876,6 +877,249 @@ def download_assist_report_context(
 # ---------------------------------------------------------------------------
 # Scopes — list
 # ---------------------------------------------------------------------------
+
+class AssistProjectFinding(BaseModel):
+    """One finding, as an analyst's question needs it — not the full UI row."""
+    id: int
+    title: str
+    severity: str
+    status: str
+    source: str
+    owner_username: Optional[str] = None
+    # A finding can span hosts; the count is what "how big is this" turns on,
+    # and the sample lets the agent name a host without a second call.
+    host_count: int = 0
+    hosts: List[str] = []
+
+
+class AssistFindingsPage(BaseModel):
+    total: int
+    severity_counts: dict
+    findings: List[AssistProjectFinding]
+
+
+@router.get(
+    "/assist/findings",
+    response_model=AssistFindingsPage,
+    summary="Findings across the project — the spine, not one host's slice",
+)
+def list_assist_findings(
+    request: Request,
+    status: Optional[str] = Query(None, description="open / triaged / confirmed / remediated / closed / false_positive; 'all' for every status."),
+    severity: Optional[str] = Query(None, description="critical / high / medium / low / info."),
+    source: Optional[str] = Query(None),
+    host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
+    unowned: bool = Query(False, description="Only findings with no owner — the work-allocation question."),
+    owner: Optional[str] = Query(None, description="Username of the owner (or 'me')."),
+    search: Optional[str] = Query(None, max_length=200, description="Substring match on the title."),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """Project-wide findings, with the totals an analyst is actually asking for.
+
+    v2.292.0.  Assist could only see findings one host at a time
+    (``/assist/hosts/{id}/findings``), so "what are the critical findings on
+    this engagement?" — the question the Findings page exists to answer — meant
+    walking every host and reassembling the spine client-side.  Findings are
+    deliberately host-spanning in this schema (one finding, many hosts), so that
+    reassembly was also wrong: the same finding on twelve hosts read as twelve
+    findings.
+
+    ``severity_counts`` respects every filter except severity, so an agent can
+    report the breakdown within the scope it asked about without a second call.
+    """
+    session = _load_assist_session(db, request)
+    from app.services.finding_service import FindingService
+
+    owner_id = None
+    if owner:
+        if owner.lower() == "me":
+            owner_id = session.started_by_id
+        else:
+            row = db.query(User.id).filter(func.lower(User.username) == owner.lower()).first()
+            if row is None:
+                raise HTTPException(status_code=400, detail=f"No user named {owner!r}")
+            owner_id = row[0]
+
+    svc = FindingService(db)
+    filters = dict(
+        project_id=session.project_id, status=status, source=source,
+        host_id=host_id, unowned=unowned, owner_id=owner_id, search=search,
+    )
+    rows, total = svc.list_findings(**filters, severity=severity, limit=limit, offset=offset)
+    counts = svc.severity_counts(**filters)
+
+    findings = []
+    for f in rows:
+        host_ips = [fh.host.ip_address for fh in (f.hosts or []) if fh.host]
+        findings.append(
+            AssistProjectFinding(
+                id=f.id,
+                title=f.title,
+                severity=f.severity,
+                status=f.status,
+                source=f.source,
+                owner_username=f.owner.username if f.owner else None,
+                host_count=len(host_ips),
+                # Capped: a finding on 400 hosts should not spend the agent's
+                # context proving it. The count above is the answer; the sample
+                # is for naming one.
+                hosts=sorted(host_ips)[:10],
+            )
+        )
+    return AssistFindingsPage(total=total, severity_counts=counts, findings=findings)
+
+
+class AssistNote(BaseModel):
+    id: int
+    body: str
+    status: Optional[str] = None
+    author: Optional[str] = None
+    # Agent-authored notes are stamped as such; a reader deserves to know
+    # whether a colleague wrote this or an earlier agent did.
+    actor_type: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+@router.get(
+    "/assist/hosts/{host_id}/notes",
+    response_model=List[AssistNote],
+    summary="The team's notes on one host",
+)
+def list_assist_host_notes(
+    request: Request,
+    host_id: int = Path(..., gt=0),
+    limit: int = Query(50, ge=1, le=200),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """What people have already said about this host.
+
+    v2.292.0.  Assist could *write* notes and not read them — an asymmetry that
+    made the obvious question ("what do we already know about 10.0.0.5?")
+    unanswerable, and let an agent add a note duplicating one written an hour
+    earlier by someone else.
+    """
+    session = _load_assist_session(db, request)
+    host = (
+        db.query(models.Host)
+        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .first()
+    )
+    if host is None:
+        raise HTTPException(status_code=404, detail="Host not found in this project")
+
+    rows = (
+        db.query(models.Annotation, User.username)
+        .outerjoin(User, models.Annotation.user_id == User.id)
+        .filter(models.Annotation.host_id == host_id)
+        .order_by(models.Annotation.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        AssistNote(
+            id=a.id,
+            body=a.body,
+            status=a.status.value if hasattr(a.status, "value") else a.status,
+            author=username,
+            actor_type=a.actor_type,
+            created_at=a.created_at,
+        )
+        for a, username in rows
+    ]
+
+
+class AssistVocabulary(BaseModel):
+    """The values this project's `q=` predicates actually accept."""
+    tags: List[str] = []
+    labels: List[str] = []
+    sites: List[str] = []
+    scopes: List[str] = []
+    usernames: List[str] = []
+    finding_statuses: List[str] = []
+    severities: List[str] = []
+
+
+@router.get(
+    "/assist/vocabulary",
+    response_model=AssistVocabulary,
+    summary="The tag / label / site / user values this project uses",
+)
+def assist_vocabulary(
+    request: Request,
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """What to put after `tag:`, `label:`, `site:`, `assigned:` in a query.
+
+    v2.292.0.  The DSL accepts these predicates, and an agent had no way to
+    learn the values — so it guessed. A guessed tag doesn't error, it returns
+    zero hosts, and "no hosts are tagged production" is a confidently wrong
+    answer to a question that was really "what are the tags called here?".
+    """
+    session = _load_assist_session(db, request)
+    pid = session.project_id
+
+    def _names(model, column, **filters):
+        q = db.query(column).filter_by(**filters) if filters else db.query(column)
+        return sorted({v for (v,) in q.all() if v})
+
+    tags = _names(models.HostTag, models.HostTag.name, project_id=pid)
+    sites = _names(models.Site, models.Site.name, project_id=pid)
+    scopes = _names(models.Scope, models.Scope.name, project_id=pid)
+    labels = sorted({
+        v for (v,) in db.query(models.SubnetLabel.name)
+        .filter(models.SubnetLabel.project_id == pid).all() if v
+    })
+    # Who an `assigned:<username>` query can actually name: project members,
+    # PLUS anyone currently holding an assignment here. A global admin needs no
+    # membership row to be assigned a host, so members-only would omit exactly
+    # the person whose work the analyst is asking about.
+    member_names = db.query(User.username).join(
+        ProjectMembership, ProjectMembership.user_id == User.id
+    ).filter(ProjectMembership.project_id == pid)
+    assignee_names = (
+        db.query(User.username)
+        .join(models.HostFollow, models.HostFollow.user_id == User.id)
+        .join(models.Host, models.Host.id == models.HostFollow.host_id)
+        .filter(
+            models.Host.project_id == pid,
+            models.HostFollow.assigned_at.isnot(None),
+        )
+    )
+    usernames = sorted({u for (u,) in member_names.all() if u}
+                       | {u for (u,) in assignee_names.all() if u})
+    return AssistVocabulary(
+        tags=tags, labels=labels, sites=sites, scopes=scopes, usernames=usernames,
+        finding_statuses=["open", "triaged", "confirmed", "remediated", "closed", "false_positive"],
+        severities=["critical", "high", "medium", "low", "info"],
+    )
+
+
+@router.get(
+    "/assist/coverage",
+    summary="How much of this project has actually been assessed",
+)
+def assist_coverage(
+    request: Request,
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """Per-domain assessment coverage — the confidence half of any answer.
+
+    v2.292.0.  Every other assist surface reports what WAS found; this one
+    reports how much was looked at, which is what stops "no critical findings"
+    being read as "no critical exposure". The report templates ask for it by
+    name in their scope-and-confidence section.
+    """
+    session = _load_assist_session(db, request)
+    from app.services.evidence_service import compute_evidence_coverage
+
+    return compute_evidence_coverage(db, session.project_id)
+
 
 @router.get(
     "/assist/scopes",

@@ -607,3 +607,181 @@ def test_assigned_none_is_the_complement_of_assigned_any(
     # And it agrees with the phrasing that already worked, so the two ways of
     # asking can't diverge.
     assert count("assigned:none") == count("NOT assigned:any")
+
+
+# ---------------------------------------------------------------------------
+# Analyst questions the surface could not answer (v2.292.0)
+#
+# Assist is meant to be the place an analyst asks anything about a project. It
+# was equipped for "which hosts match X" and little else: findings only per
+# host, notes writable but not readable, and no way to learn the tag/site/user
+# values its own query DSL accepts.
+# ---------------------------------------------------------------------------
+
+def _assist(client, project_id):
+    body = client.post(f"/api/v1/projects/{project_id}/assist/start", json={}).json()
+    return {"X-API-Key": body["api_key"]}
+
+
+def test_findings_are_answerable_across_the_project_not_host_by_host(
+    client, db_session, test_project
+):
+    """A finding spans hosts by design (one finding, many hosts). Reassembling
+    the spine from per-host calls counted the same finding once per host — so
+    the answer to "how many criticals do we have?" grew with the blast radius."""
+    from app.db.models import Host
+    from app.db.models_findings import Finding, FindingHost
+
+    hosts = []
+    for ip in ("10.8.0.1", "10.8.0.2", "10.8.0.3"):
+        h = Host(project_id=test_project.id, ip_address=ip, state="up")
+        db_session.add(h)
+        db_session.commit()
+        db_session.refresh(h)
+        hosts.append(h)
+
+    spanning = Finding(
+        project_id=test_project.id, title="SMB signing not required",
+        severity="high", status="open", source="manual",
+    )
+    single = Finding(
+        project_id=test_project.id, title="Anonymous FTP",
+        severity="critical", status="open", source="manual",
+    )
+    db_session.add_all([spanning, single])
+    db_session.commit()
+    db_session.add_all([
+        FindingHost(finding_id=spanning.id, host_id=hosts[0].id),
+        FindingHost(finding_id=spanning.id, host_id=hosts[1].id),
+        FindingHost(finding_id=spanning.id, host_id=hosts[2].id),
+        FindingHost(finding_id=single.id, host_id=hosts[0].id),
+    ])
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/findings", headers=headers).json()
+
+    # Two findings, not four: the one on three hosts is one finding.
+    assert body["total"] == 2
+    assert body["severity_counts"] == {"high": 1, "critical": 1}
+    by_title = {f["title"]: f for f in body["findings"]}
+    assert by_title["SMB signing not required"]["host_count"] == 3
+    assert set(by_title["SMB signing not required"]["hosts"]) == {
+        "10.8.0.1", "10.8.0.2", "10.8.0.3"
+    }
+
+    # And the severity breakdown respects a filter without needing a second call.
+    crit = client.get(
+        "/api/v1/agent/assist/findings", params={"severity": "critical"}, headers=headers
+    ).json()
+    assert crit["total"] == 1
+    assert crit["findings"][0]["title"] == "Anonymous FTP"
+
+
+def test_unowned_findings_are_a_first_class_question(client, db_session, test_project):
+    """"What has nobody picked up?" is the work-allocation question, and it is
+    asked of findings as often as of hosts."""
+    from app.db.models_findings import Finding
+
+    db_session.add_all([
+        Finding(project_id=test_project.id, title="Owned", severity="high",
+                status="open", source="manual", owner_id=None),
+        Finding(project_id=test_project.id, title="Also unowned", severity="low",
+                status="open", source="manual", owner_id=None),
+    ])
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get(
+        "/api/v1/agent/assist/findings", params={"unowned": "true"}, headers=headers
+    ).json()
+    assert body["total"] == 2
+    assert all(f["owner_username"] is None for f in body["findings"])
+
+
+def test_the_agent_can_read_notes_it_could_already_write(
+    client, db_session, test_project, test_user
+):
+    """The asymmetry that made "what do we already know about this host?"
+    unanswerable — and let an agent write a note duplicating one a colleague
+    added an hour earlier."""
+    from app.db.models import Annotation, Host, NoteStatus
+
+    host = Host(project_id=test_project.id, ip_address="10.8.1.1", state="up")
+    db_session.add(host)
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.add(
+        Annotation(
+            host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+            body="Confirmed false positive — the banner is a honeypot.",
+            status=NoteStatus.OPEN, actor_type="user",
+        )
+    )
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    notes = client.get(
+        f"/api/v1/agent/assist/hosts/{host.id}/notes", headers=headers
+    ).json()
+    assert len(notes) == 1
+    assert "honeypot" in notes[0]["body"]
+    # Who said it, and whether a human or an agent did — a reader needs both.
+    assert notes[0]["author"] == test_user.username
+    assert notes[0]["actor_type"] == "user"
+
+    # Another project's host is not readable through this session.
+    assert client.get(
+        "/api/v1/agent/assist/hosts/999999/notes", headers=headers
+    ).status_code == 404
+
+
+def test_the_agent_can_learn_this_projects_vocabulary(
+    client, db_session, test_project, test_user
+):
+    """A guessed tag doesn't error — it returns zero hosts, and "nothing is
+    tagged production" is a confidently wrong answer to "what are the tags
+    called here?"."""
+    from app.db.models import HostTag
+
+    from datetime import datetime, timezone
+
+    from app.db.models import FollowStatus, Host, HostFollow
+
+    db_session.add_all([
+        HostTag(project_id=test_project.id, name="production"),
+        HostTag(project_id=test_project.id, name="dmz"),
+    ])
+    # Someone holding work here — a global admin needs no membership row to be
+    # assigned a host, and they are exactly who an analyst asks about.
+    host = Host(project_id=test_project.id, ip_address="10.8.2.1", state="up")
+    db_session.add(host)
+    db_session.commit()
+    db_session.refresh(host)
+    db_session.add(
+        HostFollow(
+            host_id=host.id, user_id=test_user.id, status=FollowStatus.IN_REVIEW,
+            assigned_at=datetime.now(timezone.utc), assigned_by_id=test_user.id,
+        )
+    )
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    vocab = client.get("/api/v1/agent/assist/vocabulary", headers=headers).json()
+
+    assert {"production", "dmz"} <= set(vocab["tags"])
+    # The people an `assigned:<username>` query can name.
+    assert test_user.username in vocab["usernames"]
+    # And the fixed vocabularies, so the agent doesn't invent a status either.
+    assert "false_positive" in vocab["finding_statuses"]
+    assert "critical" in vocab["severities"]
+
+
+def test_coverage_is_reachable_so_completeness_can_be_qualified(
+    client, test_project
+):
+    """Every other tool reports what was found. This is the one that stops "no
+    critical findings" being reported as "no critical exposure"."""
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/coverage", headers=headers).json()
+    assert "domains" in body and "total_hosts" in body
