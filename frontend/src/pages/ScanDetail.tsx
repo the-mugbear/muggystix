@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, Globe } from 'lucide-react';
-import { getScan, getHostsByScan, getScanDnsRecords } from '../services/api';
-import type { Host, DNSRecord } from '../services/api';
+import { getScan, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
+import type { Host, DNSRecord, ScanHostSnapshot } from '../services/api';
 import CommandExplanation from '../components/CommandExplanation';
 import { Card, CardContent } from '../components/ui/card';
 import SeverityBar from '../components/ui/SeverityBar';
@@ -89,6 +89,11 @@ const ScanDetail: React.FC = () => {
   const fromHost = (location.state as { fromHost?: { id: number; ip: string } } | null)?.fromHost;
   const [scan, setScan] = useState<any>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
+  const [snapshots, setSnapshots] = useState<ScanHostSnapshot[]>([]);
+  // Which record the Hosts tab shows. Defaults to the scan's own record —
+  // this page is a scan artifact, and rendering current inventory under
+  // "this scan recorded" is what made it unreliable as evidence (v5.184.0).
+  const [hostView, setHostView] = useState<'as_scanned' | 'current'>('as_scanned');
   const [dnsRecords, setDnsRecords] = useState<DNSRecord[]>([]);
   const [dnsTotal, setDnsTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -108,13 +113,15 @@ const ScanDetail: React.FC = () => {
       getScan(parseInt(scanId)),
       getHostsByScan(parseInt(scanId)),
       getScanDnsRecords(parseInt(scanId)),
+      getScanHostSnapshots(parseInt(scanId)),
     ])
-      .then(([s, h, dns]) => {
+      .then(([s, h, dns, snaps]) => {
         if (!cancelled) {
           setScan(s);
           setHosts(h);
           setDnsRecords(dns.items);
           setDnsTotal(dns.total);
+          setSnapshots(snaps.items);
         }
       })
       .catch((err) => {
@@ -286,7 +293,115 @@ const ScanDetail: React.FC = () => {
                       </AlertDescription>
                     </Alert>
                   )}
+                  {/* As-scanned vs current (v5.184.0). These are different
+                      questions and the page used to answer the second one
+                      under the first one's heading: a host that was down when
+                      scanned and is up today read as up "in" this scan, and
+                      ports discovered months later appeared inside it. */}
+                  <div className="mb-sm flex flex-wrap items-center gap-xs">
+                    <div className="inline-flex rounded-control border border-border p-0.5">
+                      <Button
+                        size="sm"
+                        variant={hostView === 'as_scanned' ? 'default' : 'ghost'}
+                        onClick={() => setHostView('as_scanned')}
+                        aria-pressed={hostView === 'as_scanned'}
+                      >
+                        As scanned
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={hostView === 'current' ? 'default' : 'ghost'}
+                        onClick={() => setHostView('current')}
+                        aria-pressed={hostView === 'current'}
+                      >
+                        Current inventory
+                      </Button>
+                    </div>
+                    <p className="text-caption text-muted-foreground">
+                      {hostView === 'as_scanned'
+                        ? 'What this scan observed. Does not change as later scans run.'
+                        : 'These hosts as they are today — later scans and remediation included.'}
+                    </p>
+                  </div>
+                  {hostView === 'as_scanned' && snapshots.length === 0 && hosts.length > 0 && (
+                    <Alert className="mb-sm">
+                      <AlertDescription>
+                        No per-host observations were recorded for this scan, so there is
+                        nothing to show as scanned. Scans ingested before observation
+                        records existed only have a current-inventory view.
+                      </AlertDescription>
+                    </Alert>
+                  )}
                   <div className="rounded-panel border border-border">
+                    {hostView === 'as_scanned' ? (
+                      <Table className="table-fixed">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-1/5">IP Address</TableHead>
+                            <TableHead className="w-1/4">Hostname at scan</TableHead>
+                            <TableHead className="w-28">State at scan</TableHead>
+                            <TableHead className="w-24">First seen</TableHead>
+                            <TableHead className="w-1/4">Ports observed</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {snapshots.map((row) => (
+                            <TableRow key={row.host_id}>
+                              <TableCell>
+                                <div className="max-w-full truncate min-w-0">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      navigate(`/hosts/${row.host_id}`, {
+                                        state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
+                                      })
+                                    }
+                                    className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
+                                  >
+                                    {row.ip_address}
+                                  </button>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="max-w-full truncate min-w-0">
+                                  {row.hostname_at_scan || 'N/A'}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant={hostStateVariant(row.state_at_scan)}
+                                  className="whitespace-nowrap"
+                                >
+                                  {row.state_at_scan || 'unknown'}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                {row.host_created ? (
+                                  <Badge variant="outline" className="whitespace-nowrap">
+                                    New here
+                                  </Badge>
+                                ) : (
+                                  <span className="text-caption text-muted-foreground">
+                                    Seen before
+                                  </span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <div className="max-w-full truncate min-w-0 tabular-nums">
+                                  {row.open_port_count} open
+                                  {row.observed_port_count > row.open_port_count && (
+                                    <span className="text-muted-foreground">
+                                      {' '}
+                                      of {row.observed_port_count} seen
+                                    </span>
+                                  )}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : (
                     <Table className="table-fixed">
                       <TableHeader>
                         <TableRow>
@@ -358,6 +473,7 @@ const ScanDetail: React.FC = () => {
                         ))}
                       </TableBody>
                     </Table>
+                    )}
                   </div>
                 </>
               )}

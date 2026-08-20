@@ -92,6 +92,50 @@ export const getScanDnsRecords = async (scanId: number): Promise<Paginated<DNSRe
   }
 };
 
+// Hosts as a scan OBSERVED them (v5.184.0).  Distinct from getHostsByScan,
+// which returns the hosts' CURRENT records — every field here is read from the
+// observation tables, so the response doesn't change when a later scan runs or
+// a port is remediated.  There is deliberately no OS: the schema records only
+// whether a scan touched the OS, not what it said, so an as-scanned OS cannot
+// be reconstructed and printing today's value under a historical heading would
+// be the bug this endpoint exists to fix.
+export interface ScanPortSnapshot {
+  port_number: number;
+  protocol: string | null;
+  state_at_scan: string | null;
+  service_name: string | null;
+}
+
+export interface ScanHostSnapshot {
+  host_id: number;
+  ip_address: string;
+  hostname_at_scan: string | null;
+  state_at_scan: string | null;
+  host_created: boolean;
+  observed_port_count: number;
+  open_port_count: number;
+  ports: ScanPortSnapshot[];
+}
+
+const SNAPSHOT_PAGE = 1000;
+export const getScanHostSnapshots = async (
+  scanId: number,
+): Promise<Paginated<ScanHostSnapshot>> => {
+  try {
+    const response = await api.get(`${p()}/scans/${scanId}/host-snapshots`, {
+      params: { skip: 0, limit: SNAPSHOT_PAGE },
+    });
+    return response.data;
+  } catch (error) {
+    // A deployment mid-upgrade has the page but not the route yet; the caller
+    // falls back to the current-inventory view rather than erroring the tab.
+    if (asAxiosError(error)?.response?.status === 404) {
+      return { items: [], total: 0, skip: 0, limit: SNAPSHOT_PAGE, has_more: false };
+    }
+    throw error;
+  }
+};
+
 export interface PortOfInterestSummary {
   port: number;
   protocol: string;

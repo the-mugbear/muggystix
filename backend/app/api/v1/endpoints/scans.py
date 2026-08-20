@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, case, distinct, and_, text, or_
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import get_db
 from app.db import models
@@ -1220,6 +1220,157 @@ def get_scan_command_explanation(
             for arg in analysis.arguments
         ]
     }
+
+# ---------------------------------------------------------------------------
+# As-scanned host snapshots (v2.299.0)
+#
+# The Scan Detail page rendered the CURRENT Host rows of everything the scan
+# had ever seen — current state, current hostname, and every port the host has
+# today — under headings that read as a record of the scan.  So a host that was
+# down on the day and is up now showed as up "in" that scan, and ports found
+# months later appeared in it.  The counts were fixed in v2.298.0; this is the
+# per-host table behind them.
+#
+# Deliberately a separate DTO rather than HostSchema with extra fields: the two
+# answer different questions, and a shared shape is how "current" leaked into
+# an audit view in the first place.  Note there is no OS here — os_info_updated
+# records only WHETHER a scan touched the OS, not what it said, so an
+# as-scanned OS cannot be reconstructed.  Better to omit it than to print
+# today's value under a historical heading.
+# ---------------------------------------------------------------------------
+
+class ScanPortSnapshot(BaseModel):
+    port_number: int
+    protocol: Optional[str] = None
+    #: State THIS scan observed. The port's current state may differ.
+    state_at_scan: Optional[str] = None
+    service_name: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ScanHostSnapshot(BaseModel):
+    host_id: int
+    #: Addresses are stable, so this is both the as-scanned and current value.
+    ip_address: str
+    hostname_at_scan: Optional[str] = None
+    state_at_scan: Optional[str] = None
+    #: True when this scan is the one that first discovered the host.
+    host_created: bool = False
+    observed_port_count: int = 0
+    open_port_count: int = 0
+    ports: List[ScanPortSnapshot] = Field(default_factory=list)
+
+
+#: Ports listed per host row. Beyond this the row reports counts only — a scan
+#: of a host with 65k open ports must not produce a 65k-element row.
+_SNAPSHOT_PORT_CAP = 50
+
+
+@router.get(
+    "/{scan_id}/host-snapshots",
+    response_model=Paginated[ScanHostSnapshot],
+    responses={**_AUTH_RESPONSES, 404: {"description": "Scan not found"}},
+    summary="Hosts as this scan observed them",
+)
+def get_scan_host_snapshots(
+    scan_id: int,
+    state: Optional[str] = Query(
+        None, description="Filter on state_at_scan (the observed state, not the current one).",
+    ),
+    search: Optional[str] = Query(None, max_length=200),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """What this scan recorded, as it recorded it.
+
+    Every field is read from the observation tables (``HostScanHistory``,
+    ``PortScanHistory``), so the response is stable: re-running it after later
+    scans, or after a port is remediated, returns the same thing.  Use
+    ``GET /hosts/scan/{scan_id}`` for the hosts' *current* records.
+    """
+    scan = db.query(models.Scan).filter(
+        models.Scan.id == scan_id,
+        models.Scan.project_id == project.id,
+    ).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    base = (
+        db.query(models.HostScanHistory, models.Host)
+        .join(models.Host, models.Host.id == models.HostScanHistory.host_id)
+        .filter(models.HostScanHistory.scan_id == scan_id)
+    )
+    if state:
+        base = base.filter(models.HostScanHistory.state_at_scan == state)
+    if search:
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        base = base.filter(
+            or_(
+                models.Host.ip_address.ilike(like),
+                models.HostScanHistory.hostname_at_scan.ilike(like),
+            )
+        )
+
+    total = base.with_entities(func.count(models.HostScanHistory.id)).scalar() or 0
+    rows = (
+        base.order_by(models.Host.ip_address)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    host_ids = [host.id for _hist, host in rows]
+    ports_by_host: Dict[int, List[ScanPortSnapshot]] = {}
+    if host_ids:
+        # One query for the page's observed ports.  Joined to Port only for
+        # its identity columns (number/protocol/service); membership and state
+        # come from the observation.
+        port_rows = (
+            db.query(
+                models.Port.host_id,
+                models.Port.port_number,
+                models.Port.protocol,
+                models.Port.service_name,
+                models.PortScanHistory.state_at_scan,
+            )
+            .select_from(models.PortScanHistory)
+            .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
+            .filter(
+                models.PortScanHistory.scan_id == scan_id,
+                models.Port.host_id.in_(host_ids),
+            )
+            .order_by(models.Port.port_number)
+            .all()
+        )
+        for host_id, number, protocol, service, state_at_scan in port_rows:
+            ports_by_host.setdefault(host_id, []).append(
+                ScanPortSnapshot(
+                    port_number=number,
+                    protocol=protocol,
+                    state_at_scan=state_at_scan,
+                    service_name=service,
+                )
+            )
+
+    items = []
+    for hist, host in rows:
+        observed = ports_by_host.get(host.id, [])
+        items.append(ScanHostSnapshot(
+            host_id=host.id,
+            ip_address=host.ip_address,
+            hostname_at_scan=hist.hostname_at_scan,
+            state_at_scan=hist.state_at_scan,
+            host_created=bool(hist.host_created),
+            observed_port_count=len(observed),
+            open_port_count=sum(1 for p in observed if p.state_at_scan == "open"),
+            ports=observed[:_SNAPSHOT_PORT_CAP],
+        ))
+    return Paginated[ScanHostSnapshot].build(items, total, skip, limit)
+
 
 @router.get(
     "/{scan_id}/hosts/count",

@@ -15,19 +15,28 @@ COPY package*.json ./
 COPY generate-build-info.js ./
 
 # Install all dependencies (including dev dependencies for build).
-# Layered defense against npm bug #4828 ("Cannot find native binding"):
-#   1. Delete the in-container lockfile (repo copy untouched — SBOM
-#      still sources from it) so npm does a fresh per-platform resolve
-#      driven by package.json's version ranges.
-#   2. Pass --include=optional explicitly even though it's the default;
-#      some npm versions treat optional deps as best-effort otherwise.
-#   3. Verify the Tailwind v4 oxide binding actually loads.  If it
-#      doesn't, fall back to an explicit install of the matching
-#      platform-specific package (auto-detected via process.arch on
-#      Alpine = musl).  Failing fast HERE with a clear message beats
-#      letting Vite crash 8 layers later with a generic stack trace.
-RUN rm -f package-lock.json \
-    && npm install --include=optional --no-audit --no-fund \
+#
+# v5.184.0 — this used to `rm -f package-lock.json` first and run
+# `npm install`, so the image resolved its own dependency graph from
+# package.json's version ranges.  Three problems with that:
+#   * Production could resolve versions CI never tested — CI runs `npm ci`
+#     against the lockfile.
+#   * The SBOM at /references/sbom reads the repo lockfile that the build
+#     deliberately ignored, so it could report a graph that was never
+#     deployed — a false answer during vulnerability triage.
+#   * A rebuild of an old commit did not reproduce that commit's build.
+# The workaround dated from npm 9 and bug #4828 ("Cannot find native
+# binding"); node:22-alpine now ships npm 10.9.x, and the committed
+# lockfileVersion-3 file carries the musl platform entries this image needs
+# (@tailwindcss/oxide-linux-{x64,arm64}-musl, @rollup/rollup-*-musl), so
+# `npm ci` installs them directly.
+#
+# The verification + repair block below is KEPT: it costs one `require()`
+# and turns a missing binding into a clear failure here rather than a
+# generic Vite stack trace eight layers later.  It is now the exception
+# path, not the normal one — if it ever fires, the lockfile is wrong for
+# this platform and that is worth knowing.
+RUN npm ci --include=optional --no-audit --no-fund \
     && npm cache clean --force \
     && ( node -e "require('@tailwindcss/oxide')" \
          || ( echo "[Dockerfile] @tailwindcss/oxide native binding missing after install — repairing via explicit platform install (npm bug #4828 fallback)" \
