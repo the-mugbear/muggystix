@@ -24,7 +24,7 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.services.webhook_dispatcher import safe_dispatch
+from app.services.webhook_dispatcher import stage_dispatch
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -199,8 +199,11 @@ def bulk_assign(
             actor_id=current_user.id,
         ))
 
-    db.commit()
-
+    # v2.302.0 — staged BEFORE the commit, so the outbox row and the
+    # assignment land in the same transaction. Previously this ran after,
+    # which meant a crash in between lost the event and a rollback after
+    # dispatch would have announced an assignment that never happened.
+    #
     # v2.242.0 — the `host_assigned` webhook used to fire only from the
     # singular POST /hosts/{id}/assign route, which no UI ever called: every
     # assignment in the product goes through this bulk endpoint. So the event
@@ -221,7 +224,7 @@ def bulk_assign(
     }
     if len(host_ids) == 1:
         context["host_id"] = host_ids[0]
-    safe_dispatch(
+    stage_dispatch(
         db,
         project_id=project.id,
         event="host_assigned",
@@ -229,6 +232,7 @@ def bulk_assign(
         body=f"Assigned by @{current_user.username}",
         context=context,
     )
+    db.commit()
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))
 
 

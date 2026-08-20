@@ -176,12 +176,14 @@ class WebhookDelivery(Base):
     ``failed`` rather than vanishing, so "did that alert ever go out?" is
     answerable after the fact.
 
-    Honest limitation: the row is written just *after* the caller's own
-    commit, not inside it, because every dispatch site already commits before
-    dispatching. A crash in the microseconds between the two still loses the
-    event. Closing that fully means moving dispatch inside each caller's
-    transaction; this gets the large win (restart/outage/receiver-failure
-    durability) without reworking every call site.
+    v2.302.0 closed the last gap. The row used to be written just *after* the
+    caller's own commit, so a crash in between lost the event — and, worse in
+    the other direction, a caller that rolled back after dispatching had
+    already announced something that never happened. ``stage_dispatch`` now
+    adds the row to the **caller's** transaction and the first POST is fired
+    from an ``after_commit`` hook, so the outbox row and the change it
+    describes are atomic: each exists if and only if the other does, and
+    nothing leaves the process until the caller's work is durable.
     """
     __tablename__ = "webhook_deliveries"
 

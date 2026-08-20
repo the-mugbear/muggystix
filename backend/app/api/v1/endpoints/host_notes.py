@@ -31,7 +31,7 @@ from app.schemas.schemas import (
     NoteAttachmentOut,
 )
 from app.services.notification_service import NotificationService
-from app.services.webhook_dispatcher import safe_dispatch
+from app.services.webhook_dispatcher import stage_dispatch
 from app.services.host_follow_service import (
     HostFollowService, VALID_NOTE_TYPES, NoteHasRepliesError,
 )
@@ -383,6 +383,21 @@ def create_host_note(
         notification_service.notify_host_followers_of_note(
             note, current_user, project, exclude_user_ids=mentioned_ids,
         )
+        # v2.302.0 — staged INSIDE this transaction, immediately before the
+        # commit that makes the note real. The outbox row and the note are now
+        # atomic; the POST itself is fired from the after-commit hook, so the
+        # rollback below discards the intent along with the work. Previously
+        # this ran after the commit, leaving a window where a crash lost the
+        # event outright.
+        if mention_notifs:
+            stage_dispatch(
+                db,
+                project_id=project.id,
+                event="note_mention",
+                title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host.hostname or host.ip_address}",
+                body=(payload.body or "")[:280],
+                context={"host_id": host_id, "note_id": note.id},
+            )
         db.commit()
     except Exception as exc:
         logger.exception(
@@ -401,17 +416,9 @@ def create_host_note(
         )
         db.rollback()
 
-    # Outbound webhook — only when a mention actually fired and the
-    # commit succeeded.  Best-effort, post-commit (safe_dispatch swallows).
-    if mention_warning is None and mention_notifs:
-        safe_dispatch(
-            db,
-            project_id=project.id,
-            event="note_mention",
-            title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host.hostname or host.ip_address}",
-            body=(payload.body or "")[:280],
-            context={"host_id": host_id, "note_id": note.id},
-        )
+    # The webhook is staged above, inside the transaction. Nothing to do here:
+    # if the commit succeeded the after-commit hook has already handed the POST
+    # to the fast path; if it rolled back, the outbox row went with it.
 
     serialized = _serialize_note(note)
     if mention_warning:
@@ -568,6 +575,27 @@ def update_host_note(
                 new_status.value if hasattr(new_status, "value") else str(new_status),
                 current_user, project,
             )
+        # v2.302.0 — staged inside this transaction (see the create path).
+        host_label = host.hostname or host.ip_address
+        if mention_notifs:
+            stage_dispatch(
+                db,
+                project_id=project.id,
+                event="note_mention",
+                title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host_label}",
+                body=(payload.body or "")[:280],
+                context={"host_id": host_id, "note_id": note_id},
+            )
+        if status_changed:
+            ns = new_status.value if hasattr(new_status, "value") else str(new_status)
+            stage_dispatch(
+                db,
+                project_id=project.id,
+                event="note_status_change",
+                title=f"Note thread on {host_label} → {ns}",
+                body=(root.resolution_summary or "")[:280],
+                context={"host_id": host_id, "note_id": root.id, "status": ns},
+            )
         db.commit()
     except Exception:
         logger.exception(
@@ -585,27 +613,10 @@ def update_host_note(
         )
         db.rollback()
 
-    if mention_warning is None:
-        host_label = host.hostname or host.ip_address
-        if mention_notifs:
-            safe_dispatch(
-                db,
-                project_id=project.id,
-                event="note_mention",
-                title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host_label}",
-                body=(payload.body or "")[:280],
-                context={"host_id": host_id, "note_id": note_id},
-            )
-        if status_changed:
-            ns = new_status.value if hasattr(new_status, "value") else str(new_status)
-            safe_dispatch(
-                db,
-                project_id=project.id,
-                event="note_status_change",
-                title=f"Note thread on {host_label} → {ns}",
-                body=(root.resolution_summary or "")[:280],
-                context={"host_id": host_id, "note_id": root.id, "status": ns},
-            )
+    # Both webhooks are staged above, inside the transaction — the rollback in
+    # the except branch discards them along with the notifications, which is
+    # exactly the old `if mention_warning is None` guard, now enforced by the
+    # transaction instead of by a condition that could drift out of sync.
 
     # Response: the edited reply when the body changed (what the client
     # edited); otherwise the thread root (where the metadata lives).

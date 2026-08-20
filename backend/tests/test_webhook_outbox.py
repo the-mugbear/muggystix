@@ -50,9 +50,17 @@ def _no_real_http(monkeypatch):
 
 
 def _dispatch(db, project_id):
-    return wd.WebhookDispatcher(db).dispatch(
+    """Stage + commit, which is what a caller now does (v2.302.0).
+
+    ``stage()`` deliberately does not commit — the rows join the caller's
+    transaction so the outbox row and the change it announces are atomic. The
+    commit here stands in for the caller's own.
+    """
+    result = wd.WebhookDispatcher(db).stage(
         project_id=project_id, event="host_assigned", title="10.0.0.1 assigned to you",
     )
+    db.commit()
+    return result
 
 
 def _expire_lease(db):
@@ -291,15 +299,23 @@ def test_the_dead_senders_result_cannot_overwrite_the_new_owner(
 def test_queue_full_hands_the_row_straight_back_to_the_sweeper(
     db_session, test_project, webhook, monkeypatch
 ):
-    """When the fast path refuses the work it must drop the lease, or the
-    event sits idle for the full lease before anyone retries it."""
+    """When the fast path refuses the work the row must still be due now, or
+    the event sits idle until someone notices.
+
+    v2.302.0 — the queue-full decision moved AFTER the caller's commit (it is
+    made in the after-commit hook), so ``stage()`` cannot report it: at staging
+    time nobody knows yet whether the fast path will accept the work. The
+    accounting moved; the property that matters did not. `dropped` is therefore
+    0 here even though the fast path refused.
+    """
     def _full(_item):
         raise queue.Full()
 
     monkeypatch.setattr(wd._QUEUE, "put_nowait", _full)
 
     result = _dispatch(db_session, test_project.id)
-    assert result.dropped == 1
+    assert result.queued == 1
+    assert result.dropped == 0, "staging cannot know what the fast path will do"
 
     row = db_session.query(WebhookDelivery).one()
     db_session.refresh(row)
@@ -396,3 +412,58 @@ def test_retrying_an_already_queued_delivery_is_rejected(
         f"/api/v1/projects/{test_project.id}/webhooks/deliveries/{row.id}/retry",
     )
     assert resp.status_code == 409, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Transactional staging (v2.302.0)
+# ---------------------------------------------------------------------------
+
+def test_a_rolled_back_change_announces_nothing(
+    db_session, test_project, webhook, monkeypatch
+):
+    """The property the outbox was missing.
+
+    Rows used to be written in a commit of their own, necessarily AFTER the
+    caller had committed. So a caller that dispatched and then rolled back had
+    already announced something that never happened, and a crash between the
+    two commits lost the event outright. Staging inside the caller's
+    transaction makes the row and the change atomic in both directions.
+    """
+    sent = []
+    monkeypatch.setattr(wd._QUEUE, "put_nowait", lambda item: sent.append(item))
+
+    wd.WebhookDispatcher(db_session).stage(
+        project_id=test_project.id, event="host_assigned", title="never happened",
+    )
+    # Staged, not committed: visible in this transaction only.
+    assert db_session.query(WebhookDelivery).count() == 1
+
+    db_session.rollback()
+
+    assert db_session.query(WebhookDelivery).count() == 0, (
+        "the outbox row survived a rollback — the webhook would announce a "
+        "change that was never persisted"
+    )
+    assert sent == [], "a rolled-back transaction must not hand work to the fast path"
+
+
+def test_the_fast_path_fires_only_after_the_caller_commits(
+    db_session, test_project, webhook, monkeypatch
+):
+    """Nothing leaves the process until the caller's work is durable — the
+    other half of atomicity. A POST sent before the commit could beat the
+    change it describes to a receiver that then reads back stale state."""
+    sent = []
+    monkeypatch.setattr(wd._QUEUE, "put_nowait", lambda item: sent.append(item))
+
+    wd.WebhookDispatcher(db_session).stage(
+        project_id=test_project.id, event="host_assigned", title="real change",
+    )
+    assert sent == [], "staging must not send"
+
+    db_session.commit()
+    assert len(sent) == 1, "the after-commit hook did not hand off the delivery"
+    # The queued task carries the committed row's id, so the fast path and the
+    # sweeper are talking about the same row.
+    row = db_session.query(WebhookDelivery).one()
+    assert sent[0][3] == row.id

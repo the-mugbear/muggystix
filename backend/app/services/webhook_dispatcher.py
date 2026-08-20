@@ -16,14 +16,19 @@ exhausts ``max_attempts`` stays as ``failed`` rather than vanishing, so
 
 Before this, delivery was best-effort fire-and-forget: the payload lived
 only in a process-local queue and any network or HTTP failure was logged
-and dropped.  Callers still dispatch *after* their DB commit so a
-rolled-back transaction doesn't emit a webhook for work that didn't land —
-which means the outbox row is written just after that commit rather than
-inside it, leaving a microscopic crash window.  Closing that fully would
-require moving dispatch inside every caller's transaction; see
-``WebhookDelivery`` for why that trade was made.  The ``/test`` path still
-delivers synchronously (and is not persisted) so the UI shows immediate
-pass/fail.
+and dropped.
+
+v2.302.0 made the outbox **transactional**.  Callers used to dispatch after
+their own commit, which meant the row was written in a second commit just
+after the first: a crash in between lost the event, and a caller that rolled
+back after dispatching had already announced work that never landed.  Now
+``stage_dispatch`` adds the rows to the *caller's* session before its commit,
+and the first POST attempt is handed to the fast path by an ``after_commit``
+hook — so intent and change are atomic in both directions, and nothing is sent
+until the change is durable.  **Call it BEFORE ``db.commit()``.**
+
+The ``/test`` path still delivers synchronously (and is not persisted) so the
+UI shows immediate pass/fail.
 
 v2.91.2 (code review NEW D, Option A) — replaced the unbounded
 ``ThreadPoolExecutor`` work queue with a fixed-size ``queue.Queue`` +
@@ -38,7 +43,7 @@ was too slow under current load — not a backend error").  Drop
 notifications are coalesced per-(webhook_config, 5-minute window) so
 a sustained outage produces one actionable ping per window rather
 than flooding the bell.  Critical invariant: the drop-notification
-write does NOT itself fan out webhooks (only ``safe_dispatch`` does,
+write does NOT itself fan out webhooks (only ``stage_dispatch`` does,
 and it's a separate call path) — avoiding the drop → notify →
 webhook → drop loop.
 """
@@ -57,6 +62,7 @@ from typing import NamedTuple, Optional
 from urllib.parse import urlparse
 
 import httpx
+from sqlalchemy import event as sa_event
 from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
@@ -154,7 +160,8 @@ def _prune_drop_tracker_locked(now: float) -> None:
 
 
 def _record_dropped_delivery(
-    cfg: WebhookConfig, event: str, title: str,
+    *, cfg_id: int, cfg_url: str, cfg_name: str, created_by_id: Optional[int],
+    project_id: int, event: str, title: str,
 ) -> None:
     """Log + (coalesced) Notification when the bounded queue refuses a
     new delivery.  The notification is addressed to the webhook's
@@ -176,9 +183,9 @@ def _record_dropped_delivery(
     """
     logger.warning(
         "Webhook delivery dropped (queue full) cfg_id=%s url=%s event=%s",
-        cfg.id, cfg.url, event,
+        cfg_id, cfg_url, event,
     )
-    if cfg.created_by_id is None:
+    if created_by_id is None:
         return
     now = time.monotonic()
     should_notify = False
@@ -186,7 +193,7 @@ def _record_dropped_delivery(
     with _DROP_TRACKER_LOCK:
         _prune_drop_tracker_locked(now)
         entry = _DROP_TRACKER.setdefault(
-            cfg.id, {"last_notified": 0.0, "drops": 0.0},
+            cfg_id, {"last_notified": 0.0, "drops": 0.0},
         )
         entry["drops"] += 1
         if now - entry["last_notified"] > _DROP_COALESCE_WINDOW_SECONDS:
@@ -198,7 +205,7 @@ def _record_dropped_delivery(
         return
     plural = "s" if drop_count != 1 else ""
     body = (
-        f'The webhook "{cfg.name}" dropped {drop_count} event{plural} '
+        f'The webhook "{cfg_name}" dropped {drop_count} event{plural} '
         f"in the last few minutes because the delivery queue was full. "
         "This is a temporary backpressure signal — the receiver was too "
         "slow under current load, not a backend error.  If the action "
@@ -211,20 +218,20 @@ def _record_dropped_delivery(
     db = _session_module.SessionLocal()
     try:
         db.add(Notification(
-            user_id=cfg.created_by_id,
-            project_id=cfg.project_id,
+            user_id=created_by_id,
+            project_id=project_id,
             type="webhook_dropped",
             title="Webhook delivery dropped — receiver too slow",
             body=body,
             source_type="webhook",
-            source_id=cfg.id,
+            source_id=cfg_id,
             actor_id=None,
         ))
         db.commit()
     except Exception:
         db.rollback()
         logger.exception(
-            "Failed to write webhook-drop notification cfg_id=%s", cfg.id,
+            "Failed to write webhook-drop notification cfg_id=%s", cfg_id,
         )
     finally:
         db.close()
@@ -485,7 +492,7 @@ class WebhookDispatcher:
     def __init__(self, db: Session):
         self.db = db
 
-    def dispatch(
+    def stage(
         self,
         *,
         project_id: int,
@@ -494,15 +501,26 @@ class WebhookDispatcher:
         body: str = "",
         context: Optional[dict] = None,
     ) -> "DispatchResult":
-        """Queue delivery to every enabled webhook subscribed to ``event``.
+        """Add outbox rows to the CALLER'S transaction; send nothing yet.
 
-        Returns ``DispatchResult(queued, dropped)``.  Previously this returned
-        ``len(targets)`` — the number of webhooks it *intended* to send — so a
-        queue-full drop (still recorded as a user-visible Notification) was
-        reported to the caller as a successful send.  Returning the split lets
-        callers/tests observe loss.  Reads configs on the caller's session,
-        then hands each POST to the thread pool — the worker threads do no DB
-        work, so there's no cross-thread session sharing.
+        v2.302.0.  This used to be ``dispatch()``, which wrote the rows in a
+        commit of its own — necessarily *after* the caller had committed, since
+        every call site dispatched post-commit.  Two problems with that, and
+        the second is the worse one:
+
+        * a crash between the two commits lost the event outright;
+        * a caller whose transaction rolled back *after* dispatching had
+          already announced something that never happened.
+
+        Staging inside the caller's transaction makes the outbox row and the
+        change it describes atomic — each exists if and only if the other
+        does.  The first POST attempt is fired by the ``after_commit`` hook
+        (see ``_drain_pending``), so nothing leaves the process until the
+        caller's work is durable.
+
+        Returns ``DispatchResult(queued, dropped)`` where ``queued`` counts
+        rows STAGED — the send itself can still be deferred to the sweeper if
+        the fast-path queue is full at commit time.
         """
         configs = (
             self.db.query(WebhookConfig)
@@ -512,14 +530,8 @@ class WebhookDispatcher:
         targets = [c for c in configs if not c.events or event in c.events]
         if not targets:
             return DispatchResult(queued=0, dropped=0)
-        _ensure_workers()
         payload = build_payload(event, title, body, project_id, context)
 
-        # v2.233.0 — persist each intended POST BEFORE attempting it, so a
-        # crash, redeploy, or receiver outage can't make the event disappear.
-        # The in-process queue is now just the fast path: it carries the first
-        # attempt so latency is unchanged, and anything it can't deliver is
-        # picked up by sweep_pending_deliveries() on the worker tick.
         from app.db.models_project import WebhookDelivery, WebhookDeliveryStatus
 
         now = datetime.now(timezone.utc)
@@ -530,38 +542,30 @@ class WebhookDispatcher:
                 event=event,
                 payload=payload,
                 status=WebhookDeliveryStatus.PENDING.value,
-                # Due immediately. Pre-A6 this was leased into the future to
-                # hide the row from the sweeper while the fast path worked on
-                # it — necessary back when both senders decided by reading the
-                # status. Now that claiming is atomic, whoever gets there first
-                # wins and the other stands down, so hiding the row would only
-                # delay recovery if the fast path never ran.
+                # Due immediately: whoever claims it first wins, and claiming
+                # is atomic, so the sweeper is a safety net rather than a
+                # competitor. Leasing it into the future would only delay
+                # recovery if the fast path never ran.
                 next_attempt_at=now,
             )
             for cfg in targets
         ]
         self.db.add_all(rows)
-        self.db.commit()
+        # Flush — not commit — so the rows get ids to hand the fast path while
+        # still belonging to the caller's transaction.
+        self.db.flush()
 
-        queued = 0
-        dropped = 0
+        # Capture plain values now. After the commit these ORM objects are
+        # expired, and touching them from the hook would emit a fresh SELECT
+        # per row on a session the caller may already have closed.
+        pending = self.db.info.setdefault(_PENDING_KEY, [])
         for cfg, row in zip(targets, rows):
             secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
-            try:
-                _QUEUE.put_nowait((cfg.url, secret, payload, row.id))
-                queued += 1
-            except queue.Full:
-                # The fast path refused it, so drop the lease and make it due
-                # immediately — the sweeper is now the delivery path. This is a
-                # *deferral*, not a loss. The operator notification still fires:
-                # a receiver too slow to keep up in real time is worth knowing
-                # about even though the event will land.
-                row.next_attempt_at = now
-                _record_dropped_delivery(cfg, event, title)
-                dropped += 1
-        if dropped:
-            self.db.commit()  # persist the un-leased rows
-        return DispatchResult(queued=queued, dropped=dropped)
+            pending.append((
+                cfg.url, secret, payload, row.id,
+                cfg.id, cfg.name, cfg.created_by_id, cfg.project_id, event, title,
+            ))
+        return DispatchResult(queued=len(rows), dropped=0)
 
     def deliver_test(self, config: WebhookConfig) -> dict:
         """Synchronously deliver a test event and return the outcome —
@@ -581,23 +585,86 @@ class WebhookDispatcher:
             return {"ok": False, "error": str(exc)}
 
 
-def safe_dispatch(db: Session, **kwargs) -> None:
-    """Fire-and-forget dispatch that can never disturb the caller.
+# ---------------------------------------------------------------------------
+# Transactional outbox (v2.302.0)
+#
+# Outbox rows used to be written by ``dispatch()`` in a commit of their own,
+# just AFTER the caller had already committed its own work.  The model's
+# docstring said so plainly: "a crash in the microseconds between the two still
+# loses the event".  Worse than the window is the asymmetry — a caller whose
+# transaction rolled back after dispatching would have sent a webhook for
+# something that never happened.
+#
+# Now the rows join the caller's transaction: ``stage_dispatch`` adds them
+# WITHOUT committing, and the fast-path POST is fired from an ``after_commit``
+# hook.  Commit and delivery-intent are therefore atomic — the row exists if
+# and only if the change it describes exists — and a rollback discards both.
+#
+# The pending payloads live on ``session.info`` rather than in a closure, so
+# one pair of module-level listeners serves every session: a per-call listener
+# would have to be removed again on rollback, and a leaked one would fire on
+# some later unrelated commit and deliver an event whose row was rolled back.
+# ---------------------------------------------------------------------------
 
-    Webhooks are a side effect of a request that has already succeeded
-    (committed); a config-query error here must not surface to the user
-    or affect the response.  Swallow everything to the log.
+_PENDING_KEY = "_webhook_pending_sends"
+
+
+def _drain_pending(session) -> None:
+    """Hand every staged send to the fast path. Runs after the commit."""
+    pending = session.info.pop(_PENDING_KEY, None)
+    if not pending:
+        return
+    _ensure_workers()
+    for (url, secret, payload, row_id, cfg_id, cfg_name,
+         created_by_id, cfg_project_id, event, title) in pending:
+        try:
+            _QUEUE.put_nowait((url, secret, payload, row_id))
+        except queue.Full:
+            # A deferral, not a loss: the row is committed and due now, so the
+            # sweeper delivers it on the next tick. The operator notification
+            # still fires — a receiver too slow to keep up in real time is
+            # worth knowing about even though the event will land.
+            _record_dropped_delivery(
+                cfg_id=cfg_id, cfg_url=url, cfg_name=cfg_name,
+                created_by_id=created_by_id, project_id=cfg_project_id,
+                event=event, title=title,
+            )
+
+
+def _clear_pending(session, *args) -> None:
+    """Drop staged sends when the transaction they belonged to went away."""
+    session.info.pop(_PENDING_KEY, None)
+
+
+sa_event.listen(Session, "after_commit", _drain_pending)
+sa_event.listen(Session, "after_rollback", _clear_pending)
+sa_event.listen(Session, "after_soft_rollback", _clear_pending)
+
+
+def stage_dispatch(db: Session, **kwargs) -> None:
+    """Stage webhook deliveries inside the CALLER'S transaction.
+
+    Call this **before** ``db.commit()``, not after.  The outbox rows are added
+    to the caller's session and committed with the caller's own work, so the
+    intent to deliver and the change being announced are atomic: no window in
+    which one exists without the other, in either direction.
+
+    Nothing is sent here.  The first POST attempt is fired from an
+    ``after_commit`` hook, so a rollback silently discards both the rows and
+    the intent.
+
+    Never raises.  A webhook is a side effect of the user's request; a
+    misconfigured receiver or a config-query error must not fail the operation
+    that triggered it.  Note the failure mode this preserves: because staging
+    only *adds* to the session, an exception here leaves the caller's own work
+    intact to commit.
     """
     try:
-        result = WebhookDispatcher(db).dispatch(**kwargs)
-        if result.dropped:
-            logger.warning(
-                "Webhook dispatch for event=%s dropped %d of %d deliveries "
-                "(receiver too slow / queue full)",
-                kwargs.get("event"), result.dropped, result.queued + result.dropped,
-            )
+        WebhookDispatcher(db).stage(**kwargs)
     except Exception:
-        logger.warning("Webhook dispatch failed for event=%s", kwargs.get("event"), exc_info=True)
+        logger.warning(
+            "Webhook staging failed for event=%s", kwargs.get("event"), exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

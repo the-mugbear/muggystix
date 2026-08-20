@@ -171,7 +171,7 @@ def test_assigning_a_host_fires_the_host_assigned_webhook(
     sent = []
     import app.api.v1.endpoints.host_bulk as host_bulk
     monkeypatch.setattr(
-        host_bulk, "safe_dispatch",
+        host_bulk, "stage_dispatch",
         lambda db, **kw: sent.append(kw),
     )
 
@@ -201,7 +201,7 @@ def test_single_host_assign_webhook_keeps_the_simple_shape(
 ):
     sent = []
     import app.api.v1.endpoints.host_bulk as host_bulk
-    monkeypatch.setattr(host_bulk, "safe_dispatch", lambda db, **kw: sent.append(kw))
+    monkeypatch.setattr(host_bulk, "stage_dispatch", lambda db, **kw: sent.append(kw))
 
     pid = test_project.id
     member = _mk_user(db_session, "carol", member_of=pid)

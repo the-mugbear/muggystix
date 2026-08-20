@@ -30,7 +30,7 @@ def test_non_api_responses_are_not_forced_no_store(client):
 
 
 def test_dispatch_returns_split_result_no_targets(db_session, test_project):
-    res = WebhookDispatcher(db_session).dispatch(
+    res = WebhookDispatcher(db_session).stage(
         project_id=test_project.id, event="note_mention", title="t",
     )
     assert isinstance(res, DispatchResult)

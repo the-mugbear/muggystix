@@ -106,12 +106,24 @@ def webhook_cfg(db_session, test_project, webhook_creator):
 # ---------------------------------------------------------------------------
 
 
+def _drop(cfg, event, title):
+    """v2.302.0 — ``_record_dropped_delivery`` takes scalars now.
+
+    The queue-full decision moved into the after-commit hook, where the
+    session's ORM objects are expired; passing a live ``WebhookConfig`` there
+    would emit a SELECT per drop on a session the caller may have closed.
+    """
+    return webhook_dispatcher._record_dropped_delivery(
+        cfg_id=cfg.id, cfg_url=cfg.url, cfg_name=cfg.name,
+        created_by_id=cfg.created_by_id, project_id=cfg.project_id,
+        event=event, title=title,
+    )
+
+
 def test_drop_records_notification_for_creator(db_session, webhook_cfg, webhook_creator):
     """A single drop creates one Notification addressed to the webhook
     creator with the expected shape."""
-    webhook_dispatcher._record_dropped_delivery(
-        webhook_cfg, "note_mention", "Alice mentioned Bob",
-    )
+    _drop(webhook_cfg, "note_mention", "Alice mentioned Bob")
     notifs = (
         db_session.query(Notification)
         .filter(Notification.user_id == webhook_creator.id)
@@ -136,9 +148,7 @@ def test_drops_within_window_coalesce_to_one_notification(
     notification; subsequent drops increment an internal counter that
     surfaces on the NEXT notification (after the window closes)."""
     for i in range(5):
-        webhook_dispatcher._record_dropped_delivery(
-            webhook_cfg, "note_mention", f"event-{i}",
-        )
+        _drop(webhook_cfg, "note_mention", f"event-{i}")
     notifs = (
         db_session.query(Notification)
         .filter(Notification.user_id == webhook_creator.id)
@@ -167,9 +177,7 @@ def test_drop_without_creator_logs_only(db_session, test_project):
     )
     db_session.add(cfg)
     db_session.commit()
-    webhook_dispatcher._record_dropped_delivery(
-        cfg, "note_mention", "test",
-    )
+    _drop(cfg, "note_mention", "test")
     count = db_session.query(Notification).count()
     # The test_user fixture may have other Notification rows; assert
     # none target the orphan or carry source_id=cfg.id.
@@ -182,11 +190,18 @@ def test_drop_without_creator_logs_only(db_session, test_project):
 
 
 def test_dispatch_drops_when_queue_full(db_session, webhook_cfg, monkeypatch):
-    """End-to-end: when ``_QUEUE.put_nowait`` raises queue.Full, the
-    dispatch loop routes through ``_record_dropped_delivery``.  We
-    mock put_nowait rather than racing against the real daemon
-    workers (which would drain whatever we pre-loaded, leaving the
-    queue with capacity at the moment dispatch tries to put)."""
+    """End-to-end: when ``_QUEUE.put_nowait`` raises queue.Full, the drop is
+    reported through ``_record_dropped_delivery``.  We mock put_nowait rather
+    than racing against the real daemon workers (which would drain whatever we
+    pre-loaded, leaving the queue with capacity at the moment we try to put).
+
+    v2.302.0 — the fast-path handoff moved into the after-commit hook, so the
+    drop happens on ``db.commit()`` rather than inside the dispatch call, and
+    ``stage()`` cannot report it: at staging time nobody knows yet whether the
+    fast path will accept the work. The row is committed and due immediately,
+    so the sweeper delivers it — the drop notification exists to tell the
+    operator their receiver is too slow, not to report a lost event.
+    """
     import queue as _queue
     from app.services.webhook_dispatcher import WebhookDispatcher
 
@@ -196,16 +211,16 @@ def test_dispatch_drops_when_queue_full(db_session, webhook_cfg, monkeypatch):
     monkeypatch.setattr(webhook_dispatcher._QUEUE, "put_nowait", always_full)
 
     svc = WebhookDispatcher(db_session)
-    result = svc.dispatch(
+    result = svc.stage(
         project_id=webhook_cfg.project_id,
         event="note_mention",
         title="overflow",
         body="queue is wedged",
     )
-    # The one target was dropped (queue full): it counts as dropped, NOT queued.
-    # (Previously dispatch returned len(targets), reporting the drop as a send.)
-    assert result.queued == 0
-    assert result.dropped == 1
+    # One row STAGED. The drop is not visible here — it happens on commit.
+    assert result.queued == 1
+    assert result.dropped == 0
+    db_session.commit()  # stands in for the caller's own commit
     notifs = (
         db_session.query(Notification)
         .filter(Notification.source_id == webhook_cfg.id)
