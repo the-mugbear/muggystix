@@ -482,19 +482,28 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_segments": {
         "description": (
-            "Per-subnet rollup — hosts, critical/high counts and how many are "
-            "unassigned — sorted worst-first. Use it for \"where should we "
-            "look?\" and \"which segment is worst?\" instead of running a "
-            "count per subnet and comparing them yourself."
+            "Per-subnet rollup, worst-first: exposure (active findings by "
+            "severity, tier-weighted), neglect (unowned findings, unreviewed "
+            "and stale hosts), hygiene (end-of-life OS, certificate problems, "
+            "weak auth, risky services) and a recommended next action. Use it "
+            "for \"which segment is worst?\" and \"what is wrong with this "
+            "subnet?\" instead of counting per subnet yourself. Same numbers "
+            "as the Subnet Insights page. `no_coverage` marks a scoped range "
+            "where nothing was ever discovered — a scanning gap, NOT a clean "
+            "subnet. `adopted=false` means the project has no scoped subnets, "
+            "so this is not assessable — not that there are no problems. "
+            "Compare `total` with the number of subnets returned: the page is "
+            "capped, and you are seeing the worst ones, not all of them."
         ),
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/segments",
-        "query_params": ["limit"],
+        "query_params": ["limit", "offset"],
         "input_schema": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
             "additionalProperties": False,
         },
@@ -535,6 +544,35 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/patterns",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    "assist_list_ingestion_issues": {
+        "description": (
+            "Uploads that failed, are still in flight, or parsed but dropped "
+            "rows. CHECK THIS BEFORE REPORTING THAT SOMETHING IS ABSENT: 'no "
+            "web servers in that range' and 'the httpx upload failed to parse' "
+            "look identical from every other tool, and only one of them is a "
+            "finding about the network. kind=failed means nothing from that "
+            "file is in the project; kind=degraded means the file IS in the "
+            "project but rows were dropped, so counts drawn from it are "
+            "undercounts (everything else reports that job as completed); "
+            "queued/processing mean data is still arriving. If has_issues is "
+            "false, an empty result elsewhere is a real absence."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/ingestion-issues",
+        "query_params": ["limit"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+            },
+            "additionalProperties": False,
+        },
+    },
+    # No screenshot-download tool. Note attachments and EyeWitness web-interface
+    # captures both return image bytes, and the agent's job with an image is to
+    # save it next to the report, not read it into context. assist_get_finding
+    # and assist_get_host hand out the download paths to curl.
     "assist_get_finding": {
         "description": (
             "One finding with the evidence behind it — the note a human wrote "

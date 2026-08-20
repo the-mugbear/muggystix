@@ -21,6 +21,32 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.56.0",
+        "app_version": "2.297.0",
+        "summary": (
+            "Completeness of the picture (assist P2). INGESTION ISSUES "
+            "(`/assist/ingestion-issues`): the prompt now tells the agent to "
+            "check this BEFORE reporting that anything is absent — 'no web "
+            "servers in that range' and 'the httpx upload failed to parse' "
+            "produce the same empty result from every other tool, and only one "
+            "of them is a finding about the network. It also names the quiet "
+            "case, `kind=degraded`: a file that parsed and IS in the project "
+            "but had rows dropped, so counts from it are undercounts while the "
+            "job still reads as completed. SEGMENTS (`/assist/segments`): the "
+            "bullet now describes the real payload — exposure, neglect and "
+            "hygiene per subnet with a recommended action — because the "
+            "endpoint stopped hand-rolling its rollup and now wraps the "
+            "service behind the Subnet Insights page; it also warns that "
+            "`no_coverage` is a scanning gap rather than a clean subnet, and "
+            "that a capped page shows the worst subnets, not all of them. "
+            "WEB INTERFACES: `/assist/hosts/<id>` now returns what a host is "
+            "serving (url, title, server banner, technologies) plus a "
+            "screenshot download path per EyeWitness capture — a second "
+            "screenshot store from note attachments, captured automatically at "
+            "ingest, so it exists for hosts nobody has written a note about."
+        ),
+    },
+    {
         "version": "1.55.0",
         "app_version": "2.294.0",
         "summary": (

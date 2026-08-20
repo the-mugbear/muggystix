@@ -933,3 +933,31 @@ def test_the_analysis_tools_round_trip_through_the_loopback(client, test_project
     missing = call("assist_get_finding", {"finding_id": 999_999}, rid=42)
     assert missing["isError"] is True
     assert "not found" in missing["content"][0]["text"].lower()
+
+
+def test_the_p2_tools_round_trip_through_the_loopback(client, test_project):
+    """v2.297.0 — ingestion issues and the reshaped segments tool.
+
+    ``assist_list_segments`` changed shape (a bare list became an envelope) and
+    gained an ``offset`` param the registry has to declare; the registry
+    restates every endpoint by hand, so an undeclared param is silently dropped
+    rather than rejected — the caller gets page one and no error.
+    """
+    body = _start_session(client, test_project.id)
+    headers = {"X-API-Key": body["api_key"]}
+
+    def call(name, args=None, rid=1):
+        return _rpc(client, {
+            "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+            "params": {"name": name, "arguments": args or {}},
+        }, headers=headers).json()["result"]
+
+    issues = call("assist_list_ingestion_issues", rid=50)
+    assert issues["isError"] is False, issues
+    assert "has_issues" in issues["content"][0]["text"]
+
+    segments = call("assist_list_segments", {"limit": 5, "offset": 0}, rid=51)
+    assert segments["isError"] is False, segments
+    # The envelope, not a bare list — `total` is what tells the agent whether
+    # it is looking at the whole estate or the worst of it.
+    assert "adopted" in segments["content"][0]["text"]

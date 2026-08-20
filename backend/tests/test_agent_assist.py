@@ -889,20 +889,22 @@ def test_segments_rank_the_network_so_the_agent_does_not_have_to(
 ):
     """"Which segment is worst?" was a count per subnet reassembled client-side
     — arithmetic an agent does silently and sometimes wrongly. The ordering is
-    the answer, so the server does it."""
-    from app.db import models
+    the answer, so the server does it.
+
+    v2.297.0 — the seed changed from raw ``Vulnerability`` rows to **active
+    Findings**, because the endpoint now wraps ``compute_subnet_insights`` and
+    that is what every other surface counts. An untriaged scanner row is not
+    yet a finding, and the agent should not rank segments by one.
+    """
     from app.db.models import Host, Scope, Subnet, HostSubnetMapping
-    from app.db.models_vulnerability import (
-        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
-    )
+    from app.db.models_findings import Finding, FindingHost
 
     scope = Scope(name="s", project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     quiet = Subnet(scope_id=scope.id, cidr="10.20.0.0/24", description="quiet")
     noisy = Subnet(scope_id=scope.id, cidr="10.21.0.0/24", description="noisy")
-    scan = models.Scan(project_id=test_project.id, filename="s.xml", tool_name="nmap")
-    db_session.add_all([quiet, noisy, scan])
+    db_session.add_all([quiet, noisy])
     db_session.commit()
 
     for subnet, ip, critical in (
@@ -914,25 +916,28 @@ def test_segments_rank_the_network_so_the_agent_does_not_have_to(
         db_session.refresh(h)
         db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=subnet.id))
         if critical:
-            db_session.add(
-                Vulnerability(
-                    host_id=h.id, scan_id=scan.id, title=f"c-{ip}",
-                    severity=VulnerabilitySeverity.CRITICAL,
-                    source=VulnerabilitySource.NESSUS, plugin_id=f"p-{ip}",
-                )
+            f = Finding(
+                project_id=test_project.id, title=f"c-{ip}", severity="critical",
+                status="open", source="manual",
             )
+            db_session.add(f)
+            db_session.commit()
+            db_session.add(FindingHost(finding_id=f.id, host_id=h.id))
     db_session.commit()
 
     headers = _assist(client, test_project.id)
-    segments = client.get("/api/v1/agent/assist/segments", headers=headers).json()
+    body = client.get("/api/v1/agent/assist/segments", headers=headers).json()
+    segments = body["subnets"]
     by_cidr = {s["cidr"]: s for s in segments}
 
-    assert by_cidr["10.21.0.0/24"]["critical_hosts"] == 2
-    assert by_cidr["10.20.0.0/24"]["critical_hosts"] == 0
+    assert by_cidr["10.21.0.0/24"]["exposure"]["by_severity"]["critical"] == 2
+    assert by_cidr["10.20.0.0/24"]["exposure"]["by_severity"]["critical"] == 0
     # Worst first — the ordering IS the answer to "where should we look?".
     assert segments[0]["cidr"] == "10.21.0.0/24"
-    # Nobody owns any of them yet, which is the other half of the question.
-    assert by_cidr["10.21.0.0/24"]["unassigned_hosts"] == 2
+    # Nobody owns any of them yet, which is the other half of the question —
+    # now under `neglect`, alongside unreviewed hosts and staleness.
+    assert by_cidr["10.21.0.0/24"]["neglect"]["unowned_active_findings"] == 2
+    assert by_cidr["10.21.0.0/24"]["neglect"]["unreviewed_hosts"] == 2
 
 
 def test_recent_notes_answer_what_the_team_has_been_doing(
@@ -1169,4 +1174,199 @@ def test_attachment_download_is_project_scoped(client, db_session, test_project,
 
     headers = _assist(client, test_project.id)
     resp = client.get(f"/api/v1/agent/assist/attachments/{att.id}", headers=headers)
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# P2 — completeness of the picture (v2.297.0)
+# ---------------------------------------------------------------------------
+
+def test_segments_agree_with_the_subnet_insights_page(client, db_session, test_project):
+    """The rollup must be the service's, not a second implementation of it.
+
+    The hand-rolled version counted raw Vulnerability rows (every other surface
+    counts active Findings) and read HostSubnetMapping directly, which
+    double-counts a host that sits in two overlapping scoped ranges. An agent
+    quoting a number no page will ever show is the failure this pins.
+    """
+    from app.db.models import Scope, Subnet
+    from app.services.subnet_insight_service import compute_subnet_insights
+
+    scope = Scope(project_id=test_project.id, name="segments-parity")
+    db_session.add(scope)
+    db_session.commit()
+    # Deliberately overlapping: a /16 and a /24 inside it. This is the shape
+    # that made the old implementation count the same host twice.
+    for cidr in ("10.20.0.0/16", "10.20.5.0/24"):
+        db_session.add(Subnet(scope_id=scope.id, cidr=cidr))
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    resp = client.get("/api/v1/agent/assist/segments", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["adopted"] is True
+
+    expected = compute_subnet_insights(db_session, test_project.id, limit=25, offset=0)
+    assert body["total"] == expected["total"]
+    assert body["totals"]["hosts_in_scope"] == expected["totals"]["hosts_in_scope"]
+    assert [s["cidr"] for s in body["subnets"]] == [s["cidr"] for s in expected["subnets"]]
+    # The blocks the P2 item existed for.
+    first = body["subnets"][0]
+    for block in ("exposure", "neglect", "hygiene", "recommended_action"):
+        assert block in first, f"{block} missing from the segment payload"
+    # eol_os_detail is the per-host list; "which hosts are EOL here" is a q=
+    # filter, and carrying it per subnet per page is context spent on data the
+    # agent can ask for.
+    assert "eol_os_detail" not in first["hygiene"]
+    assert "eol_os_hosts" in first["hygiene"]
+
+
+def test_segments_report_not_assessable_rather_than_clean(client, test_project):
+    """No scoped subnets means the analysis cannot run. Returning an empty list
+    would read as "no problem segments", which is the reassuring wrong answer."""
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/segments", headers=headers).json()
+    assert body["adopted"] is False
+    assert body["subnets"] == []
+    assert "scope" in (body["reason"] or "").lower()
+
+
+def test_ingestion_issues_separates_absent_from_never_parsed(
+    client, db_session, test_project
+):
+    """The point of the tool: "no data" and "the upload failed" must not look
+    the same. A failed job and its ParseError are ONE upload — reporting both
+    would inflate the count and read as two broken files."""
+    from app.db import models
+
+    err = models.ParseError(
+        project_id=test_project.id, filename="httpx-out.json",
+        file_type="httpx_json", error_type="parsing_error",
+        error_message="Expecting value: line 1 column 1",
+        user_message="This file isn't valid JSON — check the httpx -json flag.",
+        status="unresolved",
+    )
+    db_session.add(err)
+    db_session.commit()
+    db_session.add(models.IngestionJob(
+        project_id=test_project.id, filename="httpx-out.json",
+        original_filename="httpx-out.json", storage_path="/tmp/httpx-out.json",
+        status="failed", tool_name="httpx", parse_error_id=err.id,
+        error_message="parser raised",
+    ))
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
+
+    assert body["has_issues"] is True
+    assert body["failed"] == 1
+    # The ParseError is claimed by the job, so it is NOT listed again.
+    assert body["unresolved_parse_errors"] == 0
+    assert len(body["issues"]) == 1
+    issue = body["issues"][0]
+    assert issue["kind"] == "failed"
+    # The job's own "parser raised" is useless to an operator; the parse
+    # error's user-facing message is what gets folded in.
+    assert "valid JSON" in issue["message"]
+
+
+def test_ingestion_issues_surfaces_a_completed_but_degraded_upload(
+    client, db_session, test_project
+):
+    """The quiet case. The job says completed and every other surface agrees,
+    but rows were dropped — so counts drawn from it are undercounts."""
+    from app.db import models
+
+    db_session.add(models.IngestionJob(
+        project_id=test_project.id, filename="eyewitness.zip",
+        original_filename="eyewitness.zip", storage_path="/tmp/eyewitness.zip",
+        status="completed", tool_name="eyewitness", skipped_count=30,
+        parser_warnings="30 rows missing a url column",
+    ))
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
+    assert body["degraded"] == 1
+    assert body["has_issues"] is True
+    issue = next(i for i in body["issues"] if i["kind"] == "degraded")
+    assert issue["skipped_count"] == 30
+    assert "incomplete" in issue["message"]
+
+
+def test_ingestion_issues_is_quiet_when_nothing_is_wrong(client, test_project):
+    """has_issues=false is what lets the agent report an absence as real."""
+    headers = _assist(client, test_project.id)
+    body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
+    assert body["has_issues"] is False
+    assert body["issues"] == []
+
+
+def test_host_detail_carries_web_interfaces_and_screenshot_references(
+    client, db_session, test_project
+):
+    """A write-up could say a host serves HTTP but nothing about what it
+    serves. Screenshots follow the attachment contract: a path, never bytes."""
+    from app.db import models
+
+    host = models.Host(project_id=test_project.id, ip_address="10.30.0.9", state="up")
+    db_session.add(host)
+    db_session.flush()
+    scan = models.Scan(project_id=test_project.id, filename="ew.zip", tool_name="eyewitness")
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(models.WebInterface(
+        host_id=host.id, scan_id=scan.id, project_id=test_project.id,
+        source="eyewitness", url="https://10.30.0.9/admin", port=443,
+        status_code=200, title="Router admin", server_header="lighttpd/1.4",
+        technologies=["lighttpd 1.4", "jQuery"],
+        screenshot_path=f"{scan.id}/admin.png",
+    ))
+    db_session.add(models.WebInterface(
+        host_id=host.id, scan_id=scan.id, project_id=test_project.id,
+        source="httpx", url="http://10.30.0.9/", port=80, status_code=301,
+    ))
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    body = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers).json()
+
+    interfaces = body["web_interfaces"]
+    assert len(interfaces) == 2
+    # Screenshotted first — those are the ones a report can show.
+    shot = interfaces[0]
+    assert shot["title"] == "Router admin"
+    assert shot["technologies"] == ["lighttpd 1.4", "jQuery"]
+    assert shot["screenshot_download_path"] == (
+        f"/api/v1/agent/assist/web-interfaces/{shot['id']}/screenshot"
+    )
+    # httpx records the interface without a capture — null, not a dead path.
+    assert interfaces[1]["screenshot_download_path"] is None
+
+
+def test_web_screenshot_download_is_project_scoped(client, db_session, test_project):
+    """Same boundary as the attachment download: another engagement's capture
+    must be indistinguishable from one that doesn't exist."""
+    from app.db import models
+    from app.db.models_project import Project
+
+    other = Project(name="Other engagement", slug="other-engagement-c")
+    db_session.add(other)
+    db_session.commit()
+    scan = models.Scan(project_id=other.id, filename="theirs.zip", tool_name="eyewitness")
+    db_session.add(scan)
+    db_session.flush()
+    iface = models.WebInterface(
+        scan_id=scan.id, project_id=other.id, source="eyewitness",
+        url="https://10.99.0.1/", screenshot_path=f"{scan.id}/theirs.png",
+    )
+    db_session.add(iface)
+    db_session.commit()
+
+    headers = _assist(client, test_project.id)
+    resp = client.get(
+        f"/api/v1/agent/assist/web-interfaces/{iface.id}/screenshot", headers=headers,
+    )
     assert resp.status_code == 404

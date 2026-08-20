@@ -19,8 +19,8 @@ behind their own approval/confirmation surface.
 """
 
 import json
-from datetime import datetime
-from typing import List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -62,6 +62,7 @@ from app.services.agent_environment_probe_service import apply_environment_probe
 from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.systemic_insight_service import compute_systemic_insights
+from app.services.subnet_insight_service import compute_subnet_insights
 
 router = APIRouter()
 
@@ -646,10 +647,48 @@ def download_assist_hosts_ndjson(
     )
 
 
+class AssistWebInterface(BaseModel):
+    """A web service observed on this host, and the screenshot of it if one
+    was captured.
+
+    v2.297.0.  Web interfaces were reachable through the `has:web` DSL filter
+    but their content — the page title, the server banner, the EyeWitness
+    screenshot — was not exposed to assist at all, so a write-up could say a
+    host serves HTTP and nothing about what it serves.
+    """
+    id: int
+    url: str
+    port: Optional[int] = None
+    status_code: Optional[int] = None
+    title: Optional[str] = None
+    server_header: Optional[str] = None
+    technologies: List[str] = []
+    #: Present only when EyeWitness captured a PNG.  Same contract as note
+    #: attachments: a path to curl to disk, never bytes in a tool result.
+    screenshot_download_path: Optional[str] = None
+
+
+class AssistHostDetail(HostDetail):
+    """Assist's host detail — ``HostDetail`` plus what the host is serving.
+
+    A subclass rather than a field on the shared schema: ``HostDetail`` is also
+    the recon/plan browse payload, and those workflows have no use for
+    screenshot download paths.
+    """
+    web_interfaces: List[AssistWebInterface] = []
+
+
+#: Per host. Enough to characterise what a host serves without turning a host
+#: lookup into a page dump; `assist_list_hosts` with `has:web` finds the rest.
+_WEB_INTERFACE_CAP = 10
+#: Technology lists come from Wappalyzer and can run long on a CMS.
+_TECH_CAP = 12
+
+
 @router.get(
     "/assist/hosts/{host_id}",
-    response_model=HostDetail,
-    summary="Host detail with full open-port list",
+    response_model=AssistHostDetail,
+    summary="Host detail with open ports and the web services it exposes",
 )
 def get_assist_host(
     request: Request,
@@ -674,7 +713,40 @@ def get_assist_host(
     _, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
     follow_map = _operator_follow_map(db, [host.id], session.started_by_id)
-    return HostDetail(
+
+    web_rows = (
+        db.query(models.WebInterface)
+        .filter(
+            models.WebInterface.host_id == host.id,
+            models.WebInterface.project_id == session.project_id,
+        )
+        # Screenshotted interfaces first — those are the ones a report can
+        # show — then by port for a stable order.
+        .order_by(
+            models.WebInterface.screenshot_path.is_(None),
+            models.WebInterface.port.asc(),
+        )
+        .limit(_WEB_INTERFACE_CAP)
+        .all()
+    )
+    web_interfaces = [
+        AssistWebInterface(
+            id=w.id,
+            url=w.url,
+            port=w.port,
+            status_code=w.status_code,
+            title=w.title,
+            server_header=w.server_header,
+            technologies=[str(t) for t in (w.technologies or [])][:_TECH_CAP],
+            screenshot_download_path=(
+                f"/api/v1/agent/assist/web-interfaces/{w.id}/screenshot"
+                if w.screenshot_path else None
+            ),
+        )
+        for w in web_rows
+    ]
+
+    return AssistHostDetail(
         id=host.id,
         ip_address=host.ip_address,
         hostname=host.hostname,
@@ -694,6 +766,7 @@ def get_assist_host(
         else None,
         follow=follow_map.get(host.id),
         ports=port_briefs,
+        web_interfaces=web_interfaces,
     )
 
 
@@ -1259,90 +1332,164 @@ def list_assist_host_testing(
 
 
 class AssistSegment(BaseModel):
-    """One subnet, with the numbers that decide where to look next."""
+    """One subnet, with the numbers that decide where to look next.
+
+    v2.297.0 — the exposure / neglect / hygiene blocks come straight from
+    ``compute_subnet_insights``; see the endpoint for why this stopped being
+    hand-rolled.
+    """
     cidr: str
     description: Optional[str] = None
     scope_name: Optional[str] = None
+    site: Optional[str] = None
     labels: List[str] = []
+    criticality_tier: Optional[int] = None
     host_count: int = 0
-    critical_hosts: int = 0
-    high_hosts: int = 0
-    unassigned_hosts: int = 0
+    #: A scoped range where nothing was ever discovered — a coverage signal,
+    #: not a clean subnet.  Distinct from "scanned and found nothing".
+    no_coverage: bool = False
+    exposure: Dict[str, Any] = {}
+    neglect: Dict[str, Any] = {}
+    hygiene: Dict[str, Any] = {}
+    recommended_action: Dict[str, str] = {}
+
+
+class AssistSegmentsResponse(BaseModel):
+    """Worst-first subnets plus the project-wide totals they roll up into."""
+    adopted: bool
+    #: Subnets in the project.  Compare with ``len(subnets)`` — the page is
+    #: capped, and a truncated list must not read as the whole estate.
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    totals: Dict[str, Any] = {}
+    subnets: List[AssistSegment] = []
+    reason: Optional[str] = None
 
 
 @router.get(
     "/assist/segments",
-    response_model=List[AssistSegment],
+    response_model=AssistSegmentsResponse,
     summary="Per-subnet rollup — where the problems are concentrated",
 )
 def list_assist_segments(
     request: Request,
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(require_assist_scope),
     db: Session = Depends(get_db),
 ):
-    """"Which part of the network is worst?"
+    """"Which part of the network is worst?" — and what is wrong with it.
 
-    v2.293.0.  Assist could list scope CIDRs and count hosts one query at a
-    time, so comparing segments meant a query per subnet and reassembling the
-    comparison client-side — the sort of arithmetic an agent does silently and
-    sometimes wrongly. Sorted worst-first (criticals, then highs, then size),
-    because the ordering IS the answer to the question.
+    v2.293.0 introduced this as a hand-rolled rollup.  v2.297.0 replaced the
+    body with ``compute_subnet_insights`` — the service that already backs the
+    Subnet Insights page — rather than adding a second per-subnet tool beside
+    it.  Two tools answering "which segment is worst" with different numbers is
+    worse than one, and the hand-rolled version was the one that was wrong:
+
+    * It counted raw ``Vulnerability`` rows.  Every other surface — posture,
+      the Subnet Insights page, the reports — counts **active Findings**, the
+      triaged spine.  So the agent quoted a number no page would ever show.
+    * It read ``HostSubnetMapping`` directly, and a host maps to *every*
+      containing subnet.  Scope a /16 and a /24 inside it — an ordinary way to
+      scope an engagement — and every host in the /24 was counted twice.
+      ``compute_subnet_insights`` resolves each host to its most-specific
+      subnet, so the per-subnet counts sum to the project total.
+    * It fired a query per subnet for hosts, another for severities and another
+      for assignment, then sorted only the arbitrary first ``limit`` subnets it
+      happened to load.  The sort is now over the whole estate, and the page is
+      taken after it.
+
+    What the payload carries per subnet:
+
+    * ``exposure`` — active findings by severity, and a tier-weighted score
+      (a finding in a tier-1 segment outranks the same finding in a lab).
+    * ``neglect`` — unowned findings, unreviewed hosts, median host age,
+      stale-host count.  Exposure says how bad it is; neglect says whether
+      anyone is looking.
+    * ``hygiene`` — EOL OS, certificate problems, weak/guest auth, risky
+      services with the ports behind them.  This is the "this subnet is
+      out of date" material, per subnet.
+    * ``recommended_action`` — the loudest component turned into a next step.
+
+    ``no_coverage=true`` marks a scoped range where nothing was ever
+    discovered.  That is a **scanning gap**, not a clean subnet; reporting it
+    as "no issues" inverts its meaning.
+
+    ``adopted=false`` means the project has no scoped subnets, so there is
+    nothing to segment by — "not assessable", not "no problems".  ``total`` is
+    the subnet count; when it exceeds the page you are seeing the worst ones,
+    not all of them.
     """
     session = _load_assist_session(db, request)
     pid = session.project_id
 
-    subnets = (
-        db.query(models.Subnet, models.Scope.name)
-        .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
-        .filter(models.Scope.project_id == pid)
-        .limit(limit)
-        .all()
-    )
-    if not subnets:
-        return []
-
-    out: List[AssistSegment] = []
-    for subnet, scope_name in subnets:
-        host_ids = [
-            hid for (hid,) in db.query(models.HostSubnetMapping.host_id)
-            .filter(models.HostSubnetMapping.subnet_id == subnet.id).all()
-        ]
-        critical = high = unassigned = 0
-        if host_ids:
-            sev_rows = (
-                db.query(Vulnerability.host_id, Vulnerability.severity)
-                .filter(Vulnerability.host_id.in_(host_ids))
-                .distinct()
-                .all()
-            )
-            critical = len({h for h, sev in sev_rows if _sev_name(sev) == "critical"})
-            high = len({h for h, sev in sev_rows if _sev_name(sev) == "high"})
-            assigned = {
-                h for (h,) in db.query(models.HostFollow.host_id)
-                .filter(
-                    models.HostFollow.host_id.in_(host_ids),
-                    models.HostFollow.assigned_at.isnot(None),
-                ).all()
-            }
-            unassigned = len(set(host_ids) - assigned)
-        out.append(
-            AssistSegment(
-                cidr=subnet.cidr,
-                description=subnet.description,
-                scope_name=scope_name,
-                labels=sorted(
-                    {a.label.name for a in (subnet.label_assignments or [])
-                     if a.label and a.label.name}
-                ),
-                host_count=len(host_ids),
-                critical_hosts=critical,
-                high_hosts=high,
-                unassigned_hosts=unassigned,
-            )
+    insights = compute_subnet_insights(db, pid, limit=limit, offset=offset)
+    if not insights.get("adopted"):
+        return AssistSegmentsResponse(
+            adopted=False, total=0, limit=limit, offset=offset,
+            reason=(
+                "No scoped subnets for this project, so there is nothing to "
+                "segment by. Define a scope with subnets to enable it."
+            ),
         )
-    out.sort(key=lambda s: (-s.critical_hosts, -s.high_hosts, -s.host_count))
-    return out
+
+    page = insights.get("subnets", [])
+    # Description and labels aren't part of the insight record, and both are
+    # how an operator refers to a segment ("the DMZ") — and `label:` is a DSL
+    # predicate the agent can pivot on.  One batched query for the page rather
+    # than widening the shared service for assist's benefit.
+    subnet_ids = [row["subnet_id"] for row in page]
+    descriptions: Dict[int, Optional[str]] = {}
+    labels: Dict[int, List[str]] = {}
+    if subnet_ids:
+        for sid, desc in (
+            db.query(models.Subnet.id, models.Subnet.description)
+            .filter(models.Subnet.id.in_(subnet_ids)).all()
+        ):
+            descriptions[sid] = desc
+        for sid, name in (
+            db.query(models.SubnetLabelAssignment.subnet_id, models.SubnetLabel.name)
+            .join(
+                models.SubnetLabel,
+                models.SubnetLabel.id == models.SubnetLabelAssignment.label_id,
+            )
+            .filter(models.SubnetLabelAssignment.subnet_id.in_(subnet_ids))
+            .all()
+        ):
+            if name:
+                labels.setdefault(sid, []).append(name)
+
+    subnets = [
+        AssistSegment(
+            cidr=row["cidr"],
+            description=descriptions.get(row["subnet_id"]),
+            scope_name=row.get("scope_name"),
+            site=row.get("site"),
+            labels=sorted(labels.get(row["subnet_id"], [])),
+            criticality_tier=row.get("criticality_tier"),
+            host_count=row.get("host_count", 0),
+            no_coverage=row.get("no_coverage", False),
+            exposure=row.get("exposure", {}),
+            neglect=row.get("neglect", {}),
+            # eol_os_detail is the per-host list behind the EOL count. Dropped:
+            # "which hosts are EOL in this subnet" is a `q=` filter the agent
+            # already has, and carrying up to 10 host records per subnet per
+            # page is context spent on data it can ask for when it needs it.
+            hygiene={k: v for k, v in row.get("hygiene", {}).items()
+                     if k != "eol_os_detail"},
+            recommended_action=row.get("recommended_action", {}),
+        )
+        for row in page
+    ]
+    return AssistSegmentsResponse(
+        adopted=True,
+        total=insights.get("total", 0),
+        limit=limit,
+        offset=offset,
+        totals=insights.get("totals", {}),
+        subnets=subnets,
+    )
 
 
 class AssistRecentNote(BaseModel):
@@ -1677,6 +1824,204 @@ def get_assist_patterns(
 
 
 # ---------------------------------------------------------------------------
+# Ingestion issues (v2.297.0)
+#
+# Why this is a tool and not a page link: every other assist tool answers a
+# question about the data.  This one answers "should I trust that the data is
+# all here?".  Without it, an empty result is indistinguishable from an upload
+# that never parsed, and the agent reports the first with no way to suspect the
+# second — the single most confident-sounding wrong answer this surface can
+# produce.
+# ---------------------------------------------------------------------------
+
+class AssistIngestionIssue(BaseModel):
+    """One upload that failed, is still in flight, or landed incomplete."""
+    #: ``failed`` (the worker gave up), ``degraded`` (parsed, but rows were
+    #: dropped) or ``parse_error`` (a recorded failure with no job row).
+    kind: str
+    filename: str
+    tool_name: Optional[str] = None
+    file_type: Optional[str] = None
+    #: What to tell the operator — the user-facing parse message where one
+    #: exists, otherwise the worker's error.
+    message: Optional[str] = None
+    #: Rows the parser dropped while still reporting success.  Non-zero means
+    #: this file is IN the project but thinner than the file on disk.
+    skipped_count: int = 0
+    parser_warnings: Optional[str] = None
+    job_id: Optional[int] = None
+    parse_error_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+
+class AssistIngestionIssues(BaseModel):
+    queued: int = 0
+    processing: int = 0
+    failed: int = 0
+    degraded: int = 0
+    unresolved_parse_errors: int = 0
+    #: True when anything at all is wrong or pending — the one field to check
+    #: before concluding "there is no data for that".
+    has_issues: bool = False
+    issues: List[AssistIngestionIssue] = []
+    total_issues: int = 0
+
+
+@router.get(
+    "/assist/ingestion-issues",
+    response_model=AssistIngestionIssues,
+    summary="Uploads that failed, stalled, or landed incomplete",
+)
+def list_assist_ingestion_issues(
+    request: Request,
+    limit: int = Query(25, ge=1, le=100),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """"Is the data actually all here?"
+
+    v2.297.0.  Check this before reporting an absence.  "No web servers in that
+    range" and "the httpx upload failed to parse" produce the identical empty
+    result from every other tool on this surface, and only one of them is a
+    finding about the network.
+
+    Three kinds, deliberately distinguished:
+
+    * ``failed`` — the worker gave up on the file. Nothing from it is in the
+      project.
+    * ``degraded`` — the file parsed and its data IS in the project, but the
+      parser dropped rows (``skipped_count``). Counts drawn from it are
+      undercounts, and this is invisible everywhere else: the job says
+      "completed".
+    * ``parse_error`` — a recorded parse failure with no surviving job row.
+
+    ``queued`` / ``processing`` are uploads still in flight. They are not
+    errors, but they mean the picture is incomplete *right now*, which is the
+    same practical warning.
+
+    If ``has_issues`` is false, an empty result elsewhere is a real absence and
+    can be reported as one. If it is true, say what is missing before drawing a
+    conclusion from what is present.
+    """
+    session = _load_assist_session(db, request)
+    pid = session.project_id
+
+    status_counts = dict(
+        db.query(models.IngestionJob.status, func.count(models.IngestionJob.id))
+        .filter(models.IngestionJob.project_id == pid)
+        .group_by(models.IngestionJob.status)
+        .all()
+    )
+
+    failed_jobs = (
+        db.query(models.IngestionJob)
+        .filter(
+            models.IngestionJob.project_id == pid,
+            models.IngestionJob.status == "failed",
+        )
+        .order_by(models.IngestionJob.created_at.desc())
+        .all()
+    )
+    degraded_jobs = (
+        db.query(models.IngestionJob)
+        .filter(
+            models.IngestionJob.project_id == pid,
+            models.IngestionJob.status == "completed",
+            models.IngestionJob.skipped_count > 0,
+        )
+        .order_by(models.IngestionJob.created_at.desc())
+        .all()
+    )
+
+    # A failed job usually carries a parse_error_id, so listing both tables
+    # unfiltered would report the same upload twice under two names.  Fold the
+    # parse error's user-facing message into the job row and list only the
+    # parse errors no job points at.
+    claimed_error_ids = {
+        j.parse_error_id for j in failed_jobs if j.parse_error_id is not None
+    }
+    error_messages: Dict[int, str] = {}
+    if claimed_error_ids:
+        error_messages = {
+            eid: (msg or "")
+            for eid, msg in db.query(models.ParseError.id, models.ParseError.user_message)
+            .filter(models.ParseError.id.in_(claimed_error_ids)).all()
+        }
+
+    orphan_query = (
+        db.query(models.ParseError)
+        .filter(
+            models.ParseError.project_id == pid,
+            models.ParseError.status == "unresolved",
+        )
+    )
+    if claimed_error_ids:
+        orphan_query = orphan_query.filter(
+            ~models.ParseError.id.in_(claimed_error_ids)
+        )
+    orphan_errors = orphan_query.order_by(models.ParseError.created_at.desc()).all()
+
+    issues: List[AssistIngestionIssue] = []
+    for j in failed_jobs:
+        issues.append(AssistIngestionIssue(
+            kind="failed",
+            filename=j.original_filename or j.filename,
+            tool_name=j.tool_name,
+            message=(
+                error_messages.get(j.parse_error_id)
+                or j.error_message
+                or j.last_error
+            ),
+            job_id=j.id,
+            parse_error_id=j.parse_error_id,
+            created_at=j.created_at,
+        ))
+    for j in degraded_jobs:
+        issues.append(AssistIngestionIssue(
+            kind="degraded",
+            filename=j.original_filename or j.filename,
+            tool_name=j.tool_name,
+            message=(
+                f"Parsed, but {j.skipped_count} row(s) were dropped — data "
+                "from this file is incomplete."
+            ),
+            skipped_count=j.skipped_count or 0,
+            parser_warnings=j.parser_warnings,
+            job_id=j.id,
+            created_at=j.created_at,
+        ))
+    for e in orphan_errors:
+        issues.append(AssistIngestionIssue(
+            kind="parse_error",
+            filename=e.filename,
+            file_type=e.file_type,
+            message=e.user_message or e.error_message,
+            parse_error_id=e.id,
+            created_at=e.created_at,
+        ))
+
+    # Newest first, with undated rows last rather than first — reverse-sorting
+    # a "is None" flag would float them to the top, which is the opposite of
+    # what "most recent" means to a reader.
+    _oldest = datetime.min.replace(tzinfo=timezone.utc)
+    issues.sort(key=lambda i: i.created_at or _oldest, reverse=True)
+    queued = int(status_counts.get("queued", 0) or 0)
+    processing = int(status_counts.get("processing", 0) or 0)
+    return AssistIngestionIssues(
+        queued=queued,
+        processing=processing,
+        failed=len(failed_jobs),
+        degraded=len(degraded_jobs),
+        unresolved_parse_errors=len(orphan_errors),
+        has_issues=bool(issues) or queued > 0 or processing > 0,
+        # total_issues is the unpaginated count; `issues` is capped, so a
+        # truncated list must not read as the complete set.
+        total_issues=len(issues),
+        issues=issues[:limit],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Finding detail — the evidence behind one finding (v2.294.0)
 # ---------------------------------------------------------------------------
 
@@ -1966,3 +2311,66 @@ def download_assist_attachment(
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Attachment file missing on disk")
     return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)
+
+
+@router.get(
+    "/assist/web-interfaces/{interface_id}/screenshot",
+    summary="Download an EyeWitness screenshot of a web interface",
+)
+def download_assist_web_screenshot(
+    request: Request,
+    interface_id: int = Path(..., ge=1),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """The second screenshot store, given the same treatment as note
+    attachments.
+
+    v2.297.0.  Note attachments are evidence an analyst chose to record;
+    EyeWitness screenshots are captured automatically at ingest and live in a
+    separate store (``web_interfaces.screenshot_path``). A write-up showing
+    what an exposed admin panel actually looks like usually wants this one.
+
+    Also not an MCP tool, for the same reason: it returns a PNG, and the
+    agent's job is to save it beside the report. ``assist_get_host`` hands out
+    the paths.
+
+    Project-scoped and path-checked against the screenshot root, mirroring the
+    operator-facing route (which requires a JWT an agent does not have).
+    """
+    from pathlib import Path as FsPath
+    from app.core.config import settings
+
+    session = _load_assist_session(db, request)
+    row = (
+        db.query(models.WebInterface)
+        .filter(
+            models.WebInterface.id == interface_id,
+            models.WebInterface.project_id == session.project_id,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Web interface not found in this project")
+    if not row.screenshot_path:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No screenshot captured for this interface — httpx and "
+                "CSV-only EyeWitness uploads record the interface without one."
+            ),
+        )
+
+    base = (FsPath(settings.UPLOAD_DIR) / "web_screenshots").resolve()
+    try:
+        target = (base / row.screenshot_path).resolve()
+        target.relative_to(base)
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="Screenshot path invalid")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Screenshot file missing on disk")
+    return FileResponse(
+        path=str(target),
+        media_type="image/png",
+        filename=f"web-interface-{row.id}.png",
+    )

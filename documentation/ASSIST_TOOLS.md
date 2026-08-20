@@ -22,8 +22,10 @@ Every tool is text in the model's context on every session.
 
 | | tools | payload |
 |---|---|---|
-| Full catalog (all workflows) | 47 | ~40 KB (~10k tokens) |
-| An assist session sees | 26 | ~21 KB (~5.2k tokens) |
+| Full catalog (all workflows) | 48 | ~40 KB (~10k tokens) |
+| An assist session sees | 27 | ~22 KB (~5.4k tokens) |
+
+*(Measured after P2 via `tool_list_payload(workflow="assist")`, not estimated.)*
 
 That is affordable now and it grows linearly with the tool count. So the test
 for a new tool is **"is this a distinct question shape?"** — not "is this a
@@ -80,7 +82,7 @@ could write about an engagement.
 
 | Question | Tool | Status |
 |---|---|---|
-| Which segment is worst | `assist_list_segments` | **have** |
+| Which segment is worst, and what is wrong with it | `assist_list_segments` | **have** (rebuilt 2.297.0) |
 | What has nobody picked up | `assist_list_findings?unowned=true`, `assist_count_hosts` with `assigned:none` | **have** |
 | What is the project's attention profile — exposure vs neglect | `assist_get_posture` | **have** (2.294.0) |
 | What's gone stale — untriaged backlog, unreviewed hosts | `assist_get_posture` | **have** (2.294.0) |
@@ -99,6 +101,29 @@ A second endpoint would have been the same numbers under a second name — the
 exact "five tools the agent has to combine" failure this document's review rule
 exists to prevent. One tool, and the review rule caught its own violation.
 
+### `assist_get_subnet_insights` was queued too — and became a rewrite instead
+
+P2 item 5 was written as a new per-subnet tool. Rule 3 killed it the same way:
+`assist_list_segments` already answered "which segment is worst", so shipping
+both would have left two tools ranking subnets with **different numbers** —
+and the older one was the wrong one:
+
+* It counted raw `Vulnerability` rows. Posture, the Subnet Insights page and
+  the reports all count **active Findings**, the triaged spine. The agent was
+  quoting a figure no page would ever show.
+* It read `HostSubnetMapping` directly, and `find_matching_subnets` returns
+  *every* containing subnet. Scope a /16 and a /24 inside it — an ordinary way
+  to scope an engagement — and every host in the /24 was counted twice.
+  `compute_subnet_insights` resolves each host to its most-specific subnet.
+* It fired three queries per subnet, then sorted only the arbitrary first
+  `limit` subnets it happened to load — so "worst-first" was worst-of-a-slice.
+
+So the endpoint's body was replaced with `compute_subnet_insights` and the
+hygiene, neglect and exposure blocks came along with it. Tool count unchanged;
+one wrong answer retired. The rule was written to prevent surface sprawl, and
+it keeps finding correctness bugs instead — a hand-rolled duplicate of a
+service is where a page and an agent quietly start disagreeing.
+
 ---
 
 ## Stage 3 — Understand state: "what do we know about this?"
@@ -113,11 +138,19 @@ Largely done. This is the stage the surface was originally built for.
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` | **have** |
 | What the team tested, and what it showed | `assist_get_host_testing` | **have** |
 | What values this project uses | `assist_get_vocabulary` | **have** |
-| Which uploads failed to parse | `assist_list_ingestion_issues` | **queue P2** |
+| Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
+| What a host is actually serving on the web | `assist_get_host` → `web_interfaces` | **have** (2.297.0) |
 
 **`assist_list_ingestion_issues`** matters more than it sounds: without it, "no
 data for that range" is indistinguishable from "the upload didn't parse", and
 the agent reports the first with no way to suspect the second.
+
+Building it turned up a third case worth its own kind. A job that **completed**
+having silently dropped rows (`skipped_count`) is in the project and reads as
+healthy everywhere else, so counts drawn from it are undercounts with nothing
+anywhere to say so. `kind=degraded` names it. A failed job and its `ParseError`
+are folded into one row — they are one upload, and listing both would report
+two broken files where there is one.
 
 ---
 
@@ -134,7 +167,7 @@ Posture hub.
 | How far each condition has spread (systemic vs isolated) | `assist_get_patterns` → `conditions` | **have** (2.294.0) |
 | Root cause + recommended control, per condition family | `assist_get_patterns` → `family_summary` | **have** (2.294.0) |
 | Per-subnet diagnostic profile | `assist_get_patterns` → `diagnostic_profiles` | **have** (2.294.0) |
-| Per-subnet hygiene detail — EOL OS, weak TLS, SMB signing, weak auth | `assist_get_subnet_insights` | **queue P2** |
+| Per-subnet hygiene detail — EOL OS, weak TLS, SMB signing, weak auth | `assist_list_segments` | **have** (2.297.0) |
 
 One tool (`assist_get_patterns`) rather than five: `compute_systemic_insights`
 returns all of it in one pass, and splitting it would make the agent issue five
@@ -196,8 +229,13 @@ key, not a session. It is project-scoped and path-checked against the
 attachments root, and deliberately **not** an MCP tool: it returns an image, and
 the agent's job with it is to save it, not to read it into context.
 
-Web-interface screenshots (Eyewitness) are a second, separate store
-(`web_interfaces.screenshot_path`) — same treatment, queued with P2.
+Web-interface screenshots (EyeWitness) are a second, separate store
+(`web_interfaces.screenshot_path`), and got the same treatment in 2.297.0:
+`assist_get_host` returns a `screenshot_download_path` per captured interface,
+served by `GET /assist/web-interfaces/{id}/screenshot`. The distinction is
+worth keeping in mind when writing up — note attachments are evidence an
+analyst *chose* to record, while these are captured automatically at ingest, so
+they exist for hosts nobody has written a note about yet.
 
 ---
 
@@ -211,20 +249,32 @@ Web-interface screenshots (Eyewitness) are a second, separate store
 3. ✅ `assist_get_posture` — headline condition + signals + remediation flow + per-site decomposition.
 4. ❌ `assist_get_attention` — **dropped**, subsumed by posture (see Stage 2).
 
-**P2 — completeness of the picture.**
+**P2 — completeness of the picture. ✅ Shipped in 2.297.0** (backend 2.297.0,
+prompt 1.56.0), as **one** new tool rather than three:
 
-5. `assist_get_subnet_insights` — per-subnet EOL / TLS / SMB-signing / weak-auth detail.
-6. `assist_list_ingestion_issues` — parse failures, so "no data" can be told from "no successful upload".
-7. Web-interface screenshot references (`web_interfaces.screenshot_path`).
+5. ✅ Per-subnet EOL / TLS / weak-auth / exposure / neglect detail — **not** a new
+   tool. `assist_list_segments` stopped hand-rolling its rollup and now wraps
+   `compute_subnet_insights` (see Stage 2). Tool count unchanged.
+6. ✅ `assist_list_ingestion_issues` — failed, in-flight and *degraded* uploads,
+   so "no data" can be told from "no successful upload".
+7. ✅ Web-interface screenshots — **not** a tool either. `assist_get_host` now
+   returns each interface (url, title, server banner, technologies) with a
+   `screenshot_download_path`; `GET /assist/web-interfaces/{id}/screenshot`
+   serves the PNG to a key-authenticated caller. Same contract as note
+   attachments: a path to curl, never bytes in a tool result.
 
 **P3 — needs design, not a wrapper.**
 
 8. Time-series: "what changed since the last scan / last week". Buildable from
    `HostScanHistory` + finding status history; nothing computes it today.
 
-The surface now sits at **26 tools / ~21 KB**, and P2 would land it near 29.
+The surface sits at **27 tools / ~22 KB** — under the ~29 this section
+predicted, because two of the three P2 items turned out not to be tools at all:
+one folded into an existing endpoint, one is a payload field plus a download.
 That is the ceiling I would want to stop at without revisiting the
-specific-vs-general trade-off in §"context is not free".
+specific-vs-general trade-off in §"context is not free". **P3 must not be a
+28th tool by reflex** — check first whether "what changed" belongs on
+`assist_get_posture` as a delta block.
 
 ---
 
