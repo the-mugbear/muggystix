@@ -67,14 +67,66 @@
   .min-w-xl { min-width: 36rem; }
   .min-w-2xl { min-width: 42rem; }
 
-  /* Rescue the `sm:`-prefixed responsive variants of the colliding
-   * sizing keys (the unprefixed rules above don't cover these). */
-  @media (min-width: 640px) {
+  /* Rescue the breakpoint-prefixed responsive variants of the colliding
+   * sizing keys (the unprefixed rules above don't cover these).
+   *
+   * Every breakpoint needs its own block: Tailwind emits a separate rule
+   * per variant, and each one is shadowed by the spacing scale
+   * independently. Rescuing only `sm:` is what let `md:max-w-sm` ship as
+   * a 12-pixel column on the Security Posture page — the reasons list
+   * collapsed to zero content width and its text overflowed the card one
+   * word per line. That is the third time this collision has shipped a
+   * visible layout break, hence the guard test in
+   * `src/tests/styles/containerScaleRescue.test.ts`: it fails if a source
+   * file uses a `{breakpoint}:max-w-*` / `min-w-*` on a colliding key
+   * that this block does not cover. */
+  @media (min-width: 40rem) {
     .sm\:max-w-xs { max-width: 20rem; }
     .sm\:max-w-sm { max-width: 24rem; }
     .sm\:max-w-md { max-width: 28rem; }
     .sm\:max-w-lg { max-width: 32rem; }
     .sm\:max-w-xl { max-width: 36rem; }
+    .sm\:min-w-xs { min-width: 20rem; }
+    .sm\:min-w-sm { min-width: 24rem; }
+    .sm\:min-w-md { min-width: 28rem; }
+    .sm\:min-w-lg { min-width: 32rem; }
+    .sm\:min-w-xl { min-width: 36rem; }
+  }
+  @media (min-width: 48rem) {
+    .md\:max-w-xs { max-width: 20rem; }
+    .md\:max-w-sm { max-width: 24rem; }
+    .md\:max-w-md { max-width: 28rem; }
+    .md\:max-w-lg { max-width: 32rem; }
+    .md\:max-w-xl { max-width: 36rem; }
+    .md\:min-w-xs { min-width: 20rem; }
+    .md\:min-w-sm { min-width: 24rem; }
+    .md\:min-w-md { min-width: 28rem; }
+    .md\:min-w-lg { min-width: 32rem; }
+    .md\:min-w-xl { min-width: 36rem; }
+  }
+  @media (min-width: 64rem) {
+    .lg\:max-w-xs { max-width: 20rem; }
+    .lg\:max-w-sm { max-width: 24rem; }
+    .lg\:max-w-md { max-width: 28rem; }
+    .lg\:max-w-lg { max-width: 32rem; }
+    .lg\:max-w-xl { max-width: 36rem; }
+    .lg\:min-w-xs { min-width: 20rem; }
+    .lg\:min-w-sm { min-width: 24rem; }
+    .lg\:min-w-md { min-width: 28rem; }
+    .lg\:min-w-lg { min-width: 32rem; }
+    .lg\:min-w-xl { min-width: 36rem; }
+  }
+  @media (min-width: 80rem) {
+    .xl\:max-w-xs { max-width: 20rem; }
+    .xl\:max-w-sm { max-width: 24rem; }
+    .xl\:max-w-md { max-width: 28rem; }
+    .xl\:max-w-lg { max-width: 32rem; }
+    .xl\:max-w-xl { max-width: 36rem; }
+    .xl\:min-w-xs { min-width: 20rem; }
+    .xl\:min-w-sm { min-width: 24rem; }
+    .xl\:min-w-md { min-width: 28rem; }
+    .xl\:min-w-lg { min-width: 32rem; }
+    .xl\:min-w-xl { min-width: 36rem; }
   }
 }
 

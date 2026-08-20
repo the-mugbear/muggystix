@@ -15,9 +15,7 @@ import {
   updateProject,
   Project,
   AgentResponse,
-  AgentCreateResponse,
   getProjectAgents,
-  createAgent,
   deactivateAgent,
   rotateAgentKey,
 } from '../services/api';
@@ -57,7 +55,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -160,10 +157,8 @@ const ProjectSettings: React.FC = () => {
   const [agent, setAgent] = useState<AgentResponse | null>(null);
   const [allAgents, setAllAgents] = useState<AgentResponse[]>([]);
   const [agentLoading, setAgentLoading] = useState(false);
-  const [createAgentOpen, setCreateAgentOpen] = useState(false);
-  const [agentName, setAgentName] = useState('');
-  const [agentDescription, setAgentDescription] = useState('');
-  const [creatingAgent, setCreatingAgent] = useState(false);
+  // Still set by key rotation, which is the one path that surfaces a new
+  // plaintext key now that agent creation has no UI.
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [apiKeyCopied, setApiKeyCopied] = useState(false);
 
@@ -243,26 +238,6 @@ const ProjectSettings: React.FC = () => {
   };
 
   // Agent management
-  const handleCreateAgent = async () => {
-    if (!agentName.trim()) return;
-    setCreatingAgent(true);
-    try {
-      const result: AgentCreateResponse = await createAgent({
-        name: agentName.trim(),
-        description: agentDescription.trim() || undefined,
-      });
-      setAgent(result);
-      setNewApiKey(result.api_key);
-      setAgentName('');
-      setAgentDescription('');
-      setCreateAgentOpen(false);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to create agent.'));
-    } finally {
-      setCreatingAgent(false);
-    }
-  };
-
   const handleDeactivateAgent = async () => {
     if (!agent) return;
     const ok = await confirm({
@@ -731,11 +706,16 @@ const ProjectSettings: React.FC = () => {
               <Bot className="size-5" aria-hidden /> AI Agents
               {allAgents.length > 0 && <Badge variant="muted">{allAgents.length}</Badge>}
             </CardTitle>
-            {!agent && (
-              <Button size="sm" onClick={() => setCreateAgentOpen(true)}>
-                Create My Agent
-              </Button>
-            )}
+            {/* No "create" affordance by design (v5.181.0). Every workflow —
+                assist, recon, plan generation, execution — auto-provisions the
+                per-user agent row on first session start, so nothing here ever
+                needed to be clicked first. What the button actually did was
+                mint an UNSCOPED key: one bound to no session and no plan, which
+                `require_plan_scope` still admits to every /agent/test-plans/*
+                endpoint for any plan in the project. That is wider authority
+                than the session dialogs hand out, offered under a label that
+                read like setup. This card stays as the place to see, rotate and
+                revoke what exists. */}
           </CardHeader>
           <CardContent>
             {newApiKey && (
@@ -846,51 +826,6 @@ const ProjectSettings: React.FC = () => {
           </CardContent>
         </Card>
       )}
-
-      {/* Create Agent Dialog */}
-      <Dialog
-        open={createAgentOpen}
-        onOpenChange={(next) => !next && !creatingAgent && setCreateAgentOpen(false)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create AI Agent</DialogTitle>
-            <DialogDescription>
-              Create an AI agent for this project. The agent will receive an API key for
-              programmatic access to project data.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-md">
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="agent-name">Agent Name</Label>
-              <Input
-                id="agent-name"
-                value={agentName}
-                onChange={(e) => setAgentName(e.target.value)}
-                required
-                autoFocus
-              />
-            </div>
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="agent-desc">Description</Label>
-              <Textarea
-                id="agent-desc"
-                rows={2}
-                value={agentDescription}
-                onChange={(e) => setAgentDescription(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateAgentOpen(false)} disabled={creatingAgent}>
-              Cancel
-            </Button>
-            <Button onClick={handleCreateAgent} disabled={creatingAgent || !agentName.trim()}>
-              {creatingAgent ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Creating…</> : 'Create'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Create Project Dialog */}
       <Dialog open={createOpen} onOpenChange={(next) => !next && !creating && setCreateOpen(false)}>

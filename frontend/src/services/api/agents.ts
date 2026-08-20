@@ -26,23 +26,18 @@ export interface AgentResponse {
   api_key_prefix?: string;
 }
 
-export interface AgentCreateResponse extends AgentResponse {
-  api_key: string;
-}
-
 export interface AgentKeyRotateResponse {
   api_key: string;
   message: string;
 }
 
-export const createAgent = async (data: {
-  name: string;
-  description?: string;
-  rate_limit_rpm?: number;
-}): Promise<AgentCreateResponse> => {
-  const response = await api.post(`${p()}/agents/`, data);
-  return response.data;
-};
+/* `createAgent` (POST /agents/) was removed here in v5.181.0 along with the
+ * "Create My Agent" button, its only caller. Nothing needs it: all four agent
+ * workflows auto-provision the per-user agent row when a session starts. The
+ * endpoint itself is unchanged and still reachable by script — it mints an
+ * unscoped key, which is deliberately a different (and broader) thing than the
+ * per-session keys the UI hands out, and not something to offer behind a
+ * button that reads like setup. */
 
 export const getProjectAgents = async (): Promise<AgentResponse[]> => {
   const response = await api.get(`${p()}/agents/`);
