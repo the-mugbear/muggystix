@@ -155,8 +155,57 @@ the existing staleness reaper handles sessions someone walked away from.
 
 `key_expires_at` is already surfaced through `/agent/identity` and the assist
 start payload, so the agent can see its own deadline. The prompt should instruct
-it to **renew before starting anything it expects to outlast the key** — which is
-the only approach that survives a long silent scan.
+it to **renew before starting anything it expects to outlast the key**.
+
+#### The failure mode that actually happens, and why prevention is not enough
+
+An operator starts a recon session. The agent launches nmap / masscan / Nessus
+and **blocks**, waiting hours. The key expires while it waits. The agent
+discovers this **at upload** — after the scanning is done, at the exact moment
+the work is about to be delivered.
+
+Prevention cannot be made reliable here, for two independent reasons:
+
+* **A blocked agent cannot call anything.** While it sits in a foreground tool
+  invocation it issues no requests, so no heartbeat, keep-alive or
+  activity-based extension can fire. This is the same reason idle-based sliding
+  expiry fails — restated, and it also defeats the staleness reaper's usual
+  definition of "alive".
+* **Scan duration is not predictable.** "Renew before a long operation" helps,
+  but the agent cannot know that a `-p-` sweep across a /16 will take nine hours
+  rather than one, and even a renewed key can be outlasted.
+
+So the design rule is:
+
+> **Expiry must never be terminal while the session is active. It must be
+> recoverable using the expired key itself.**
+
+The cost of getting this wrong is not an inconvenience — it is hours of scanning
+discarded because a credential lapsed while the tool it authorised was running.
+
+**Mechanism**
+
+1. `renew` accepts an **expired** key, provided its session is still active and
+   the expiry falls inside a grace window. It returns the *same* token with a
+   new deadline, so the pending upload can simply be retried.
+2. `401` becomes **machine-distinguishable**: recoverable (expired, session
+   live, renewable — carrying the renew path) versus terminal (revoked, session
+   ended, agent deactivated). Today it is a flat
+   `401 "Agent API key expired"`, which gives an agent holding hours of output
+   no way to tell whether retrying is worth anything.
+3. The prompt teaches the recovery loop explicitly: on a recoverable 401, renew,
+   then **retry the upload** — never discard collected output, never re-run the
+   scan.
+4. Optional prevention on top: an agent that is about to block may declare the
+   expected duration and have its deadline extended ahead of time. Useful, but
+   it is the belt, not the braces.
+
+**The trade-off, stated plainly.** If an expired key can renew itself, expiry
+stops being a revocation control; **ending the session becomes the control.**
+That is already immediate and operator-driven, and it fits the trust model this
+document adopts — but it should be a conscious choice, not a side effect. The
+grace window bounds how long an abandoned key stays renewable, and every renewal
+is audited.
 
 ---
 
@@ -274,6 +323,11 @@ can reach, so authorization must be in place first, and the deletions come last.
   only used rotation because renewal did not exist for plan keys. Rotation has
   exactly one honest use left (the secret is believed compromised), which is a
   revoke-and-restart, not a mid-run continuation.
+* **Renewal must accept an expired key** while its session is active — see the
+  failure-mode analysis above. An agent blocked on a multi-hour scan finds out
+  its key lapsed only when it tries to upload, and by then the work is done.
+* **Split the 401** into recoverable vs terminal so the agent can tell whether
+  retrying is worth anything.
 * Independently valuable: fixes a live gap for recon runs over 24h, and can land
   before any other phase.
 
@@ -339,3 +393,7 @@ in the session dialog, stated plainly rather than buried:
    Intended, or should auditors get no agent at all?
 2. **Absolute key cap** — with session-bound lifetime, what is the maximum a
    session may live before it must be restarted? 168h is today's cap.
+3. **Renewal grace window** — how long after expiry may an expired key still
+   renew itself while its session is active? This bounds how long an abandoned
+   key stays recoverable. A long Nessus run against a large scope is the case to
+   size it against, so it wants to be generous — days, not hours.
