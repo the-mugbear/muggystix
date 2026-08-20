@@ -404,7 +404,14 @@ def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     ids = []
     for v in values:
         if not v.isdigit():
-            raise DSLError(f"scan: expects a numeric id, got '{v}'")
+            # The operator almost certainly typed the filename — that's what
+            # they know the upload by.  Say where the id lives instead of just
+            # restating the type.
+            raise DSLError(
+                f"scan: expects a numeric id, got '{v}'. Keep typing the "
+                "filename and autocomplete will offer the matching id, or read "
+                "it off the Scans page (shown as #id next to the filename)."
+            )
         ids.append(int(v))
     return P.scan_predicate(ctx.db, ids)
 
@@ -541,7 +548,9 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("assigned", _b_assigned, aliases=["assignee"],
               description="Host assignment — “me”, “any”, “none”, a username, or a user id."),
     FieldSpec("scan", _b_scan, value_source="scan",
-              description="A scan that observed the host — by numeric id."),
+              description="A scan that observed the host — by numeric id. Type the "
+                          "filename after “scan:” and autocomplete will find the id "
+                          "(the Scans page lists ids too)."),
     FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS),
               description="Derived boolean flag — takes one of the values below.",
               enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),

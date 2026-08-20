@@ -34,6 +34,10 @@ export interface HostCommandBarProps {
   onCopyLink: (q?: string) => void;
   /** Optional facet values per value_source (ports/services/os/tags/…). */
   valueSuggestions?: Record<string, string[]>;
+  /** Optional human label per facet value, keyed by value_source then value.
+   *  For fields whose stored value isn't what an operator knows them by —
+   *  `scan:` takes a numeric id, but they came here knowing the filename. */
+  valueLabels?: Record<string, Record<string, string>>;
 }
 
 const COMMIT_DEBOUNCE_MS = 450;
@@ -49,6 +53,7 @@ function buildSuggestions(
   draft: string,
   fields: HostQueryField[],
   valueSuggestions: Record<string, string[]> | undefined,
+  valueLabels: Record<string, Record<string, string>> | undefined,
 ): { display: string; insert: string }[] {
   const { token } = lastToken(draft);
   if (!token) return [];
@@ -73,16 +78,31 @@ function buildSuggestions(
     spec.enum_values.length > 0
       ? spec.enum_values
       : (valueSuggestions?.[spec.value_source] ?? []);
+  // A value's human label, from the schema (enum fields carry their own) or
+  // from the page (facet values whose stored form isn't what an operator
+  // knows them by — `scan:` is an id, but nobody remembers scan 33).
+  const labelFor = (v: string): string | undefined =>
+    spec.enum_descriptions?.[v] ?? valueLabels?.[spec.value_source]?.[v];
   return pool
-    .filter((v) => v.toLowerCase().includes(partial))
+    // Match the label too, so typing what you actually know — `scan:openvas`
+    // — finds the id you don't. Without this, an id-valued field is only
+    // searchable by the one thing the operator came here NOT knowing.
+    .filter((v) => {
+      if (v.toLowerCase().includes(partial)) return true;
+      const label = labelFor(v);
+      return label ? label.toLowerCase().includes(partial) : false;
+    })
     .slice(0, 8)
     // Quote values with spaces/commas/quotes so e.g. "Windows Server 2019"
     // inserts as os:"Windows Server 2019", not os:Windows AND Server AND 2019.
-    // Annotate enum values that carry meaning (has:) with their description.
-    .map((v) => ({
-      display: spec.enum_descriptions?.[v] ? `${v} — ${spec.enum_descriptions[v]}` : v,
-      insert: `${spec.name}:${quote(v)}`,
-    }));
+    // Annotate values that carry meaning (has:, scan:) with their label.
+    .map((v) => {
+      const label = labelFor(v);
+      return {
+        display: label ? `${v} — ${label}` : v,
+        insert: `${spec.name}:${quote(v)}`,
+      };
+    });
 }
 
 /**
@@ -97,6 +117,7 @@ export default function HostCommandBar({
   onPin,
   onCopyLink,
   valueSuggestions,
+  valueLabels,
 }: HostCommandBarProps) {
   const [draft, setDraft] = useState(value);
   const [focused, setFocused] = useState(false);
@@ -143,8 +164,8 @@ export default function HostCommandBar({
   }, [draft, validation, validatedQuery, validating, value, onChange]);
 
   const suggestions = useMemo(
-    () => (schema ? buildSuggestions(draft, schema.fields, valueSuggestions) : []),
-    [draft, schema, valueSuggestions],
+    () => (schema ? buildSuggestions(draft, schema.fields, valueSuggestions, valueLabels) : []),
+    [draft, schema, valueSuggestions, valueLabels],
   );
   useEffect(() => { setActiveIndex(-1); }, [draft]);
 

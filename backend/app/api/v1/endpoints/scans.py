@@ -346,13 +346,23 @@ def get_scans(
         )
         port_stats_map = {row.scan_id: row for row in port_stats_rows}
 
-    # Batch vulnerability stats for nessus scans
-    nessus_scan_ids = [
-        r.id for r in results
-        if "nessus" in (r.tool_name or r.scan_type or "").lower()
-    ]
+    # Batch vulnerability stats for every scan on this page.
+    #
+    # v2.296.0 — this used to filter ``results`` down to scans whose
+    # tool_name/scan_type contained "nessus" before querying.  Nessus is not the
+    # only tool that writes ``Vulnerability`` rows: the OpenVAS parser sets
+    # ``tool_name="openvas"``, Nikto sets ``"nikto"``, and nmap script output
+    # produces them too — none matched, so ``vulnerability_summary`` came back
+    # None and the Findings column rendered "No findings" for scans that had
+    # plenty.  Reported from prod against OpenVAS; the live DB showed the same
+    # silence over nikto and nmap scans holding hundreds of rows.
+    #
+    # The tool gate bought nothing: ``Vulnerability.scan_id.in_(scan_ids)`` is
+    # already the correct restriction, and a scan with no vulns simply has no
+    # row in the result set.  Filtering by tool name to decide whether a scan
+    # *might* have findings was guessing at data we can just ask for.
     vuln_stats_map = {}
-    if nessus_scan_ids:
+    if scan_ids:
         vuln_stats_rows = (
             db.query(
                 Vulnerability.scan_id.label('scan_id'),
@@ -363,7 +373,7 @@ def get_scans(
                 func.sum(case((Vulnerability.severity == VulnerabilitySeverity.LOW, 1), else_=0)).label('low'),
                 func.sum(case((Vulnerability.severity == VulnerabilitySeverity.INFO, 1), else_=0)).label('info'),
             )
-            .filter(Vulnerability.scan_id.in_(nessus_scan_ids))
+            .filter(Vulnerability.scan_id.in_(scan_ids))
             .group_by(Vulnerability.scan_id)
             .all()
         )

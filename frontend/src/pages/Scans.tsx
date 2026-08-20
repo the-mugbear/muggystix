@@ -1532,10 +1532,24 @@ export default function Scans() {
                                   name overflows into the next column. */}
                               <span className="min-w-0 break-words font-semibold">{scan.filename}</span>
                             </div>
-                            <div className="flex flex-wrap gap-xxs">
+                            <div className="flex flex-wrap items-center gap-xxs">
                               {renderInlineToolBadge(scan)}
                               {scan.version && <Badge variant="outline">v{scan.version}</Badge>}
                               {statusBadge(scan)}
+                              {/* The host-query DSL's `scan:` predicate takes
+                                  the numeric id, which was previously not
+                                  shown anywhere — operators know the upload by
+                                  its filename. This is where the two meet. */}
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="shrink-0 cursor-default font-mono text-caption text-muted-foreground">
+                                    #{scan.id}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  Scan id — filter hosts with <code>scan:{scan.id}</code>
+                                </TooltipContent>
+                              </Tooltip>
                             </div>
                           </TableCell>
                           <TableCell>

@@ -1103,6 +1103,20 @@ export default function Hosts() {
     return map;
   }, [filterData]);
 
+  // `scan:` takes a numeric id, which is the one thing an operator does NOT
+  // know — they know the file they uploaded. Labelling each suggested id with
+  // its filename (and tool) makes the autocomplete the lookup table, and
+  // HostCommandBar matches on the label too, so typing `scan:openvas` finds
+  // the id and inserts it.
+  const queryValueLabels = useMemo(() => {
+    if (!filterData?.scans) return undefined;
+    const scan: Record<string, string> = {};
+    for (const s of filterData.scans) {
+      scan[String(s.id)] = s.tool_name ? `${s.filename} (${s.tool_name})` : s.filename;
+    }
+    return { scan };
+  }, [filterData]);
+
   // Row click opens the side-sheet instead of navigating away from the
   // list — operators keep their place in the filtered set while
   // drilling into a host.  The full standalone page at /hosts/:id stays
@@ -1773,6 +1787,7 @@ export default function Hosts() {
         onPin={handlePinQuery}
         onCopyLink={handleCopyLink}
         valueSuggestions={queryValueSuggestions}
+        valueLabels={queryValueLabels}
       />
 
       <div className="flex flex-wrap items-center gap-xs">

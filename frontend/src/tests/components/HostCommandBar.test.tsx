@@ -21,6 +21,7 @@ const schema = {
   fields: [
     { name: 'port', aliases: [], value_source: 'port', trgm: false, enum_values: [] },
     { name: 'has', aliases: [], value_source: 'enum', trgm: false, enum_values: ['web', 'critical'] },
+    { name: 'scan', aliases: [], value_source: 'scan', trgm: false, enum_values: [] },
   ],
   examples: [{ label: 'Both ports', q: 'port:80 port:443' }],
 };
@@ -129,6 +130,48 @@ describe('HostCommandBar', () => {
     // reject it if it's actually invalid).
     await user.keyboard('{Enter}');
     expect(onChange).toHaveBeenCalledWith('port:80');
+  });
+
+  // `scan:` takes a numeric id — the one thing an operator doesn't know, since
+  // they know the upload by its filename. Reported from prod.
+  describe('id-valued fields are searchable by their human label', () => {
+    const scanLabels = { scan: { '33': 'openvas-report.xml (openvas)', '41': 'nmap-full.xml (nmap)' } };
+    const scanIds = { scan: ['33', '41'] };
+
+    it('finds the id by typing the filename, and inserts the id', async () => {
+      const user = userEvent.setup();
+      const { onChange } = setup({ valueSuggestions: scanIds, valueLabels: scanLabels });
+      await user.type(screen.getByLabelText('Host query'), 'scan:openvas');
+
+      const listbox = await screen.findByRole('listbox');
+      // The label is what matched; the id is what the operator needs to see.
+      const option = within(listbox).getByRole('option', {
+        name: '33 — openvas-report.xml (openvas)',
+      });
+      await user.click(option);
+      await waitFor(() => expect(screen.getByLabelText('Host query')).toHaveValue('scan:33'));
+      expect(onChange).not.toHaveBeenCalledWith('scan:openvas');
+    });
+
+    it('still matches on the id itself', async () => {
+      const user = userEvent.setup();
+      setup({ valueSuggestions: scanIds, valueLabels: scanLabels });
+      await user.type(screen.getByLabelText('Host query'), 'scan:41');
+
+      const listbox = await screen.findByRole('listbox');
+      expect(
+        within(listbox).getByRole('option', { name: '41 — nmap-full.xml (nmap)' }),
+      ).toBeInTheDocument();
+    });
+
+    it('falls back to the bare value when no label is supplied', async () => {
+      const user = userEvent.setup();
+      setup({ valueSuggestions: scanIds });
+      await user.type(screen.getByLabelText('Host query'), 'scan:33');
+
+      const listbox = await screen.findByRole('listbox');
+      expect(within(listbox).getByRole('option', { name: '33' })).toBeInTheDocument();
+    });
   });
 
   it('disables Copy while a different, invalid draft is shown (no silent substitution)', async () => {
