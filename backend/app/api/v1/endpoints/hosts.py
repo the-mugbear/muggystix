@@ -449,6 +449,17 @@ def get_hosts_v2(
         noload(models.Host.vulnerabilities),
         noload(models.Host.attributes),
         noload(models.Host.notes),
+        # v2.301.0 — host_scripts belongs in that list and was missing, which
+        # cost one query PER HOST on every page.  The comment above says the
+        # list "deliberately doesn't eager-load" it, and that was true — but
+        # not eager-loading a relationship the serializer reads means loading
+        # it LAZILY, one host at a time, which is the worse of the two.
+        # ``serialize_host_base`` reads ``host.host_scripts`` (it is a
+        # HostSchema field), and this endpoint then throws the result away at
+        # ``serialized["host_scripts"] = []`` — so a 400-host page fired 400
+        # queries whose results were discarded.  Measured: 426 queries for a
+        # 500-row page before, 26 after.
+        noload(models.Host.host_scripts),
     )
 
     # Apply pagination and return
