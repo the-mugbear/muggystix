@@ -194,3 +194,40 @@ def test_missing_certificate_reports_nothing_rather_than_crashing(tmp_path, monk
     info = references.tls_certificate_info()
     assert info.fingerprint_sha256 is None
     assert info.self_signed is None
+
+
+def test_reference_page_recipes_come_from_the_session_builder(client):
+    """The page used to carry its own TypeScript copy of the connect recipes,
+    and the pair drifted twice: on the config wrapper key (the bug the shared
+    builder was created to fix) and on the Codex TLS note, which had to be
+    corrected in both languages by hand. Both failures were silent — a config
+    the client ignores, and advice that cannot work.
+
+    So the catalog serves what a live session would emit, with a placeholder
+    where the key goes. This asserts they are the same code, not merely similar.
+    """
+    from app.api.v1.endpoints.references import SAMPLE_KEY_PLACEHOLDER
+    from app.services.mcp_client_setup_service import build_mcp_clients
+
+    body = client.get("/api/v1/references/mcp-tools").json()
+    served = body["sample_clients"]
+    assert body["sample_key_placeholder"] == SAMPLE_KEY_PLACEHOLDER
+
+    expected = build_mcp_clients(
+        body["endpoint"], SAMPLE_KEY_PLACEHOLDER, workflow="assist"
+    )
+    assert served == expected
+
+    # No live key ever reaches a page anyone with app access can read.
+    for entry in served:
+        assert "nm_agent_" not in entry["payload"], entry["id"]
+
+    by_id = {e["id"]: e for e in served}
+    # The two recipes that embed a credential show the placeholder in its place.
+    assert SAMPLE_KEY_PLACEHOLDER in by_id["vscode"]["payload"]
+    assert SAMPLE_KEY_PLACEHOLDER in by_id["claude_code"]["payload"]
+    # Codex is the exception BY DESIGN: it reads the key from an env var at run
+    # time, so the recipe has no slot for one — which is why it is the only
+    # client where the credential never touches a config file.
+    assert SAMPLE_KEY_PLACEHOLDER not in by_id["codex"]["payload"]
+    assert "--bearer-token-env-var" in by_id["codex"]["payload"]

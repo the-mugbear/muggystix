@@ -17,11 +17,11 @@ import { getMcpTools, type McpCatalog, type McpToolDoc } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { copyToClipboard } from '../utils/clipboard';
 import { CardListSkeleton } from '../components/PageSkeleton';
+import McpConnectPanel from '../components/McpConnectPanel';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -30,62 +30,6 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table';
-
-/** Stand-in for the real key, which only exists inside a live assist session. */
-const KEY_PLACEHOLDER = '<your-session-key>';
-
-type ClientRecipe = {
-  id: string;
-  label: string;
-  /** Where the snippet goes, or null when it's a command to run. */
-  path: string | null;
-  snippet: (endpoint: string) => string;
-  note: React.ReactNode;
-};
-
-// The same recipes the Start Assist dialog emits — kept here as a *reference*
-// (placeholder key, no session), so an operator can see what they're signing up
-// for before starting a session. Each was verified against the real client:
-// Claude Code and Codex against their installed CLIs, VS Code against the shape
-// this deployment was already using.
-const CLIENTS: ClientRecipe[] = [
-  {
-    id: 'vscode',
-    label: 'VS Code Copilot',
-    path: '.vscode/mcp.json',
-    snippet: (endpoint) =>
-      JSON.stringify(
-        {
-          servers: {
-            'bluestick-assist': {
-              type: 'http',
-              url: endpoint,
-              headers: { 'X-API-Key': KEY_PLACEHOLDER },
-            },
-          },
-        },
-        null,
-        2,
-      ),
-    note: 'Start the server from the Copilot MCP panel once the file is saved. To keep the key out of the file entirely, VS Code supports a password input: declare an `inputs` entry and reference it as ${input:...} in place of the key.',
-  },
-  {
-    id: 'claude_code',
-    label: 'Claude Code',
-    path: null,
-    snippet: (endpoint) =>
-      `claude mcp add --transport http bluestick-assist ${endpoint} \\\n  --header "X-API-Key: ${KEY_PLACEHOLDER}"`,
-    note: 'Run it in your project directory. Add -s project to share it via .mcp.json, or -s user for every project.',
-  },
-  {
-    id: 'codex',
-    label: 'Codex',
-    path: null,
-    snippet: (endpoint) =>
-      `read -rs BLUESTICK_ASSIST_KEY && export BLUESTICK_ASSIST_KEY   # paste the key, then Enter\ncodex mcp add bluestick-assist --url ${endpoint} \\\n  --bearer-token-env-var BLUESTICK_ASSIST_KEY`,
-    note: 'Codex reads the env var at run time, so the key never enters config.toml. `read -rs` keeps it out of shell history — re-run it in each new shell rather than writing the key into a profile. See the TLS note above: Codex pins with SSL_CERT_DIR, not NODE_EXTRA_CA_CERTS.',
-  },
-];
 
 const CAPABILITY_LABEL: Record<string, string> = {
   'write:notes': 'write:notes',
@@ -217,6 +161,7 @@ const McpReference: React.FC = () => {
   // the certificate, which is not the same as "it is self-signed" — so the
   // pinning block stays for null and only softens on an explicit `false`.
   const selfSigned = catalog?.tls_certificate?.self_signed ?? null;
+  const keyPlaceholder = catalog?.sample_key_placeholder ?? '<your-session-key>';
   // Absolute, because the fallback is a bare path and `curl -sk /api/v1/...`
   // is not a runnable command — it has no host.
   const trustScriptUrl = new URL(
@@ -427,30 +372,24 @@ const McpReference: React.FC = () => {
           key is a committed key until then.
         </AlertDescription>
       </Alert>
-      <Tabs defaultValue={CLIENTS[0].id} className="mb-lg">
-        <TabsList className="mb-xs">
-          {CLIENTS.map((c) => (
-            <TabsTrigger key={c.id} value={c.id}>
-              {c.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        {CLIENTS.map((client) => (
-          <TabsContent key={client.id} value={client.id}>
-            <p className="mb-xxs text-caption text-muted-foreground">
-              {client.path ? (
-                <>
-                  Save as <span className="font-mono">{client.path}</span>
-                </>
-              ) : (
-                'Run this command'
-              )}
-            </p>
-            <CodeBlock text={client.snippet(endpoint)} label={`${client.label} setup`} />
-            <p className="mt-xxs text-caption text-muted-foreground">{client.note}</p>
-          </TabsContent>
-        ))}
-      </Tabs>
+      {/* The recipes come from the server — the same builder a live session
+          uses, with a placeholder key. The page used to carry its own copy in
+          TypeScript, and the pair drifted twice: on the config wrapper key (the
+          bug the shared builder exists to fix) and on the Codex TLS note. */}
+      {catalog?.sample_clients?.length ? (
+        <McpConnectPanel
+          clients={catalog.sample_clients}
+          blurb={`Exactly what the Start AI Assist dialog emits, with ${keyPlaceholder} standing in for the key a session mints:`}
+        />
+      ) : null}
+      <p className="mb-lg mt-xs max-w-4xl text-caption text-muted-foreground">
+        VS Code can keep the key out of the file entirely: declare an{' '}
+        <span className="font-mono">inputs</span> entry and reference it as{' '}
+        <span className="font-mono">${'{'}input:...{'}'}</span> in place of the key. Claude Code
+        takes <span className="font-mono">-s project</span> to share the server via{' '}
+        <span className="font-mono">.mcp.json</span> or <span className="font-mono">-s user</span>{' '}
+        for every project — neither with a live key in it.
+      </p>
 
       {/* --- What a call actually does --- */}
       <h2 className="text-section-title">What happens on a tool call</h2>
@@ -582,7 +521,7 @@ const McpReference: React.FC = () => {
         and point the agent at the file.
       </p>
       <CodeBlock
-        text={`curl -sk -H "X-API-Key: ${KEY_PLACEHOLDER}" \\\n  ${endpoint.replace(/\/mcp$/, '')}/agent/assist/report-context.ndjson \\\n  -o report-context.ndjson`}
+        text={`curl -sk -H "X-API-Key: ${keyPlaceholder}" \\\n  ${endpoint.replace(/\/mcp$/, '')}/agent/assist/report-context.ndjson \\\n  -o report-context.ndjson`}
         label="report-context download"
       />
       <p className="mt-xxs text-caption text-muted-foreground">

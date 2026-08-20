@@ -12,9 +12,9 @@ Each entry:
     workflows    : which key workflows may see it in tools/list (see below)
     method       : HTTP verb of the underlying endpoint
     path         : loopback path; ``{name}`` placeholders filled from path_params
-    path_params  : argument names substituted into the path
-    query_params : argument names sent as querystring
-    body_params  : argument names sent in the JSON body
+    path_params  : argument names substituted into the path (omit if none)
+    query_params : argument names sent as querystring (omit if none)
+    body_params  : argument names sent in the JSON body (omit if none)
     input_schema : JSON Schema advertised to the client
     capability   : the write capability the underlying endpoint requires
     defaults     : MCP-side argument defaults (smaller pages than the endpoints')
@@ -145,9 +145,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/identity",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "read_agent_guide": {
@@ -162,13 +159,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agents-guide",
-        "path_params": [],
         "query_params": ["workflow"],
         # Filled from the caller's identity: the slice you want is the workflow
         # your key belongs to, and asking a model to name it invites the one
         # answer that returns another workflow's instructions.
         "auto_params": {"workflow": "workflow"},
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -192,9 +187,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/references/tools",
-        "path_params": [],
         "query_params": ["status", "category"],
-        "body_params": [],
         # Always send a status: the unfiltered listing is 60+ tools, most of them
         # documentation for humans, and an agent reading that as "what I may run"
         # is the exact confusion the status column exists to prevent.
@@ -226,8 +219,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/tool-suggestions",
-        "path_params": [],
-        "query_params": [],
         "body_params": ["name", "rationale", "category", "description"],
         "additive": True,
         "input_schema": {
@@ -267,9 +258,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_list_hosts": {
@@ -282,12 +270,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
-        "path_params": [],
         "query_params": [
             "q", "search", "state", "ports", "services", "subnets",
             "has_critical_vulns", "has_high_vulns", "limit", "offset",
         ],
-        "body_params": [],
         # The endpoint's own default is 500 — right for a file download, a lot
         # of tokens for a model that usually wants the first handful.
         "defaults": {"limit": 100},
@@ -318,8 +304,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
         "path_params": ["host_id"],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": dict(HOST_ID_PROP),
@@ -338,7 +322,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/hosts/{host_id}/findings",
         "path_params": ["host_id"],
         "query_params": ["severity", "limit", "offset"],
-        "body_params": [],
         "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
@@ -360,9 +343,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/scopes",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_list_scans": {
@@ -370,9 +350,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
-        "path_params": [],
         "query_params": ["limit"],
-        "body_params": [],
         "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
@@ -389,9 +367,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/session",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_record_environment": {
@@ -406,7 +381,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/sessions/{session_id}/environment",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
-        "query_params": [],
         # Field names mirror EnvironmentSummary exactly — the schema advertises
         # additionalProperties:false and we reject unknown arguments, so a name
         # that doesn't exist server-side would be a hard error, not a silently
@@ -440,7 +414,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/notes",
         "path_params": ["host_id"],
-        "query_params": [],
         "body_params": ["body", "status"],
         "capability": "write:notes",
         "additive": True,
@@ -469,7 +442,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/follow",
         "path_params": ["host_id"],
-        "query_params": [],
         "body_params": ["status"],
         "capability": "write:follow",
         "input_schema": {
@@ -493,7 +465,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "PATCH",
         "path": "/api/v1/agent/hosts/{host_id}",
         "path_params": ["host_id"],
-        "query_params": [],
         "body_params": ["hostname", "os_name"],
         "capability": "write:host",
         "input_schema": {
@@ -527,7 +498,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
         "query_params": ["limit", "offset", "min_severity", "host_ids"],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -555,9 +525,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _PLAN,
         "method": "GET",
         "path": "/api/v1/agent/test-plans",
-        "path_params": [],
         "query_params": ["status", "limit", "offset"],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -578,8 +546,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -602,7 +568,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
         "body_params": [
             "title", "description", "generated_by_model", "generated_by_tool",
             "prompt_version",
@@ -637,7 +602,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/entries",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
         "body_params": ["entries"],
         "additive": True,
         "input_schema": {
@@ -691,7 +655,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}",
         "path_params": ["plan_id", "entry_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
         "body_params": [
             "priority", "test_phase", "proposed_tests", "rationale", "status",
             "findings", "notes", "expected_updated_at",
@@ -732,8 +695,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/validate",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -753,8 +714,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/submit",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -780,7 +739,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/execution-sessions/{session_id}/environment",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
-        "query_params": [],
         "body_params": _PROBE_BODY_PARAMS,
         "capability": "write:execution",
         "input_schema": {
@@ -809,7 +767,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
         "query_params": ["limit", "offset", "status"],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -833,7 +790,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
         "path_params": ["plan_id", "entry_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
         "body_params": [
             "method", "target_ip", "port_checked", "expected_value", "actual_value",
             "source_ip", "dns_result", "passed", "details",
@@ -873,7 +829,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/test-results",
         "path_params": ["plan_id", "entry_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
         "body_params": [
             "test_index", "status", "command_run", "raw_output", "findings_summary",
             "severity", "is_finding", "sanity_override_reason",
@@ -921,7 +876,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/complete",
         "path_params": ["plan_id", "entry_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
         "body_params": [
             "findings_summary", "overall_status", "override_reason", "no_tests_run_reason",
         ],
@@ -962,8 +916,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/execution-progress",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": [],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -983,7 +935,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/execution-sessions/{session_id}/complete",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
-        "query_params": [],
         "body_params": ["notes", "overall_status"],
         "capability": "write:execution",
         "input_schema": {
@@ -1020,7 +971,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/recon/sessions/{session_id}/environment",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
-        "query_params": [],
         "body_params": _PROBE_BODY_PARAMS,
         "input_schema": {
             "type": "object",
@@ -1046,9 +996,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _RECON,
         "method": "GET",
         "path": "/api/v1/agent/recon/context",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "recon_list_subnets": {
@@ -1059,9 +1006,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _RECON,
         "method": "GET",
         "path": "/api/v1/agent/recon/subnets",
-        "path_params": [],
         "query_params": ["limit", "offset"],
-        "body_params": [],
         "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
@@ -1082,8 +1027,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/recon/jobs/{job_id}",
         "path_params": ["job_id"],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1107,9 +1050,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _RECON,
         "method": "GET",
         "path": "/api/v1/agent/recon/summary",
-        "path_params": [],
-        "query_params": [],
-        "body_params": [],
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "recon_complete": {
@@ -1121,8 +1061,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _RECON,
         "method": "POST",
         "path": "/api/v1/agent/recon/complete",
-        "path_params": [],
-        "query_params": [],
         "body_params": ["notes"],
         "input_schema": {
             "type": "object",

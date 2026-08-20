@@ -6,6 +6,7 @@
  * ``../services/api`` unchanged.
  */
 import { api } from './client';
+import type { McpClientSetup } from '../../components/McpConnectPanel';
 
 
 // --- Software Bill of Materials ---
@@ -154,6 +155,12 @@ export interface McpCatalog {
   max_request_bytes: number;
   max_batch_messages: number;
   tools: McpToolDoc[];
+  /** The connect recipes, built by the same code a live session uses, with a
+   *  placeholder key. Served rather than duplicated in TypeScript: the two
+   *  copies drifted twice — on the config wrapper key, and on the Codex TLS
+   *  note — and both failures were silent. */
+  sample_clients?: McpClientSetup[];
+  sample_key_placeholder?: string;
   /** Connecting is the other half of this page's job, and every client fails at
    *  the certificate first. These ride along with the catalog so the page has
    *  them exactly when it needs them. */

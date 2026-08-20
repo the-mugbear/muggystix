@@ -563,27 +563,53 @@ def list_assist_sessions(
     notes_by_session = _note_counts(db, [s for s, _ in rows])
 
     return [
-        AssistSessionRow(
-            id=s.id,
-            project_id=s.project_id,
-            purpose=s.purpose,
-            status=effective_status(s.status, expiry_by_session.get(s.id), now),
-            started_by_id=s.started_by_id,
-            started_by_username=username,
-            started_at=s.started_at,
-            ended_at=s.ended_at,
-            last_activity_at=s.last_activity_at,
-            environment_probed=s.environment_probed_at is not None,
-            key_expires_at=expiry_by_session.get(s.id),
-            capabilities=(s.agent_session.capabilities or []) if s.agent_session else [],
-            capability_constraint=(
-                s.agent_session.capability_constraint if s.agent_session else None
-            ),
+        _session_row(
+            s,
+            username,
+            expiry_by_session.get(s.id),
+            now=now,
             call_count=calls_by_session.get(s.id, 0),
             note_count=notes_by_session.get(s.id, 0),
         )
         for s, username in rows
     ]
+
+
+def _session_row(
+    session: AssistSession,
+    username: Optional[str],
+    key_expires_at,
+    *,
+    now,
+    call_count: int = 0,
+    note_count: int = 0,
+) -> AssistSessionRow:
+    """Map one session to its wire row.
+
+    Shared by the list and the detail endpoint (which extends this shape).  The
+    two built the same 18 fields independently, so adding one meant remembering
+    both — and the one you forget is the one that silently reads as its default.
+    """
+    agent_session = session.agent_session
+    return AssistSessionRow(
+        id=session.id,
+        project_id=session.project_id,
+        purpose=session.purpose,
+        status=effective_status(session.status, key_expires_at, now),
+        started_by_id=session.started_by_id,
+        started_by_username=username,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        last_activity_at=session.last_activity_at,
+        environment_probed=session.environment_probed_at is not None,
+        key_expires_at=key_expires_at,
+        capabilities=(agent_session.capabilities or []) if agent_session else [],
+        capability_constraint=(
+            agent_session.capability_constraint if agent_session else None
+        ),
+        call_count=call_count,
+        note_count=note_count,
+    )
 
 
 def _call_counts(db: Session, session_ids: List[int]) -> dict:
@@ -679,7 +705,7 @@ def get_assist_session(
         )
         .scalar()
     )
-    derived_status = effective_status(session.status, key_expires_at)
+    now = datetime.now(timezone.utc)
 
     notes: List[AssistSessionNote] = []
     note_total = 0
@@ -716,26 +742,17 @@ def get_assist_session(
         .scalar()
     ) or 0
 
+    # Detail EXTENDS the list row, so the shared fields are mapped once. The two
+    # used to build the same 18 fields independently.
     return AssistSessionDetail(
-        id=session.id,
-        project_id=session.project_id,
-        purpose=session.purpose,
-        status=derived_status,
-        started_by_id=session.started_by_id,
-        started_by_username=username,
-        started_at=session.started_at,
-        ended_at=session.ended_at,
-        last_activity_at=session.last_activity_at,
-        environment_probed=session.environment_probed_at is not None,
-        key_expires_at=key_expires_at,
-        capabilities=(
-            session.agent_session.capabilities or [] if session.agent_session else []
-        ),
-        capability_constraint=(
-            session.agent_session.capability_constraint if session.agent_session else None
-        ),
-        call_count=call_count,
-        note_count=note_total,
+        **_session_row(
+            session,
+            username,
+            key_expires_at,
+            now=now,
+            call_count=call_count,
+            note_count=note_total,
+        ).model_dump(),
         environment=session.environment,
         environment_probed_at=session.environment_probed_at,
         agent_model=session.generated_by_model,

@@ -372,7 +372,7 @@ async def _dispatch_tool(
 
     # Path params (e.g. host_id) -> substitute into the path template.
     path = spec["path"]
-    for pname in spec["path_params"]:
+    for pname in spec.get("path_params", ()):
         value = arguments.get(pname)
         if value is None:
             if pname in auto:
@@ -390,13 +390,13 @@ async def _dispatch_tool(
     # Query params (skip omitted).
     params = {
         k: arguments[k]
-        for k in spec["query_params"]
+        for k in spec.get("query_params", ())
         if k in arguments and arguments[k] is not None
     }
     # Body params (skip omitted).
     body = {
         k: arguments[k]
-        for k in spec["body_params"]
+        for k in spec.get("body_params", ())
         if k in arguments and arguments[k] is not None
     }
     json_body = body if (spec["method"] != "GET" ) else None

@@ -501,3 +501,24 @@ def test_suggesting_an_approved_tool_says_so(client, test_project, db_session):
     body = result["structuredContent"]
     assert body["already_approved"] is True
     assert body["status"] == "approved"
+
+
+def test_a_registry_entry_can_omit_the_params_it_has_none_of(client, test_project):
+    """Every entry used to declare `path_params: []`, `query_params: []` and
+    `body_params: []` whether or not it had any — 62 lines of noise across the
+    registry, and a *missing* key blew up at dispatch time (a failed tool call)
+    rather than at import. The readers now treat absent as empty, which is what
+    the empty lists said."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+
+    # A read tool with no arguments at all declares none of the three.
+    spec = TOOLS["agent_identity"]
+    assert "path_params" not in spec
+    assert "query_params" not in spec
+    assert "body_params" not in spec
+
+    # And it still dispatches — the property the empty lists were protecting.
+    assist = _assist_key(client, test_project)
+    result = _call(client, {"X-API-Key": assist["api_key"]}, "agent_identity")
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["workflow"] == "assist"

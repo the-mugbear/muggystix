@@ -34,6 +34,10 @@ from app.services.agent_prompt_history import PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 
+# Stands in for a real key on the reference page, which has no session. The
+# recipes are otherwise byte-identical to what a session emits.
+SAMPLE_KEY_PLACEHOLDER = "<your-session-key>"  # noqa: S105 - not a credential
+
 router = APIRouter()
 
 
@@ -387,6 +391,7 @@ def mcp_tools(request: Request):
     """
     from app.api.v1.endpoints.mcp_assist import tool_catalog
     from app.services.agent_prompt_service import resolve_base_url
+    from app.services.mcp_client_setup_service import build_mcp_clients
 
     base_url = resolve_base_url(request)
     catalog = tool_catalog(f"{base_url}/mcp")
@@ -395,6 +400,17 @@ def mcp_tools(request: Request):
     # fingerprint ride along here rather than in a second fetch: the page needs
     # both exactly when it needs the tool list, and a fingerprint the operator
     # has to go and find is a fingerprint nobody checks.
+    # The connect recipes come from the SAME builder the session dialogs use,
+    # with a placeholder in place of a key (v2.289.0).  The page used to carry
+    # its own copy in TypeScript, and that pair drifted twice: once on the
+    # config wrapper key (the bug the shared builder was created to fix) and
+    # once on the Codex TLS note, which had to be corrected in both languages by
+    # hand.  Rendering what the server would actually emit removes the second
+    # copy rather than re-syncing it.
+    catalog["sample_clients"] = build_mcp_clients(
+        catalog["endpoint"], SAMPLE_KEY_PLACEHOLDER, workflow="assist"
+    )
+    catalog["sample_key_placeholder"] = SAMPLE_KEY_PLACEHOLDER
     catalog["trust_script_url"] = f"{base_url}/references/trust-cert-script"
     catalog["tls_certificate_url"] = f"{base_url}/references/tls-certificate"
     info = tls_certificate_info()

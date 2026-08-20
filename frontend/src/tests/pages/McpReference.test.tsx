@@ -36,6 +36,38 @@ const catalog = (): McpCatalog => ({
     subject: 'CN=127.0.0.1',
     expires_at: '2027-04-08T20:19:47+00:00',
   },
+  sample_key_placeholder: '<your-session-key>',
+  // Server-built, so the page can't drift from what a session actually emits.
+  sample_clients: [
+    {
+      id: 'vscode',
+      label: 'VS Code Copilot',
+      kind: 'file',
+      path: '.vscode/mcp.json',
+      payload: JSON.stringify(
+        { servers: { 'bluestick-assist': { type: 'http', url: 'https://bluestick.example/api/v1/mcp' } } },
+        null,
+        2,
+      ),
+      hint: 'Save as .vscode/mcp.json in your workspace.',
+    },
+    {
+      id: 'claude_code',
+      label: 'Claude Code',
+      kind: 'command',
+      path: '',
+      payload: 'claude mcp add --transport http bluestick-assist https://bluestick.example/api/v1/mcp',
+      hint: 'Run in your project directory.',
+    },
+    {
+      id: 'codex',
+      label: 'Codex',
+      kind: 'command',
+      path: '',
+      payload: 'codex mcp add bluestick-assist --url https://bluestick.example/api/v1/mcp',
+      hint: 'Codex reads the env var at run time. SSL_CERT_DIR pins the cert.',
+    },
+  ],
   tools: [
     {
       name: 'assist_list_hosts',
@@ -143,10 +175,12 @@ describe('McpReference', () => {
     expect(screen.getByText(/1 MiB body · 50-message batch/)).toBeInTheDocument();
   });
 
-  it('keeps the connect instructions distinct per client', async () => {
+  it('renders the server-built recipes rather than a second copy of them', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
-    // Default tab is VS Code, which is the one client using `servers`.
+    // The page used to hold its own TypeScript copy of these, and the pair
+    // drifted twice — on the config wrapper key and on the Codex TLS note.
+    // Rendering what the server emits is what stops that recurring.
     const vscode = screen.getByText(/"servers"/);
     expect(vscode).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Claude Code' })).toBeInTheDocument();
