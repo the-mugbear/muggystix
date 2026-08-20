@@ -22,28 +22,16 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { cn } from '../utils/cn';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface HostLineagePanelProps {
   hostId: number;
 }
 
-function fmtAgo(iso?: string | null): string {
-  if (!iso) return '';
-  try {
-    const ms = Date.now() - new Date(iso).getTime();
-    if (ms < 0) return 'just now';
-    const sec = Math.floor(ms / 1000);
-    if (sec < 60) return `${sec}s ago`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.floor(hr / 24);
-    return `${day}d ago`;
-  } catch {
-    return '';
-  }
-}
+/** Short relative age ("5m ago"). Shared with every other surface —
+ *  this was one of four byte-identical copies before v5.179.0. */
+const fmtAgo = (iso?: string | null): string =>
+  formatRelativeTime(iso, { withSeconds: true });
 
 const SectionHeader: React.FC<{ title: string; count: number; hint: string }> = ({
   title,

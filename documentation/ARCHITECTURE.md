@@ -293,7 +293,16 @@ For the senior-tester case where the operator just wants to *query* a project �
 
 1. **`POST /projects/{id}/assist/start`** (JWT user, `assist.py`) opens an `AssistSession`, mints a fresh `assist`-scoped API key, and returns it plus the agent prompt. `POST /assist/sessions/{session_id}/end` revokes the key (the session row stays for audit history); `GET /assist/sessions` lists recent sessions.
 2. The agent authenticates against the `/agent/assist/*` surface (`agent_assist.py`, `X-API-Key`) — `/assist/context`, `/assist/hosts`, `/assist/hosts/{host_id}`, `/assist/scopes`, `/assist/scans`, plus `/assist/sessions/{session_id}/environment` for the per-session probe.
-3. **Read-only by design.** Assist keys are rejected on plan, recon, and execution endpoints and vice-versa (`require_assist_scope`), mirroring the workflow isolation on the other agent surfaces. v1 has no execution authority, plan creation, or follow mutation.
+3. **Scoped by design.** Assist keys are rejected on plan, recon, and execution endpoints and vice-versa (`require_assist_scope`), mirroring the workflow isolation on the other agent surfaces. Reads are always available; writes (host notes, review status, hostname/OS corrections) are opt-in at start time, gated by capability, and narrowed to hosts assigned to the operator who started the session.
+4. **Reviewable after the fact.** `/assist-sessions` lists every session in the project with what it was allowed to do and what it produced; the detail view leads with the notes the agent wrote (its only durable output) over the per-session API-call feed. A session whose key has expired reports as `ended` immediately — derived from the key, with an hourly sweep converging the stored column (`assist_session_service`).
+
+### 5.6 MCP transport (Workflow F — all of the above, as tools)
+
+Every workflow above is also reachable over the **Model Context Protocol** at `POST /api/v1/mcp` (`mcp_assist.py` for the transport, `mcp_tools.py` for the declarative registry). A `tools/call` loops back into the same `/agent/*` endpoint **in-process** via an ASGI transport, forwarding the caller's `X-API-Key`, so auth, capability gating, row scope, and the audit log run unchanged — the MCP layer makes no authorization decision of its own.
+
+`tools/list` is scoped to the workflow the caller's key belongs to (resolved via `GET /agent/identity`), which is presentation rather than authorisation: an unlisted tool called anyway still reaches the endpoint and gets its 403. Bulk, file-shaped endpoints (NDJSON streams, target lists, `recon/upload`) are deliberately *not* tools.
+
+See [MCP.md](MCP.md) for the transport details, the per-client certificate-pinning story, the approved-tool registry, and the guardrail model.
 
 ---
 

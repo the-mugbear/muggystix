@@ -65,6 +65,7 @@ import {
 } from '../components/ui/tooltip';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 const formatFileSize = (bytes: number | null): string => {
   if (bytes == null || bytes === 0) return '-';
@@ -83,23 +84,8 @@ const formatDuration = (seconds: number | null): string => {
   return `${mins}m ${secs}s`;
 };
 
-const timeAgo = (dateString: string | null): string => {
-  if (!dateString) return '-';
-  const now = Date.now();
-  const then = new Date(dateString).getTime();
-  const diff = now - then;
-  if (diff < 0) return 'just now';
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(dateString).toLocaleDateString();
-};
-
+const timeAgo = (dateString: string | null): string =>
+  formatRelativeTime(dateString, { fallback: '-', absoluteAfterDays: 30 });
 const STATUS_VARIANT: Record<string, 'success' | 'destructive' | 'info' | 'muted'> = {
   completed: 'success',
   failed: 'destructive',

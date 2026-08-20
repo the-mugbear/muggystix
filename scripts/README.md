@@ -20,6 +20,7 @@ This directory contains utility scripts for deployment and maintenance.
 - **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so the Posture hub (Posture / Segments / Patterns / Evidence) and Findings are evaluable on a fresh install. Runs inside the backend container.
 - **`transfer-images.sh`** - Export/import container images for offline or air-gapped moves
 - **`preflight.sh`** - Environment probe helper used by the agentic recon workflow
+- **`trust-cert.sh`** - Install this deployment's TLS certificate so MCP clients trust it, without disabling verification. Handles both mechanisms (`NODE_EXTRA_CA_CERTS` for VS Code / Claude Code, `SSL_CERT_DIR` for Codex) and mirrors the system anchors so the directory *adds* trust rather than replacing it. Also served from the app itself at `GET /api/v1/references/trust-cert-script`, so an operator on a different machine can fetch it: `bash trust-cert.sh --url https://<host>`
 - **`generate-ssl-cert.sh`** / **`generate-ssl-cert-simple.sh`** - SSL certificate generators (also invoked by `deploy.sh` during first-time setup)
 
 ### Database Scripts

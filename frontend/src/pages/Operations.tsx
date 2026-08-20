@@ -32,6 +32,7 @@ import SeverityBar from '../components/ui/SeverityBar';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { cn } from '../utils/cn';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 type ScopeView = 'all' | 'mine';
 const SCOPE_STORAGE_KEY = 'nm.operations.scopeView';
@@ -53,23 +54,10 @@ const persistScope = (view: ScopeView): void => {
   }
 };
 
-const fmtRelative = (iso?: string | null): string => {
-  if (!iso) return '';
-  try {
-    const ms = Date.now() - new Date(iso).getTime();
-    if (ms < 0) return 'just now';
-    const sec = Math.floor(ms / 1000);
-    if (sec < 60) return `${sec}s ago`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.floor(hr / 24);
-    return `${day}d ago`;
-  } catch {
-    return '';
-  }
-};
+/** Short relative age ("5m ago"). Shared with every other surface —
+ *  this was one of four byte-identical copies before v5.179.0. */
+const fmtRelative = (iso?: string | null): string =>
+  formatRelativeTime(iso, { withSeconds: true });
 
 type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'secondary' | 'muted' | 'outline';
 

@@ -1,14 +1,20 @@
 """Public reference endpoints — extracted from main.py in v2.42.0.
 
-Three surfaces, all unauthenticated by design (documentation /
-environment tooling, not sensitive data — same stance as ``/agents-guide``):
+Unauthenticated by design (documentation / environment tooling, not sensitive
+data — same stance as ``/agents-guide``), with one exception noted below:
 
-  * ``GET /api/v1/references/preflight-script`` — bash preflight script
-  * ``GET /api/v1/references/sbom``             — software bill of materials
-  * ``GET /api/v1/references/mcp-tools``        — MCP tool catalog
-  * ``GET /api/v1/references/tls-certificate``  — deployment TLS cert (PEM)
-  * ``GET /api/v1/references/``                 — listing of references above
-  * ``GET /api/v1/agents-guide``                — AGENTS.md slice
+  * ``GET  /api/v1/references/preflight-script``    — bash preflight script
+  * ``GET  /api/v1/references/trust-cert-script``   — TLS trust installer
+  * ``GET  /api/v1/references/sbom``                — software bill of materials
+  * ``GET  /api/v1/references/mcp-tools``           — MCP tool catalog, connect
+    recipes, and this deployment's certificate info
+  * ``GET  /api/v1/references/tls-certificate``     — deployment TLS cert (PEM)
+  * ``GET  /api/v1/references/tools``               — the tool registry
+  * ``PATCH /api/v1/references/tools/{name}``       — vet one (**admin only**)
+  * ``GET  /api/v1/references/tool-readiness``      — registry vs. your own probe
+    (**authenticated** — it reflects the calling user's host)
+  * ``GET  /api/v1/references/``                    — listing of the above
+  * ``GET  /api/v1/agents-guide``                   — AGENTS.md slice
 
 The agents-guide endpoint is colocated here because it's part of the
 same "things-agents-curl-once" surface, not because of route prefix.

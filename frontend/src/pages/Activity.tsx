@@ -33,6 +33,7 @@ import {
 import { cn } from '../utils/cn';
 import { InlineLoader } from '../components/ui/inline-loader';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
+import { formatRelativeTime as relativeTime } from '../utils/relativeTime';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All Statuses' },
@@ -63,19 +64,11 @@ type NoteThreadGroup = {
   hostNoteCount: number;
 };
 
+/** Short age, switching to a date past a month — "412d ago" tells a reader
+ *  less than the date does. Local name kept so the ~10 call sites below read
+ *  unchanged; the behaviour is the shared one. */
 function formatRelativeTime(dateStr: string | null | undefined): string {
-  if (!dateStr) return '';
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHrs = Math.floor(diffMin / 60);
-  if (diffHrs < 24) return `${diffHrs}h ago`;
-  const diffDays = Math.floor(diffHrs / 24);
-  if (diffDays < 30) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return relativeTime(dateStr, { absoluteAfterDays: 30 });
 }
 
 const getNoteTimestamp = (note: NoteActivityItem) => note.updated_at || note.created_at;

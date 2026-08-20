@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { cn } from '../../utils/cn';
+import { formatRelativeTime } from '../../utils/relativeTime';
 import {
   PORTS_OF_INTEREST_BY_PORT,
   type PortOfInterestDefinition,
@@ -150,16 +151,8 @@ export const getTopServices = (hostPorts: Port[] = []): string[] =>
 export const getScanLabel = (discovery: HostDiscovery): string =>
   discovery.scan_filename || `Scan #${discovery.scan_id}`;
 
-export const formatRelativeLastViewed = (value?: string | null): string | null => {
-  if (!value) return null;
-  const diff = Date.now() - new Date(value).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-};
+export const formatRelativeLastViewed = (value?: string | null): string | null =>
+  formatRelativeTime(value, { fallback: null });
 
 // --- Redesign helpers: Host / Exposure / Attention columns ----------------
 

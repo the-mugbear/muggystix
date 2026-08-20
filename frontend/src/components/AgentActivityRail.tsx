@@ -40,6 +40,7 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 // Cadence when there's something live worth watching.
 const ACTIVE_POLL_MS = 60_000;
@@ -68,22 +69,10 @@ const statusIcon = (status: string) => {
   return <CircleDot className="size-3 text-muted-foreground" aria-hidden />;
 };
 
-const fmtAgo = (iso?: string | null): string => {
-  if (!iso) return '';
-  try {
-    const ms = Date.now() - new Date(iso).getTime();
-    if (ms < 0) return 'just now';
-    const sec = Math.floor(ms / 1000);
-    if (sec < 60) return `${sec}s ago`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    return `${Math.floor(hr / 24)}d ago`;
-  } catch {
-    return '';
-  }
-};
+/** Short relative age ("5m ago"). Shared with every other surface —
+ *  this was one of four byte-identical copies before v5.179.0. */
+const fmtAgo = (iso?: string | null): string =>
+  formatRelativeTime(iso, { withSeconds: true });
 
 const detailPath = (row: AgentSessionRow): string => {
   switch (row.kind) {

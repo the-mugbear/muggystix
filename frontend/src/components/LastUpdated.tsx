@@ -25,6 +25,7 @@ import { Switch } from './ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useNow } from '../hooks/useNow';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface LastUpdatedProps {
   /** Timestamp of the most recent successful fetch (Date or ISO string). null = never fetched. */
@@ -43,18 +44,14 @@ export interface LastUpdatedProps {
   compact?: boolean;
 }
 
+/** Anything under five seconds reads as "just now": this is a refresh
+ *  indicator, and a flickering "0s ago" is noise rather than information. */
 function formatRelative(value: Date | string | null): string {
-  if (!value) return 'never';
-  const d = typeof value === 'string' ? new Date(value) : value;
-  if (Number.isNaN(d.getTime())) return 'never';
-  const seconds = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (seconds < 5) return 'just now';
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  return formatRelativeTime(value, {
+    withSeconds: true,
+    justNowBelowMs: 5_000,
+    fallback: 'never',
+  });
 }
 
 export const LastUpdated: React.FC<LastUpdatedProps> = ({

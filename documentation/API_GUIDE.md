@@ -90,7 +90,9 @@ The `require_plan_scope` dependency validates the key, loads the bound agent + p
 ├── /llm-providers            # per-user LLM credentials + /{id}/complete
 ├── /integrations             # per-user scanner tool credentials
 ├── /feedback                 # admin triage of agent feedback rows
-├── /references               # SBOM, tool catalog (live, public reads)
+├── /references               # SBOM, tool registry, MCP catalog, TLS trust (public reads)
+├── /mcp                      # MCP transport (JSON-RPC 2.0) — see §5.9
+├── /mcp-telemetry/summary    # admin: per-tool MCP call outcomes
 └── /agent                    # AGENT API — see §5
 ```
 
@@ -200,6 +202,11 @@ Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — se
 | GET | `/references/sbom` | **v2.20.0** — Software Bill of Materials reflecting the deployed build's resolved dependency tree. Reads `requirements.txt` + `frontend/package-lock.json`. Memoised by manifest mtimes + `app_version` (so a release bump invalidates the cache even if dependencies didn't change). Classifies each component as direct (listed in `requirements.txt` / `package.json` root) or transitive. |
 | GET | `/references/preflight-script` | Returns `scripts/preflight.sh` (text/x-shellscript) — the recon-workflow environment probe agents run to check which tools the host has. Supports `--json`, `--strict`, `--help`. |
 | GET | `/references/tool-readiness` | **Authenticated** — the agent tool catalog checked against the current user's most recent environment probe: per-tool `installed`/`missing`/`warn`/`unknown` status + install hints. Returns `has_probe: false` (all `unknown`) when the user hasn't probed yet. Powers the ToolReference page's Host Readiness panel. |
+| GET | `/references/tools` | **v2.277.0** — the tool registry: every tool BlueStick knows about, with install/usage knowledge for humans and, for the `approved` subset, the phase/intrusiveness metadata agents key off. `?status=approved\|reference\|suggested\|rejected`, `?category=`. One source of truth for the Tool Reference page and the agent guardrail. |
+| PATCH | `/references/tools/{name}` | **Admin** — vet a tool: set `status` (approved / reference / rejected) and the human-facing prose. `ingestible` is deliberately not editable (it records whether a parser exists, not an operator decision), and `suggested` cannot be *set* — it means an agent asked. |
+| GET | `/references/mcp-tools` | The live MCP tool catalog: every tool, its input schema, the capability it needs, and which workflows see it — plus the per-client connect recipes (with a placeholder key) and this deployment's certificate fingerprint / self-signed status. Read off the server registry, so it cannot drift from what is served. |
+| GET | `/references/trust-cert-script` | **v2.286.0** — `scripts/trust-cert.sh` (text/x-shellscript): installs this deployment's certificate for MCP clients in both shapes they need. Download and read before running (it installs a trust anchor) — deliberately not advertised as `curl \| bash`. |
+| GET | `/references/tls-certificate` | The deployment's public TLS certificate (PEM). Pin it rather than disabling verification: `NODE_EXTRA_CA_CERTS` for Node clients, `SSL_CERT_DIR` for Codex. |
 
 ### 3.10 Two-factor auth (TOTP)
 
@@ -442,6 +449,8 @@ All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the r
 
 The surface spans **four** workflows, each with its own scope and Swagger tag: **plan-generation** (`agent-plan-generation`), **execution** (`agent-execution`), **reconnaissance** (`agent-recon`), and **assist** (`agent-assist`). A key minted for one workflow is rejected on the others' endpoints (403).
 
+Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, same checks, same audit row.
+
 ### 5.1 Project context (global-scope keys only)
 
 | Method | Path | Notes |
@@ -518,7 +527,28 @@ For "ask questions about this project" agents that shouldn't trigger the plan-ap
 
 **`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `exploitport:`, `header:`, `webtitle:`, `tech:`, `org:`, `certorg:`, `asn:`, `country:`, `note:`, `scan:`, `has:`, `follow:`, `assigned:` (alias `assignee:`)), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). `has:` takes one of `eol` · `smb_unsigned` · `weak_auth` · `cert_issue` · `weak_tls` · `cleartext` · `critical`/`high`/`medium`/`low` · `exploit` · `web` · `open_ports` · `tested` · `planned` · `notes` · `stale_review`. It is ANDed with the discrete filter params. `follow:` and `assigned:` accept `me` — which resolves against the **operator who started the (read-only) session** (so `assigned:me` means "hosts assigned to that operator") — and `assigned:`/`assignee:` also accept a **username** (case-insensitive; the value a user actually knows, since ids aren't surfaced) or a numeric user id. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); if the session has no bound operator, `follow:`/`assigned:` predicates also return 400. Backed by `host_query_dsl.parse_query` / `evaluate`.
 
-The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt (shown once); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists recent sessions.
+The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt + per-client MCP config (shown once); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists sessions (`?status=active|ended`, `?mine=`, `limit`/`offset`) and `GET /assist/sessions/{id}` returns one with the notes it wrote, its environment probe, and call/note/feedback counts. `GET /projects/{id}/assist-sessions/{sid}/api-activity` is the per-session audit feed, mirroring the plan and recon ones.
+
+Session status is **derived**: a session whose keys have all expired reports `ended` immediately, with an hourly sweep converging the stored column. Nothing accumulates as "active" waiting to be tidied up by hand.
+
+### 5.8 Cross-workflow endpoints
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/agent/identity` | **v2.278.0** — what this key is: workflow, bound project/plan/session ids, granted capabilities, the operator it acts for, and when it expires. Behind **no** workflow guard, deliberately: every other introspection route requires the workflow it describes, so an agent holding an unknown key could otherwise only classify it by trying surfaces until one stopped returning 403. |
+| POST | `/agent/tool-suggestions` | **v2.278.0** — record a request for a tool outside the approved set, with rationale. Lands as `suggested` (which no approval rule reads) for an admin to vet. Deliberately ungated: a capability gate would silence exactly the sessions most likely to hit the edge of the set. |
+
+### 5.9 MCP transport (`POST /api/v1/mcp`)
+
+JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2025-06-18` / `2025-03-26`). `initialize`, `tools/list`, `tools/call`, `ping`.
+
+* **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so capability gating, row scope, and the audit log are unchanged. The MCP layer makes no authorization decision.
+* **401 vs. isError.** No usable credential answers a real **HTTP 401** with a bare `WWW-Authenticate: Bearer` challenge (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
+* **Scoped listing.** `tools/list` returns only the caller's workflow's tools, plus `agent_identity`, `suggest_tool`, `read_agent_guide` and `list_approved_tools`. This is presentation, not authorisation — an unlisted tool called anyway still hits the endpoint's own guard.
+* **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages.
+* **Not tools:** the file-shaped endpoints (`report-context.ndjson`, `recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt`, `POST recon/upload`) stay `curl` — they belong on disk, not in a model's context.
+
+`GET /api/v1/mcp-telemetry/summary` (**admin**) reports per-tool call counts and outcomes, including `unknown_tools_called`. Full detail — client setup, certificate pinning, the tool registry, the guardrail model — is in [MCP.md](MCP.md).
 
 ---
 

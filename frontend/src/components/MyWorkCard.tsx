@@ -46,6 +46,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { cn } from '../utils/cn';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
 
@@ -74,14 +75,11 @@ const tsOf = (v?: string | null): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
+/** Compact age ("5m") — the column header already says what it measures.
+ *  Takes epoch ms because the callers sort on it first. */
 function fmtAgo(ms: number): string {
   if (!ms) return '';
-  const mins = Math.floor((Date.now() - ms) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
+  return formatRelativeTime(ms, { style: 'compact' });
 }
 
 /** "Overdue 2d" / "Due today" / "Due 3d" from a due timestamp. */

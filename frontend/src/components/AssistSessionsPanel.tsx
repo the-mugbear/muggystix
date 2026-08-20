@@ -20,6 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
+import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface AssistSessionsPanelProps {
   sessions: AssistSessionRow[];
@@ -27,22 +28,10 @@ export interface AssistSessionsPanelProps {
   onChanged: () => void | Promise<void>;
 }
 
-/** "4 minutes ago" / "2 hours ago". Local to this component, matching
- *  ProvenanceCard — there is no shared relative-time utility yet. */
-const formatAge = (iso: string | null): string | null => {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return null;
-  const mins = Math.floor((Date.now() - then) / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins === 1) return '1 minute ago';
-  if (mins < 60) return `${mins} minutes ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours === 1) return '1 hour ago';
-  if (hours < 24) return `${hours} hours ago`;
-  const days = Math.floor(hours / 24);
-  return days === 1 ? '1 day ago' : `${days} days ago`;
-};
+/** "4 minutes ago" — the long form, and null when there is no timestamp so the
+ *  caller renders nothing rather than a placeholder. */
+const formatAge = (iso: string | null): string | null =>
+  formatRelativeTime(iso, { style: 'long', fallback: null });
 
 /** Time remaining on the session's key, as the operator's decision needs it.
  *  Returns null when there is no live key — the caller renders that as a

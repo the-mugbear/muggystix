@@ -5,6 +5,58 @@ what's intentionally left for later.)
 
 ---
 
+## Deferred from the MCP / assist work — 2026-08-19
+
+Each of these was found while building something else, judged real, and left
+alone deliberately. Recorded here so the reasoning survives the conversation
+that produced it.
+
+### Test-harness
+
+- [ ] **`setupTests.ts` mocks `useParams` globally to `{ id: '1' }`.** Any page keyed
+  on its own route param therefore reads as "no param supplied" in tests and
+  silently falls through to its other branch — `AssistSessions` needed a local
+  override to test its detail view at all. Route-param behaviour is effectively
+  untested app-wide, and a page test can pass for the wrong reason. Fixing it
+  means auditing every suite that currently depends on the fixed `{ id: '1' }`,
+  which is why it isn't folded into a feature commit.
+- [ ] **Backend tests share one Postgres.** Parallel or concurrent runs interfere;
+  an external reviewer hit it too and their isolated rerun passed. Wants a
+  per-run database (or a transaction-per-test harness), not a retry.
+
+### Schema
+
+- [ ] **`assist_sessions.status` is free-text `String(20)` with no CHECK.** `"actve"`
+  is storable. Status semantics became load-bearing in 2.283.0 (the derived
+  active/ended rule), so this is the moment it earns a constraint.
+- [ ] **Stored vs. derived session status.** The column is *eventually* correct —
+  the hourly sweep converges it, the API derives the truth per request. Anything
+  querying `assist_sessions.status` directly (a future report, an ad-hoc SQL
+  check) gets a different answer from the API for up to an hour. The model needs
+  a comment saying the API is authoritative; the endpoints already say it, but
+  the next person to write a query won't read them.
+
+### Frontend
+
+- [ ] **Relative-time consolidation is done for the ten timestamp formatters**
+  (`utils/relativeTime.ts`, v5.179.0), but four surfaces were deliberately left
+  out because they answer different questions — calendar-day bucketing
+  (`MyActivityCard`), day/month scan age (`ProvenanceCard`), server-provided day
+  counts (`SecurityPosture` / `PortfolioDashboard` / `Operations`), and a
+  countdown (`TestPlanLayout.formatTimeLeft`). Listed in the util's docstring so
+  they don't read as misses. No action expected — this entry exists to stop the
+  next sweep "finishing the job" and breaking them.
+
+### Product
+
+- [ ] **Assist is absent from the unified `/agent-activity` timeline**, which covers
+  recon, plan generation and execution only. Widening it means touching the
+  shared session-kind service (`agent_sessions.py`, `SessionKindLiteral`), which
+  is a different change from giving assist its own page — that shipped as
+  `/assist-sessions` in 2.284.0.
+
+---
+
 ## Orphan inventory — 2026-08-10
 
 A whole-repo sweep for code that was built and then stranded: client functions with no

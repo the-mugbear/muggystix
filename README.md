@@ -23,8 +23,10 @@ BlueStick is a network visibility and review platform for aggregating host intel
   - **Recon** — agent populates host data for a scope from scanner output
   - **Plan generation** — agent reads candidate hosts and drafts a structured test plan
   - **Execution** — agent works through an approved plan with per-test human approval, per-host sanity-check gates, and a per-session environment probe so commands match the operator's host
-  - **AI Assist** — a read-only agent that answers ad-hoc questions over all project data using the same query DSL as the Hosts page (e.g. "show me the hosts I have in review")
+  - **AI Assist** — an interactive agent that answers ad-hoc questions over all project data using the same query DSL as the Hosts page (e.g. "show me the hosts I have in review"), and — when the operator grants it — records notes and review status on hosts assigned to them
   - Every agent request is recorded in an audit log surfaced in the UI so users can review exactly what their agent did and which hosts it touched. The contract agents read at startup is [AGENTS.md](AGENTS.md).
+- **MCP** — every agent workflow is also reachable over the [Model Context Protocol](documentation/MCP.md) at `/api/v1/mcp`, so an MCP-capable client (VS Code Copilot, Claude Code, Codex) calls them as native tools instead of shelling `curl`. `tools/list` is scoped to the workflow the caller's key belongs to; the session dialogs emit ready-to-paste client config, and `scripts/trust-cert.sh` handles the self-signed certificate each client rejects by default.
+- **Approve by exception, not by default** — an agent may run an approved tool against a host already in the inventory and write its output into the session's working directory without asking each time; anything outside those bounds stops for the operator. Which tools are approved is a table an admin vets ([Tool Reference](documentation/MCP.md#the-tool-registry)), and an agent that needs something else records the request rather than substituting.
 - **Export** scoped data and operational reports for downstream analysis (CSV, JSON, HTML; large PDF/JSON/zip bundles run as **async report jobs** on a dedicated report-worker container).
 
 ## Repository Layout
