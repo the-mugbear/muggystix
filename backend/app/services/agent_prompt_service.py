@@ -62,7 +62,11 @@ def _load_instance_id() -> Optional[str]:
         from app.db.session import SessionLocal
         from app.db.models_auth import SystemIdentity
         with SessionLocal() as db:
-            row = db.query(SystemIdentity).first()
+            # Ordered so every worker agrees on which row is the identity —
+            # see seed_system_identity (v2.298.0). An agent checks its
+            # instructions against this value; two workers naming different
+            # instances would make that check worse than useless.
+            row = db.query(SystemIdentity).order_by(SystemIdentity.id).first()
             _INSTANCE_ID_CACHE = row.instance_id if row else None
             return _INSTANCE_ID_CACHE
     except (OperationalError, ProgrammingError) as exc:

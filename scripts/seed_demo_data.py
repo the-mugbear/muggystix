@@ -157,10 +157,20 @@ def seed(db, name: str, host_count: int, owner: User):
     for h in hosts:
         sc = scan_for()
         db.add(models.HostScanHistory(host_id=h.id, scan_id=sc.id, discovered_at=h.first_seen))
-        # Ports
+        # Ports.  The real ingest path writes a PortScanHistory row per
+        # (port, scan) via HostDeduplicationService; seeded data has to do the
+        # same or it is not a faithful fixture — as of v2.298.0 the per-scan
+        # port counts are read from that table, so ports without history
+        # render as a scan that found nothing.
         for port, svc, _risky in RNG.sample(SERVICE_POOL, RNG.randint(2, 5)):
-            db.add(models.Port(host_id=h.id, port_number=port, protocol="tcp",
-                               state="open", service_name=svc, is_active=True))
+            p = models.Port(host_id=h.id, port_number=port, protocol="tcp",
+                            state="open", service_name=svc, is_active=True)
+            db.add(p)
+            db.flush()
+            db.add(models.PortScanHistory(
+                port_id=p.id, scan_id=sc.id, state_at_scan="open",
+                discovered_at=h.first_seen,
+            ))
         # Vulnerabilities (severity-weighted)
         for _ in range(RNG.randint(0, 6)):
             sev_enum, _sev_str, _w = RNG.choices(

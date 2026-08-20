@@ -315,33 +315,53 @@ def get_scans(
     results = scans_query.all()
     scan_ids = [r.id for r in results]
 
-    # Batch port stats for all scans at once (avoids N+1)
+    # Batch port stats for all scans at once (avoids N+1).
+    #
+    # v2.298.0 — these counts are what the scan OBSERVED, read from
+    # PortScanHistory.state_at_scan.  They previously came from the *current*
+    # Port rows of every host the scan had ever seen:
+    #
+    #     .select_from(Port).join(Host).join(HostScanHistory)
+    #
+    # which made a scan's port counts a function of everything that happened
+    # afterwards.  A port first discovered by Tuesday's scan was retroactively
+    # counted in Monday's; closing a port today rewrote what last month's scan
+    # "found".  For an artefact whose whole job is to be evidence of a moment,
+    # that is the wrong number — and the scan-comparison endpoint below already
+    # read PortScanHistory, so the same page could contradict itself.
+    #
+    # protocol still comes from Port (it is an identity of the port, not a
+    # per-scan observation), so the join stays — but it no longer decides
+    # membership or state.
     port_stats_map = {}
     if scan_ids:
         port_stats_rows = (
             db.query(
-                models.HostScanHistory.scan_id.label('scan_id'),
-                func.count(models.Port.id).label('total_ports'),
-                func.sum(case((models.Port.state == 'open', 1), else_=0)).label('open_ports'),
+                models.PortScanHistory.scan_id.label('scan_id'),
+                func.count(models.PortScanHistory.port_id).label('total_ports'),
+                func.sum(
+                    case((models.PortScanHistory.state_at_scan == 'open', 1), else_=0)
+                ).label('open_ports'),
                 func.count(distinct(models.Port.port_number)).label('unique_ports'),
                 func.sum(
                     case(
-                        (and_(models.Port.state == 'open', models.Port.protocol == 'tcp'), 1),
+                        (and_(models.PortScanHistory.state_at_scan == 'open',
+                              models.Port.protocol == 'tcp'), 1),
                         else_=0,
                     )
                 ).label('open_tcp_ports'),
                 func.sum(
                     case(
-                        (and_(models.Port.state == 'open', models.Port.protocol == 'udp'), 1),
+                        (and_(models.PortScanHistory.state_at_scan == 'open',
+                              models.Port.protocol == 'udp'), 1),
                         else_=0,
                     )
                 ).label('open_udp_ports'),
             )
-            .select_from(models.Port)
-            .join(models.Host, models.Port.host_id == models.Host.id)
-            .join(models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id)
-            .filter(models.HostScanHistory.scan_id.in_(scan_ids))
-            .group_by(models.HostScanHistory.scan_id)
+            .select_from(models.PortScanHistory)
+            .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
+            .filter(models.PortScanHistory.scan_id.in_(scan_ids))
+            .group_by(models.PortScanHistory.scan_id)
             .all()
         )
         port_stats_map = {row.scan_id: row for row in port_stats_rows}
@@ -472,16 +492,19 @@ def get_scans_summary(
     )
     host_row = host_agg.one()
 
-    # Open services — count open ports across the (host, scan) observations
+    # Open services — count open ports across the (port, scan) observations
     # of the matching scans.  Matches the list endpoint's per-scan open_ports
-    # summed client-side: each scan contributes the open ports on its hosts.
+    # summed client-side: each scan contributes the ports IT saw open
+    # (v2.298.0 — was the hosts' current open ports, so this total moved
+    # whenever a later scan changed the inventory).
     open_services_query = (
-        db.query(func.count(models.Port.id))
-        .select_from(models.Port)
-        .join(models.Host, models.Port.host_id == models.Host.id)
-        .join(models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id)
-        .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
-        .filter(models.Scan.project_id == project.id, models.Port.state == "open")
+        db.query(func.count(models.PortScanHistory.port_id))
+        .select_from(models.PortScanHistory)
+        .join(models.Scan, models.PortScanHistory.scan_id == models.Scan.id)
+        .filter(
+            models.Scan.project_id == project.id,
+            models.PortScanHistory.state_at_scan == "open",
+        )
     )
     open_services_query = _apply_scan_inventory_filters(
         open_services_query, search=search, tool=tool, created_after=created_after
@@ -834,10 +857,13 @@ def get_scan(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     # Attach accurate per-scan counts so the detail page's title cards
-    # match the /scans list badge.  Both derive from HostScanHistory /
-    # current Port state — the SAME aggregate the list endpoint uses.
+    # match the /scans list badge — the SAME aggregate the list endpoint uses.
     # Pre-fix the detail page counted the *fetched* host list (capped at
     # limit=1000), so a 1942-host scan rendered "1000/1000 up".
+    #
+    # v2.298.0 — ports now come from PortScanHistory.state_at_scan, i.e. what
+    # THIS scan observed, not the hosts' current port rows. See the list
+    # endpoint for why.
     host_row = (
         db.query(
             func.count(models.HostScanHistory.id),
@@ -848,13 +874,12 @@ def get_scan(
     )
     port_row = (
         db.query(
-            func.count(models.Port.id),
-            func.sum(case((models.Port.state == "open", 1), else_=0)),
+            func.count(models.PortScanHistory.port_id),
+            func.sum(
+                case((models.PortScanHistory.state_at_scan == "open", 1), else_=0)
+            ),
         )
-        .select_from(models.Port)
-        .join(models.Host, models.Port.host_id == models.Host.id)
-        .join(models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id)
-        .filter(models.HostScanHistory.scan_id == scan.id)
+        .filter(models.PortScanHistory.scan_id == scan.id)
         .one()
     )
     # Non-mapped instance attributes — read by the Scan Pydantic schema

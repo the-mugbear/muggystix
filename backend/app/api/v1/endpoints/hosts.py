@@ -1036,6 +1036,17 @@ def get_host_filter_data_v2(
     ]
 
     # Subnets — scoped host counts when filters are active
+    #
+    # v2.298.0 (cross-project leak).  The project restriction has to live HERE,
+    # on the base relation, not only on the host side.  The host predicate
+    # below is `or_(host_scope, HostSubnetMapping.host_id.is_(None))` — that
+    # second arm exists so a scoped-but-empty subnet still shows in the facet,
+    # and it matched empty subnets belonging to OTHER projects too, exposing
+    # their CIDR and scope name to anyone who could load this endpoint.  A
+    # populated foreign subnet was excluded (its hosts fail host_scope), which
+    # is why this survived: the leak was invisible in any project whose
+    # neighbours had no empty subnets.  The site query immediately below always
+    # had the filter; this one never did.
     subnet_query = db.query(
         models.Subnet.cidr,
         models.Scope.name.label('scope_name'),
@@ -1044,6 +1055,8 @@ def get_host_filter_data_v2(
         models.Scope, models.Subnet.scope_id == models.Scope.id
     ).outerjoin(
         models.HostSubnetMapping, models.Subnet.id == models.HostSubnetMapping.subnet_id
+    ).filter(
+        models.Scope.project_id == project.id
     )
     if host_scope is not None:
         subnet_query = subnet_query.outerjoin(

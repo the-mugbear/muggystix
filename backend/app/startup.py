@@ -207,6 +207,7 @@ async def agent_api_call_retention_loop() -> None:
 # a sibling was mid-bootstrap and skip admin creation entirely: fresh DB,
 # no admin, and a credential file advertising a dead instance's password.
 _BOOTSTRAP_ADMIN_LOCK = 0x42535F41444D  # "BS_ADM"
+_SYSTEM_IDENTITY_LOCK = 0x42535F494454  # "BS_IDT"
 
 
 def admin_marker_path() -> str:
@@ -500,12 +501,29 @@ def seed_system_identity() -> None:
     forfeits it).  Used by the /.well-known/networkmapper.json endpoint
     and by the prompt provenance block so hesitant agents can verify
     they're talking to the instance that generated their instructions.
+
+    v2.298.0 — serialized on an advisory lock, like ``seed_default_admin``.
+    Production runs four Uvicorn workers, and ``instance_id`` is unique while
+    the primary key is a plain autoincrement, so nothing stopped two workers
+    from both seeing an empty table and inserting *different* UUIDs.  Reads use
+    an unordered ``.first()``, so the deployment could then answer with either
+    one — defeating the single thing this table exists to provide: an identity
+    an agent can check its instructions against.  Losing workers take the lock
+    after the winner commits, re-read, and return.
     """
     from app.db.session import SessionLocal
     from app.db.models_auth import SystemIdentity
 
     with SessionLocal() as db:
-        existing = db.query(SystemIdentity).first()
+        # Non-Postgres (sqlite dev/tests, single process) needs no lock.
+        if db.bind.dialect.name == "postgresql":
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:k)"),
+                {"k": _SYSTEM_IDENTITY_LOCK},
+            )
+        # Re-read UNDER the lock — a pre-lock check would race exactly the way
+        # the unlocked version did.
+        existing = db.query(SystemIdentity).order_by(SystemIdentity.id).first()
         if existing:
             logger.info("System identity: %s (existing)", existing.instance_id)
             return
@@ -537,7 +555,9 @@ def get_instance_id() -> Optional[str]:
     from app.db.models_auth import SystemIdentity
     try:
         with SessionLocal() as db:
-            row = db.query(SystemIdentity).first()
+            # Ordered, so a deployment that already raced to two rows before
+            # v2.298.0 at least answers with the SAME one from every worker.
+            row = db.query(SystemIdentity).order_by(SystemIdentity.id).first()
             if row:
                 _cached_instance_id = row.instance_id
                 return _cached_instance_id
