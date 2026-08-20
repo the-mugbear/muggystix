@@ -4,15 +4,14 @@ Shared FastAPI dependencies for project-scoped endpoints.
 
 import hashlib
 import logging
-import threading
-import time
-from collections import deque
 from datetime import datetime, timedelta, timezone
-from typing import Deque, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import CompileError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
@@ -21,8 +20,8 @@ from app.db.models import HostFollow
 from app.db.models_auth import User, UserRole, APIKey
 from app.db.models_agent import (
     Agent,
-    AgentApiCall,
     AgentCapabilityConstraint,
+    AgentRateBucket,
     LEGACY_WRITE_CAPABILITIES,
 )
 from app.api.v1.endpoints.auth import get_current_user
@@ -58,21 +57,16 @@ _AGENT_ACTIVITY_DEBOUNCE_SECONDS = 60.0
 # on Agent.rate_limit_rpm.
 _AGENT_RATE_WINDOW_SECONDS = 60.0
 
-# In-process sliding-window of recent agent calls, per agent_id.
-# Supplements the DB-backed count: the audit rows the DB count reads are
-# now written by a *post-response* BackgroundTask (agent_api_log_service),
-# so under a burst the in-flight requests aren't persisted yet and the DB
-# count lags (and reads 0 entirely if the background writer is failing) —
-# i.e. the limiter would fail open exactly under load.  This per-worker
-# deque counts requests synchronously at auth time, closing that race for
-# bursts that land on one worker; the DB count remains the cross-worker
-# ceiling.  Effective limit = max(db_count, in-process count).
-_AGENT_RECENT_CALLS: "Dict[int, Deque[float]]" = {}
-_AGENT_RECENT_CALLS_LOCK = threading.Lock()
-# Above this many tracked agents, opportunistically sweep out entries whose
-# rate window has fully drained (idle/dead agents), so the map stays bounded by
-# ACTIVE agents rather than every distinct agent seen since restart.
-_AGENT_RECENT_CALLS_SWEEP_AT = 1024
+# v2.300.0 — the per-worker deque (`_AGENT_RECENT_CALLS`) and its lock and
+# sweep threshold are gone.  They existed only to paper over a DB count that
+# lagged because it read a post-response audit log; enforcement no longer reads
+# that log at all.  Shared state now lives in `agent_rate_buckets`, which is
+# where a limit spanning four Uvicorn workers has to live.
+#
+# Sweep old buckets every Nth admitted request for an agent.  Sampling, not a
+# per-request delete: the statement is indexed and small, but on the hot path
+# "small and pointless" still costs a round trip.
+_AGENT_RATE_SWEEP_EVERY = 500
 
 
 def resolve_capabilities(*, workflow, agent_session) -> tuple[frozenset, str | None]:
@@ -404,74 +398,90 @@ def check_agent_rate_limit(
 ) -> Agent:
     # v2.91.4 (third code review #3) — synchronous body (one COUNT query).
     # Plain `def` so FastAPI runs it in the thread pool.
-    """Enforce per-agent sliding-window rate limiting.
+    """Enforce the per-agent request rate, atomically across workers.
 
-    v2.26.0 — counts rows in ``agent_api_calls`` within the last
-    ``_AGENT_RATE_WINDOW_SECONDS`` instead of maintaining an
-    in-process dict.  Two side benefits:
+    v2.300.0 — capacity is now **reserved** at admission with a single
+    ``INSERT ... ON CONFLICT DO UPDATE ... RETURNING count`` against
+    ``agent_rate_buckets``.  Postgres serializes concurrent upserts of the same
+    row, so four Uvicorn workers admitting simultaneously each get a distinct,
+    increasing count and one limit holds across all of them.
 
-    1. The limit is enforced **globally** across Uvicorn workers
-       (previous behaviour: N workers each enforced the limit
-       independently, so the effective limit was N × rate_limit_rpm).
-    2. No new infrastructure — the audit log added in v2.24.0
-       already records every authenticated agent request with an
-       indexed ``(agent_id, created_at)`` lookup path.
+    What this replaces, and why neither half could work:
 
-    The audit rows the DB count reads are written by a *post-response*
-    BackgroundTask (v2.91.4), so the DB count lags the actual request
-    rate under burst and reads 0 if the background writer is failing —
-    the limiter would fail open exactly when it matters.  We therefore
-    take the **max** of the lagging DB count (cross-worker ceiling) and
-    an in-process sliding-window count recorded synchronously here
-    (closes the deferred-write race for a burst on one worker).
+    * A ``COUNT`` over ``agent_api_calls``.  Those rows are written by a
+      **post-response** BackgroundTask (v2.91.4), so the count excluded every
+      request currently in flight — and read 0 outright if the background
+      writer was failing, i.e. the limiter failed open exactly when it
+      mattered.  Enforcement was reading an audit log that had not been
+      written yet.
+    * An in-process deque, which lives in one worker.  Taking ``max()`` of the
+      two narrowed the race without closing it: a burst distributed across
+      workers still passed, and *adding workers made the limit weaker* — the
+      opposite of what scaling out should do.
+
+    The window is fixed rather than sliding (see ``AgentRateBucket``): the
+    trade is up to 2x ``rate_limit_rpm`` across a boundary, a bounded abuse
+    ceiling in place of the unbounded one it replaces.
+
+    A rejected request still increments the bucket — deliberately, and unlike
+    the old behaviour.  With a fixed window the count cannot extend a lockout
+    past the window's own expiry, so a client hammering the limit waits at most
+    one window, while an attacker no longer gets retries the limiter declines
+    to count.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_AGENT_RATE_WINDOW_SECONDS)
-    db_count = (
-        db.query(func.count(AgentApiCall.id))
-        .filter(
-            AgentApiCall.agent_id == agent.id,
-            AgentApiCall.created_at >= cutoff,
-        )
-        .scalar()
-        or 0
-    )
+    now = datetime.now(timezone.utc)
+    window_seconds = int(_AGENT_RATE_WINDOW_SECONDS)
+    # Truncate to the window so every worker derives the same bucket key
+    # without coordinating.
+    epoch = int(now.timestamp()) // window_seconds * window_seconds
+    window_start = datetime.fromtimestamp(epoch, tz=timezone.utc)
 
-    # In-process count of prior requests still inside the window (pruned),
-    # recorded synchronously and not dependent on the deferred audit write.
-    now_m = time.monotonic()
-    window_start = now_m - _AGENT_RATE_WINDOW_SECONDS
-    with _AGENT_RECENT_CALLS_LOCK:
-        dq = _AGENT_RECENT_CALLS.setdefault(agent.id, deque())
-        while dq and dq[0] < window_start:
-            dq.popleft()
-        inproc_prior = len(dq)
-        effective_prior = max(db_count, inproc_prior)
-        if effective_prior >= agent.rate_limit_rpm:
-            # Don't record the rejected call — a client hammering past the
-            # limit must not extend its own lockout indefinitely.
-            if not dq:
-                # Reject path only: we're not about to append, so an empty
-                # deque here is pure dead weight — drop it.  (We can't pop on
-                # the accept path: `dq` is a live reference we're about to
-                # append to; popping would detach it and lose the count.)
-                # Steady-state growth is therefore bounded by distinct agents
-                # seen since restart — a non-empty deque lingers until that
-                # agent's next call prunes it — not strictly to active agents.
-                _AGENT_RECENT_CALLS.pop(agent.id, None)
-            raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        dq.append(now_m)
-        # Bound the map: when it's grown large, drop other agents whose most
-        # recent call is older than the window (their deque would prune to
-        # empty) — they're idle/dead and only this agent's deque is pruned per
-        # call, so they'd otherwise linger until they call again (never, for a
-        # dead agent). Cheap: only runs past the threshold.
-        if len(_AGENT_RECENT_CALLS) > _AGENT_RECENT_CALLS_SWEEP_AT:
-            stale = [
-                aid for aid, d in _AGENT_RECENT_CALLS.items()
-                if aid != agent.id and (not d or d[-1] < window_start)
-            ]
-            for aid in stale:
-                _AGENT_RECENT_CALLS.pop(aid, None)
+    stmt = (
+        pg_insert(AgentRateBucket)
+        .values(agent_id=agent.id, window_start=window_start, count=1)
+        .on_conflict_do_update(
+            index_elements=["agent_id", "window_start"],
+            set_={"count": AgentRateBucket.__table__.c.count + 1},
+        )
+        .returning(AgentRateBucket.__table__.c.count)
+    )
+    try:
+        count = db.execute(stmt).scalar_one()
+        # Commit immediately: the row lock is held until this transaction ends,
+        # and holding it for the request's duration would serialize every call
+        # from the same agent.  get_current_agent already commits in this same
+        # dependency chain, so there is no caller work to disturb.
+        db.commit()
+    except (ProgrammingError, OperationalError, CompileError):
+        # No ON CONFLICT support (sqlite dev), or the table is missing because
+        # migrations have not run yet.  Fail OPEN rather than locking every
+        # agent out of a deployment mid-upgrade — the limiter this replaces
+        # also failed open, and a boot-order problem must not present as an
+        # attack.  Logged so it can never be silent.
+        db.rollback()
+        logger.warning(
+            "agent rate limiting unavailable (agent_rate_buckets not usable) - "
+            "admitting the request; run migrations",
+            exc_info=True,
+        )
+        return agent
+
+    if count > agent.rate_limit_rpm:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    # Opportunistic housekeeping: drop buckets from windows nothing can be
+    # counted against any more.  Sampled rather than run per request — the
+    # delete is indexed and tiny, but it is still pure hot-path overhead.
+    if count % _AGENT_RATE_SWEEP_EVERY == 0:
+        try:
+            db.query(AgentRateBucket).filter(
+                AgentRateBucket.window_start
+                < window_start - timedelta(seconds=window_seconds),
+            ).delete(synchronize_session=False)
+            db.commit()
+        except Exception:  # pragma: no cover - housekeeping must never 500
+            db.rollback()
+            logger.warning("agent rate bucket sweep failed", exc_info=True)
     return agent
 
 

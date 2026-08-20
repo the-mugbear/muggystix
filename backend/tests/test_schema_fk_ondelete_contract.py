@@ -36,6 +36,9 @@ EXPECTED_ONDELETE = {
     ('activity_cursors', 'project_id'): 'CASCADE',
     ('activity_cursors', 'user_id'): 'CASCADE',
     ('agent_api_calls', 'agent_id'): 'CASCADE',
+    # v2.300.0 — rate-limit buckets die with their agent; a counter for a
+    # deleted agent can never be consulted again.
+    ('agent_rate_buckets', 'agent_id'): 'CASCADE',
     ('agent_api_calls', 'api_key_id'): 'SET NULL',
     ('agent_api_calls', 'assist_session_id'): 'SET NULL',
     ('agent_api_calls', 'execution_session_id'): 'SET NULL',

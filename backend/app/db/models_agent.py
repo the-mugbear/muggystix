@@ -1483,3 +1483,51 @@ class McpToolCall(Base):
         Index("idx_mcp_tool_call_outcome_created", "outcome", "created_at"),
         Index("idx_mcp_tool_call_tool_created", "tool_name", "created_at"),
     )
+
+
+class AgentRateBucket(Base):
+    """Per-agent request counter for one fixed rate-limit window.
+
+    v2.300.0.  Rate limiting used to take ``max()`` of two counts, neither of
+    which could enforce a shared limit:
+
+    * a COUNT over ``agent_api_calls``, whose rows are written by a
+      **post-response** BackgroundTask — so the count lagged every request
+      currently in flight, and read 0 outright if the background writer was
+      failing, i.e. it failed open exactly when it mattered;
+    * an in-process deque, which exists only inside one Uvicorn worker.
+
+    Production runs four workers, so a burst spread across them could exceed
+    ``rate_limit_rpm`` before a single audit row landed — and adding workers
+    widened the gap, meaning the limit weakened as the deployment scaled.
+
+    This row is the shared state that fixes it.  Admission does one
+    ``INSERT … ON CONFLICT DO UPDATE … RETURNING count``, which is atomic
+    across workers: Postgres serializes concurrent upserts of the same row, so
+    every caller gets a distinct, increasing count and capacity is *reserved*
+    at admission rather than inferred afterwards.  Enforcement no longer
+    depends on the audit log, which goes back to being purely an audit log.
+
+    Fixed window rather than sliding: a sliding window needs either per-request
+    timestamps (the deque — per-worker again) or a second bucket plus
+    interpolation.  The trade is the standard one — up to 2x ``rate_limit_rpm``
+    across a window boundary — which is an acceptable abuse ceiling on a
+    trusted-operator surface, and is *bounded*, unlike what it replaces.
+    """
+    __tablename__ = "agent_rate_buckets"
+
+    agent_id = Column(
+        Integer,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    #: Start of the window this row counts, truncated to the window size.
+    #: Part of the key, so a new window is a new row rather than a
+    #: read-then-reset (which would be a race of its own).
+    window_start = Column(DateTime(timezone=True), primary_key=True)
+    count = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        # Housekeeping deletes by age; without this the sweep scans the table.
+        Index("idx_agent_rate_bucket_window", "window_start"),
+    )

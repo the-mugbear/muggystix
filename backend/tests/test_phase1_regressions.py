@@ -1339,25 +1339,29 @@ def test_analyze_scope_size_collapses_empty_into_small():
 #    entry update.
 # ---------------------------------------------------------------------------
 
-def test_rate_limit_uses_agent_api_call_log(
+def test_rate_limit_is_enforced_from_shared_state_not_the_audit_log(
     client, db_session, test_plan, execution_session_with_key, test_agent,
 ):
-    """The new limiter counts rows in agent_api_calls within the last 60s.
-    Pre-populating that table to the limit causes the next request to 429."""
+    """v2.300.0 — the limit is enforced from ``agent_rate_buckets``.
+
+    This replaces two tests that asserted the previous mechanism: a COUNT over
+    ``agent_api_calls``. Those rows are written by a POST-RESPONSE background
+    task, so the count excluded every in-flight request and read 0 if the
+    writer was failing — the limiter failed open exactly under load. Enforcement
+    no longer reads the audit log at all, so pre-loading it must NOT trip the
+    limiter, and real requests must.
+    """
     from datetime import datetime, timezone, timedelta
     from app.db.models_agent import AgentApiCall
+
     key = execution_session_with_key["key"]
     test_plan.status = "approved"
-    db_session.commit()
-
-    # Bring the agent down to a tiny limit so we don't have to pre-load a
-    # realistic number of rows.
     test_agent.rate_limit_rpm = 3
     db_session.commit()
 
-    # Three rows within the 60s window → at the limit.
+    # Audit rows at the limit. Under the old limiter this alone caused a 429.
     now = datetime.now(timezone.utc)
-    for i in range(3):
+    for _ in range(5):
         db_session.add(AgentApiCall(
             agent_id=test_agent.id, project_id=test_plan.project_id,
             test_plan_id=test_plan.id,
@@ -1367,37 +1371,37 @@ def test_rate_limit_uses_agent_api_call_log(
         ))
     db_session.commit()
 
-    # The 4th request hits the limiter (count == limit before the new
-    # request is logged) → 429.
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
-    assert resp.status_code == 429, resp.text
+    url = f"/api/v1/agent/test-plans/{test_plan.id}/execution-context"
+    # The audit log is not the limiter's input, so this passes.
+    assert client.get(url, headers={"X-API-Key": key}).status_code == 200
+
+    # Actual requests are what count. Two more reach the limit of 3...
+    for _ in range(2):
+        assert client.get(url, headers={"X-API-Key": key}).status_code == 200
+    # ...and the next is refused.
+    assert client.get(url, headers={"X-API-Key": key}).status_code == 429
 
 
-def test_rate_limit_ignores_rows_outside_window(
+def test_rate_limit_does_not_count_a_previous_window(
     client, db_session, test_plan, execution_session_with_key, test_agent,
 ):
-    """Rows older than the 60s window must not count toward the limit —
-    otherwise the limit would only ever climb."""
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_agent import AgentApiCall
+    """A spent window must not hold the agent down forever — otherwise the
+    count would only ever climb and the limit would become a permanent ban."""
+    from datetime import datetime, timedelta, timezone
+    from app.db.models_agent import AgentRateBucket
+
     key = execution_session_with_key["key"]
     test_plan.status = "approved"
     test_agent.rate_limit_rpm = 3
     db_session.commit()
 
-    # Three rows OUTSIDE the window — must not count.
-    old = datetime.now(timezone.utc) - timedelta(seconds=120)
-    for i in range(3):
-        db_session.add(AgentApiCall(
-            agent_id=test_agent.id, project_id=test_plan.project_id,
-            test_plan_id=test_plan.id,
-            method="GET", path="/api/v1/agent/test-plans/x",
-            status_code=200, duration_ms=10,
-            created_at=old,
-        ))
+    # A full bucket belonging to an EARLIER window.
+    now = datetime.now(timezone.utc)
+    epoch = int(now.timestamp()) // 60 * 60
+    previous = datetime.fromtimestamp(epoch - 60, tz=timezone.utc)
+    db_session.add(AgentRateBucket(
+        agent_id=test_agent.id, window_start=previous, count=999,
+    ))
     db_session.commit()
 
     resp = client.get(
@@ -1407,28 +1411,98 @@ def test_rate_limit_ignores_rows_outside_window(
     assert resp.status_code == 200, resp.text
 
 
-def test_rate_limit_inprocess_counter_without_db_rows(test_agent, db_session):
-    """The in-process sliding-window counter must enforce the limit even
-    when the agent_api_calls DB count is 0.  The audit rows the DB count
-    reads are written by a *post-response* BackgroundTask, so under a burst
-    on one worker the DB count lags (or reads 0 if the writer is failing)
-    and the limiter would fail open exactly under load.  check_agent_rate_limit
-    takes max(db_count, in-process count); this drives the in-process branch
-    directly with an empty audit table.  (The autouse _reset_agent_rate_limit_state
-    fixture clears the module deque between tests.)"""
+def test_rate_limit_holds_across_independent_connections(db_session):
+    """Enforcement lives in shared DB state, not in the calling session.
+
+    Each call here runs on its OWN connection and its own Agent instance, so
+    nothing but the ``agent_rate_buckets`` row carries the count between them —
+    which is what lets one limit span four Uvicorn workers.
+
+    Honest scope: this does NOT fail against the old limiter, because the old
+    per-worker deque did catch a burst confined to one process, and pytest is
+    one process. A genuine multi-process test would need spawned workers. The
+    defect is isolated by ``test_rate_limit_is_enforced_from_shared_state_not_
+    the_audit_log`` above, which does fail pre-fix; this one pins the mechanism
+    the cross-worker property rests on.
+
+    The fixtures live inside the test transaction and so are invisible to other
+    connections; this commits its own minimal project/user/agent on an
+    independent session and removes them afterwards.
+    """
     from fastapi import HTTPException
+    from sqlalchemy.orm import sessionmaker
+
     from app.api.deps import check_agent_rate_limit
+    from app.db.models_agent import Agent, AgentRateBucket
+    from app.db.models_auth import User, UserRole
+    from app.db.models_project import Project
+    from tests.conftest import engine
 
-    test_agent.rate_limit_rpm = 3
-    db_session.commit()
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("the ON CONFLICT upsert is the Postgres path")
 
-    # No AgentApiCall rows exist → db_count stays 0; only the synchronous
-    # in-process deque accumulates.  First 3 pass, 4th trips 429.
-    for _ in range(3):
-        assert check_agent_rate_limit(agent=test_agent, db=db_session) is test_agent
-    with pytest.raises(HTTPException) as exc:
-        check_agent_rate_limit(agent=test_agent, db=db_session)
-    assert exc.value.status_code == 429
+    Independent = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    ids = {}
+    try:
+        with Independent() as s:
+            project = Project(name="rate-limit-concurrency", slug="rate-limit-concurrency")
+            s.add(project)
+            user = User(
+                username="rate-limit-worker",
+                email="rate-limit-worker@example.com",
+                hashed_password="x",
+                role=UserRole.MEMBER,
+                is_active=True,
+            )
+            s.add(user)
+            s.flush()
+            agent = Agent(
+                name="rate-limit-agent", project_id=project.id,
+                owner_id=user.id, rate_limit_rpm=3,
+            )
+            s.add(agent)
+            s.commit()
+            ids = {"project": project.id, "user": user.id, "agent": agent.id}
+
+        admitted, refused = 0, 0
+        # Six calls, each on its OWN connection — no shared process state.
+        for _ in range(6):
+            with Independent() as worker_db:
+                worker_agent = worker_db.get(Agent, ids["agent"])
+                try:
+                    check_agent_rate_limit(agent=worker_agent, db=worker_db)
+                    admitted += 1
+                except HTTPException as exc:
+                    assert exc.status_code == 429
+                    refused += 1
+
+        assert admitted == 3, (
+            f"{admitted} calls admitted against a limit of 3 — the limit is not "
+            "shared across connections"
+        )
+        assert refused == 3
+
+        # The count is in the row, and refused calls are counted too — with a
+        # fixed window that cannot extend a lockout past the window's own
+        # expiry, so an attacker gets no uncounted retries.
+        with Independent() as s:
+            buckets = s.query(AgentRateBucket).filter(
+                AgentRateBucket.agent_id == ids["agent"]
+            ).all()
+            assert len(buckets) == 1
+            assert buckets[0].count == 6
+    finally:
+        with Independent() as s:
+            if ids.get("agent"):
+                s.query(AgentRateBucket).filter(
+                    AgentRateBucket.agent_id == ids["agent"]
+                ).delete(synchronize_session=False)
+                s.query(Agent).filter(Agent.id == ids["agent"]).delete()
+            if ids.get("project"):
+                s.query(Project).filter(Project.id == ids["project"]).delete()
+            if ids.get("user"):
+                s.query(User).filter(User.id == ids["user"]).delete()
+            s.commit()
 
 
 def test_audit_log_redacts_value_shaped_secrets():

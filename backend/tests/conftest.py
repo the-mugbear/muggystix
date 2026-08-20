@@ -371,19 +371,28 @@ def client(db_session, test_user):
 
 
 @pytest.fixture(autouse=True)
-def _reset_agent_rate_limit_state():
-    """Clear the in-process agent rate-limit sliding-window between tests.
+def _reset_agent_rate_limit_state(db_session):
+    """Clear rate-limit buckets between tests.
 
-    ``deps._AGENT_RECENT_CALLS`` is a module-global keyed by agent_id; with
-    per-test rollback, agent_ids repeat across tests, so a deque left
-    populated by one test could spuriously trip the limiter in the next.
+    v2.300.0 — the state moved from a per-worker in-process deque to the shared
+    ``agent_rate_buckets`` table, which is what lets one limit span four Uvicorn
+    workers.  The isolation problem is unchanged: with per-test rollback,
+    agent_ids repeat across tests, so a bucket left populated by one test could
+    spuriously trip the limiter in the next.
     """
-    from app.api import deps
-    with deps._AGENT_RECENT_CALLS_LOCK:
-        deps._AGENT_RECENT_CALLS.clear()
+    from app.db.models_agent import AgentRateBucket
+
+    def _clear():
+        try:
+            db_session.query(AgentRateBucket).delete(synchronize_session=False)
+            db_session.flush()
+        except Exception:
+            # Table absent (a schema-less unit test) — nothing to isolate.
+            db_session.rollback()
+
+    _clear()
     yield
-    with deps._AGENT_RECENT_CALLS_LOCK:
-        deps._AGENT_RECENT_CALLS.clear()
+    _clear()
 
 
 @pytest.fixture
