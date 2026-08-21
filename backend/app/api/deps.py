@@ -484,6 +484,36 @@ def get_current_agent(
     return agent
 
 
+def identify_agent_if_present(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_agent_bearer),
+    db: Session = Depends(get_db),
+) -> Optional[Agent]:
+    """Attribute an agent's call on an endpoint that does not *require* an agent.
+
+    v2.312.0.  Two MCP tools dispatch to public endpoints — ``read_agent_guide``
+    to ``/agents-guide`` and ``list_approved_tools`` to ``/references/tools`` —
+    and the agent sends its key on both.  Neither endpoint looked at it, so
+    ``request.state`` carried no attribution and the audit middleware dropped
+    the row: a four-call assist session showed two entries, which reads as a
+    quieter agent rather than as a partial record.
+
+    Attribution comes from **authenticating the key**, never from a header the
+    caller supplies, so this cannot be used to write an audit row against
+    someone else's agent.
+
+    Use only on endpoints that are already public. A missing or unusable key is
+    not this endpoint's problem — it serves everyone — it simply earns no audit
+    row, which is the same record an anonymous caller has always produced.
+    """
+    if not request.headers.get("x-api-key") and credentials is None:
+        return None
+    try:
+        return get_current_agent(request=request, credentials=credentials, db=db)
+    except HTTPException:
+        return None
+
+
 def check_agent_rate_limit(
     agent: Agent = Depends(get_current_agent),
     db: Session = Depends(get_db),

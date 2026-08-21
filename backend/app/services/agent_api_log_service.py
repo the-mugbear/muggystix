@@ -55,6 +55,43 @@ MAX_BODY_BYTES = 8 * 1024
 AGENT_API_PREFIX = "/api/v1/agent/"
 
 
+# Public endpoints that agent tooling calls with its key, which therefore
+# belong in the activity log despite sitting outside the agent prefix.
+#
+# v2.312.0.  The audit log decided what to record from a URL prefix, on the
+# assumption that "an agent call" and "a call under /api/v1/agent/" are the same
+# set.  Two MCP tools break that: ``read_agent_guide`` fetches
+# ``/api/v1/agents-guide`` and ``list_approved_tools`` fetches
+# ``/api/v1/references/tools``.  Both are things the agent did, with its own key,
+# inside a session — and neither appeared in the operator's session view.  A
+# four-call session showed two rows, which reads as a quieter agent rather than
+# as a partial record.
+#
+# Spelled out here rather than derived from the MCP registry because a service
+# must not import the router layer (``test_service_router_boundary``).  The
+# agreement is enforced instead by
+# ``tests/test_agent_activity_covers_mcp_tools.py``, which walks the real
+# registry and fails if any tool dispatches somewhere this predicate ignores —
+# so adding a tool pointed at a new public endpoint fails loudly rather than
+# quietly going unlogged.
+#
+# Matched exactly: both entries are static, and a templated path would need real
+# matching rather than a silent near-miss (the same test rejects one).
+#
+# Widening the predicate does not widen what is stored.  ``_write_row`` still
+# discards any request that did not authenticate as an agent, so the UI's and an
+# anonymous client's hits on these public endpoints record nothing.
+AGENT_AUDITED_PUBLIC_PATHS = frozenset({
+    "/api/v1/agents-guide",
+    "/api/v1/references/tools",
+})
+
+
+def is_agent_audited_path(path: str) -> bool:
+    """Whether a request path belongs in the agent activity log."""
+    return path.startswith(AGENT_API_PREFIX) or path in AGENT_AUDITED_PUBLIC_PATHS
+
+
 # Methods whose body we capture (mutations) vs skip (reads).
 _BODY_CAPTURE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -349,7 +386,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        is_agent_path = path.startswith(AGENT_API_PREFIX)
+        is_agent_path = is_agent_audited_path(path)
 
         # Read the body BEFORE call_next() — request.body() can only
         # be awaited once, and the handler downstream will read it

@@ -31,6 +31,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.deps import identify_agent_if_present
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
@@ -258,6 +259,10 @@ def tool_registry(
     status: Optional[str] = None,
     category: Optional[str] = None,
     db: Session = Depends(get_db),
+    # Public endpoint; the dependency only stamps attribution when an agent key
+    # is presented, so `list_approved_tools` lands in the session's activity
+    # log instead of vanishing (v2.312.0).
+    _agent=Depends(identify_agent_if_present),
 ):
     """The tool registry — every tool BlueStick knows about (v2.277.0).
 
@@ -563,7 +568,12 @@ async def references_index():
 
 
 @router.get("/agents-guide")
-async def agents_guide(request: Request, workflow: Optional[str] = None):
+async def agents_guide(
+    request: Request,
+    workflow: Optional[str] = None,
+    # See tool_registry above — attribution only, never a requirement.
+    _agent=Depends(identify_agent_if_present),
+):
     """Serve AGENTS.md with the base URL replaced to match the current deployment.
 
     Accepts an optional ``workflow`` query parameter (``plan_generation``,
