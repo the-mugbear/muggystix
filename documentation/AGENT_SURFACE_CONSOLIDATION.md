@@ -500,11 +500,55 @@ keys are possible and the workflow guards are gone, a viewer's agent would have
 data egress its own JWT session is denied. The end state needs a minimum *read*
 role per route, not a single membership check.
 
-### Phase 6 — Delete the split
-* Remove the workflow guards; `workflow` becomes a label.
-* Collapse the twelve shared columns; per-workflow tables keep only their 2–4
-  real fields.
-* Drop the four legacy scope columns from `api_keys`.
+### Phase 6 — Audited, and the guard removal is **cancelled**
+The precondition from Phase 5 was an audit of what each workflow check is
+actually load-bearing for, because `write:execution` turned out to be silently
+holding up the cross-workflow boundary. That audit says: **keep the guards.**
+
+Three findings, all of which post-date the plan that proposed removing them:
+
+1. **`require_plan_scope` is not primarily a workflow check.** Its distinctive
+   job is per-plan scoping — a key minted for plan A is refused on plan B
+   (`key_plan_id != plan_id`). That has nothing to do with workflows and would
+   be lost with the guard.
+2. **The guards are load-bearing functionally, not only as gates.**
+   `require_assist_scope` stashes `scoped_agent_project_id`, which
+   `_load_assist_session` re-checks; recon handlers resolve their session from
+   `scoped_scope_id`. Removing the guards is not a deletion — it is a rewrite of
+   how every handler finds its own session.
+3. **Record integrity now rests on the guards alone.** Phase 5 deleted the
+   capability system, and with it the second check that kept an assist key out
+   of execution writes. The operator-role gate does not help here: every analyst
+   passes it. So the workflow guard is now the *only* thing stopping a recon
+   agent from submitting fabricated test results, or an assist agent from
+   uploading scan data that invents inventory. That is a control over the
+   **record**, which is the thing this product exists to keep trustworthy.
+
+And the benefit the plan claimed — "`workflow` becomes a label" — was already
+banked: at the MCP layer `tools/list` scoping is presentation only, which is
+where the label pays for itself in context budget. There is nothing left to
+collect by deleting ~60 lines of guard that cost one dict lookup per request.
+
+### The table collapse — narrowed to the failure mode
+The twelve columns duplicated across the four session tables are real
+duplication, but the *cost* was never storage — it was **drift**, and drift has
+a cheaper fix than a schema migration:
+
+* Assist was absent from the timeline for months because "the list of workflows"
+  lived in five places and one was missed. Fixed in 2.303.0.
+* `plan_generation`'s base-row status is frozen at `active` because the truth
+  lives on `TestPlan.status`. Not read from the base row, so inert.
+
+A full collapse means rewriting every reader of `status` / `environment` /
+`generated_by_*` across four tables — a large mechanical refactor whose failure
+mode is exactly what this phase already demonstrated twice: removing something
+that was quietly carrying a second load.
+
+**So the drift is closed with a guard test instead** (`test_workflow_registration_is_complete.py`):
+every `AgentSessionWorkflow` value must appear in the service's kind set and in
+the API's literal. That is the bug that actually happened, and it now cannot
+recur silently. Revisit the schema collapse if a *second* symptom appears; until
+then it is cost without a matching benefit.
 
 Phases 1–4 are reversible and independently useful. Phase 5 is the commitment.
 
@@ -551,15 +595,35 @@ in the session dialog, stated plainly rather than buried:
   starts a new session. **Maximum session lifetime: 168h**, matching today's
   `AGENT_KEY_MAX_TTL_HOURS` — not a new value, a new meaning.
 
-## Open questions
+## Where this ended
 
-None blocking. **Phase 6** is the remaining work: remove the four workflow
-guards so `workflow` becomes purely a label, collapse the twelve columns
-duplicated across the four session tables, and drop the four legacy scope
-columns from `api_keys`.
+The consolidation is **done**, and it ended somewhere its first draft did not
+predict — which is the honest outcome of auditing rather than executing.
 
-One caveat carried forward from Phase 5: the `write:execution` capability turned
-out to be enforcing the recon/assist **cross-workflow boundary** as a side
-effect. Phase 6 removes the workflow guards deliberately — so before it lands,
-every place that relied on a workflow check needs the same audit, or boundaries
-will disappear the way that one nearly did.
+**Landed:** one authorization model (the operator's project role, per request),
+session-bound keys with recoverable expiry, the target declaration made visible,
+per-route read roles, an auditor floor that makes read-only agents real, and the
+capability system deleted outright.
+
+**Deliberately not landed:** the workflow guards, and the table collapse. The
+plan called for both; the audit said neither pays for itself, and one of them
+would have removed a control that Phase 5 had just made load-bearing.
+
+The through-line: **the agent surface no longer has its own authorization
+model** — the thing this document set out to fix. `workflow` remains a real
+boundary over the *record*, which is a different job from deciding who may act,
+and it was only ever conflated with authorization because the same string
+happened to gate both.
+
+### If someone picks this up later
+
+* The schema duplication is still there (12 columns × 4 tables). It is cost
+  without a current symptom; the drift it caused is now guarded by
+  `test_workflow_registration_is_complete.py`. Revisit on a second symptom.
+* `api_keys` still carries four legacy scope columns beside `agent_session_id`.
+  Dropping them needs `scoped_assist_session_id` / `scoped_scope_id` rewired to
+  resolve from the session, since `get_current_agent` reads the columns
+  directly.
+* `plan_generation` remains the odd kind out: keyed by `TestPlan.id`, status
+  derived live, no base row for historical plans. Fixing it is a backfill plus a
+  decision about where plan status lives — not a refactor.
