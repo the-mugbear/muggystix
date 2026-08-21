@@ -85,7 +85,14 @@ HOST_ID_PROP = {
 # endpoints share `apply_environment_probe`), so the schema is written once —
 # a field added for recon must not silently go missing for execution.
 _PROBE_PROPERTIES = {
-    "os_family": {"type": "string", "enum": ["windows", "darwin", "linux"]},
+    # v2.313.0 — was ["windows", "darwin", "linux"], which the model and the
+    # guide never agreed with: EnvironmentSummary documents 'bsd' and 'other'
+    # too, so an operator on FreeBSD had to misreport their OS to satisfy the
+    # schema.
+    "os_family": {
+        "type": "string",
+        "enum": ["windows", "darwin", "linux", "bsd", "other"],
+    },
     "os_release": {"type": "string"},
     "arch": {"type": "string"},
     "shell": {"type": "string", "description": "e.g. bash, zsh, powershell."},
@@ -97,6 +104,43 @@ _PROBE_PROPERTIES = {
     "python": {"type": "string", "description": "Path or command that runs a real Python."},
     "python_version": {"type": "string"},
     "wsl_available": {"type": "boolean"},
+    # v2.313.0 — the tool inventory was missing, and because the probe schemas
+    # set `additionalProperties: false` it was not merely undocumented but
+    # *rejected*: an MCP agent could not submit the inventory the environment
+    # contract requires, and every probe recorded through MCP stored
+    # `tools_available: {}`. A curl agent hitting the same endpoint could send
+    # it, because EnvironmentSummary is `extra="allow"` — so the two transports
+    # disagreed about what a complete probe is.
+    "tools_available": {
+        "type": "object",
+        "additionalProperties": {"type": "boolean"},
+        "description": (
+            "Map of tool name → present on PATH, e.g. "
+            '{"nmap": true, "masscan": false}. Names follow the AGENTS.md '
+            "inventory."
+        ),
+    },
+    "tools_status": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "description": "e.g. ok, missing, wrong-binary, needs-privilege.",
+                },
+                "version": {"type": "string"},
+                "path": {"type": "string"},
+                "detail": {"type": "string"},
+            },
+            "required": ["name", "status"],
+        },
+        "description": (
+            "Richer per-tool preflight result, posted after running the "
+            "preflight check. Supersedes tools_available where both are sent."
+        ),
+    },
     "notes": {"type": "string"},
     "agent_model": {"type": "string", "description": "Model you are running as."},
     "agent_tool": {"type": "string", "description": "Harness you run in (e.g. claude-code)."},
@@ -653,9 +697,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_session_info": {
         "description": (
-            "This assist session's identity: bound project, granted write capabilities, "
-            "row-scope constraint, and the operator you act on behalf of. Call this to "
-            "learn whether you may write and to whom `assigned:me` refers."
+            "This assist session's identity: bound project, purpose, status, and the "
+            "operator you act on behalf of — who `assigned:me` refers to. For whether "
+            "you may write, call agent_identity and read `can_write_project_data`; "
+            "this response does not carry it."
         ),
         "workflows": _ASSIST,
         "method": "GET",
@@ -754,7 +799,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "data (see agent_identity's `can_write_project_data`). "
             "Only these two operator-curated fields are editable "
             "— scan-derived facts (ports, services, vulns) are never mutated here. Send "
-            "just the field you're fixing."
+            "just the field you're fixing; sending neither is refused with a 400."
         ),
         "workflows": _ASSIST,
         "method": "PATCH",
@@ -769,9 +814,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "os_name": {"type": "string", "maxLength": 255},
             },
             "required": ["host_id"],
-            # host_id on its own is a no-op the endpoint rejects with 400 — say
-            # "send at least one field" in the schema so the client catches it.
-            "anyOf": [{"required": ["hostname"]}, {"required": ["os_name"]}],
+            # v2.313.0 — an `anyOf` used to encode "send at least one field", so
+            # a client could catch the endpoint's 400 before making the call.
+            # It cost more than it bought: a top-level `anyOf` makes some hosts
+            # (Codex among them) present the whole tool as an opaque object
+            # union instead of three typed parameters, so the model has to guess
+            # argument names to make a call that would otherwise be obvious. The
+            # constraint is stated in the description and enforced by the
+            # endpoint; typed parameters are worth more than a client-side
+            # pre-check only some clients perform.
             "additionalProperties": False,
         },
     },

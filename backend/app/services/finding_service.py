@@ -653,6 +653,9 @@ class FindingService:
             )
             if parent is None:
                 raise ValueError("parent_id must reference a comment on the same finding")
+        # ``project_id`` is a sibling TARGET, not a scope column — setting it
+        # here would violate ck_annotations_exactly_one_target. See create_note
+        # in host_follow_service.
         note = Annotation(
             finding_id=finding_id, user_id=user_id, body=body,
             status=NoteStatus.OPEN, parent_id=parent_id,

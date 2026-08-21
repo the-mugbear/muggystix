@@ -25,8 +25,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import case, func
-from sqlalchemy.orm import Session, joinedload, Query as SAQuery
+from sqlalchemy import case, func, or_
+from sqlalchemy.orm import Session, aliased, joinedload, Query as SAQuery
 
 from app.db.session import get_db
 from app.db import models
@@ -1524,11 +1524,48 @@ def list_assist_recent_notes(
     outstanding-work list the project actually keeps.
     """
     session = _load_assist_session(db, request)
+    pid = session.project_id
+    # v2.313.0 — this filtered `Annotation.project_id == pid` and returned an
+    # empty list for every project since it shipped.
+    #
+    # `project_id` is not a scope column: it is one of seven MUTUALLY EXCLUSIVE
+    # targets (`ck_annotations_exactly_one_target`), so a note with it set is a
+    # note on the *project itself*, and a host note necessarily has it NULL.
+    # Filtering on it selected the one target nothing writes — 33 of 33 notes in
+    # the deployment were host-targeted. The endpoint answered "the team has
+    # done nothing" while `assist_get_host_notes` returned the same notes fine,
+    # which is how an agent found it.
+    #
+    # A note's project is whatever its target belongs to, so reach it through
+    # each target. Port notes go one hop further, via their host. All outer
+    # joins: a note matches on exactly one branch and is NULL on the rest.
+    #
+    # All seven targets are covered on purpose. Only host notes exist today, so
+    # a narrower fix would pass its tests and quietly reintroduce the same class
+    # of gap the first time someone annotates a scan.
+    from app.db.models_agent import TestPlan
+    from app.db.models_findings import Finding
+
+    port_host = aliased(models.Host)
     q = (
         db.query(models.Annotation, User.username, models.Host.ip_address)
         .outerjoin(User, models.Annotation.user_id == User.id)
         .outerjoin(models.Host, models.Annotation.host_id == models.Host.id)
-        .filter(models.Annotation.project_id == session.project_id)
+        .outerjoin(Finding, models.Annotation.finding_id == Finding.id)
+        .outerjoin(models.Scan, models.Annotation.scan_id == models.Scan.id)
+        .outerjoin(models.Scope, models.Annotation.scope_id == models.Scope.id)
+        .outerjoin(TestPlan, models.Annotation.plan_id == TestPlan.id)
+        .outerjoin(models.Port, models.Annotation.port_id == models.Port.id)
+        .outerjoin(port_host, models.Port.host_id == port_host.id)
+        .filter(or_(
+            models.Annotation.project_id == pid,
+            models.Host.project_id == pid,
+            Finding.project_id == pid,
+            models.Scan.project_id == pid,
+            models.Scope.project_id == pid,
+            TestPlan.project_id == pid,
+            port_host.project_id == pid,
+        ))
     )
     if status:
         q = q.filter(models.Annotation.status == status)
@@ -1855,7 +1892,22 @@ class AssistIngestionIssues(BaseModel):
     processing: int = 0
     failed: int = 0
     degraded: int = 0
+    #: Unresolved parse errors with NO surviving job row — the ones that would
+    #: otherwise go unreported, since a failed job already carries its error.
+    #: Deliberately NOT the project's total: `failed` above accounts for the
+    #: rest, and adding both would double-count the same failure.
+    #:
+    #: v2.313.0 — an agent reading this next to `assist_get_coverage`
+    #: reasonably concluded the two disagreed: coverage counts EVERY unresolved
+    #: parse error under the same words, so a project with 7 failed uploads
+    #: reads as "7 unresolved" there and "0 unresolved + 7 failed" here. Both
+    #: were right and neither said so. The total is now reported alongside, so
+    #: the decomposition is visible instead of inferred.
     unresolved_parse_errors: int = 0
+    #: Every unresolved parse error in the project, however it is reached —
+    #: the number `assist_get_coverage` reports as `parse_errors_unresolved`.
+    #: `unresolved_parse_errors` is the subset of these with no job row.
+    unresolved_parse_errors_total: int = 0
     #: True when anything at all is wrong or pending — the one field to check
     #: before concluding "there is no data for that".
     has_issues: bool = False
@@ -1944,13 +1996,17 @@ def list_assist_ingestion_issues(
             .filter(models.ParseError.id.in_(claimed_error_ids)).all()
         }
 
-    orphan_query = (
+    unresolved_query = (
         db.query(models.ParseError)
         .filter(
             models.ParseError.project_id == pid,
             models.ParseError.status == "unresolved",
         )
     )
+    # Same predicate assist_get_coverage / compute_evidence_coverage uses, so
+    # the two tools can be read side by side (see AssistIngestionIssues).
+    unresolved_total = unresolved_query.count()
+    orphan_query = unresolved_query
     if claimed_error_ids:
         orphan_query = orphan_query.filter(
             ~models.ParseError.id.in_(claimed_error_ids)
@@ -2009,6 +2065,7 @@ def list_assist_ingestion_issues(
         failed=len(failed_jobs),
         degraded=len(degraded_jobs),
         unresolved_parse_errors=len(orphan_errors),
+        unresolved_parse_errors_total=unresolved_total,
         has_issues=bool(issues) or queued > 0 or processing > 0,
         # total_issues is the unpaginated count; `issues` is capped, so a
         # truncated list must not read as the complete set.

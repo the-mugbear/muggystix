@@ -121,8 +121,8 @@ def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
 # Data-read endpoints
 # ---------------------------------------------------------------------------
 
-def _workflow_session_id(db: Session, request: Request, session) -> Optional[int]:
-    """The per-workflow session row's id, which is what that workflow's URLs use.
+def _workflow_session_row(db: Session, request: Request, session):
+    """The per-workflow session row — AssistSession / ReconSession / ExecutionSession.
 
     ``AgentSession`` unified the *binding*; the workflow tables it points at were
     kept (composition, not inheritance), so `/agent/recon/sessions/{id}/…` and
@@ -130,6 +130,15 @@ def _workflow_session_id(db: Session, request: Request, session) -> Optional[int
     ids — different numbers from the AgentSession id a key resolves to. Returning
     both is the difference between a caller filling that path itself and getting
     a 404 it can't diagnose.
+
+    v2.313.0 — returns the row rather than just its id, because the environment
+    probe lives on it too.  ``apply_environment_probe`` is handed the *detail*
+    row by all three workflows, so ``AgentSession.environment_probed_at`` is
+    written by nothing and identity read a column that is always NULL: an agent that
+    had just recorded its environment was told ``environment_probed: false``
+    while ``assist_session_info`` said true, on every workflow.  (The unused
+    columns on ``agent_sessions`` are left alone — removing them is part of the
+    session-table expand/contract, not of fixing a wrong answer.)
     """
     if session is not None:
         model = {
@@ -139,18 +148,22 @@ def _workflow_session_id(db: Session, request: Request, session) -> Optional[int
         }.get(session.workflow)
         if model is not None:
             found = (
-                db.query(model.id)
+                db.query(model)
                 .filter(model.agent_session_id == session.id)
-                .scalar()
+                .first()
             )
             if found is not None:
                 return found
     # Legacy keys minted before the unified binding carry the id on the key row
     # itself. plan_generation has no per-workflow session at all — None is the
     # honest answer there, not a fallback to something unrelated.
-    return getattr(request.state, "scoped_assist_session_id", None) or getattr(
-        request.state, "scoped_recon_session_id", None
-    )
+    legacy_assist = getattr(request.state, "scoped_assist_session_id", None)
+    if legacy_assist is not None:
+        return db.query(AssistSession).filter(AssistSession.id == legacy_assist).first()
+    legacy_recon = getattr(request.state, "scoped_recon_session_id", None)
+    if legacy_recon is not None:
+        return db.query(ReconSession).filter(ReconSession.id == legacy_recon).first()
+    return None
 
 
 class SessionRenewResponse(BaseModel):
@@ -271,13 +284,17 @@ def get_agent_identity(
         and check_permissions(project_role, ProjectRole.ANALYST.value)
     )
 
+    workflow_session = _workflow_session_row(db, request, session)
+
     return AgentIdentity(
         # Fall back to the coarse family for a legacy key with no session row —
         # it is the most specific thing that is still true.
         workflow=(session.workflow if session is not None else workflow_family),
         workflow_family=workflow_family,
         session_id=session_id,
-        workflow_session_id=_workflow_session_id(db, request, session),
+        workflow_session_id=(
+            workflow_session.id if workflow_session is not None else None
+        ),
         plan_id=getattr(request.state, "key_plan_id", None),
         scope_id=getattr(request.state, "scoped_scope_id", None),
         project_id=agent.project_id,
@@ -288,8 +305,11 @@ def get_agent_identity(
         agent_name=agent.name,
         operator=operator,
         can_write_project_data=can_write_project_data,
+        # Read from the row the probe actually writes — see
+        # _workflow_session_row. Reading `session` here reported false forever.
         environment_probed=(
-            session is not None and session.environment_probed_at is not None
+            workflow_session is not None
+            and workflow_session.environment_probed_at is not None
         ),
         key_expires_at=getattr(request.state, "key_expires_at", None),
         renew_path=AGENT_SESSION_RENEW_PATH,

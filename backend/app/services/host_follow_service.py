@@ -189,6 +189,13 @@ class HostFollowService:
                 raise ValueError("parent_id must reference a note on the same host")
         # ``user_id`` is the operator either way; ``actor_type`` records whether
         # they typed it or an agent wrote it on their behalf.
+        #
+        # NOTE: do NOT also set ``project_id`` here. It is one of seven
+        # mutually exclusive *targets* (``ck_annotations_exactly_one_target``),
+        # not a denormalised scope column — a project-targeted note is a note on
+        # the project itself. Setting it alongside ``host_id`` violates the
+        # CHECK. Project scope is reached through the target; see
+        # ``list_assist_recent_notes``.
         note = Annotation(
             host_id=host_id,
             user_id=user_id,
