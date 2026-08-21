@@ -249,6 +249,7 @@ def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ReconHostBrief]
                 service=p.service_name,
                 product=p.service_product,
                 version=p.service_version,
+                tunnel=p.service_tunnel,
             )
         )
 
@@ -628,15 +629,22 @@ def web_targets_from_hosts(hosts: List[ReconHostBrief]) -> List[WebTarget]:
     targets: List[WebTarget] = []
     for h in hosts:
         for p in h.open_ports:
-            scheme = _WEB_PORT_SCHEMES.get(p.port)
-            if scheme is None:
-                # Honor explicit service-name hits too (e.g. https on
-                # 10443 that a version probe identified).
-                svc = (p.service or "").lower()
-                if "https" in svc or "ssl/http" in svc:
+            # v2.314.0 — order reversed: OBSERVED service beats the port-number
+            # guess. It used to be the other way round, so a real `ssl/http` on
+            # :3000 came back as `http://…:3000/` (3000 isn't in the table, and
+            # nmap's XML calls it name="http" tunnel="ssl", so the service test
+            # matched plain "http"). The port table is a fallback for ports
+            # nothing probed, not a stronger signal than -sV output.
+            svc = (p.service or "").lower()
+            tunnel = (getattr(p, "tunnel", None) or "").lower()
+            scheme = None
+            if svc:
+                if tunnel == "ssl" or "https" in svc or "ssl/http" in svc:
                     scheme = "https"
                 elif "http" in svc:
                     scheme = "http"
+            if scheme is None:
+                scheme = _WEB_PORT_SCHEMES.get(p.port)
             if scheme is None:
                 continue
             default_port = 443 if scheme == "https" else 80

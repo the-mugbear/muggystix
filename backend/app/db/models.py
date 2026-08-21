@@ -89,7 +89,14 @@ class Port(Base):
     service_extrainfo = Column(Text)
     service_method = Column(String)
     service_conf = Column(Integer)
-    
+    # v2.314.0 — nmap's `tunnel` attribute ("ssl" when the service runs inside
+    # TLS).  What nmap's text output prints as `ssl/http` is
+    # `<service name="http" tunnel="ssl">` in XML, so without this an HTTPS
+    # service on a non-standard port is indistinguishable from plaintext HTTP.
+    # Typed rather than blob'd: it decides the scheme of a derived web-target
+    # URL, and "which services are TLS-wrapped" is a real cross-host question.
+    service_tunnel = Column(String(20), index=True)
+
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

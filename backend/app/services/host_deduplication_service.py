@@ -494,6 +494,7 @@ class HostDeduplicationService:
             service_extrainfo=port_data.get('service_extrainfo'),
             service_method=port_data.get('service_method'),
             service_conf=port_data.get('service_conf'),
+            service_tunnel=port_data.get('service_tunnel'),
             last_updated_scan_id=scan_id,
             is_active=True
         )
@@ -525,6 +526,10 @@ class HostDeduplicationService:
             port.service_extrainfo = port_data.get('service_extrainfo')
             port.service_method = port_data.get('service_method')
             port.service_conf = new_service_conf
+            # Moves with the rest of the service block: tunnel belongs to the
+            # observation that won, and carrying a stale "ssl" onto a service
+            # a better scan says is plaintext would be worse than NULL.
+            port.service_tunnel = port_data.get('service_tunnel')
         
         # Always update timestamps and scan reference
         port.last_seen = func.now()

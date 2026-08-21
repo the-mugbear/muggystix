@@ -387,7 +387,17 @@ class NmapXMLParser:
                 'service_version': service_elem.get('version'),
                 'service_extrainfo': service_elem.get('extrainfo'),
                 'service_method': service_elem.get('method'),
-                'service_conf': int(service_elem.get('conf', 0))
+                'service_conf': int(service_elem.get('conf', 0)),
+                # v2.314.0 — nmap reports TLS as a separate `tunnel` attribute:
+                # what the text output shows as `ssl/http` is
+                # `<service name="http" tunnel="ssl">` in XML.  Dropping it made
+                # an HTTPS service on a non-standard port indistinguishable from
+                # plaintext HTTP, so the derived web target for a real
+                # `ssl/http` on :3000 came out as `http://…:3000/` — the agent
+                # then fingerprinted the wrong scheme.  Typed column rather than
+                # a blob per the column-vs-blob policy: it decides a URL scheme
+                # and is worth filtering on ("which services are TLS-wrapped").
+                'service_tunnel': service_elem.get('tunnel'),
             })
         
         return port_data

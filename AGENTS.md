@@ -667,7 +667,12 @@ Current swaps:
 | `httpx` (web) | `eyewitness` | `tools_status[httpx].status` is `warn`/`missing`, or `tools_available.httpx === false` |
 | `masscan` (discovery on large scopes) | `rustscan` | same, for masscan — covers both missing-binary and no-raw-socket-privilege cases |
 
-When *both* the default tool and its fallback are missing/broken, the step comes back as a blocked placeholder with `tool: null`, `command: null`, and a non-null `blocked_reason` (currently always `"neither_available"`); it keeps the original step's `phase`, so **detect it by `blocked_reason`, not `phase`**. Any pre-vetted alternatives ride along in `acceptable_fallbacks[]` (each still needs per-command approval). **If `blocked_reason` is set, stop and report to the user** — do not improvise an alternate tool. (When the masscan→rustscan swap fires, the server also collapses the now-unusable standalone service-probe step into a synthesized web-fingerprint step carrying `"synthesized_after": "masscan_to_rustscan_swap"`.)
+When *both* the default tool and its fallback are missing/broken, the step comes back as a blocked placeholder with `tool: null`, `command: null`, and a non-null `blocked_reason`; it keeps the original step's `phase`, so **detect it by `blocked_reason`, not `phase`**. Two values:
+
+| `blocked_reason` | Meaning |
+|---|---|
+| `neither_available` | The step's default tool AND its documented fallback are both unusable. `acceptable_fallbacks[]` carries pre-vetted alternatives. |
+| `tool_unavailable` | The step's tool is unusable and the step has **no** fallback (e.g. the optional eyewitness screenshot pass). `unavailable_tool` names it. There is nothing to swap to — report and move on. | Any pre-vetted alternatives ride along in `acceptable_fallbacks[]` (each still needs per-command approval). **If `blocked_reason` is set, stop and report to the user** — do not improvise an alternate tool. (When the masscan→rustscan swap fires, the server also collapses the now-unusable standalone service-probe step into a synthesized web-fingerprint step carrying `"synthesized_after": "masscan_to_rustscan_swap"`.)
 
 Calling `/agent/recon/context` *before* posting the env probe returns no adaptation; calls after the probe lands return the adapted sequence. Surface `swap_reason` during plan approval so the user sees which steps deviated and why.
 

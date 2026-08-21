@@ -974,6 +974,12 @@ class ReconPortBrief(BaseModel):
     service: Optional[str] = None
     product: Optional[str] = None
     version: Optional[str] = None
+    #: v2.314.0 — nmap's `tunnel` attribute, "ssl" when the service runs inside
+    #: TLS. `service` alone cannot say so: nmap's XML reports `ssl/http` as
+    #: name="http" tunnel="ssl", so an agent reading only `service` would call
+    #: an HTTPS service on a non-standard port plain HTTP, as the derived web
+    #: targets did.
+    tunnel: Optional[str] = None
 
 
 class ReconHostBrief(BaseModel):

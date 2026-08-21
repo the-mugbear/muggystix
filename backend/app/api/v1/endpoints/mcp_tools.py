@@ -120,25 +120,48 @@ _PROBE_PROPERTIES = {
             "inventory."
         ),
     },
+    # The field names and the status vocabulary here are a CONTRACT, not a
+    # convenience: `recon_planning_service._env_tool_unavailable` treats only
+    # `warn` and `missing` as a problem and reads the reason from `issue`.
+    # v2.313.0 shipped an invented shape (`detail`, plus statuses like
+    # `wrong-binary`) which type-checked and planned WRONGLY — a tool reported
+    # as `wrong-binary` fell through the `warn|missing` test and was planned
+    # around as working. Mirrors `preflight.sh --json`'s `tools[]` output; see
+    # AGENTS.md § Environment probe.
     "tools_status": {
         "type": "array",
         "items": {
             "type": "object",
             "properties": {
-                "name": {"type": "string"},
+                "name": {"type": "string", "description": "Tool name, e.g. httpx."},
                 "status": {
                     "type": "string",
-                    "description": "e.g. ok, missing, wrong-binary, needs-privilege.",
+                    "enum": ["ok", "warn", "missing", "info"],
+                    "description": (
+                        "ok = usable; warn = present but not the tool you want "
+                        "(wrong binary, no privileges); missing = not on PATH; "
+                        "info = advisory only. Only warn and missing make the "
+                        "server plan around the tool."
+                    ),
                 },
-                "version": {"type": "string"},
-                "path": {"type": "string"},
-                "detail": {"type": "string"},
+                "issue": {
+                    "type": "string",
+                    "description": (
+                        "Why, in one line — surfaced verbatim as the step's "
+                        "swap_reason. e.g. 'Python httpx CLI shadows "
+                        "ProjectDiscovery httpx'."
+                    ),
+                },
+                "path": {"type": "string", "description": "Resolved path, when known."},
             },
             "required": ["name", "status"],
+            "additionalProperties": False,
         },
         "description": (
-            "Richer per-tool preflight result, posted after running the "
-            "preflight check. Supersedes tools_available where both are sent."
+            "Per-tool preflight result, posted after running the preflight "
+            "check. Richer than tools_available and takes precedence over it: "
+            "re-post the probe with this populated so recon_get_context can "
+            "adapt the recommended sequence."
         ),
     },
     "notes": {"type": "string"},

@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.60.0",
+        "app_version": "2.314.0",
+        "summary": (
+            "The recon sequence can now block a step that has no fallback, and "
+            "the guide says so. Previously only steps with a documented "
+            "fallback were checked against the environment probe, so the "
+            "optional eyewitness screenshot pass kept advertising a runnable "
+            "command on hosts whose own preflight had reported eyewitness "
+            "missing. Such a step now comes back with "
+            "`blocked_reason: \"tool_unavailable\"` and `unavailable_tool`, "
+            "distinct from the existing `neither_available` because the "
+            "agent's move differs: there is no fallback to consider, so report "
+            "it rather than reaching for `acceptable_fallbacks`. Found by an "
+            "agent running the full recon workflow against a /24."
+        ),
+    },
+    {
         "version": "1.59.0",
         "app_version": "2.311.0",
         "summary": (

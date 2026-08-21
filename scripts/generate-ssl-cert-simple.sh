@@ -53,6 +53,31 @@ else
     [[ "$DOMAIN" != "localhost" ]] && SAN="$SAN,DNS:$DOMAIN"
 fi
 
+# v2.314.0 — always cover this machine's own LAN addresses, whatever $DOMAIN
+# said.  A cert generated with `localhost` came out valid for loopback ONLY, so
+# every MCP client and browser reaching BlueStick over the network hit a name
+# mismatch and had to disable verification — which defeats the point of running
+# trust-cert.sh at all.  Found by an agent connecting to 192.168.7.245:443 and
+# being handed a certificate for 127.0.0.1.
+#
+# Loopback entries are skipped (already in the base SAN) and the whole list is
+# de-duplicated below, so passing your own LAN IP as $DOMAIN is still correct
+# and simply adds nothing twice.
+if command -v hostname >/dev/null 2>&1; then
+    for ip in $(hostname -I 2>/dev/null); do
+        case "$ip" in
+            127.*|::1) continue ;;
+        esac
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            SAN="$SAN,IP:$ip"
+        fi
+    done
+fi
+
+# De-duplicate while preserving order — repeated SAN entries are legal but
+# make the cert confusing to read when someone is debugging a trust failure.
+SAN="$(printf '%s' "$SAN" | tr ',' '\n' | awk '!seen[$0]++' | paste -sd, -)"
+
 echo "SAN entries: $SAN"
 
 # Generate self-signed certificate with SAN

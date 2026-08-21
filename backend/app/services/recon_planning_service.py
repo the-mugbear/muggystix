@@ -904,6 +904,34 @@ _SWAP_RULES: List[SwapRule] = [
         # web_screenshot (also eyewitness) is redundant — drop it.
         reshape=_drop_redundant_screenshot_step,
         acceptable_fallbacks_when_blocked=[
+            # v2.314.0 — nmap first, and it was missing entirely.  The catalog
+            # markets the `nmap_web` entry as the "**always-available** fallback
+            # when ProjectDiscovery httpx is missing or shadowed", and then this
+            # list offered only curl and whatweb, so an agent with httpx and
+            # eyewitness both unusable was steered away from the one option the
+            # catalog told it to expect — and toward two tools whose output
+            # BlueStick ingests less well.  Caught by an agent running the recon
+            # workflow end to end against a host with neither installed.
+            {
+                "tool": "nmap",
+                "command": (
+                    "nmap -sV --script "
+                    "http-title,http-server-header,http-headers,http-methods,"
+                    "http-enum,ssl-cert,ssl-enum-ciphers "
+                    "-p 80,443,8080,8443,8000,8888 "
+                    "-oX nmap-web.xml -iL targets.txt"
+                ),
+                "rationale": (
+                    "The catalog's designated always-available web-enrichment "
+                    "fallback.  Outputs standard nmap XML, so it ingests "
+                    "through the same parser as the discovery scan — title, "
+                    "server header, methods, common content and TLS cert land "
+                    "in Port.scripts automatically.  Prefer this over curl or "
+                    "whatweb: nmap is already required for step 1, so it is "
+                    "present whenever recon ran at all."
+                ),
+                "coverage_loss": "No favicon hash, no JARM, no per-target tech-stack inference.",
+            },
             {
                 "tool": "curl",
                 "command": "curl -ksIL --max-time 10 https://<host>:<port>/ | head -20",
@@ -965,6 +993,53 @@ def _apply_environment_substitutions(
                 if rule.reshape is not None:
                     rule.reshape(sequence)
             break  # at most one matching step per rule
+
+    _block_unrunnable_steps(sequence, environment)
+
+
+def _block_unrunnable_steps(
+    sequence: List[Dict[str, Any]],
+    environment: Optional[Dict[str, Any]],
+) -> None:
+    """Mark any remaining step whose tool the probe says is unusable.
+
+    v2.314.0.  The swap rules only cover steps that HAVE a documented fallback
+    — discovery and web-fingerprint.  Everything else was emitted verbatim
+    regardless of the probe, so the optional step-4 screenshot pass kept
+    advertising an eyewitness command on hosts whose own preflight had already
+    reported eyewitness missing.  An agent reading the sequence had no way to
+    know the step could not run until it tried.
+
+    Runs after the swap rules on purpose: a successfully swapped step now names
+    its replacement tool, and a blocked one names none, so neither is touched
+    here.  ``blocked_reason`` is ``"tool_unavailable"`` rather than the swap
+    path's ``"neither_available"`` — the agent's action differs (there was no
+    fallback to lose), and AGENTS.md says to branch on the reason.
+    """
+    if not environment:
+        return
+    for i, step in enumerate(sequence):
+        tool = step.get("tool")
+        if not tool or step.get("blocked_reason"):
+            continue
+        reason = _env_tool_unavailable(environment, tool)
+        if not reason:
+            continue
+        blocked = dict(step)
+        blocked.update({
+            "tool": None,
+            "command": None,
+            "blocked_reason": "tool_unavailable",
+            "unavailable_tool": tool,
+            "note": (
+                f"BLOCKED — your environment probe reports {tool} as unusable "
+                f"({reason}), and this step has no documented fallback. "
+                f"Report this to the operator rather than substituting a tool "
+                f"of your own choosing.\n\n"
+                f"Original command was: {step.get('command')}"
+            ),
+        })
+        sequence[i] = blocked
 
 
 def _rustscan_followup_web_step(step_number: int) -> Dict[str, Any]:
@@ -1077,6 +1152,15 @@ def build_recommended_sequence(
         {
             "step": 1,
             "phase": "discovery",
+            # v2.314.0 — every step names its tool. Without it, the only way to
+            # ask "can this step run here?" was to re-parse the command string,
+            # which is why the optional screenshot step kept advertising
+            # eyewitness on hosts where the probe had already reported it
+            # missing.  See _block_unrunnable_steps.
+            "tool": {
+                "masscan": "masscan",
+                "rustscan_nmap": "rustscan",
+            }.get(recommended, "nmap"),
             "command": step1_cmd,
             "estimated_duration": durations.get(recommended),
             "note": step1_note,
@@ -1096,6 +1180,7 @@ def build_recommended_sequence(
         sequence.append({
             "step": 2,
             "phase": "web",
+            "tool": "httpx",
             "command": (
                 "httpx -l web_targets.txt -sc -title -server -tech-detect "
                 "-favicon -tls-probe -cdn -json -o httpx.jsonl"
@@ -1115,6 +1200,7 @@ def build_recommended_sequence(
         sequence.append({
             "step": 2,
             "phase": "service_probe",
+            "tool": "nmap",
             "command": (
                 "nmap -sV -sC -T3 --top-ports 1000 "
                 "-iL live-hosts.txt -oX nmap-services.xml"
@@ -1153,6 +1239,7 @@ def build_recommended_sequence(
         sequence.append({
             "step": 3,
             "phase": "web",
+            "tool": "httpx",
             "command": (
                 "httpx -l web_targets.txt -sc -title -server -tech-detect "
                 "-favicon -tls-probe -cdn -json -o httpx.jsonl"
@@ -1181,6 +1268,7 @@ def build_recommended_sequence(
         sequence.append({
             "step": 4,
             "phase": "web_screenshot",
+            "tool": "eyewitness",
             "command": (
                 "eyewitness --web -f web_targets.txt -d eyewitness-results "
                 "--no-prompt"
