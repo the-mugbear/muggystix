@@ -16,7 +16,6 @@ Each entry:
     query_params : argument names sent as querystring (omit if none)
     body_params  : argument names sent in the JSON body (omit if none)
     input_schema : JSON Schema advertised to the client
-    capability   : the write capability the underlying endpoint requires
     defaults     : MCP-side argument defaults (smaller pages than the endpoints')
     auto_params  : arguments filled from the caller's own identity when omitted
     additive     : True iff the write only appends (drives destructive/idempotent
@@ -24,11 +23,19 @@ Each entry:
 
 **``workflows`` is an entry-point affordance, not a security boundary.**  Hiding
 a tool from a key that cannot use it stops the model from trying a call whose
-403 it would read as its own bug — the same reason capability-less writes are
-hidden.  It decides nothing: every dispatch still loops back through the real
-endpoint, and ``require_plan_scope`` / ``require_recon_scope`` /
-``require_capability`` make the actual decision there.  The MCP layer makes no
-security decision anywhere, and this file must not become the place it starts.
+403 it would read as its own bug.  It decides nothing: every dispatch still
+loops back through the real endpoint, and ``require_plan_scope`` /
+``require_recon_scope`` / ``require_assist_scope`` /
+``require_execution_session_scope`` plus the router-level
+``enforce_agent_operator_access`` make the actual decision there.  The MCP layer
+makes no security decision anywhere, and this file must not become the place it
+starts.
+
+Writes are **not** filtered by whether the caller may perform them (v2.309.0
+removed the per-session capability grants that filter keyed off).  A write tool
+is listed for every session of its workflow, and whether it succeeds is the
+operator's project role, checked per request.  An agent that wants the answer
+before trying reads ``can_write_project_data`` from ``agent_identity``.
 
 **Three entry points, deliberately.**  Recon, plan generation, and execution are
 separate sessions with separate keys because the operator starts each one
@@ -688,10 +695,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # --- assist writes (capability-gated by the underlying endpoint) ---
+    # --- assist writes (allowed iff the operator's project role permits writes) ---
     "assist_add_note": {
         "description": (
-            "Add a note to a host. Requires the write:notes capability on your key. "
+            "Add a note to a host. Writes project data, so it succeeds only if the "
+            "operator who started your session may write to this project — check "
+            "`can_write_project_data` on agent_identity rather than probing. "
             "Notes are stamped agent-authored and appear in the operator's UI and in "
             "client-facing reports — record observations tied to host/port/finding "
             "evidence, mark inferences as inferences."
@@ -701,7 +710,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/hosts/{host_id}/notes",
         "path_params": ["host_id"],
         "body_params": ["body", "status"],
-        "capability": "write:notes",
         "additive": True,
         "input_schema": {
             "type": "object",
@@ -720,7 +728,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_set_follow": {
         "description": (
-            "Set a host's review status. Requires the write:follow capability. Do NOT "
+            "Set a host's review status. Writes project data (see agent_identity's "
+            "`can_write_project_data`). Do NOT "
             "mark a host `reviewed` on your own initiative — reviewed is a human "
             "judgement with client-reportable weight; confirm with the operator first."
         ),
@@ -729,7 +738,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/hosts/{host_id}/follow",
         "path_params": ["host_id"],
         "body_params": ["status"],
-        "capability": "write:follow",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -742,8 +750,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_patch_host": {
         "description": (
-            "Correct a host's hostname and/or OS after investigation. Requires the "
-            "write:host capability. Only these two operator-curated fields are editable "
+            "Correct a host's hostname and/or OS after investigation. Writes project "
+            "data (see agent_identity's `can_write_project_data`). "
+            "Only these two operator-curated fields are editable "
             "— scan-derived facts (ports, services, vulns) are never mutated here. Send "
             "just the field you're fixing."
         ),
@@ -752,7 +761,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/hosts/{host_id}",
         "path_params": ["host_id"],
         "body_params": ["hostname", "os_name"],
-        "capability": "write:host",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1026,7 +1034,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
         "body_params": _PROBE_BODY_PARAMS,
-        "capability": "write:execution",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1222,7 +1229,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
         "body_params": ["notes", "overall_status"],
-        "capability": "write:execution",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1386,10 +1392,12 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     ``readOnlyHint`` is the one that earns the feature: it's what lets a client
     offer "always allow" on the reads.
     """
-    # A tool is read-only iff it doesn't mutate — method, not capability.  The
-    # environment probe is a POST with no capability gate (it writes session
-    # metadata, not project data), so keying off `capability` alone would
-    # advertise a mutation as safe to auto-approve.
+    # A tool is read-only iff it doesn't mutate — the HTTP method, nothing else.
+    # This used to be qualified against the (now removed) per-tool capability,
+    # which would have advertised the environment probe as safe to auto-approve:
+    # it is a POST that carried no capability because it writes session metadata
+    # rather than project data.  Authority and mutation are different questions,
+    # and only mutation belongs in an annotation a client auto-approves from.
     is_write = spec["method"] != "GET"
     # The spec defines destructiveHint:false as "additive updates only", so the
     # flag lives on the entry rather than being inferred from the name: adding a
@@ -1404,8 +1412,6 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         "idempotentHint": not additive,
         "openWorldHint": False,
     }
-    if spec.get("capability"):
-        ann["title"] = f"{name} (requires {spec['capability']})"
     return ann
 
 

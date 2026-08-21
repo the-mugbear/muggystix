@@ -167,6 +167,65 @@ def test_an_auditors_agent_is_read_only(client, db_session, test_project):
     assert blocked.status_code == 403
 
 
+@pytest.mark.parametrize(
+    "role, expected_write",
+    [
+        (ProjectRole.ANALYST.value, True),
+        (ProjectRole.ADMIN.value, True),
+        (ProjectRole.AUDITOR.value, False),
+        (ProjectRole.VIEWER.value, False),
+    ],
+)
+def test_identity_advertises_the_same_answer_the_write_gate_gives(
+    client, db_session, test_project, role, expected_write,
+):
+    """v2.311.0 — ``can_write_project_data`` must not be a second opinion.
+
+    The capability list was removed because it was an authorization model
+    running beside the real one. Publishing a *predicted* authority on identity
+    risks recreating exactly that: a number the agent plans around that the gate
+    then contradicts. So this asserts the two agree rather than asserting either
+    one's value in isolation — if someone changes the write floor in
+    ``enforce_agent_operator_access``, this fails until identity follows.
+    """
+    user = _member(db_session, test_project, role)
+    raw, _ = _assist_key(db_session, test_project, user)
+    host = _host(db_session, test_project, f"10.90.9.{len(role)}")
+    headers = {"X-API-Key": raw}
+
+    identity = client.get("/api/v1/agent/identity", headers=headers)
+    assert identity.status_code == 200, identity.text
+    body = identity.json()
+    assert body["operator"]["project_role"] == role
+    assert body["operator"]["is_global_admin"] is False
+    assert body["can_write_project_data"] is expected_write
+
+    wrote = client.post(
+        f"/api/v1/agent/hosts/{host.id}/notes",
+        headers=headers, json={"body": f"probe from a project {role}"},
+    )
+    actually_wrote = wrote.status_code in (200, 201)
+    assert actually_wrote is body["can_write_project_data"], (
+        f"identity said can_write_project_data={body['can_write_project_data']} "
+        f"but the write returned {wrote.status_code}: {wrote.text}"
+    )
+
+
+def test_identity_reports_a_global_admin_as_unbounded_by_project_role(
+    client, db_session, test_project
+):
+    """A global admin has no membership row, so ``project_role`` is None — and
+    reporting None must not be read as "cannot write". The flag carries it."""
+    user = _member(db_session, test_project, ProjectRole.VIEWER.value)
+    user.role = UserRole.ADMIN
+    db_session.commit()
+    raw, _ = _assist_key(db_session, test_project, user)
+
+    body = client.get("/api/v1/agent/identity", headers={"X-API-Key": raw}).json()
+    assert body["operator"]["is_global_admin"] is True
+    assert body["can_write_project_data"] is True
+
+
 def test_losing_project_membership_stops_the_key(
     client, db_session, test_project
 ):

@@ -73,7 +73,6 @@ const catalog = (): McpCatalog => ({
       name: 'assist_list_hosts',
       description: 'List/filter hosts in the project.',
       kind: 'read',
-      capability: null,
       method: 'GET',
       path: '/api/v1/agent/assist/hosts',
       workflows: ['assist'],
@@ -83,7 +82,6 @@ const catalog = (): McpCatalog => ({
       name: 'assist_add_note',
       description: 'Add a note to a host.',
       kind: 'write',
-      capability: 'write:notes',
       method: 'POST',
       path: '/api/v1/agent/hosts/{host_id}/notes',
       workflows: ['assist'],
@@ -97,7 +95,6 @@ const catalog = (): McpCatalog => ({
       name: 'plan_submit',
       description: 'Submit the draft for human approval.',
       kind: 'write',
-      capability: null,
       method: 'POST',
       path: '/api/v1/agent/test-plans/{plan_id}/submit',
       workflows: ['plan_generation'],
@@ -107,7 +104,6 @@ const catalog = (): McpCatalog => ({
       name: 'suggest_tool',
       description: "Ask for a tool that isn't approved yet.",
       kind: 'write',
-      capability: null,
       method: 'POST',
       path: '/api/v1/agent/tool-suggestions',
       workflows: ['assist', 'plan_generation', 'execution', 'recon'],
@@ -135,14 +131,16 @@ describe('McpReference', () => {
     getMcpTools.mockResolvedValue(catalog());
   });
 
-  it('separates reads from capability-gated writes', async () => {
+  it('marks writes as writes so nothing reads as safe to auto-approve', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
 
-    // The write tool is listed with the capability it needs — the operator
-    // should never read "always allow this" next to a mutation.
+    // v5.190.0 — the per-tool capability badge is gone with the capability
+    // system; the read/write badge is what the operator needs, and it must
+    // survive. Nobody should read "always allow this" next to a mutation.
     expect(screen.getByText('assist_add_note')).toBeInTheDocument();
-    expect(screen.getByText('write:notes')).toBeInTheDocument();
+    expect(screen.queryByText('write:notes')).not.toBeInTheDocument();
+    expect(screen.getAllByText('write').length).toBeGreaterThan(0);
 
     // Required params are marked; optional ones are not.
     expect(screen.getByTitle('host_id (required)')).toBeInTheDocument();

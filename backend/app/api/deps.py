@@ -827,6 +827,49 @@ def require_plan_scope(
     return agent
 
 
+def require_execution_session_scope(
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+) -> Agent:
+    """Workflow guard for execution routes keyed by ``session_id``.
+
+    v2.310.0.  ``require_plan_scope`` cannot gate these — it reads a ``plan_id``
+    path parameter, and these URLs carry an execution-session id instead. So the
+    boundary was enforced inline, per route, and that is how it went wrong:
+
+    Both routes used to sit behind ``require_capability(write:execution)``,
+    which was doing two jobs at once — granting authority, and keeping assist
+    keys out, since assist sessions never carried that capability. Deleting the
+    capability system (v2.309.0) removed the second job silently. The
+    ``/environment`` route got its boundary restored because a test covered it;
+    ``/complete`` did not, and an assist key could mark someone else's execution
+    session completed — a terminal state transition, recorded as the agent's.
+
+    One shared guard so the next session-id-keyed route inherits it instead of
+    re-deriving it. Per-plan scoping still belongs to the handler, which knows
+    which plan the session hangs off.
+    """
+    workflow = getattr(request.state, "key_workflow", None)
+    if workflow == "assist":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This API key is scoped to an assist session and cannot act on "
+                "execution sessions. Use the plan-scoped key minted by /execute."
+            ),
+        )
+    if workflow == "recon" or getattr(request.state, "scoped_scope_id", None) is not None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This API key is scoped to a reconnaissance run and cannot act "
+                "on execution sessions. Use the plan-scoped key minted by "
+                "/execute."
+            ),
+        )
+    return agent
+
+
 def require_recon_scope(
     request: Request,
     agent: Agent = Depends(check_agent_rate_limit),

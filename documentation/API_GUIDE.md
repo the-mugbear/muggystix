@@ -187,7 +187,7 @@ Per-user credentials for Nessus, OpenVAS, Nuclei, Burp, PDCP, and generic-API in
 | PATCH | `/integrations/{id}` | Update. `clear_secret` / `clear_secret2` flags remove encrypted material. |
 | DELETE | `/integrations/{id}` | |
 
-The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit finding C#2). If a future agent workflow needs programmatic scanner credentials, it must come back as a capability-scoped endpoint with per-plan grants and audit logging. Today, recon prompts inline the credentials the agent needs directly from `agent_prompt_service._integration_block`.
+The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit finding C#2). If a future agent workflow needs programmatic scanner credentials, it must come back as a per-plan-scoped endpoint with audit logging. Today, recon prompts inline the credentials the agent needs directly from `agent_prompt_service._integration_block`.
 
 ### 3.8 Feedback (admin triage)
 
@@ -210,7 +210,7 @@ Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — se
 | GET | `/references/tool-readiness` | **Authenticated** — the agent tool catalog checked against the current user's most recent environment probe: per-tool `installed`/`missing`/`warn`/`unknown` status + install hints. Returns `has_probe: false` (all `unknown`) when the user hasn't probed yet. Powers the ToolReference page's Host Readiness panel. |
 | GET | `/references/tools` | **v2.277.0** — the tool registry: every tool BlueStick knows about, with install/usage knowledge for humans and, for the `approved` subset, the phase/intrusiveness metadata agents key off. `?status=approved\|reference\|suggested\|rejected`, `?category=`. One source of truth for the Tool Reference page and the agent guardrail. |
 | PATCH | `/references/tools/{name}` | **Admin** — vet a tool: set `status` (approved / reference / rejected) and the human-facing prose. `ingestible` is deliberately not editable (it records whether a parser exists, not an operator decision), and `suggested` cannot be *set* — it means an agent asked. |
-| GET | `/references/mcp-tools` | The live MCP tool catalog: every tool, its input schema, the capability it needs, and which workflows see it — plus the per-client connect recipes (with a placeholder key) and this deployment's certificate fingerprint / self-signed status. Read off the server registry, so it cannot drift from what is served. |
+| GET | `/references/mcp-tools` | The live MCP tool catalog: every tool, its input schema, whether it reads or writes, and which workflows see it — plus the per-client connect recipes (with a placeholder key) and this deployment's certificate fingerprint / self-signed status. Read off the server registry, so it cannot drift from what is served. |
 | GET | `/references/trust-cert-script` | **v2.286.0** — `scripts/trust-cert.sh` (text/x-shellscript): installs this deployment's certificate for MCP clients in both shapes they need. Download and read before running (it installs a trust anchor) — deliberately not advertised as `curl \| bash`. |
 | GET | `/references/tls-certificate` | The deployment's public TLS certificate (PEM). Pin it rather than disabling verification: `NODE_EXTRA_CA_CERTS` for Node clients, `SSL_CERT_DIR` for Codex. |
 
@@ -553,14 +553,14 @@ Session status is **derived**: a session whose keys have all expired reports `en
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/agent/identity` | **v2.278.0** — what this key is: workflow, bound project/plan/session ids, the operator it acts for (which since v2.309.0 *is* its authority — capability lists are gone), when it expires, and where to renew. Behind **no** workflow guard, deliberately: every other introspection route requires the workflow it describes, so an agent holding an unknown key could otherwise only classify it by trying surfaces until one stopped returning 403. |
+| GET | `/agent/identity` | **v2.278.0** — what this key is: workflow, bound project/plan/session ids, the operator it acts for — which since v2.309.0 *is* its authority, so v2.311.0 also returns that operator's `project_role` and a precomputed `can_write_project_data` rather than making the agent infer it or discover it from a 403 — when it expires, and where to renew. Behind **no** workflow guard, deliberately: every other introspection route requires the workflow it describes, so an agent holding an unknown key could otherwise only classify it by trying surfaces until one stopped returning 403. |
 | POST | `/agent/tool-suggestions` | **v2.278.0** — record a request for a tool outside the approved set, with rationale. Lands as `suggested` (which no approval rule reads) for an admin to vet. Deliberately ungated: a capability gate would silence exactly the sessions most likely to hit the edge of the set. |
 
 ### 5.9 MCP transport (`POST /api/v1/mcp`)
 
 JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2025-06-18` / `2025-03-26`). `initialize`, `tools/list`, `tools/call`, `ping`.
 
-* **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so capability gating, row scope, and the audit log are unchanged. The MCP layer makes no authorization decision.
+* **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so workflow scope, the operator's project role, and the audit log are unchanged. The MCP layer makes no authorization decision.
 * **401 vs. isError.** No usable credential answers a real **HTTP 401** with a bare `WWW-Authenticate: Bearer` challenge (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
 * **Scoped listing.** `tools/list` returns only the caller's workflow's tools, plus `agent_identity`, `suggest_tool`, `read_agent_guide` and `list_approved_tools`. This is presentation, not authorisation — an unlisted tool called anyway still hits the endpoint's own guard.
 * **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages.

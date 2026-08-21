@@ -62,7 +62,7 @@ def _agent_note(db_session, *, session, host, body="vsftpd 2.3.4 on 21"):
 def test_detail_returns_the_notes_the_session_wrote(client, db_session, test_project):
     """Notes are the session's only durable output — everything else it did was
     a read. A review page without them is a review of nothing."""
-    started = _start(client, test_project.id, can_write_assigned=True)
+    started = _start(client, test_project.id)
     sid = started["assist_session_id"]
     session = db_session.get(AssistSession, sid)
     host = _host(db_session, test_project.id)

@@ -24,7 +24,11 @@ from app.db.models_agent import (
 )
 from app.core.config import settings as _settings
 from app.core.security import log_audit_event
-from app.api.deps import require_plan_scope, check_agent_rate_limit
+from app.api.deps import (
+    check_agent_rate_limit,
+    require_execution_session_scope,
+    require_plan_scope,
+)
 from app.services.test_plan_service import TestPlanService
 from app.services.notification_service import NotificationService
 from app.services.agent_prompt_history import PROMPT_VERSION
@@ -143,8 +147,10 @@ def record_execution_environment(
     body: EnvironmentProbeRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    # v2.309.0 — capability gone; the router-level operator gate decides.
-    agent: Agent = Depends(check_agent_rate_limit),
+    # v2.310.0 — the shared workflow guard for session-id-keyed execution
+    # routes. It replaces the inline checks that drifted apart between this
+    # route and its sibling; see require_execution_session_scope.
+    agent: Agent = Depends(require_execution_session_scope),
     db: Session = Depends(get_db),
 ):
     """Record the agent's environment probe for an execution session.
@@ -176,34 +182,10 @@ def record_execution_environment(
     # otherwise pass the "plan_id is None → skip plan check" branch
     # and let a recon key write into an execution session it should
     # have nothing to do with.
-    # v2.309.0 — assist keys used to be turned away by the ``write:execution``
-    # capability on the route. That capability did double duty: it gated
-    # authority AND enforced the cross-workflow boundary, because assist
-    # sessions never carried it. Deleting the capability system silently
-    # reopened the second job, so the boundary is now stated directly. Both
-    # rejections belong here rather than in a dependency because the URL is
-    # keyed by session_id, not plan_id, so ``require_plan_scope`` cannot gate
-    # it. (Caught by test_assist_key_cannot_write_execution_environment.)
-    workflow = getattr(request.state, "key_workflow", None)
-    if workflow == "assist":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to an assist session and cannot write "
-                "to execution-session endpoints. Use the plan-scoped key minted "
-                "by /execute."
-            ),
-        )
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None or workflow == "recon":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a reconnaissance run and cannot "
-                "write to execution-session endpoints. Use the plan-scoped "
-                "key minted by /execute."
-            ),
-        )
+    # v2.310.0 — the assist/recon rejection moved to
+    # ``require_execution_session_scope`` on the route, shared with /complete.
+    # Per-plan scoping stays here: only the handler knows which plan the
+    # session hangs off.
     plan = session.test_plan
     if not plan or plan.agent_id != agent.id:
         raise HTTPException(status_code=403, detail="Not your execution session")
@@ -1107,8 +1089,10 @@ def complete_execution_session(
     body: ExecutionSessionCompleteRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    # v2.309.0 — capability gone; the router-level operator gate decides.
-    agent: Agent = Depends(check_agent_rate_limit),
+    # v2.310.0 — the shared workflow guard for session-id-keyed execution
+    # routes. It replaces the inline checks that drifted apart between this
+    # route and its sibling; see require_execution_session_scope.
+    agent: Agent = Depends(require_execution_session_scope),
     db: Session = Depends(get_db),
 ):
     """Transition the execution session from active/paused to a terminal state (v2.45.2).
@@ -1173,25 +1157,14 @@ def complete_execution_session(
         )
 
     # v2.84.1 — the URL is keyed by session_id, not plan_id, so
-    # require_plan_scope can't gate this directly (it declares plan_id as
-    # a Path() param, which FastAPI then demands in the URL template ->
-    # 422 on every request).  Enforce the same audit chain inline, mirroring
-    # record_execution_environment above: reject recon/assist keys
-    # outright, then verify a plan-scoped key actually targets this
-    # session's plan.  Pre-v2.84.1 the route was unreachable due to the
-    # path-parameter mismatch.  Assist keys are turned away by the
-    # ``write:execution`` capability on the route (v2.231.0); what remains is
-    # the recon workflow boundary and the per-plan scope check.
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a reconnaissance run and cannot "
-                "complete execution sessions. Use the plan-scoped key minted "
-                "by /execute, or the unscoped agent key."
-            ),
-        )
+    # require_plan_scope can't gate this directly (it declares plan_id as a
+    # Path() param, which FastAPI would then demand in the URL template -> 422
+    # on every request).  v2.310.0 moved the assist/recon rejection to
+    # ``require_execution_session_scope`` on the route, shared with
+    # /environment: this route relied on the ``write:execution`` capability to
+    # turn assist keys away, and when that was deleted an assist key could mark
+    # someone else's execution session completed.  What stays here is the
+    # per-plan check, because only the handler knows this session's plan.
     scoped_plan = getattr(request.state, "scoped_plan_id", None)
     if scoped_plan is not None and scoped_plan != plan.id:
         raise HTTPException(

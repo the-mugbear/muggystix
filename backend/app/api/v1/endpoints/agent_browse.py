@@ -39,13 +39,14 @@ from app.db.models_agent import (
     ReconSession,
 )
 from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.api.deps import (
     AGENT_SESSION_RENEW_PATH,
     authenticate_for_renewal,
     check_agent_rate_limit,
     session_renewal_deadline,
 )
+from app.core.security import check_permissions
 from app.db.models_tools import TOOL_APPROVED
 from app.services.host_follow_service import HostFollowService
 from app.services.tool_registry_service import record_suggestion
@@ -251,13 +252,24 @@ def get_agent_identity(
         else None
     )
 
-    operator_id = getattr(request.state, "key_operator_id", None)
+    # Same resolution the access gate uses, including the ``Agent.owner_id``
+    # fallback — reporting no operator for a key the gate is happily checking
+    # against one would make this endpoint disagree with the thing it describes.
+    operator_id = getattr(request.state, "key_operator_id", None) or agent.owner_id
+    is_global_admin = bool(getattr(request.state, "key_operator_is_admin", False))
+    project_role = getattr(request.state, "key_operator_role", None)
     operator = None
     if operator_id is not None:
         operator = AgentIdentityOperator(
             id=operator_id,
             username=db.query(User.username).filter(User.id == operator_id).scalar(),
+            project_role=project_role,
+            is_global_admin=is_global_admin,
         )
+    can_write_project_data = is_global_admin or (
+        project_role is not None
+        and check_permissions(project_role, ProjectRole.ANALYST.value)
+    )
 
     return AgentIdentity(
         # Fall back to the coarse family for a legacy key with no session row —
@@ -275,6 +287,7 @@ def get_agent_identity(
         agent_id=agent.id,
         agent_name=agent.name,
         operator=operator,
+        can_write_project_data=can_write_project_data,
         environment_probed=(
             session is not None and session.environment_probed_at is not None
         ),

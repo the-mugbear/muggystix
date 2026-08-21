@@ -132,9 +132,11 @@ export const updateToolRegistryEntry = async (
 export interface McpToolDoc {
   name: string;
   description: string;
-  /** 'write' iff the underlying endpoint gates the call on a capability. */
+  /** 'write' iff the underlying endpoint mutates — decided by HTTP method.
+   *  Whether a given session may perform the write is a separate question,
+   *  answered by the operator's project role at request time, so there is no
+   *  per-tool permission to show here. */
   kind: 'read' | 'write';
-  capability: string | null;
   method: string;
   path: string;
   /** Which key workflows see this tool in `tools/list` — a session only ever

@@ -17,8 +17,8 @@ route, which keeps the whole thing
 **in-process**, which is the important property: every tool call loops straight
 back into the app's own ``/api/v1/agent/assist/*`` (and ``/agent/hosts/*``)
 endpoints via an ASGI transport, so authentication (``require_assist_scope`` +
-capability gate + row-scope), the agent-API audit log middleware, and the recon
-streaming caps all run **unchanged**.  The MCP layer makes no security decision
+``enforce_agent_operator_access``), the agent-API audit log middleware, and the
+recon streaming caps all run **unchanged**.  The MCP layer makes no security decision
 of its own — it forwards the caller's ``X-API-Key`` and lets the real endpoint
 decide.
 
@@ -46,7 +46,8 @@ forwards it to the loopback endpoint, which decides.  The outcome splits on
   bare ``WWW-Authenticate: Bearer`` challenge.  That is a fact about the
   connection, and a client can act on it: prompt for a key, show a connection
   error, stop retrying.
-* **A valid key that may not do this** (capability missing, host not assigned)
+* **A valid key that may not do this** (the operator's project role is
+  read-only, wrong workflow, host outside the session's scope)
   → an ``isError`` tool result carrying the endpoint's 403.  That is a fact
   about one call, which the model should read and work around; re-authenticating
   would not change it.
@@ -191,10 +192,10 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "name": name,
                 "description": spec["description"],
                 # Mutation is decided by HTTP method, matching readOnlyHint —
-                # the environment probe is a capability-free POST, and calling
-                # that a "read" on the reference page would be a lie.
+                # the environment probe is a POST that touches only session
+                # metadata, and calling that a "read" on the reference page
+                # would be a lie.
                 "kind": "read" if spec["method"] == "GET" else "write",
-                "capability": spec.get("capability"),
                 "method": spec["method"],
                 "path": spec["path"],
                 # Which session type sees this tool.  The page documents four
@@ -230,7 +231,7 @@ async def _key_identity(
     caller: Optional[Tuple[str, int]] = None,
     user_agent: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """What this key is — workflow, capabilities, bound plan/session ids.
+    """What this key is — workflow, operator, bound plan/session ids.
 
     One lookup answers both questions the server has about a caller: which
     workflow's tools to list, and which arguments it can fill in on the caller's
@@ -426,7 +427,7 @@ async def _dispatch_tool(
     text = resp.text
     if resp.status_code >= 400:
         # Surface the real endpoint's error (401/403/404/400) as a tool error so
-        # the agent sees exactly why — capability missing, wrong scope, etc.
+        # the agent sees exactly why — read-only operator, wrong scope, etc.
         return _tool_text_result(
             f"HTTP {resp.status_code} from {spec['method']} {path}: {text}",
             is_error=True,
@@ -698,7 +699,7 @@ def _classify(message: Any, response: Optional[Dict[str, Any]]) -> Dict[str, Any
         return {
             "outcome": mcp_telemetry.TOOL_ERROR,
             # Lift the endpoint's status out of the message so failures group by
-            # cause (403 capability vs 404 missing host) instead of by string.
+            # cause (403 refused vs 404 missing host) instead of by string.
             "error_code": int(match.group(1)) if match else None,
             "detail": text,
         }
@@ -744,8 +745,8 @@ def _auth_failure_detail(response: Optional[Dict[str, Any]]) -> Optional[str]:
 
     Only 401 — *authentication*, a fact about the connection: there is no key,
     or the one presented isn't valid here.  A 403 stays an ordinary tool result
-    on purpose: capability and row-scope refusals are per-call outcomes the
-    model should read and work around ("that host isn't assigned to you"), not
+    on purpose: authority and scope refusals are per-call outcomes the
+    model should read and work around ("your operator can't write here"), not
     a signal that the whole connection is unusable.  Promoting those to a
     transport status would tell the client to re-authenticate over something it
     can't fix by re-authenticating.

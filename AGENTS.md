@@ -830,10 +830,10 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/hosts/{id}` | Host detail with ports — 404 if host is not in your scope (recon keys) |
 | GET | `/agent/scans` | List scans — scope-filtered for recon keys. **Newest-first, default 100 / max 500, NO offset — scans past the newest 500 are not retrievable here (use `scans_ingested` in `/agent/recon/summary` for true per-session counts).** Optional filters: `tool`, `created_after`, `sort_by` (`created_at`\|`filename`\|`tool_name`), `sort_order` (`asc`\|`desc`) |
 | GET | `/agent/scopes` | List scopes |
-| POST | `/agent/hosts/{id}/notes` | Create a note on a host (requires `write:notes`) |
+| POST | `/agent/hosts/{id}/notes` | Create a note on a host — a project write |
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
-| POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) (requires `write:follow`) |
-| PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation (requires `write:host`). Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
+| POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) — a project write |
+| PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation — a project write. Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
 | POST | `/agent/feedback` | **Submit structured feedback at the end of every workflow.** Pass one of `test_plan_id` / `execution_session_id` / `recon_session_id` / `assist_session_id` so the row links back to the session it came from. See the `## Feedback Requested` block at the end of every prompt for the full payload shape. |
 
 <!-- agents:end -->
@@ -1180,17 +1180,19 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
 | `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, etc.). |
 
-**Write routes — only if your prompt granted write access.**  Note these live under `/agent/hosts/…`, not `/agent/assist/…`:
+**Write routes.**  Note these live under `/agent/hosts/…`, not `/agent/assist/…`:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /agent/hosts/{host_id}/notes` | Add a note (`write:notes`). Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). 403 unless the host is assigned to your operator. |
-| `POST /agent/hosts/{host_id}/follow` | Set review status (`write:follow`). Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). Same 403 rule. |
-| `PATCH /agent/hosts/{host_id}` | Correct a host's `hostname` / `os_name` after investigation (`write:host`). Body `{"hostname": "...", "os_name": "..."}` — send only the field you're fixing; only these two are editable. Same assigned-host 403 rule. Use when your investigation established the real hostname/OS a scan mis-detected. |
+| `POST /agent/hosts/{host_id}/notes` | Add a note. Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). |
+| `POST /agent/hosts/{host_id}/follow` | Set review status. Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). |
+| `PATCH /agent/hosts/{host_id}` | Correct a host's `hostname` / `os_name` after investigation. Body `{"hostname": "...", "os_name": "..."}` — send only the field you're fixing; only these two are editable. Use when your investigation established the real hostname/OS a scan mis-detected. |
 
-Find what you may write to with `GET /agent/assist/hosts?q=assigned:me`.
+**Whether you may write is your operator's project role, not a per-session grant.** `GET /agent/identity` returns `can_write_project_data` — check it once at start rather than discovering the answer from a 403. `true` means you can write anywhere in the project, `false` means nowhere in it. The role is re-checked on every request, so it can change mid-session if the operator's membership changes.
 
-### Write discipline (only applies when write access was granted)
+Project-wide is deliberately wider than what you should *touch*. Use `GET /agent/assist/hosts?q=assigned:me` to find your operator's own work, and stay inside it unless they point you elsewhere — writing on a colleague's host is permitted and still rude.
+
+### Write discipline
 
 Every note you create is stamped agent-authored and surfaces in the operator's UI *and in client-facing reports*, under their name. Treat that weight seriously:
 
@@ -1198,7 +1200,7 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
 2. **Observations, not unsupported conclusions.** Write what the data shows and cite the host / port / finding it came from. Never assert a vulnerability you haven't seen evidence for in BlueStick's own data.
 3. **Mark uncertainty in the note body itself.** A reader six weeks out cannot separate your inferences from your facts unless you say which is which.
 4. **Never set `reviewed` on your own initiative.** "Reviewed" is a human judgement with client-reportable weight — ask the operator to confirm first. `in_review` is fine when they asked you to pick work up.
-5. **A 403 is the guardrail working.** If a write is refused, the host isn't assigned to your operator (or your key wasn't granted that capability). Report it; don't hunt for another route.
+5. **A 403 is the guardrail working.** If a write is refused, your operator's project role is read-only, their membership changed, or their account was deactivated. Report what the message says; don't hunt for another route.
 6. **Host attribute edits are corrections, not guesses.** Only `PATCH /agent/hosts/{id}` (`hostname` / `os_name`) when your investigation actually established the real value — cite what showed it (a banner, a cert CN, a service response) in a note alongside the edit. Don't overwrite a scan's OS on a hunch; a wrong "correction" is worse than the scan's uncertainty because it reads as settled.
 
 ### How to operate
@@ -1228,7 +1230,7 @@ The operator drives every action; you assist their query.
 ### What you can NOT do
 
 - Upload scans, or create/modify/execute test plans — use a recon session / the Test Plans UI.
-- Create notes or change follow status unless write access was granted, and then only on hosts assigned to your operator. Cannot assign hosts to anyone, ever.
+- Create notes or change follow status when `can_write_project_data` is false. Cannot assign hosts to anyone, ever.
 - Access other projects, or list other operators' assist sessions / environment probes.
 
 ### Tone

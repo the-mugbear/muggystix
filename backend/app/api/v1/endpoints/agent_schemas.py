@@ -255,6 +255,14 @@ class ProjectInfo(BaseModel):
 class AgentIdentityOperator(BaseModel):
     id: int
     username: Optional[str] = None
+    # v2.311.0 — the operator's role in this project, and whether they are a
+    # global admin (who bypasses project roles entirely).  Naming the operator
+    # without naming their authority left the agent exactly where the removed
+    # capability list left it: able to learn what it may write only by writing
+    # and reading the 403.  ``project_role`` is None for a global admin, who has
+    # no membership row to report.
+    project_role: Optional[str] = None
+    is_global_admin: bool = False
 
 
 class AgentIdentity(BaseModel):
@@ -292,6 +300,14 @@ class AgentIdentity(BaseModel):
     # authority is its operator's project role, so `operator` is the answer to
     # "what may I do here" and there is no second list to reconcile it against.
     operator: Optional[AgentIdentityOperator] = None
+    # v2.311.0 — the one bit an agent actually plans around, precomputed rather
+    # than left as an inference from `operator.project_role`.  It is the same
+    # predicate `enforce_agent_operator_access` applies to a project write
+    # (ANALYST or above, or global admin), so a `false` here and a 403 on the
+    # first write can never disagree.  Session-metadata writes — the
+    # environment probe, key renewal — are not project writes and stay
+    # available to a read-only operator.
+    can_write_project_data: bool = False
     environment_probed: bool = False
     # Agent keys are short-lived (24h for plan keys). An agent that knows when
     # its credential dies can finish or hand back cleanly instead of failing

@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -99,10 +99,45 @@ class StartAssistRequest(BaseModel):
             "workflows that have proper session resume."
         ),
     )
-    # v2.309.0 — ``can_write_assigned`` removed with the capability system. A
-    # session's authority is its operator's project role, decided per request,
-    # so there is nothing to opt into here. Clients that still send the field
-    # are unaffected: unknown keys are ignored, not rejected.
+    # v2.309.0 removed ``can_write_assigned`` with the capability system: a
+    # session's authority is its operator's project role now, decided per
+    # request, so there is nothing to opt into.
+    #
+    # v2.310.0 — but it is kept here to be REJECTED, not ignored. Pydantic's
+    # default is `extra="ignore"`, and the failure that produces is the worst
+    # shape available: a caller that sent `can_write_assigned: false` asking for
+    # a read-only key gets a 201 and a key with their full analyst write
+    # authority. Silently granting more than was requested is not a compatible
+    # change, however compatible the response looks. Sending `true` is equally
+    # wrong in the other direction — it asked for "assigned hosts only" and
+    # would now get the whole project.
+    #
+    # So an old caller gets an error explaining the new model, and a chance to
+    # decide whether they still want the session.
+    can_write_assigned: Optional[bool] = Field(
+        default=None,
+        deprecated=True,
+        description=(
+            "REMOVED in v2.309.0. Rejected rather than ignored, because the "
+            "value you sent no longer means what it meant. An assist session "
+            "now carries the permissions of the operator who starts it, "
+            "checked on every call. Omit this field."
+        ),
+    )
+
+    @field_validator("can_write_assigned")
+    @classmethod
+    def _reject_retired_capability_flag(cls, value):
+        if value is None:
+            return value
+        raise ValueError(
+            "can_write_assigned was removed in v2.309.0 and is no longer "
+            "honoured. An assist session now acts with the permissions of the "
+            "operator who starts it, re-checked on every call — there is no "
+            "per-session write grant to set. Retry without this field; if you "
+            "were relying on it to obtain a read-only key, start the session as "
+            "a user whose project role is read-only instead."
+        )
 
 
 class McpClientSetup(BaseModel):

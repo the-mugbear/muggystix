@@ -417,19 +417,25 @@ def test_reference_catalog_matches_what_agents_see(client):
 
 
 def test_reference_catalog_classifies_reads_and_writes(client):
-    """`kind` is derived from the capability the endpoint requires, so a write
-    can never be documented as a safe-to-always-allow read."""
+    """`kind` is derived from the HTTP method the tool dispatches, so a write
+    can never be documented as a safe-to-always-allow read.
+
+    v2.311.0 — it used to be qualified against a per-tool `capability`, which
+    the catalog also published. Both are gone: authority is the operator's
+    project role, checked per request, so there is no per-tool permission to
+    document. `kind` has to stand on its own now, which is what this pins.
+    """
     tools = {t["name"]: t for t in client.get("/api/v1/references/mcp-tools").json()["tools"]}
 
     for name in ("assist_get_context", "assist_list_hosts", "assist_get_host_findings"):
         assert tools[name]["kind"] == "read"
-        assert tools[name]["capability"] is None
 
-    assert tools["assist_add_note"]["capability"] == "write:notes"
-    assert tools["assist_set_follow"]["capability"] == "write:follow"
-    assert tools["assist_patch_host"]["capability"] == "write:host"
     for name in ("assist_add_note", "assist_set_follow", "assist_patch_host"):
         assert tools[name]["kind"] == "write"
+
+    # The removed field must not linger on any entry — a client reading a stale
+    # `capability` would be reasoning about a gate that no longer exists.
+    assert all("capability" not in t for t in tools.values())
 
     # Every tool carries what the page renders: a description, the underlying
     # route, and a JSON-Schema object for its parameters.
@@ -587,11 +593,16 @@ def test_tools_list_is_scoped_by_workflow_not_by_grant(client, test_project):
     assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= anon
 
 
-def test_write_tools_appear_for_a_granted_session(client, test_project):
+def test_write_tools_appear_for_every_assist_session(client, test_project):
+    """v2.311.0 — was `..._for_a_granted_session`, and started the session with
+    `can_write_assigned: True`. There is no grant to ask for: write tools are
+    listed for every assist session, and whether a write lands is the operator's
+    project role at request time."""
     resp = client.post(
         f"/api/v1/projects/{test_project.id}/assist/start",
-        json={"purpose": "granted", "can_write_assigned": True},
+        json={"purpose": "ordinary session"},
     )
+    assert resp.status_code == 201, resp.text
     key = resp.json()["api_key"]
     names = {t["name"] for t in _rpc(
         client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
@@ -852,7 +863,7 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
 
     key = client.post(
         f"/api/v1/projects/{test_project.id}/assist/start",
-        json={"purpose": "write path", "can_write_assigned": True},
+        json={"purpose": "write path"},
     ).json()["api_key"]
     headers = {"X-API-Key": key}
 

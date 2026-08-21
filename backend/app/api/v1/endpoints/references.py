@@ -546,8 +546,8 @@ async def references_index():
             "url": "/api/v1/references/mcp-tools",
             "description": (
                 "The MCP tool catalog this deployment serves — every tool "
-                "name, its input schema, and the write capability it needs. "
-                "Drives the in-app MCP reference page."
+                "name, its input schema, whether it reads or writes, and the "
+                "workflows that see it. Drives the in-app MCP reference page."
             ),
         },
         "tool_readiness": {

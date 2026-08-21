@@ -160,6 +160,47 @@ def test_assist_key_cannot_write_execution_environment(
     assert "assist" in resp.json()["detail"].lower()
 
 
+def test_assist_key_cannot_complete_an_execution_session(
+    client, db_session, test_project, execution_session_row,
+):
+    """The sibling of the environment case — and the one that got missed.
+
+    Both routes were gated by ``require_capability(write:execution)``, which was
+    doing double duty: granting authority AND keeping assist keys out, since
+    assist sessions never carried that capability. v2.309.0 deleted the
+    capability system and restored the boundary on ``/environment`` only,
+    because that is the route a test covered. This one had nothing watching it.
+
+    It matters more than the environment row: completing a session is a
+    terminal state transition on someone else's execution work, and the audit
+    record says the agent did it.
+    """
+    from app.db.models_agent import ExecutionSessionStatus
+
+    start = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "regression: assist key completing an execution"},
+    )
+    assert start.status_code == 201, start.text
+    assist_key = start.json()["api_key"]
+
+    before = execution_session_row.status
+    resp = client.post(
+        f"/api/v1/agent/execution-sessions/{execution_session_row.id}/complete",
+        headers={"X-API-Key": assist_key},
+        json={"overall_status": "completed"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "assist" in resp.json()["detail"].lower()
+
+    # State must be untouched — a refused call that still mutated would be the
+    # worse half of this bug.
+    db_session.expire_all()
+    db_session.refresh(execution_session_row)
+    assert execution_session_row.status == before
+    assert execution_session_row.status != ExecutionSessionStatus.COMPLETED.value
+
+
 def test_execution_key_blocked_from_assist_and_recon(client, execution_key):
     """Cross-workflow guarantee mirroring the recon smoke: a plan-
     scoped key 403s on /agent/assist/* and /agent/recon/*."""

@@ -1386,3 +1386,47 @@ def test_web_screenshot_download_is_project_scoped(client, db_session, test_proj
         f"/api/v1/agent/assist/web-interfaces/{iface.id}/screenshot", headers=headers,
     )
     assert resp.status_code == 404
+
+
+def test_the_retired_write_flag_is_refused_not_ignored(client, db_session, test_project):
+    """v2.310.0 — a caller asking for authority that no longer exists gets an
+    error, not a silent upgrade.
+
+    ``can_write_assigned`` was removed with the capability system. Pydantic's
+    default is ``extra="ignore"``, which would have produced the worst possible
+    shape: a script sending ``false`` to request a READ-ONLY key gets a 201 and
+    a key carrying its operator's full write authority. Sending ``true`` is
+    wrong in the other direction — it asked for "assigned hosts only" and would
+    get the whole project.
+
+    Both values are refused, and nothing is persisted, so a caller cannot end
+    up holding a credential it did not ask for.
+    """
+    from app.db.models_agent import AssistSession
+
+    before = db_session.query(AssistSession).count()
+    for value in (False, True):
+        resp = client.post(
+            f"/api/v1/projects/{test_project.id}/assist/start",
+            json={"purpose": "legacy client", "can_write_assigned": value},
+        )
+        assert resp.status_code == 422, (
+            f"can_write_assigned={value} was accepted: {resp.text}. Ignoring it "
+            "silently grants authority the caller did not request."
+        )
+        assert "can_write_assigned" in resp.text
+
+    db_session.expire_all()
+    assert db_session.query(AssistSession).count() == before, (
+        "a refused start still created a session — the caller would be holding "
+        "a key it was told it could not have"
+    )
+
+
+def test_omitting_the_retired_flag_still_works(client, test_project):
+    """The rejection must not catch the normal path: `None` means 'not sent'."""
+    resp = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "current client"},
+    )
+    assert resp.status_code == 201, resp.text

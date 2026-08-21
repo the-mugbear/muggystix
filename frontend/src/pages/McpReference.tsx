@@ -31,13 +31,6 @@ import {
   TableRow,
 } from '../components/ui/table';
 
-const CAPABILITY_LABEL: Record<string, string> = {
-  'write:notes': 'write:notes',
-  'write:follow': 'write:follow',
-  'write:host': 'write:host',
-  'write:execution': 'write:execution',
-};
-
 /** The workflow a key belongs to decides which tools it is offered. Order
  *  follows the engagement: recon feeds planning, planning feeds execution. */
 const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
@@ -201,11 +194,6 @@ const McpReference: React.FC = () => {
                   <Badge variant={tool.kind === 'read' ? 'secondary' : 'warning'}>
                     {tool.kind}
                   </Badge>
-                  {tool.capability ? (
-                    <Badge variant="outline" className="max-w-full truncate">
-                      {CAPABILITY_LABEL[tool.capability] ?? tool.capability}
-                    </Badge>
-                  ) : null}
                 </div>
               </div>
             </TableCell>
@@ -258,7 +246,7 @@ const McpReference: React.FC = () => {
         <AlertDescription>
           MCP changes <strong>how</strong> an agent reaches this project, not{' '}
           <strong>what</strong> it may do. Every tool call re-enters the same authenticated
-          endpoint a curl would hit — same key, same capability gate, same audit row. Start a
+          endpoint a curl would hit — same key, same permission checks, same audit row. Start a
           session from a project&rsquo;s <Link to="/operations" className="underline">Operations</Link>{' '}
           page to get a key and a ready-to-paste config.
         </AlertDescription>
@@ -407,8 +395,9 @@ const McpReference: React.FC = () => {
               authorization decision of its own.
             </li>
             <li>
-              That endpoint runs its normal checks — assist-scope, capability gate, row scope —
-              and records an audit row, exactly as it would for a curl.
+              That endpoint runs its normal checks — workflow scope, and the project role of
+              the operator who started the session — and records an audit row, exactly as it
+              would for a curl.
             </li>
             <li>
               The response comes back as the tool result. A <strong>403</strong> — valid key,
@@ -483,11 +472,14 @@ const McpReference: React.FC = () => {
           <div className="flex gap-sm">
             <Lock className="mt-xxs size-4 shrink-0 text-warning" aria-hidden />
             <p className="text-caption text-muted-foreground">
-              <strong className="text-foreground">Project writes are capability-gated and
-              row-scoped.</strong>{' '}
-              The three that touch project data — notes, review status, hostname/OS — need the
-              matching capability <em>and</em> a host assigned to the operator who started the
-              session; anything else is refused, through MCP or otherwise. The one exception is
+              <strong className="text-foreground">An agent writes exactly what its operator
+              can write.</strong>{' '}
+              The three tools that touch project data — notes, review status, hostname/OS —
+              succeed only if the person who started the session may write to the project
+              (analyst or above), checked on <em>every</em> request rather than at key-mint
+              time, so a role change reaches a live session immediately. An agent can ask
+              first: <span className="font-mono">agent_identity</span> returns{' '}
+              <span className="font-mono">can_write_project_data</span>. The one exception is
               <span className="font-mono"> assist_record_environment</span>, which writes session
               metadata (your OS and shell) rather than project data and is therefore open to every
               session.

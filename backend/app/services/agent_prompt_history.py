@@ -21,6 +21,25 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.59.0",
+        "app_version": "2.311.0",
+        "summary": (
+            "The guide catches up with 1.58.0's authority change, which had "
+            "only reached the prompts. AGENTS.md still published the removed "
+            "capability names next to each write route and still told agents a "
+            "write is refused unless the host is assigned to their operator — "
+            "both false since v2.309.0, and the second one materially so: an "
+            "analyst's agent may write anywhere in the project. The write "
+            "section now states the real rule and points at "
+            "`GET /agent/identity`, which gained `can_write_project_data` (and "
+            "the operator's `project_role`) in the same release so an agent can "
+            "learn its authority by asking rather than by reading a 403. "
+            "Assigned-hosts is kept as guidance about whose work to touch, "
+            "which is what it now is, rather than as a boundary the server "
+            "enforces."
+        ),
+    },
+    {
         "version": "1.58.0",
         "app_version": "2.309.0",
         "summary": (
