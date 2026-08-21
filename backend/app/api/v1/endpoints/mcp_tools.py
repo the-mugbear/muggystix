@@ -1409,18 +1409,22 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     return ann
 
 
-def tool_list_payload(
-    *, workflow: Optional[str] = None, granted: Optional[set] = None
-) -> List[Dict[str, Any]]:
+def tool_list_payload(*, workflow: Optional[str] = None) -> List[Dict[str, Any]]:
     """The ``tools`` array for a ``tools/list`` response.
 
     ``workflow`` is the caller's key workflow; tools belonging to the other
-    workflows are omitted.  ``granted`` is the session's capability set; writes
-    it cannot perform are omitted.  ``None`` for either means "unknown" — list
-    everything, which is the documentation view an unauthenticated client gets.
+    workflows are omitted.  ``None`` means "unknown" — list everything, which
+    is the documentation view an unauthenticated client gets.
 
-    Both filters are presentational (see the module docstring): the endpoint
-    behind each tool re-decides on every call.
+    v2.309.0 — the ``granted`` capability filter is gone with the capability
+    system. Write tools are listed for every session now, and whether a
+    particular write succeeds is decided by the operator's project role at the
+    endpoint. That is a small honesty improvement as well as a simplification:
+    the previous filter implied the listed set was the *permitted* set, when
+    the row-level constraint meant a listed write could still be refused.
+
+    The workflow filter remains presentational (see the module docstring): the
+    endpoint behind each tool re-decides on every call.
     """
     return [
         {
@@ -1430,10 +1434,5 @@ def tool_list_payload(
             "annotations": annotations(name, spec),
         }
         for name, spec in TOOLS.items()
-        if (workflow is None or workflow in spec["workflows"])
-        and (
-            granted is None
-            or not spec.get("capability")
-            or spec["capability"] in granted
-        )
+        if workflow is None or workflow in spec["workflows"]
     ]

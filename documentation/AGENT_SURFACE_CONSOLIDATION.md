@@ -390,9 +390,36 @@ real data. A test pins that adding rows which share an agent adds no queries.
 * Keep minting the existing key kinds underneath so nothing breaks yet.
 * Resolve the `plan_generation` question above.
 
-### Phase 5 — The fail-closed flip *(the sharp edge)*
-* Delete `LEGACY_WRITE_CAPABILITIES` and the capability machinery.
-* **Breaks every legacy key the moment it lands.**
+### Phase 5 — Delete the capability system ✅ **Shipped in 2.309.0** (prompt 1.58.0)
+Resolved by a decision rather than a drain: **read-only assist was abandoned
+entirely.** 99% of users are analysts, read-only was the *default* rather than a
+choice anyone made, and every assist session in the deployment was already
+ended — so there was nothing to port, version, or wait out. All three drain
+options below became unnecessary.
+
+Deleted: `AgentCapability`, `AgentCapabilityConstraint`,
+`LEGACY_WRITE_CAPABILITIES`, `ASSIST_GRANTABLE_CAPABILITIES`,
+`resolve_capabilities`, `require_capability`, `enforce_capability_row_scope`,
+the two `agent_sessions` columns (migration `f1a6c92d4b70`), the `can_write_assigned`
+start parameter, the dialog checkbox, the authority badges, and the MCP
+`tools/list` capability filter.
+
+**Two widenings, both deliberate and worth stating plainly:**
+* An assist session started by an analyst can now write, where it was read-only
+  unless the operator opted in.
+* Writes are no longer narrowed to the operator's *assigned* hosts — an analyst
+  can edit any host in their project through the UI, so their agent can too.
+
+**One regression this caused, caught by an existing test:** the
+`write:execution` capability had been doing double duty — gating authority *and*
+enforcing the cross-workflow boundary, since assist sessions never carried it.
+Deleting it silently let an assist key write an execution session's environment.
+The boundary is now stated directly in the handler.
+
+*(Historical: the drain strategies below were the plan while read-only assist
+was still a feature. Kept because the analysis — particularly why the exposure
+was 168h rather than hours — is the reasoning that made abandoning it the
+obvious call.)*
 
 #### ⚠️ Phase 5 would WIDEN live assist keys — this needs solving first
 
@@ -526,9 +553,13 @@ in the session dialog, stated plainly rather than buried:
 
 ## Open questions
 
-1. **Phase 5 drain strategy** — which of the three options above, to stop live
-   read-only assist keys being widened by the flip. Blocking for Phase 5.
-2. **Minimum role to start a session** (Phase 4) — the floor that makes
-   auditor/viewer agents real.
-3. **Per-route minimum read roles** — needed before viewer keys exist; today's
-   single membership check would give a viewer's agent auditor-level egress.
+None blocking. **Phase 6** is the remaining work: remove the four workflow
+guards so `workflow` becomes purely a label, collapse the twelve columns
+duplicated across the four session tables, and drop the four legacy scope
+columns from `api_keys`.
+
+One caveat carried forward from Phase 5: the `write:execution` capability turned
+out to be enforcing the recon/assist **cross-workflow boundary** as a side
+effect. Phase 6 removes the workflow guards deliberately — so before it lands,
+every place that relied on a workflow check needs the same audit, or boundaries
+will disappear the way that one nearly did.

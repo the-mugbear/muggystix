@@ -29,8 +29,6 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   last_activity_at: new Date(Date.now() - 5 * 60_000).toISOString(),
   environment_probed: true,
   key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
-  capabilities: [],
-  capability_constraint: null,
   call_count: 0,
   note_count: 0,
   ...over,
@@ -64,11 +62,10 @@ describe('AssistSessionsPanel', () => {
     expect(screen.getByText(/last used 5 minutes ago/)).toBeInTheDocument();
   });
 
-  it('distinguishes a write-capable session from a read-only one', () => {
-    renderPanel([session({ capabilities: ['write:notes'] })]);
-    expect(screen.getByText('Can write')).toBeInTheDocument();
-    expect(screen.queryByText('Read-only')).toBeNull();
-  });
+  // v5.189.0 — the read-only/can-write badge is gone with the capability
+  // system. A session acts with its operator's own project permissions, so
+  // there is no per-session authority to distinguish; the panel would have been
+  // reporting a distinction that no longer exists.
 
   it('flags a session whose agent never connected', () => {
     // Key minted, prompt never pasted — different from merely idle, and the

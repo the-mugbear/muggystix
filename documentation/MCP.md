@@ -29,7 +29,7 @@ resources/prompts surfaces are ever needed.
 
 **Every tool call loops back into the app's own `/api/v1/agent/*` endpoint
 in-process** (ASGI transport, no socket), forwarding the caller's `X-API-Key`.
-So authentication, the capability gate, row-scope, the agent-API audit log, and
+So authentication, the operator-role gate, the agent-API audit log, and
 the streaming caps all run **unchanged**. The MCP layer makes no security
 decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
 `test_hiding_a_tool_is_presentation_not_authorisation`.
@@ -46,7 +46,7 @@ resolved from their key via `GET /api/v1/agent/identity`:
 | `recon` | Scopes → Start Agentic Recon | scope context, subnets, upload-job polling, summary, completion |
 | `plan_generation` | Test Plans → Generate with AI | planning context, entry drafting, validation, submit-for-approval |
 | `execution` | Execute with AI on an approved plan | execution context, sanity checks, test results, entry/session completion |
-| `assist` | Operations → AI Assist | interactive reads over the inventory, plus the three capability-gated writes |
+| `assist` | Operations → AI Assist | interactive reads over the inventory, plus notes / review status / hostname-OS corrections when the operator's role permits them |
 
 ### Assist: answering questions, and filling in a report
 
@@ -195,8 +195,9 @@ it. What comes back depends on *why* a call was refused:
 * **No usable credential** → a real **HTTP 401** with a bare `WWW-Authenticate:
   Bearer` challenge. That is a fact about the connection, and a client can act
   on it: prompt for a key, show a connection error, stop retrying.
-* **A valid key that may not do this** (capability missing, host not assigned)
-  → an `isError` tool result carrying the endpoint's 403. That is a fact about
+* **A valid key that may not do this** (the operator's project role is
+  read-only, or the target does not exist)
+  → an `isError` tool result carrying the endpoint's status. That is a fact about
   one call, which the model should read and work around; re-authenticating
   would not change it.
 

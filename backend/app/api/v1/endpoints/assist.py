@@ -34,10 +34,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.api.deps import get_current_project, require_project_role
 from app.db.models import Annotation, Host
 from app.db.models_agent import (
-    ASSIST_GRANTABLE_CAPABILITIES,
     Agent,
     AgentApiCall,
-    AgentCapabilityConstraint,
     AgentFeedback,
     AgentSessionWorkflow,
     AssistSession,
@@ -101,16 +99,10 @@ class StartAssistRequest(BaseModel):
             "workflows that have proper session resume."
         ),
     )
-    can_write_assigned: bool = Field(
-        default=False,
-        description=(
-            "Grant the session permission to write host notes and set review "
-            "status, limited to hosts assigned to the operator starting it. "
-            "Defaults to false — an assist session is read-only unless the "
-            "operator opts in.  The grant never widens beyond the operator's "
-            "own assigned hosts."
-        ),
-    )
+    # v2.309.0 — ``can_write_assigned`` removed with the capability system. A
+    # session's authority is its operator's project role, decided per request,
+    # so there is nothing to opt into here. Clients that still send the field
+    # are unaffected: unknown keys are ignored, not rejected.
 
 
 class McpClientSetup(BaseModel):
@@ -162,10 +154,9 @@ class StartAssistResponse(BaseModel):
     # McpClientSetup.  The lower-friction alternative to the curl recipe.
     mcp_clients: List[McpClientSetup] = []
     mcp_url: str
-    # What the session may do beyond reading, so the dialog can state it back
-    # to the operator rather than assuming its own checkbox took effect.
-    capabilities: List[str] = []
-    capability_constraint: Optional[str] = None
+    # v2.309.0 — `capabilities` / `capability_constraint` removed. The session
+    # can do what its operator can do, so the dialog states the operator's role
+    # rather than echoing a grant back at them.
     # v2.65.0 — surface the resolved TTL so the dialog can render
     # the actual expiry without hardcoding a value that drifts when
     # AGENT_KEY_TTL_HOURS / ASSIST_KEY_DEFAULT_TTL_HOURS change.
@@ -196,9 +187,6 @@ class AssistSessionRow(BaseModel):
     # AGENT_KEY_TTL_HOURS can override the default and per-session ttl_hours
     # is a start parameter, so a computed expiry would quietly be wrong.
     key_expires_at: Optional[datetime] = None
-    # Audit: which sessions carried write authority, and how narrowly.
-    capabilities: List[str] = []
-    capability_constraint: Optional[str] = None
     # v2.284.0 — how much the session actually did, so the list answers "which
     # of these is worth opening?" without a round trip per row.  A session that
     # made no calls is the common dead end (key minted, prompt never pasted) and
@@ -354,24 +342,18 @@ def start_assist_session(
     with 403.  The plaintext key is shown exactly once — copy it to
     the agent prompt the response contains.
 
-    Role gate: ANALYST (same level as recon/plan-start).  Viewers and
-    auditors cannot mint assist keys because the key authenticates as
-    the operator's project agent and that has more authority than the
-    viewer role implies — even though the assist surface itself is
-    read-only.
+    Role gate: AUDITOR (v2.308.0).  The key acts with the starting operator's
+    own project permissions on every call, so an auditor's assist agent is
+    read-only because the auditor is — there is no separate grant to get wrong.
+    Recon, plan generation and execution remain ANALYST: they exist to change
+    project state.
     """
     agent = _resolve_assist_agent(db, project=project, user=current_user)
 
-    # Capability grant.  Read is implicit; writes are opt-in and always
-    # narrowed to the starting operator's own assigned hosts, so an assist
-    # agent can annotate the work its operator already owns and nothing else.
-    if body.can_write_assigned:
-        capabilities = sorted(ASSIST_GRANTABLE_CAPABILITIES)
-        constraint = AgentCapabilityConstraint.ASSIGNED.value
-    else:
-        capabilities = []
-        constraint = None
-
+    # v2.309.0 — no capability grant. What this session may write is decided on
+    # every request by the operator's project role (enforce_agent_operator_access),
+    # so there is nothing to opt into at start time and nothing to keep in sync.
+    #
     # Unified base session first, so the detail row + key both link to it
     # (R5 — expand-phase completion; was left null for the backfill).
     base_session = create_agent_session(
@@ -382,8 +364,6 @@ def start_assist_session(
         started_by_id=current_user.id,
         status=AssistSessionStatus.ACTIVE.value,
     )
-    base_session.capabilities = capabilities
-    base_session.capability_constraint = constraint
 
     assist_session = AssistSession(
         project_id=project.id,
@@ -412,7 +392,6 @@ def start_assist_session(
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
-        capabilities=capabilities,
     )
     db.commit()
     db.refresh(assist_session)
@@ -431,8 +410,6 @@ def start_assist_session(
         instructions=instructions,
         mcp_clients=mcp_clients,
         mcp_url=mcp_url,
-        capabilities=capabilities,
-        capability_constraint=constraint,
         key_ttl_hours=resolve_ttl_hours(
             body.ttl_hours or ASSIST_KEY_DEFAULT_TTL_HOURS
         ),
@@ -613,10 +590,6 @@ def _session_row(
         last_activity_at=session.last_activity_at,
         environment_probed=session.environment_probed_at is not None,
         key_expires_at=key_expires_at,
-        capabilities=(agent_session.capabilities or []) if agent_session else [],
-        capability_constraint=(
-            agent_session.capability_constraint if agent_session else None
-        ),
         call_count=call_count,
         note_count=note_count,
     )

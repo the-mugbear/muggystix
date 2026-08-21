@@ -60,8 +60,6 @@ const row = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   last_activity_at: '2026-08-19T11:20:00Z',
   environment_probed: true,
   key_expires_at: null,
-  capabilities: [],
-  capability_constraint: null,
   call_count: 14,
   note_count: 2,
   ...over,
@@ -125,15 +123,19 @@ describe('AssistSessions', () => {
     expect(screen.getByText(/14 · 2/)).toBeInTheDocument();
   });
 
-  it('marks which sessions could write, since those carry the operator’s name', async () => {
+  it('names the operator each session acted for', async () => {
+    // v5.189.0 — was "marks which sessions could write". Capability grants are
+    // gone: a session acts with its operator's own project permissions, so the
+    // operator IS the authority statement, and it is the thing a reviewer needs
+    // when the session's output carries that person's name.
     listAssistSessions.mockResolvedValue([
-      row(),
-      row({ id: 13, capabilities: ['write:notes'], capability_constraint: 'assigned' }),
+      row({ started_by_username: 'alice' }),
+      row({ id: 13, started_by_username: 'bob' }),
     ]);
     renderPage();
 
-    await waitFor(() => expect(screen.getByText('Read-only')).toBeInTheDocument());
-    expect(screen.getByText('Could write')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('as alice')).toBeInTheDocument());
+    expect(screen.getByText('as bob')).toBeInTheDocument();
   });
 
   it('leads the detail with the notes the agent wrote', async () => {

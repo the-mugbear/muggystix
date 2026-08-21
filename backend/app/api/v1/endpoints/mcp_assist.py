@@ -559,22 +559,17 @@ async def _handle_message(
         return _rpc_result(msg_id, {})
 
     if method == "tools/list":
-        # With a key, list only what this session can actually do: its own
-        # workflow's tools (v2.278.0), minus the writes its capabilities don't
-        # cover (v2.271.0).  Advertising the rest invites the model to try them
-        # and read a 403 as a bug in itself.  Without a key we list everything —
-        # that's the documentation view.
+        # With a key, list this session's own workflow tools (v2.278.0).
+        # Without a key we list everything — that's the documentation view.
+        #
+        # v2.309.0 — the capability filter is gone with the capability system.
+        # Write tools are listed for every session; whether a given write
+        # succeeds is the operator's project role, decided at the endpoint.
         identity = await _key_identity(
             app, api_key, caller=caller, user_agent=user_agent
         )
         workflow = identity.get("workflow") if identity else None
-        granted = (
-            frozenset(identity.get("capabilities") or []) if identity else None
-        )
-        return _rpc_result(
-            msg_id,
-            {"tools": tool_list_payload(workflow=workflow, granted=granted)},
-        )
+        return _rpc_result(msg_id, {"tools": tool_list_payload(workflow=workflow)})
 
     if method == "tools/call":
         try:

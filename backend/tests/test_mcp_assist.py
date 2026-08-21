@@ -240,42 +240,40 @@ def test_rejected_key_says_the_token_is_the_problem(client):
     assert 'error="invalid_token"' in resp.headers["WWW-Authenticate"]
 
 
-def test_write_tool_blocked_for_readonly_key(client, test_project):
-    """A default (read-only) assist key hitting assist_add_note surfaces the
-    write:notes capability gate's 403 through MCP."""
-    body = _start_session(client, test_project.id)
-    headers = {"X-API-Key": body["api_key"]}
-    resp = _rpc(client, {
-        "jsonrpc": "2.0", "id": 12, "method": "tools/call",
-        "params": {
-            "name": "assist_add_note",
-            "arguments": {"host_id": 1, "body": "should be blocked"},
-        },
-    }, headers=headers)
-    result = resp.json()["result"]
-    assert result["isError"] is True
-    assert "403" in result["content"][0]["text"]
+# ``test_write_tool_blocked_for_readonly_key`` removed in v2.309.0 with the
+# capability system: there is no longer a read-only assist key to hold, since a
+# session acts with its operator's project permissions. The role-based refusal
+# it stood for is covered by test_agent_operator_access.py.
 
 
-def test_capability_refusal_stays_a_tool_result_not_a_transport_error(client, test_project):
-    """The line between 401 and isError.
+def test_an_endpoint_refusal_stays_a_tool_result_not_a_transport_error(
+    client, test_project
+):
+    """The line between a transport status and ``isError``.
 
-    A capability or row-scope refusal is a per-call outcome the model should
-    read and work around ("that host isn't assigned to you"). Promoting it to a
-    transport status would tell the client to re-authenticate over something no
-    amount of re-authenticating fixes — the key is fine, the action isn't
-    allowed. Only *authentication* failures become HTTP 401.
+    A per-call refusal is an outcome the model should read and work around
+    ("that host doesn't exist"). Promoting it to a transport status would tell
+    the client to re-authenticate over something no amount of re-authenticating
+    fixes — the key is fine, the call isn't. Only *authentication* failures
+    become HTTP 401.
+
+    v2.309.0 — this used to drive a capability refusal (403) with a read-only
+    key. Capabilities are gone, so it drives a missing host instead; the
+    property under test is the transport's behaviour, not which refusal
+    produced it.
     """
-    body = _start_session(client, test_project.id)  # read-only key
+    body = _start_session(client, test_project.id)
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 13, "method": "tools/call",
-        "params": {"name": "assist_set_follow", "arguments": {"host_id": 1, "status": "watching"}},
+        "params": {
+            "name": "assist_set_follow",
+            "arguments": {"host_id": 999_999, "status": "watching"},
+        },
     }, headers={"X-API-Key": body["api_key"]})
 
-    assert resp.status_code == 200
+    assert resp.status_code == 200, "a per-call refusal must not become a transport error"
     result = resp.json()["result"]
     assert result["isError"] is True
-    assert "403" in result["content"][0]["text"]
 
 
 def test_write_tool_without_key_also_answers_401(client):
@@ -560,15 +558,27 @@ def test_tools_carry_annotations_so_clients_can_default_approvals(client):
     assert tools["assist_set_follow"]["annotations"]["idempotentHint"] is True
 
 
-def test_tools_list_hides_writes_a_session_cannot_perform(client, test_project):
-    """A read-only key shouldn't be shown three tools it will only ever be
-    refused for."""
+def test_tools_list_is_scoped_by_workflow_not_by_grant(client, test_project):
+    """v2.309.0 — was ``..._hides_writes_a_session_cannot_perform``.
+
+    The capability filter is gone with the capability system, so write tools
+    are listed for every assist session; whether a given write succeeds is the
+    operator's project role, decided at the endpoint. That is also more honest
+    than the filter was: with the old row-level constraint, a *listed* write
+    could still be refused for an unassigned host, so the list never actually
+    meant "these will work".
+
+    The workflow filter stays — it is what keeps the catalogue (and its ~10k
+    tokens) scoped to the surface the session can reach.
+    """
     body = _start_session(client, test_project.id)
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                 headers={"X-API-Key": body["api_key"]})
     names = {t["name"] for t in resp.json()["result"]["tools"]}
     assert "assist_list_hosts" in names
-    assert not {"assist_add_note", "assist_set_follow", "assist_patch_host"} & names
+    assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= names
+    # Still scoped by workflow: an assist key is not shown recon/plan tooling.
+    assert not {"recon_upload", "plan_submit"} & names
 
     # Without a key the full catalogue is still listed — that's the docs view.
     anon = {t["name"] for t in _rpc(

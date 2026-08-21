@@ -76,20 +76,28 @@ def test_bad_arguments_record_what_was_wrong(client, db_session):
 
 
 def test_refused_tool_call_records_the_endpoint_status(client, test_project, db_session):
-    """A capability refusal is a tool_error, not a protocol error — and the
+    """An endpoint refusal is a tool_error, not a protocol error — and the
     endpoint's status is lifted out of the message so failures group by cause
-    rather than by string."""
+    rather than by string.
+
+    v2.309.0 — this drove a capability refusal (403) before capabilities were
+    removed. It now drives a missing host (404); the property under test is
+    that the endpoint's *status* reaches telemetry, not which status it was.
+    """
     body = client.post(
         f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "telemetry"}
     ).json()
     _rpc(client, {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "assist_add_note", "arguments": {"host_id": 1, "body": "x"}},
+        "params": {
+            "name": "assist_add_note",
+            "arguments": {"host_id": 999_999, "body": "x"},
+        },
     }, headers={"X-API-Key": body["api_key"]})
 
     row = _rows(db_session, tool_name="assist_add_note")[0]
     assert row.outcome == "tool_error"
-    assert row.error_code == 403
+    assert row.error_code == 404
 
 
 def test_the_401_path_still_records_which_tool_was_attempted(client, db_session):

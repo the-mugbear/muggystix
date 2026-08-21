@@ -120,10 +120,22 @@ def test_assist_key_blocked_from_plan_and_recon_surfaces(client, test_project, t
     assert "assist" in recon.json()["detail"].lower()
 
 
-def test_assist_key_cannot_write_notes_or_follow(client, test_project, db_session):
-    """v1 assist is strictly read-only.  The two writes on agent_browse
-    (notes + follow) must 403 even though the assist key authenticates
-    as the agent the same way a plan/recon key does."""
+def test_an_assist_key_writes_exactly_what_its_operator_may(
+    client, test_project, db_session
+):
+    """v2.309.0 — this used to assert assist was *strictly* read-only.
+
+    That property came from the capability system: assist sessions were minted
+    with no write grants unless the operator ticked a box. The system is gone,
+    and a key now does what its operator may do — so an assist session started
+    by an analyst can add a note, because the analyst can. A session started by
+    an auditor still cannot; that direction is covered in
+    ``test_agent_operator_access.py``.
+
+    Kept rather than deleted because "what may an assist key write" is exactly
+    the question that changed, and a reader hitting this file deserves the
+    answer rather than a silent absence.
+    """
     from app.db.models import Host
     host = Host(
         project_id=test_project.id,
@@ -142,18 +154,16 @@ def test_assist_key_cannot_write_notes_or_follow(client, test_project, db_sessio
     note = client.post(
         f"/api/v1/agent/hosts/{host.id}/notes",
         headers=headers,
-        json={"body": "should be rejected", "status": "info"},
+        json={"body": "written by an analyst's agent", "status": "open"},
     )
-    assert note.status_code == 403, note.text
-    assert "read-only" in note.json()["detail"].lower()
+    assert note.status_code in (200, 201), note.text
 
     follow = client.post(
         f"/api/v1/agent/hosts/{host.id}/follow",
         headers=headers,
         json={"status": "watching"},
     )
-    assert follow.status_code == 403, follow.text
-    assert "read-only" in follow.json()["detail"].lower()
+    assert follow.status_code in (200, 204), follow.text
 
 
 def test_end_session_revokes_key(client, test_project):
@@ -232,29 +242,25 @@ def test_context_totals_includes_scan_count(client, test_project):
     assert "scan_count" in ctx.json()["totals"]
 
 
-def test_assist_session_exposes_capabilities_and_operator(client, test_project):
-    # Read-only session: no write capabilities, but the bound operator is shown.
-    ro = _start_session(client, test_project.id)
-    ro_sess = client.get(
-        "/api/v1/agent/assist/session", headers=_auth_headers(ro["api_key"])
-    )
-    assert ro_sess.status_code == 200, ro_sess.text
-    d = ro_sess.json()
-    assert d["capabilities"] == []            # read-only
-    assert d["capability_constraint"] is None
-    assert d["operator"] is not None and d["operator"]["id"] is not None
+def test_assist_session_names_the_operator_it_acts_for(client, test_project):
+    """v2.309.0 — was ``..._exposes_capabilities_and_operator``.
 
-    # Write session: capabilities granted, row-scope constraint present.
-    rw = client.post(
-        f"/api/v1/projects/{test_project.id}/assist/start",
-        json={"purpose": "write session", "can_write_assigned": True},
+    The capability list is gone; the operator is what remains, and it is now
+    the complete answer to "what may I do here" rather than half of it. An
+    agent that wants to know its authority looks at who it is acting as.
+    """
+    body = _start_session(client, test_project.id)
+    session = client.get(
+        "/api/v1/agent/assist/session", headers=_auth_headers(body["api_key"])
     )
-    assert rw.status_code == 201, rw.text
-    rw_sess = client.get(
-        "/api/v1/agent/assist/session", headers=_auth_headers(rw.json()["api_key"])
-    ).json()
-    assert rw_sess["capabilities"], "write session should enumerate capabilities"
-    assert rw_sess["capability_constraint"] == "assigned"
+    assert session.status_code == 200, session.text
+    payload = session.json()
+    assert payload["operator"] is not None
+    assert payload["operator"]["id"] is not None
+    # The removed fields must not linger as empty shells — a client reading
+    # `capabilities == []` would conclude "read-only", which is now wrong.
+    assert "capabilities" not in payload
+    assert "capability_constraint" not in payload
 
 
 def test_assist_host_dto_carries_operator_follow_field(client, test_project, db_session):
@@ -273,17 +279,27 @@ def test_assist_host_dto_carries_operator_follow_field(client, test_project, db_
     assert "follow" in detail.json()
 
 
-def test_write_session_prompt_has_no_read_only_contradiction(client, test_project):
-    """The 'What this session can NOT do' block used to hard-code
-    'cannot create notes / change follow — read-only' even when writes were
-    granted, contradicting the Writing section."""
-    rw = client.post(
+def test_assist_prompt_states_authority_as_the_operator(client, test_project):
+    """v2.309.0 — the prompt no longer branches on a capability grant.
+
+    It used to render one of two authority blocks, and the risk this test was
+    written for was them contradicting each other. There is now a single block
+    that states the rule — you act as the operator — which cannot contradict
+    itself and cannot promise the agent something the server will refuse.
+    """
+    started = client.post(
         f"/api/v1/projects/{test_project.id}/assist/start",
-        json={"purpose": "write session", "can_write_assigned": True},
+        json={"purpose": "authority wording"},
     )
-    instructions = rw.json()["instructions"]
-    assert "strictly read-only" not in instructions
-    assert "Writes are limited to" in instructions
+    assert started.status_code == 201, started.text
+    instructions = started.json()["instructions"]
+
+    assert "You act as" in instructions
+    # The old read-only framing must not survive: it would tell an analyst's
+    # agent it cannot write, which is now false.
+    assert "read-only** assist session" not in instructions
+    # And the guardrails that are still absolute have to stay absolute.
+    assert "do **not** create test plans" in instructions
 
 
 def test_assist_session_listing_includes_started_session(client, test_project):

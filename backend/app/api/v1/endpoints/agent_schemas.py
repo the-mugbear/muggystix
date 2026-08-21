@@ -288,9 +288,9 @@ class AgentIdentity(BaseModel):
     project_name: Optional[str] = None
     agent_id: int
     agent_name: Optional[str] = None
-    # Writes only — read is implicit for every authenticated key.
-    capabilities: List[str] = Field(default_factory=list)
-    capability_constraint: Optional[str] = None
+    # v2.309.0 — `capabilities` / `capability_constraint` removed. A key's
+    # authority is its operator's project role, so `operator` is the answer to
+    # "what may I do here" and there is no second list to reconcile it against.
     operator: Optional[AgentIdentityOperator] = None
     environment_probed: bool = False
     # Agent keys are short-lived (24h for plan keys). An agent that knows when

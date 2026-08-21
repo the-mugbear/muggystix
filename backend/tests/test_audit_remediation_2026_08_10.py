@@ -122,24 +122,22 @@ def _assign_host_to(db_session, host_id, user_id):
     db_session.commit()
 
 
-def _start(client, project_id, *, can_write=False):
+def _start(client, project_id):
+    # v2.309.0 — no `can_write_assigned`: a session's authority is its
+    # operator's project role, decided per request.
     resp = client.post(
         f"/api/v1/projects/{project_id}/assist/start",
-        json={"purpose": "edit-host test", "can_write_assigned": can_write},
+        json={"purpose": "edit-host test"},
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
 
 
-def test_readonly_assist_key_cannot_edit_host(client, test_project, db_session):
-    host = _make_host(db_session, test_project.id)
-    body = _start(client, test_project.id, can_write=False)
-    resp = client.patch(
-        f"/api/v1/agent/hosts/{host.id}",
-        headers={"X-API-Key": body["api_key"]},
-        json={"hostname": "hacked"},
-    )
-    assert resp.status_code == 403, resp.text
+# v2.309.0 — ``test_readonly_assist_key_cannot_edit_host`` removed with the
+# capability system. There is no longer a "read-only assist key" to hold: a
+# session acts with its operator's project permissions, so the equivalent
+# question is "can an auditor's agent edit a host?", answered in
+# ``test_agent_operator_access.py::test_an_auditors_agent_is_read_only``.
 
 
 def test_granted_assist_key_edits_assigned_host(
@@ -147,7 +145,7 @@ def test_granted_assist_key_edits_assigned_host(
 ):
     host = _make_host(db_session, test_project.id)
     _assign_host_to(db_session, host.id, test_user.id)
-    body = _start(client, test_project.id, can_write=True)
+    body = _start(client, test_project.id)
 
     resp = client.patch(
         f"/api/v1/agent/hosts/{host.id}",
@@ -167,16 +165,22 @@ def test_granted_assist_key_edits_assigned_host(
     assert refreshed.os_name == "Windows Server 2022"
 
 
-def test_granted_assist_key_cannot_edit_unassigned_host(
+def test_an_assist_key_edits_any_host_its_operator_could(
     client, test_project, db_session
 ):
-    """The grant is narrowed to assigned hosts — an unassigned host 403s even
-    with write:host granted."""
+    """v2.309.0 — was ``..._cannot_edit_unassigned_host``.
+
+    The assigned-hosts narrowing went with the capability system's row-level
+    constraint. An analyst can edit any host in their project through the UI,
+    so their agent can too — the boundary is the operator's role and the
+    project, not an assignment. Worth stating explicitly rather than deleting:
+    this is a genuine widening, chosen deliberately.
+    """
     host = _make_host(db_session, test_project.id, ip="10.90.0.2")
-    body = _start(client, test_project.id, can_write=True)
+    body = _start(client, test_project.id)
     resp = client.patch(
         f"/api/v1/agent/hosts/{host.id}",
         headers={"X-API-Key": body["api_key"]},
-        json={"hostname": "nope"},
+        json={"hostname": "corrected-unassigned.example.com"},
     )
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 200, resp.text

@@ -94,25 +94,24 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) =>
     <Badge variant="muted">Ended</Badge>
   );
 
-/** Read-only vs write, which is the fact a reviewer checks first: a session
- *  that could write is one whose output carries the operator's own name. */
-const AuthorityBadge: React.FC<{ capabilities: string[]; constraint: string | null }> = ({
-  capabilities,
-  constraint,
-}) => {
-  if (!capabilities.length) return <Badge variant="outline">Read-only</Badge>;
+/** Who the session acted for, which is the fact a reviewer checks first: its
+ *  output carries that person's name, and its authority was theirs.
+ *
+ *  v5.189.0 — this was a read-only/could-write badge sourced from the session's
+ *  capability grant. Grants are gone: a session does what its operator may do,
+ *  so the operator IS the authority statement. */
+const AuthorityBadge: React.FC<{ operator: string | null }> = ({ operator }) => {
+  if (!operator) return <Badge variant="outline">Unknown operator</Badge>;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Badge variant="warning" tabIndex={0}>
-          Could write
+        <Badge variant="outline" tabIndex={0}>
+          as {operator}
         </Badge>
       </TooltipTrigger>
       <TooltipContent className="max-w-sm">
-        {capabilities.join(', ')}
-        {constraint === 'assigned'
-          ? ' — limited to hosts assigned to the operator who started it.'
-          : ''}
+        This session acted with {operator}&rsquo;s permissions on the project,
+        checked on every call.
       </TooltipContent>
     </Tooltip>
   );
@@ -174,8 +173,7 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
           <div className="flex flex-wrap items-center gap-xs">
             <StatusBadge status={session.status} />
             <AuthorityBadge
-              capabilities={session.capabilities}
-              constraint={session.capability_constraint}
+              operator={session.started_by_username}
             />
             {!session.environment_probed && (
               <Tooltip>
@@ -491,10 +489,7 @@ const AssistSessions: React.FC = () => {
                     <StatusBadge status={row.status} />
                   </TableCell>
                   <TableCell>
-                    <AuthorityBadge
-                      capabilities={row.capabilities}
-                      constraint={row.capability_constraint}
-                    />
+                    <AuthorityBadge operator={row.started_by_username} />
                   </TableCell>
                   <TableCell className="truncate text-metadata text-foreground">
                     {safeFallback(row.started_by_username, 'unknown')}

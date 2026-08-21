@@ -61,7 +61,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   onSessionsChanged,
 }) => {
   const [purpose, setPurpose] = useState('');
-  const [canWrite, setCanWrite] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<StartAssistResponse | null>(null);
@@ -71,7 +70,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
 
   const reset = useCallback(() => {
     setPurpose('');
-    setCanWrite(false);
     setLoading(false);
     setError(null);
     setResult(null);
@@ -86,7 +84,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     try {
       const resp = await startAssistSession({
         purpose: purpose.trim() || undefined,
-        can_write_assigned: canWrite,
       });
       setResult(resp);
       // The new key is live the moment this returns — reflect it wherever the
@@ -99,10 +96,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     }
   };
 
-  // Read back what the server actually granted rather than trusting the
-  // checkbox — the two can diverge (e.g. a future policy that refuses the
-  // grant), and the operator needs to know which one they got.
-  const grantedWrite = (result?.capabilities?.length ?? 0) > 0;
   // A backend that predates the per-client MCP setup returns none; the prompt
   // tab then stands alone rather than opening on an empty tab.
   const hasMcp = (result?.mcp_clients?.length ?? 0) > 0;
@@ -200,27 +193,17 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   disabled={loading}
                 />
               </div>
-              <div className="flex flex-col gap-xxs rounded-control border border-border p-sm">
-                <label className="flex items-start gap-xs">
-                  <Checkbox
-                    checked={canWrite}
-                    onCheckedChange={(v) => setCanWrite(v === true)}
-                    disabled={loading}
-                    aria-label="Allow writing to hosts assigned to me"
-                  />
-                  <span className="flex flex-col gap-xxs">
-                    <span className="text-metadata font-semibold">
-                      Let the agent write to hosts assigned to me
-                    </span>
-                    <span className="text-caption text-muted-foreground">
-                      Adds host notes and review status only, and only on hosts
-                      currently assigned to you. Everything else stays read-only.
-                      Notes the agent writes are attributed to you and marked
-                      &ldquo;Agent&rdquo;.
-                    </span>
-                  </span>
-                </label>
-              </div>
+              {/* v5.189.0 — the write-access checkbox is gone with the
+                  capability system. The session acts with your own permissions
+                  on this project, so there is nothing to opt into. */}
+              <Alert>
+                <AlertDescription className="text-caption">
+                  The session acts with <strong>your</strong> permissions on this
+                  project, re-checked on every call. Anything you can change, it
+                  can change; anything you cannot, it cannot. Notes it writes are
+                  attributed to you and marked &ldquo;Agent&rdquo;.
+                </AlertDescription>
+              </Alert>
               {error && (
                 <Alert variant="destructive">
                   <AlertDescription>{error}</AlertDescription>
@@ -235,21 +218,13 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   started for project <strong>{result.project_name}</strong>.
                 </AlertDescription>
               </Alert>
-              <Alert variant={grantedWrite ? 'warning' : 'info'}>
+              <Alert variant="info">
                 <AlertDescription>
-                  {grantedWrite ? (
-                    <>
-                      This session can <strong>add notes and set review status
-                      on hosts assigned to you</strong>. It cannot touch any other
-                      host, scan, create plans, or execute tests. Notes it writes
-                      appear under your name with an &ldquo;Agent&rdquo; badge.
-                    </>
-                  ) : (
-                    <>
-                      This session is <strong>read-only</strong>. It can query
-                      project data but cannot change anything.
-                    </>
-                  )}
+                  This session acts with <strong>your permissions</strong> on
+                  this project. It can query project data and make the changes
+                  you can make — notes it writes appear under your name with an
+                  &ldquo;Agent&rdquo; badge. It cannot create plans or execute
+                  tests from here, and it cannot reach other projects.
                 </AlertDescription>
               </Alert>
               <div>

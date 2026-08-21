@@ -17,14 +17,14 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import (
-    Agent, AgentCapability, TestPlan, TestPlanEntry,
+    Agent, TestPlan, TestPlanEntry,
     ExecutionSession, ExecutionSessionStatus,
     TestExecutionResult, TestExecutionStatus,
     HostSanityCheck,
 )
 from app.core.config import settings as _settings
 from app.core.security import log_audit_event
-from app.api.deps import require_plan_scope, check_agent_rate_limit, require_capability
+from app.api.deps import require_plan_scope, check_agent_rate_limit
 from app.services.test_plan_service import TestPlanService
 from app.services.notification_service import NotificationService
 from app.services.agent_prompt_history import PROMPT_VERSION
@@ -143,7 +143,8 @@ def record_execution_environment(
     body: EnvironmentProbeRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_capability(AgentCapability.WRITE_EXECUTION.value)),
+    # v2.309.0 — capability gone; the router-level operator gate decides.
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Record the agent's environment probe for an execution session.
@@ -175,18 +176,32 @@ def record_execution_environment(
     # otherwise pass the "plan_id is None → skip plan check" branch
     # and let a recon key write into an execution session it should
     # have nothing to do with.
-    # Assist keys are turned away by the ``write:execution`` capability on the
-    # route itself (v2.231.0), so only the recon workflow boundary is left to
-    # enforce here: a recon key DOES carry write:execution, but has no
-    # business inside an execution session.
+    # v2.309.0 — assist keys used to be turned away by the ``write:execution``
+    # capability on the route. That capability did double duty: it gated
+    # authority AND enforced the cross-workflow boundary, because assist
+    # sessions never carried it. Deleting the capability system silently
+    # reopened the second job, so the boundary is now stated directly. Both
+    # rejections belong here rather than in a dependency because the URL is
+    # keyed by session_id, not plan_id, so ``require_plan_scope`` cannot gate
+    # it. (Caught by test_assist_key_cannot_write_execution_environment.)
+    workflow = getattr(request.state, "key_workflow", None)
+    if workflow == "assist":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This API key is scoped to an assist session and cannot write "
+                "to execution-session endpoints. Use the plan-scoped key minted "
+                "by /execute."
+            ),
+        )
     scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
+    if scoped_scope is not None or workflow == "recon":
         raise HTTPException(
             status_code=403,
             detail=(
                 "This API key is scoped to a reconnaissance run and cannot "
                 "write to execution-session endpoints. Use the plan-scoped "
-                "key minted by /execute, or the unscoped agent key."
+                "key minted by /execute."
             ),
         )
     plan = session.test_plan
@@ -1092,7 +1107,8 @@ def complete_execution_session(
     body: ExecutionSessionCompleteRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_capability(AgentCapability.WRITE_EXECUTION.value)),
+    # v2.309.0 — capability gone; the router-level operator gate decides.
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Transition the execution session from active/paused to a terminal state (v2.45.2).

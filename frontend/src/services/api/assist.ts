@@ -33,23 +33,15 @@ export interface StartAssistResponse {
   // hardcoding "4 h" so an env override (or future ASSIST_KEY_TTL
   // bump) doesn't require a frontend change in lockstep.
   key_ttl_hours: number;
-  // What the session may do beyond reading (e.g. ["write:follow","write:notes"]),
-  // and how narrowly ("assigned" = only hosts assigned to the operator).
-  // Echoed back so the dialog states the granted authority rather than
-  // assuming its own checkbox took effect.
-  capabilities: string[];
-  capability_constraint: string | null;
+  // v5.189.0 — `capabilities` / `capability_constraint` removed. A session does
+  // what its operator may do on the project, so there is no grant to echo back.
 }
 
 export interface StartAssistRequest {
   purpose?: string;
   ttl_hours?: number;
-  /**
-   * Let the session write host notes and set review status, limited to hosts
-   * assigned to the operator starting it. Defaults to false — assist is
-   * read-only unless the operator opts in.
-   */
-  can_write_assigned?: boolean;
+  // `can_write_assigned` removed in v5.189.0 with the capability system — the
+  // session's authority is the operator's project role, decided per request.
 }
 
 export interface AssistSessionRow {
@@ -71,9 +63,6 @@ export interface AssistSessionRow {
    *  Never derive this from started_at + 4h — AGENT_KEY_TTL_HOURS and the
    *  per-start ttl_hours both move it. */
   key_expires_at: string | null;
-  // Audit: which sessions carried write authority, and how narrowly.
-  capabilities: string[];
-  capability_constraint: string | null;
   /** How much the session actually did. A session with zero calls is the
    *  common dead end — key minted, prompt never pasted — and reads identically
    *  to a busy one without these. */

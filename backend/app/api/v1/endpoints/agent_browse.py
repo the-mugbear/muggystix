@@ -33,7 +33,6 @@ from app.db.models import NoteStatus, FollowStatus
 from app.db.models_agent import (
     ActorType,
     Agent,
-    AgentCapability,
     AgentSession,
     AssistSession,
     ExecutionSession,
@@ -45,8 +44,6 @@ from app.api.deps import (
     AGENT_SESSION_RENEW_PATH,
     authenticate_for_renewal,
     check_agent_rate_limit,
-    enforce_capability_row_scope,
-    require_capability,
     session_renewal_deadline,
 )
 from app.db.models_tools import TOOL_APPROVED
@@ -240,8 +237,8 @@ def get_agent_identity(
     surface it guessed wrong.
 
     It discloses nothing the key can't already reach: the bound project and
-    session are what every other call is scoped to, and the capability list is
-    what the key's own writes would reveal one 403 at a time.
+    session are what every other call is scoped to, and the operator is who the
+    key acts for — which its own writes would reveal one 403 at a time anyway.
     """
     # No legacy-hit log here: unlike the browse routes below, this one is
     # meant to be called by every workflow, so an unscoped caller is not a
@@ -277,8 +274,6 @@ def get_agent_identity(
         ),
         agent_id=agent.id,
         agent_name=agent.name,
-        capabilities=sorted(getattr(request.state, "key_capabilities", None) or []),
-        capability_constraint=getattr(request.state, "key_capability_constraint", None),
         operator=operator,
         environment_probed=(
             session is not None and session.environment_probed_at is not None
@@ -611,15 +606,16 @@ def create_agent_note(
     body: AgentNoteCreate,
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_capability(AgentCapability.WRITE_NOTES.value)),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Create a note on a host.
 
-    Requires the ``write:notes`` capability (v2.231.0).  Plan, execution,
-    recon, and legacy unscoped keys carry it implicitly; an assist session
-    only carries it when the operator granted write access at start time,
-    and then only for hosts assigned to them.
+    v2.309.0 — gated by the operator's project role, like every other write on
+    this surface (``enforce_agent_operator_access``, applied at the router).
+    The ``write:notes`` capability it used to require is gone with the rest of
+    the capability system: an agent may write a note if the person whose
+    session it is may write a note.
     """
     q = (
         db.query(models.Host)
@@ -631,8 +627,6 @@ def create_agent_note(
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-
-    enforce_capability_row_scope(request, db, host_id=host_id)
 
     try:
         note_status = NoteStatus(body.status)
@@ -710,13 +704,12 @@ def set_agent_follow(
     body: AgentFollowRequest,
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_capability(AgentCapability.WRITE_FOLLOW.value)),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Set review status on a host.
 
-    Requires the ``write:follow`` capability (v2.231.0) — see
-    ``create_agent_note`` for how that resolves per workflow.
+    v2.309.0 — gated by the operator's project role; see ``create_agent_note``.
     """
     q = (
         db.query(models.Host)
@@ -728,8 +721,6 @@ def set_agent_follow(
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-
-    enforce_capability_row_scope(request, db, host_id=host_id)
 
     try:
         follow_status = FollowStatus(body.status)
@@ -749,17 +740,15 @@ def update_agent_host(
     body: AgentHostUpdate,
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_capability(AgentCapability.WRITE_HOST.value)),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Update ``hostname`` and/or ``os_name`` on a host after investigation.
 
-    Requires the ``write:host`` capability. Plan / execution / recon / legacy
-    keys carry it implicitly; an assist session only carries it when the
-    operator granted write access at start time, and then only for hosts
-    assigned to them. Deliberately narrow — only these two operator-correctable
-    attributes are editable; scan-derived facts are never mutated here. The
-    change is captured by the agent API audit middleware (touched host id), so
+    v2.309.0 — gated by the operator's project role; see ``create_agent_note``.
+    Still deliberately narrow: only these two operator-correctable attributes
+    are editable, and scan-derived facts are never mutated here. The change is
+    captured by the agent API audit middleware (touched host id), so
     who-changed-what stays reconstructable.
     """
     q = (
@@ -772,8 +761,6 @@ def update_agent_host(
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-
-    enforce_capability_row_scope(request, db, host_id=host_id)
 
     fields = body.model_dump(exclude_unset=True)
     if not fields:

@@ -723,7 +723,6 @@ def build_assist_instructions(
     raw_api_key: str,
     user_label: str,
     user_id: Optional[int],
-    capabilities: Optional[List[str]] = None,
 ) -> str:
     """Instructions for an agent in an interactive assist session.
 
@@ -731,11 +730,10 @@ def build_assist_instructions(
     creation, no execution — ever.  The agent's job is to answer the
     operator's questions by querying BlueStick and synthesizing.
 
-    v2.231.0 — the operator may additionally grant note/follow writes,
-    narrowed to hosts assigned to them.  When granted, the prompt gains
-    a write section; when not, it keeps the original read-only framing.
-    The grant is stated explicitly either way so the agent doesn't have
-    to discover its own authority by trial and error.
+    v2.309.0 — there is no per-session write grant any more.  The session
+    acts with the operator's own project permissions, so the prompt states
+    that plainly rather than enumerating a capability list the agent would
+    otherwise have to reconcile against the 403s it actually gets.
 
     Shorter prompt than recon/plan/execution because the surface is
     smaller and the safety surface is small (no target traffic).  The
@@ -749,33 +747,24 @@ def build_assist_instructions(
     base_url = resolve_base_url(request)
     agents_guide_url = f"{base_url}/agents-guide?workflow=assist"
 
-    granted = set(capabilities or [])
-    can_write = bool(granted)
-    # Agent feedback (v1.44.0): the "What this session can NOT do" block
-    # hard-coded "cannot create notes / change follow — read-only", which
-    # contradicted the Writing section whenever writes were granted. Drive the
-    # limitations line from the same capability flag so the two can't diverge.
-    # (Assist grants are all-or-nothing — notes+follow+host together — so one
-    # flag suffices.)
+    # v2.309.0 — no capability flag to branch on. The session's authority is
+    # the operator's project role, resolved per request, so the prompt states
+    # the rule instead of a grant list: an agent that knows "I can do what
+    # {user_label} can do" needs no enumeration, and cannot be told something
+    # the server will later contradict.
     cannot_writes_line = (
-        f"- **No writes** — cannot create notes, change host follow/review "
-        f"status, or edit host attributes; this session is read-only.\n\n"
-        if not can_write
-        else f"- **Writes are limited to {user_label}'s assigned hosts** — "
-        f"notes, review status, and hostname/OS corrections only (see the "
-        f"Writing section). A write to any other host — or to scans, test "
-        f"plans, or scan-derived fields — is refused.\n\n"
+        f"- **You act as {user_label}** — you can change what they can change "
+        f"(host notes, review status, hostname/OS corrections) and nothing "
+        f"else. Scans, test plans, execution and scan-derived fields are not "
+        f"writable from this session at all. If {user_label}'s project role is "
+        f"read-only, every write is refused — that is not an error to retry.\n\n"
     )
 
     provenance = build_provenance_block(
         base_url=base_url,
         user_label=user_label,
         user_id=user_id,
-        action=(
-            "interactive assist (read + notes/review/host-attribute writes on assigned hosts)"
-            if can_write
-            else "interactive assist (read-only project query)"
-        ),
+        action="interactive assist (reads, plus whatever the operator may write)",
         target_label=f"project #{project_id} ({project_name}); assist session #{assist_session_id}",
         timestamp_iso=datetime.now(timezone.utc).isoformat(),
     )
@@ -786,22 +775,21 @@ def build_assist_instructions(
         else ""
     )
 
-    if can_write:
-        authority_block = (
+    authority_block = (
             f"## Agent Interactive Assist Instructions\n\n"
             f"You are in an assist session against project **{project_name}** "
             f"(id {project_id}).  Your main job is to help the operator query "
             f"their project — answer questions about hosts, summarize "
             f"findings, surface relevant scans — by hitting BlueStick's "
             f"`/agent/assist/*` endpoints and synthesizing the results.\n\n"
-            f"**This session also has limited write access.**  You may record "
-            f"notes and set review status on hosts **assigned to "
-            f"{user_label}** — nothing else.  Writing to a host that is not "
-            f"assigned to them returns 403; that is the guardrail working, not "
-            f"an error to route around.  Do **not** run scans, do **not** "
-            f"create test plans, do **not** execute tests.  The API will "
-            f"refuse all three.\n\n"
-            f"### Writing (assigned hosts only)\n\n"
+            f"**You act as {user_label}.**  You may record notes, set review "
+            f"status, and correct hostname/OS on any host in this project that "
+            f"they could — and nothing beyond that.  If a write returns 403, "
+            f"their project role does not permit it: that is the guardrail "
+            f"working, not an error to route around.  Do **not** run scans, do "
+            f"**not** create test plans, do **not** execute tests.  The API "
+            f"will refuse all three regardless of role.\n\n"
+            f"### Writing\n\n"
             f"- **Add a note:** `POST {base_url}/agent/hosts/<host_id>/notes` "
             f"with `{{\"body\": \"...\", \"status\": \"open\"}}` "
             f"(status: `open` | `in_progress` | `resolved`).\n"
@@ -814,8 +802,9 @@ def build_assist_instructions(
             f"Use this when your investigation established the real hostname or "
             f"OS a scan mis-detected. Scan-derived facts (ports, services, "
             f"vulns) are never editable here.\n"
-            f"- Find what you may write to with "
-            f"`GET {base_url}/agent/assist/hosts?q=assigned:me`.\n\n"
+            f"- The operator's own hosts are "
+            f"`GET {base_url}/agent/assist/hosts?q=assigned:me` — usually where "
+            f"your notes belong, even though you are not restricted to them.\n\n"
             f"**Write discipline — read this before your first write.**  Every "
             f"note you create is stamped as agent-authored and shows up in the "
             f"operator's UI and in client-facing reports under their name. So:\n"
@@ -832,19 +821,7 @@ def build_assist_instructions(
             f"4. **Never mark a host `reviewed` on your own initiative.** "
             f"Reviewed is a human judgement with client-reportable weight; ask "
             f"the operator to confirm before setting it.\n\n"
-        )
-    else:
-        authority_block = (
-            f"## Agent Interactive Assist Instructions\n\n"
-            f"You are in a **read-only** assist session against project "
-            f"**{project_name}** (id {project_id}).  Your job is to help the "
-            f"operator query their project — answer questions about hosts, "
-            f"summarize findings, surface relevant scans — by hitting "
-            f"BlueStick's `/agent/assist/*` endpoints and synthesizing the "
-            f"results.  Do **not** run scans, do **not** create test plans, "
-            f"do **not** mutate follow status.  This session has no "
-            f"authority to do any of those things — the API will refuse.\n\n"
-        )
+    )
 
     instructions = (
         provenance +

@@ -108,7 +108,6 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
         {sessions.map((s) => {
           const started = formatAge(s.started_at);
           const active = formatAge(s.last_activity_at);
-          const canWrite = (s.capabilities?.length ?? 0) > 0;
           const remaining = formatRemaining(s.key_expires_at);
           return (
             <li
@@ -120,21 +119,10 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                   <span className="font-mono text-caption text-muted-foreground">
                     #{s.id}
                   </span>
-                  {canWrite ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Badge variant="warning" tabIndex={0}>
-                          Can write
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Adds host notes and review status, limited to hosts
-                        assigned to you.
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <Badge variant="outline">Read-only</Badge>
-                  )}
+                  {/* v5.189.0 — was a read-only/can-write badge sourced from
+                      the session's capability grant. Grants are gone: a session
+                      acts with its operator's own project permissions, so there
+                      is no per-session authority to report here. */}
                   {/* A session whose agent never connected is worth
                       distinguishing from an idle one — it usually means the
                       key was minted and the prompt never pasted. */}

@@ -37,7 +37,7 @@ const sections: GuideSection[] = [
           <li><strong>Reconnaissance</strong> — populate host data for a scope from scanner output (Scopes → <em>Start Agentic Recon</em>).</li>
           <li><strong>Test plan generation</strong> — draft a structured test plan from already-scanned hosts (Test Plans → <em>Generate with AI</em>).</li>
           <li><strong>Execution</strong> — work through an approved plan with per-test approval (<em>Execute with AI</em> on an approved plan).</li>
-          <li><strong>AI Assist</strong> — read-only, ask-anything queries over your project (Operations → <em>AI Assist</em>).</li>
+          <li><strong>AI Assist</strong> — ask-anything queries over your project, acting with your own permissions (Operations → <em>AI Assist</em>).</li>
         </UnorderedList>
         <Para>
           The agent reads its full contract from <strong>AGENTS.md</strong> (downloadable from the
@@ -155,14 +155,14 @@ const sections: GuideSection[] = [
     id: 'assist',
     title: 'AI Assist — ask anything about your project',
     Icon: MessagesSquare,
-    summary: 'An agent that answers ad-hoc questions over all your project data — read-only unless you grant narrow writes.',
+    summary: 'An agent that answers ad-hoc questions over all your project data, acting with your own permissions.',
     content: (
       <div>
         <Para>
           <strong>AI Assist</strong> (Operations → <em>AI Assist</em>) connects an AI of your choice
-          as a <strong>read-only research partner</strong> over your whole project. No scanning, no
+          as a <strong>research partner</strong> over your whole project. No scanning, no
           plan creation, no execution — it answers questions by querying BlueStick's already-ingested
-          data and citing what it read.
+          data and citing what it read, and it can annotate what it finds if you can.
         </Para>
         <Subhead>What you can ask</Subhead>
         <Para>
@@ -179,7 +179,7 @@ const sections: GuideSection[] = [
         </UnorderedList>
         <Subhead>How it's bounded</Subhead>
         <UnorderedList>
-          <li><strong>Read-only unless you say otherwise</strong> — by default every write endpoint rejects the assist key. Ticking the write box when you start a session grants exactly three narrow writes (add a note, set review status, correct hostname/OS), and only on hosts <em>assigned to you</em>. Scanning, plan creation, and execution are never available.</li>
+          <li><strong>It can do what you can do</strong> — the session acts with your own permissions on the project, re-checked on every call. It can add notes, set review status, and correct hostname/OS; if your role is read-only, so is it. Scanning, plan creation, and execution are never available from Assist, whatever your role.</li>
           <li><strong>Project-scoped</strong> — it sees all hosts in the one project you started it from, and nothing in other projects.</li>
           <li><strong>Short-lived, but recoverable</strong> — assist keys expire quickly (4h by default) and can be ended at any time. If a key lapses while the session is still open, the agent renews it itself and carries on — see <em>When a key expires mid-run</em> below.</li>
           <li><strong>Who can start one</strong> — auditor role or above. Recon, plan generation and execution still require analyst, because they exist to change project state.</li>

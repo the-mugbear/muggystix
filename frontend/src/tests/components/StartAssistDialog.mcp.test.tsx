@@ -67,8 +67,6 @@ const result = (): StartAssistResponse => ({
       hint: 'Codex reads the env var at run time.',
     },
   ],
-  capabilities: [],
-  capability_constraint: null,
   key_ttl_hours: 4,
 });
 

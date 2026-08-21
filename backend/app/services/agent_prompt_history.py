@@ -21,6 +21,26 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.58.0",
+        "app_version": "2.309.0",
+        "summary": (
+            "Assist prompts state authority as a rule instead of a grant list. "
+            "The capability system is gone, so there is no longer a read-only "
+            "session and no per-session write grant: an agent acts with its "
+            "operator's own project permissions, checked on every call. The "
+            "prompt used to render one of two authority blocks depending on "
+            "whether writes had been granted, which meant it could contradict "
+            "itself and could promise the agent something the server would "
+            "later refuse. Now one block: 'You act as <operator>' — you can "
+            "change what they can change, a 403 means their role does not "
+            "permit it and is not an error to retry, and scans / test plans / "
+            "execution remain refused from assist regardless of role. The "
+            "assigned-hosts narrowing is gone with the row-level constraint, "
+            "so the prompt points at `assigned:me` as where notes usually "
+            "belong rather than as a boundary."
+        ),
+    },
+    {
         "version": "1.57.0",
         "app_version": "2.304.0",
         "summary": (

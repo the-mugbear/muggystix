@@ -1665,11 +1665,9 @@ def get_assist_session_self(
         .scalar()
     )
     # Agent feedback (v1.44.0): the agent could only discover its write grants
-    # by *attempting* a write, and had no operator-relative context. Surface the
-    # resolved capabilities, the row-scope constraint, and the bound operator so
-    # it can reason about "what may I write, and to whose rows" up front.
-    caps = getattr(request.state, "key_capabilities", None) or frozenset()
-    constraint = getattr(request.state, "key_capability_constraint", None)
+    # by *attempting* a write, and had no operator-relative context. It still
+    # gets the operator — v2.309.0 removed the capability list, because a key's
+    # authority is now simply its operator's project role.
     operator_id = getattr(request.state, "key_operator_id", None)
     operator = None
     if operator_id is not None:
@@ -1688,11 +1686,9 @@ def get_assist_session_self(
         if session.last_activity_at
         else None,
         "environment_probed": session.environment_probed_at is not None,
-        # Read is always granted; capabilities enumerates writes only. Empty
-        # list = read-only. constraint (e.g. "assigned") narrows which rows a
-        # granted write may touch — resolved against `operator`.
-        "capabilities": sorted(caps),
-        "capability_constraint": constraint,
+        # v2.309.0 — `capabilities` / `capability_constraint` removed. What this
+        # key may write is the operator's project role, so `operator` is the
+        # answer to "what may I do here" and there is no second list to consult.
         "operator": operator,
     }
 

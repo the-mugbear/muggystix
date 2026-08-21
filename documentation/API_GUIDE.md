@@ -553,7 +553,7 @@ Session status is **derived**: a session whose keys have all expired reports `en
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/agent/identity` | **v2.278.0** — what this key is: workflow, bound project/plan/session ids, granted capabilities, the operator it acts for, and when it expires. Behind **no** workflow guard, deliberately: every other introspection route requires the workflow it describes, so an agent holding an unknown key could otherwise only classify it by trying surfaces until one stopped returning 403. |
+| GET | `/agent/identity` | **v2.278.0** — what this key is: workflow, bound project/plan/session ids, the operator it acts for (which since v2.309.0 *is* its authority — capability lists are gone), when it expires, and where to renew. Behind **no** workflow guard, deliberately: every other introspection route requires the workflow it describes, so an agent holding an unknown key could otherwise only classify it by trying surfaces until one stopped returning 403. |
 | POST | `/agent/tool-suggestions` | **v2.278.0** — record a request for a tool outside the approved set, with rationale. Lands as `suggested` (which no approval rule reads) for an admin to vet. Deliberately ungated: a capability gate would silence exactly the sessions most likely to hit the edge of the set. |
 
 ### 5.9 MCP transport (`POST /api/v1/mcp`)

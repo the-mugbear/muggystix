@@ -62,11 +62,6 @@ def _assist_key(db, project, user):
         workflow=AgentSessionWorkflow.ASSIST.value,
         project_id=project.id, agent_id=agent.id,
         started_by_id=user.id, status="active",
-        # Both gates are active during Phase 1 by design, and the capability
-        # gate runs first. Granting the write here is what an operator does when
-        # starting an assist session with write access — it isolates what these
-        # tests are actually about: whether the OPERATOR's role decides.
-        capabilities=["write:notes"],
     )
     db.add(base)
     db.flush()

@@ -69,7 +69,7 @@ def _key_for(db, project, user):
     base = AgentSession(
         workflow=AgentSessionWorkflow.ASSIST.value,
         project_id=project.id, agent_id=agent.id, started_by_id=user.id,
-        status="active", capabilities=["write:notes"],
+        status="active",
     )
     db.add(base)
     db.flush()

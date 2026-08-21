@@ -436,56 +436,21 @@ class AgentSessionWorkflow(str, enum.Enum):
     ASSIST = "assist"
 
 
-class AgentCapability(str, enum.Enum):
-    """What a session's key is *allowed to do*, independent of which
-    endpoints it can reach.
-
-    ``workflow`` answers "which surface?"; capability answers "how much
-    authority?".  Splitting them replaces the hand-written per-handler
-    deny guards (``if scoped_assist_session_id is not None: 403``) with a
-    single positive gate that fails closed — an endpoint that forgets to
-    declare a capability grants nothing rather than everything.
-
-    Read access is implicit: every authenticated agent key can read its
-    own project.  Only writes are enumerated here.
-    """
-    WRITE_NOTES = "write:notes"
-    WRITE_FOLLOW = "write:follow"
-    WRITE_EXECUTION = "write:execution"
-    # Correct operator-curated host attributes (hostname / OS) after manual
-    # investigation. Grantable to assist sessions so an agent can fix what a
-    # scan mis-detected; always row-scoped to the operator's assigned hosts.
-    WRITE_HOST = "write:host"
-
-
-class AgentCapabilityConstraint(str, enum.Enum):
-    """Narrows *which rows* a granted write capability may touch.
-
-    ``ASSIGNED`` restricts writes to hosts assigned to the session's own
-    operator (a ``host_follows`` row with ``assigned_at`` set for
-    ``started_by_id``).  NULL means unconstrained within the project —
-    the historical behaviour of plan / recon / unscoped keys.
-    """
-    ASSIGNED = "assigned"
-
-
-# Capability set granted to plan-generation, execution, recon, and legacy
-# unscoped keys.  These surfaces have always been able to write, so this
-# preserves their behaviour exactly as the capability gate rolls out.
-LEGACY_WRITE_CAPABILITIES = frozenset({
-    AgentCapability.WRITE_NOTES.value,
-    AgentCapability.WRITE_FOLLOW.value,
-    AgentCapability.WRITE_EXECUTION.value,
-    AgentCapability.WRITE_HOST.value,
-})
-
-# Assist sessions start with NO write capability.  The operator may grant
-# note/follow/host writes at mint time, always narrowed to assigned hosts.
-ASSIST_GRANTABLE_CAPABILITIES = frozenset({
-    AgentCapability.WRITE_NOTES.value,
-    AgentCapability.WRITE_FOLLOW.value,
-    AgentCapability.WRITE_HOST.value,
-})
+# v2.309.0 — the capability vocabulary is gone: ``AgentCapability``,
+# ``AgentCapabilityConstraint``, ``LEGACY_WRITE_CAPABILITIES`` and
+# ``ASSIST_GRANTABLE_CAPABILITIES`` all lived here.
+#
+# They were a second authorization model beside the product's RBAC, and only
+# assist consulted them — the other three workflows resolved to
+# ``LEGACY_WRITE_CAPABILITIES`` unconditionally, which is the tell that the
+# model was grandfathered rather than chosen. An agent key now does what its
+# operator may do, checked per request against the same project roles a person
+# is checked against.
+#
+# The deliberate consequence: an operator can no longer start a read-only
+# assist session. Read-only was the *default* rather than a choice, nothing was
+# left to drain (every assist session was already ended), and auditors and
+# viewers still get read-only agents — because that is what they can do.
 
 
 class AgentSession(Base):
@@ -558,20 +523,9 @@ class AgentSession(Base):
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Authority granted to this session's key(s) — see AgentCapability.
-    # Authoritative for assist sessions only; plan/execution/recon keys
-    # resolve to LEGACY_WRITE_CAPABILITIES in deps.resolve_capabilities()
-    # so their long-standing write access is unchanged.  A key re-minted on
-    # resume inherits the grant because it hangs off the SESSION, not the key
-    # — the operator authorised the session, not a particular credential.
-    #
-    # Blob rationale (column-vs-blob policy): read per-session for a single
-    # auth decision and a badge, never filtered or aggregated across rows.
-    # If "show every session that could write" becomes a query, promote it.
-    capabilities = Column(JSON, nullable=False, default=list, server_default="[]")
-    # Row-level narrowing for the granted capabilities (AgentCapabilityConstraint).
-    # NULL = unconstrained within the project.
-    capability_constraint = Column(String(20), nullable=True)
+    # v2.309.0 — ``capabilities`` and ``capability_constraint`` dropped
+    # (migration f1a6c92d4b70). A session's authority is its operator's project
+    # role, resolved per request, so there is no per-session grant to store.
 
     # Environment probe (shared) — see AGENTS.md § Environment probe.
     environment = Column(JSON, nullable=True)
