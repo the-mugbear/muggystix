@@ -14,7 +14,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import Agent, TestPlanEntry
-from app.api.deps import check_agent_rate_limit, require_plan_scope
+from app.api.deps import (
+    check_agent_rate_limit,
+    require_plan_generation_scope,
+    require_plan_scope,
+)
 from app.services.test_plan_service import TestPlanService
 from app.services.agent_prompt_history import PROMPT_VERSION
 
@@ -470,7 +474,7 @@ def get_planning_context(
 def update_test_plan(
     body: PlanUpdate,
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(require_plan_generation_scope),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
@@ -500,7 +504,7 @@ def update_test_plan(
 def add_entries(
     body: EntryBatch,
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(require_plan_generation_scope),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
@@ -528,7 +532,7 @@ def update_entry(
     body: AgentEntryUpdate,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(require_plan_generation_scope),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)

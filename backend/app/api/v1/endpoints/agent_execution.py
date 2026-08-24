@@ -27,6 +27,7 @@ from app.core.security import log_audit_event
 from app.api.deps import (
     check_agent_rate_limit,
     require_execution_session_scope,
+    require_plan_generation_scope,
     require_plan_scope,
 )
 from app.services.test_plan_service import TestPlanService
@@ -94,7 +95,7 @@ def _require_executable_plan(plan) -> None:
 )
 def submit_test_plan(
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(require_plan_generation_scope),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)

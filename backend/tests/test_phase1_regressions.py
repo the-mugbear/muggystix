@@ -350,6 +350,68 @@ def test_planning_context_with_candidates_returns_sample_host(client, db_session
     assert body["entry_template"]["host_id"] == host.id
 
 
+def _mint_workflow_key(db_session, test_agent, test_plan, workflow):
+    """An APIKey bound to an AgentSession of the given workflow, on test_plan."""
+    import hashlib
+    from datetime import datetime, timezone, timedelta
+    from app.db.models_auth import APIKey
+    from app.db.models_agent import AgentSession
+    session = AgentSession(
+        workflow=workflow,
+        project_id=test_plan.project_id,
+        agent_id=test_agent.id,
+        started_by_id=test_agent.owner_id,
+        status="active",
+        plan_id=test_plan.id,
+    )
+    db_session.add(session)
+    db_session.flush()
+    raw = f"nm_agent_{workflow}_" + "q" * 24
+    key = APIKey(
+        agent_id=test_agent.id,
+        test_plan_id=test_plan.id,
+        agent_session_id=session.id,
+        name=f"{workflow}-{test_plan.id}",
+        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
+        key_prefix=raw[:14],
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    db_session.add(key)
+    db_session.commit()
+    return raw
+
+
+def test_execution_key_cannot_draft_plan_entries(db_session, client, test_agent, test_plan):
+    """v2.318.0 — the plan-DRAFTING writes require the plan_generation workflow.
+    An execution-session key records results against an approved plan; it must
+    not add/modify entries. The service allows add_entries on an approved/
+    in_progress plan (the operator's UI path), so before this an execution agent
+    could inject un-vetted entries into the plan it was executing — which the
+    _EXEC tool list implies it cannot. A plan_generation key is still accepted."""
+    entry_payload = {"entries": [{
+        "host_id": 1, "priority": "low", "test_phase": "enumeration",
+        "rationale": "x" * 40,
+        "proposed_tests": [{"tool": "nmap", "description": "svc"}],
+    }]}
+
+    exec_raw = _mint_workflow_key(db_session, test_agent, test_plan, "execution")
+    blocked = client.post(
+        f"/api/v1/agent/test-plans/{test_plan.id}/entries",
+        headers={"X-API-Key": exec_raw}, json=entry_payload,
+    )
+    assert blocked.status_code == 403, blocked.text
+    assert "execution-session key" in blocked.json()["detail"]
+
+    # A plan_generation key reaches the endpoint (host_id 1 may not exist, but it
+    # gets past the workflow guard — not a 403 from require_plan_generation_scope).
+    plan_raw = _mint_workflow_key(db_session, test_agent, test_plan, "plan_generation")
+    allowed = client.post(
+        f"/api/v1/agent/test-plans/{test_plan.id}/entries",
+        headers={"X-API-Key": plan_raw}, json=entry_payload,
+    )
+    assert allowed.status_code != 403, allowed.text
+
+
 def test_archive_plan_abandons_non_terminal(client, test_project, test_plan):
     """A non-terminal (approved) plan can be abandoned → ARCHIVED; a second
     abandon of the now-terminal plan is rejected with 400."""

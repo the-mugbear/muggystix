@@ -369,6 +369,13 @@ def get_current_agent(
     agent_session = api_key_obj.agent_session
     if agent_session is not None:
         _wf = agent_session.workflow
+        # The UN-normalized workflow, kept alongside the normalized key_workflow
+        # (v2.318.0).  key_workflow collapses plan_generation + execution into
+        # "plan" for the shared per-plan scope check, but the plan-DRAFTING write
+        # endpoints must tell them apart: an execution key records results, it
+        # does not draft entries.  Legacy keys (no agent_session) leave this None
+        # and are not subject to the distinction.
+        request.state.key_workflow_raw = _wf
         if _wf in ("plan_generation", "execution"):
             request.state.key_workflow = "plan"
             request.state.key_plan_id = agent_session.plan_id
@@ -854,6 +861,38 @@ def require_plan_scope(
                     "generate a new key for the plan you're working on."
                 ),
             )
+    return agent
+
+
+def require_plan_generation_scope(
+    request: Request,
+    plan_id: int = Path(..., gt=0),
+    agent: Agent = Depends(require_plan_scope),
+) -> Agent:
+    """Per-plan scope PLUS: the key must belong to the plan_generation workflow.
+
+    v2.318.0.  ``require_plan_scope`` normalizes plan_generation and execution
+    into one ``"plan"`` workflow (they share the per-plan binding), which is
+    right for the reads and for the execution endpoints.  But the plan-DRAFTING
+    WRITES — add/patch entries, edit the plan, submit — are stage-2 work: an
+    execution key records results against an APPROVED plan, it must not mutate
+    the plan's entry set.  The service even allows ``add_entries`` on an
+    approved/in_progress plan (for the operator's JWT/UI path), so without this
+    an execution agent could inject un-vetted entries into the plan it is
+    executing — the ``_EXEC`` tool list implies it cannot, but the endpoint let
+    it.  Legacy keys (``key_workflow_raw`` unset) are unaffected; only a key
+    explicitly bound to the ``execution`` workflow is refused here.
+    """
+    if getattr(request.state, "key_workflow_raw", None) == "execution":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This is an execution-session key; it records results against "
+                "an approved plan and cannot draft or modify plan entries. "
+                "Plan authoring is the plan-generation workflow — generate a "
+                "plan-generation key, or edit the plan in the UI."
+            ),
+        )
     return agent
 
 
