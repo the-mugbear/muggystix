@@ -81,8 +81,8 @@ def _require_executable_plan(plan) -> None:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Plan is in {plan.status} status — execution writes are "
-                "only allowed while it is approved or in_progress."
+                f"Plan is in {plan.status} status — execution requires it to be "
+                "approved or in_progress."
             ),
         )
 
@@ -255,11 +255,10 @@ def get_execution_context(
         raise HTTPException(status_code=404, detail="Test plan not found")
     if plan.agent_id != agent.id:
         raise HTTPException(status_code=403, detail="Not your test plan")
-    if plan.status not in ("approved", "in_progress"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Plan is in {plan.status} status — must be approved or in_progress to execute.",
-        )
+    # v2.316.0 — was an inline 400 that duplicated _require_executable_plan and
+    # disagreed with the write paths (which 409). Same condition, one helper,
+    # one status code now.
+    _require_executable_plan(plan)
 
     # Find the active execution session for this plan.
     session = (
@@ -912,6 +911,33 @@ def complete_entry_execution(
         actor_id=agent.id,
         updates=updates,
     )
+
+    # v2.316.0 — completion-time overrides are audit-logged, not merely stored
+    # in results_data JSON.  Record-time sanity overrides already emit an audit
+    # event (test_result_sanity_override above); completion is where an entry is
+    # closed WITHOUT full evidence, so its two overrides — the sanity bypass and
+    # the coverage/no-tests bypass — are exactly what a reviewer needs to find,
+    # and the tool description promises they are "audit-visible".  A query on a
+    # results_data JSON column is not that.
+    if override_reason or no_tests_reason:
+        log_audit_event(
+            db,
+            user_id=None,  # agent-authenticated, no JWT user
+            action="execution_entry_completion_override",
+            resource_type="test_plan_entry",
+            resource_id=str(entry.id),
+            details={
+                "agent_id": agent.id,
+                "plan_id": plan.id,
+                "entry_id": entry.id,
+                "session_id": session.id,
+                "sanity_override_reason": (override_reason or "")[:200] or None,
+                "no_tests_run_reason": (no_tests_reason or "")[:200] or None,
+                "sanity_checks_passed": sanity_passed,
+                "proposed_test_count": proposed_count,
+                "result_row_count": len(test_results),
+            },
+        )
 
     return {
         "entry_id": entry.id,

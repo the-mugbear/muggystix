@@ -221,6 +221,22 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/identity",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    "session_renew": {
+        "description": (
+            "Push your API key's expiry out without changing the secret — call it "
+            "before launching, or right after finishing, a long-blocking scan whose "
+            "key might lapse while it runs. Renewal, not rotation: the same key keeps "
+            "working, so an agent holding scan output it cannot cheaply reproduce does "
+            "not get re-bootstrapped. Works even if the key has ALREADY expired, and is "
+            "bounded by the session — ending the session revokes the key regardless. No "
+            "arguments: your key identifies its own session (v2.316.0)."
+        ),
+        "workflows": ALL_WORKFLOWS,
+        "method": "POST",
+        "metadata_write": True,
+        "path": "/api/v1/agent/session/renew",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
     "read_agent_guide": {
         "description": (
             "AGENTS.md — the authoritative guide for how to work with BlueStick: the "
@@ -749,6 +765,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "workflows": _ASSIST,
         "method": "POST",
+        "metadata_write": True,
         "path": "/api/v1/agent/assist/sessions/{session_id}/environment",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
@@ -872,16 +889,20 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "plan_get_context": {
         "description": (
             "Everything you need to draft this plan: candidate hosts with their open "
-            "ports, services and existing findings, plus the project's scopes. Call "
-            "this first — proposing tests without it means proposing against hosts "
-            "you have not looked at. plan_id is resolved from your key."
+            "ports, services and existing findings, plus the selection policy and an "
+            "entry template. Call this first — proposing tests without it means "
+            "proposing against hosts you have not looked at. plan_id is resolved from "
+            "your key. Page with `after_host_id` (the last host id from the previous "
+            "page); use `detail_level=brief` to pick candidates cheaply, then `full` "
+            "for the hosts you will write entries for."
         ),
         "workflows": _PLAN,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/context",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": ["limit", "offset", "min_severity", "host_ids"],
+        "query_params": ["limit", "after_host_id", "include_zero_port", "detail_level"],
+        "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -890,15 +911,26 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "minimum": 1,
                     "description": "Usually omit — your key is bound to one plan.",
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
-                "offset": {"type": "integer", "minimum": 0},
-                "min_severity": {
-                    "type": "string",
-                    "description": "Only include hosts with a finding at or above this severity.",
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000},
+                "after_host_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Cursor: return only hosts with id greater than this. Pass the "
+                        "last host id from the previous page to fetch the next batch."
+                    ),
                 },
-                "host_ids": {
+                "include_zero_port": {
+                    "type": "boolean",
+                    "description": "Include hosts with no open ports (excluded by default).",
+                },
+                "detail_level": {
                     "type": "string",
-                    "description": "Comma-separated host ids to restrict the context to.",
+                    "enum": ["brief", "full"],
+                    "description": (
+                        "'brief' = summary fields only (no ports array), for candidate "
+                        "selection; 'full' (default) = full port detail per host."
+                    ),
                 },
             },
             "additionalProperties": False,
@@ -909,13 +941,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "workflows": _PLAN,
         "method": "GET",
         "path": "/api/v1/agent/test-plans",
-        "query_params": ["status", "limit", "offset"],
+        "query_params": ["status"],
         "input_schema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "description": "Filter by plan status (e.g. draft)."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-                "offset": {"type": "integer", "minimum": 0},
             },
             "additionalProperties": False,
         },
@@ -1070,9 +1100,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "plan_validate": {
         "description": (
-            "Dry-run the checks plan_submit will apply — missing description, entries "
-            "without proposed tests, hosts outside the project. Costs nothing and "
-            "reports every problem at once, unlike submit, which stops at the first."
+            "Dry-run the checks plan_submit will apply — an empty plan, a missing "
+            "description, a too-short rationale — and report the plan's candidate-host "
+            "coverage. Costs nothing and reports every problem at once, unlike submit, "
+            "which stops at the first."
         ),
         "workflows": _PLAN,
         "method": "GET",
@@ -1120,6 +1151,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "workflows": _EXEC,
         "method": "POST",
+        "metadata_write": True,
         "path": "/api/v1/agent/execution-sessions/{session_id}/environment",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
@@ -1149,14 +1181,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans/{plan_id}/execution-context",
         "path_params": ["plan_id"],
         "auto_params": {"plan_id": "plan_id"},
-        "query_params": ["limit", "offset", "status"],
         "input_schema": {
             "type": "object",
             "properties": {
                 "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
-                "offset": {"type": "integer", "minimum": 0},
-                "status": {"type": "string", "description": "Filter entries by status."},
             },
             "additionalProperties": False,
         },
@@ -1350,6 +1378,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "workflows": _RECON,
         "method": "POST",
+        "metadata_write": True,
         "path": "/api/v1/agent/recon/sessions/{session_id}/environment",
         "path_params": ["session_id"],
         "auto_params": {"session_id": "workflow_session_id"},
@@ -1393,7 +1422,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
             "additionalProperties": False,
@@ -1496,10 +1525,17 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     # question for idempotency is whether a retry is safe — re-sending a
     # replacement converges, a second append is a second row.
     additive = bool(spec.get("additive"))
+    # The environment probe is a POST, but it writes SESSION bookkeeping, not
+    # project data — and re-probing replaces rather than appends, so it is both
+    # non-destructive and idempotent.  Marking it destructive (v2.316.0 fix)
+    # meant a client could not auto-approve the one call every workflow mandates
+    # first.  readOnlyHint stays false — it does write — but that is the honest
+    # limit; destructiveHint is the flag that gates auto-approval.
+    metadata_write = bool(spec.get("metadata_write"))
     ann: Dict[str, Any] = {
         "readOnlyHint": not is_write,
-        "destructiveHint": is_write and not additive,
-        "idempotentHint": not additive,
+        "destructiveHint": is_write and not additive and not metadata_write,
+        "idempotentHint": (not additive) or metadata_write,
         "openWorldHint": False,
     }
     return ann

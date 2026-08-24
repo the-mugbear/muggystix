@@ -802,14 +802,22 @@ def test_probe_accepts_the_attribution_fields_the_prompt_asks_for(client, test_p
 
 def test_overwriting_tools_are_not_advertised_as_additive(client):
     """destructiveHint:false means "additive updates only" per the spec. Only
-    add_note is additive; the others replace a stored value."""
+    add_note is additive; the project-data writes replace a stored value."""
     tools = {t["name"]: t["annotations"] for t in _rpc(
         client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     ).json()["result"]["tools"]}
 
     assert tools["assist_add_note"]["destructiveHint"] is False
-    for name in ("assist_set_follow", "assist_patch_host", "assist_record_environment"):
+    for name in ("assist_set_follow", "assist_patch_host"):
         assert tools[name]["destructiveHint"] is True, name
+    # The environment probe is a metadata_write (v2.316.0): it replaces session
+    # bookkeeping, not project data, and re-probing converges — so it is
+    # non-destructive and idempotent, and a client may auto-approve it. It still
+    # writes, so it is not read-only.
+    probe = tools["assist_record_environment"]
+    assert probe["destructiveHint"] is False
+    assert probe["idempotentHint"] is True
+    assert probe["readOnlyHint"] is False
     # Reads are never destructive.
     assert tools["assist_list_hosts"]["destructiveHint"] is False
 

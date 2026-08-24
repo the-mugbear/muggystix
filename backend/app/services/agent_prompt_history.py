@@ -21,6 +21,19 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.62.0",
+        "app_version": "2.316.0",
+        "summary": (
+            "The env-probe `tools_status` field is now typed, so the guide drops "
+            "its 'the server tolerates both a list and a dict' note: send a list "
+            "of {name, status} objects, status one of ok/warn/missing/info, or the "
+            "probe is rejected with a 422 instead of silently stored. The status "
+            "vocabulary was always the contract the recon planner branches on; it "
+            "is now enforced at the boundary. Found while reviewing the MCP tool "
+            "surface for tool/endpoint drift."
+        ),
+    },
+    {
         "version": "1.61.0",
         "app_version": "2.315.0",
         "summary": (

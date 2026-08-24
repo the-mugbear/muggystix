@@ -730,6 +730,31 @@ class ExecutionProgressResponse(BaseModel):
 # observed AV agent, custom toolbox).  See AGENTS.md § Environment probe
 # for the agent-facing contract.
 
+class ToolStatusItem(BaseModel):
+    """One tool's preflight result — see AGENTS.md § Environment probe.
+
+    The status vocabulary is a CONTRACT, not a convenience:
+    ``recon_planning_service._env_tool_unavailable`` treats only ``warn`` and
+    ``missing`` as a problem and reads the reason from ``issue``. Declared as a
+    typed field (v2.316.0) rather than riding in on the parent's ``extra=allow``,
+    so a malformed status (e.g. the invented ``wrong-binary`` that v2.313.0
+    fixed) is rejected at the boundary instead of stored and planned around.
+    """
+    name: str = Field(description="Tool name, e.g. httpx.")
+    status: Literal["ok", "warn", "missing", "info"] = Field(
+        description=(
+            "ok = usable; warn = present but not the tool you want; "
+            "missing = not on PATH; info = advisory only. Only warn and missing "
+            "make the server plan around the tool."
+        ),
+    )
+    issue: Optional[str] = Field(
+        None,
+        description="Why, in one line — surfaced verbatim as the step's swap_reason.",
+    )
+    path: Optional[str] = Field(None, description="Resolved path, when known.")
+
+
 class EnvironmentSummary(BaseModel):
     """Result of the agent's environment probe.
 
@@ -802,6 +827,16 @@ class EnvironmentSummary(BaseModel):
             "Map of tool-name → present-on-PATH for the agent's preferred "
             "toolbox. Names follow the AGENTS.md inventory: 'nmap', 'masscan', "
             "'httpx', 'dig', 'curl', 'jq', 'enum4linux', 'nxc', 'nikto', ..."
+        ),
+    )
+    # Richer per-tool preflight result; takes precedence over tools_available.
+    # Typed (v2.316.0) so the status vocabulary the planner branches on is
+    # validated here rather than accepted as free-form extra.
+    tools_status: List[ToolStatusItem] = Field(
+        default_factory=list,
+        description=(
+            "Per-tool preflight result, posted after running the preflight "
+            "check. Richer than tools_available and takes precedence over it."
         ),
     )
 

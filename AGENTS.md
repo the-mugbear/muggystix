@@ -97,7 +97,7 @@ Run a short capability check appropriate to the shell you're talking to and capt
 | `tools_status` | Optional but recommended after preflight: **list of `{name, status, issue}` dicts**, one per tool, mirroring `preflight.sh --json`'s `tools[]` output. `status` is `"ok"` / `"warn"` / `"missing"` / `"info"`. Re-post the env with this populated so `/recon/context` can adapt `recommended_sequence` (drop tools that are absent, swap to fallbacks, surface `manual_action_required` when there's no usable option). See [§ Environment preflight script](#environment-preflight-script-v2133-shell-agnostic-guidance-v2411). |
 | `notes` | Free text — AV product detected, sandbox/VM indicators, network egress restrictions, anything a reviewer should see. ≤2000 chars. |
 
-> **Shape gotcha for `tools_status`.** Send it as a **list**, not a dict keyed by tool name (the server tolerates both, but the list form is canonical): `[{"name": "curl", "status": "ok"}, {"name": "httpx", "status": "warn", "issue": "Python httpx CLI shadows ProjectDiscovery httpx"}, {"name": "eyewitness", "status": "missing"}]`.
+> **Shape gotcha for `tools_status`.** Send it as a **list** of `{name, status}` objects (`issue` and `path` optional), not a dict keyed by tool name — as of v2.316.0 the field is typed, so `status` must be one of `ok`/`warn`/`missing`/`info` and a dict or an unknown status is rejected with a 422 rather than silently stored: `[{"name": "curl", "status": "ok"}, {"name": "httpx", "status": "warn", "issue": "Python httpx CLI shadows ProjectDiscovery httpx"}, {"name": "eyewitness", "status": "missing"}]`.
 
 ### How to report it
 

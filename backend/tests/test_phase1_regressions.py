@@ -372,9 +372,11 @@ def test_complete_rejects_without_sanity_check_or_override(client, execution_tar
     assert "sanity" in resp.json()["detail"].lower()
 
 
-def test_complete_accepts_with_override_reason(client, execution_target, plan_agent_key, test_plan):
+def test_complete_accepts_with_override_reason(client, execution_target, plan_agent_key, test_plan, db_session):
     """No passing sanity check but an explicit override_reason → accepted,
-    and the reason is echoed in the response for the audit trail."""
+    the reason is echoed in the response, and — v2.316.0 — a completion-override
+    audit event is written so a reviewer can find it without querying a JSON
+    column (the tool description promises it is "audit-visible")."""
     resp = client.post(
         f"/api/v1/agent/test-plans/{test_plan.id}/entries/{execution_target['entry'].id}/complete",
         headers={"X-API-Key": plan_agent_key["raw"]},
@@ -392,6 +394,18 @@ def test_complete_accepts_with_override_reason(client, execution_target, plan_ag
     body = resp.json()
     assert body["sanity_check_missing"] is True
     assert "target stopped responding" in body["override_reason"]
+
+    from app.db.models_auth import AuditLog
+    event = (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "execution_entry_completion_override")
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+    assert event is not None, "completion override was not audit-logged"
+    assert event.details["entry_id"] == execution_target["entry"].id
+    assert "target stopped responding" in event.details["sanity_override_reason"]
+    assert "fixture entry has no proposed tests" in event.details["no_tests_run_reason"]
 
 
 def test_complete_accepts_with_passing_sanity_check(client, execution_target, plan_agent_key, test_plan, db_session):
