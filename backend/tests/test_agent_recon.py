@@ -304,3 +304,24 @@ def test_recon_upload_rejects_disallowed_extension(client, recon_key):
     )
     assert resp.status_code == 400, resp.text
     assert "file type not allowed" in resp.json()["detail"].lower()
+
+
+def test_recon_upload_rejected_on_terminal_session(
+    client, db_session, recon_key, recon_session_row
+):
+    """v2.317.0 — a finalized recon session must not keep ingesting. The env
+    probe and /recon/complete already 409 on a terminal session; upload skipped
+    the check, so a completed session silently accepted more scanner output and
+    mutated its final rollup. Uploads add host data, so the immutability the
+    other two enforce applies here too."""
+    from app.db.models_agent import ReconSessionStatus
+    recon_session_row.status = ReconSessionStatus.COMPLETED.value
+    db_session.commit()
+
+    resp = client.post(
+        "/api/v1/agent/recon/upload",
+        headers={"X-API-Key": recon_key},
+        files={"file": ("scan.xml", b"<nmaprun></nmaprun>", "text/xml")},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "terminal state" in resp.json()["detail"].lower()

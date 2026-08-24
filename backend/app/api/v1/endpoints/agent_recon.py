@@ -627,6 +627,25 @@ async def upload_recon_output(
 
     session = _load_recon_session(db, request)
 
+    # TERMINAL-STATE GUARD (v2.317.0): a finalized recon session must not keep
+    # ingesting.  record_environment and /recon/complete both 409 on a
+    # non-active session — "finalized sessions are part of the audit trail and
+    # stay immutable" — but upload skipped the check, so a completed/abandoned
+    # session (whose summary and handoff note the operator already read) would
+    # silently accept more scanner output and mutate its rollup.  Uploads add
+    # host/port data, so the immutability argument applies more strongly here,
+    # not less.
+    if session.status != ReconSessionStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Recon session #{session.id} is in terminal state "
+                f"'{session.status}'; it cannot ingest more scanner output. "
+                "Its counts and handoff note are final — start a fresh recon "
+                "session from the Scopes UI for another pass."
+            ),
+        )
+
     # SCOPE BOUNDARY (review A-6): a recon key is scope-bound for AUTH and
     # ATTRIBUTION, not for CONTAINMENT.  Ingestion is a project-level pipeline:
     # the parsed hosts land at `project_id` and are correlated to scopes
