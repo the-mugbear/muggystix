@@ -139,7 +139,7 @@ def test_tools_list_exposes_the_full_surface(client):
     # 7 reads + 3 writes.
     for name in (
         "assist_get_context", "assist_list_hosts", "assist_get_host",
-        "assist_get_host_findings", "assist_list_scopes", "assist_list_scans",
+        "assist_get_host_vulnerabilities", "assist_list_scopes", "assist_list_scans",
         "assist_session_info", "assist_add_note", "assist_set_follow",
         "assist_patch_host",
     ):
@@ -427,7 +427,7 @@ def test_reference_catalog_classifies_reads_and_writes(client):
     """
     tools = {t["name"]: t for t in client.get("/api/v1/references/mcp-tools").json()["tools"]}
 
-    for name in ("assist_get_context", "assist_list_hosts", "assist_get_host_findings"):
+    for name in ("assist_get_context", "assist_list_hosts", "assist_get_host_vulnerabilities"):
         assert tools[name]["kind"] == "read"
 
     for name in ("assist_add_note", "assist_set_follow", "assist_patch_host"):
@@ -709,7 +709,7 @@ def test_mcp_page_size_defaults_are_smaller_than_the_download_defaults(client, t
     from app.api.v1.endpoints.mcp_assist import _TOOLS
 
     assert _TOOLS["assist_list_hosts"]["defaults"]["limit"] == 100
-    assert _TOOLS["assist_get_host_findings"]["defaults"]["limit"] == 50
+    assert _TOOLS["assist_get_host_vulnerabilities"]["defaults"]["limit"] == 50
 
     # An explicit limit still wins.
     body = _start_session(client, test_project.id)
@@ -895,6 +895,14 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
     assert db_session.query(HostFollow).filter(
         HostFollow.host_id == host.id, HostFollow.user_id == test_user.id
     ).one().status == FollowStatus.REVIEWED
+
+    # `none` clears the follow — the inverse the enum otherwise lacks (v2.315.0).
+    cleared = call("assist_set_follow", {"host_id": host.id, "status": "none"})
+    assert cleared["isError"] is False and cleared["content"][0]["text"] == "OK"
+    db_session.expire_all()
+    assert db_session.query(HostFollow).filter(
+        HostFollow.host_id == host.id, HostFollow.user_id == test_user.id
+    ).count() == 0
 
 
 def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):

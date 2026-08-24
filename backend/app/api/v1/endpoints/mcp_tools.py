@@ -327,7 +327,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Project orientation for this assist session: host/port/scope/scan "
             "totals, the scope list (capped at 50), and recent scans. It carries "
             "NO findings — use assist_list_hosts to locate hosts and "
-            "assist_get_host_findings for the findings on one. Call this first."
+            "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first."
         ),
         "workflows": _ASSIST,
         "method": "GET",
@@ -406,7 +406,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Full detail for one host: identity, OS, per-port service detail, "
             "severity counts, and your review status. Notes and individual "
-            "findings are separate — use assist_get_host_findings for findings."
+            "vulnerabilities are separate — use assist_get_host_vulnerabilities for those."
         ),
         "workflows": _ASSIST,
         "method": "GET",
@@ -419,11 +419,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    "assist_get_host_findings": {
+    "assist_get_host_vulnerabilities": {
         "description": (
-            "Every finding on a host with evidence: severity, CVE/plugin id, title, "
-            "affected port/service, CVSS, description, remediation, scanner evidence. "
-            "Worst-severity first. Use this to cite specifics in a report, not just counts."
+            "Every raw scanner vulnerability on a host with evidence: severity, "
+            "CVE/plugin id, title, affected port/service, CVSS, description, "
+            "remediation, scanner evidence. Worst-severity first. Use this to cite "
+            "specifics in a report, not just counts. NOTE: these are scanner rows — "
+            "each `id` is a vulnerability id, NOT a project-Finding id, so do not "
+            "pass it to assist_get_finding. The triaged project Findings (the spine "
+            "assist_list_findings / assist_get_finding work on) are a separate set."
         ),
         "workflows": _ASSIST,
         "method": "GET",
@@ -454,7 +458,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "host_id, or a title substring. Returns `total` and a "
             "`severity_counts` breakdown for the filter you asked about, so "
             "\"how many criticals are open?\" is one call. A finding can span "
-            "many hosts — `host_count` is how big it is; counting rows is not."
+            "many hosts — `host_count` is how big it is; counting rows is not. "
+            "These are triaged project Findings, a different set from the raw "
+            "scanner rows assist_get_host_vulnerabilities returns; the ids do not "
+            "cross between the two."
         ),
         "workflows": _ASSIST,
         "method": "GET",
@@ -669,7 +676,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "finding_id": {
                     "type": "integer",
-                    "description": "Finding id, from assist_list_findings.",
+                    "description": (
+                        "Project-Finding id, from assist_list_findings — NOT a "
+                        "per-host vulnerability id from assist_get_host_vulnerabilities."
+                    ),
                 },
             },
             "required": ["finding_id"],
@@ -796,8 +806,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_set_follow": {
         "description": (
-            "Set a host's review status. Writes project data (see agent_identity's "
-            "`can_write_project_data`). Do NOT "
+            "Set — or clear — a host's review status. Writes project data (see "
+            "agent_identity's `can_write_project_data`). Pass `none` to remove "
+            "your follow entirely, the inverse of setting one (use it to undo a "
+            "status you set). Do NOT "
             "mark a host `reviewed` on your own initiative — reviewed is a human "
             "judgement with client-reportable weight; confirm with the operator first."
         ),
@@ -810,7 +822,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 **HOST_ID_PROP,
-                "status": {"type": "string", "enum": ["watching", "in_review", "reviewed"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["watching", "in_review", "reviewed", "none"],
+                    "description": "watching / in_review / reviewed, or `none` to clear the follow.",
+                },
             },
             "required": ["host_id", "status"],
             "additionalProperties": False,

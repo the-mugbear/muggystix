@@ -755,12 +755,20 @@ def set_agent_follow(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
+    svc = HostFollowService(db)
+
+    # "none"/"clear" removes the operator's follow entirely — the inverse the
+    # enum otherwise lacks, so an agent that set a status can undo it rather
+    # than being stuck at watching/in_review/reviewed forever (v2.315.0).
+    if body.status in ("none", "clear"):
+        svc.unfollow(host_id, agent.owner_id)
+        return
+
     try:
         follow_status = FollowStatus(body.status)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid follow status: {body.status}")
 
-    svc = HostFollowService(db)
     svc.set_follow_status(host_id, agent.owner_id, follow_status)
 
 

@@ -21,6 +21,20 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.61.0",
+        "app_version": "2.315.0",
+        "summary": (
+            "The guide's assist tool-name list catches up with a rename: the "
+            "per-host tool `assist_get_host_findings` is now "
+            "`assist_get_host_vulnerabilities`. It returns raw scanner "
+            "vulnerability rows, whose ids are a different id-space from the "
+            "triaged project Findings that `assist_list_findings` / "
+            "`assist_get_finding` work on — the old shared word 'findings' led "
+            "agents to pass a host vuln id to `assist_get_finding` and get a "
+            "404. Found by an agent exercising all 27 assist MCP tools."
+        ),
+    },
+    {
         "version": "1.60.0",
         "app_version": "2.314.0",
         "summary": (
