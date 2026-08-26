@@ -381,7 +381,6 @@ def generate_test_plan(
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     api_key_obj = APIKey(
         agent_id=agent.id,
-        test_plan_id=plan.id,
         agent_session_id=base_session.id,
         name=f"plan-{plan.id}",
         key_hash=key_hash,
@@ -572,8 +571,7 @@ def get_test_plan(
     # has_key=False on manual plans (agent_id null, no key minted).
     api_key_status = ApiKeyStatus()
     key_row = (
-        db.query(APIKey)
-        .filter(APIKey.test_plan_id == plan.id)
+        _plan_api_keys(db, plan.id)
         .order_by(APIKey.created_at.desc())
         .first()
     )
@@ -930,8 +928,8 @@ def rotate_test_plan_key(
         db, agent=plan.agent, plan=plan, name=f"plan-{plan.id}",
     )
     new_key = (
-        db.query(APIKey)
-        .filter(APIKey.test_plan_id == plan.id, APIKey.is_active.is_(True))
+        _plan_api_keys(db, plan.id)
+        .filter(APIKey.is_active.is_(True))
         .order_by(APIKey.id.desc())
         .first()
     )
@@ -1757,6 +1755,22 @@ def _ensure_plan_agent_session(db: Session, *, agent: Agent, plan: TestPlan) -> 
     return base.id
 
 
+def _plan_api_keys(db: Session, plan_id: int):
+    """APIKey query for the keys bound to this plan via their AgentSession.
+
+    Post-contract replacement for ``APIKey.test_plan_id == plan_id`` (that column
+    was dropped): a key links to a plan through its agent_session, whose
+    ``plan_id`` is set for the plan_generation + execution workflows. Both a
+    generation key and an execution key for the plan resolve here, so the
+    revoke-then-mint invariant ("at most one live key per plan") is preserved.
+    """
+    return db.query(APIKey).filter(
+        APIKey.agent_session_id.in_(
+            db.query(AgentSession.id).filter(AgentSession.plan_id == plan_id)
+        )
+    )
+
+
 def _mint_plan_agent_key(
     db: Session,
     *,
@@ -1783,8 +1797,7 @@ def _mint_plan_agent_key(
     requests race on a backend where the plan row lock is a no-op (SQLite)
     or where no lock is taken (rotate).
     """
-    db.query(APIKey).filter(
-        APIKey.test_plan_id == plan.id,
+    _plan_api_keys(db, plan.id).filter(
         APIKey.is_active.is_(True),
     ).update({"is_active": False}, synchronize_session=False)
 
@@ -1797,7 +1810,6 @@ def _mint_plan_agent_key(
     db.add(
         APIKey(
             agent_id=agent.id,
-            test_plan_id=plan.id,
             agent_session_id=agent_session_id,
             name=name or f"exec-plan-{plan.id}{name_suffix}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),

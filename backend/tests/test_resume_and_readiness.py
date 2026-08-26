@@ -40,9 +40,19 @@ def test_mint_plan_agent_key_revokes_prior_active_key_for_plan(
     /resume would leave two valid keys live, and agent execution
     endpoints (which resolve work by plan_id+ACTIVE, not by key) would
     let two agents write into the same session."""
+    from app.db.models_agent import AgentSession, AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
+    prior_session = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.EXECUTION.value,
+        project_id=test_plan.project_id,
+        agent_id=test_agent.id,
+        started_by_id=None,
+        plan_id=test_plan.id,
+    )
     prior = APIKey(
         agent_id=test_agent.id,
-        test_plan_id=test_plan.id,
+        agent_session_id=prior_session.id,
         name="prior",
         key_hash=hashlib.sha256(b"prior").hexdigest(),
         key_prefix="nm_agent_prio",
@@ -60,7 +70,14 @@ def test_mint_plan_agent_key_revokes_prior_active_key_for_plan(
 
     active_for_plan = (
         db_session.query(APIKey)
-        .filter(APIKey.test_plan_id == test_plan.id, APIKey.is_active.is_(True))
+        .filter(
+            APIKey.agent_session_id.in_(
+                db_session.query(AgentSession.id).filter(
+                    AgentSession.plan_id == test_plan.id
+                )
+            ),
+            APIKey.is_active.is_(True),
+        )
         .all()
     )
     assert len(active_for_plan) == 1, "only the newly minted key should be active"
@@ -91,9 +108,19 @@ def test_mint_plan_agent_key_leaves_other_plans_keys_alone(
     db_session.commit()
     db_session.refresh(other_plan)
 
+    from app.services.agent_session_service import create_agent_session
+    from app.db.models_agent import AgentSessionWorkflow
+    other_session = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.EXECUTION.value,
+        project_id=other_plan.project_id,
+        agent_id=test_agent.id,
+        started_by_id=None,
+        plan_id=other_plan.id,
+    )
     other_key = APIKey(
         agent_id=test_agent.id,
-        test_plan_id=other_plan.id,
+        agent_session_id=other_session.id,
         name="other-plan-key",
         key_hash=hashlib.sha256(b"other").hexdigest(),
         key_prefix="nm_agent_othe",

@@ -537,14 +537,13 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             api_key_prefix = getattr(request.state, "api_key_prefix", None)
             scoped_plan_id = getattr(request.state, "scoped_plan_id", None)
             scoped_scope_id = getattr(request.state, "scoped_scope_id", None)
-            # v2.64.0 — assist-session attribution.  Stamped on
-            # request.state by get_current_agent when the key carries
-            # assist_session_id; NULL for plan/recon/execution keys
-            # and for unscoped legacy keys.  Doubles as the "refresh
-            # last_activity_at" trigger below.
-            scoped_assist_session_id = getattr(
-                request.state, "scoped_assist_session_id", None
-            )
+            # The detail-session ids (recon_session_id / assist_session_id) are
+            # no longer stashed on request.state — the legacy api_keys columns
+            # were dropped in the contract phase — so resolve them from the key's
+            # agent_session below, gated by workflow so a non-recon/non-assist
+            # call skips the lookup entirely.
+            key_workflow = getattr(request.state, "key_workflow", None)
+            agent_session_id = getattr(request.state, "agent_session_id", None)
 
             path_params = dict(request.path_params or {})
             query_params = dict(request.query_params or {})
@@ -594,32 +593,29 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 path_params, query_params, body_for_id_scan,
             )
 
-            # Tie the audit row to a recon session.
-            # v2.45.0 — prefer the key's bound recon_session_id (set on
-            # request.state by get_current_agent for v2.45.0+ recon
-            # keys).  This is the same fix that makes _load_recon_session
-            # collision-safe under concurrent recons.  Falls back to the
-            # legacy "newest active session per scope" lookup only when
-            # the key predates v2.45.0 (recon_session_id NULL on the
-            # APIKey row); those keys carry the original collision risk
-            # but the audit attribution is at least consistent with what
-            # the request handler resolved.
-            recon_session_id = getattr(
-                request.state, "scoped_recon_session_id", None
-            )
-            if recon_session_id is None and scoped_scope_id is not None:
-                from app.db.models_agent import ReconSession, ReconSessionStatus
+            # Tie the audit row to its recon / assist detail session, resolved
+            # 1:1 from the key's agent_session — the same deterministic binding
+            # the request handler used, no "newest active per scope" heuristic.
+            recon_session_id = None
+            if key_workflow == "recon" and agent_session_id is not None:
+                from app.db.models_agent import ReconSession
                 row = (
                     db.query(ReconSession.id)
-                    .filter(
-                        ReconSession.scope_id == scoped_scope_id,
-                        ReconSession.status == ReconSessionStatus.ACTIVE.value,
-                    )
-                    .order_by(ReconSession.started_at.desc())
+                    .filter(ReconSession.agent_session_id == agent_session_id)
                     .first()
                 )
                 if row:
                     recon_session_id = row[0]
+            assist_session_id = None
+            if key_workflow == "assist" and agent_session_id is not None:
+                from app.db.models_agent import AssistSession as _AssistSessionLookup
+                row = (
+                    db.query(_AssistSessionLookup.id)
+                    .filter(_AssistSessionLookup.agent_session_id == agent_session_id)
+                    .first()
+                )
+                if row:
+                    assist_session_id = row[0]
 
             execution_session_id = _active_execution_session_id(
                 db, scoped_plan_id,
@@ -663,7 +659,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 execution_session_id=execution_session_id,
                 scope_id=scoped_scope_id,
                 recon_session_id=recon_session_id,
-                assist_session_id=scoped_assist_session_id,
+                assist_session_id=assist_session_id,
                 method=request.method,
                 path=request.url.path,
                 path_template=_path_template_from_route(request),
@@ -686,11 +682,11 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             # need this (their summary endpoints carry their own
             # progress signals); assist is conversational, so an
             # idle marker is meaningful here.
-            if scoped_assist_session_id is not None:
+            if assist_session_id is not None:
                 from datetime import datetime as _dt, timezone as _tz
                 from app.db.models_agent import AssistSession as _AssistSession
                 db.query(_AssistSession).filter(
-                    _AssistSession.id == scoped_assist_session_id
+                    _AssistSession.id == assist_session_id
                 ).update(
                     {"last_activity_at": _dt.now(_tz.utc)},
                     synchronize_session=False,

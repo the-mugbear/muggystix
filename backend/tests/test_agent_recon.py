@@ -55,13 +55,23 @@ def recon_scope(db_session, test_project):
 
 @pytest.fixture
 def recon_session_row(db_session, test_project, test_agent, recon_scope):
-    """An ACTIVE ReconSession bound to the fixture scope."""
-    from app.db.models_agent import ReconSession, ReconSessionStatus
+    """An ACTIVE ReconSession bound to the fixture scope, with its AgentSession
+    (the key's scope binding; recon_session ↔ agent_session is 1:1)."""
+    from app.db.models_agent import (
+        AgentSessionWorkflow, ReconSession, ReconSessionStatus,
+    )
+    from app.services.agent_session_service import create_agent_session
+    base = create_agent_session(
+        db_session, workflow=AgentSessionWorkflow.RECON.value,
+        project_id=test_project.id, agent_id=test_agent.id,
+        started_by_id=None, scope_id=recon_scope.id,
+    )
     session = ReconSession(
         project_id=test_project.id,
         scope_id=recon_scope.id,
         agent_id=test_agent.id,
         status=ReconSessionStatus.ACTIVE.value,
+        agent_session_id=base.id,
     )
     db_session.add(session)
     db_session.commit()
@@ -71,15 +81,12 @@ def recon_session_row(db_session, test_project, test_agent, recon_scope):
 
 @pytest.fixture
 def recon_key(db_session, test_agent, recon_scope, recon_session_row):
-    """A scope-bound API key pinned to this recon session (v2.45.0+
-    keys carry recon_session_id; pre-v2.45.0 keys carried only
-    scope_id and used a heuristic to resolve the session)."""
+    """A recon-scoped API key bound to this recon session via its AgentSession."""
     from app.db.models_auth import APIKey
     raw = "nm_agent_recon_smoke_" + "r" * 28
     db_session.add(APIKey(
         agent_id=test_agent.id,
-        scope_id=recon_scope.id,
-        recon_session_id=recon_session_row.id,
+        agent_session_id=recon_session_row.agent_session_id,
         name=f"recon-smoke-{recon_session_row.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
@@ -180,8 +187,7 @@ def test_expired_agent_key_rejected(
     def _mint(raw, expires_at):
         db_session.add(APIKey(
             agent_id=test_agent.id,
-            scope_id=recon_scope.id,
-            recon_session_id=recon_session_row.id,
+            agent_session_id=recon_session_row.agent_session_id,
             name="expired-key",
             key_hash=hashlib.sha256(raw.encode()).hexdigest(),
             key_prefix=raw[:14],
@@ -211,35 +217,15 @@ def test_expired_agent_key_rejected(
     assert r2.status_code == 401, r2.text
 
 
-def _mint_session_bound_key(
-    db_session, *, test_agent, recon_scope, recon_session_row, workflow, raw,
-    set_legacy_columns=True,
-):
-    """Mint an API key bound to a freshly-created AgentSession (the WS2c
-    primary scope binding), optionally also setting the legacy scope_id +
-    recon_session_id columns.  Returns the plaintext key."""
-    from app.db.models_agent import AgentSession
+def _mint_agent_key_for_session(db_session, *, test_agent, agent_session_id, raw):
+    """Mint an API key bound to the given AgentSession (the key's only scope
+    binding now — the legacy per-workflow columns were dropped)."""
     from app.db.models_auth import APIKey
 
-    agent_session = AgentSession(
-        workflow=workflow,
-        project_id=recon_scope.project_id,
-        agent_id=test_agent.id,
-        scope_id=recon_scope.id,
-        status="active",
-    )
-    db_session.add(agent_session)
-    db_session.flush()
     db_session.add(APIKey(
         agent_id=test_agent.id,
-        agent_session_id=agent_session.id,
-        # Legacy columns: present so the recon handler can still resolve the
-        # session.  The fail-closed test sets these to a *valid* recon
-        # binding deliberately — proving the agent_session.workflow takes
-        # precedence over them.
-        scope_id=recon_scope.id if set_legacy_columns else None,
-        recon_session_id=recon_session_row.id if set_legacy_columns else None,
-        name=f"sessbound-{workflow}",
+        agent_session_id=agent_session_id,
+        name=f"sessbound-{agent_session_id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
         expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
@@ -251,14 +237,12 @@ def _mint_session_bound_key(
 def test_agent_session_bound_recon_key_authorizes(
     client, db_session, test_agent, recon_scope, recon_session_row,
 ):
-    """WS2c primary-branch coverage: a key bound to an AgentSession with
-    workflow='recon' (not via the legacy-column fallback) passes
-    require_recon_scope and reads /agent/recon/context.  The existing suite
-    only exercised the legacy-column fallback path in get_current_agent; this
-    drives the agent_session-derived key_workflow branch directly."""
-    raw = _mint_session_bound_key(
-        db_session, test_agent=test_agent, recon_scope=recon_scope,
-        recon_session_row=recon_session_row, workflow="recon",
+    """A key bound to an AgentSession with workflow='recon' passes
+    require_recon_scope and reads /agent/recon/context — the session resolves
+    1:1 from the key's agent_session (there is no legacy-column fallback)."""
+    raw = _mint_agent_key_for_session(
+        db_session, test_agent=test_agent,
+        agent_session_id=recon_session_row.agent_session_id,
         raw="nm_agent_sessbound_recon_" + "a" * 24,
     )
     resp = client.get(
@@ -269,20 +253,24 @@ def test_agent_session_bound_recon_key_authorizes(
 
 
 def test_unrecognized_agent_session_workflow_denied(
-    client, db_session, test_agent, recon_scope, recon_session_row,
+    client, db_session, test_agent, recon_scope,
 ):
     """Fail-closed regression: a key bound to an AgentSession whose workflow
     the auth code can't classify must be denied (403), NOT silently treated
-    as an unscoped global key (the most-privileged outcome).
+    as an unscoped global key (the most-privileged outcome)."""
+    from app.db.models_agent import AgentSession
 
-    The legacy scope_id + recon_session_id columns are set to a *valid*
-    recon binding here on purpose: if get_current_agent fell back to them (or
-    fell through to key_workflow=None) this key would authorize.  The 403
-    proves (a) the agent_session.workflow takes precedence over the legacy
-    columns, and (b) an unrecognized value fails closed."""
-    raw = _mint_session_bound_key(
-        db_session, test_agent=test_agent, recon_scope=recon_scope,
-        recon_session_row=recon_session_row, workflow="totally_bogus",
+    bogus = AgentSession(
+        workflow="totally_bogus",
+        project_id=recon_scope.project_id,
+        agent_id=test_agent.id,
+        scope_id=recon_scope.id,
+        status="active",
+    )
+    db_session.add(bogus)
+    db_session.flush()
+    raw = _mint_agent_key_for_session(
+        db_session, test_agent=test_agent, agent_session_id=bogus.id,
         raw="nm_agent_sessbound_bogus_" + "b" * 24,
     )
     resp = client.get(

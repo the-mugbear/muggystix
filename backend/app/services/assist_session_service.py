@@ -78,7 +78,9 @@ def has_live_key(now: Optional[datetime] = None):
     return (
         select(APIKey.id)
         .where(
-            APIKey.assist_session_id == AssistSession.id,
+            # Post-contract: keys bind to the session via their agent_session
+            # (the api_keys.assist_session_id column was dropped).
+            APIKey.agent_session_id == AssistSession.agent_session_id,
             APIKey.is_active.is_(True),
             APIKey.expires_at.isnot(None),
             APIKey.expires_at > now,
@@ -99,12 +101,15 @@ def key_expiry_for_sessions(db: Session, session_ids: List[int]) -> dict:
     return {
         sid: expires_at
         for sid, expires_at in (
-            db.query(APIKey.assist_session_id, func.max(APIKey.expires_at))
+            # Map keys back to their assist session through agent_session
+            # (api_keys.assist_session_id was dropped in the contract phase).
+            db.query(AssistSession.id, func.max(APIKey.expires_at))
+            .join(APIKey, APIKey.agent_session_id == AssistSession.agent_session_id)
             .filter(
-                APIKey.assist_session_id.in_(session_ids),
+                AssistSession.id.in_(session_ids),
                 APIKey.is_active.is_(True),
             )
-            .group_by(APIKey.assist_session_id)
+            .group_by(AssistSession.id)
             .all()
         )
     }
@@ -123,14 +128,12 @@ def lapse_expired_assist_sessions(db: Session) -> int:
     # of the list endpoint's need, which is why they no longer share a query.
     live_expiry = (
         db.query(
-            APIKey.assist_session_id.label("session_id"),
+            AssistSession.id.label("session_id"),
             func.max(APIKey.expires_at).label("expires_at"),
         )
-        .filter(
-            APIKey.assist_session_id.isnot(None),
-            APIKey.is_active.is_(True),
-        )
-        .group_by(APIKey.assist_session_id)
+        .join(APIKey, APIKey.agent_session_id == AssistSession.agent_session_id)
+        .filter(APIKey.is_active.is_(True))
+        .group_by(AssistSession.id)
         .subquery()
     )
 

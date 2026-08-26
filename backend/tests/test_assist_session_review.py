@@ -185,7 +185,11 @@ def test_the_list_filters_by_effective_status(client, db_session, test_project):
 
     live = _start(client, test_project.id, ttl_hours=6)["assist_session_id"]
     dead = _start(client, test_project.id)["assist_session_id"]
-    db_session.query(APIKey).filter(APIKey.assist_session_id == dead).update(
+    dead_agent_session = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == dead).scalar()
+    )
+    db_session.query(APIKey).filter(APIKey.agent_session_id == dead_agent_session).update(
         {"expires_at": datetime.now(timezone.utc)}, synchronize_session=False
     )
     db_session.commit()
@@ -213,7 +217,11 @@ def test_status_filter_paginates_rather_than_slicing_a_prefix(
 
     ids = [_start(client, test_project.id)["assist_session_id"] for _ in range(5)]
     # Kill the two OLDEST sessions' keys — the ones a prefix-slice would miss.
-    db_session.query(APIKey).filter(APIKey.assist_session_id.in_(ids[:2])).update(
+    dead_agent_sessions = [
+        r[0] for r in db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id.in_(ids[:2]))
+    ]
+    db_session.query(APIKey).filter(APIKey.agent_session_id.in_(dead_agent_sessions)).update(
         {"expires_at": datetime.now(timezone.utc)}, synchronize_session=False
     )
     db_session.commit()
@@ -246,7 +254,11 @@ def test_one_definition_of_active_across_list_and_detail(
     from app.db.models_auth import APIKey
 
     sid = _start(client, test_project.id)["assist_session_id"]
-    db_session.query(APIKey).filter(APIKey.assist_session_id == sid).update(
+    sid_agent_session = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == sid).scalar()
+    )
+    db_session.query(APIKey).filter(APIKey.agent_session_id == sid_agent_session).update(
         {"expires_at": datetime.now(timezone.utc)}, synchronize_session=False
     )
     db_session.commit()

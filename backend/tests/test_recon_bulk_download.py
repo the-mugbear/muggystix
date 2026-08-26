@@ -43,12 +43,21 @@ def scope_with_subnets(db_session, test_project):
 
 @pytest.fixture
 def recon_session_and_key(db_session, test_project, test_agent, scope_with_subnets):
-    from app.db.models_agent import ReconSession, ReconSessionStatus
+    from app.db.models_agent import (
+        AgentSessionWorkflow, ReconSession, ReconSessionStatus,
+    )
     from app.db.models_auth import APIKey
+    from app.services.agent_session_service import create_agent_session
 
+    base = create_agent_session(
+        db_session, workflow=AgentSessionWorkflow.RECON.value,
+        project_id=test_project.id, agent_id=test_agent.id,
+        started_by_id=None, scope_id=scope_with_subnets.id,
+    )
     session = ReconSession(
         project_id=test_project.id, scope_id=scope_with_subnets.id,
         agent_id=test_agent.id, status=ReconSessionStatus.ACTIVE.value,
+        agent_session_id=base.id,
     )
     db_session.add(session)
     db_session.commit()
@@ -56,8 +65,7 @@ def recon_session_and_key(db_session, test_project, test_agent, scope_with_subne
 
     raw_key = "nm_agent_dlrecon_" + "x" * 32
     db_session.add(APIKey(
-        agent_id=test_agent.id, scope_id=scope_with_subnets.id,
-        recon_session_id=session.id, name="dl-recon",
+        agent_id=test_agent.id, agent_session_id=base.id, name="dl-recon",
         key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
         key_prefix=raw_key[:14],
         expires_at=datetime.now(timezone.utc) + timedelta(hours=24),

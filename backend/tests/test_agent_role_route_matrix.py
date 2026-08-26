@@ -85,7 +85,6 @@ def _key_for(db, project, user):
         agent_id=agent.id, name=f"matrix-{user.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14], agent_session_id=base.id,
-        assist_session_id=detail.id,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
     ))
     db.commit()

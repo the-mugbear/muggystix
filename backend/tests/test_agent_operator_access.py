@@ -76,11 +76,10 @@ def _assist_key(db, project, user):
     db.add(APIKey(
         agent_id=agent.id, name=f"opaccess-{user.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
+        # The assist AgentSession (base) scopes the key to the assist workflow;
+        # that's what the workflow guard reads, so these routes are reachable and
+        # the test isolates the operator-role gate.
         key_prefix=raw[:14], agent_session_id=base.id,
-        # Bind the assist scope too, or the workflow guard refuses these routes
-        # for an unrelated reason and the test proves nothing about the
-        # operator gate.
-        assist_session_id=detail.id,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
     ))
     db.commit()

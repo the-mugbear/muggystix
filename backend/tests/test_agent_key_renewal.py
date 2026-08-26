@@ -61,7 +61,6 @@ def _mint(db, project, agent, user, *, expires_in_hours, session_age_hours=0.0,
         name="renewal-test",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
-        assist_session_id=None,
         agent_session_id=base.id,
         expires_at=now + timedelta(hours=expires_in_hours),
     )

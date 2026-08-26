@@ -74,7 +74,7 @@ def test_start_assist_populates_unified_agent_session(client, test_project, db_s
 
     key = (
         db_session.query(APIKey)
-        .filter(APIKey.assist_session_id == sid, APIKey.is_active.is_(True))
+        .filter(APIKey.agent_session_id == base.id, APIKey.is_active.is_(True))
         .first()
     )
     assert key.agent_session_id == base.id

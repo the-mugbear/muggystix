@@ -53,7 +53,9 @@ def test_key_expiry_is_null_once_no_active_key_remains(
     started = _start(client, test_project.id)
     sid = started["assist_session_id"]
 
-    db_session.query(APIKey).filter(APIKey.assist_session_id == sid).update(
+    db_session.query(APIKey).filter(
+        APIKey.agent_session_id == _agent_session_id_for(db_session, sid)
+    ).update(
         {"is_active": False}, synchronize_session=False
     )
     db_session.commit()
@@ -108,9 +110,22 @@ def test_expiry_lookup_does_not_scale_with_session_count(
 # these myself?") should answer itself: no.
 # ---------------------------------------------------------------------------
 
+def _agent_session_id_for(db_session, assist_session_id):
+    """Resolve an assist session's agent_session_id — api_keys binds to keys
+    through it now (the api_keys.assist_session_id column was dropped)."""
+    from app.db.models_agent import AssistSession
+    return (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == assist_session_id)
+        .scalar()
+    )
+
+
 def _expire_keys(db_session, session_id, *, when=None):
     """Age the session's key out, the way the TTL would."""
-    db_session.query(APIKey).filter(APIKey.assist_session_id == session_id).update(
+    db_session.query(APIKey).filter(
+        APIKey.agent_session_id == _agent_session_id_for(db_session, session_id)
+    ).update(
         {"expires_at": when or (datetime.now(timezone.utc) - timedelta(minutes=5))},
         synchronize_session=False,
     )

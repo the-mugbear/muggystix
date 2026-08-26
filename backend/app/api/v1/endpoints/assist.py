@@ -324,8 +324,11 @@ def _mint_assist_session_key(
     Keys for OTHER assist sessions are untouched, so concurrent
     assists (e.g. two operators on the same project) stay isolated.
     """
+    # Revoke prior active keys for this session's agent_session (one live key per
+    # session). assist_session ↔ agent_session is 1:1; assist has no resume, so a
+    # fresh start's agent_session_id is brand new and this is a no-op there.
     db.query(APIKey).filter(
-        APIKey.assist_session_id == assist_session.id,
+        APIKey.agent_session_id == agent_session_id,
         APIKey.is_active.is_(True),
     ).update({"is_active": False}, synchronize_session=False)
 
@@ -333,7 +336,6 @@ def _mint_assist_session_key(
     db.add(
         APIKey(
             agent_id=agent.id,
-            assist_session_id=assist_session.id,
             agent_session_id=agent_session_id,
             name=f"assist-session-{assist_session.id}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
@@ -506,7 +508,7 @@ def end_assist_session(
         )
 
     db.query(APIKey).filter(
-        APIKey.assist_session_id == session.id,
+        APIKey.agent_session_id == session.agent_session_id,
         APIKey.is_active.is_(True),
     ).update({"is_active": False}, synchronize_session=False)
 
@@ -718,7 +720,7 @@ def get_assist_session(
     key_expires_at = (
         db.query(func.max(APIKey.expires_at))
         .filter(
-            APIKey.assist_session_id == session.id,
+            APIKey.agent_session_id == session.agent_session_id,
             APIKey.is_active.is_(True),
         )
         .scalar()

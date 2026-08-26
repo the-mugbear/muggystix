@@ -314,9 +314,17 @@ def plan_agent_key(db_session, test_agent, test_plan):
     from datetime import datetime, timezone, timedelta
     from app.db.models_auth import APIKey
     raw = "nm_agent_complete_test_" + "z" * 24
+    from app.db.models_agent import AgentSession, AgentSessionWorkflow
+    session = AgentSession(
+        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
+        project_id=test_plan.project_id, agent_id=test_agent.id,
+        started_by_id=test_agent.owner_id, status="active", plan_id=test_plan.id,
+    )
+    db_session.add(session)
+    db_session.flush()
     api_key = APIKey(
         agent_id=test_agent.id,
-        test_plan_id=test_plan.id,
+        agent_session_id=session.id,
         name=f"plan-{test_plan.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
@@ -369,7 +377,6 @@ def _mint_workflow_key(db_session, test_agent, test_plan, workflow):
     raw = f"nm_agent_{workflow}_" + "q" * 24
     key = APIKey(
         agent_id=test_agent.id,
-        test_plan_id=test_plan.id,
         agent_session_id=session.id,
         name=f"{workflow}-{test_plan.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
@@ -539,9 +546,21 @@ def recon_agent_key(db_session, test_agent, recon_session):
     from datetime import datetime, timezone, timedelta
     from app.db.models_auth import APIKey
     raw = "nm_agent_recon_envprobe_" + "k" * 24
+    from app.db.models_agent import AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
+    base = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.RECON.value,
+        project_id=recon_session["session"].project_id,
+        agent_id=test_agent.id,
+        started_by_id=None,
+        scope_id=recon_session["scope"].id,
+    )
+    recon_session["session"].agent_session_id = base.id
+    db_session.flush()
     api_key = APIKey(
         agent_id=test_agent.id,
-        scope_id=recon_session["scope"].id,
+        agent_session_id=base.id,
         name=f"recon-{recon_session['scope'].id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
@@ -559,17 +578,28 @@ def execution_session_with_key(db_session, test_agent, test_plan):
     from datetime import datetime, timezone, timedelta
     from app.db.models_agent import ExecutionSession, ExecutionSessionStatus
     from app.db.models_auth import APIKey
+    from app.db.models_agent import AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
+    base = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.EXECUTION.value,
+        project_id=test_plan.project_id,
+        agent_id=test_agent.id,
+        started_by_id=None,
+        plan_id=test_plan.id,
+    )
     session = ExecutionSession(
         test_plan_id=test_plan.id,
         agent_id=test_agent.id,
         status=ExecutionSessionStatus.ACTIVE.value,
+        agent_session_id=base.id,
     )
     db_session.add(session)
     db_session.flush()
     raw = "nm_agent_exec_envprobe_" + "e" * 24
     api_key = APIKey(
         agent_id=test_agent.id,
-        test_plan_id=test_plan.id,
+        agent_session_id=base.id,
         name=f"plan-{test_plan.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
@@ -698,9 +728,19 @@ def test_execution_probe_rejects_other_users_session(
     db_session.add(intruder_plan)
     db_session.flush()
     raw = "nm_agent_intruder_" + "x" * 28
+    from app.db.models_agent import AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
+    intruder_session = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.EXECUTION.value,
+        project_id=intruder_plan.project_id,
+        agent_id=intruder_agent.id,
+        started_by_id=None,
+        plan_id=intruder_plan.id,
+    )
     api_key = APIKey(
         agent_id=intruder_agent.id,
-        test_plan_id=intruder_plan.id,
+        agent_session_id=intruder_session.id,
         name=f"plan-{intruder_plan.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
@@ -1126,10 +1166,22 @@ def test_execution_env_probe_rejects_recon_scoped_key(
     db_session.add(rs)
     db_session.flush()
 
-    # A *recon-scoped* API key — scope_id set, test_plan_id null.
+    # A *recon-scoped* API key — bound to a recon AgentSession.
+    from app.db.models_agent import AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
+    recon_base = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.RECON.value,
+        project_id=test_project.id,
+        agent_id=test_agent.id,
+        started_by_id=None,
+        scope_id=scope.id,
+    )
+    rs.agent_session_id = recon_base.id
+    db_session.flush()
     raw = "nm_agent_recon_auth_hole_" + "r" * 24
     db_session.add(APIKey(
-        agent_id=test_agent.id, scope_id=scope.id,
+        agent_id=test_agent.id, agent_session_id=recon_base.id,
         name=f"recon-{scope.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
@@ -1625,8 +1677,11 @@ def test_activity_stamp_debounced(
 
     # Stamp both as "just used now" — well inside the debounce window.
     fresh = datetime.now(timezone.utc) - timedelta(seconds=5)
+    from app.db.models_agent import AgentSession
     api_key_row = db_session.query(APIKey).filter(
-        APIKey.test_plan_id == test_plan.id
+        APIKey.agent_session_id.in_(
+            db_session.query(AgentSession.id).filter(AgentSession.plan_id == test_plan.id)
+        )
     ).first()
     api_key_row.last_used = fresh
     test_agent.last_activity_at = fresh
@@ -1663,8 +1718,11 @@ def test_activity_stamp_writes_when_stale(
     db_session.commit()
 
     stale = datetime.now(timezone.utc) - timedelta(seconds=300)
+    from app.db.models_agent import AgentSession
     api_key_row = db_session.query(APIKey).filter(
-        APIKey.test_plan_id == test_plan.id
+        APIKey.agent_session_id.in_(
+            db_session.query(AgentSession.id).filter(AgentSession.plan_id == test_plan.id)
+        )
     ).first()
     api_key_row.last_used = stale
     test_agent.last_activity_at = stale

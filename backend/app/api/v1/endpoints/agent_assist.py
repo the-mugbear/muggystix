@@ -74,17 +74,23 @@ router = APIRouter()
 def _load_assist_session(db: Session, request: Request) -> AssistSession:
     """Resolve the AssistSession for the caller's assist-scoped key.
 
-    Assist keys bind to exactly one session via
-    ``api_keys.assist_session_id`` (require_assist_scope already
-    enforced not-NULL).  Defence-in-depth: also verify the session
-    is still ACTIVE — if a parallel "end session" call landed first,
-    we want this request to 401/404 rather than silently serve data
-    on what the human thinks is a closed session.
+    Assist keys bind to one AgentSession (assist workflow), and each
+    AssistSession is 1:1 with its AgentSession via
+    ``assist_sessions.agent_session_id`` — so the session resolves from that
+    (the legacy ``api_keys.assist_session_id`` column was dropped in the
+    contract phase). ``require_assist_scope`` already enforced the assist
+    workflow. Defence-in-depth: also verify the session is still ACTIVE — if a
+    parallel "end session" call landed first, we want this request to 404/410
+    rather than silently serve data on what the human thinks is a closed session.
     """
-    session_id = getattr(request.state, "scoped_assist_session_id", None)
-    if session_id is None:
+    agent_session_id = getattr(request.state, "agent_session_id", None)
+    if agent_session_id is None:
         raise HTTPException(status_code=403, detail="Assist scope not bound")
-    session = db.query(AssistSession).filter(AssistSession.id == session_id).first()
+    session = (
+        db.query(AssistSession)
+        .filter(AssistSession.agent_session_id == agent_session_id)
+        .first()
+    )
     if session is None:
         raise HTTPException(
             status_code=404,

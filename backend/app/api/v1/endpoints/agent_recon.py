@@ -190,60 +190,37 @@ def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Opti
 def _load_recon_session(db: Session, request: Request) -> ReconSession:
     """Resolve the ReconSession for the caller's recon-scoped key.
 
-    v2.45.0 — keys minted from /scopes/{id}/recon/start now bind to a
-    specific ReconSession via ``api_keys.recon_session_id``.  When that
-    binding is present, we use it directly — multiple concurrent
-    recons on the same scope (intentional: cross-model agent coverage,
-    multi-user workflows) each resolve to their own session.
+    The key binds to one AgentSession (recon workflow), and each ReconSession is
+    1:1 with its AgentSession via ``recon_sessions.agent_session_id`` — so the
+    call's session resolves deterministically. This is what replaced the old
+    "newest active session under the scope" heuristic (the root cause of the
+    concurrent-recon collision bug, where two agents holding scope-only keys had
+    their /recon/upload calls routed to whichever session started later); with
+    the contract phase dropping ``api_keys.recon_session_id`` / ``scope_id``, the
+    AgentSession IS the binding and the heuristic fallback is gone for good.
 
-    Pre-v2.45.0 keys only had ``scope_id``; for those we fall back to
-    the legacy "newest active session under the scope" heuristic.  This
-    heuristic was the root cause of the concurrent-recon collision
-    bug — Agent A and Agent B both holding scope-only keys would have
-    their /recon/upload calls silently routed to whichever session
-    started later.
-
-    404 if there's no usable session — the bound session was deleted,
-    or for legacy keys no active session exists for the scope.
+    404 if there's no usable session — the bound session was deleted.
     """
+    agent_session_id = getattr(request.state, "agent_session_id", None)
     scope_id = getattr(request.state, "scoped_scope_id", None)
-    if scope_id is None:
-        # Should be unreachable — require_recon_scope already gates on this.
+    if agent_session_id is None or scope_id is None:
+        # Unreachable — require_recon_scope already gates on the recon workflow,
+        # and get_current_agent sets both for a recon key.
         raise HTTPException(status_code=403, detail="Recon scope not bound")
 
-    # Preferred path (v2.45.0+ keys): the key knows its session.
-    bound_session_id = getattr(request.state, "scoped_recon_session_id", None)
-    session = None
-    if bound_session_id is not None:
-        session = (
-            db.query(ReconSession)
-            .filter(ReconSession.id == bound_session_id)
-            .first()
-        )
-        # Defence-in-depth: the key's scope_id must still match the
-        # session's scope_id.  Catches a hypothetical session→scope
-        # FK swap or a manually-edited api_keys row.
-        if session is not None and session.scope_id != scope_id:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "API key's bound recon session belongs to a "
-                    "different scope — refusing to serve."
-                ),
-            )
-
-    # Legacy fallback (pre-v2.45.0 keys with NULL recon_session_id):
-    # newest active session on the scope.  See the docstring for why
-    # this heuristic is the bug we're moving away from.
-    if session is None:
-        session = (
-            db.query(ReconSession)
-            .filter(
-                ReconSession.scope_id == scope_id,
-                ReconSession.status == ReconSessionStatus.ACTIVE.value,
-            )
-            .order_by(ReconSession.started_at.desc())
-            .first()
+    session = (
+        db.query(ReconSession)
+        .filter(ReconSession.agent_session_id == agent_session_id)
+        .first()
+    )
+    # Defence-in-depth: the key's scope must still match the session's scope.
+    if session is not None and session.scope_id != scope_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "API key's bound recon session belongs to a "
+                "different scope — refusing to serve."
+            ),
         )
     if session is None:
         raise HTTPException(

@@ -186,65 +186,16 @@ class APIKey(Base):
     # API keys carry agent_id (the other branch) and are independent.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
-    # When set, the key is scoped to a single test plan: auth requests that
-    # target a different plan_id are rejected.  Lets two concurrent agents
-    # own independent keys without sharing a fate when one is rotated.
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-    # v2.11.0: reconnaissance keys bind to a scope instead of a test
-    # plan.  Mutually exclusive with test_plan_id — a key is either a
-    # plan-scoped execution/generation key or a scope-scoped recon
-    # key, never both.  Recon endpoints reject keys where scope_id is
-    # NULL; plan endpoints reject keys where scope_id is set.
-    scope_id = Column(
-        Integer,
-        ForeignKey("scopes.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-    # v2.45.0: recon keys also pin to a specific ReconSession.  Pre-fix,
-    # two concurrent recons on the same scope collided because
-    # `_load_recon_session` used a "newest active session" heuristic to
-    # resolve the call's session from `scope_id` alone — so Agent A's
-    # uploads to /agent/recon/upload silently landed on Agent B's
-    # session (whichever was started most recently).  With the key
-    # bound to a specific session, every endpoint that doesn't take a
-    # session_id in the URL (/recon/context, /recon/upload,
-    # /recon/summary, /recon/complete) resolves to the bound session
-    # deterministically — no heuristic, no cross-agent collision.
-    # Nullable for backwards compat with v2.44.5-and-older keys that
-    # only have scope_id; the loader falls back to the heuristic for
-    # those.
-    recon_session_id = Column(
-        Integer,
-        ForeignKey("recon_sessions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-    # v2.64.0 — assist-session keys are read-only, project-scoped, and
-    # bound to a specific AssistSession row.  Mutually exclusive with
-    # the other three scope columns above (a single key never spans
-    # workflows; the four scope columns are XOR'd by the minting code,
-    # not the DB).  /agent/assist/* endpoints require this column to
-    # be set; /agent/test-plans/*, /agent/execution/*, and /agent/recon/*
-    # all reject keys where it's populated.
-    assist_session_id = Column(
-        Integer,
-        ForeignKey("assist_sessions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-
-    # v2.116.0 — the unified scope binding that replaces the four
-    # workflow-specific FKs above.  A key points at exactly one
-    # AgentSession; its ``workflow`` discriminator + ``plan_id``/``scope_id``
-    # carry what the four columns used to.  Nullable during the expand
-    # phase (backfilled by the migration); the four legacy columns are
-    # dropped in the contract phase once deps + minting read this instead.
+    # v2.116.0 — the key's scope binding: it points at exactly one AgentSession,
+    # whose ``workflow`` discriminator (plan_generation / execution / recon /
+    # assist) + ``plan_id`` / ``scope_id`` carry everything the four legacy
+    # per-workflow FK columns used to. Those four —
+    #   test_plan_id, scope_id, recon_session_id, assist_session_id
+    # — were DROPPED in the contract phase (migration d4e9f1c72a6b) once deps +
+    # minting resolved scope from this instead. ``get_current_agent`` now
+    # REQUIRES it for an agent key (a null binding on an agent key is refused);
+    # it stays nullable at the DB level only for operator/service keys
+    # (``agent_id`` NULL), which carry no workflow session.
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="CASCADE"),

@@ -50,15 +50,24 @@ def recon_session_and_key(db_session, test_project, test_agent, scope_with_subne
     so we can exercise /agent/recon/* without going through the JWT start
     endpoint (which requires TestClient + auth override).
     """
-    from app.db.models_agent import ReconSession, ReconSessionStatus
+    from app.db.models_agent import (
+        AgentSessionWorkflow, ReconSession, ReconSessionStatus,
+    )
     from app.db.models_auth import APIKey
+    from app.services.agent_session_service import create_agent_session
     from datetime import datetime, timezone, timedelta
 
+    base = create_agent_session(
+        db_session, workflow=AgentSessionWorkflow.RECON.value,
+        project_id=test_project.id, agent_id=test_agent.id,
+        started_by_id=None, scope_id=scope_with_subnets.id,
+    )
     session = ReconSession(
         project_id=test_project.id,
         scope_id=scope_with_subnets.id,
         agent_id=test_agent.id,
         status=ReconSessionStatus.ACTIVE.value,
+        agent_session_id=base.id,
     )
     db_session.add(session)
     db_session.commit()
@@ -68,10 +77,9 @@ def recon_session_and_key(db_session, test_project, test_agent, scope_with_subne
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     api_key = APIKey(
         agent_id=test_agent.id,
-        scope_id=scope_with_subnets.id,
-        # v2.45.0 — bind key to this specific session so concurrent
-        # recons on the same scope don't collide on writes.
-        recon_session_id=session.id,
+        # The key's scope binding is the recon AgentSession (recon_session ↔
+        # agent_session is 1:1, so the call resolves to this session).
+        agent_session_id=base.id,
         name=f"test-recon-{scope_with_subnets.id}",
         key_hash=key_hash,
         key_prefix=raw_key[:14],
@@ -122,12 +130,14 @@ class TestReconSessionStart:
         assert session.status == "active"
         assert session.notes == "initial sweep"
 
-        # Key binding: scope_id set, test_plan_id null
+        # Key binding: bound to the session's recon AgentSession (scope on it).
         key = db_session.query(APIKey).filter(
-            APIKey.scope_id == scope_with_subnets.id,
+            APIKey.agent_session_id == session.agent_session_id,
         ).first()
         assert key is not None
-        assert key.test_plan_id is None
+        assert key.agent_session is not None
+        assert key.agent_session.workflow == "recon"
+        assert key.agent_session.scope_id == scope_with_subnets.id
         # Hash should match the plaintext, not equal it
         assert key.key_hash != body["api_key"]
         assert key.key_hash == hashlib.sha256(body["api_key"].encode()).hexdigest()
@@ -189,20 +199,23 @@ class TestReconKeyScopeIsolation:
     the deps' unit tests in isolation.
     """
 
-    def test_recon_key_has_scope_id_and_null_plan_id(
+    def test_recon_key_is_bound_to_a_recon_agent_session(
         self, db_session, recon_session_and_key
     ):
-        """Sanity: the fixture set up the key with the v2.11.0 shape."""
+        """Sanity: the fixture bound the key to a recon-workflow AgentSession."""
         key = recon_session_and_key["api_key"]
-        assert key.scope_id is not None
-        assert key.test_plan_id is None
+        assert key.agent_session_id is not None
+        assert key.agent_session.workflow == "recon"
+        assert key.agent_session.scope_id is not None
 
     def test_recon_key_binds_to_correct_scope(
         self, db_session, recon_session_and_key
     ):
         session = recon_session_and_key["session"]
         key = recon_session_and_key["api_key"]
-        assert key.scope_id == session.scope_id
+        # Same AgentSession backs both the key and the recon session.
+        assert key.agent_session_id == session.agent_session_id
+        assert key.agent_session.scope_id == session.scope_id
 
 
 class TestReconSessionLifecycle:
@@ -544,16 +557,25 @@ class TestConcurrentReconSessionIsolation:
     def _start_session_with_pinned_key(
         self, db_session, test_project, test_agent, scope, name_suffix
     ):
-        """Create one ReconSession + a v2.45.0-shape (session-pinned) key."""
-        from app.db.models_agent import ReconSession, ReconSessionStatus
+        """Create one ReconSession + a session-bound key (via its AgentSession)."""
+        from app.db.models_agent import (
+            AgentSessionWorkflow, ReconSession, ReconSessionStatus,
+        )
         from app.db.models_auth import APIKey
+        from app.services.agent_session_service import create_agent_session
         from datetime import datetime, timezone, timedelta
 
+        base = create_agent_session(
+            db_session, workflow=AgentSessionWorkflow.RECON.value,
+            project_id=test_project.id, agent_id=test_agent.id,
+            started_by_id=None, scope_id=scope.id,
+        )
         session = ReconSession(
             project_id=test_project.id,
             scope_id=scope.id,
             agent_id=test_agent.id,
             status=ReconSessionStatus.ACTIVE.value,
+            agent_session_id=base.id,
         )
         db_session.add(session)
         db_session.flush()
@@ -562,8 +584,7 @@ class TestConcurrentReconSessionIsolation:
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         api_key = APIKey(
             agent_id=test_agent.id,
-            scope_id=scope.id,
-            recon_session_id=session.id,
+            agent_session_id=base.id,
             name=f"concurrent-{name_suffix}",
             key_hash=key_hash,
             key_prefix=raw_key[:14],
@@ -612,13 +633,15 @@ class TestConcurrentReconSessionIsolation:
     def test_cross_scope_session_binding_rejected(
         self, client, db_session, test_project, test_agent, scope_with_subnets
     ):
-        """Defence-in-depth: if a key's recon_session_id points at a
-        session whose scope_id differs from the key's scope_id (e.g.
-        a manually-edited api_keys row, or a future FK swap bug),
-        the loader must 403 — not silently serve cross-scope data."""
+        """Defence-in-depth: if the key's AgentSession carries one scope but the
+        recon session it resolves to belongs to another (a future FK-swap bug or
+        a manually-edited row), the loader must 403 — not serve cross-scope data."""
         from app.db.models import Scope, Subnet
-        from app.db.models_agent import ReconSession, ReconSessionStatus
+        from app.db.models_agent import (
+            AgentSessionWorkflow, ReconSession, ReconSessionStatus,
+        )
         from app.db.models_auth import APIKey
+        from app.services.agent_session_service import create_agent_session
         from datetime import datetime, timezone, timedelta
 
         other_scope = Scope(
@@ -628,26 +651,29 @@ class TestConcurrentReconSessionIsolation:
         db_session.add(other_scope)
         db_session.flush()
         db_session.add(Subnet(scope_id=other_scope.id, cidr="10.99.9.0/24"))
-        # Session belongs to OTHER scope.
+        # The key's AgentSession says scope_with_subnets (→ scoped_scope_id), but
+        # the recon session bound 1:1 to it belongs to OTHER scope. Constructed by
+        # hand — no production path produces this — to catch a hypothetical bug.
+        base = create_agent_session(
+            db_session, workflow=AgentSessionWorkflow.RECON.value,
+            project_id=test_project.id, agent_id=test_agent.id,
+            started_by_id=None, scope_id=scope_with_subnets.id,
+        )
         other_session = ReconSession(
             project_id=test_project.id,
             scope_id=other_scope.id,
             agent_id=test_agent.id,
             status=ReconSessionStatus.ACTIVE.value,
+            agent_session_id=base.id,
         )
         db_session.add(other_session)
         db_session.flush()
 
-        # Key bound to scope_with_subnets but recon_session_id pointing
-        # at other_scope's session.  Constructed by hand here because no
-        # production code path produces this state — the test exists
-        # to catch a hypothetical bug or manual DB edit.
         raw_key = "nm_agent_xscope_" + "x" * 28
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
         api_key = APIKey(
             agent_id=test_agent.id,
-            scope_id=scope_with_subnets.id,
-            recon_session_id=other_session.id,
+            agent_session_id=base.id,
             name="cross-scope-bad",
             key_hash=key_hash,
             key_prefix=raw_key[:14],
@@ -665,47 +691,56 @@ class TestConcurrentReconSessionIsolation:
         )
         assert "different scope" in resp.json()["detail"].lower()
 
-    def test_legacy_key_without_recon_session_id_falls_back_to_heuristic(
+    def test_key_does_not_fall_back_to_another_session_on_the_scope(
         self, client, db_session, test_project, test_agent, scope_with_subnets
     ):
-        """Pre-v2.45.0 keys (recon_session_id NULL) keep working via
-        the legacy "newest active session per scope" heuristic.  This
-        is the only path where concurrent recons can still collide;
-        the test guarantees we don't regress the existing behavior
-        for already-issued keys."""
-        from app.db.models_agent import ReconSession, ReconSessionStatus
+        """The old "newest active session per scope" heuristic is GONE (the
+        contract phase dropped the columns that enabled it). A key whose recon
+        AgentSession has no matching ReconSession must 404 — it must NOT silently
+        resolve to some OTHER active session on the same scope, which was the
+        concurrent-recon collision bug."""
+        from app.db.models_agent import (
+            AgentSessionWorkflow, ReconSession, ReconSessionStatus,
+        )
         from app.db.models_auth import APIKey
+        from app.services.agent_session_service import create_agent_session
         from datetime import datetime, timezone, timedelta
 
-        legacy_session = ReconSession(
+        # A real, active recon session on the scope — the heuristic would have
+        # returned THIS for any scope-only key.
+        decoy = ReconSession(
             project_id=test_project.id,
             scope_id=scope_with_subnets.id,
             agent_id=test_agent.id,
             status=ReconSessionStatus.ACTIVE.value,
         )
-        db_session.add(legacy_session)
+        db_session.add(decoy)
         db_session.flush()
 
-        raw_key = "nm_agent_legacy_" + "x" * 28
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-        legacy_key = APIKey(
+        # A key whose recon AgentSession has NO ReconSession pointing back at it.
+        base = create_agent_session(
+            db_session, workflow=AgentSessionWorkflow.RECON.value,
+            project_id=test_project.id, agent_id=test_agent.id,
+            started_by_id=None, scope_id=scope_with_subnets.id,
+        )
+        raw_key = "nm_agent_nofallback_" + "x" * 26
+        db_session.add(APIKey(
             agent_id=test_agent.id,
-            scope_id=scope_with_subnets.id,
-            # recon_session_id intentionally NULL — pre-v2.45.0 shape.
-            name="legacy-key",
-            key_hash=key_hash,
+            agent_session_id=base.id,
+            name="no-fallback",
+            key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        db_session.add(legacy_key)
+        ))
         db_session.commit()
 
         resp = client.get(
             "/api/v1/agent/recon/context",
             headers={"X-API-Key": raw_key},
         )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["recon_session_id"] == legacy_session.id
+        assert resp.status_code == 404, (
+            f"expected 404 (no fallback), got {resp.status_code}: {resp.text}"
+        )
 
 
 class TestApplyEnvironmentProbeEnumMembership:

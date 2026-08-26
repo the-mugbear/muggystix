@@ -1012,8 +1012,12 @@ def _mint_recon_session_key(
     import secrets
     from datetime import datetime, timezone, timedelta
 
+    # Revoke prior active keys for THIS session's agent_session (one live key
+    # per session). recon_session ↔ agent_session is 1:1, so this is the
+    # post-contract equivalent of the old ``APIKey.recon_session_id ==`` revoke;
+    # on a fresh start agent_session_id is brand new, so it's a no-op there.
     db.query(APIKey).filter(
-        APIKey.recon_session_id == recon_session.id,
+        APIKey.agent_session_id == agent_session_id,
         APIKey.is_active.is_(True),
     ).update({"is_active": False}, synchronize_session=False)
 
@@ -1021,8 +1025,6 @@ def _mint_recon_session_key(
     db.add(
         APIKey(
             agent_id=agent.id,
-            scope_id=scope.id,
-            recon_session_id=recon_session.id,
             agent_session_id=agent_session_id,
             name=f"recon-session-{recon_session.id}{name_suffix}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),

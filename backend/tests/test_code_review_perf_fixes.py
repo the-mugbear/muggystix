@@ -54,10 +54,20 @@ def execution_session_row(db_session, test_plan):
 @pytest.fixture
 def execution_key(db_session, test_agent, test_plan):
     from app.db.models_auth import APIKey
+    from app.db.models_agent import AgentSessionWorkflow
+    from app.services.agent_session_service import create_agent_session
+    base = create_agent_session(
+        db_session,
+        workflow=AgentSessionWorkflow.EXECUTION.value,
+        project_id=test_plan.project_id,
+        agent_id=test_agent.id,
+        started_by_id=None,
+        plan_id=test_plan.id,
+    )
     raw = "nm_agent_perfE_" + "z" * 32
     db_session.add(APIKey(
         agent_id=test_agent.id,
-        test_plan_id=test_plan.id,
+        agent_session_id=base.id,
         name=f"perf-E-{test_plan.id}",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
