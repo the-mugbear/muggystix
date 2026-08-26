@@ -890,6 +890,10 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
     assert follow["isError"] is False and follow["content"][0]["text"] == "OK"
     assert "structuredContent" not in follow
 
+    # Capture the scan-evidence timestamp before a pure metadata correction.
+    db_session.expire_all()
+    last_seen_before = db_session.get(Host, host.id).last_seen
+
     patch = call("assist_patch_host", {"host_id": host.id, "hostname": "ftp01.corp"})
     assert patch["isError"] is False, patch
     assert patch["structuredContent"]["changed"] == ["hostname"]
@@ -900,6 +904,11 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
         Annotation.host_id == host.id, Annotation.body == "vsftpd 2.3.4 on 21"
     ).count() == 1
     assert db_session.get(Host, host.id).hostname == "ftp01.corp"
+    # A-Crit-2 regression: last_seen is scan evidence — it feeds the
+    # review-freshness predicate ("a scan re-observed this host since review").
+    # A hostname correction must NOT advance it; `onupdate=func.now()` used to
+    # bump it on every UPDATE, forging a fresh observation from a metadata edit.
+    assert db_session.get(Host, host.id).last_seen == last_seen_before
     assert db_session.query(HostFollow).filter(
         HostFollow.host_id == host.id, HostFollow.user_id == test_user.id
     ).one().status == FollowStatus.REVIEWED

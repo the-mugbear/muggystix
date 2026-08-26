@@ -61,6 +61,7 @@ import {
 } from '../../services/api';
 import InAppAgentPanel from '../../components/InAppAgentPanel';
 import McpConnectPanel from '../../components/McpConnectPanel';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { NextStepBanner } from '../../components/NextStepBanner';
 import { DetailSkeleton } from '../../components/PageSkeleton';
 import { useAuth } from '../../contexts/AuthContext';
@@ -1456,50 +1457,69 @@ const TestPlanLayout: React.FC = () => {
                 )}
               </div>
 
-              <div>
-                <div className="mb-xxs flex items-center justify-between">
-                  <p className="text-metadata font-semibold">Instructions (copy to agent)</p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleCopy(executeResult.instructions, setCopiedInstructions)}
-                        aria-label="Copy agent instructions to clipboard"
-                      >
-                        {copiedInstructions ? (
-                          <Check className="size-4 text-success" aria-hidden />
-                        ) : (
-                          <Copy className="size-4" aria-hidden />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {copiedInstructions ? 'Copied!' : 'Copy instructions'}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <div className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                  {executeResult.instructions}
-                </div>
-              </div>
-
-              <McpConnectPanel
-                clients={executeResult.mcp_clients ?? []}
-                blurb={
-                  'Or connect this session to your MCP client — the execution tools appear ' +
-                  'natively instead of as curl recipes. The tests run on your machine, so ' +
-                  'launch the client from the directory the run should write into.'
-                }
-              />
-
-              <div>
-                <p className="mb-xxs text-metadata font-semibold">Run with In-App Agent</p>
-                <InAppAgentPanel
-                  prompt={executeResult.instructions}
-                  contextLabel={`execution of plan #${executeResult.plan_id}`}
-                />
-              </div>
+              {/* Three handoff routes as tabs, not a stack (v5.191.0, mirroring
+                  StartAssistDialog): the multi-KB prompt no longer sits between
+                  the operator and the MCP config they came to copy. */}
+              {(() => {
+                const hasMcp = (executeResult.mcp_clients?.length ?? 0) > 0;
+                return (
+                  <Tabs defaultValue={hasMcp ? 'mcp' : 'prompt'}>
+                    <TabsList className="mb-xs">
+                      {hasMcp && <TabsTrigger value="mcp">Connect via MCP</TabsTrigger>}
+                      <TabsTrigger value="prompt">Paste the prompt</TabsTrigger>
+                      <TabsTrigger value="inapp">Run in-app</TabsTrigger>
+                    </TabsList>
+                    {hasMcp && (
+                      <TabsContent value="mcp">
+                        <McpConnectPanel
+                          clients={executeResult.mcp_clients ?? []}
+                          withCertTrust
+                          blurb={
+                            'The execution tools appear natively in your client instead of as curl ' +
+                            'recipes. The tests run on your machine, so launch the client from the ' +
+                            'directory the run should write into.'
+                          }
+                        />
+                      </TabsContent>
+                    )}
+                    <TabsContent value="prompt">
+                      <div className="mb-xxs flex items-center justify-between">
+                        <p className="text-metadata text-muted-foreground">
+                          Paste into a terminal agent — it drives the same session with curl.
+                        </p>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleCopy(executeResult.instructions, setCopiedInstructions)}
+                              aria-label="Copy agent instructions to clipboard"
+                            >
+                              {copiedInstructions ? (
+                                <Check className="size-4 text-success" aria-hidden />
+                              ) : (
+                                <Copy className="size-4" aria-hidden />
+                              )}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {copiedInstructions ? 'Copied!' : 'Copy instructions'}
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                      <div className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
+                        {executeResult.instructions}
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="inapp">
+                      <InAppAgentPanel
+                        prompt={executeResult.instructions}
+                        contextLabel={`execution of plan #${executeResult.plan_id}`}
+                      />
+                    </TabsContent>
+                  </Tabs>
+                );
+              })()}
             </div>
           )}
           </DialogBody>

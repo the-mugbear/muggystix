@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -163,6 +164,12 @@ class ReportJobService:
             if row is None:
                 return False
             job_id = row[0]
+            # started_at doubles as this claim's fencing token: it's rewritten
+            # on every claim, and the reaper nulls it on requeue. The renewal
+            # thread and the completion/failure writes all condition on it, so a
+            # worker whose lease was reaped and re-claimed by a peer can neither
+            # keep the heartbeat warm nor publish a result over the new owner.
+            claimed_at = datetime.now(timezone.utc)
             db.execute(
                 text(
                     "UPDATE report_jobs "
@@ -170,7 +177,7 @@ class ReportJobService:
                     "    message = 'Generating report' "
                     "WHERE id = :jid"
                 ),
-                {"now": datetime.now(timezone.utc), "jid": job_id},
+                {"now": claimed_at, "jid": job_id},
             )
             db.commit()
         except Exception:
@@ -179,7 +186,7 @@ class ReportJobService:
         finally:
             db.close()
 
-        self._run_job(job_id)
+        self._run_job(job_id, claimed_at)
         return True
 
     def update_heartbeat(self, db, job_id: int) -> None:
@@ -192,9 +199,48 @@ class ReportJobService:
         except Exception:
             db.rollback()
 
-    def _run_job(self, job_id: int) -> None:
+    def _renew_lease_until(self, job_id: int, claimed_at: datetime, stop: threading.Event) -> None:
+        """Keep ``last_heartbeat`` fresh while a render runs so the reaper does
+        not treat a legitimately long job as stalled and requeue it.
+
+        Runs on its own connection in a daemon thread (a render is one blocking
+        call, so there is no in-render checkpoint to piggyback on). Fenced on
+        ``started_at``: once a peer has re-claimed the job the update touches
+        zero rows and this thread stops — it no longer owns the lease. This is
+        the ONE heartbeat a thread may drive: unlike the worker-liveness file
+        (deliberately main-loop-only, to expose a wedged loop), a warm job lease
+        means exactly what a running render should mean — the job is in hand."""
+        interval = max(15.0, settings.REPORT_JOB_TIMEOUT_SECONDS / 3.0)
+        while not stop.wait(interval):
+            db = _session_module.SessionLocal()
+            try:
+                res = db.execute(
+                    text(
+                        "UPDATE report_jobs SET last_heartbeat = :hb "
+                        "WHERE id = :jid AND status = 'processing' AND started_at = :claimed"
+                    ),
+                    {"hb": datetime.now(timezone.utc), "jid": job_id, "claimed": claimed_at},
+                )
+                db.commit()
+                if res.rowcount == 0:
+                    return  # lease lost (reaped + reclaimed) — stop renewing
+            except Exception:
+                db.rollback()
+            finally:
+                db.close()
+
+    def _run_job(self, job_id: int, claimed_at: datetime) -> None:
         # Lazy import — ReportGenerator pulls in the whole report/insight stack.
         from app.services.report_generator import ReportGenerator
+
+        stop = threading.Event()
+        renewer = threading.Thread(
+            target=self._renew_lease_until,
+            args=(job_id, claimed_at, stop),
+            name=f"report-lease-{job_id}",
+            daemon=True,
+        )
+        renewer.start()
 
         db = _session_module.SessionLocal()
         try:
@@ -215,12 +261,12 @@ class ReportJobService:
                 # It defaults to REPORT_MAX_HOSTS (the worker isn't memory-
                 # constrained the way the API thread was), but is a real lever
                 # again: lower REPORT_MAX_INMEMORY_HOSTS if this worker OOMs
-                # against REPORT_WORKER_MEM_LIMIT.
+                # against REPORT_WORKER_MEM_LIMIT.  The lease-renewal thread keeps
+                # the reaper off this row for the duration.
                 hosts = gen.get_hosts_for_report(
                     filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
                 )
                 data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
-                self.update_heartbeat(db, job_id)  # a long render leaves the row stale
 
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 filename = f"hosts_{report_type}_{ts}.{ext}"
@@ -231,34 +277,62 @@ class ReportJobService:
                 artifact.write_bytes(data)
 
                 now = datetime.now(timezone.utc)
-                job = db.get(ReportJob, job_id)
-                job.status = "completed"
-                job.completed_at = now
-                job.result_path = str(artifact)
-                job.result_filename = filename
-                job.media_type = media_type
-                job.file_size = len(data)
-                job.truncated = bool(gen.report_truncated)
-                job.message = f"Generated {filename}" + (" (truncated)" if gen.report_truncated else "")
-                job.expires_at = now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS)
-                job.last_error = None
+                # Fenced completion: publish ONLY if we still own the lease. If
+                # the reaper requeued this job and a peer re-claimed it (new
+                # started_at), this UPDATE matches zero rows — we must not clobber
+                # the peer's row nor leave two "completed" writers racing. In that
+                # case our artifact is orphaned, so discard it.
+                result = db.execute(
+                    text(
+                        "UPDATE report_jobs SET "
+                        "status = 'completed', completed_at = :now, result_path = :rp, "
+                        "result_filename = :fn, media_type = :mt, file_size = :sz, "
+                        "truncated = :tr, message = :msg, expires_at = :exp, last_error = NULL "
+                        "WHERE id = :jid AND status = 'processing' AND started_at = :claimed"
+                    ),
+                    {
+                        "now": now,
+                        "rp": str(artifact),
+                        "fn": filename,
+                        "mt": media_type,
+                        "sz": len(data),
+                        "tr": bool(gen.report_truncated),
+                        "msg": f"Generated {filename}" + (" (truncated)" if gen.report_truncated else ""),
+                        "exp": now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
+                        "jid": job_id,
+                        "claimed": claimed_at,
+                    },
+                )
                 db.commit()
+                if result.rowcount == 0:
+                    logger.warning(
+                        "Report job %s lease lost mid-render (reaped/reclaimed) — "
+                        "discarding this worker's artifact %s", job_id, job_dir,
+                    )
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    return
                 logger.info(
                     "Report job %s completed: %s (%d bytes, truncated=%s)",
-                    job_id, filename, len(data), job.truncated,
+                    job_id, filename, len(data), bool(gen.report_truncated),
                 )
             except Exception as exc:
                 logger.exception("Report job %s failed", job_id)
                 db.rollback()
-                job = db.get(ReportJob, job_id)
-                if job:
-                    msg = str(exc)[:1000]
-                    job.status = "failed"
-                    job.error_message = msg
-                    job.last_error = msg
-                    job.completed_at = datetime.now(timezone.utc)
-                    db.commit()
+                msg = str(exc)[:1000]
+                # Fence the failure write too — do not stamp 'failed' onto a row
+                # a peer now owns after a requeue.
+                db.execute(
+                    text(
+                        "UPDATE report_jobs SET status = 'failed', error_message = :m, "
+                        "last_error = :m, completed_at = :now "
+                        "WHERE id = :jid AND status = 'processing' AND started_at = :claimed"
+                    ),
+                    {"m": msg, "now": datetime.now(timezone.utc), "jid": job_id, "claimed": claimed_at},
+                )
+                db.commit()
         finally:
+            stop.set()
+            renewer.join(timeout=5)
             db.close()
 
     def _render(

@@ -201,8 +201,7 @@ class TestPlan(Base):
         Integer,
         ForeignKey("recon_sessions.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
-    )
+    )  # indexed via idx_test_plan_source_recon (see __table_args__)
     # JSON rather than postgresql.ARRAY(Integer) so SQLite test runs
     # work transparently and the column is portable.  Postgres ARRAY
     # gives no extra integrity (FKs aren't enforced on array elements
@@ -242,6 +241,10 @@ class TestPlan(Base):
 
     __table_args__ = (
         Index("idx_test_plan_project_status", "project_id", "status"),
+        # source_recon_session_id's single-column index lives under a legacy
+        # name in the DB; declared here (not via `index=True`) so metadata
+        # matches that exact name rather than proposing ix_test_plans_*.
+        Index("idx_test_plan_source_recon", "source_recon_session_id"),
         # Per-project version is monotonic and unique.  TestPlanService
         # .create_plan() retries on the unique violation if two callers
         # race to compute max(version)+1.
@@ -478,14 +481,13 @@ class AgentSession(Base):
     __tablename__ = "agent_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    workflow = Column(String(20), nullable=False, index=True)  # AgentSessionWorkflow
+    workflow = Column(String(20), nullable=False)  # AgentSessionWorkflow; indexed via idx_agent_session_workflow_status
 
     project_id = Column(
         Integer,
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
-    )
+    )  # indexed via idx_agent_session_project
     agent_id = Column(
         Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True,
     )
@@ -916,11 +918,13 @@ class AgentFeedback(Base):
         Integer,
         ForeignKey("recon_sessions.id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     assist_session_id = Column(
         Integer,
         ForeignKey("assist_sessions.id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
 
     source = Column(String(40), nullable=False)
@@ -1143,8 +1147,7 @@ class AssistSession(Base):
         Integer,
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
-    )
+    )  # indexed via idx_assist_session_project
     agent_id = Column(
         Integer,
         ForeignKey("agents.id", ondelete="SET NULL"),
@@ -1308,8 +1311,7 @@ class AgentApiCall(Base):
         Integer,
         ForeignKey("assist_sessions.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
-    )
+    )  # indexed via idx_agent_api_call_assist_created (prefix; see __table_args__)
 
     # The call itself
     method = Column(String(8), nullable=False)        # GET / POST / PATCH / DELETE
@@ -1355,6 +1357,9 @@ class AgentApiCall(Base):
         Index("idx_agent_api_call_recon_created", "recon_session_id", "created_at"),
         Index("idx_agent_api_call_exec_created", "execution_session_id", "created_at"),
         Index("idx_agent_api_call_project_created", "project_id", "created_at"),
+        # assist_session_id folds into this composite (it's the leading column),
+        # so the column itself drops `index=True` to avoid a redundant index.
+        Index("idx_agent_api_call_assist_created", "assist_session_id", "created_at"),
         # v2.50.1 — enforce the agent_id+project_id-or-error_class
         # contract at the DB level.  The columns were relaxed to
         # nullable in f9e2d471a8c6 to record pre-auth 5xx (the request

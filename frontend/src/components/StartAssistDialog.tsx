@@ -267,6 +267,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   <TabsContent value="mcp">
                     <McpConnectPanel
                       clients={result.mcp_clients ?? []}
+                      withCertTrust
                       blurb={
                         'The tools appear natively in your client, and the read tools can be ' +
                         'marked “always allow” so queries run without a prompt. Each client ' +

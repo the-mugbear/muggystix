@@ -23,6 +23,27 @@ const startAssistSession = vi.fn();
 vi.mock('../../services/api', () => ({
   startAssistSession: (...args: unknown[]) => startAssistSession(...args),
   endAssistSession: vi.fn(),
+  // The MCP tab now carries the cert-trust notice, which reads the live catalog
+  // for the fingerprint. A minimal resolve keeps the notice off the assertions
+  // here (its command block is collapsed) while satisfying the import.
+  getMcpTools: vi.fn(() =>
+    Promise.resolve({
+      server_name: 'bluestick',
+      protocol_version: '2025-06-18',
+      endpoint: 'https://bluestick.example/api/v1/mcp',
+      max_request_bytes: 1,
+      max_batch_messages: 1,
+      tools: [],
+      trust_script_url: '/api/v1/references/trust-cert-script',
+      tls_fingerprint_sha256: 'AA:BB:CC',
+      tls_certificate: {
+        fingerprint_sha256: 'AA:BB:CC',
+        self_signed: true,
+        subject: null,
+        expires_at: null,
+      },
+    }),
+  ),
 }));
 
 vi.mock('../../contexts/ToastContext', () => ({

@@ -37,6 +37,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 
@@ -58,7 +59,7 @@ class ToolRegistryEntry(Base):
 
     id = Column(Integer, primary_key=True)
     # The binary as invoked — the join key against a reported `command_run`.
-    name = Column(String(64), nullable=False, unique=True, index=True)
+    name = Column(String(64), nullable=False, index=True)
 
     # --- human knowledge (the reference page renders these) ---
     description = Column(Text, nullable=False)
@@ -97,6 +98,12 @@ class ToolRegistryEntry(Base):
     )
 
     __table_args__ = (
+        # `name` carries a plain btree index PLUS a separate named UNIQUE
+        # constraint in the DB (both from the seed migration). Model them
+        # explicitly so metadata matches the DB — `unique=True` on the column
+        # would instead make the ix_ index itself unique and drop the
+        # constraint, which reads to autogenerate as drift.
+        UniqueConstraint("name", name="uq_tool_registry_name"),
         Index("idx_tool_registry_status_name", "status", "name"),
     )
 

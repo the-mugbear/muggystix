@@ -11,7 +11,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
 import {
-  ArrowDown, ArrowUp, ArrowUpDown, Copy, Network, ShieldAlert, ShieldCheck, Terminal,
+  ArrowDown, ArrowUp, ArrowUpDown, Copy, HelpCircle, Lock, Network, ShieldAlert, ShieldCheck, Terminal,
 } from 'lucide-react';
 
 import {
@@ -68,8 +68,43 @@ const hasTlsSignal = (w: WebInterface): boolean =>
   w.cert_not_after != null || w.cert_self_signed != null
   || !!w.cert_subject_org || w.tls_weak_protocol === true;
 
-const TlsCell: React.FC<{ tls?: PortTls }> = ({ tls }) => {
-  if (!tls) return <span className="text-caption text-muted-foreground">—</span>;
+/** nmap's tunnel attribute is "ssl" when the service runs inside TLS. */
+const isTlsTunnel = (tunnel?: string | null): boolean => !!tunnel && /ssl|tls/i.test(tunnel);
+
+const TlsCell: React.FC<{ tls?: PortTls; tunnel?: string | null; webError?: boolean }> = ({
+  tls, tunnel, webError,
+}) => {
+  if (!tls) {
+    // No web-interface / cert evidence for this port. Fall back to nmap's
+    // tunnel attribute so a TLS-wrapped service on a non-standard port is still
+    // marked, and keep "no evidence" (—) distinct from "evidence failed to load".
+    if (isTlsTunnel(tunnel)) {
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="border-info/40 text-info" tabIndex={0}>
+              <Lock className="mr-xxs size-3" aria-hidden />TLS
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            nmap saw this service running inside TLS (tunnel=ssl). No certificate detail was
+            captured — run a web/cert probe for issuer and expiry.
+          </TooltipContent>
+        </Tooltip>
+      );
+    }
+    if (webError) {
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <HelpCircle className="size-4 text-muted-foreground" tabIndex={0} aria-label="TLS evidence unavailable" />
+          </TooltipTrigger>
+          <TooltipContent>TLS evidence couldn’t be loaded for this host — reopen it to retry.</TooltipContent>
+        </Tooltip>
+      );
+    }
+    return <span className="text-caption text-muted-foreground">—</span>;
+  }
   const days = daysUntil(tls.cert_not_after);
   const expired = days !== null && days < 0;
   const expiringSoon = days !== null && days >= 0 && days <= EXPIRY_WARN_DAYS;
@@ -121,12 +156,18 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   const toast = useToast();
   const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
   const [tlsByPort, setTlsByPort] = useState<Map<number, PortTls>>(new Map());
+  const [webError, setWebError] = useState(false);
 
   // Join cert/TLS evidence from the host's web interfaces onto ports by
-  // ``port_id``, latest observation winning. Non-fatal: on failure the TLS
-  // column simply stays empty rather than breaking the port table.
+  // ``port_id``, latest observation winning. Non-fatal: on failure the column
+  // falls back to nmap's tunnel attribute and marks the load as failed (so a
+  // fetch error reads differently from "no TLS evidence") rather than breaking
+  // the port table. State is reset per host — the inspector stays mounted across
+  // prev/next, so a stale map would otherwise bleed onto the next host.
   useEffect(() => {
     let cancelled = false;
+    setTlsByPort(new Map());
+    setWebError(false);
     getHostWebInterfaces(hostId)
       .then((interfaces) => {
         if (cancelled) return;
@@ -147,7 +188,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
         }
         setTlsByPort(map);
       })
-      .catch(() => { /* TLS column stays empty; not worth a toast */ });
+      .catch(() => { if (!cancelled) setWebError(true); });
     return () => { cancelled = true; };
   }, [hostId]);
 
@@ -242,7 +283,11 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                               )}
                             </TableCell>
                             <TableCell>
-                              <TlsCell tls={tlsByPort.get(port.id)} />
+                              <TlsCell
+                                tls={tlsByPort.get(port.id)}
+                                tunnel={port.service_tunnel}
+                                webError={webError}
+                              />
                             </TableCell>
                             <TableCell className="text-center">
                               <Popover>

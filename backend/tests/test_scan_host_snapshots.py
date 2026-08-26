@@ -134,3 +134,40 @@ def test_snapshot_is_project_scoped(client, db_session, test_project):
         f"/api/v1/projects/{test_project.id}/scans/{foreign.id}/host-snapshots"
     )
     assert resp.status_code == 404
+
+
+def test_ingestion_advances_last_seen_but_a_non_scan_update_does_not(
+    db_session, test_project
+):
+    """last_seen is scan evidence (A-Crit-2).
+
+    It feeds the review-freshness predicate, so re-observing a host through
+    ingestion must advance it, while a non-scan UPDATE (e.g. a hostname/OS
+    correction) must leave it untouched. Removing ``onupdate=func.now()`` from
+    the column is what makes the second half true; the explicit assignment in
+    the dedup service is what keeps the first half true.
+    """
+    from app.services.host_deduplication_service import HostDeduplicationService
+
+    pid = test_project.id
+    stale = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    host = models.Host(
+        project_id=pid, ip_address="10.50.0.9", state="up", last_seen=stale,
+    )
+    db_session.add(host)
+    db_session.flush()
+
+    # A pure metadata UPDATE must not forge a fresh observation.
+    host.hostname = "corrected.example"
+    db_session.commit()
+    db_session.refresh(host)
+    assert host.last_seen == stale, "a non-scan UPDATE advanced scan-evidence last_seen"
+
+    # Re-observing the host through ingestion advances it explicitly.
+    scan = _scan(db_session, pid, "rescan.xml")
+    HostDeduplicationService(db_session).find_or_create_host(
+        "10.50.0.9", scan.id, {"state": "up"}, project_id=pid,
+    )
+    db_session.commit()
+    db_session.refresh(host)
+    assert host.last_seen > stale, "ingestion did not advance last_seen"

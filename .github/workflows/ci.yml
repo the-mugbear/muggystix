@@ -73,6 +73,16 @@ jobs:
         run: pip install -r requirements.txt
       - name: Alembic migrations apply cleanly
         run: alembic upgrade head
+      - name: Alembic models match migrations (no drift)
+        # After `upgrade head`, the models' metadata must diff clean against the
+        # migrated schema. This catches (a) a model module missing from
+        # app/db/model_registry.py — which made autogenerate propose DROPPING
+        # its tables (attribution + tool_registry did exactly this) — and (b) a
+        # new table/column/index added to a model without a migration to match.
+        # env.py excludes the indexes with no portable model representation
+        # (partial / expression / GIN / GiST / redundant PK-id), so a failure
+        # here is real drift, not noise.
+        run: alembic check
       - name: Pytest
         # Coverage gate is ON (v2.232.0).  It was previously suppressed with
         # --no-cov pointing at a "separate tracked item" that never existed,

@@ -16,6 +16,7 @@ import { Button } from './ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { copyToClipboard } from '../utils/clipboard';
+import McpCertTrustNotice from './McpCertTrustNotice';
 
 export interface McpClientSetup {
   id: string;
@@ -31,9 +32,14 @@ interface Props {
   clients: McpClientSetup[];
   /** One line above the tabs, describing what this session's tools are for. */
   blurb?: string;
+  /** Surface the certificate-trust prerequisite above the recipes. On by
+   *  default in the start dialogs (where the first connection happens and the
+   *  cert wall is invisible until it refuses); off on the reference page,
+   *  which already carries the full cert write-up. */
+  withCertTrust?: boolean;
 }
 
-const McpConnectPanel: React.FC<Props> = ({ clients, blurb }) => {
+const McpConnectPanel: React.FC<Props> = ({ clients, blurb, withCertTrust = false }) => {
   const [selected, setSelected] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -50,6 +56,7 @@ const McpConnectPanel: React.FC<Props> = ({ clients, blurb }) => {
   return (
     <div>
       <p className="mb-xxs text-metadata font-semibold">Connect via MCP</p>
+      {withCertTrust ? <McpCertTrustNotice /> : null}
       {blurb ? (
         <p className="mb-xs text-caption text-muted-foreground">{blurb}</p>
       ) : null}

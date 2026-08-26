@@ -39,6 +39,11 @@ class PortBase(BaseModel):
     service_extrainfo: Optional[str] = None
     service_method: Optional[str] = None
     service_conf: Optional[int] = None
+    # nmap's tunnel attribute ("ssl" when the service runs inside TLS). Without
+    # it an HTTPS service on a non-standard port is indistinguishable from
+    # plaintext HTTP — the port table's TLS column had no fallback evidence when
+    # no web-interface record existed. NULL means "unknown", not "plaintext".
+    service_tunnel: Optional[str] = None
 
 class Port(PortBase):
     id: int

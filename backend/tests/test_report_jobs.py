@@ -179,3 +179,36 @@ def test_cancelled_job_is_not_claimed_by_the_worker(db_session, test_project):
     ReportJobService().cancel_job(db_session, job_id=job.id, project_id=test_project.id)
     db_session.refresh(job)
     assert job.status == "cancelled"
+
+
+def test_completion_is_fenced_against_a_reclaimed_lease(
+    db_session, test_project, test_user
+):
+    """A-Ref-2: a worker whose lease was reaped and re-claimed by a peer must not
+    publish its result over the new owner.
+
+    The completion write is fenced on ``started_at`` (the claim token), so a run
+    carrying a stale token matches zero rows and leaves the peer's row intact —
+    no duplicate 'completed', no last-writer-wins, and the orphaned artifact is
+    discarded rather than dangling."""
+    _make_host(db_session, test_project.id)
+    db_session.commit()
+
+    service = ReportJobService()
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format="json", report_type="comprehensive", filters={},
+    )
+    # Model the row as a PEER now owns it: processing under a fresh started_at.
+    peer_started = datetime.now(timezone.utc)
+    job.status = "processing"
+    job.started_at = peer_started
+    db_session.commit()
+
+    # A stale worker runs the same job carrying an OLDER claim token.
+    service._run_job(job.id, peer_started - timedelta(minutes=10))
+
+    db_session.refresh(job)
+    assert job.status == "processing", "a stale worker clobbered the peer's row"
+    assert job.started_at == peer_started
+    assert job.result_path is None, "a stale worker published a result over the peer"

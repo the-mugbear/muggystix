@@ -24,6 +24,7 @@ import {
   MessageCircleQuestion,
   MessageSquareHeart,
   Network as NetworkIcon,
+  Plug,
   Settings as SettingsIcon,
   ShieldCheck,
   Sparkles,
@@ -233,6 +234,18 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'reference', path: '/reference', label: 'Reference', requiredRole: 'viewer', hub: 'settings',
     palette: { Icon: NetworkIcon, keywords: ['docs', 'help', 'guide'], order: 15 },
+  },
+  {
+    // Palette-only (no hub): the page is a card under the Reference hub, but it
+    // was reachable only two clicks deep with no keyword search. For a first
+    // MCP user, "mcp" in the command palette is the shortest path to the
+    // explainer, the connect recipes, and the certificate fingerprint.
+    id: 'mcp-reference', path: '/reference/mcp', label: 'MCP', requiredRole: 'viewer',
+    palette: {
+      Icon: Plug,
+      keywords: ['mcp', 'model context protocol', 'agent', 'tools', 'connect', 'claude', 'codex', 'cursor', 'assist'],
+      order: 15.5,
+    },
   },
   {
     id: 'parse-errors', path: '/parse-errors', label: 'Ingestion Results', requiredRole: 'analyst', hub: 'settings',

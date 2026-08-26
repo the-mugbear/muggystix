@@ -15,22 +15,11 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
-from app.db.session import Base
-
-# Import EVERY model module so Base.metadata contains all tables before
-# autogenerate diffs against it.  This list must stay in sync with the
-# create_all bases in app/db/init.py and the side-effect imports in
-# tests/conftest.py — a module missing here makes autogenerate think its
-# tables were dropped.
-import app.db.models  # noqa: F401
-import app.db.models_auth  # noqa: F401
-import app.db.models_project  # noqa: F401
-import app.db.models_agent  # noqa: F401
-import app.db.models_findings  # noqa: F401
-import app.db.models_vulnerability  # noqa: F401
-import app.db.models_confidence  # noqa: F401
-import app.db.models_llm  # noqa: F401
-import app.db.models_integrations  # noqa: F401
+# Importing the registry populates Base.metadata with EVERY model's tables
+# before autogenerate diffs against it. A module missing here made autogenerate
+# think its tables were dropped — which is exactly how attribution + tool_registry
+# came to be proposed for deletion. The registry is the single list now.
+from app.db.model_registry import Base  # noqa: F401
 
 config = context.config
 
@@ -43,19 +32,53 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-def _include_object(object_, name, type_, reflected, compare_to):
-    """Keep the pg_trgm GIN evidence indexes out of autogenerate.
+# Indexes that exist only in the database, created by hand-written migrations
+# because they cannot be expressed in portable model metadata: partial (WHERE)
+# indexes, and expression / GIN / GiST indexes. Adding them to __table_args__
+# would break the metadata create_all() the SQLite/PG test backends use (no
+# pg_trgm, no inet_ops, etc.), so they live in migrations alone — and are
+# excluded here so a future --autogenerate never proposes to drop them.
+# (The pg_trgm evidence indexes are handled by the ix_trgm_ prefix rule below.)
+_UNMODELABLE_INDEXES = frozenset({
+    "idx_host_ip_inet",                              # ((ip_address)::inet) expression
+    "idx_host_ip_inet_gist",                         # gist ((ip_address)::inet) inet_ops
+    "ix_agent_api_calls_referenced_host_ids_gin",    # gin ((referenced_host_ids)::jsonb)
+    "ix_agent_api_calls_referenced_target_ips_gin",  # gin ((referenced_target_ips)::jsonb)
+    "ix_ingestion_jobs_processing_heartbeat",        # partial WHERE status='processing'
+    "ix_ingestion_jobs_queued_created",              # partial WHERE status='queued'
+    "ix_report_jobs_processing_heartbeat",           # partial WHERE status='processing'
+    "ix_report_jobs_queued_created",                 # partial WHERE status='queued'
+    "uq_api_key_plan_active",                        # partial UNIQUE WHERE is_active
+    "uq_exec_session_plan_active",                   # partial UNIQUE WHERE status='active'
+})
 
-    They are expression / ``gin_trgm_ops`` indexes that require the
-    ``pg_trgm`` extension and have no portable model representation (adding
-    them to ``__table_args__`` would break the metadata ``create_all`` used
-    by the SQLite/PG test backends, which don't install the extension).
-    They live solely in the hand-written ``*_hosts_dsl_trgm_indexes``
-    migration; excluding them here stops a future ``--autogenerate`` from
-    proposing to drop them.
+
+def _include_object(object_, name, type_, reflected, compare_to):
+    """Exclude indexes that have no faithful model representation.
+
+    Three classes are ignored in BOTH directions (reflected DB + metadata) so
+    autogenerate never proposes to add or drop them:
+
+    * ``ix_trgm_*`` — the pg_trgm GIN evidence indexes (extension-dependent).
+    * ``_UNMODELABLE_INDEXES`` — partial / expression / GIN / GiST indexes that
+      live only in hand-written migrations.
+    * a single-column index on a primary-key ``id`` column — a PK already has a
+      unique btree, so ``ix_<table>_id`` is redundant. Older tables carry it
+      (from the historical create_all), newer ones don't (migration-built);
+      ignoring it stops that split from reading as drift and stops ``index=True``
+      on a PK proposing a fresh redundant index.
     """
-    if type_ == "index" and name and name.startswith("ix_trgm_"):
-        return False
+    if type_ == "index":
+        if name and name.startswith("ix_trgm_"):
+            return False
+        if name in _UNMODELABLE_INDEXES:
+            return False
+        try:
+            cols = list(object_.columns)
+        except Exception:  # pragma: no cover - defensive
+            cols = []
+        if name and name.endswith("_id") and len(cols) == 1 and cols[0].name == "id":
+            return False
     return True
 
 

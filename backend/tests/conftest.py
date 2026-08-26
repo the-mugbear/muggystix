@@ -40,21 +40,14 @@ settings.REQUIRE_2FA = False
 TEST_USER_PASSWORD = "Test-Password-123!"
 TEST_USER_PW_HASH = get_password_hash(TEST_USER_PASSWORD)
 
-# Import the non-default model modules so their tables are registered
-# on the shared SQLAlchemy Base *before* create_all runs.  Without
-# these imports, contract tests that touch TestPlan / ExecutionSession
-# / AgentFeedback / LLMProvider / IntegrationCredential hit "no such
-# table" errors because the declarative Base never saw them.
-from app.db import (  # noqa: F401  (side-effect imports)
-    models_agent,
-    models_attribution,
-    models_auth,
-    models_findings,
-    models_integrations,
-    models_llm,
-    models_project,
-    models_vulnerability,
-)
+# Register EVERY model module on the shared SQLAlchemy Base *before* create_all
+# runs — otherwise contract tests that touch TestPlan / ExecutionSession /
+# AgentFeedback / LLMProvider / IntegrationCredential hit "no such table"
+# because the declarative Base never saw them. The registry is the single
+# list (this copy was missing models_confidence + models_tools before it existed).
+from app.db import model_registry  # noqa: F401  (side-effect import; the
+# `from ... import` form matters — a bare `import app.db.model_registry` would
+# rebind the name `app` to the package and shadow `from app.main import app`.)
 
 # ---------------------------------------------------------------------------
 # Test database selection

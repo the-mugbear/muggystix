@@ -1,11 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeftRight,
   Bot,
-  Check,
-  Copy,
   Info,
   Loader2,
   RefreshCw,
@@ -50,6 +47,8 @@ import {
 } from '../components/ui/dialog';
 import InAppAgentPanel from '../components/InAppAgentPanel';
 import McpConnectPanel from '../components/McpConnectPanel';
+import { CopyButton } from '../components/ui/code-block';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -100,41 +99,6 @@ function stripAttribution(text: string): string {
 
 const formatDate = (d?: string) =>
   d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '-';
-
-function CopyButton({ text, label }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  const toast = useToast();
-  const handleCopy = () => {
-    copyToClipboard(text).then((ok) => {
-      if (ok) {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-        toast.success('Copied to clipboard');
-      } else {
-        toast.warning('Could not copy to clipboard. Select the text manually instead.');
-      }
-    });
-  };
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handleCopy}
-          aria-label={label || 'Copy to clipboard'}
-        >
-          {copied ? (
-            <Check className="size-4 text-success" aria-hidden />
-          ) : (
-            <Copy className="size-4" aria-hidden />
-          )}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{copied ? 'Copied' : label || 'Copy'}</TooltipContent>
-    </Tooltip>
-  );
-}
 
 const WORKFLOW_EXPANDED_KEY = 'testPlansWorkflowExpanded';
 
@@ -768,32 +732,51 @@ const TestPlans: React.FC = () => {
                 </div>
               </div>
 
-              <div>
-                <div className="mb-xxs flex items-center justify-between">
-                  <p className="text-metadata font-semibold">Instructions</p>
-                  <CopyButton text={genResult.instructions} label="Copy instructions" />
-                </div>
-                <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                  {genResult.instructions}
-                </div>
-              </div>
-
-              <McpConnectPanel
-                clients={genResult.mcp_clients ?? []}
-                blurb={
-                  'Or connect this session to your MCP client — the planning tools appear ' +
-                  'natively instead of as curl recipes. Plan generation only reads and ' +
-                  'proposes; nothing runs until you approve the plan.'
-                }
-              />
-
-              <div>
-                <p className="mb-xxs text-metadata font-semibold">Run with In-App Agent</p>
-                <InAppAgentPanel
-                  prompt={genResult.instructions}
-                  contextLabel={`generation of plan #${genResult.plan_id}`}
-                />
-              </div>
+              {/* Three handoff routes as tabs, not a stack (v5.191.0, mirroring
+                  StartAssistDialog): the prompt dump no longer sits between the
+                  operator and the MCP config. */}
+              {(() => {
+                const hasMcp = (genResult.mcp_clients?.length ?? 0) > 0;
+                return (
+                  <Tabs defaultValue={hasMcp ? 'mcp' : 'prompt'}>
+                    <TabsList className="mb-xs">
+                      {hasMcp && <TabsTrigger value="mcp">Connect via MCP</TabsTrigger>}
+                      <TabsTrigger value="prompt">Paste the prompt</TabsTrigger>
+                      <TabsTrigger value="inapp">Run in-app</TabsTrigger>
+                    </TabsList>
+                    {hasMcp && (
+                      <TabsContent value="mcp">
+                        <McpConnectPanel
+                          clients={genResult.mcp_clients ?? []}
+                          withCertTrust
+                          blurb={
+                            'The planning tools appear natively in your client instead of as curl ' +
+                            'recipes. Plan generation only reads and proposes; nothing runs until ' +
+                            'you approve the plan.'
+                          }
+                        />
+                      </TabsContent>
+                    )}
+                    <TabsContent value="prompt">
+                      <div className="mb-xxs flex items-center justify-between">
+                        <p className="text-metadata text-muted-foreground">
+                          Paste into a terminal agent — it drives the same session with curl.
+                        </p>
+                        <CopyButton text={genResult.instructions} label="Copy instructions" />
+                      </div>
+                      <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
+                        {genResult.instructions}
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="inapp">
+                      <InAppAgentPanel
+                        prompt={genResult.instructions}
+                        contextLabel={`generation of plan #${genResult.plan_id}`}
+                      />
+                    </TabsContent>
+                  </Tabs>
+                );
+              })()}
             </div>
           ) : (
             <div className="flex flex-col gap-sm">

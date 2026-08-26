@@ -304,6 +304,10 @@ export interface Port {
   service_conf?: string | null;
   service_method?: string | null;
   reason?: string | null;
+  // nmap's tunnel attribute — "ssl" when the service runs inside TLS. Lets the
+  // port table mark a TLS-wrapped service on a non-standard port even when no
+  // web-interface/cert record exists. null/absent means "unknown", not "plaintext".
+  service_tunnel?: string | null;
   scripts?: NseScript[];
 }
 

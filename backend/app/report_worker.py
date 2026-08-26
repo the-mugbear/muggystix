@@ -27,17 +27,9 @@ from app.services.report_job_service import ReportJobService
 # (e.g. Host.project -> Project) before the first query.  Unlike the ingestion
 # worker this process never runs initialize_database(), which is what loads them
 # elsewhere — without this, the first ReportJob query fails to resolve related
-# mappers.  Keep in sync with alembic/env.py / app/db/init.py / tests/conftest.py.
-import app.db.models  # noqa: F401,E402
-import app.db.models_auth  # noqa: F401,E402
-import app.db.models_project  # noqa: F401,E402
-import app.db.models_agent  # noqa: F401,E402
-import app.db.models_findings  # noqa: F401,E402
-import app.db.models_attribution  # noqa: F401,E402
-import app.db.models_vulnerability  # noqa: F401,E402
-import app.db.models_confidence  # noqa: F401,E402
-import app.db.models_llm  # noqa: F401,E402
-import app.db.models_integrations  # noqa: F401,E402
+# mappers.  The registry is the single list (this worker's copy was missing
+# models_tools before it existed).
+from app.db import model_registry  # noqa: F401,E402
 
 logging.basicConfig(
     level=logging.INFO,

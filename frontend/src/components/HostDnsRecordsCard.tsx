@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Globe, Loader2 } from 'lucide-react';
 
 import {
@@ -57,28 +57,33 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await getHostDnsRecords(hostId));
-    } catch (err) {
-      setError(formatApiError(err, 'DNS records could not be loaded for this host.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [hostId]);
-
+  // Fetch inside the effect and guard EVERY state write with `cancelled`, so an
+  // out-of-order resolve can't paint host A's DNS into host B's inspector. The
+  // SideSheet keeps HostInspector mounted across prev/next, so a slower request
+  // for A can otherwise land after B's and win — wrong-asset evidence, worse
+  // than a loading flash. `data` is cleared on hostId change so a stale card
+  // never lingers under the new host while it loads.
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      await load();
-      if (cancelled) return;
-    })();
+    setLoading(true);
+    setError(null);
+    setData(null);
+    getHostDnsRecords(hostId)
+      .then((res) => {
+        if (!cancelled) setData(res);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(formatApiError(err, 'DNS records could not be loaded for this host.'));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [load]);
+  }, [hostId]);
 
   // Render-nothing path: only when there's no DNS data ANYWHERE in the
   // project.  If records exist project-wide but none match this host, we

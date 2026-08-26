@@ -39,7 +39,14 @@ class Host(Base):
 
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
-    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # last_seen means "last scan that observed this host" — it is scan evidence
+    # (host_query_predicates compares it against a review timestamp to find
+    # hosts a scan re-observed after review). It must therefore advance ONLY on
+    # ingestion, which sets it explicitly (host_deduplication_service
+    # ._update_existing_host). NO `onupdate=func.now()`: that bumped it on every
+    # row UPDATE, so correcting a hostname/OS via the assist surface forged
+    # fresh scan evidence and could make a stale scope look re-scanned.
+    last_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))  # Track which scan last updated this host
 
     # Relationships.  Hot read paths (host list, serializers, reports) touch
@@ -99,7 +106,11 @@ class Port(Base):
 
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
-    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # Scan evidence, same contract as Host.last_seen: advances only on ingestion
+    # (host_deduplication_service._update_existing_port sets it explicitly). No
+    # `onupdate=func.now()` — a non-scan UPDATE to a port row must not forge a
+    # fresh observation timestamp.
+    last_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
     is_active = Column(Boolean, default=True)  # Track if port is currently active
     
@@ -255,6 +266,12 @@ class Scan(Base):
     web_interfaces = relationship("WebInterface", back_populates="scan", cascade="all, delete-orphan")
     vulnerabilities = relationship("Vulnerability", back_populates="scan", cascade="all, delete-orphan")
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
+
+    __table_args__ = (
+        # Scans are listed newest-first by start_time. Declared under its
+        # legacy DB name (a plain `index=True` would auto-name it ix_scans_*).
+        Index("idx_scans_start_time", "start_time"),
+    )
 
 class Scope(Base):
     __tablename__ = "scopes"
@@ -982,7 +999,7 @@ class Annotation(Base):
     # a note thread into a durable unit of work (owner, deadline, kind,
     # resolution) rather than just a discussion.  Unlike body/status,
     # these are editable by any project member, not only the author.
-    assignee_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    assignee_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     due_at = Column(DateTime(timezone=True), nullable=True)
     # observation | finding | question | decision | action | handoff
     note_type = Column(String(20), nullable=True)

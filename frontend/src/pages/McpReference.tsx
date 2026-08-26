@@ -12,15 +12,17 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CheckCircle2, Copy, Lock, Radio, ShieldCheck } from 'lucide-react';
+import { Lock, Radio, ShieldCheck } from 'lucide-react';
 import { getMcpTools, type McpCatalog, type McpToolDoc } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
-import { copyToClipboard } from '../utils/clipboard';
+import { buildCertTrust } from '../utils/mcpCert';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import McpConnectPanel from '../components/McpConnectPanel';
+import McpFlowDiagram from '../components/mcp/McpFlowDiagram';
+import McpWorkflowMap from '../components/mcp/McpWorkflowMap';
+import { CodeBlock } from '../components/ui/code-block';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
-import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import {
   Table,
@@ -78,36 +80,6 @@ const paramSummary = (tool: McpToolDoc): Array<{ name: string; required: boolean
     .sort((a, b) => Number(b.required) - Number(a.required) || a.name.localeCompare(b.name));
 };
 
-const CodeBlock: React.FC<{ text: string; label: string }> = ({ text, label }) => {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
-  };
-  return (
-    <div className="relative">
-      <pre className="max-h-72 overflow-auto rounded-control border border-border bg-accent p-sm pr-xl font-mono text-caption">
-        {text}
-      </pre>
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={copy}
-        aria-label={`Copy ${label}`}
-        className="absolute right-xxs top-xxs"
-      >
-        {copied ? (
-          <CheckCircle2 className="size-4 text-success" aria-hidden />
-        ) : (
-          <Copy className="size-4" aria-hidden />
-        )}
-      </Button>
-    </div>
-  );
-};
-
 const McpReference: React.FC = () => {
   const [catalog, setCatalog] = useState<McpCatalog | null>(null);
   const [loading, setLoading] = useState(true);
@@ -145,33 +117,33 @@ const McpReference: React.FC = () => {
     })).filter((g) => g.tools.length > 0);
   }, [catalog]);
 
-  // The certificate story, resolved from the same catalog call: the script URL
-  // and the fingerprint to check a download against. Falls back to relative
-  // paths so the commands still read correctly if the catalog call failed.
-  const fingerprint = catalog?.tls_fingerprint_sha256 ?? null;
-  // Self-signed is the shipped default, not an invariant: an operator can mount
-  // an internal-CA or DNS-validated certificate. `null` means we couldn't read
-  // the certificate, which is not the same as "it is self-signed" — so the
-  // pinning block stays for null and only softens on an explicit `false`.
-  const selfSigned = catalog?.tls_certificate?.self_signed ?? null;
+  // The certificate story, resolved from the same catalog call (shared with the
+  // in-dialog McpCertTrustNotice so the two can't disagree on whether the step
+  // even exists — they did once). `selfSigned` is null when we couldn't read
+  // the cert, which is not "it is self-signed", so the pinning block stays for
+  // null and only softens on an explicit `false`.
+  const { fingerprint, selfSigned, commands: trustScriptCommands } = buildCertTrust(catalog);
   const keyPlaceholder = catalog?.sample_key_placeholder ?? '<your-session-key>';
-  // Absolute, because the fallback is a bare path and `curl -sk /api/v1/...`
-  // is not a runnable command — it has no host.
-  const trustScriptUrl = new URL(
-    catalog?.trust_script_url ?? '/api/v1/references/trust-cert-script',
-    window.location.origin,
-  ).toString();
-  // Origin of the deployment, which is what the script needs to fetch the cert.
-  const deploymentUrl = trustScriptUrl.replace(/\/api\/v1\/references\/.*$/, '');
-  const trustScriptCommands = [
-    `curl -sk ${trustScriptUrl} -o trust-cert.sh`,
-    'less trust-cert.sh          # it installs a trust anchor — read it first',
-    `bash trust-cert.sh --url ${deploymentUrl || 'https://<this-host>'}`,
-  ].join('\n');
 
   // The endpoint is server-resolved; fall back to a relative path so the
   // connect snippets still read correctly if the catalog call failed.
   const endpoint = catalog?.endpoint ?? '/api/v1/mcp';
+
+  // Per-workflow tool counts for the lifecycle map, read off the same live
+  // catalog the table below groups — a picture can't claim a tool the
+  // deployment doesn't serve. `shared` tools (>= 4 workflows) are excluded so
+  // a workflow's count is the tools distinctive to it, matching the groups.
+  const workflowCounts = useMemo(() => {
+    const tools = catalog?.tools ?? [];
+    const distinctive = (wf: string) =>
+      tools.filter((t) => t.workflows?.includes(wf) && (t.workflows?.length ?? 0) < 4).length;
+    return {
+      recon: distinctive('recon'),
+      plan_generation: distinctive('plan_generation'),
+      execution: distinctive('execution'),
+      assist: distinctive('assist'),
+    };
+  }, [catalog]);
 
   const toolRows = (tools: McpToolDoc[]) => (
     <Table style={{ tableLayout: 'fixed' }}>
@@ -251,6 +223,19 @@ const McpReference: React.FC = () => {
           page to get a key and a ready-to-paste config.
         </AlertDescription>
       </Alert>
+
+      {/* --- The lifecycle picture: which workflow (and so which key) --- */}
+      <h2 className="text-section-title">The four workflows</h2>
+      <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
+        A key belongs to one workflow and sees only that workflow&rsquo;s tools — there is no key
+        that spans them — so the first question is which one you want. Recon feeds planning, planning
+        feeds execution, and assist reads across all of it at any time.
+      </p>
+      <Card className="mb-lg">
+        <CardContent className="p-md">
+          <McpWorkflowMap counts={workflowCounts} />
+        </CardContent>
+      </Card>
 
       {/* --- Transport facts, straight off the running server --- */}
       <Card className="mb-lg">
@@ -383,7 +368,8 @@ const McpReference: React.FC = () => {
       <h2 className="text-section-title">What happens on a tool call</h2>
       <Card className="mb-lg mt-xs">
         <CardContent className="p-md">
-          <ol className="ml-md list-decimal space-y-xxs text-caption text-muted-foreground">
+          <McpFlowDiagram />
+          <ol className="ml-md mt-md list-decimal space-y-xxs text-caption text-muted-foreground">
             <li>
               Your client POSTs a JSON-RPC <span className="font-mono">tools/call</span> to{' '}
               <span className="font-mono">/api/v1/mcp</span> with your{' '}
@@ -464,9 +450,9 @@ const McpReference: React.FC = () => {
           <div className="flex gap-sm">
             <ShieldCheck className="mt-xxs size-4 shrink-0 text-success" aria-hidden />
             <p className="text-caption text-muted-foreground">
-              <strong className="text-foreground">Read-only by default.</strong> An assist session
-              gets the read tools and nothing else unless the operator ticks the write box when
-              starting it.
+              <strong className="text-foreground">Reads need only a valid session.</strong> Every
+              assist session can run the read tools. The write tools are separate and gated on the
+              operator&rsquo;s own project role, checked per request — see the next point.
             </p>
           </div>
           <div className="flex gap-sm">

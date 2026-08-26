@@ -31,6 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import InAppAgentPanel from './InAppAgentPanel';
 import McpConnectPanel from './McpConnectPanel';
@@ -169,48 +170,70 @@ export const StartReconDialog: React.FC<StartReconDialogProps> = ({ recon }) => 
                   {recon.result.api_key}
                 </div>
               </div>
-              <div>
-                <div className="mb-xxs flex items-center justify-between">
-                  <p className="text-metadata font-semibold">Instructions</p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={recon.copyInstructions}
-                        aria-label="Copy recon instructions"
-                      >
-                        {recon.copiedInstr ? (
-                          <CheckCircle2 className="size-4 text-success" aria-hidden />
-                        ) : (
-                          <Copy className="size-4" aria-hidden />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {recon.copiedInstr ? 'Copied!' : 'Copy instructions'}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                  {recon.result.instructions}
-                </div>
-              </div>
-              <McpConnectPanel
-                clients={recon.result.mcp_clients ?? []}
-                blurb={
-                  'Or connect this session to your MCP client — the recon tools appear ' +
-                  'natively instead of as curl recipes. Scanners still run on your machine: ' +
-                  'launch the client from the directory you want the output in.'
-                }
-              />
-              <div>
-                <p className="mb-xxs text-metadata font-semibold">Run with In-App Agent</p>
-                <InAppAgentPanel
-                  prompt={recon.result.instructions}
-                  contextLabel={`reconnaissance of ${recon.scopeName}`}
-                />
-              </div>
+              {/* Three ways to hand this session to an agent, as tabs rather
+                  than stacked (v5.191.0, mirroring StartAssistDialog): the
+                  multi-KB prompt no longer sits between the operator and the
+                  MCP config they came to copy. They pick one. */}
+              {(() => {
+                const hasMcp = (recon.result?.mcp_clients?.length ?? 0) > 0;
+                return (
+                  <Tabs defaultValue={hasMcp ? 'mcp' : 'prompt'}>
+                    <TabsList className="mb-xs">
+                      {hasMcp && <TabsTrigger value="mcp">Connect via MCP</TabsTrigger>}
+                      <TabsTrigger value="prompt">Paste the prompt</TabsTrigger>
+                      <TabsTrigger value="inapp">Run in-app</TabsTrigger>
+                    </TabsList>
+                    {hasMcp && (
+                      <TabsContent value="mcp">
+                        <McpConnectPanel
+                          clients={recon.result.mcp_clients ?? []}
+                          withCertTrust
+                          blurb={
+                            'The recon tools appear natively in your client instead of as curl ' +
+                            'recipes. Scanners still run on your machine: launch the client from ' +
+                            'the directory you want the output in.'
+                          }
+                        />
+                      </TabsContent>
+                    )}
+                    <TabsContent value="prompt">
+                      <div className="mb-xxs flex items-center justify-between">
+                        <p className="text-metadata text-muted-foreground">
+                          Paste into a terminal agent — it drives the same session with curl.
+                        </p>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={recon.copyInstructions}
+                              aria-label="Copy recon instructions"
+                            >
+                              {recon.copiedInstr ? (
+                                <CheckCircle2 className="size-4 text-success" aria-hidden />
+                              ) : (
+                                <Copy className="size-4" aria-hidden />
+                              )}
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {recon.copiedInstr ? 'Copied!' : 'Copy instructions'}
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                      <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
+                        {recon.result.instructions}
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="inapp">
+                      <InAppAgentPanel
+                        prompt={recon.result.instructions}
+                        contextLabel={`reconnaissance of ${recon.scopeName}`}
+                      />
+                    </TabsContent>
+                  </Tabs>
+                );
+              })()}
             </div>
           )}
         </DialogBody>

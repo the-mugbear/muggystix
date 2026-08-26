@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Info, Loader2, MessageCircleQuestion, RefreshCw, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
+import { Info, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
@@ -20,7 +20,9 @@ import {
   markWorkbenchSeen,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { useReconPlan } from '../hooks/useReconPlan';
 import { formatApiError } from '../utils/apiErrors';
+import StartReconDialog from '../components/StartReconDialog';
 import MyWorkCard from '../components/MyWorkCard';
 import MyActivityCard from '../components/MyActivityCard';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -276,10 +278,17 @@ const ProjectStateCard: React.FC<{
 // ---------------------------------------------------------------------------
 
 const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) => {
-  const navigate = useNavigate();
+  // Turn a "due for re-scan" warning into the action it implies. The old row
+  // linked to /scopes/:id, a route retired to a redirect that discards the id —
+  // a dead end. Recon needs analyst+, so viewers/auditors see the freshness
+  // signal without an action they can't take (the endpoint would 403 anyway).
+  const recon = useReconPlan();
+  const { hasPermission } = useAuth();
+  const canStartRecon = hasPermission('analyst');
   if (!data || data.scopes.length === 0) return null;
   const stale = data.scopes.filter((s) => s.is_stale);
   return (
+    <>
     <Card className="mb-md">
       <CardContent className="p-md">
         <h2 className="text-subheading font-semibold">Scan freshness</h2>
@@ -306,10 +315,16 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
                     {s.last_activity_at ? `last seen by a scan ${s.days_since}d ago` : 'no hosts discovered'}
                   </span>
                 </p>
-                <Button size="sm" variant="ghost" onClick={() => navigate(`/scopes/${s.scope_id}`)}>
-                  Open
-                  <SquareArrowOutUpRight className="size-3" aria-hidden />
-                </Button>
+                {canStartRecon && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => recon.openFor(s.scope_id, s.scope_name)}
+                  >
+                    <Rocket className="size-3" aria-hidden />
+                    Start Recon
+                  </Button>
+                )}
               </li>
             ))}
             {stale.length > 5 && (
@@ -319,6 +334,9 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
         )}
       </CardContent>
     </Card>
+      {/* Opens when recon.scopeId becomes non-null via openFor (hook-driven). */}
+      <StartReconDialog recon={recon} />
+    </>
   );
 };
 
