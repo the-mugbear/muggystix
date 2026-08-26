@@ -187,18 +187,24 @@ scope-bound key and its own tag below:
 #### Interactive assist — tag `agent-assist`
 
 1. **Operator starts an assist session** from the UI — backend mints a
-   **read-only**, project-scoped key (4h TTL).
+   project-scoped key (4h TTL). The session acts with the **operator's own
+   project permissions**, re-checked on every call.
 2. **Agent queries project state** to answer ad-hoc questions —
    `GET /agent/assist/context` for a headline summary, then
    `GET /agent/assist/hosts` (Hosts-page filter vocabulary),
-   `GET .../scopes`, `GET .../scans`. No scanning, no plan creation, no
-   writes — every write endpoint returns 403.
+   `GET .../scopes`, `GET .../scans`.
+3. **Agent may also record findings** when the operator's role permits
+   (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status
+   (`POST .../follow`), and hostname/OS corrections (`PATCH /agent/hosts/{id}`).
+   A write by an operator whose role can't write returns 403; `GET
+   /agent/identity` reports `can_write_project_data` so the agent can check
+   first. No scanning, no plan creation, no execution from this surface.
 
 Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`;
 assist keys 4h), and bound to **one** plan (plan-gen/execution), **one** scope
 (recon), or **one** assist session. Cross-workflow calls return 403. The
-`agent-browse` tag below documents the read-only host/scope/dashboard surface
-shared by the plan, execution, and recon workflows.
+`agent-browse` tag below documents the host/scope/dashboard surface shared by
+the plan, execution, and recon workflows (reads, plus the three assist writes).
 
 ## Error conventions
 
@@ -288,7 +294,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-browse",
-        "description": "Read-only browse surface shared by the plan, execution, and recon agent workflows: hosts, scans, scopes, dashboard, notes, follows. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project. (The assist workflow has its own read-only surface — see `agent-assist`.)",
+        "description": "Browse surface shared by the plan, execution, recon, and assist agent workflows: hosts, scans, scopes, dashboard, notes, follows. Mostly reads, plus three project writes an assist agent may make when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
     },
     {
         "name": "agent-plan-generation",
@@ -304,7 +310,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-assist",
-        "description": "Read-only interactive query surface for an assist agent: project context, host inventory (Hosts-page filter vocabulary), scopes, and scans. Authenticated via `X-API-Key`; project-scoped; every write endpoint returns 403. Lets an operator's AI of choice answer ad-hoc questions about project data without minting a plan or scope key.",
+        "description": "Interactive query surface for an assist agent: project context, host inventory (Hosts-page filter vocabulary), scopes, and scans. The session acts with the operator's own project permissions — reads for anyone; the three project writes (notes / review status / hostname-OS, under the `agent-browse` tag) succeed only for an operator whose role can write (analyst+), else 403. Authenticated via `X-API-Key`; project-scoped. Lets an operator's AI of choice answer ad-hoc questions about project data without minting a plan or scope key.",
     },
     {
         "name": "agent-feedback",
