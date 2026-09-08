@@ -644,6 +644,13 @@ class DNSRecord(Base):
     # rows with no project (a name needs a project); every new row sets it.
     name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="CASCADE"), nullable=True, index=True)
     observed_at = Column(DateTime(timezone=True), server_default=func.now())
+    # v2.324.0 — TESTED observations are evidence OF one execution result
+    # (the binding a recorded, executed command actually reached).  Keyed to
+    # the result so a correction replaces rather than piles up, and CASCADE:
+    # if the result is deleted, so is the evidence that only it supported.
+    exec_result_id = Column(
+        Integer, ForeignKey("test_execution_results.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
     # RV-1 — provenance: which scan produced this DNS row, so a scan can
     # report its dns_record_count instead of looking "empty" when it only
     # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none,
@@ -674,6 +681,8 @@ class DNSRecord(Base):
         #       WHERE scan_id IS NOT NULL
         #   uq_dns_record_import_observation
         #       (name_id, record_type, value) WHERE scan_id IS NULL AND record_type='IMPORT'
+        #   uq_dns_record_result_observation
+        #       (name_id, record_type, value, exec_result_id) WHERE exec_result_id IS NOT NULL
         # Split on purpose (v2.323.0 review): scan_id is SET NULL when a scan
         # is deleted, so a single NULLS-NOT-DISTINCT index made deleting the
         # second of two scans that held the same answer fail on the orphaned

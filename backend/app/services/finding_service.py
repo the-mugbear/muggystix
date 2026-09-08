@@ -160,14 +160,24 @@ class FindingService:
         # relationship: on paths that attach to an EXISTING finding (a second
         # scanner corroborating an issue), `finding.hosts` can be a stale
         # selectin load from before this transaction's flushes, and an empty
-        # `seen` then re-inserts and trips uq_finding_host.
+        # `seen` then re-inserts and trips uq_finding_host_name.
+        # v2.324.0 — identity is (host, named endpoint): the same issue on two
+        # vhosts of one address is two affected endpoints, both kept.
+        names_by_host = names_by_host or {}
         seen = {
-            r[0] for r in self.db.query(FindingHost.host_id)
+            (r[0], r[1]) for r in self.db.query(FindingHost.host_id, FindingHost.name_id)
             .filter(FindingHost.finding_id == finding.id)
             .all()
         } if finding.id is not None else set()
-        requested = [hid for hid in host_ids if hid is not None and hid not in seen]
-        if not requested:
+        pairs = []
+        for hid in host_ids:
+            if hid is None:
+                continue
+            pair = (hid, names_by_host.get(hid))
+            if pair not in seen and pair not in pairs:
+                pairs.append(pair)
+        requested = sorted({hid for hid, _ in pairs})
+        if not pairs:
             return
         # Cross-tenant guard (the single choke point all three write paths
         # share — create / promote / add-hosts).  host_ids are global,
@@ -186,13 +196,12 @@ class FindingService:
                 status_code=422,
                 detail=f"Hosts {invalid} are not in this project.",
             )
-        for hid in requested:
+        for hid, name_id in pairs:
             self.db.add(FindingHost(
-                finding_id=finding.id, host_id=hid,
-                name_id=(names_by_host or {}).get(hid),
+                finding_id=finding.id, host_id=hid, name_id=name_id,
                 host_status=FindingHostStatus.OPEN.value,
             ))
-            seen.add(hid)
+            seen.add((hid, name_id))
 
     def promote_annotation(
         self,

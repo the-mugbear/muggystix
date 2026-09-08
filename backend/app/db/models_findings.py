@@ -155,7 +155,14 @@ class FindingHost(Base):
     name = relationship("DNSName", foreign_keys=[name_id])
 
     __table_args__ = (
-        UniqueConstraint("finding_id", "host_id", name="uq_finding_host"),
+        # v2.324.0 — one row per (finding, host, named endpoint): two vhosts on
+        # one address affected by the same issue are two affected endpoints,
+        # both kept.  NULLS NOT DISTINCT so unnamed (host-level) rows stay
+        # unique per host on Postgres; SQLite (test fallback) ignores the flag.
+        UniqueConstraint(
+            "finding_id", "host_id", "name_id",
+            name="uq_finding_host_name", postgresql_nulls_not_distinct=True,
+        ),
     )
 
 

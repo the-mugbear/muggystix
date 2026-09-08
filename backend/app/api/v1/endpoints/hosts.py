@@ -2353,8 +2353,9 @@ def get_host_lineage(
 
     # --- Plan entries referencing this host ---------------------------
     # Project-scope through the plan's project_id (the entry FK doesn't
-    # carry project_id directly).  One row per (plan, entry) since a
-    # host can appear at most once per plan (uq_plan_host).
+    # carry project_id directly).  One row per (plan, entry); since
+    # v2.324.0 a host may appear more than once per plan — once per named
+    # target (uq_plan_host_name).
     plan_entries = (
         db.query(TestPlanEntry, TestPlan)
         .join(TestPlan, TestPlan.id == TestPlanEntry.test_plan_id)

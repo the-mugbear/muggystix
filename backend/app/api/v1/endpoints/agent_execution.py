@@ -64,25 +64,40 @@ def _validate_observed_ip(raw) -> "str | None":
         )
 
 
-def _record_tested_binding(db: Session, entry, observed_ip: "str | None") -> None:
-    """v2.323.0 — when the entry targets a NAME, record a TESTED observation
-    (name → the address the command reached, or the entry host's address when
-    none was reported) so the names inventory shows which binding the
-    evidence was collected against.  Best effort: never blocks the result."""
-    if entry.name_id is None or entry.target_name is None:
-        return
-    ip = observed_ip or (entry.host.ip_address if entry.host else None)
-    if not ip:
-        return
+def _record_tested_binding(db: Session, entry, result) -> None:
+    """v2.324.0 — a TESTED observation says "an EXECUTED command against this
+    name reached THIS address".  It is recorded only when the result row
+    establishes both facts (status executed AND the agent reported
+    observed_ip); an unknown address stays unknown — the inventory IP is
+    never assumed, because rotating DNS is exactly why it can't be.
+
+    Keyed to the result (dns_records.exec_result_id): re-recording or
+    correcting the result replaces its observation, so a test downgraded to
+    skipped withdraws the evidence.  Best effort: never blocks the result.
+    """
+    from app.db import models as _m
     from app.db.models import DNS_OBS_TESTED
     from app.services.dns_name_service import record_observation
     try:
-        record_observation(
-            db, project_id=entry.host.project_id if entry.host else None,
-            name=entry.target_name.fqdn, record_type=DNS_OBS_TESTED, value=ip,
+        db.query(_m.DNSRecord).filter(_m.DNSRecord.exec_result_id == result.id).delete(
+            synchronize_session=False,
         )
+        if (
+            result.status == TestExecutionStatus.EXECUTED.value
+            and result.observed_ip
+            and entry.name_id is not None
+            and entry.target_name is not None
+            and entry.host is not None
+        ):
+            record_observation(
+                db, project_id=entry.host.project_id, name=entry.target_name.fqdn,
+                record_type=DNS_OBS_TESTED, value=result.observed_ip,
+                exec_result_id=result.id, observed_at=result.executed_at,
+            )
+        db.commit()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("TESTED observation for entry %s skipped: %s", entry.id, exc)
+        db.rollback()
+        logger.warning("TESTED observation for result %s skipped: %s", getattr(result, "id", None), exc)
 
 
 def _truncate_to_byte_cap(text: str, cap: int) -> str:
@@ -406,11 +421,10 @@ def get_execution_context(
                 # something is here.
                 resolved = {"tool": "unknown", "description": "(unstructured test entry)"}
             if resolved.get("command"):
-                resolved["command"] = resolved["command"].replace("{ip}", ip)
-                # v2.323.0 — {fqdn} resolves to the entry's named target; when
-                # the entry has none, fall back to the address so a command
-                # never ships with a literal placeholder.
-                resolved["command"] = resolved["command"].replace("{fqdn}", target_fqdn or ip)
+                # {ip} / {fqdn} — the one rule shared with the offline bundle.
+                resolved["command"] = TestPlanService.resolve_command_placeholders(
+                    resolved["command"], ip, target_fqdn,
+                )
             resolved["test_index"] = idx
             resolved["result_status"] = existing_results.get(entry.id, {}).get(idx)
             tests.append(resolved)
@@ -677,12 +691,10 @@ def record_test_result(
         _settings.TEST_OUTPUT_MAX_BYTES,
     ) or None
 
-    # v2.323.0 — the address the command actually hit.  Validated as an IP
-    # literal; when the entry targets a name, also recorded as a TESTED
-    # observation (name → observed address) so the names inventory shows
-    # which binding the evidence was collected against.
+    # v2.323.0 — the address the command actually hit, validated as an IP
+    # literal.  The TESTED observation is recorded AFTER the row persists
+    # (both paths below) and only for an executed result that reported one.
     observed_ip = _validate_observed_ip(body.observed_ip)
-    _record_tested_binding(db, entry, observed_ip)
 
     result = TestExecutionResult(
         execution_session_id=session.id,
@@ -749,9 +761,11 @@ def record_test_result(
             else:
                 existing.executed_at = None
             db.commit()
+            _record_tested_binding(db, entry, existing)
             return {"id": existing.id, "status": existing.status, "updated": True}
         raise
 
+    _record_tested_binding(db, entry, result)
     return {"id": result.id, "status": result.status, "updated": False}
 
 

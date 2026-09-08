@@ -297,17 +297,39 @@ def build_export_bundle(
         "entry_count": len(entries),
         "entries": [],
     }
+    from app.services.test_plan_service import TestPlanService
+
     for e in entries:
         host = e.host
+        ip = host.ip_address if host else "unknown"
+        # v2.324.0 — the named target rides along, and {ip}/{fqdn} are
+        # resolved with the SAME rule the online execution context uses, so
+        # the offline executor never sees a literal placeholder and can tell
+        # the approved vhost from the host's display name.
+        target_fqdn = e.target_name.fqdn if e.target_name is not None else None
+        tests = []
+        for t in (e.proposed_tests or []):
+            if isinstance(t, dict):
+                resolved = dict(t)
+                if resolved.get("command"):
+                    resolved["command"] = TestPlanService.resolve_command_placeholders(
+                        resolved["command"], ip, target_fqdn,
+                    )
+                tests.append(resolved)
+            elif isinstance(t, str):
+                tests.append(TestPlanService.resolve_command_placeholders(t, ip, target_fqdn))
+            else:
+                tests.append(t)
         plan_snapshot["entries"].append({
             "entry_id": e.id,
             "host_id": e.host_id,
             "host_ip": host.ip_address if host else None,
             "host_hostname": host.hostname if host else None,
+            "target_fqdn": target_fqdn,
             "host_os": getattr(host, "os_name", None) if host else None,
             "priority": e.priority,
             "test_phase": e.test_phase,
-            "proposed_tests": e.proposed_tests or [],
+            "proposed_tests": tests,
             "rationale": e.rationale,
             "notes": e.notes,
         })

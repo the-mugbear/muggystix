@@ -324,6 +324,15 @@ class TestPlanService:
     # Test Plan Entries
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def resolve_command_placeholders(command: str, ip: str, target_fqdn: Optional[str]) -> str:
+        """The ONE placeholder rule for proposed-test commands, shared by the
+        online execution context and the offline bundle: ``{ip}`` is the host
+        address; ``{fqdn}`` is the entry's named target, falling back to the
+        address when the entry has none so a command never ships with a
+        literal placeholder."""
+        return command.replace("{ip}", ip).replace("{fqdn}", target_fqdn or ip)
+
     def _resolve_target_name(
         self, project_id: int, host_id: int, host_ip: Optional[str], target_fqdn: Optional[str],
     ) -> Optional[int]:
@@ -375,7 +384,7 @@ class TestPlanService:
         Concurrency: the application-level precheck below catches the
         common case (the same client submitting a duplicate batch) but
         the *real* invariant is the unique constraint
-        ``uq_plan_host`` on ``(test_plan_id, host_id)``.  Two
+        ``uq_plan_host_name`` on ``(test_plan_id, host_id, name_id)``.  Two
         concurrent batches can both pass the precheck and then race on
         commit, which previously surfaced as a 500 IntegrityError.
         Each row is now inserted inside a SAVEPOINT so a constraint
@@ -397,13 +406,15 @@ class TestPlanService:
         # Pre-v2.42.0 this was two separate filtered queries; on a 10k-host
         # bulk-add the redundant scan cost ~50ms per batch.  Fast-path
         # precheck remains an optimization (not the invariant — the
-        # unique index uq_plan_host is what actually prevents duplicates),
+        # unique constraint uq_plan_host_name is what actually prevents duplicates),
         # so a JOIN that may briefly miss a concurrent insert is fine.
         valid_hosts: set = set()
         host_ips: Dict[int, str] = {}
+        # v2.324.0 — entry identity is (host, named target): a load balancer's
+        # vhosts are distinct entries on one address.  Dedup on the pair.
         existing: set = set()
         rows = (
-            self.db.query(Host.id, Host.ip_address, TestPlanEntry.host_id)
+            self.db.query(Host.id, Host.ip_address, TestPlanEntry.host_id, TestPlanEntry.name_id)
             .outerjoin(
                 TestPlanEntry,
                 (TestPlanEntry.host_id == Host.id)
@@ -412,11 +423,11 @@ class TestPlanService:
             .filter(Host.id.in_(host_ids), Host.project_id == plan.project_id)
             .all()
         )
-        for host_id, host_ip, existing_entry_host_id in rows:
+        for host_id, host_ip, existing_entry_host_id, existing_name_id in rows:
             valid_hosts.add(host_id)
             host_ips[host_id] = host_ip
             if existing_entry_host_id is not None:
-                existing.add(host_id)
+                existing.add((host_id, existing_name_id))
 
         created: List[TestPlanEntry] = []
         for data in entries_data:
@@ -424,14 +435,19 @@ class TestPlanService:
             if hid not in valid_hosts:
                 logger.warning("Skipping entry for host %d: not in project %d", hid, plan.project_id)
                 continue
-            if hid in existing:
-                logger.warning("Skipping duplicate entry for host %d in plan %d", hid, plan.id)
-                continue
             # v2.323.0 — optional named endpoint.  The "target in inventory"
             # guardrail applied to names: it must be a name bound to THIS host
             # by observation, or the whole batch is rejected (a typo'd vhost
             # is exactly the kind of thing a reviewer must not have to spot).
+            # Resolved BEFORE the duplicate check so a second vhost on the same
+            # host is a new entry, not a silently dropped one.
             name_id = self._resolve_target_name(plan.project_id, hid, host_ips.get(hid), data.get("target_fqdn"))
+            if (hid, name_id) in existing:
+                logger.warning(
+                    "Skipping duplicate entry for host %d (name_id=%s) in plan %d", hid, name_id, plan.id,
+                )
+                continue
+            existing.add((hid, name_id))
 
             entry = TestPlanEntry(
                 test_plan_id=plan.id,
@@ -455,7 +471,7 @@ class TestPlanService:
             except IntegrityError:
                 logger.warning(
                     "Skipping host %d in plan %d: another writer inserted a "
-                    "matching entry concurrently (uq_plan_host)",
+                    "matching entry concurrently (uq_plan_host_name)",
                     hid, plan.id,
                 )
                 existing.add(hid)

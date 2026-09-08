@@ -281,6 +281,14 @@ def upsert_vulnerability(
         query = query.filter(Vulnerability.port_id.is_(None))
     else:
         query = query.filter(Vulnerability.port_id == port_id)
+    # v2.324.0 — the named endpoint is part of the finding's identity: the
+    # same nikto check on a.example.com and b.example.com behind one address
+    # is two findings.  A named finding never absorbs into an unnamed
+    # (host/service-level) row, and vice versa.
+    if name_id is None:
+        query = query.filter(Vulnerability.name_id.is_(None))
+    else:
+        query = query.filter(Vulnerability.name_id == name_id)
 
     existing = query.first()
     if existing:
@@ -296,8 +304,6 @@ def upsert_vulnerability(
         existing.solution = solution or existing.solution
         if references:
             existing.references = json.dumps(references)
-        if name_id is not None and existing.name_id is None:
-            existing.name_id = name_id
         return existing
 
     vulnerability = Vulnerability(

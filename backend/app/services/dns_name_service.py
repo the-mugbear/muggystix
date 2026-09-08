@@ -243,6 +243,18 @@ def _insert_ignore(db: Session, table, values: dict):
     return db.execute(insert(table).values(**values).on_conflict_do_nothing())
 
 
+def _insert_ignore_many(db: Session, table, rows: List[dict]):
+    """Multi-row INSERT … ON CONFLICT DO NOTHING (one statement per call)."""
+    if not rows:
+        return None
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    return db.execute(insert(table).values(rows).on_conflict_do_nothing())
+
+
 def get_or_create_name(
     db: Session,
     project_id: int,
@@ -297,12 +309,14 @@ def _cmp_ts(a: datetime, b: datetime) -> int:
 
 def observation_key(
     name_id: Optional[int], record_type: str, value: str, resolver_name: Optional[str], scan_id: Optional[int],
+    exec_result_id: Optional[int] = None,
 ) -> Tuple:
     """The identity the DB enforces (see the partial unique indexes created in
-    migration a7d3e5f91c26): scan-bound rows are unique on (name, kind, value,
-    resolver-or-empty, scan); imports (no scan) on (name, IMPORT, value).
-    Orphaned rows (their scan was deleted) carry no uniqueness."""
-    return (name_id, record_type, value, resolver_name or "", scan_id)
+    migrations a7d3e5f91c26 / c3f7a9d2e4b8): scan-bound rows are unique on
+    (name, kind, value, resolver-or-empty, scan); imports (no scan) on
+    (name, IMPORT, value); result-bound rows (TESTED) on (name, kind, value,
+    exec_result).  Orphaned rows (their scan was deleted) carry no uniqueness."""
+    return (name_id, record_type, value, resolver_name or "", scan_id, exec_result_id)
 
 
 def record_observation(
@@ -320,6 +334,7 @@ def record_observation(
     cache: Optional[ObservationCache] = None,
     journal: Optional[List[Tuple[str, object]]] = None,
     check_exists: bool = True,
+    exec_result_id: Optional[int] = None,
 ) -> Optional[int]:
     """Persist one observation about ``name``.  Returns the new row's id, or
     None when an identical observation (same name, kind, value, resolver, scan)
@@ -355,7 +370,7 @@ def record_observation(
             )
 
     name_id = name_row.id if name_row is not None else None
-    key = observation_key(name_id, record_type, value, resolver_name, scan_id)
+    key = observation_key(name_id, record_type, value, resolver_name, scan_id, exec_result_id)
     if cache is not None and key in cache.observations:
         return None
 
@@ -366,6 +381,8 @@ def record_observation(
             func.coalesce(models.DNSRecord.resolver_name, "") == (resolver_name or ""),
             models.DNSRecord.scan_id.is_(None) if scan_id is None
             else models.DNSRecord.scan_id == scan_id,
+            models.DNSRecord.exec_result_id.is_(None) if exec_result_id is None
+            else models.DNSRecord.exec_result_id == exec_result_id,
         )
         if name_id is None:
             # Legacy shape: no name to key on, fall back to the raw domain string.
@@ -384,7 +401,7 @@ def record_observation(
 
     ts = observed_at or _now()
     result = _insert_ignore(db, models.DNSRecord.__table__, {
-        "project_id": project_id, "scan_id": scan_id, "name_id": name_id,
+        "project_id": project_id, "scan_id": scan_id, "name_id": name_id, "exec_result_id": exec_result_id,
         "domain": (name or "").strip(), "record_type": record_type, "value": value,
         "ttl": ttl, "resolver_name": resolver_name, "observed_at": ts, "created_at": ts,
     })
@@ -723,16 +740,43 @@ def import_names(
         ):
             cache.observations.add(observation_key(name_id, DNS_OBS_IMPORT, value, None, None))
 
-    # 3. Record.
+    # 3. Bulk-create the missing names (ON CONFLICT DO NOTHING per chunk),
+    #    read their ids back, then bulk-insert the IMPORT observations that
+    #    aren't already known.  A first-time import of N names is therefore
+    #    ~3 statements per 1000, not ~4 per name.
+    now = _now()
+    missing = [f for f in wanted if f not in existing_before]
+    for i in range(0, len(missing), _CHUNK):
+        chunk = missing[i:i + _CHUNK]
+        _insert_ignore_many(db, models.DNSName.__table__, [
+            {"project_id": project_id, "fqdn": f, "kind": wanted[f][1],
+             "first_seen": now, "last_seen": now, "created_by_id": created_by_id}
+            for f in chunk
+        ])
+        for row in (
+            db.query(models.DNSName)
+            .filter(models.DNSName.project_id == project_id, models.DNSName.fqdn.in_(chunk))
+            .all()
+        ):
+            cache.names[(project_id, row.fqdn)] = row
+
+    obs_rows: List[dict] = []
     created = existing = wildcards = observations = 0
     scope_entries: List[Tuple[str, bool, Optional[str]]] = []
-    now = _now()
     for fqdn, (raw_s, kind) in wanted.items():
-        if record_observation(
-            db, project_id=project_id, name=raw_s, record_type=DNS_OBS_IMPORT, value=raw_s,
-            observed_at=now, created_by_id=created_by_id, cache=cache, check_exists=False,
-        ) is not None:
+        name_row = cache.names.get((project_id, fqdn))
+        if name_row is None:  # pragma: no cover — insert + read-back above guarantees it
+            continue
+        key = observation_key(name_row.id, DNS_OBS_IMPORT, raw_s, None, None)
+        if key not in cache.observations:
+            cache.observations.add(key)
+            obs_rows.append({
+                "project_id": project_id, "scan_id": None, "name_id": name_row.id, "exec_result_id": None,
+                "domain": raw_s, "record_type": DNS_OBS_IMPORT, "value": raw_s,
+                "ttl": None, "resolver_name": None, "observed_at": now, "created_at": now,
+            })
             observations += 1
+            _touch_seen(name_row, now)
         if fqdn in existing_before:
             existing += 1
         else:
@@ -741,6 +785,8 @@ def import_names(
             wildcards += 1
         if declare_scope:
             scope_entries.append((fqdn, include_subdomains, None))
+    for i in range(0, len(obs_rows), _CHUNK):
+        _insert_ignore_many(db, models.DNSRecord.__table__, obs_rows[i:i + _CHUNK])
 
     scope_added = scope_updated = 0
     scope_invalid: List[str] = []

@@ -51,6 +51,7 @@ _UNMODELABLE_INDEXES = frozenset({
     "uq_api_key_agent_session_active",               # partial UNIQUE WHERE is_active (rebased off test_plan_id in the contract phase)
     "uq_dns_record_scan_observation",                # partial UNIQUE + COALESCE(resolver_name,'') WHERE scan_id IS NOT NULL
     "uq_dns_record_import_observation",              # partial UNIQUE WHERE scan_id IS NULL AND record_type='IMPORT'
+    "uq_dns_record_result_observation",              # partial UNIQUE WHERE exec_result_id IS NOT NULL
     "uq_exec_session_plan_active",                   # partial UNIQUE WHERE status='active'
 })
 

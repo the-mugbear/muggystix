@@ -278,8 +278,8 @@ class TestPlanEntry(Base):
     # against a name rather than the bare address (web tests behind a load
     # balancer need the Host header / SNI).  Must be a name bound to
     # ``host_id`` by observation at draft time (the "target in inventory"
-    # guardrail applied to names).  The entry stays one-per-host
-    # (uq_plan_host); this says WHICH name on that host is the target.
+    # guardrail applied to names).  Entries are unique per (plan, host, name)
+    # — uq_plan_host_name — so each vhost on a shared address is its own entry.
     name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Test specification
@@ -314,7 +314,14 @@ class TestPlanEntry(Base):
     assigned_to = relationship("User", foreign_keys=[assigned_to_id])
 
     __table_args__ = (
-        UniqueConstraint("test_plan_id", "host_id", name="uq_plan_host"),
+        # v2.324.0 — one entry per (plan, host, named target).  A load
+        # balancer's vhosts are distinct test targets on one address; the
+        # bare-address entry (name_id NULL) stays unique per host thanks to
+        # NULLS NOT DISTINCT (Postgres; SQLite test fallback ignores it).
+        UniqueConstraint(
+            "test_plan_id", "host_id", "name_id",
+            name="uq_plan_host_name", postgresql_nulls_not_distinct=True,
+        ),
         Index("idx_entry_plan_status", "test_plan_id", "status"),
         # v2.85.0 — the host-detail "tests against this host" panel
         # filters by host_id then status.  The existing
