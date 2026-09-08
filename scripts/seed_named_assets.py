@@ -94,54 +94,147 @@ def _scan(db, project, filename, tool, age_days):
     return s
 
 
-def reset(db, project):
-    """Remove what a previous run created (names, scope domains, LB hosts,
-    the plan/agent, tagged scans).  Project-owned demo hosts are untouched
-    except for the display names this script set."""
-    # Order matters — a name still referenced by plan entries / finding
-    # endpoints must not be deleted (the API refuses with 409; a raw delete
-    # would SET NULL two rows onto one key).  So: the plan (cascades entries +
-    # results), the LB hosts (cascade their vulns → findings → endpoints and
-    # web interfaces), tagged scans, THEN names, then scope domains.
-    for plan in db.query(TestPlan).filter(TestPlan.project_id == project.id, TestPlan.title.like(f"{TAG}%")).all():
-        db.delete(plan)
-    for agent in db.query(Agent).filter(Agent.project_id == project.id, Agent.name.like(f"{TAG}%")).all():
-        db.delete(agent)
-    db.flush()
-    for h in db.query(models.Host).filter(
-        models.Host.project_id == project.id, models.Host.ip_address.in_([LB_IP, OLD_LB_IP]),
-    ).all():
-        db.delete(h)
-    for s in db.query(models.Scan).filter(
-        models.Scan.project_id == project.id, models.Scan.filename.like(f"{TAG}%"),
-    ).all():
-        db.delete(s)
-    db.flush()
-    from app.db.models_findings import FindingHost
+# ---------------------------------------------------------------------------
+# Ownership: a manifest of exactly what one run created
+# ---------------------------------------------------------------------------
+# Project membership or a matching fixture IP is NOT ownership — an operator
+# may have imported the same name, declared the same domain or scanned the
+# same address.  So the seed snapshots every table it touches before and
+# after, records the ids that appeared (plus the display names it changed on
+# pre-existing hosts), and --reset deletes only those.  No manifest, no reset.
+from app.db.models_findings import Finding, FindingHost  # noqa: E402
+from app.db.models_vulnerability import Vulnerability  # noqa: E402
+
+_OWNED_TABLES = {
+    # attribute -> (model, project filter column or None for join-through)
+    "dns_names": models.DNSName,
+    "dns_records": models.DNSRecord,
+    "scope_domains": models.ScopeDomain,
+    "hosts": models.Host,
+    "scans": models.Scan,
+    "web_interfaces": models.WebInterface,
+    "vulnerabilities": Vulnerability,
+    "findings": Finding,
+    "finding_hosts": FindingHost,
+    "test_plans": TestPlan,
+    "agents": Agent,
+    "execution_sessions": ExecutionSession,
+}
+
+
+def _ids(db, project, key):
+    """Current row ids of one owned table, scoped to the project."""
+    m = _OWNED_TABLES[key]
+    if key == "scope_domains":
+        q = db.query(m.id).filter(m.scope_id.in_(db.query(models.Scope.id).filter(models.Scope.project_id == project.id)))
+    elif key == "vulnerabilities":
+        q = db.query(m.id).join(models.Host, models.Host.id == m.host_id).filter(models.Host.project_id == project.id)
+    elif key == "finding_hosts":
+        q = db.query(m.id).join(Finding, Finding.id == m.finding_id).filter(Finding.project_id == project.id)
+    elif key == "execution_sessions":
+        q = db.query(m.id).join(TestPlan, TestPlan.id == m.test_plan_id).filter(TestPlan.project_id == project.id)
+    else:
+        q = db.query(m.id).filter(m.project_id == project.id)
+    return {r[0] for r in q.all()}
+
+
+def _snapshot(db, project):
+    return {key: _ids(db, project, key) for key in _OWNED_TABLES}
+
+
+def _manifest_path(project, manifest_dir):
+    import os
+    return os.path.join(manifest_dir, f"seed_named_assets.project-{project.id}.json")
+
+
+def _write_manifest(path, before, after, hostname_before):
+    import json, os
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    created = {key: sorted(after[key] - before[key]) for key in _OWNED_TABLES}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({
+            "tag": TAG, "written_at": NOW.isoformat(), "created": created,
+            # host_id -> [hostname, hostname_source] as they were before we
+            # applied PTR / operator display names to pre-existing hosts.
+            "hostname_before": {str(k): v for k, v in hostname_before.items()},
+        }, fh, indent=1)
+    return created
+
+
+def reset(db, project, manifest_dir):
+    """Remove ONLY the rows a previous run created (per its manifest) and
+    restore the display names it changed.  Refuses without a manifest, and
+    refuses to delete a seeded name that something outside the manifest has
+    since come to reference (a raw delete would SET NULL two endpoint rows
+    onto one key — the API returns 409 for the same reason)."""
+    import json, os
+    path = _manifest_path(project, manifest_dir)
+    if not os.path.exists(path):
+        raise SystemExit(f"refusing to reset: no manifest at {path} — ownership of existing rows cannot be established")
+    with open(path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    created = {k: set(v) for k, v in manifest["created"].items()}
+
     from app.db.models_agent import TestPlanEntry
-    still_referenced = (
+    foreign_refs = (
         db.query(models.DNSName.fqdn)
-        .filter(models.DNSName.project_id == project.id)
+        .filter(models.DNSName.id.in_(created["dns_names"] or {-1}))
         .filter(
-            db.query(FindingHost.id).filter(FindingHost.name_id == models.DNSName.id).exists()
-            | db.query(TestPlanEntry.id).filter(TestPlanEntry.name_id == models.DNSName.id).exists()
+            db.query(FindingHost.id).filter(
+                FindingHost.name_id == models.DNSName.id, ~FindingHost.id.in_(created["finding_hosts"] or {-1}),
+            ).exists()
+            | db.query(TestPlanEntry.id).filter(
+                TestPlanEntry.name_id == models.DNSName.id,
+                ~TestPlanEntry.test_plan_id.in_(created["test_plans"] or {-1}),
+            ).exists()
         )
         .all()
     )
-    if still_referenced:
+    if foreign_refs:
         raise SystemExit(
-            f"refusing to reset: names still referenced outside the seeded rows: "
-            f"{[r[0] for r in still_referenced]} — detach them first"
+            "refusing to reset: seeded names are now referenced by rows this script did not create: "
+            f"{[r[0] for r in foreign_refs]} — detach them first"
         )
-    n = db.query(models.DNSName).filter(models.DNSName.project_id == project.id).delete()
-    db.query(models.ScopeDomain).filter(
-        models.ScopeDomain.scope_id.in_(db.query(models.Scope.id).filter(models.Scope.project_id == project.id))
-    ).delete(synchronize_session=False)
+
+    def _delete(key):
+        ids = created.get(key) or set()
+        if not ids:
+            return 0
+        m = _OWNED_TABLES[key]
+        rows = db.query(m).filter(m.id.in_(ids)).all()
+        for r in rows:
+            db.delete(r)
+        db.flush()
+        return len(rows)
+
+    removed = {}
+    # Dependency order: plans (cascade entries/results/sessions) and agents,
+    # then findings / endpoints / scanner rows / web interfaces we created,
+    # then hosts we created (their remaining children cascade), scans, then
+    # observations and names, then scope domains.
+    for key in ("test_plans", "agents", "execution_sessions", "finding_hosts", "findings",
+                "vulnerabilities", "web_interfaces", "hosts", "scans", "dns_records", "dns_names", "scope_domains"):
+        removed[key] = _delete(key)
+    for host_id, (hostname, source) in manifest.get("hostname_before", {}).items():
+        h = db.get(models.Host, int(host_id))
+        if h is not None:
+            h.hostname, h.hostname_source = hostname, source
     db.commit()
-    print(f"  reset: removed {n} names + scope domains, LB hosts, tagged scans/plan")
+    os.remove(path)
+    print("  reset: removed " + ", ".join(f"{v} {k}" for k, v in removed.items() if v)
+          + f"; restored {len(manifest.get('hostname_before', {}))} display name(s)")
 
 
-def seed(db, project, owner):
+def seed(db, project, owner, manifest_dir):
+    before = _snapshot(db, project)
+    hostname_before = {}
+    _seed_body(db, project, owner, hostname_before)
+    after = _snapshot(db, project)
+    created = _write_manifest(_manifest_path(project, manifest_dir), before, after, hostname_before)
+    print("  manifest: " + ", ".join(f"{len(v)} {k}" for k, v in created.items() if v))
+
+
+def _seed_body(db, project, owner, hostname_before):
     scope = db.query(models.Scope).filter(models.Scope.project_id == project.id).first()
     if scope is None:
         scope = models.Scope(project_id=project.id, name="Demo scope")
@@ -170,6 +263,12 @@ def seed(db, project, owner):
     httpx = _scan(db, project, "httpx.jsonl", "httpx", 1)
     nikto = _scan(db, project, "nikto.json", "nikto", 1)
 
+    # Pre-existing hosts on the fixture addresses are REUSED, never owned —
+    # but their display names may change below, so snapshot them for reset.
+    for h in db.query(models.Host).filter(
+        models.Host.project_id == project.id, models.Host.ip_address.in_([LB_IP, OLD_LB_IP]),
+    ).all():
+        hostname_before[h.id] = [h.hostname, h.hostname_source]
     lb = dedup.find_or_create_host(LB_IP, new_dns.id, {
         "hostname": LB_PTR, "hostname_source": "ptr", "hostnames": [(LB_PTR, "PTR")], "state": "up",
     }, project_id=project.id)
@@ -242,7 +341,6 @@ def seed(db, project, owner):
     db.flush()
 
     # Promote both vhost findings → ONE umbrella finding, BOTH endpoints kept.
-    from app.db.models_vulnerability import Vulnerability
     fsvc = FindingService(db)
     vhost_vulns = (
         db.query(Vulnerability)
@@ -268,6 +366,7 @@ def seed(db, project, owner):
     labels = ["dc01", "fs01", "wiki", "print01", "git", "jump"]
     named_internal = None
     for h, label in zip(internal, labels):
+        hostname_before[h.id] = [h.hostname, h.hostname_source]   # restored on --reset
         ptr = f"{label}.demo.local"
         dedup.find_or_create_host(h.ip_address, internal_scan.id, {
             "hostname": ptr, "hostname_source": "ptr", "hostname_kind": "PTR",
@@ -372,8 +471,15 @@ def summarize(db, project):
 def main():
     ap = argparse.ArgumentParser(description="Seed a named-asset scenario into an existing project.")
     ap.add_argument("--project", default="Demo — Insights Eval")
-    ap.add_argument("--reset", action="store_true", help="Remove a previous run's rows first.")
+    ap.add_argument("--reset", action="store_true",
+                    help="Remove ONLY the rows a previous run created (per its manifest), then re-seed.")
+    ap.add_argument("--reset-only", action="store_true", help="Remove the previous run's rows and stop.")
+    ap.add_argument("--manifest-dir", default=None,
+                    help="Where the ownership manifest lives (default: the app's UPLOAD_DIR).")
     args = ap.parse_args()
+    import os
+    from app.core.config import settings
+    manifest_dir = args.manifest_dir or settings.UPLOAD_DIR
     db = SessionLocal()
     try:
         project = db.query(Project).filter(Project.name == args.project).first()
@@ -381,13 +487,15 @@ def main():
             print(f"Project '{args.project}' not found — run seed_demo_data.py first.")
             return 1
         owner = (db.query(User).filter(User.role == UserRole.ADMIN).first() or db.query(User).first())
-        if args.reset:
-            reset(db, project)
-        elif db.query(models.DNSName).filter(models.DNSName.project_id == project.id).first():
-            print("Project already has names. Re-run with --reset to replace this scenario.")
+        if args.reset or args.reset_only:
+            reset(db, project, manifest_dir)
+            if args.reset_only:
+                return 0
+        elif os.path.exists(_manifest_path(project, manifest_dir)):
+            print("This project already carries a seeded scenario. Re-run with --reset to replace it.")
             return 1
         print(f"Seeding named assets into '{project.name}' (id={project.id})…")
-        seed(db, project, owner)
+        seed(db, project, owner, manifest_dir)
         summarize(db, project)
         print("Done. Open Inventory → Names, the Scopes page (Domains in scope), the LB host "
               f"{LB_IP}, Findings, and the seeded test plan.")
