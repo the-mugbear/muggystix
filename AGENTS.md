@@ -401,6 +401,7 @@ The separate **sanity-check gate** still applies: completion also needs a passin
 - `agent_name` — for attribution in findings
 - `hosts[]` — one per entry, sorted by priority (critical first):
   - `entry_id`, `host_id`, `ip_address`, `hostname`, `os_name`
+  - `target_fqdn` — the named endpoint the entry targets, or null for the bare address. Commands carry `{fqdn}` resolved to it. When you record a result for such an entry, include `observed_ip` (the address the command actually reached) — a name behind a load balancer may resolve differently at run time, and the evidence must reference the real binding
   - `priority`, `test_phase`, `entry_status`
   - `sanity_check_passed` — null if not yet checked, true/false after
   - `tests[]` — each proposed test with `{ip}` resolved in commands, plus `result_status` (null if not yet recorded)
@@ -1018,9 +1019,11 @@ Each item in `proposed_tests` **must** be a structured object, not a plain strin
 |-------|----------|-------------|
 | `tool` | Yes | Tool name (e.g., `nmap`, `crackmapexec`, `curl`, `smbclient`, `nikto`) |
 | `description` | Yes | What this test checks and why |
-| `command` | No | Exact command to run. Use `{ip}` as placeholder for the target IP |
+| `command` | No | Exact command to run. Use `{ip}` as placeholder for the target IP, and `{fqdn}` for the entry's `target_fqdn` when set |
 | `expected_result` | No | What to look for in the output. What constitutes a finding vs. a pass |
 | `references` | No | URLs to tool docs, CVEs, or technique references |
+
+**Named endpoints (optional, entry-level).** A host behind a load balancer or NAT carries many names; `hostname` on the host is only its display name. `GET /agent/hosts/{host_id}` returns `names` — every FQDN observed at that address. When a test is against a *name* (web tests need the Host header / SNI to reach the right vhost), set `target_fqdn` on the entry to one of those names and write commands with `{fqdn}`. A `target_fqdn` that is not in the host's `names` is rejected with 400 — the target-in-inventory guardrail applied to names. Leave it unset for tests against the bare address.
 
 **Bad** (too vague — the analyst can't act on it): `"proposed_tests": ["SMB null session check", "Anonymous FTP test"]`. **Good** is the structured object shown above — a `tool`, an exact `{ip}` command, and an `expected_result` stating what counts as a finding vs. a pass.
 

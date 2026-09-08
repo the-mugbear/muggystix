@@ -33,7 +33,7 @@ class TestNormalize:
         ("  api.example.com ", ("api.example.com", "fqdn")),
         ("https://Portal.example.com/login?x=1", ("portal.example.com", "fqdn")),
         ("portal.example.com:8443", ("portal.example.com", "fqdn")),
-        ("*.Example.com", ("example.com", "wildcard")),
+        ("*.Example.com", ("*.example.com", "wildcard")),
         ("_dmarc.example.com", ("_dmarc.example.com", "fqdn")),
         ("db01", ("db01", "fqdn")),
         ("bücher.example", ("xn--bcher-kva.example", "fqdn")),
@@ -278,12 +278,12 @@ class TestParsersKeepNames:
         f.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
         HttpxParser(db_session).parse_file(str(f), "httpx.jsonl", project_id=test_project.id)
         names = {n.fqdn: n.kind for n in db_session.query(models.DNSName).all()}
-        assert names == {"unresolved.example.com": "fqdn", "portal.example.com": "fqdn", "example.com": "wildcard"}
+        assert names == {"unresolved.example.com": "fqdn", "portal.example.com": "fqdn", "*.example.com": "wildcard"}
         kinds = {(r.name.fqdn, r.record_type) for r in db_session.query(models.DNSRecord).all()}
         assert ("unresolved.example.com", DNS_OBS_DISCOVERED) in kinds
         assert ("portal.example.com", DNS_OBS_HTTP) in kinds
         assert ("portal.example.com", DNS_OBS_CERT) in kinds
-        assert ("example.com", DNS_OBS_CERT) in kinds
+        assert ("*.example.com", DNS_OBS_CERT) in kinds
         assert db_session.query(models.Host).count() == 1
 
     def test_dnsx_rows_bind_to_names_and_keep_resolver(self, db_session, test_project, tmp_path):
@@ -323,7 +323,7 @@ class TestDomainScope:
     def test_wildcard_name_is_never_in_scope_by_itself(self, db_session, test_project):
         scope = _scope(db_session, test_project)
         svc.upsert_scope_domains(db_session, scope, [("*.example.com", False, None)])
-        svc.get_or_create_name(db_session, test_project.id, "example.com", kind="wildcard")
+        svc.get_or_create_name(db_session, test_project.id, "*.example.com", kind="wildcard")
         assert db_session.query(models.DNSName).filter(svc.name_in_scope_condition(test_project.id)).count() == 0
 
     def test_host_reached_via_in_scope_name_is_neither_in_nor_out(self, client, db_session, test_project):
@@ -370,7 +370,230 @@ class TestDomainScope:
         assert r.json()["added"] == 0
         dom_id = body["domains"][0]["id"]
         assert client.delete(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains/{dom_id}").status_code == 200
-        assert client.get(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains").json() == []
+        listing = client.get(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains").json()
+        assert listing["items"] == [] and listing["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Review fixes (v2.323.0)
+# ---------------------------------------------------------------------------
+class TestReviewFixes:
+    def test_wildcard_and_base_domain_are_distinct_assets_either_order(self, db_session, test_project):
+        for order in (["*.example.com", "example.com"], ["example.com", "*.example.com"]):
+            svc.import_names(db_session, project_id=test_project.id, raw_names=order, created_by_id=None)
+        rows = {n.fqdn: n.kind for n in db_session.query(models.DNSName).all()}
+        assert rows == {"example.com": "fqdn", "*.example.com": "wildcard"}
+        # Certificate wildcard evidence lands on the pattern, never the base.
+        scan = _scan(db_session, test_project, tool="httpx")
+        svc.record_observation(db_session, project_id=test_project.id, name="*.example.com",
+                               record_type=DNS_OBS_CERT, value="203.0.113.20", scan_id=scan.id)
+        base = db_session.query(models.DNSName).filter_by(fqdn="example.com").one()
+        assert db_session.query(models.DNSRecord).filter_by(name_id=base.id).count() == 1  # its IMPORT only
+
+    def test_normalisation_collisions_are_one_observation(self, db_session, test_project):
+        scan = _scan(db_session, test_project)
+        a = svc.record_observation(db_session, project_id=test_project.id, name="A.Example.com",
+                                   record_type="A", value="10.0.0.1", scan_id=scan.id)
+        b = svc.record_observation(db_session, project_id=test_project.id, name="a.example.com.",
+                                   record_type="A", value="10.0.0.1", scan_id=scan.id)
+        assert a is not None and b is None
+        assert db_session.query(models.DNSName).count() == 1
+
+    def test_deleting_both_scans_in_either_order_succeeds(self, db_session, test_project):
+        """Two scans hold the same answer; deleting both must not trip the
+        observation identity on the orphaned (scan_id NULL) rows."""
+        for first, second in ((0, 1), (1, 0)):
+            db_session.query(models.DNSRecord).delete()
+            db_session.query(models.DNSName).delete()
+            db_session.query(models.Scan).delete()
+            scans = [_scan(db_session, test_project) for _ in range(2)]
+            for s in scans:
+                svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                                       record_type="A", value="203.0.113.20", scan_id=s.id, resolver_name="1.1.1.1:53")
+            db_session.flush()
+            db_session.delete(scans[first])
+            db_session.flush()
+            db_session.delete(scans[second])
+            db_session.flush()  # would raise IntegrityError under the old single index
+            orphans = db_session.query(models.DNSRecord).filter(models.DNSRecord.scan_id.is_(None)).count()
+            assert orphans == 2
+
+    def test_historical_answer_does_not_confer_coverage(self, db_session, test_project):
+        """Name moved .10 -> .20: only .20 is reachable; .10 is out of scope
+        again, and the by-host view files .10 under 'previous'."""
+        from app.services.scope_coverage import out_of_scope_hosts
+        scope = _scope(db_session, test_project)
+        svc.upsert_scope_domains(db_session, scope, [("portal.example.com", False, None)])
+        t0 = datetime.now(timezone.utc) - timedelta(days=7)
+        old = _scan(db_session, test_project, when=t0)
+        new = _scan(db_session, test_project)
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                               record_type="A", value="203.0.113.10", scan_id=old.id, observed_at=t0)
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                               record_type="A", value="203.0.113.20", scan_id=new.id,
+                               observed_at=datetime.now(timezone.utc))
+        h_old = models.Host(ip_address="203.0.113.10", project_id=test_project.id, state="up")
+        h_new = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
+        db_session.add_all([h_old, h_new])
+        db_session.flush()
+        hosts, total = out_of_scope_hosts(db_session, test_project.id)
+        assert total == 1 and hosts[0].ip_address == "203.0.113.10"
+        assert svc.names_per_address(db_session, test_project.id, ["203.0.113.10", "203.0.113.20"]) == {"203.0.113.20": 1}
+
+    def test_by_host_view_splits_current_previous_other(self, client, db_session, test_project):
+        t0 = datetime.now(timezone.utc) - timedelta(days=7)
+        old = _scan(db_session, test_project, when=t0)
+        new = _scan(db_session, test_project)
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                               record_type="A", value="203.0.113.10", scan_id=old.id, observed_at=t0)
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                               record_type="A", value="203.0.113.20", scan_id=new.id,
+                               observed_at=datetime.now(timezone.utc))
+        svc.record_observation(db_session, project_id=test_project.id, name="cert-only.example.com",
+                               record_type=DNS_OBS_CERT, value="203.0.113.10", scan_id=new.id)
+        h_old = models.Host(ip_address="203.0.113.10", project_id=test_project.id, state="up")
+        db_session.add(h_old)
+        db_session.commit()
+        body = client.get(f"/api/v1/projects/{test_project.id}/names/by-host/{h_old.id}").json()
+        assert body["current"] == []
+        assert [b["fqdn"] for b in body["previous"]] == ["portal.example.com"]
+        assert [b["fqdn"] for b in body["other"]] == ["cert-only.example.com"]
+        assert body["in_scope_via_names"] is False
+
+    def test_reimport_query_budget(self, db_session, test_project, test_engine):
+        """A no-change re-import must not issue a statement per name."""
+        from sqlalchemy import event
+        names = [f"host{i}.example.com" for i in range(100)]
+        svc.import_names(db_session, project_id=test_project.id, raw_names=names, created_by_id=None)
+        db_session.flush()
+        count = {"n": 0}
+
+        def _before(*_a, **_k):
+            count["n"] += 1
+
+        event.listen(test_engine, "before_cursor_execute", _before)
+        try:
+            stats = svc.import_names(db_session, project_id=test_project.id, raw_names=names, created_by_id=None)
+        finally:
+            event.remove(test_engine, "before_cursor_execute", _before)
+        assert stats["names_created"] == 0 and stats["observations_recorded"] == 0
+        assert count["n"] <= 6, f"re-import of 100 names issued {count['n']} statements"
+
+    def test_scope_domain_listing_is_paged_and_counts_set_based(self, client, db_session, test_project, test_engine):
+        from sqlalchemy import event
+        scope = _scope(db_session, test_project)
+        svc.upsert_scope_domains(
+            db_session, scope, [(f"d{i}.example.com", i % 2 == 0, None) for i in range(30)],
+        )
+        for i in range(30):
+            svc.get_or_create_name(db_session, test_project.id, f"d{i}.example.com")
+            svc.get_or_create_name(db_session, test_project.id, f"x.d{i}.example.com")
+        db_session.commit()
+        count = {"n": 0}
+
+        def _before(*_a, **_k):
+            count["n"] += 1
+
+        event.listen(test_engine, "before_cursor_execute", _before)
+        try:
+            body = client.get(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains?limit=10").json()
+        finally:
+            event.remove(test_engine, "before_cursor_execute", _before)
+        assert body["total"] == 30 and len(body["items"]) == 10 and body["has_more"] is True
+        # Even-numbered entries include subdomains (exact + x.<domain> = 2);
+        # odd ones are exact-only (1).  Collation decides which land on page 1.
+        for d in body["items"]:
+            idx = int(d["domain"].split(".")[0][1:])
+            assert d["name_count"] == (2 if idx % 2 == 0 else 1), d
+        assert count["n"] <= 12, f"paged scope-domain listing issued {count['n']} statements"
+
+
+# ---------------------------------------------------------------------------
+# Phases two and three (v2.323.0)
+# ---------------------------------------------------------------------------
+class TestNamedEndpoints:
+    def test_web_interfaces_bind_to_the_url_name(self, db_session, test_project, tmp_path):
+        from app.parsers.httpx_parser import HttpxParser
+        rows = [
+            {"url": "https://portal.example.com", "host": "portal.example.com", "host_ip": "203.0.113.20",
+             "port": 443, "scheme": "https", "status_code": 200},
+            {"url": "https://203.0.113.20:8443", "host": "203.0.113.20", "host_ip": "203.0.113.20",
+             "port": 8443, "scheme": "https", "status_code": 200},
+        ]
+        f = tmp_path / "httpx.jsonl"
+        f.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        HttpxParser(db_session).parse_file(str(f), "httpx.jsonl", project_id=test_project.id)
+        wis = {w.url: w for w in db_session.query(models.WebInterface).all()}
+        assert wis["https://portal.example.com"].name.fqdn == "portal.example.com"
+        assert wis["https://203.0.113.20:8443"].name_id is None
+
+    def test_nikto_findings_anchor_to_the_name_and_promotion_inherits_it(self, db_session, test_project, tmp_path):
+        from app.parsers.nikto_parser import NiktoParser
+        from app.services.finding_service import FindingService
+        from app.db.models_vulnerability import Vulnerability
+        # nikto JSON: one record per finding, each carrying its own target.
+        payload = {"vulnerabilities": [
+            {"id": "999990", "msg": "Test header missing", "url": "/", "OSVDB": "0",
+             "ip": "203.0.113.20", "hostname": "portal.example.com", "port": "443"},
+        ]}
+        f = tmp_path / "nikto.json"
+        f.write_text(json.dumps(payload))
+        NiktoParser(db_session).parse_file(str(f), "nikto.json", project_id=test_project.id)
+        vuln = db_session.query(Vulnerability).one()
+        assert vuln.name.fqdn == "portal.example.com"
+        finding = FindingService(db_session).promote_vulnerability(
+            vuln=vuln, project_id=test_project.id, actor_id=None,
+        )
+        db_session.flush()
+        assert [fh.name.fqdn for fh in finding.hosts] == ["portal.example.com"]
+
+    def test_plan_entry_target_fqdn_must_be_bound_to_the_host(self, db_session, test_project, test_plan):
+        from app.services.test_plan_service import TestPlanService
+        scan = _scan(db_session, test_project)
+        host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
+        db_session.add(host)
+        db_session.flush()
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                               record_type="A", value="203.0.113.20", scan_id=scan.id)
+        svc.get_or_create_name(db_session, test_project.id, "elsewhere.example.com")
+        plan_svc = TestPlanService(db_session)
+        base = {"host_id": host.id, "priority": "high", "test_phase": "enumeration",
+                "proposed_tests": [{"tool": "curl", "description": "x", "command": "curl https://{fqdn}/"}],
+                "rationale": "r"}
+        with pytest.raises(ValueError, match="never been observed"):
+            plan_svc.add_entries(test_plan, [{**base, "target_fqdn": "elsewhere.example.com"}], "user", 1)
+        with pytest.raises(ValueError, match="not a name"):
+            plan_svc.add_entries(test_plan, [{**base, "target_fqdn": "unknown.example.org"}], "user", 1)
+        created = plan_svc.add_entries(test_plan, [{**base, "target_fqdn": "Portal.Example.com"}], "user", 1)
+        assert created[0].target_name.fqdn == "portal.example.com"
+
+    def test_execution_result_observed_ip_records_tested_binding(self, db_session, test_project, test_plan):
+        from app.db.models import DNS_OBS_TESTED
+        from app.db.models_agent import TestPlanEntry
+        from app.api.v1.endpoints.agent_execution import _record_tested_binding, _validate_observed_ip
+        from fastapi import HTTPException
+        scan = _scan(db_session, test_project)
+        host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
+        db_session.add(host)
+        db_session.flush()
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
+                               record_type="A", value="203.0.113.20", scan_id=scan.id)
+        name = db_session.query(models.DNSName).one()
+        entry = TestPlanEntry(test_plan_id=test_plan.id, host_id=host.id, name_id=name.id, priority="high",
+                              test_phase="enumeration", proposed_tests=[], rationale="r")
+        db_session.add(entry)
+        db_session.flush()
+        db_session.refresh(entry)
+        assert _validate_observed_ip(" 203.0.113.21 ") == "203.0.113.21"
+        with pytest.raises(HTTPException):
+            _validate_observed_ip("portal.example.com")
+        _record_tested_binding(db_session, entry, "203.0.113.21")
+        tested = db_session.query(models.DNSRecord).filter_by(record_type=DNS_OBS_TESTED).one()
+        assert (tested.name_id, tested.value) == (name.id, "203.0.113.21")
+
+    def test_agent_host_detail_lists_names(self, db_session, test_project):
+        from app.api.v1.endpoints.agent_schemas import HostDetail
+        assert "names" in HostDetail.model_fields
 
 
 # ---------------------------------------------------------------------------

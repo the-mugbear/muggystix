@@ -213,37 +213,55 @@ def names_for_host(
         raise HTTPException(status_code=404, detail="Host not found")
     r, n = models.DNSRecord, models.DNSName
     in_scope = svc.name_in_scope_condition(project.id).label("in_scope")
+    # is_current uses the ONE binding rule (dns_name_service
+    # .current_binding_condition) so this view and host coverage agree: a
+    # name that moved away from this address is "previously resolved here",
+    # never "current".
+    is_current = svc.current_binding_condition(r).label("is_current")
     rows = (
-        db.query(n, in_scope, r.record_type, func.max(func.coalesce(r.observed_at, r.created_at)))
+        db.query(n, in_scope, r.record_type, is_current, func.max(func.coalesce(r.observed_at, r.created_at)))
         .join(r, r.name_id == n.id)
         .filter(
             r.project_id == project.id,
             r.value == host.ip_address,
             r.record_type.in_(DNS_ADDRESS_VALUED_TYPES),
         )
-        .group_by(n.id, r.record_type)
+        .group_by(n.id, r.record_type, is_current)
         .all()
     )
     grouped: Dict[int, dict] = {}
-    for name, scoped, rtype, last in rows:
+    for name, scoped, rtype, cur, last in rows:
         g = grouped.setdefault(
             name.id,
-            {"name": name, "in_scope": bool(scoped), "types": set(), "last": None},
+            {"name": name, "in_scope": bool(scoped), "types": set(), "last": None,
+             "current": False, "historical": False},
         )
         g["types"].add(rtype)
+        if rtype in DNS_RESOLVING_TYPES:
+            if cur:
+                g["current"] = True
+            else:
+                g["historical"] = True
         if last is not None and (g["last"] is None or svc._cmp_ts(last, g["last"]) > 0):
             g["last"] = last
     current: List[HostNameBinding] = []
+    previous: List[HostNameBinding] = []
     other: List[HostNameBinding] = []
     for g in sorted(grouped.values(), key=lambda x: x["name"].fqdn):
         binding = HostNameBinding(
             name_id=g["name"].id, fqdn=g["name"].fqdn, kind=g["name"].kind,
             in_scope=g["in_scope"], record_types=sorted(g["types"]), last_observed=g["last"],
         )
-        (current if g["types"] & set(DNS_RESOLVING_TYPES) else other).append(binding)
+        if g["current"]:
+            current.append(binding)
+        elif g["historical"]:
+            previous.append(binding)
+        else:
+            other.append(binding)
     return HostNamesResponse(
         host_id=host.id,
         current=current,
+        previous=previous,
         other=other,
         in_scope_via_names=any(b.in_scope and b.kind == "fqdn" for b in current),
     )

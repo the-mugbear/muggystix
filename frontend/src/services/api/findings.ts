@@ -19,6 +19,10 @@ export interface FindingHostInfo {
   host_id: number;
   ip_address: string | null;
   hostname: string | null;
+  // v5.194.0 — the named endpoint on this host the finding applies to
+  // (inherited from the scanner row / plan entry); null = host-level.
+  name_id?: number | null;
+  fqdn?: string | null;
   host_status: string;
 }
 

@@ -285,6 +285,15 @@ def _ingest_results(
                 f"{type(raw_is_finding).__name__}"
             )
             raw_is_finding = False
+        # v2.323.0 — observed_ip: kept only when it parses as an IP literal
+        # (bundles are agent-authored JSON; a bad value is dropped, not fatal).
+        observed_ip = raw.get("observed_ip")
+        if observed_ip is not None:
+            try:
+                import ipaddress as _ipaddress
+                observed_ip = str(_ipaddress.ip_address(str(observed_ip).strip()))
+            except ValueError:
+                observed_ip = None
         payload = dict(
             status=status,
             command_run=raw.get("command_run"),
@@ -293,6 +302,7 @@ def _ingest_results(
             severity=severity,
             is_finding=raw_is_finding is True,
             executed_at=executed_at,
+            observed_ip=observed_ip,
         )
 
         existing = (

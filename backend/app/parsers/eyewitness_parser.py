@@ -38,6 +38,7 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.dns_name_service import ObservationCache, bind_url_name
 from app.db import models
 from app.parsers.parser_utils import (
     correlate_scan,
@@ -112,6 +113,7 @@ class EyewitnessParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
+        self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -423,6 +425,12 @@ class EyewitnessParser:
             )
             .first()
         )
+        # Phase 2 — named endpoint from the URL (+ HTTP observation when the
+        # record carried an address).
+        name_id = bind_url_name(
+            self.db, project_id=self._project_id, url=url, ip_address=ip,
+            scan_id=scan.id, cache=self._name_cache,
+        )
         if existing is None:
             wi = models.WebInterface(
                 scan_id=scan.id,
@@ -434,6 +442,7 @@ class EyewitnessParser:
                 protocol=protocol or None,
                 port=port,
                 ip_address=ip,
+                name_id=name_id,
                 status_code=response_code,
                 title=(title or "")[:500] or None,
                 server_header=(server or "")[:255] or None,

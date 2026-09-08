@@ -33,6 +33,7 @@ from app.parsers.parser_utils import (
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.cert_fields import parse_cert_not_after, _classify_tls_version
+from app.services.dns_name_service import ObservationCache, bind_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class TestsslParser:
         self._project_id: Optional[int] = None
         self._host_cache: dict = {}
         self._port_cache: dict = {}
+        self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -187,11 +189,18 @@ class TestsslParser:
                 # would otherwise collapse to one URL (and collide on the unique
                 # (scan_id, url, source) constraint across its distinct hosts).
                 url = f"https://{ip}:{port}"
+                # Phase 2 — testssl knows the NAME it probed (SNI) even though
+                # the URL is keyed by IP; bind it + record the HTTP observation.
+                name_id = bind_hostname(
+                    self.db, project_id=self._project_id, hostname=hostname,
+                    ip_address=ip, scan_id=scan.id, cache=self._name_cache,
+                )
                 self.db.add(models.WebInterface(
                     scan_id=scan.id, host_id=host_row.id,
                     port_id=port_row.id if port_row else None,
                     project_id=self._project_id, source="testssl",
                     url=url, protocol="https", port=port, ip_address=ip,
+                    name_id=name_id,
                     tls_weak_protocol=weak,
                     cert_not_after=t["not_after"],
                     cert_self_signed=t["self_signed"],

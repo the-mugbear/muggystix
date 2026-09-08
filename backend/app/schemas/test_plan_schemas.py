@@ -22,6 +22,9 @@ class TestPlanEntryResponse(BaseModel):
     host_id: int
     host_ip: Optional[str] = None
     host_hostname: Optional[str] = None
+    # v2.323.0 — the named endpoint this entry targets (null = bare address).
+    name_id: Optional[int] = None
+    target_fqdn: Optional[str] = None
     priority: str
     test_phase: str
     proposed_tests: List[ProposedTestItem]
@@ -263,6 +266,9 @@ class EntryCreate(BaseModel):
     proposed_tests: List[ProposedTestItem]
     rationale: str = Field(..., max_length=4096)
     notes: Optional[str] = Field(None, max_length=8192)
+    # v2.323.0 — optional named endpoint on the host (must be bound to it by
+    # observation; see TestPlanService.add_entries).
+    target_fqdn: Optional[str] = Field(None, max_length=253)
 
 
 class EntryBatch(BaseModel):

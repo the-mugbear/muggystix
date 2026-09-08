@@ -252,6 +252,10 @@ def upsert_vulnerability(
     cve_id: Optional[str] = None,
     solution: Optional[str] = None,
     references: Optional[list[str]] = None,
+    # v2.323.0 — the named endpoint the finding was observed at (web scanners
+    # test a name, not a bare address).  Stamped on create; filled on update
+    # when the existing row has none.
+    name_id: Optional[int] = None,
     # Onboarding seam for exploitability: this shared helper does NOT set
     # `Vulnerability.exploitable` today — only the Nessus path
     # (VulnerabilityService) does.  To let another scanner (e.g. Qualys) feed the
@@ -292,6 +296,8 @@ def upsert_vulnerability(
         existing.solution = solution or existing.solution
         if references:
             existing.references = json.dumps(references)
+        if name_id is not None and existing.name_id is None:
+            existing.name_id = name_id
         return existing
 
     vulnerability = Vulnerability(
@@ -304,6 +310,7 @@ def upsert_vulnerability(
         source_plugin_name=title,
         host_id=host_id,
         port_id=port_id,
+        name_id=name_id,
         scan_id=scan_id,
         cve_id=cve_id,
         solution=solution,

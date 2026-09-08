@@ -110,8 +110,11 @@ class NamesSummary(BaseModel):
 
 class HostNamesResponse(BaseModel):
     host_id: int
-    # Names with an A/AAAA observation whose value is this host's address.
+    # Names whose CURRENT A/AAAA batch includes this host's address.
     current: List["HostNameBinding"] = Field(default_factory=list)
+    # Names that resolved here in an earlier scan but no longer do — history,
+    # not coverage.
+    previous: List["HostNameBinding"] = Field(default_factory=list)
     # Names observed at this address only by non-resolving kinds (HTTP, CERT,
     # SCANNER, PTR) — evidence the name is served here, not that it resolves here.
     other: List["HostNameBinding"] = Field(default_factory=list)
@@ -155,7 +158,10 @@ class ScopeDomainBatchResponse(BaseModel):
     added: int
     updated: int
     invalid: List[str]
+    # First page of the scope's domains after the write; ``total`` is the
+    # full count so the caller knows whether to page.
     domains: List[ScopeDomainRow]
+    total: int = 0
 
 
 NameDetail.model_rebuild()

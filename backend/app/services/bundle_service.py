@@ -123,6 +123,14 @@ RESULTS_SCHEMA: Dict[str, Any] = {
                     "executed_at": {
                         "type": ["string", "null"],
                         "description": "ISO 8601 timestamp."
+                    },
+                    "observed_ip": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "The IP the command actually reached (v2.323.0). Record it when the "
+                            "entry has a target_fqdn — a name behind a load balancer may resolve "
+                            "differently at run time."
+                        )
                     }
                 }
             }

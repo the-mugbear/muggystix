@@ -49,18 +49,39 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
   const toast = useToast();
   const [confirmDialog, confirm] = useConfirm();
   const [rows, setRows] = useState<ScopeDomainRow[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState('');
   const [includeSub, setIncludeSub] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const PAGE = 100;
 
+  // Server-paged: a bulk import with declare-scope can create thousands of
+  // entries, so the list loads a page at a time with a load-more affordance.
   const load = async () => {
     try {
       setError(null);
-      setRows(await listScopeDomains(scopeId));
+      const page = await listScopeDomains(scopeId, { skip: 0, limit: PAGE });
+      setRows(page.items);
+      setTotal(page.total);
     } catch (err: unknown) {
       setError(formatApiError(err, 'Failed to load scope domains.'));
+    }
+  };
+
+  const loadMore = async () => {
+    if (!rows) return;
+    setLoadingMore(true);
+    try {
+      const page = await listScopeDomains(scopeId, { skip: rows.length, limit: PAGE });
+      setRows((prev) => [...(prev ?? []), ...page.items]);
+      setTotal(page.total);
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Failed to load more domains.'));
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -83,6 +104,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
         entries.map((domain) => ({ domain, include_subdomains: includeSub })),
       );
       setRows(res.domains);
+      setTotal(res.total);
       setDomainInput('');
       const parts: string[] = [];
       if (res.added) parts.push(`${res.added} added`);
@@ -113,6 +135,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
     try {
       await deleteScopeDomain(scopeId, row.id);
       setRows((prev) => (prev ? prev.filter((r) => r.id !== row.id) : prev));
+      setTotal((t) => Math.max(0, t - 1));
       toast.success(`Removed ${row.domain} from scope`);
       onChanged?.();
     } catch (err: unknown) {
@@ -129,7 +152,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
         <div className="flex flex-wrap items-center gap-xs border-b border-border p-sm">
           <Globe className="size-4 text-primary" aria-hidden />
           <span className="font-medium">Domains in scope</span>
-          {rows && <Badge variant="outline">{rows.length}</Badge>}
+          {rows && <Badge variant="outline">{total.toLocaleString()}</Badge>}
           <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
             Names covered here are in scope; the addresses they resolve to are not made subnet-in-scope.
           </span>
@@ -214,6 +237,17 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
                 ))}
               </TableBody>
             </Table>
+            {rows.length < total && (
+              <div className="flex items-center justify-between border-t border-border p-sm text-metadata text-muted-foreground">
+                <span>
+                  Showing {rows.length.toLocaleString()} of {total.toLocaleString()}
+                </span>
+                <Button size="sm" variant="outline" onClick={loadMore} disabled={loadingMore}>
+                  {loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+                  Load more
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </CardContent>

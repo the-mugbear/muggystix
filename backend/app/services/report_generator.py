@@ -9,7 +9,7 @@ hosts router.
 """
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import or_, and_, distinct, func
+from sqlalchemy import or_, and_, case, distinct, func
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.schemas.schemas import Host
@@ -1258,6 +1258,40 @@ class ReportGenerator:
             })
         return out
 
+    def _names_by_host(self, host_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+        """Names observed at each host's address (v2.323.0), for the dossier
+        identity block: ``[{fqdn, current}]`` sorted current-first then by
+        name.  ``current`` uses the one binding rule from dns_name_service so
+        the report cannot disagree with the inventory."""
+        if not host_ids:
+            return {}
+        from sqlalchemy import func as _func
+        from app.services.dns_name_service import current_binding_condition
+
+        r, n, h = models.DNSRecord, models.DNSName, models.Host
+        rows = (
+            self.db.query(
+                h.id, n.fqdn,
+                _func.max(case((current_binding_condition(r), 1), else_=0)).label("current"),
+            )
+            .join(r, r.value == h.ip_address)
+            .join(n, n.id == r.name_id)
+            .filter(
+                h.id.in_(host_ids),
+                r.project_id == h.project_id,
+                r.record_type.in_(models.DNS_ADDRESS_VALUED_TYPES),
+                n.kind == "fqdn",
+            )
+            .group_by(h.id, n.fqdn)
+            .all()
+        )
+        out: Dict[int, List[Dict[str, Any]]] = {}
+        for hid, fqdn, current in rows:
+            out.setdefault(hid, []).append({"fqdn": fqdn, "current": bool(current)})
+        for entries in out.values():
+            entries.sort(key=lambda e: (not e["current"], e["fqdn"]))
+        return out
+
     def _tester_summaries_by_host(self, host_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
         """``host_id -> [tester summaries]`` — the analyst's per-host
         ``TestPlanEntry.findings`` narrative (skipping empty ones)."""
@@ -2107,6 +2141,7 @@ class ReportGenerator:
         canonical_by_host, promoted_vuln_ids, promoted_exec_ids = self._canonical_findings_by_host(host_ids)
         execution_findings_map = self._execution_findings_by_host(host_ids, promoted_exec_ids)
         tester_summaries_map = self._tester_summaries_by_host(host_ids)
+        names_map = self._names_by_host(host_ids)
 
         return {
             "follow_map": follow_map,
@@ -2119,6 +2154,7 @@ class ReportGenerator:
             "canonical_findings_map": canonical_by_host,
             "promoted_vuln_ids_map": promoted_vuln_ids,
             "execution_findings_map": execution_findings_map,
+            "names_map": names_map,
             "tester_summaries_map": tester_summaries_map,
         }
 
@@ -2170,6 +2206,10 @@ class ReportGenerator:
             "identity": {
                 "ip_address": host.ip_address,
                 "hostname": host.hostname,
+                # v2.323.0 — every name observed at this address (the display
+                # hostname is one of many behind a load balancer).  Each entry:
+                # {fqdn, current} where current = the name resolves here NOW.
+                "names": context.get("names_map", {}).get(host.id, []),
                 "state": host.state,
                 "state_reason": host.state_reason,
             },

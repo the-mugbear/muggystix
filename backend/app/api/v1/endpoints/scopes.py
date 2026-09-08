@@ -939,27 +939,24 @@ def delete_subnet(
 
 def _scope_domain_rows(db: Session, project_id: int, domains: List[ScopeDomain]) -> List[ScopeDomainRow]:
     """Serialize with a per-entry count of the project's concrete names it
-    covers — the operator's check that a declaration actually bites."""
-    n = models.DNSName
-    out: List[ScopeDomainRow] = []
-    for d in domains:
-        cond = n.fqdn == d.domain
-        if d.include_subdomains:
-            cond = or_(
-                cond,
-                n.fqdn.like(dns_name_service._escaped_like_suffix(d.domain), escape="\\"),
-            )
-        count = (
-            db.query(func.count(n.id))
-            .filter(n.project_id == project_id, n.kind == "fqdn", cond)
-            .scalar() or 0
-        )
-        out.append(ScopeDomainRow(
+    covers — the operator's check that a declaration actually bites.  Counts
+    are set-based (two grouped queries for the page), never one per row."""
+    counts = dns_name_service.scope_domain_name_counts(db, project_id, domains)
+    return [
+        ScopeDomainRow(
             id=d.id, scope_id=d.scope_id, domain=d.domain,
             include_subdomains=bool(d.include_subdomains), description=d.description,
-            created_at=d.created_at, name_count=int(count),
-        ))
-    return out
+            created_at=d.created_at, name_count=counts.get(d.id, 0),
+        )
+        for d in domains
+    ]
+
+
+def _scope_domain_page(db: Session, project_id: int, scope_id: int, skip: int, limit: int) -> Paginated[ScopeDomainRow]:
+    q = db.query(ScopeDomain).filter(ScopeDomain.scope_id == scope_id)
+    total = q.with_entities(func.count(ScopeDomain.id)).scalar() or 0
+    rows = q.order_by(ScopeDomain.domain.asc()).offset(skip).limit(limit).all()
+    return Paginated.build(_scope_domain_rows(db, project_id, rows), total, skip, limit)
 
 
 def _load_scope_or_404(db: Session, scope_id: int, project_id: int) -> Scope:
@@ -971,22 +968,20 @@ def _load_scope_or_404(db: Session, scope_id: int, project_id: int) -> Scope:
 
 @router.get(
     "/{scope_id}/domains",
-    response_model=List[ScopeDomainRow],
-    summary="List the domains declared in scope",
+    response_model=Paginated[ScopeDomainRow],
+    summary="List the domains declared in scope (paged)",
 )
 def list_scope_domains(
     scope_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
+    """Paged: a bulk import with declare-scope can create thousands of
+    entries, and the per-entry name counts are computed for the page only."""
     scope = _load_scope_or_404(db, scope_id, project.id)
-    rows = (
-        db.query(ScopeDomain)
-        .filter(ScopeDomain.scope_id == scope.id)
-        .order_by(ScopeDomain.domain.asc())
-        .all()
-    )
-    return _scope_domain_rows(db, project.id, rows)
+    return _scope_domain_page(db, project.id, scope.id, skip, limit)
 
 
 @router.post(
@@ -1012,15 +1007,11 @@ def add_scope_domains(
         created_by_id=current_user.id,
     )
     db.commit()
-    rows = (
-        db.query(ScopeDomain)
-        .filter(ScopeDomain.scope_id == scope.id)
-        .order_by(ScopeDomain.domain.asc())
-        .all()
-    )
+    # First page only — the caller re-lists to page through a large set.
+    page = _scope_domain_page(db, project.id, scope.id, 0, 100)
     return ScopeDomainBatchResponse(
         added=added, updated=updated, invalid=invalid,
-        domains=_scope_domain_rows(db, project.id, rows),
+        domains=page.items, total=page.total,
     )
 
 

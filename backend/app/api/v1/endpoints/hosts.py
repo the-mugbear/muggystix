@@ -1971,6 +1971,10 @@ class WebInterfaceResponse(BaseModel):
     id: int
     source: str
     url: str
+    # v2.323.0 — the named endpoint this interface was reached as (URL
+    # hostname when it's a name); null when the URL targeted an IP literal.
+    name_id: Optional[int] = None
+    fqdn: Optional[str] = None
     protocol: Optional[str] = None
     port: Optional[int] = None
     status_code: Optional[int] = None
@@ -2031,6 +2035,8 @@ def list_host_web_interfaces(
             id=r.id,
             source=r.source,
             url=r.url,
+            name_id=r.name_id,
+            fqdn=r.name.fqdn if r.name else None,
             protocol=r.protocol,
             port=r.port,
             status_code=r.status_code,

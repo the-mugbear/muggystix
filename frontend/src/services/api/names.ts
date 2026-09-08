@@ -115,8 +115,10 @@ export interface HostNameBinding {
 
 export interface HostNamesResponse {
   host_id: number;
-  /** Names with an A/AAAA observation at this address. */
+  /** Names whose CURRENT A/AAAA batch includes this address. */
   current: HostNameBinding[];
+  /** Names that resolved here in an earlier scan but no longer do. */
+  previous: HostNameBinding[];
   /** Names seen here only by non-resolving evidence (HTTP, CERT, SCANNER, PTR). */
   other: HostNameBinding[];
   in_scope_via_names: boolean;
@@ -137,7 +139,9 @@ export interface ScopeDomainBatchResponse {
   added: number;
   updated: number;
   invalid: string[];
+  /** First page of the scope's domains after the write. */
   domains: ScopeDomainRow[];
+  total: number;
 }
 
 export const listNames = async (
@@ -189,8 +193,15 @@ export const getHostNames = async (hostId: number): Promise<HostNamesResponse> =
 
 // --- scope domains ---------------------------------------------------------
 
-export const listScopeDomains = async (scopeId: number): Promise<ScopeDomainRow[]> => {
-  const r = await api.get<ScopeDomainRow[]>(`${p()}/scopes/${scopeId}/domains`);
+export const listScopeDomains = async (
+  scopeId: number,
+  opts: { skip?: number; limit?: number } = {},
+): Promise<Paginated<ScopeDomainRow>> => {
+  const params = new URLSearchParams();
+  if (opts.skip !== undefined) params.set('skip', String(opts.skip));
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  const r = await api.get<Paginated<ScopeDomainRow>>(`${p()}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`);
   return r.data;
 };
 

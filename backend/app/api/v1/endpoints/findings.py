@@ -42,6 +42,8 @@ def _serialize(finding: Finding) -> FindingResponse:
             host_id=fh.host_id,
             ip_address=fh.host.ip_address if fh.host else None,
             hostname=fh.host.hostname if fh.host else None,
+            name_id=fh.name_id,
+            fqdn=fh.name.fqdn if fh.name else None,
             host_status=fh.host_status,
         )
         for fh in finding.hosts

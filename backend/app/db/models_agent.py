@@ -274,6 +274,14 @@ class TestPlanEntry(Base):
         index=True,
     )
 
+    # v2.323.0 — the NAMED endpoint this entry targets, when the tests are
+    # against a name rather than the bare address (web tests behind a load
+    # balancer need the Host header / SNI).  Must be a name bound to
+    # ``host_id`` by observation at draft time (the "target in inventory"
+    # guardrail applied to names).  The entry stays one-per-host
+    # (uq_plan_host); this says WHICH name on that host is the target.
+    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # Test specification
     priority = Column(String(20), nullable=False)          # critical/high/medium/low/info
     test_phase = Column(String(30), nullable=False)        # reconnaissance/enumeration/...
@@ -302,6 +310,7 @@ class TestPlanEntry(Base):
     # Relationships
     test_plan = relationship("TestPlan", back_populates="entries")
     host = relationship("Host", foreign_keys=[host_id])
+    target_name = relationship("DNSName", foreign_keys=[name_id])
     assigned_to = relationship("User", foreign_keys=[assigned_to_id])
 
     __table_args__ = (
@@ -733,6 +742,14 @@ class TestExecutionResult(Base):
     # the "show me every result that bypassed sanity" query.  Empty
     # for the common case where sanity was verified first.
     sanity_override_reason = Column(String(500), nullable=True, index=True)
+
+    # v2.323.0 — the address the command actually hit, as the agent observed
+    # it when the test ran.  Execution EVIDENCE references the particular
+    # binding; the finding itself anchors to the entry's named endpoint, so a
+    # later DNS move doesn't orphan it.  Null when the agent didn't report one
+    # (the entry's host address is the default assumption).  Also recorded as
+    # a TESTED observation on the entry's target name.
+    observed_ip = Column(String(45), nullable=True)
 
     # Relationships
     execution_session = relationship("ExecutionSession", back_populates="test_results")

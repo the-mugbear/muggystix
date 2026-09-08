@@ -25,6 +25,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
@@ -509,7 +510,25 @@ def get_host(
     # Compute vuln summary for consistency with list endpoint
     port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
+    # v2.323.0 — every name observed at this address (any address-valued
+    # evidence kind), most recently seen first; the valid target_fqdn set.
+    _r, _n = models.DNSRecord, models.DNSName
+    name_rows = (
+        db.query(_n.fqdn, func.max(func.coalesce(_r.observed_at, _r.created_at)).label("last"))
+        .join(_r, _r.name_id == _n.id)
+        .filter(
+            _r.project_id == host.project_id,
+            _r.value == host.ip_address,
+            _r.record_type.in_(models.DNS_ADDRESS_VALUED_TYPES),
+            _n.kind == "fqdn",
+        )
+        .group_by(_n.fqdn)
+        .order_by(func.max(func.coalesce(_r.observed_at, _r.created_at)).desc())
+        .limit(200)
+        .all()
+    )
     return HostDetail(
+        names=[fq for fq, _ in name_rows],
         id=host.id,
         ip_address=host.ip_address,
         hostname=host.hostname,

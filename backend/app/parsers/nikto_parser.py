@@ -18,6 +18,7 @@ from app.parsers.parser_utils import (
     persist_host_observation,
     upsert_vulnerability,
 )
+from app.services.dns_name_service import ObservationCache, bind_hostname
 from app.services.host_deduplication_service import HostDeduplicationService
 
 
@@ -31,6 +32,7 @@ class NiktoParser:
     def __init__(self, db: Session):
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
+        self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -159,6 +161,13 @@ class NiktoParser:
             project_id=self._project_id,
         )
         persisted_port = port_map.get((port, "tcp"))
+        # Phase 3 — nikto tested a NAME (Host header selects the vhost); the
+        # finding belongs to that named endpoint, the host is where it was
+        # observed.  Also records the HTTP observation name→address.
+        name_id = bind_hostname(
+            self.db, project_id=self._project_id, hostname=hostname,
+            ip_address=ip_address, scan_id=scan.id, cache=self._name_cache,
+        )
         upsert_vulnerability(
             db=self.db,
             host_id=host.id,
@@ -170,6 +179,7 @@ class NiktoParser:
             port_id=persisted_port.id if persisted_port else None,
             description=description,
             cve_id=cve_id,
+            name_id=name_id,
         )
 
     def _coerce_port(self, value: object) -> Optional[int]:

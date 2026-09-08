@@ -139,6 +139,8 @@ def _entry_to_response(entry: TestPlanEntry) -> TestPlanEntryResponse:
         host_id=entry.host_id,
         host_ip=host.ip_address if host else None,
         host_hostname=host.hostname if host else None,
+        name_id=entry.name_id,
+        target_fqdn=entry.target_name.fqdn if entry.target_name else None,
         priority=entry.priority,
         test_phase=entry.test_phase,
         proposed_tests=entry.proposed_tests or [],
@@ -1133,6 +1135,9 @@ class TestExecutionResultRow(BaseModel):
     test_index: int
     status: str
     command_run: Optional[str] = None
+    # v2.323.0 — the address the command actually hit (execution evidence
+    # references the binding; the finding anchors to the named endpoint).
+    observed_ip: Optional[str] = None
     raw_output: Optional[str] = None
     findings_summary: Optional[str] = None
     severity: Optional[str] = None

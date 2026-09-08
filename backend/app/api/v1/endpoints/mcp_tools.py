@@ -1049,6 +1049,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                                 "description": "Why this host and these tests — the reviewer reads this.",
                             },
                             "notes": {"type": "string"},
+                            "target_fqdn": {
+                                "type": "string",
+                                "maxLength": 253,
+                                "description": (
+                                    "Optional named endpoint on this host the tests are against (must be one "
+                                    "of the host's `names`). Set it for web tests behind a shared address; "
+                                    "use {fqdn} in commands."
+                                ),
+                            },
                         },
                         "required": ["host_id", "priority", "test_phase", "proposed_tests", "rationale"],
                         "additionalProperties": False,
@@ -1242,7 +1251,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "auto_params": {"plan_id": "plan_id"},
         "body_params": [
             "test_index", "status", "command_run", "raw_output", "findings_summary",
-            "severity", "is_finding", "sanity_override_reason",
+            "severity", "is_finding", "sanity_override_reason", "observed_ip",
         ],
         "additive": True,
         "input_schema": {
@@ -1271,6 +1280,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "severity": {"type": "string"},
                 "is_finding": {"type": "boolean", "default": False},
                 "sanity_override_reason": {"type": "string", "maxLength": 500},
+                "observed_ip": {
+                    "type": "string",
+                    "maxLength": 45,
+                    "description": (
+                        "The IP the command actually reached, when the entry targets a name "
+                        "(target_fqdn). A name behind a load balancer may resolve differently at "
+                        "run time; recording it keeps the evidence tied to the real address."
+                    ),
+                },
             },
             "required": ["entry_id", "test_index", "status"],
             "additionalProperties": False,

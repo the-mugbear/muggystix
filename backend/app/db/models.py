@@ -492,6 +492,13 @@ class WebInterface(Base):
     protocol = Column(String(10))  # http | https
     port = Column(Integer)
     ip_address = Column(String(45), index=True)
+    # v2.323.0 — the NAMED endpoint this interface was reached as (the URL's
+    # hostname, when it is a name and not an IP literal).  Host header / SNI
+    # select the service behind a shared address, so "portal.example.com on
+    # 203.0.113.20" and "api.example.com on 203.0.113.20" are two interfaces
+    # on one host.  Derived at ingest from ``url``; SET NULL if the name is
+    # deleted — the interface row (address evidence) outlives the name.
+    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Fingerprint fields — union across tools.
     status_code = Column(Integer)
@@ -547,6 +554,7 @@ class WebInterface(Base):
     scan = relationship("Scan", back_populates="web_interfaces")
     host = relationship("Host")
     port_row = relationship("Port", foreign_keys=[port_id])
+    name = relationship("DNSName", foreign_keys=[name_id])
 
 
 class DNSName(Base):
@@ -600,10 +608,11 @@ DNS_OBS_DISCOVERED = "DISCOVERED"  # a tool enumerated the name with no address;
 DNS_OBS_SCANNER = "SCANNER"        # a scanner reported this name for an address; value = IP
 DNS_OBS_HTTP = "HTTP"              # the name was contacted over HTTP at an address; value = IP
 DNS_OBS_CERT = "CERT"              # a certificate presented at an address carried the name; value = IP
+DNS_OBS_TESTED = "TESTED"          # a plan test ran against the name at an address (v2.323.0); value = IP
 # Only these establish "resolves to" for the derived current-address view.
 DNS_RESOLVING_TYPES = ("A", "AAAA")
 # Kinds whose ``value`` is an IP address (joinable to hosts_v2.ip_address).
-DNS_ADDRESS_VALUED_TYPES = ("A", "AAAA", "PTR", DNS_OBS_SCANNER, DNS_OBS_HTTP, DNS_OBS_CERT)
+DNS_ADDRESS_VALUED_TYPES = ("A", "AAAA", "PTR", DNS_OBS_SCANNER, DNS_OBS_HTTP, DNS_OBS_CERT, DNS_OBS_TESTED)
 
 
 class DNSRecord(Base):
@@ -657,19 +666,21 @@ class DNSRecord(Base):
     name = relationship("DNSName", back_populates="observations")
 
     __table_args__ = (
-        # One observation per (name, kind, value, resolver, scan).  scan_id and
-        # resolver_name are legitimately NULL (imports have no scan; CSV/amass
-        # carry no resolver), so NULLS NOT DISTINCT makes those collide as
-        # intended on Postgres.  SQLAlchemy ignores the flag on SQLite, where
-        # the test fallback degrades to NULLs-distinct — the application-level
-        # existence check in dns_name_service.record_observation is what the
-        # parsers rely on; this index is the backstop.
-        Index(
-            "uq_dns_record_observation",
-            "name_id", "record_type", "value", "resolver_name", "scan_id",
-            unique=True,
-            postgresql_nulls_not_distinct=True,
-        ),
+        # Observation identity is enforced by TWO partial unique indexes that
+        # live in the migrations only (alembic/env.py _UNMODELABLE_INDEXES —
+        # partial + expression indexes have no portable model form):
+        #   uq_dns_record_scan_observation
+        #       (name_id, record_type, value, COALESCE(resolver_name,''), scan_id)
+        #       WHERE scan_id IS NOT NULL
+        #   uq_dns_record_import_observation
+        #       (name_id, record_type, value) WHERE scan_id IS NULL AND record_type='IMPORT'
+        # Split on purpose (v2.323.0 review): scan_id is SET NULL when a scan
+        # is deleted, so a single NULLS-NOT-DISTINCT index made deleting the
+        # second of two scans that held the same answer fail on the orphaned
+        # row.  Orphans carry no uniqueness; imports are unique per name+raw
+        # value; scan-bound rows per scan.  dns_name_service.observation_key
+        # is the application twin of this identity.
+        #
         # "Which names bind to this address" — the join hosts_v2.ip_address =
         # dns_records.value filtered by project.
         Index("idx_dns_record_project_value", "project_id", "value"),

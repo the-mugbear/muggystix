@@ -86,7 +86,7 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
     };
   }, [hostId]);
 
-  const total = (data?.current.length ?? 0) + (data?.other.length ?? 0);
+  const total = (data?.current.length ?? 0) + (data?.previous?.length ?? 0) + (data?.other.length ?? 0);
   if (!loading && !error && total === 0) return null;
 
   return (
@@ -121,6 +121,18 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
             </h4>
             <ul className="divide-y divide-border">
               {data.current.map((b) => (
+                <BindingRow key={b.name_id} b={b} />
+              ))}
+            </ul>
+          </section>
+        )}
+        {data && (data.previous?.length ?? 0) > 0 && (
+          <section className="mb-sm">
+            <h4 className="mb-2xs text-caption font-medium uppercase tracking-wide text-muted-foreground">
+              Previously resolved here (moved away — history, not coverage)
+            </h4>
+            <ul className="divide-y divide-border">
+              {data.previous.map((b) => (
                 <BindingRow key={b.name_id} b={b} />
               ))}
             </ul>

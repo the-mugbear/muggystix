@@ -324,6 +324,45 @@ class TestPlanService:
     # Test Plan Entries
     # ------------------------------------------------------------------
 
+    def _resolve_target_name(
+        self, project_id: int, host_id: int, host_ip: Optional[str], target_fqdn: Optional[str],
+    ) -> Optional[int]:
+        """``target_fqdn`` -> ``dns_names.id``, or None when not supplied.
+        Raises ValueError unless the name exists in the project AND some
+        address-valued observation binds it to this host's address."""
+        if not target_fqdn:
+            return None
+        from app.db import models as _m
+        from app.services.dns_name_service import InvalidName, normalize_fqdn
+        try:
+            fqdn, kind = normalize_fqdn(target_fqdn)
+        except InvalidName as exc:
+            raise ValueError(f"target_fqdn {target_fqdn!r}: {exc}")
+        if kind != "fqdn":
+            raise ValueError(f"target_fqdn {target_fqdn!r}: a wildcard pattern cannot be a test target")
+        name = (
+            self.db.query(_m.DNSName)
+            .filter(_m.DNSName.project_id == project_id, _m.DNSName.fqdn == fqdn)
+            .first()
+        )
+        if name is None:
+            raise ValueError(f"target_fqdn {fqdn!r} is not a name in this project's inventory")
+        bound = (
+            self.db.query(_m.DNSRecord.id)
+            .filter(
+                _m.DNSRecord.name_id == name.id,
+                _m.DNSRecord.value == host_ip,
+                _m.DNSRecord.record_type.in_(_m.DNS_ADDRESS_VALUED_TYPES),
+            )
+            .first()
+        )
+        if bound is None:
+            raise ValueError(
+                f"target_fqdn {fqdn!r} has never been observed at host {host_id}'s address "
+                f"({host_ip}); pick one of the host's `names`"
+            )
+        return name.id
+
     def add_entries(
         self,
         plan: TestPlan,
@@ -361,9 +400,10 @@ class TestPlanService:
         # unique index uq_plan_host is what actually prevents duplicates),
         # so a JOIN that may briefly miss a concurrent insert is fine.
         valid_hosts: set = set()
+        host_ips: Dict[int, str] = {}
         existing: set = set()
         rows = (
-            self.db.query(Host.id, TestPlanEntry.host_id)
+            self.db.query(Host.id, Host.ip_address, TestPlanEntry.host_id)
             .outerjoin(
                 TestPlanEntry,
                 (TestPlanEntry.host_id == Host.id)
@@ -372,8 +412,9 @@ class TestPlanService:
             .filter(Host.id.in_(host_ids), Host.project_id == plan.project_id)
             .all()
         )
-        for host_id, existing_entry_host_id in rows:
+        for host_id, host_ip, existing_entry_host_id in rows:
             valid_hosts.add(host_id)
+            host_ips[host_id] = host_ip
             if existing_entry_host_id is not None:
                 existing.add(host_id)
 
@@ -386,10 +427,16 @@ class TestPlanService:
             if hid in existing:
                 logger.warning("Skipping duplicate entry for host %d in plan %d", hid, plan.id)
                 continue
+            # v2.323.0 — optional named endpoint.  The "target in inventory"
+            # guardrail applied to names: it must be a name bound to THIS host
+            # by observation, or the whole batch is rejected (a typo'd vhost
+            # is exactly the kind of thing a reviewer must not have to spot).
+            name_id = self._resolve_target_name(plan.project_id, hid, host_ips.get(hid), data.get("target_fqdn"))
 
             entry = TestPlanEntry(
                 test_plan_id=plan.id,
                 host_id=hid,
+                name_id=name_id,
                 priority=data["priority"],
                 test_phase=data["test_phase"],
                 proposed_tests=data["proposed_tests"],

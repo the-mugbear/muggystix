@@ -765,7 +765,7 @@ const Names: React.FC = () => {
                       aria-selected={selectedId === row.id}
                     >
                       <TableCell className="truncate font-mono" title={row.fqdn}>
-                        {row.kind === 'wildcard' ? `*.${row.fqdn}` : row.fqdn}
+                        {row.fqdn}
                         {row.kind === 'wildcard' && (
                           <Badge variant="muted" className="ml-xs">
                             pattern

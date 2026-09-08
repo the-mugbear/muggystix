@@ -12,6 +12,10 @@ class FindingHostInfo(BaseModel):
     host_id: int
     ip_address: Optional[str] = None
     hostname: Optional[str] = None
+    # v2.323.0 — the named endpoint on this host the finding applies to
+    # (inherited from the scanner row / plan entry); null = host-level.
+    name_id: Optional[int] = None
+    fqdn: Optional[str] = None
     host_status: str
     model_config = ConfigDict(from_attributes=True)
 

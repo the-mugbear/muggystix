@@ -49,6 +49,42 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _validate_observed_ip(raw) -> "str | None":
+    """``observed_ip`` must be an IP literal or absent — it is evidence about
+    an address, and a hostname here would recreate the identity problem."""
+    if raw is None or not str(raw).strip():
+        return None
+    import ipaddress
+    try:
+        return str(ipaddress.ip_address(str(raw).strip().strip("[]")))
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"observed_ip must be an IPv4/IPv6 literal, got {str(raw)[:60]!r}",
+        )
+
+
+def _record_tested_binding(db: Session, entry, observed_ip: "str | None") -> None:
+    """v2.323.0 — when the entry targets a NAME, record a TESTED observation
+    (name → the address the command reached, or the entry host's address when
+    none was reported) so the names inventory shows which binding the
+    evidence was collected against.  Best effort: never blocks the result."""
+    if entry.name_id is None or entry.target_name is None:
+        return
+    ip = observed_ip or (entry.host.ip_address if entry.host else None)
+    if not ip:
+        return
+    from app.db.models import DNS_OBS_TESTED
+    from app.services.dns_name_service import record_observation
+    try:
+        record_observation(
+            db, project_id=entry.host.project_id if entry.host else None,
+            name=entry.target_name.fqdn, record_type=DNS_OBS_TESTED, value=ip,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TESTED observation for entry %s skipped: %s", entry.id, exc)
+
+
 def _truncate_to_byte_cap(text: str, cap: int) -> str:
     """Truncate ``text`` so its UTF-8 byte length is at most ``cap``.
 
@@ -349,6 +385,7 @@ def get_execution_context(
     for entry in entries:
         host = hosts_map.get(entry.host_id)
         ip = host.ip_address if host else "unknown"
+        target_fqdn = entry.target_name.fqdn if entry.target_name is not None else None
         # Resolve {ip} placeholders in commands.  v2.25.0 — also handle
         # bare-string entries that ``ProposedTestItem = Union[str,
         # ProposedTest]`` still allows: historical plans (and any agent
@@ -370,6 +407,10 @@ def get_execution_context(
                 resolved = {"tool": "unknown", "description": "(unstructured test entry)"}
             if resolved.get("command"):
                 resolved["command"] = resolved["command"].replace("{ip}", ip)
+                # v2.323.0 — {fqdn} resolves to the entry's named target; when
+                # the entry has none, fall back to the address so a command
+                # never ships with a literal placeholder.
+                resolved["command"] = resolved["command"].replace("{fqdn}", target_fqdn or ip)
             resolved["test_index"] = idx
             resolved["result_status"] = existing_results.get(entry.id, {}).get(idx)
             tests.append(resolved)
@@ -379,6 +420,7 @@ def get_execution_context(
             host_id=entry.host_id,
             ip_address=ip,
             hostname=host.hostname if host else None,
+            target_fqdn=target_fqdn,
             os_name=host.os_name if host else None,
             priority=entry.priority,
             test_phase=entry.test_phase,
@@ -635,6 +677,13 @@ def record_test_result(
         _settings.TEST_OUTPUT_MAX_BYTES,
     ) or None
 
+    # v2.323.0 — the address the command actually hit.  Validated as an IP
+    # literal; when the entry targets a name, also recorded as a TESTED
+    # observation (name → observed address) so the names inventory shows
+    # which binding the evidence was collected against.
+    observed_ip = _validate_observed_ip(body.observed_ip)
+    _record_tested_binding(db, entry, observed_ip)
+
     result = TestExecutionResult(
         execution_session_id=session.id,
         entry_id=entry.id,
@@ -646,6 +695,7 @@ def record_test_result(
         severity=body.severity,
         is_finding=body.is_finding,
         sanity_override_reason=sanity_override_reason,
+        observed_ip=observed_ip,
         # v2.43.3 (AUD-O2): executed_at is DateTime(timezone=True); the
         # pre-fix naive `datetime.now()` silently stripped the tz on write
         # and produced naive↔aware comparison bugs downstream (same class
@@ -682,6 +732,7 @@ def record_test_result(
             existing.findings_summary = body.findings_summary
             existing.severity = body.severity
             existing.is_finding = body.is_finding
+            existing.observed_ip = observed_ip
             # v2.91.0 (#2) — also propagate the override on the
             # re-record path so an operator who re-submits a result
             # AFTER running sanity can clear the bypass marker (by

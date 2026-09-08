@@ -32,6 +32,9 @@ export interface TestPlanEntryResponse {
   host_id: number;
   host_ip?: string;
   host_hostname?: string;
+  // v5.194.0 — the named endpoint this entry targets (null = bare address).
+  name_id?: number | null;
+  target_fqdn?: string | null;
   priority: string;
   test_phase: string;
   proposed_tests: ProposedTestItem[];
@@ -328,6 +331,8 @@ export interface TestExecutionResultRow {
   test_index: number;
   status: string;
   command_run?: string | null;
+  // v5.194.0 — the address the command actually hit (evidence about the binding).
+  observed_ip?: string | null;
   raw_output?: string | null;
   findings_summary?: string | null;
   severity?: string | null;

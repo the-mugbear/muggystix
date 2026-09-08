@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models import DNS_OBS_CERT, DNS_OBS_DISCOVERED, DNS_OBS_HTTP
 from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, derive_weak_protocol
-from app.services.dns_name_service import ObservationCache, record_observation
+from app.services.dns_name_service import ObservationCache, bind_url_name, record_observation
 from app.parsers.parser_utils import (
     correlate_scan,
     record_hosts_in_scan,
@@ -295,6 +295,12 @@ class HttpxParser:
             )
             .first()
         )
+        # Phase 2 — the named endpoint this interface was reached as (URL
+        # hostname when it's a name).  Also records the HTTP observation.
+        name_id = bind_url_name(
+            self.db, project_id=self._project_id, url=url, ip_address=ip,
+            scan_id=scan.id, cache=self._name_cache,
+        )
         if existing is None:
             wi = models.WebInterface(
                 scan_id=scan.id,
@@ -306,6 +312,7 @@ class HttpxParser:
                 protocol=protocol,
                 port=port,
                 ip_address=ip,
+                name_id=name_id,
                 status_code=self._coerce_int(record.get("status_code") or record.get("status-code")),
                 title=(record.get("title") or "")[:500] or None,
                 server_header=(record.get("webserver") or record.get("server") or "")[:255] or None,

@@ -13,29 +13,39 @@ or dropping the name (which the amass, dnsx and httpx parsers did).
 
 What
 ----
-1. ``dns_names`` — the named asset, unique per (project, normalised fqdn).
+1. ``dns_names`` — the named asset, unique per (project, normalised fqdn).  A
+   wildcard pattern keeps its ``*.`` prefix in ``fqdn`` so ``*.example.com``
+   and ``example.com`` are two assets.
 2. ``scope_domains`` — domain scope alongside subnet scope (exact vs
    include-subdomains, deliberately separate).
 3. ``dns_records`` gains ``name_id`` (FK dns_names, CASCADE) and
    ``observed_at``; its role broadens from "DNS answer" to "one immutable
-   observation about a name" (see the model docstring).  A unique index on
-   (name_id, record_type, value, resolver_name, scan_id) NULLS NOT DISTINCT
-   makes re-ingesting the same answer in the same scan a no-op.
+   observation about a name" (see the model docstring).
 4. ``hosts_v2.hostname_source`` — provenance rank of the display name so the
    centralised precedence rule can decide replacements.
 
-Backfill
---------
-* Duplicate dns_records rows (same project, domain, type, value, resolver,
-  scan) are collapsed to the lowest id BEFORE the unique index is created —
-  the CSV parser never deduped, so real deployments have them.
-* ``observed_at`` := ``created_at`` for existing rows.
-* A dns_names row is created for every distinct (project_id, domain) whose
-  domain normalises to a valid name; dns_records.name_id is set accordingly.
-  Rows whose domain is an IP or garbage keep name_id NULL (legacy, unbound).
-  The normaliser here is a deliberately self-contained copy of the service's
-  rules (lowercase, strip trailing dot, punycode) so this migration never
-  depends on app code that may later change.
+Observation identity — two PARTIAL unique indexes (review v2.323.0)
+--------------------------------------------------------------------
+* ``uq_dns_record_scan_observation`` on (name_id, record_type, value,
+  COALESCE(resolver_name,''), scan_id) WHERE scan_id IS NOT NULL — one row
+  per answer per scan; the same answer from two resolvers stays two rows.
+* ``uq_dns_record_import_observation`` on (name_id, record_type, value)
+  WHERE scan_id IS NULL AND record_type = 'IMPORT' — re-importing a name is
+  a no-op.
+* Rows orphaned by a scan delete (scan_id SET NULL) carry NO uniqueness, so
+  deleting the second of two scans that held the same answer cannot collide
+  on the first scan's orphan.  Unbound rows (name_id NULL — the domain wasn't
+  a usable name) are likewise unconstrained; distinct unbound evidence is
+  never collapsed.
+
+Backfill order matters
+----------------------
+Names are created and ``name_id`` assigned FIRST, then duplicates are
+collapsed on the NORMALISED identity the indexes enforce (``A.Example.com``
+and ``a.example.com.`` are one name), then the indexes are created.  The
+pre-review version deduped on the raw domain before normalising and would
+have failed CREATE INDEX on legacy data that differed only in case or a
+trailing dot.
 """
 from __future__ import annotations
 
@@ -57,6 +67,8 @@ _LABEL_RE = re.compile(r"^(?!-)[a-z0-9_-]{1,63}(?<!-)$")
 
 
 def _normalize(raw: str) -> Optional[Tuple[str, str]]:
+    """Self-contained copy of dns_name_service.normalize_fqdn's rules (the
+    migration must not depend on app code that may later change)."""
     s = (raw or "").strip().lower().rstrip(".")
     if not s:
         return None
@@ -85,9 +97,59 @@ def _normalize(raw: str) -> Optional[Tuple[str, str]]:
             except Exception:  # noqa: BLE001
                 return None
     fqdn = ".".join(labels)
+    if kind == "wildcard":
+        fqdn = "*." + fqdn
     if len(fqdn) > 253:
         return None
     return fqdn, kind
+
+
+# Shared with b2e6f8a1c3d7 (which reconciles a DB that ran the pre-review
+# version of this migration).  Keep the two copies identical.
+def dedupe_observations(bind) -> None:
+    """Collapse duplicate observations on the identity the partial unique
+    indexes enforce, keeping the lowest id.  Scan-bound rows: (name_id,
+    record_type, value, COALESCE(resolver_name,''), scan_id).  Imports:
+    (name_id, 'IMPORT', value) with no scan.  Unbound / orphaned rows are
+    left alone."""
+    is_pg = bind.dialect.name == "postgresql"
+    if is_pg:
+        bind.execute(sa.text(
+            "DELETE FROM dns_records d USING dns_records k "
+            "WHERE d.id > k.id AND d.name_id IS NOT NULL AND d.scan_id IS NOT NULL "
+            "  AND d.name_id = k.name_id AND d.record_type = k.record_type AND d.value = k.value "
+            "  AND COALESCE(d.resolver_name,'') = COALESCE(k.resolver_name,'') "
+            "  AND d.scan_id = k.scan_id"
+        ))
+        bind.execute(sa.text(
+            "DELETE FROM dns_records d USING dns_records k "
+            "WHERE d.id > k.id AND d.name_id IS NOT NULL AND d.scan_id IS NULL AND k.scan_id IS NULL "
+            "  AND d.record_type = 'IMPORT' AND k.record_type = 'IMPORT' "
+            "  AND d.name_id = k.name_id AND d.value = k.value"
+        ))
+    else:
+        bind.execute(sa.text(
+            "DELETE FROM dns_records WHERE name_id IS NOT NULL AND scan_id IS NOT NULL AND id NOT IN ("
+            "  SELECT MIN(id) FROM dns_records WHERE name_id IS NOT NULL AND scan_id IS NOT NULL "
+            "  GROUP BY name_id, record_type, value, COALESCE(resolver_name,''), scan_id)"
+        ))
+        bind.execute(sa.text(
+            "DELETE FROM dns_records WHERE name_id IS NOT NULL AND scan_id IS NULL AND record_type = 'IMPORT' "
+            "AND id NOT IN (SELECT MIN(id) FROM dns_records WHERE name_id IS NOT NULL AND scan_id IS NULL "
+            "  AND record_type = 'IMPORT' GROUP BY name_id, record_type, value)"
+        ))
+
+
+def create_observation_indexes(bind) -> None:
+    """The two partial unique indexes; idempotent (IF NOT EXISTS)."""
+    bind.execute(sa.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_dns_record_scan_observation ON dns_records "
+        "(name_id, record_type, value, COALESCE(resolver_name,''), scan_id) WHERE scan_id IS NOT NULL"
+    ))
+    bind.execute(sa.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_dns_record_import_observation ON dns_records "
+        "(name_id, record_type, value) WHERE scan_id IS NULL AND record_type = 'IMPORT'"
+    ))
 
 
 def upgrade() -> None:
@@ -140,24 +202,8 @@ def upgrade() -> None:
     op.create_index("idx_dns_record_project_value", "dns_records", ["project_id", "value"])
     bind.execute(sa.text("UPDATE dns_records SET observed_at = created_at WHERE created_at IS NOT NULL"))
 
-    # 5. Collapse pre-existing duplicate observations (lowest id survives).
-    if is_pg:
-        bind.execute(sa.text(
-            "DELETE FROM dns_records d USING dns_records k "
-            "WHERE d.id > k.id "
-            "  AND d.project_id IS NOT DISTINCT FROM k.project_id "
-            "  AND d.domain = k.domain AND d.record_type = k.record_type AND d.value = k.value "
-            "  AND d.resolver_name IS NOT DISTINCT FROM k.resolver_name "
-            "  AND d.scan_id IS NOT DISTINCT FROM k.scan_id"
-        ))
-    else:
-        bind.execute(sa.text(
-            "DELETE FROM dns_records WHERE id NOT IN ("
-            "  SELECT MIN(id) FROM dns_records "
-            "  GROUP BY project_id, domain, record_type, value, resolver_name, scan_id)"
-        ))
-
-    # 6. Backfill dns_names from distinct (project_id, domain) and link rows.
+    # 5. Backfill dns_names from distinct (project_id, normalised domain) and
+    #    link every row to its name.
     rows = bind.execute(sa.text(
         "SELECT project_id, domain, MIN(created_at) AS first_seen, MAX(created_at) AS last_seen "
         "FROM dns_records WHERE project_id IS NOT NULL GROUP BY project_id, domain"
@@ -186,17 +232,14 @@ def upgrade() -> None:
         sa.column("last_seen", sa.DateTime(timezone=True)),
     )
     for entry in names.values():
-        result = bind.execute(
-            dns_names.insert().values(
-                project_id=entry["project_id"], fqdn=entry["fqdn"], kind=entry["kind"],
-                first_seen=entry["first_seen"], last_seen=entry["last_seen"],
-            ).returning(dns_names.c.id) if is_pg else
-            dns_names.insert().values(
-                project_id=entry["project_id"], fqdn=entry["fqdn"], kind=entry["kind"],
-                first_seen=entry["first_seen"], last_seen=entry["last_seen"],
-            )
+        ins = dns_names.insert().values(
+            project_id=entry["project_id"], fqdn=entry["fqdn"], kind=entry["kind"],
+            first_seen=entry["first_seen"], last_seen=entry["last_seen"],
         )
-        name_id = result.scalar() if is_pg else result.inserted_primary_key[0]
+        if is_pg:
+            name_id = bind.execute(ins.returning(dns_names.c.id)).scalar()
+        else:
+            name_id = bind.execute(ins).inserted_primary_key[0]
         for domain in entry["domains"]:
             bind.execute(
                 sa.text(
@@ -206,22 +249,14 @@ def upgrade() -> None:
                 {"name_id": name_id, "project_id": entry["project_id"], "domain": domain},
             )
 
-    # 7. The observation-identity index.  NULLS NOT DISTINCT so NULL scan_id
-    #    (imports) and NULL resolver_name (CSV/amass) collide as intended.
-    if is_pg:
-        op.execute(
-            "CREATE UNIQUE INDEX uq_dns_record_observation ON dns_records "
-            "(name_id, record_type, value, resolver_name, scan_id) NULLS NOT DISTINCT"
-        )
-    else:
-        op.create_index(
-            "uq_dns_record_observation", "dns_records",
-            ["name_id", "record_type", "value", "resolver_name", "scan_id"], unique=True,
-        )
+    # 6. Collapse duplicates on the NORMALISED identity, then enforce it.
+    dedupe_observations(bind)
+    create_observation_indexes(bind)
 
 
 def downgrade() -> None:
-    op.drop_index("uq_dns_record_observation", table_name="dns_records")
+    op.execute("DROP INDEX IF EXISTS uq_dns_record_import_observation")
+    op.execute("DROP INDEX IF EXISTS uq_dns_record_scan_observation")
     op.drop_index("idx_dns_record_project_value", table_name="dns_records")
     op.drop_index("ix_dns_records_name_id", table_name="dns_records")
     op.drop_column("dns_records", "observed_at")

@@ -142,11 +142,17 @@ class FindingHost(Base):
         Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="SET NULL"), nullable=True)
+    # v2.323.0 — the NAMED endpoint on this host the finding applies to (the
+    # stable identity: portal.example.com), inherited from the evidencing
+    # vulnerability / plan entry.  The finding anchors to the name; the host
+    # row is where it was observed at the time.  Null for host-level findings.
+    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
     host_status = Column(String(20), nullable=False, default=FindingHostStatus.OPEN.value)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     finding = relationship("Finding", back_populates="hosts")
     host = relationship("Host")
+    name = relationship("DNSName", foreign_keys=[name_id])
 
     __table_args__ = (
         UniqueConstraint("finding_id", "host_id", name="uq_finding_host"),

@@ -770,6 +770,14 @@ const PlanTab: React.FC = () => {
                                 {entry.host_hostname}
                               </p>
                             )}
+                            {entry.target_fqdn && (
+                              <p
+                                className="truncate font-mono text-caption text-info"
+                                title={`Tests target the named endpoint ${entry.target_fqdn} (Host header / SNI), not the bare address`}
+                              >
+                                → {entry.target_fqdn}
+                              </p>
+                            )}
                           </TableCell>
                           <TableCell>
                             <Badge variant={priorityTone(entry.priority)} className="whitespace-nowrap">

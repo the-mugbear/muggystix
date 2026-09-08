@@ -664,6 +664,9 @@ class AssistWebInterface(BaseModel):
     """
     id: int
     url: str
+    # v2.323.0 — the named endpoint (vhost) this interface answers as; null
+    # when the URL targeted the bare address.
+    fqdn: Optional[str] = None
     port: Optional[int] = None
     status_code: Optional[int] = None
     title: Optional[str] = None
@@ -739,6 +742,7 @@ def get_assist_host(
         AssistWebInterface(
             id=w.id,
             url=w.url,
+            fqdn=w.name.fqdn if w.name else None,
             port=w.port,
             status_code=w.status_code,
             title=w.title,

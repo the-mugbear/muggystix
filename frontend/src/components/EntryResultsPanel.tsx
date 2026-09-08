@@ -197,6 +197,14 @@ const TestResultRow: React.FC<{ row: TestExecutionResultRow; tool?: string | nul
             </TooltipTrigger>
             {row.command_run && <TooltipContent>{row.command_run}</TooltipContent>}
           </Tooltip>
+          {row.observed_ip && (
+            <span
+              className="ml-xs font-mono text-caption text-muted-foreground"
+              title="Address the command actually reached, as the agent observed it"
+            >
+              @ {row.observed_ip}
+            </span>
+          )}
         </TableCell>
         <TableCell className="w-44 whitespace-nowrap text-caption text-muted-foreground">
           {fmtTime(row.executed_at)}

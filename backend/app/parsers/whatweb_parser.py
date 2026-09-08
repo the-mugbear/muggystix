@@ -55,6 +55,7 @@ from app.parsers.parser_utils import (
     resolve_port_cached,
 )
 from app.parsers.streaming_json import iter_json_records
+from app.services.dns_name_service import ObservationCache, bind_url_name
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class WhatwebParser:
         # and Port lookups (many records share a host) to a dict hit.
         self._host_cache: dict = {}
         self._port_cache: dict = {}
+        self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -229,6 +231,11 @@ class WhatwebParser:
             )
             .first()
         )
+        # Phase 2 — named endpoint from the URL (+ HTTP observation).
+        name_id = bind_url_name(
+            self.db, project_id=self._project_id, url=url, ip_address=ip,
+            scan_id=scan.id, cache=self._name_cache,
+        )
         if existing is None:
             wi = models.WebInterface(
                 scan_id=scan.id,
@@ -240,6 +247,7 @@ class WhatwebParser:
                 protocol=protocol,
                 port=port,
                 ip_address=ip,
+                name_id=name_id,
                 status_code=status_code,
                 title=(title or "")[:500] or None,
                 server_header=(server_header or "")[:255] or None,

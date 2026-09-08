@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ExternalLink, Globe, Image as ImageIcon, Loader2, Lock, Unlock } from 'lucide-react';
 
 import {
@@ -292,6 +293,15 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
             <Badge variant={statusVariant(row.status_code)}>{row.status_code}</Badge>
           )}
           <Badge variant={sourceBadgeVariant(row.source)}>{row.source}</Badge>
+          {row.fqdn && row.name_id != null && (
+            <Link
+              to={`/names?name_id=${row.name_id}`}
+              className="max-w-[20rem] truncate font-mono text-caption text-primary hover:underline"
+              title={`Named endpoint: ${row.fqdn}`}
+            >
+              {row.fqdn}
+            </Link>
+          )}
           {row.server_header && (
             <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted-foreground">
               {row.server_header}

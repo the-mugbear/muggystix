@@ -98,6 +98,8 @@ def _entry_response(entry: TestPlanEntry) -> EntryResponse:
         id=entry.id,
         host_id=entry.host_id,
         host_ip=host.ip_address if host else None,
+        name_id=entry.name_id,
+        target_fqdn=entry.target_name.fqdn if entry.target_name else None,
         priority=entry.priority,
         test_phase=entry.test_phase,
         proposed_tests=entry.proposed_tests or [],

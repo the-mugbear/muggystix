@@ -395,6 +395,15 @@ const FindingDetail: React.FC = () => {
                           {h.ip_address || `Host ${h.host_id}`}
                         </Link>
                         {h.hostname && <span className="ml-xs text-caption text-muted-foreground">{h.hostname}</span>}
+                        {h.fqdn && h.name_id != null && (
+                          <Link
+                            to={`/names?name_id=${h.name_id}`}
+                            className="ml-xs font-mono text-caption text-info hover:underline"
+                            title="Named endpoint this finding applies to on this host"
+                          >
+                            {h.fqdn}
+                          </Link>
+                        )}
                       </TableCell>
                       <TableCell>
                         {canManage && (

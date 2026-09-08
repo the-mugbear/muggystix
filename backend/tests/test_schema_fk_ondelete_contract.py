@@ -93,6 +93,13 @@ EXPECTED_ONDELETE = {
     # v2.322.0 — named assets.  An observation dies with its name; a name
     # dies with its project; the importing user is an audit pointer.
     ('dns_records', 'name_id'): 'CASCADE',
+    # v2.323.0 — named-endpoint references are evidence pointers: the row
+    # (interface / scanner finding / finding-host / plan entry) outlives the
+    # name, so SET NULL, never CASCADE.
+    ('web_interfaces', 'name_id'): 'SET NULL',
+    ('vulnerabilities', 'name_id'): 'SET NULL',
+    ('finding_hosts', 'name_id'): 'SET NULL',
+    ('test_plan_entries', 'name_id'): 'SET NULL',
     ('dns_names', 'project_id'): 'CASCADE',
     ('dns_names', 'created_by_id'): 'SET NULL',
     ('scope_domains', 'scope_id'): 'CASCADE',

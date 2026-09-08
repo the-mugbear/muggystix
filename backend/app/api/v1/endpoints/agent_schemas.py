@@ -79,6 +79,13 @@ class HostBrief(BaseModel):
 
 class HostDetail(HostBrief):
     ports: List[PortBrief] = Field(default_factory=list)
+    # v2.323.0 — every name observed at this address (current A/AAAA, HTTP,
+    # certificate, scanner, PTR evidence), most-recently-seen first.  The
+    # `hostname` field is the ONE display name; a load balancer carries many.
+    # Use one of these as an entry's `target_fqdn`.
+    names: List[str] = Field(default_factory=list, description=(
+        "Names observed at this address (evidence-backed). Valid values for a plan entry's target_fqdn."
+    ))
 
 
 class AssistFinding(BaseModel):
@@ -391,6 +398,14 @@ class EntryCreate(BaseModel):
     proposed_tests: List[ProposedTestItem]
     rationale: str
     notes: Optional[str] = None
+    # v2.323.0 — the NAMED endpoint on this host the tests target (web tests
+    # behind a load balancer need the Host header / SNI).  Must be one of the
+    # host's ``names`` from GET /agent/hosts/{host_id}; an unknown name is
+    # rejected (the target-in-inventory guardrail applied to names).
+    target_fqdn: Optional[str] = Field(None, max_length=253, description=(
+        "Optional: the FQDN on this host the tests are against (e.g. portal.example.com). "
+        "Must appear in the host's `names` list; use {fqdn} in commands to reference it."
+    ))
 
 
 class EntryBatch(BaseModel):
@@ -428,6 +443,9 @@ class EntryResponse(BaseModel):
     id: int
     host_id: int
     host_ip: Optional[str] = None
+    # v2.323.0 — the named endpoint this entry targets, when one was set.
+    name_id: Optional[int] = None
+    target_fqdn: Optional[str] = None
     priority: str
     test_phase: str
     proposed_tests: List[ProposedTestItem]
@@ -558,6 +576,9 @@ class ExecutionHostContext(BaseModel):
     host_id: int
     ip_address: str
     hostname: Optional[str] = None
+    # v2.323.0 — the named endpoint the entry targets (null = bare address).
+    # Commands carry {fqdn} resolved to this when set.
+    target_fqdn: Optional[str] = None
     os_name: Optional[str] = None
     priority: str
     test_phase: str
@@ -618,6 +639,14 @@ class TestResultRequest(BaseModel):
     # the result data (Option B over reject-outright) while the
     # reason carries the audit context for who bypassed sanity.
     sanity_override_reason: Optional[str] = Field(None, max_length=500)
+    # v2.323.0 — the address the command actually hit, as you observed it
+    # (e.g. from the tool's output or a resolver check at run time).  Execution
+    # evidence references the binding; the finding anchors to the entry's
+    # named endpoint.  Omit when you targeted the bare IP.
+    observed_ip: Optional[str] = Field(None, max_length=45, description=(
+        "IPv4/IPv6 literal the test actually reached. Record it when the entry has a "
+        "target_fqdn — a name behind a load balancer may resolve differently at run time."
+    ))
 
 
 class CompleteEntryRequest(BaseModel):

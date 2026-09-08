@@ -852,6 +852,10 @@ export interface WebInterface {
   id: number;
   source: string;                 // httpx | eyewitness | nikto
   url: string;
+  // v5.194.0 — the named endpoint (vhost) this interface answers as; null
+  // when the URL targeted the bare address.
+  name_id?: number | null;
+  fqdn?: string | null;
   protocol?: string | null;
   port?: number | null;
   status_code?: number | null;

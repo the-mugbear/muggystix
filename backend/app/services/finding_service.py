@@ -6,7 +6,7 @@ a durable, roll-up-able record.  The annotation thread stays as the
 finding's evidence/discussion; the Finding carries severity + disposition +
 owner + the cross-host M2M.
 """
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import func, case, select, asc, desc
@@ -149,7 +149,13 @@ class FindingService:
     # ------------------------------------------------------------------
     # Create / promote
     # ------------------------------------------------------------------
-    def _attach_hosts(self, finding: Finding, host_ids: Sequence[int]) -> None:
+    def _attach_hosts(
+        self, finding: Finding, host_ids: Sequence[int],
+        names_by_host: Optional[Dict[int, int]] = None,
+    ) -> None:
+        """``names_by_host`` (host_id -> dns_names.id) stamps the named endpoint
+        on the FindingHost rows it covers (v2.323.0) — inherited from the
+        evidencing vulnerability or plan entry, never guessed."""
         # Read the already-attached set from the DB rather than the ORM
         # relationship: on paths that attach to an EXISTING finding (a second
         # scanner corroborating an issue), `finding.hosts` can be a stale
@@ -183,6 +189,7 @@ class FindingService:
         for hid in requested:
             self.db.add(FindingHost(
                 finding_id=finding.id, host_id=hid,
+                name_id=(names_by_host or {}).get(hid),
                 host_status=FindingHostStatus.OPEN.value,
             ))
             seen.add(hid)
@@ -315,7 +322,10 @@ class FindingService:
             # already existed; corroboration is the thing worth keeping.
             self.attach_vulnerability(finding=existing, vuln=vuln)
             # A second scanner may see the issue on hosts the first one missed.
-            self._attach_hosts(existing, self._issue_host_ids(vuln, project_id, key))
+            self._attach_hosts(
+                existing, self._issue_host_ids(vuln, project_id, key),
+                names_by_host=self._vuln_names_by_host(vuln),
+            )
             # Already promoted — if the caller is dismissing/redispositioning,
             # honour the new status rather than silently returning stale.
             if status != existing.status:
@@ -338,7 +348,10 @@ class FindingService:
         self.db.add(finding)
         self.db.flush()
         self.attach_vulnerability(finding=finding, vuln=vuln)
-        self._attach_hosts(finding, self._issue_host_ids(vuln, project_id, key))
+        self._attach_hosts(
+            finding, self._issue_host_ids(vuln, project_id, key),
+            names_by_host=self._vuln_names_by_host(vuln),
+        )
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,
@@ -365,6 +378,16 @@ class FindingService:
                 FindingVulnerability(finding_id=finding.id, vuln_id=vuln.id)
             )
             self.db.flush()
+
+    @staticmethod
+    def _vuln_names_by_host(vuln) -> Optional[Dict[int, int]]:
+        """The named endpoint the scanner row was observed at, keyed by its
+        host (v2.323.0).  Sibling hosts fanned out by issue key get no name —
+        their own scanner rows would have to say."""
+        name_id = getattr(vuln, "name_id", None)
+        if name_id is None or vuln.host_id is None:
+            return None
+        return {vuln.host_id: name_id}
 
     def _issue_host_ids(self, vuln, project_id: int, key: Optional[str]) -> list:
         """Every project host carrying this ISSUE.
@@ -505,8 +528,22 @@ class FindingService:
         )
         self.db.add(finding)
         self.db.flush()
+        # v2.323.0 — an execution-sourced finding inherits the plan entry's
+        # named endpoint: the finding anchors to the name, the result row
+        # (observed_ip) is the evidence about the binding.
+        names_by_host = None
+        if exec_result_id is not None:
+            from app.db.models_agent import TestExecutionResult, TestPlanEntry
+            row = (
+                self.db.query(TestPlanEntry.host_id, TestPlanEntry.name_id)
+                .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
+                .filter(TestExecutionResult.id == exec_result_id)
+                .first()
+            )
+            if row and row[1] is not None:
+                names_by_host = {row[0]: row[1]}
         if host_ids:
-            self._attach_hosts(finding, host_ids)
+            self._attach_hosts(finding, host_ids, names_by_host=names_by_host)
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,

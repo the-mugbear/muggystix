@@ -21,6 +21,21 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.63.0",
+        "app_version": "2.323.0",
+        "summary": (
+            "Named endpoints. GET /agent/hosts/{id} now returns `names` — every "
+            "FQDN observed at the address (a load balancer carries many; "
+            "`hostname` is only the display name). A plan entry may set "
+            "`target_fqdn` to one of them (rejected otherwise — the target-in-"
+            "inventory guardrail applied to names) and use {fqdn} in commands; "
+            "the execution context echoes it as `target_fqdn`. A test result may "
+            "carry `observed_ip`, the address the command actually reached — "
+            "execution evidence references the binding, the finding anchors to "
+            "the name, so a DNS move never orphans it."
+        ),
+    },
+    {
         "version": "1.62.0",
         "app_version": "2.316.0",
         "summary": (
