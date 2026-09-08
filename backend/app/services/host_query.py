@@ -207,10 +207,17 @@ def build_filtered_host_query(
         query = query.filter(P.follow_predicate(db, follow_status, current_user))
 
     if out_of_scope_only:
+        # Same derivation as scope_coverage._base_query: no subnet mapping
+        # AND not reachable via an in-scope name (v2.322.0 third state).
+        from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
+
         query = query.outerjoin(
             models.HostSubnetMapping,
             models.HostSubnetMapping.host_id == models.Host.id,
-        ).filter(models.HostSubnetMapping.host_id.is_(None))
+        ).filter(
+            models.HostSubnetMapping.host_id.is_(None),
+            ~host_reachable_via_in_scope_name_condition(project_id),
+        )
 
     severities = []
     if has_critical_vulns:

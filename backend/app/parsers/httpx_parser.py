@@ -45,7 +45,9 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from app.db import models
+from app.db.models import DNS_OBS_CERT, DNS_OBS_DISCOVERED, DNS_OBS_HTTP
 from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, derive_weak_protocol
+from app.services.dns_name_service import ObservationCache, record_observation
 from app.parsers.parser_utils import (
     correlate_scan,
     record_hosts_in_scan,
@@ -114,11 +116,14 @@ class HttpxParser:
         # and Port lookups (many records share a host) to a dict hit.
         self._host_cache: dict = {}
         self._port_cache: dict = {}
+        # v2.322.0 — named-asset bookkeeping (see dns_name_service).
+        self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
         self._host_cache.clear()
         self._port_cache.clear()
+        self._name_cache = ObservationCache()
         start = time.time()
         logger.info("Starting httpx parse of %s", filename)
 
@@ -220,15 +225,22 @@ class HttpxParser:
         # IDs that couldn't be correlated to subnets.
         ip, hostname = self._resolve_ip_and_hostname(record, url)
         if ip is None:
-            # No valid IP could be extracted — drop the record rather
-            # than invent one.  A non-IP "host" string is a hostname we
-            # couldn't resolve from the httpx record alone; let DNS
-            # enrichment fill it in later once a real IP is observed.
+            # No valid IP could be extracted — never invent one.  The NAME is
+            # still an asset, though (v2.322.0): record it as DISCOVERED so it
+            # appears in the names inventory as unresolved instead of being
+            # dropped; the web_interfaces row still needs a host, so skip that.
+            if hostname and self._project_id is not None:
+                record_observation(
+                    self.db, project_id=self._project_id, name=hostname,
+                    record_type=DNS_OBS_DISCOVERED, value="httpx",
+                    scan_id=scan.id, cache=self._name_cache,
+                )
             logger.info(
-                "httpx: skipping record with no resolvable IP (host=%r, host_ip=%r, input=%r, url=%r)",
+                "httpx: no resolvable IP, recorded name only (host=%r, host_ip=%r, input=%r, url=%r)",
                 record.get("host"), record.get("host_ip"), record.get("input"), url,
             )
             return None
+        self._record_name_evidence(scan.id, ip, hostname, record)
 
         port = self._coerce_int(record.get("port")) or self._port_from_url(url)
         protocol = (record.get("scheme") or "").lower() or self._scheme_from_url(url)
@@ -350,6 +362,40 @@ class HttpxParser:
             return True
         except ValueError:
             return False
+
+    def _record_name_evidence(
+        self, scan_id: int, ip: str, hostname: Optional[str], record: Dict[str, Any],
+    ) -> None:
+        """Name→address evidence an httpx record carries (v2.322.0):
+
+        * HTTP — ``hostname`` was contacted over HTTP at ``ip`` (Host header /
+          SNI selected the service).  Not a DNS resolution.
+        * CERT — every name in the presented certificate's CN / SANs.  A
+          certificate name says the cert covers the name; it says nothing
+          about where the name resolves.  Wildcards are kept as patterns.
+        """
+        if self._project_id is None:
+            return
+        if hostname:
+            record_observation(
+                self.db, project_id=self._project_id, name=hostname,
+                record_type=DNS_OBS_HTTP, value=ip, scan_id=scan_id, cache=self._name_cache,
+            )
+        tls = record.get("tls")
+        if not isinstance(tls, dict):
+            return
+        cert_names: List[str] = []
+        cn = tls.get("subject_cn")
+        if isinstance(cn, str) and cn.strip():
+            cert_names.append(cn.strip())
+        san = tls.get("subject_an")
+        if isinstance(san, list):
+            cert_names.extend(str(s).strip() for s in san if isinstance(s, str) and s.strip())
+        for name in dict.fromkeys(cert_names):  # de-dup, keep order
+            record_observation(
+                self.db, project_id=self._project_id, name=name,
+                record_type=DNS_OBS_CERT, value=ip, scan_id=scan_id, cache=self._name_cache,
+            )
 
     @classmethod
     def _resolve_ip_and_hostname(

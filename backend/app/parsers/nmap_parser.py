@@ -312,12 +312,23 @@ class NmapXMLParser:
         """Extract host information from XML element"""
         host_data = {}
         
-        # Extract hostname
+        # Extract hostnames.  nmap distinguishes type="user" (the operator
+        # gave nmap this name and it resolved to the address) from type="PTR"
+        # (reverse DNS).  Every one becomes a name→address observation via
+        # the dedup service; the FIRST stays the display-name candidate
+        # (pre-v2.322.0 behaviour), with PTR provenance when nmap says so.
         hostnames = host_elem.find('hostnames')
         if hostnames is not None:
-            hostname_elem = hostnames.find('hostname')
-            if hostname_elem is not None:
-                host_data['hostname'] = hostname_elem.get('name')
+            pairs = [
+                (el.get('name'), (el.get('type') or '').strip())
+                for el in hostnames.findall('hostname')
+                if el.get('name')
+            ]
+            if pairs:
+                host_data['hostnames'] = pairs
+                host_data['hostname'] = pairs[0][0]
+                host_data['hostname_kind'] = pairs[0][1]
+                host_data['hostname_source'] = 'ptr' if pairs[0][1].lower() == 'ptr' else 'scanner'
         
         # Extract status
         status = host_elem.find('status')

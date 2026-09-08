@@ -45,6 +45,7 @@ vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
 vi.mock('../../components/HostFindingsCard', () => ({ default: () => null }));
 vi.mock('../../components/HostDnsRecordsCard', () => ({ default: () => null }));
+vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
 vi.mock('../../components/HostLineagePanel', () => ({ default: () => null }));
 // PortDetailsCard fetches web interfaces (getHostWebInterfaces) which the api
 // mock above doesn't provide; stub it like the other fetching child cards.

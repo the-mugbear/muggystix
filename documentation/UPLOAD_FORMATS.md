@@ -14,7 +14,7 @@ BlueStick's ingestion pipeline automatically detects and routes uploads to the c
 | RustScan | `.txt` | `backend/app/parsers/rustscan_parser.py` | Supports common console output with `Open <ip>:<port>` or bracketed port lists. Include `rustscan` in the filename. |
 | Nessus | `.nessus` XML | `backend/app/parsers/nessus_parser.py`, `backend/app/services/nessus_integration_service.py` | Large (~600 MB) exports are streamed; ensure `scan-results.nessus` style XML, not HTML reports. |
 | OpenVAS / Greenbone | `.xml` | `backend/app/parsers/openvas_parser.py` | Expects XML reports with `<result>` entries containing host/port/finding data. |
-| Amass / Subfinder | `.json`, `.txt` | `backend/app/parsers/amass_parser.py` | Best results come from exports that include resolved IPs. Hostname-only rows are ignored. |
+| Amass / Subfinder | `.json`, `.txt` | `backend/app/parsers/amass_parser.py` | Rows with resolved IPs create hosts and A/AAAA observations. Hostname-only rows become unresolved names in the Names inventory (no host, no invented IP) until a later upload resolves them. |
 | Nikto | `.json`, `.csv`, `.txt` | `backend/app/parsers/nikto_parser.py` | Text reports should preserve the standard `Target IP` / `Target Port` header lines. |
 | SMBMap | `.json`, `.txt` | `backend/app/parsers/smbmap_parser.py` | Text reports should preserve the standard smbmap `[+] <ip>` host lines. |
 | BloodHound / SharpHound | `.json` | `backend/app/parsers/bloodhound_parser.py` | Upload extracted JSON files, not the ZIP bundle. Computer objects should include resolved IPv4 data. Files ≥50 MB are streamed via `ijson` to avoid OOM-killing the worker (v2.41.0). |

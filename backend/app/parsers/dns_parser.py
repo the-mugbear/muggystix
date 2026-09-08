@@ -5,6 +5,11 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import correlate_scan
+from app.services.dns_name_service import (
+    ObservationCache,
+    apply_hostname_candidate,
+    record_observation,
+)
 from app.services.host_deduplication_service import HostDeduplicationService
 import logging
 import time
@@ -16,6 +21,7 @@ class DNSParser:
     def __init__(self, db: Session):
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
+        self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Parse DNS records CSV file and create/update host records with DNS names"""
@@ -84,19 +90,24 @@ class DNSParser:
                         logger.warning(f"Skipping row {i}: invalid IP address format: {ip_address}")
                         continue
 
-                    # Store the DNS record regardless of type.  project_id +
-                    # scan_id mirror the PTR-host creation below (and the
-                    # dnsx parser): without them the row is orphaned —
-                    # invisible to project-scoped DNS reads and uncounted in
-                    # the producing scan's dns_record_count.
-                    dns_record = models.DNSRecord(
-                        domain=dns_name,
+                    # Store the observation regardless of type, through the
+                    # shared name service so the row binds to a DNSName and a
+                    # repeated CSV line is a no-op instead of a duplicate row.
+                    # project_id + scan_id mirror the PTR-host creation below:
+                    # without them the row is orphaned — invisible to
+                    # project-scoped DNS reads and uncounted in the producing
+                    # scan's dns_record_count.
+                    ttl_raw = (normalized_row.get('ttl') or '').strip()
+                    record_observation(
+                        self.db,
+                        project_id=self._project_id,
+                        name=dns_name,
                         record_type=record_type,
                         value=ip_address,
-                        project_id=self._project_id,
                         scan_id=scan.id,
+                        ttl=int(ttl_raw) if ttl_raw.isdigit() else None,
+                        cache=self._name_cache,
                     )
-                    self.db.add(dns_record)
                     dns_records_processed += 1
 
                     # For PTR records, also create/update the host.
@@ -112,12 +123,15 @@ class DNSParser:
                         ).first()
 
                         if existing_host:
-                            if not existing_host.hostname or existing_host.hostname != dns_name:
-                                existing_host.hostname = dns_name
+                            # PTR outranks scanner/forward names but never an
+                            # operator's correction (was: unconditional overwrite).
+                            if apply_hostname_candidate(existing_host, dns_name, 'ptr'):
                                 hosts_updated += 1
                         else:
                             host_data = {
                                 'hostname': dns_name,
+                                'hostname_source': 'ptr',
+                                'names_recorded': True,  # record_observation above wrote it
                                 'state': 'unknown',
                             }
                             self.dedup_service.find_or_create_host(

@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel, Field
 from app.db import models
 from app.db.session import get_db
-from app.db.models import Scope, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment, Site
+from app.db.models import Scope, ScopeDomain, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment, Site
+from app.schemas.dns_names import (
+    ScopeDomainBatchCreate,
+    ScopeDomainBatchResponse,
+    ScopeDomainRow,
+)
+from app.services import dns_name_service
 from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
@@ -487,7 +493,30 @@ def get_scope_coverage(
         .scalar() or 0
     )
 
-    out_of_scope_count = max(total_hosts - scoped_hosts, 0)
+    # v2.322.0 — domain scope.  Hosts an in-scope name resolves to (and that
+    # no subnet covers) are a third state: not counted as scoped, not
+    # reported as out of scope.
+    total_domains = (
+        db.query(func.count(ScopeDomain.id))
+        .join(Scope, Scope.id == ScopeDomain.scope_id)
+        .filter(Scope.project_id == project.id)
+        .scalar() or 0
+    )
+    name_reachable_cond = dns_name_service.host_reachable_via_in_scope_name_condition(project.id)
+    name_reachable_hosts = 0
+    if total_domains:
+        name_reachable_hosts = (
+            db.query(func.count(models.Host.id))
+            .outerjoin(HostSubnetMapping, HostSubnetMapping.host_id == models.Host.id)
+            .filter(
+                models.Host.project_id == project.id,
+                HostSubnetMapping.host_id.is_(None),
+                name_reachable_cond,
+            )
+            .scalar() or 0
+        )
+
+    out_of_scope_count = max(total_hosts - scoped_hosts - name_reachable_hosts, 0)
     coverage_percentage = (
         (scoped_hosts / total_hosts) * 100 if total_hosts > 0 else 0.0
     )
@@ -506,6 +535,7 @@ def get_scope_coverage(
         .outerjoin(HostSubnetMapping, HostSubnetMapping.host_id == models.Host.id)
         .outerjoin(scan_alias, scan_alias.id == models.Host.last_updated_scan_id)
         .filter(HostSubnetMapping.host_id.is_(None))
+        .filter(~name_reachable_cond)
         .filter(models.Host.project_id == project.id)
         .order_by(models.Host.last_seen.desc().nullslast())
         .limit(limit)
@@ -555,11 +585,13 @@ def get_scope_coverage(
     return ScopeCoverageSummary(
         total_scopes=total_scopes,
         total_subnets=total_subnets,
+        total_domains=total_domains,
+        name_reachable_hosts=name_reachable_hosts,
         total_hosts=total_hosts,
         scoped_hosts=scoped_hosts,
         out_of_scope_hosts=out_of_scope_count,
         coverage_percentage=coverage_percentage,
-        has_scope_configuration=total_subnets > 0,
+        has_scope_configuration=(total_subnets > 0 or total_domains > 0),
         recent_out_of_scope_hosts=recent_entries,
         top_technologies=top_technologies,
     )
@@ -895,6 +927,126 @@ def delete_subnet(
     db.delete(subnet)
     db.commit()
     return {"message": "Subnet deleted successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Domain scope (v2.322.0)
+# ---------------------------------------------------------------------------
+#
+# Names in scope, alongside subnets.  Exact-name membership and "include
+# descendants" are separate flags; name scope never confers subnet scope on
+# the addresses names resolve to (see ScopeDomain docstring).
+
+def _scope_domain_rows(db: Session, project_id: int, domains: List[ScopeDomain]) -> List[ScopeDomainRow]:
+    """Serialize with a per-entry count of the project's concrete names it
+    covers — the operator's check that a declaration actually bites."""
+    n = models.DNSName
+    out: List[ScopeDomainRow] = []
+    for d in domains:
+        cond = n.fqdn == d.domain
+        if d.include_subdomains:
+            cond = or_(
+                cond,
+                n.fqdn.like(dns_name_service._escaped_like_suffix(d.domain), escape="\\"),
+            )
+        count = (
+            db.query(func.count(n.id))
+            .filter(n.project_id == project_id, n.kind == "fqdn", cond)
+            .scalar() or 0
+        )
+        out.append(ScopeDomainRow(
+            id=d.id, scope_id=d.scope_id, domain=d.domain,
+            include_subdomains=bool(d.include_subdomains), description=d.description,
+            created_at=d.created_at, name_count=int(count),
+        ))
+    return out
+
+
+def _load_scope_or_404(db: Session, scope_id: int, project_id: int) -> Scope:
+    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project_id).first()
+    if not scope:
+        raise HTTPException(status_code=404, detail="Scope not found")
+    return scope
+
+
+@router.get(
+    "/{scope_id}/domains",
+    response_model=List[ScopeDomainRow],
+    summary="List the domains declared in scope",
+)
+def list_scope_domains(
+    scope_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    scope = _load_scope_or_404(db, scope_id, project.id)
+    rows = (
+        db.query(ScopeDomain)
+        .filter(ScopeDomain.scope_id == scope.id)
+        .order_by(ScopeDomain.domain.asc())
+        .all()
+    )
+    return _scope_domain_rows(db, project.id, rows)
+
+
+@router.post(
+    "/{scope_id}/domains",
+    response_model=ScopeDomainBatchResponse,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    summary="Declare domains in scope (analyst)",
+)
+def add_scope_domains(
+    scope_id: int,
+    body: ScopeDomainBatchCreate,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    """Idempotent: an existing entry widens (exact → include_subdomains) but
+    never narrows.  ``*.example.com`` is accepted and stored as
+    ``example.com`` with include_subdomains."""
+    scope = _load_scope_or_404(db, scope_id, project.id)
+    added, updated, invalid = dns_name_service.upsert_scope_domains(
+        db, scope,
+        [(d.domain, d.include_subdomains, d.description) for d in body.domains],
+        created_by_id=current_user.id,
+    )
+    db.commit()
+    rows = (
+        db.query(ScopeDomain)
+        .filter(ScopeDomain.scope_id == scope.id)
+        .order_by(ScopeDomain.domain.asc())
+        .all()
+    )
+    return ScopeDomainBatchResponse(
+        added=added, updated=updated, invalid=invalid,
+        domains=_scope_domain_rows(db, project.id, rows),
+    )
+
+
+@router.delete(
+    "/{scope_id}/domains/{domain_id}",
+    response_model=MessageResponse,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    summary="Remove a domain from scope (analyst)",
+)
+def delete_scope_domain(
+    scope_id: int,
+    domain_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    scope = _load_scope_or_404(db, scope_id, project.id)
+    row = (
+        db.query(ScopeDomain)
+        .filter(ScopeDomain.id == domain_id, ScopeDomain.scope_id == scope.id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Scope domain not found")
+    db.delete(row)
+    db.commit()
+    return {"message": "Domain removed from scope"}
 
 
 # ---------------------------------------------------------------------------

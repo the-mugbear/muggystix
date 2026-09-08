@@ -75,6 +75,7 @@ import {
   SubnetLabelChip,
 } from '../components/SubnetLabelManager';
 import SiteManagerDialog from '../components/SiteManagerDialog';
+import ScopeDomainsCard from '../components/ScopeDomainsCard';
 
 type CoverageTone = 'success' | 'warning' | 'destructive' | 'muted';
 
@@ -646,6 +647,10 @@ const Scopes: React.FC = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
+          coverage card on change (name-reachable hosts move between states). */}
+      {scope != null && <ScopeDomainsCard scopeId={scope.id} onChanged={loadData} />}
 
       {scope == null ? (
         <Card>

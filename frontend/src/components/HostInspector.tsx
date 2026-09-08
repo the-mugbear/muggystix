@@ -97,6 +97,7 @@ import NseScriptsCard from './NseScriptsCard';
 import NetExecCard from './NetExecCard';
 import HostFindingsCard from './HostFindingsCard';
 import HostDnsRecordsCard from './HostDnsRecordsCard';
+import HostNamesCard from './HostNamesCard';
 import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
@@ -2215,6 +2216,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           surface).  Self-suppresses when the host has no DNS records,
           so it doesn't add visual clutter on freshly-discovered hosts. */}
       <HostDnsRecordsCard hostId={host.id} />
+
+      {/* v5.193.0 — every name bound to this address (the host row shows
+          one display name; a load balancer carries many).  Self-suppresses
+          when no name was ever observed here. */}
+      <HostNamesCard hostId={host.id} />
 
       {/* NSE script output — port + host scripts.  Renders nothing
           when the host was scanned without -sC/--script. */}

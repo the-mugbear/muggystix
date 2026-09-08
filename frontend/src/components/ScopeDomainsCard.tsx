@@ -1,0 +1,224 @@
+import React, { useEffect, useState } from 'react';
+import { Globe, Loader2, Plus, Trash2 } from 'lucide-react';
+
+import {
+  addScopeDomains,
+  deleteScopeDomain,
+  listScopeDomains,
+  ScopeDomainRow,
+} from '../services/api';
+import { formatApiError } from '../utils/apiErrors';
+import { useToast } from '../contexts/ToastContext';
+import { useConfirm } from '../hooks/useConfirm';
+import { Alert, AlertDescription } from './ui/alert';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { Card, CardContent } from './ui/card';
+import { Checkbox } from './ui/checkbox';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from './ui/table';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+
+/**
+ * ScopeDomainsCard — the domains declared in scope, alongside the subnet
+ * table (v5.193.0).
+ *
+ * Exact-name membership and "include subdomains" are separate on purpose:
+ * approving portal.example.com does not approve dev.portal.example.com.  Name
+ * scope never confers subnet scope on the addresses names resolve to — a host
+ * reached only through an in-scope name is reported as "reachable via
+ * in-scope name", not as in scope.  `name_count` is the operator's check that
+ * an entry actually covers something in the names inventory.
+ */
+
+interface ScopeDomainsCardProps {
+  scopeId: number;
+  /** Called after any change so the parent can refresh coverage numbers. */
+  onChanged?: () => void;
+}
+
+const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged }) => {
+  const toast = useToast();
+  const [confirmDialog, confirm] = useConfirm();
+  const [rows, setRows] = useState<ScopeDomainRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [domainInput, setDomainInput] = useState('');
+  const [includeSub, setIncludeSub] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  const load = async () => {
+    try {
+      setError(null);
+      setRows(await listScopeDomains(scopeId));
+    } catch (err: unknown) {
+      setError(formatApiError(err, 'Failed to load scope domains.'));
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeId]);
+
+  const handleAdd = async () => {
+    // One per line or comma/whitespace-separated; "*.example.com" is accepted.
+    const entries = domainInput
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (entries.length === 0) return;
+    setAdding(true);
+    try {
+      const res = await addScopeDomains(
+        scopeId,
+        entries.map((domain) => ({ domain, include_subdomains: includeSub })),
+      );
+      setRows(res.domains);
+      setDomainInput('');
+      const parts: string[] = [];
+      if (res.added) parts.push(`${res.added} added`);
+      if (res.updated) parts.push(`${res.updated} widened to include subdomains`);
+      if (res.invalid.length) parts.push(`${res.invalid.length} rejected`);
+      if (res.invalid.length) {
+        toast.warning(`${parts.join(', ')}. Rejected: ${res.invalid.slice(0, 3).join('; ')}`);
+      } else {
+        toast.success(parts.length ? parts.join(', ') : 'Already in scope');
+      }
+      onChanged?.();
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Failed to add domains.'));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleDelete = async (row: ScopeDomainRow) => {
+    const ok = await confirm({
+      title: 'Remove domain from scope',
+      body: `${row.domain}${row.include_subdomains ? ' and all subdomains' : ''} will no longer be in scope. Names and hosts are not deleted.`,
+      severity: 'warning',
+      confirmLabel: 'Remove',
+    });
+    if (!ok) return;
+    setDeletingId(row.id);
+    try {
+      await deleteScopeDomain(scopeId, row.id);
+      setRows((prev) => (prev ? prev.filter((r) => r.id !== row.id) : prev));
+      toast.success(`Removed ${row.domain} from scope`);
+      onChanged?.();
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Failed to remove domain.'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <Card className="mb-md">
+      {confirmDialog}
+      <CardContent className="p-0">
+        <div className="flex flex-wrap items-center gap-xs border-b border-border p-sm">
+          <Globe className="size-4 text-primary" aria-hidden />
+          <span className="font-medium">Domains in scope</span>
+          {rows && <Badge variant="outline">{rows.length}</Badge>}
+          <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
+            Names covered here are in scope; the addresses they resolve to are not made subnet-in-scope.
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-xs border-b border-border bg-accent/30 p-sm sm:flex-row sm:items-end">
+          <div className="min-w-0 flex-1">
+            <Label htmlFor="new-scope-domain">Domain (one or more; *.example.com allowed)</Label>
+            <Input
+              id="new-scope-domain"
+              value={domainInput}
+              onChange={(e) => setDomainInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !adding) handleAdd();
+              }}
+              placeholder="portal.example.com, *.lab.example.com"
+              className="font-mono"
+            />
+          </div>
+          <label className="flex items-center gap-xs text-metadata">
+            <Checkbox checked={includeSub} onCheckedChange={(v) => setIncludeSub(v === true)} />
+            Include subdomains
+          </label>
+          <Button size="sm" onClick={handleAdd} disabled={adding || !domainInput.trim()}>
+            {adding ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Plus className="size-4" aria-hidden />}
+            Add
+          </Button>
+        </div>
+
+        {error && (
+          <Alert variant="destructive" className="m-sm">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {rows === null ? (
+          <div className="p-md text-center text-metadata text-muted-foreground">Loading domains…</div>
+        ) : rows.length === 0 ? (
+          <div className="p-md text-center text-metadata text-muted-foreground">
+            No domains declared. Subnet scope is unaffected; imported names stay out of scope until a domain covers them.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table style={{ tableLayout: 'fixed' }} className="min-w-[560px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[45%]">Domain</TableHead>
+                  <TableHead className="w-[20%]">Match</TableHead>
+                  <TableHead className="w-[20%] text-right">Names covered</TableHead>
+                  <TableHead className="w-[15%]" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="truncate font-mono" title={row.domain}>
+                      {row.include_subdomains ? `*.${row.domain}` : row.domain}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={row.include_subdomains ? 'info-outline' : 'outline'}>
+                        {row.include_subdomains ? 'name + subdomains' : 'exact name'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{row.name_count.toLocaleString()}</TableCell>
+                    <TableCell className="text-right">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`Remove ${row.domain} from scope`}
+                            disabled={deletingId === row.id}
+                            onClick={() => handleDelete(row)}
+                          >
+                            <Trash2 className="size-4" aria-hidden />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remove from scope</TooltipContent>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+export default ScopeDomainsCard;

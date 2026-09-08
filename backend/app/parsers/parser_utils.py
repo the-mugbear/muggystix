@@ -338,10 +338,15 @@ def resolve_host_cached(
     ``hostname`` if one was newly learned — matches the per-record behaviour the
     web parsers relied on.  ``create=True`` inserts + flushes a missing host
     (the web tool observed it, so it's real)."""
+    # Display-name writes go through the one precedence rule; a web tool's
+    # name for the address is a 'scanner' source (fills an empty hostname or
+    # replaces a weaker forward-resolved vhost, never a PTR or operator name).
+    from app.services.dns_name_service import apply_hostname_candidate
+
     if ip in host_cache:
         host = host_cache[ip]
-        if host is not None and hostname and not host.hostname:
-            host.hostname = hostname
+        if host is not None and hostname:
+            apply_hostname_candidate(host, hostname, "scanner")
         return host
 
     host = (
@@ -352,11 +357,12 @@ def resolve_host_cached(
     if host is None and create:
         host = models.Host(
             ip_address=ip, hostname=hostname, state="up", project_id=project_id,
+            hostname_source="scanner" if hostname else None,
         )
         db.add(host)
         db.flush()
-    elif host is not None and hostname and not host.hostname:
-        host.hostname = hostname
+    elif host is not None and hostname:
+        apply_hostname_candidate(host, hostname, "scanner")
 
     host_cache[ip] = host
     return host

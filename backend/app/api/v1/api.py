@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
-    host_queries, findings, findings_bulk,
+    host_queries, findings, findings_bulk, dns_names,
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, parse_errors, reports, report_drafts, auth, two_factor,
     audit, users, projects, notifications,
@@ -177,6 +177,9 @@ project_router = APIRouter(
 project_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 project_router.include_router(scans.router, prefix="/scans", tags=["scans"])
 project_router.include_router(hosts.router, prefix="/hosts", tags=["hosts"])
+# v2.322.0 — named assets (FQDN inventory).  Mounted before the scopes router
+# only for grouping; the two share no path prefix.
+project_router.include_router(dns_names.router, prefix="/names", tags=["names"])
 project_router.include_router(host_follow.router, prefix="/hosts", tags=["host-follow"])
 project_router.include_router(host_notes.router, prefix="/hosts", tags=["host-notes"])
 # Bulk finding operations — mirrors the host_bulk split (its own router so

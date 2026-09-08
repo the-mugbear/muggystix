@@ -20,6 +20,7 @@ import {
   Compass,
   Folder,
   Gauge,
+  Globe,
   KeyRound,
   MessageCircleQuestion,
   MessageSquareHeart,
@@ -141,6 +142,10 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'hosts', path: '/hosts', label: 'Hosts', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: ServerStackIcon, order: 3 },
+  },
+  {
+    id: 'names', path: '/names', label: 'Names', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: Globe, keywords: ['name', 'fqdn', 'dns', 'domain', 'hostname', 'vhost'], order: 3.5 },
   },
   {
     id: 'findings', path: '/findings', label: 'Findings', requiredRole: 'viewer', hub: 'inventory',

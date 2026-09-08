@@ -96,6 +96,7 @@ const Hosts = lazy(() => import('./pages/Hosts'));
 const Activity = lazy(() => import('./pages/Activity'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
+const Names = lazy(() => import('./pages/Names'));
 const SecurityPosture = lazy(() => import('./pages/SecurityPosture'));
 const Segments = lazy(() => import('./pages/Segments'));
 const Patterns = lazy(() => import('./pages/Patterns'));
@@ -474,6 +475,15 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="analyst">
                             <Scopes />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* v5.193.0 — named assets (FQDN inventory). */}
+                      <Route
+                        path="/names"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <Names />
                           </ProtectedRoute>
                         }
                       />

@@ -21,7 +21,18 @@ class Host(Base):
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     ip_address = Column(String, nullable=False, index=True)
+    # DISPLAY name only (v2.322.0).  A host may legitimately carry many names
+    # (every vhost behind a load balancer); those live as DNSName rows bound
+    # through dns_records observations.  This column is the one name shown in
+    # lists, chosen by the precedence rule in dns_name_service
+    # .apply_hostname_candidate — never by "first/last writer wins".
     hostname = Column(String)
+    # Provenance rank of the display name: 'operator' > 'ptr' > 'scanner' >
+    # 'forward'.  NULL = legacy row written before the rule existed (treated
+    # as 'scanner').  A candidate replaces the current name only when its
+    # source outranks this — so a forward-resolved vhost never clobbers a PTR,
+    # and nothing automatic clobbers an operator's correction.
+    hostname_source = Column(String(16))
     state = Column(String)
     state_reason = Column(String)
     os_name = Column(String)
@@ -288,6 +299,45 @@ class Scope(Base):
     
     # Relationships
     subnets = relationship("Subnet", back_populates="scope", cascade="all, delete-orphan")
+    domains = relationship("ScopeDomain", back_populates="scope", cascade="all, delete-orphan")
+
+
+class ScopeDomain(Base):
+    """A DNS domain declared in scope (v2.322.0).
+
+    Scope was subnet-only, so a supplied FQDN list had nowhere to live and
+    every imported name was out of scope by construction.  A row here says
+    "``domain`` is in scope"; ``include_subdomains`` extends that to every
+    descendant (``*.example.com`` on input maps to ``example.com`` +
+    ``include_subdomains=True``).  Exact-name and descendant membership are
+    deliberately separate — approving ``portal.example.com`` must not approve
+    ``dev.portal.example.com``.
+
+    Name scope is independent of IP scope: an in-scope name resolving to a
+    shared address does not put that address's other names or services in
+    scope.  Hosts reached only through an in-scope name are reported as
+    "reachable via in-scope name", never as subnet-in-scope (see
+    scope_coverage).  Import and declaration are separate operations — a
+    name list becomes scope only when the operator says so.
+    """
+    __tablename__ = "scope_domains"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Normalised (lowercase, no trailing dot, IDN as punycode) — same rules as
+    # DNSName.fqdn so membership is a plain string compare.
+    domain = Column(String(253), nullable=False, index=True)
+    include_subdomains = Column(Boolean, nullable=False, default=False)
+    description = Column(Text)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    scope = relationship("Scope", back_populates="domains")
+
+    __table_args__ = (
+        UniqueConstraint("scope_id", "domain", name="uq_scope_domain"),
+    )
+
 
 class Subnet(Base):
     __tablename__ = "subnets"
@@ -499,11 +549,92 @@ class WebInterface(Base):
     port_row = relationship("Port", foreign_keys=[port_id])
 
 
+class DNSName(Base):
+    """A named asset — an FQDN the engagement knows about (v2.322.0).
+
+    Separate from ``Host`` on purpose.  A Host is an ADDRESS (unique per
+    project + IP); a name is an IDENTITY that may resolve to a rotating
+    address behind NAT, share an address with forty other vhosts on a load
+    balancer, or resolve to nothing yet.  Forcing a name into the host table
+    meant either inventing a placeholder IP (a duplicate waiting to happen) or
+    dropping the name (what the amass/dnsx/httpx parsers did before this).
+
+    Names and hosts are linked only through EVIDENCE: ``dns_records`` rows
+    (one immutable observation per scan) carry ``name_id``; "currently
+    resolves to" is derived from the latest A/AAAA observation, never stored.
+    Nothing here ever merges two names or two hosts automatically.
+
+    ``fqdn`` is normalised (lowercase, no trailing dot, IDN as punycode) so
+    re-importing the same list is a no-op.  ``kind``: ``fqdn`` for a concrete
+    name, ``wildcard`` for a ``*.example.com`` pattern (kept for provenance —
+    certificates and amass emit them — but excluded from anything that
+    enumerates targets and never conferring scope by itself).
+    """
+    __tablename__ = "dns_names"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    fqdn = Column(String(253), nullable=False, index=True)
+    kind = Column(String(16), nullable=False, default="fqdn")
+    # first_seen = earliest observation of any kind; last_seen = latest.  Both
+    # are maintained by dns_name_service.record_observation.  Neither is scan
+    # evidence about an ADDRESS — Host.last_seen semantics don't transfer.
+    first_seen = Column(DateTime(timezone=True), server_default=func.now())
+    last_seen = Column(DateTime(timezone=True), server_default=func.now())
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    project = relationship("Project", foreign_keys=[project_id])
+    observations = relationship("DNSRecord", back_populates="name", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "fqdn", name="uq_dns_name_project_fqdn"),
+        Index("idx_dns_name_project_kind", "project_id", "kind"),
+    )
+
+
+# Observation kinds carried in ``DNSRecord.record_type`` beyond real DNS RR
+# types.  Each states exactly what it establishes and no more — a certificate
+# name is NOT a resolution, an imported name is NOT a verified binding.
+DNS_OBS_IMPORT = "IMPORT"          # operator supplied the name; value = raw string as supplied
+DNS_OBS_DISCOVERED = "DISCOVERED"  # a tool enumerated the name with no address; value = tool name
+DNS_OBS_SCANNER = "SCANNER"        # a scanner reported this name for an address; value = IP
+DNS_OBS_HTTP = "HTTP"              # the name was contacted over HTTP at an address; value = IP
+DNS_OBS_CERT = "CERT"              # a certificate presented at an address carried the name; value = IP
+# Only these establish "resolves to" for the derived current-address view.
+DNS_RESOLVING_TYPES = ("A", "AAAA")
+# Kinds whose ``value`` is an IP address (joinable to hosts_v2.ip_address).
+DNS_ADDRESS_VALUED_TYPES = ("A", "AAAA", "PTR", DNS_OBS_SCANNER, DNS_OBS_HTTP, DNS_OBS_CERT)
+
+
 class DNSRecord(Base):
+    """One immutable observation about a name (v2.322.0 broadened role).
+
+    Historically "a DNS answer from an upload".  Now the single evidence table
+    linking ``DNSName`` to addresses and tools, so the same fact doesn't grow a
+    fourth home.  ``record_type`` is the observation kind: a real RR type
+    (A/AAAA/CNAME/PTR/MX/...) or one of the ``DNS_OBS_*`` constants above.
+    DNS-specific fields (``ttl``, ``resolver_name``) are NULL for non-DNS
+    kinds.  ``value`` is the RR data for DNS kinds and the kind-specific
+    payload documented on each constant otherwise.
+
+    Rows are observations, not summaries: one per (name, kind, value,
+    resolver, scan).  Re-ingesting the same answer in the same scan is a
+    no-op (the unique index below, NULLS NOT DISTINCT on Postgres); the same
+    answer in a later scan is a NEW row, which is how history, gaps and
+    per-scan evidence survive.  Current state is derived by query.
+
+    TTL is cache freshness — it says nothing about when an address stopped
+    serving a name.  ``observed_at`` is the tool's own timestamp when the
+    output carries one (dnsx), else ingest time.
+    """
     __tablename__ = "dns_records"
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    # The named asset this observation is about.  Nullable only for legacy
+    # rows with no project (a name needs a project); every new row sets it.
+    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="CASCADE"), nullable=True, index=True)
+    observed_at = Column(DateTime(timezone=True), server_default=func.now())
     # RV-1 — provenance: which scan produced this DNS row, so a scan can
     # report its dns_record_count instead of looking "empty" when it only
     # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none,
@@ -522,6 +653,27 @@ class DNSRecord(Base):
     resolver_name = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    name = relationship("DNSName", back_populates="observations")
+
+    __table_args__ = (
+        # One observation per (name, kind, value, resolver, scan).  scan_id and
+        # resolver_name are legitimately NULL (imports have no scan; CSV/amass
+        # carry no resolver), so NULLS NOT DISTINCT makes those collide as
+        # intended on Postgres.  SQLAlchemy ignores the flag on SQLite, where
+        # the test fallback degrades to NULLs-distinct — the application-level
+        # existence check in dns_name_service.record_observation is what the
+        # parsers rely on; this index is the backstop.
+        Index(
+            "uq_dns_record_observation",
+            "name_id", "record_type", "value", "resolver_name", "scan_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        # "Which names bind to this address" — the join hosts_v2.ip_address =
+        # dns_records.value filtered by project.
+        Index("idx_dns_record_project_value", "project_id", "value"),
+    )
 
 
 class OutOfScopeHost(Base):

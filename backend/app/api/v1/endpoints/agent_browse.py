@@ -813,6 +813,12 @@ def update_agent_host(
             if getattr(host, field) != new_value:
                 setattr(host, field, new_value)
                 changed.append(field)
+            if field == "hostname":
+                # An operator correction is the top-ranked display-name source:
+                # no later scan, PTR or forward answer may replace it (see
+                # dns_name_service.apply_hostname_candidate).  Clearing the
+                # name drops the lock so ingestion can name the host again.
+                host.hostname_source = "operator" if new_value else None
     if changed:
         db.commit()
         db.refresh(host)

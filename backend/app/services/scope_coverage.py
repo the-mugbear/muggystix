@@ -35,6 +35,17 @@ OUT_OF_SCOPE_REASON = (
 
 
 def _base_query(db: Session, project_id: int):
+    """Hosts with no subnet mapping AND not reachable via an in-scope name.
+
+    v2.322.0 — domain scope adds a third coverage state.  A host that an
+    in-scope name resolves to (A/AAAA observation) is neither subnet-in-scope
+    (it gets no host_subnet_mappings row; approving a name never approves the
+    address's other names or services) nor out of scope — reporting it here
+    would flag every host behind an approved load-balancer name as a scope
+    violation.  See dns_name_service.host_reachable_via_in_scope_name_condition.
+    """
+    from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
+
     mapped = select(models.HostSubnetMapping.id).where(
         models.HostSubnetMapping.host_id == models.Host.id
     )
@@ -42,6 +53,7 @@ def _base_query(db: Session, project_id: int):
         db.query(models.Host)
         .filter(models.Host.project_id == project_id)
         .filter(~mapped.exists())
+        .filter(~host_reachable_via_in_scope_name_condition(project_id))
     )
 
 

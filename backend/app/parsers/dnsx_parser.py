@@ -43,6 +43,7 @@ import ipaddress
 import logging
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -54,9 +55,31 @@ from app.parsers.parser_utils import (
     persist_host_observation,
 )
 from app.parsers.streaming_json import iter_json_records
+from app.services.dns_name_service import (
+    ObservationCache,
+    apply_hostname_candidate,
+    record_observation,
+)
 from app.services.host_deduplication_service import HostDeduplicationService
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_timestamp(raw: Any) -> Optional[datetime]:
+    """dnsx emits ``timestamp`` as RFC 3339 (``2026-09-08T10:11:12.123Z``).
+    Returns an aware datetime or None — a bad stamp is not a bad record."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 # Record-type fields dnsx surfaces and the canonical record_type
@@ -120,6 +143,11 @@ class DnsxParser:
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
         self._project_id: Optional[int] = None
+        # v2.322.0 — name rows + observation identity memo (see
+        # dns_name_service).  Replaces the parser-local ``seen`` tuple set;
+        # dedup is now (name, type, value, resolver, scan) and survives across
+        # uploads because the DB is checked, not just this file.
+        self._name_cache = ObservationCache()
         # Tracked for the parser-warning summary.
         self._resolvers_seen: Counter[str] = Counter()
         self._status_codes_seen: Counter[str] = Counter()
@@ -145,14 +173,10 @@ class DnsxParser:
         ptr_hosts_updated = 0
         a_hosts_created = 0
         skipped_records = 0
-        # Dedup tuple — (record_type, domain, value, resolver_name).
-        # v2.89.0 (#44.1): the 4-tuple keeps the same answer from two
-        # different resolvers as two distinct rows (which is the whole
-        # point of the resolver_name column), while still folding
-        # exact duplicates from the SAME resolver into one row.  Pre-
-        # #44.1 the 3-tuple collapsed multi-resolver duplicates and
-        # the resolver info was lost to a parser-warning summary.
-        seen: set[tuple[str, str, str, str | None]] = set()
+        # Observation identity is (name, record_type, value, resolver_name,
+        # scan) — the same answer from two resolvers stays two rows (the
+        # point of resolver_name), an exact repeat from one resolver folds.
+        # Enforced by dns_name_service.record_observation + the DB index.
 
         for row in iter_json_records(file_path, tool_label="dnsx JSON"):
             if not isinstance(row, dict):
@@ -176,6 +200,7 @@ class DnsxParser:
                 continue
 
             ttl = row.get("ttl") if isinstance(row.get("ttl"), int) else None
+            observed_at = _parse_timestamp(row.get("timestamp"))
 
             # Per-record isolation: wrap each row's answer-persistence in a
             # SAVEPOINT so one malformed answer (a bad value, an unexpected
@@ -185,11 +210,11 @@ class DnsxParser:
             # per-record parsers (naabu/amass/dirbuster).  The cheap pre-checks
             # above touch no DB state, so they stay outside the savepoint to
             # avoid a SAVEPOINT round-trip per resolution failure.
-            added_keys: List[tuple] = []
+            journal: List[tuple] = []
             sp = self.db.begin_nested()
             try:
                 row_records, row_ptr_hosts, row_a_hosts = self._persist_row_answers(
-                    seen, added_keys, row, host, ttl, resolver, scan.id,
+                    journal, row, host, ttl, resolver, scan.id, observed_at,
                 )
                 sp.commit()
                 records_written += row_records
@@ -198,11 +223,10 @@ class DnsxParser:
             except Exception as exc:  # noqa: BLE001 — isolate one bad record
                 sp.rollback()
                 skipped_records += 1
-                # The DNSRecord rows rolled back with the savepoint; drop this
-                # row's in-memory dedup keys too so an identical answer in a
-                # LATER row still persists instead of being deduped away.
-                for k in added_keys:
-                    seen.discard(k)
+                # The rows rolled back with the savepoint; make the cache
+                # forget them too so an identical answer in a LATER row still
+                # persists instead of being deduped away.
+                self._name_cache.forget(journal)
                 logger.warning("dnsx: skipping malformed record host=%r: %s", host, exc)
 
         if records_written == 0:
@@ -282,13 +306,13 @@ class DnsxParser:
 
     def _persist_row_answers(
         self,
-        seen: set,
-        added_keys: List[tuple],
+        journal: List[tuple],
         row: Dict[str, Any],
         host: str,
         ttl: Optional[int],
         resolver: Optional[str],
         scan_id: int,
+        observed_at: Optional[datetime],
     ) -> tuple[int, int, int]:
         """Persist every DNS answer carried by one dnsx row — the record-type
         fields plus PTR — updating the host inventory for forward A/AAAA and
@@ -296,9 +320,8 @@ class DnsxParser:
         ``(records_written, ptr_hosts_updated, a_hosts_created)``.
 
         Raises on any persistence error so the caller's SAVEPOINT can isolate
-        a single bad record; ``added_keys`` collects the dedup keys inserted
-        for this row so the caller can roll them back out of ``seen`` on
-        failure.
+        a single bad record; ``journal`` collects what this row added to the
+        name cache so the caller can forget it on rollback.
         """
         records_written = 0
         ptr_hosts_updated = 0
@@ -313,8 +336,8 @@ class DnsxParser:
                 if not value_str:
                     continue
                 if self._persist_record(
-                    seen, added_keys, host, record_type, value_str, ttl, resolver,
-                    scan_id=scan_id,
+                    journal, host, record_type, value_str, ttl, resolver,
+                    scan_id=scan_id, observed_at=observed_at,
                 ):
                     records_written += 1
                 # RV-1 — a forward A/AAAA answer (domain -> IP) is a
@@ -323,10 +346,11 @@ class DnsxParser:
                 # the PTR path, so a dnsx run that only resolves names
                 # no longer produces a host-less "empty" scan.
                 if record_type in ("A", "AAAA") and _is_valid_ip(value_str):
-                    # overwrite=False — never clobber an existing PTR /
-                    # scanner hostname with a forward-resolved vhost name.
+                    # 'forward' is the weakest display-name source: many
+                    # vhosts share one IP, so it only ever fills an empty
+                    # hostname or names a brand-new host.
                     if self._update_host_hostname(
-                        scan_id, value_str, host, overwrite=False,
+                        scan_id, value_str, host, source="forward",
                     ):
                         a_hosts_created += 1
 
@@ -347,8 +371,8 @@ class DnsxParser:
                     if not value_str:
                         continue
                     if self._persist_record(
-                        seen, added_keys, host, "PTR", value_str, ttl, resolver,
-                        scan_id=scan_id,
+                        journal, host, "PTR", value_str, ttl, resolver,
+                        scan_id=scan_id, observed_at=observed_at,
                     ):
                         records_written += 1
             else:
@@ -357,58 +381,53 @@ class DnsxParser:
                     if not hostname:
                         continue
                     if self._persist_record(
-                        seen, added_keys, hostname, "PTR", host, ttl, resolver,
-                        scan_id=scan_id,
+                        journal, hostname, "PTR", host, ttl, resolver,
+                        scan_id=scan_id, observed_at=observed_at,
                     ):
                         records_written += 1
-                    if self._update_host_hostname(scan_id, host, hostname):
+                    if self._update_host_hostname(scan_id, host, hostname, source="ptr"):
                         ptr_hosts_updated += 1
 
         return records_written, ptr_hosts_updated, a_hosts_created
 
     def _persist_record(
         self,
-        seen: set[tuple[str, str, str, Optional[str]]],
-        added_keys: List[tuple],
+        journal: List[tuple],
         domain: str,
         record_type: str,
         value: str,
         ttl: Optional[int],
         resolver_name: Optional[str],
         scan_id: Optional[int] = None,
+        observed_at: Optional[datetime] = None,
     ) -> bool:
-        key = (record_type, domain, value, resolver_name)
-        if key in seen:
-            return False
-        seen.add(key)
-        added_keys.append(key)
-        self.db.add(
-            models.DNSRecord(
-                project_id=self._project_id,
-                scan_id=scan_id,
-                domain=domain,
-                record_type=record_type,
-                value=value,
-                ttl=ttl,
-                resolver_name=resolver_name,
-            )
+        row = record_observation(
+            self.db,
+            project_id=self._project_id,
+            name=domain,
+            record_type=record_type,
+            value=value,
+            scan_id=scan_id,
+            resolver_name=resolver_name,
+            ttl=ttl,
+            observed_at=observed_at,
+            cache=self._name_cache,
+            journal=journal,
         )
-        return True
+        return row is not None
 
     def _update_host_hostname(
-        self, scan_id: int, ip_address: str, hostname: str, overwrite: bool = True,
+        self, scan_id: int, ip_address: str, hostname: str, *, source: str,
     ) -> bool:
-        """Mirror DNSParser's PTR special-case: a successful reverse
-        lookup populates Host.hostname when the row exists, or creates
-        a new host with ``state='unknown'`` when it doesn't.
-        Returns True if the inventory was touched.
+        """A DNS answer names an address: apply it to the host's DISPLAY name
+        through the one precedence rule (dns_name_service), creating the host
+        with ``state='unknown'`` when it doesn't exist yet.  Returns True if
+        the inventory was touched.
 
-        ``overwrite`` controls clobbering an EXISTING hostname.  PTR
-        (authoritative reverse DNS) overwrites.  Forward A/AAAA passes
-        ``overwrite=False`` (review #4): many virtual hosts share one IP,
-        so import order must not replace a trusted PTR/scanner hostname
-        with an arbitrary vhost name — A/AAAA only fills an empty hostname
-        or creates a missing host.
+        ``source`` is 'ptr' (authoritative reverse DNS — outranks scanner and
+        forward names) or 'forward' (weakest — fills an empty hostname or
+        names a new host, never replaces).  The name→address relationship
+        itself is already persisted by ``_persist_record``.
         """
         existing = (
             self.db.query(models.Host)
@@ -419,13 +438,16 @@ class DnsxParser:
             .first()
         )
         if existing:
-            if existing.hostname and not overwrite:
-                return False  # preserve the canonical hostname
-            if not existing.hostname or existing.hostname != hostname:
-                existing.hostname = hostname
-                return True
-            return False
-        host_data = {"hostname": hostname, "state": "unknown"}
+            return apply_hostname_candidate(existing, hostname, source)
+        # names_recorded: _persist_record already wrote this name→address
+        # observation (with resolver + TTL); the dedup service must not add a
+        # second, poorer row for the same fact.
+        host_data = {
+            "hostname": hostname,
+            "hostname_source": source,
+            "names_recorded": True,
+            "state": "unknown",
+        }
         self.dedup_service.find_or_create_host(
             ip_address, scan_id, host_data, project_id=self._project_id,
         )

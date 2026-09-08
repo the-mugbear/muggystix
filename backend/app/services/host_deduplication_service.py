@@ -64,6 +64,10 @@ class HostDeduplicationService:
         # never one that later gets rolled back.
         self._pending_host_history: Dict[Tuple[int, int], HostScanHistory] = {}
         self._pending_port_history: Dict[Tuple[int, int], PortScanHistory] = {}
+        # v2.322.0 — per-parse memo for name rows + observation identity so
+        # the name→address bookkeeping costs one lookup per distinct name.
+        from app.services.dns_name_service import ObservationCache
+        self._name_cache = ObservationCache()
 
     def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
         """
@@ -73,7 +77,72 @@ class HostDeduplicationService:
         Handles concurrent inserts: if another session creates the same IP
         between our SELECT and INSERT, we catch the UniqueViolation, rollback
         the failed flush, and merge with the now-existing row.
+
+        v2.322.0 — every name the scan reported for this address is recorded
+        as a name→address observation (``dns_records``) on the way out, so a
+        load balancer's forty vhosts all survive as relationships instead of
+        one display name plus thirty-nine "conflicts".
         """
+        host = self._find_or_create_host_inner(ip_address, scan_id, host_data, project_id)
+        self._record_name_observations(host, ip_address, scan_id, host_data)
+        return host
+
+    def _record_name_observations(self, host: Host, ip_address: str, scan_id: int, host_data: Dict[str, Any]) -> None:
+        """Persist ``host_data['hostnames']`` (a list of ``(name, kind)``) and
+        the plain ``host_data['hostname']`` as observations about names.
+
+        ``kind`` is the nmap hostname type: ``'PTR'`` (reverse DNS → PTR
+        observation), ``'user'`` (the operator gave the scanner this name and
+        it resolved to the address → A/AAAA observation), anything else →
+        SCANNER ("a scanner reported this name for this address").
+        """
+        project_id = host.project_id
+        if project_id is None:
+            return
+        # A parser that has ALREADY written this host's name observations
+        # (dnsx / amass / DNS CSV write them with resolver + TTL detail the
+        # dedup service doesn't have) says so, or we'd add a second, poorer
+        # row for the same fact.
+        if host_data.get('names_recorded'):
+            return
+        pairs: List[Tuple[str, str]] = []
+        for entry in host_data.get('hostnames') or []:
+            if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                pairs.append((str(entry[0]), str(entry[1] or '')))
+            elif isinstance(entry, str):
+                pairs.append((entry, ''))
+        plain = host_data.get('hostname')
+        if plain and not any(n == plain for n, _ in pairs):
+            pairs.append((str(plain), host_data.get('hostname_kind') or ''))
+        if not pairs:
+            return
+        from app.db.models import DNS_OBS_SCANNER
+        from app.services.dns_name_service import record_observation
+        is_v6 = ':' in ip_address
+        for name, kind in pairs:
+            k = (kind or '').lower()
+            if k == 'ptr':
+                record_type = 'PTR'
+            elif k == 'user':
+                record_type = 'AAAA' if is_v6 else 'A'
+            else:
+                record_type = DNS_OBS_SCANNER
+            # SAVEPOINT so a bad name can't poison the host's transaction; the
+            # journal lets the cache forget what the rollback discarded.
+            journal: List[Tuple[str, object]] = []
+            sp = self.db.begin_nested()
+            try:
+                record_observation(
+                    self.db, project_id=project_id, name=name, record_type=record_type,
+                    value=ip_address, scan_id=scan_id, cache=self._name_cache, journal=journal,
+                )
+                sp.commit()
+            except Exception as exc:  # noqa: BLE001 — never let a name break host ingest
+                sp.rollback()
+                self._name_cache.forget(journal)
+                logger.warning("name observation %r for %s skipped: %s", name, ip_address, exc)
+
+    def _find_or_create_host_inner(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
         # v2.90.3 (code review NEW C) — suppress the eager loads
         # inherited from Host.* lazy="selectin" relationships.  The
         # dedup lookup only needs Host.id + scalar fields to decide
@@ -362,9 +431,14 @@ class HostDeduplicationService:
     
     def _create_new_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any]) -> Host:
         """Create a new host record"""
+        hostname = (host_data.get('hostname') or '').strip() or None
         host = Host(
             ip_address=ip_address,
-            hostname=host_data.get('hostname'),
+            hostname=hostname,
+            # Provenance of the display name (see dns_name_service).  Parsers
+            # that know better (dnsx PTR, operator edits) pass hostname_source;
+            # everything else is a scanner-reported name.
+            hostname_source=(host_data.get('hostname_source') or 'scanner') if hostname else None,
             state=host_data.get('state'),
             state_reason=host_data.get('state_reason'),
             os_name=host_data.get('os_name'),
@@ -427,18 +501,18 @@ class HostDeduplicationService:
         updated = False
         prior_scan = host.last_updated_scan_id  # captured before we overwrite it
 
-        # Fill the hostname only when we don't already have one.  The old
-        # "longer hostname wins" heuristic let a long but wrong vhost
-        # (very-long-marketing-redirect.example.com) clobber a correct short
-        # PTR (db01), and contradicted the overwrite=False protection the dnsx
-        # parser added for canonical names.  Without a per-attribute
-        # confidence signal here, first-non-empty-wins is the safe rule.
+        # Display name: decided by ONE rule (dns_name_service
+        # .apply_hostname_candidate) — a candidate replaces the current name
+        # only when its provenance outranks it (operator > PTR > scanner >
+        # forward).  A differing name is NOT a conflict any more: many names
+        # legitimately share one address, and every reported name is kept as
+        # a name→address observation by find_or_create_host.  Pre-v2.322.0
+        # hostname conflict rows stay as history; none are added.
+        from app.services.dns_name_service import apply_hostname_candidate
         new_hostname = host_data.get('hostname')
-        if new_hostname and host.hostname and new_hostname != host.hostname:
-            # We keep the existing hostname, but record that a scan disagreed.
-            self._record_conflict('host', host.id, 'hostname', host.hostname, new_hostname, prior_scan, scan_id)
-        if new_hostname and not host.hostname:
-            host.hostname = new_hostname
+        if new_hostname and apply_hostname_candidate(
+            host, new_hostname, host_data.get('hostname_source') or 'scanner',
+        ):
             updated = True
 
         # Update state (most recent wins) — but 'unknown' carries no

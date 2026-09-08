@@ -90,6 +90,13 @@ EXPECTED_ONDELETE = {
     ('conflict_history', 'previous_scan_id'): 'SET NULL',
     ('dns_records', 'project_id'): 'CASCADE',
     ('dns_records', 'scan_id'): 'SET NULL',
+    # v2.322.0 — named assets.  An observation dies with its name; a name
+    # dies with its project; the importing user is an audit pointer.
+    ('dns_records', 'name_id'): 'CASCADE',
+    ('dns_names', 'project_id'): 'CASCADE',
+    ('dns_names', 'created_by_id'): 'SET NULL',
+    ('scope_domains', 'scope_id'): 'CASCADE',
+    ('scope_domains', 'created_by_id'): 'SET NULL',
     ('execution_sessions', 'agent_id'): 'SET NULL',
     ('execution_sessions', 'agent_session_id'): 'CASCADE',
     ('execution_sessions', 'environment_probed_by_user_id'): 'SET NULL',

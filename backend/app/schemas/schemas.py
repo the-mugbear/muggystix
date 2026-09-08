@@ -56,6 +56,10 @@ class Port(PortBase):
 class HostBase(BaseModel):
     ip_address: str
     hostname: Optional[str] = None
+    # v2.322.0 — provenance of the display name: operator | ptr | scanner |
+    # forward | None (legacy).  Lets the UI say why THIS name is shown when a
+    # host carries many (see the names inventory).
+    hostname_source: Optional[str] = None
     state: Optional[str] = None
     state_reason: Optional[str] = None
     os_name: Optional[str] = None
@@ -873,6 +877,12 @@ class TopTechnology(BaseModel):
 class ScopeCoverageSummary(BaseModel):
     total_scopes: int
     total_subnets: int
+    # v2.322.0 — domain scope alongside subnet scope.
+    total_domains: int = 0
+    # Hosts with no subnet mapping that an in-scope name resolves to — the
+    # third coverage state (neither in nor out of subnet scope).  Not part of
+    # scoped_hosts and subtracted from out_of_scope_hosts.
+    name_reachable_hosts: int = 0
     total_hosts: int
     scoped_hosts: int
     out_of_scope_hosts: int
