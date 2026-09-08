@@ -98,14 +98,16 @@ def reset(db, project):
     """Remove what a previous run created (names, scope domains, LB hosts,
     the plan/agent, tagged scans).  Project-owned demo hosts are untouched
     except for the display names this script set."""
-    n = db.query(models.DNSName).filter(models.DNSName.project_id == project.id).delete()
-    db.query(models.ScopeDomain).filter(
-        models.ScopeDomain.scope_id.in_(db.query(models.Scope.id).filter(models.Scope.project_id == project.id))
-    ).delete(synchronize_session=False)
+    # Order matters — a name still referenced by plan entries / finding
+    # endpoints must not be deleted (the API refuses with 409; a raw delete
+    # would SET NULL two rows onto one key).  So: the plan (cascades entries +
+    # results), the LB hosts (cascade their vulns → findings → endpoints and
+    # web interfaces), tagged scans, THEN names, then scope domains.
     for plan in db.query(TestPlan).filter(TestPlan.project_id == project.id, TestPlan.title.like(f"{TAG}%")).all():
         db.delete(plan)
     for agent in db.query(Agent).filter(Agent.project_id == project.id, Agent.name.like(f"{TAG}%")).all():
         db.delete(agent)
+    db.flush()
     for h in db.query(models.Host).filter(
         models.Host.project_id == project.id, models.Host.ip_address.in_([LB_IP, OLD_LB_IP]),
     ).all():
@@ -114,6 +116,27 @@ def reset(db, project):
         models.Scan.project_id == project.id, models.Scan.filename.like(f"{TAG}%"),
     ).all():
         db.delete(s)
+    db.flush()
+    from app.db.models_findings import FindingHost
+    from app.db.models_agent import TestPlanEntry
+    still_referenced = (
+        db.query(models.DNSName.fqdn)
+        .filter(models.DNSName.project_id == project.id)
+        .filter(
+            db.query(FindingHost.id).filter(FindingHost.name_id == models.DNSName.id).exists()
+            | db.query(TestPlanEntry.id).filter(TestPlanEntry.name_id == models.DNSName.id).exists()
+        )
+        .all()
+    )
+    if still_referenced:
+        raise SystemExit(
+            f"refusing to reset: names still referenced outside the seeded rows: "
+            f"{[r[0] for r in still_referenced]} — detach them first"
+        )
+    n = db.query(models.DNSName).filter(models.DNSName.project_id == project.id).delete()
+    db.query(models.ScopeDomain).filter(
+        models.ScopeDomain.scope_id.in_(db.query(models.Scope.id).filter(models.Scope.project_id == project.id))
+    ).delete(synchronize_session=False)
     db.commit()
     print(f"  reset: removed {n} names + scope domains, LB hosts, tagged scans/plan")
 
