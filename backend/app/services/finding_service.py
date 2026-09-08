@@ -593,9 +593,59 @@ class FindingService:
         return finding
 
     def remove_host(self, *, finding: Finding, host_id: int) -> Finding:
+        """Detach EVERY endpoint row on ``host_id`` (named and unnamed).
+        Callers that mean one named endpoint use ``remove_endpoint``."""
         self.db.query(FindingHost).filter(
             FindingHost.finding_id == finding.id, FindingHost.host_id == host_id,
         ).delete(synchronize_session=False)
+        return finding
+
+    def remove_endpoint(self, *, finding: Finding, finding_host_id: int) -> Optional[dict]:
+        """v2.325.0 — detach exactly one affected-endpoint row.  Returns
+        ``{host_id, name_id, host_status}`` (what an Undo must restore) or
+        None when the row isn't on this finding."""
+        row = (
+            self.db.query(FindingHost)
+            .filter(FindingHost.id == finding_host_id, FindingHost.finding_id == finding.id)
+            .first()
+        )
+        if row is None:
+            return None
+        snapshot = {"host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status}
+        self.db.delete(row)
+        self.db.flush()
+        return snapshot
+
+    def restore_endpoint(
+        self, *, finding: Finding, host_id: int, name_id: Optional[int] = None,
+        host_status: Optional[str] = None,
+    ) -> Finding:
+        """v2.325.0 — (re)attach one endpoint with its name and status intact.
+        ``name_id`` must belong to the finding's project; a name from another
+        project is rejected like a foreign host."""
+        if name_id is not None:
+            from app.db.models import DNSName
+            ok = (
+                self.db.query(DNSName.id)
+                .filter(DNSName.id == name_id, DNSName.project_id == finding.project_id)
+                .first()
+            )
+            if ok is None:
+                raise HTTPException(status_code=422, detail=f"Name {name_id} is not in this project.")
+        self._attach_hosts(finding, [host_id], names_by_host={host_id: name_id} if name_id is not None else None)
+        self.db.flush()  # autoflush is off — the row must exist before we look it up
+        if host_status:
+            row = (
+                self.db.query(FindingHost)
+                .filter(
+                    FindingHost.finding_id == finding.id, FindingHost.host_id == host_id,
+                    FindingHost.name_id.is_(None) if name_id is None else FindingHost.name_id == name_id,
+                )
+                .first()
+            )
+            if row is not None:
+                row.host_status = host_status
+        self.db.flush()
         return finding
 
     # ------------------------------------------------------------------

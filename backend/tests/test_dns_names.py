@@ -742,6 +742,119 @@ class TestNamedEndpoints:
 
 
 # ---------------------------------------------------------------------------
+# Review round 3 (v2.325.0)
+# ---------------------------------------------------------------------------
+class TestReviewRound3:
+    def _lb_with_two_vhosts(self, db_session, test_project):
+        scan = _scan(db_session, test_project)
+        host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
+        db_session.add(host)
+        db_session.flush()
+        for fq in ("a.example.com", "b.example.com"):
+            svc.record_observation(db_session, project_id=test_project.id, name=fq, record_type="A",
+                                   value="203.0.113.20", scan_id=scan.id)
+        by_fqdn = {n.fqdn: n for n in db_session.query(models.DNSName).all()}
+        return host, by_fqdn
+
+    def test_deleting_a_referenced_name_is_refused(self, client, db_session, test_project, test_plan):
+        """C1: a named entry + an unnamed entry on one host; deleting the name
+        would collapse both onto the NULL key.  Refuse with 409 instead."""
+        from app.services.test_plan_service import TestPlanService
+        host, names_by = self._lb_with_two_vhosts(db_session, test_project)
+        base = {"host_id": host.id, "priority": "high", "test_phase": "enumeration",
+                "proposed_tests": [{"tool": "curl", "description": "x", "command": "curl {fqdn}"}], "rationale": "r"}
+        TestPlanService(db_session).add_entries(
+            test_plan, [{**base, "target_fqdn": "a.example.com"}, dict(base)], "user", 1,
+        )
+        db_session.commit()
+        a = names_by["a.example.com"]
+        r = client.delete(f"/api/v1/projects/{test_project.id}/names/{a.id}")
+        assert r.status_code == 409, r.text
+        assert "1 plan entry" in r.json()["detail"]
+        assert db_session.query(models.DNSName).filter_by(id=a.id).count() == 1
+        # An unreferenced name still deletes.
+        b = names_by["b.example.com"]
+        assert client.delete(f"/api/v1/projects/{test_project.id}/names/{b.id}").status_code == 204
+
+    def test_detach_one_endpoint_keeps_sibling_and_undo_restores_name_and_status(
+        self, client, db_session, test_project,
+    ):
+        """C2: FindingHost rows are the affected-endpoint records; detach and
+        restore address the row, not the host."""
+        from app.services.finding_service import FindingService
+        from app.db.models_findings import FindingHost
+        host, names_by = self._lb_with_two_vhosts(db_session, test_project)
+        fsvc = FindingService(db_session)
+        finding = fsvc.create_finding(project_id=test_project.id, title="XFO missing", severity="low", actor_id=None)
+        for fq in ("a.example.com", "b.example.com"):
+            fsvc.restore_endpoint(finding=finding, host_id=host.id, name_id=names_by[fq].id, host_status="open")
+        db_session.commit()
+        body = client.get(f"/api/v1/projects/{test_project.id}/findings/{finding.id}").json()
+        rows = {h["fqdn"]: h for h in body["hosts"]}
+        assert set(rows) == {"a.example.com", "b.example.com"} and all("id" in h for h in rows.values())
+
+        # Mark 'a' remediated, then detach it — 'b' must survive.
+        a_row = db_session.query(FindingHost).filter_by(id=rows["a.example.com"]["id"]).one()
+        a_row.host_status = "remediated"
+        db_session.commit()
+        r = client.delete(f"/api/v1/projects/{test_project.id}/findings/{finding.id}/endpoints/{a_row.id}")
+        assert r.status_code == 200, r.text
+        assert [h["fqdn"] for h in r.json()["hosts"]] == ["b.example.com"]
+
+        # Undo restores the SAME endpoint with its status, not a bare host.
+        r = client.post(
+            f"/api/v1/projects/{test_project.id}/findings/{finding.id}/hosts",
+            json={"host_ids": [], "endpoints": [
+                {"host_id": host.id, "name_id": names_by["a.example.com"].id, "host_status": "remediated"},
+            ]},
+        )
+        assert r.status_code == 200, r.text
+        restored = {h["fqdn"]: h for h in r.json()["hosts"]}
+        assert set(restored) == {"a.example.com", "b.example.com"}
+        assert restored["a.example.com"]["host_status"] == "remediated"
+        # The legacy "detach every endpoint on this host" route still does exactly that.
+        r = client.delete(f"/api/v1/projects/{test_project.id}/findings/{finding.id}/hosts/{host.id}")
+        assert r.json()["hosts"] == []
+
+    def test_offline_import_syncs_tested_evidence(self, db_session, test_project, test_plan):
+        """C3: results arriving through the bundle importer produce, correct
+        and withdraw TESTED evidence exactly like the online endpoint."""
+        from app.db.models import DNS_OBS_TESTED
+        from app.db.models_agent import ExecutionSession, TestPlanEntry
+        from app.services.bundle_import_service import _ingest_results
+        host, names_by = self._lb_with_two_vhosts(db_session, test_project)
+        entry = TestPlanEntry(test_plan_id=test_plan.id, host_id=host.id, name_id=names_by["a.example.com"].id,
+                              priority="high", test_phase="enumeration",
+                              proposed_tests=[{"tool": "curl", "description": "x", "command": "curl {fqdn}"}],
+                              rationale="r")
+        db_session.add(entry)
+        session = ExecutionSession(test_plan_id=test_plan.id, status="active", mode="offline_bundle")
+        db_session.add(session)
+        db_session.flush()
+        db_session.refresh(entry)
+        tested = lambda: [(r.value, r.exec_result_id) for r in  # noqa: E731
+                          db_session.query(models.DNSRecord).filter_by(record_type=DNS_OBS_TESTED).all()]
+
+        def ingest(item):
+            errors: list = []
+            n, _ = _ingest_results(db_session, session=session, entry_map={entry.id: entry}, items=[item], errors=errors)
+            assert n == 1, errors
+            db_session.flush()
+
+        ingest({"entry_id": entry.id, "test_index": 0, "status": "skipped"})
+        assert tested() == []
+        ingest({"entry_id": entry.id, "test_index": 0, "status": "executed"})   # no observed_ip → nothing
+        assert tested() == []
+        ingest({"entry_id": entry.id, "test_index": 0, "status": "executed", "observed_ip": "203.0.113.21"})
+        rows = tested()
+        assert len(rows) == 1 and rows[0][0] == "203.0.113.21"
+        ingest({"entry_id": entry.id, "test_index": 0, "status": "executed", "observed_ip": "203.0.113.22"})
+        assert [v for v, _ in tested()] == ["203.0.113.22"]      # correction replaces
+        ingest({"entry_id": entry.id, "test_index": 0, "status": "skipped"})
+        assert tested() == []                                     # withdrawal
+
+
+# ---------------------------------------------------------------------------
 # Existing consumers of dns_records keep working
 # ---------------------------------------------------------------------------
 class TestLegacyConsumers:

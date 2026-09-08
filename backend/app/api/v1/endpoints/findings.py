@@ -39,6 +39,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 def _serialize(finding: Finding) -> FindingResponse:
     hosts = [
         FindingHostInfo(
+            id=fh.id,
             host_id=fh.host_id,
             ip_address=fh.host.ip_address if fh.host else None,
             hostname=fh.host.hostname if fh.host else None,
@@ -320,12 +321,20 @@ def add_finding_hosts(
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
     finding = _load(db, project, finding_id)
-    FindingService(db).add_hosts(finding=finding, host_ids=body.host_ids)
+    svc = FindingService(db)
+    if body.host_ids:
+        svc.add_hosts(finding=finding, host_ids=body.host_ids)
+    for ep in body.endpoints:
+        svc.restore_endpoint(finding=finding, host_id=ep.host_id, name_id=ep.name_id, host_status=ep.host_status)
     db.commit()
     return _serialize(_load(db, project, finding_id))
 
 
-@router.delete("/findings/{finding_id}/hosts/{host_id}", response_model=FindingResponse)
+@router.delete(
+    "/findings/{finding_id}/hosts/{host_id}",
+    response_model=FindingResponse,
+    summary="Detach EVERY endpoint on a host from the finding",
+)
 def remove_finding_host(
     finding_id: int,
     host_id: int,
@@ -333,8 +342,35 @@ def remove_finding_host(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
+    """Removes all affected-endpoint rows for ``host_id`` (named and
+    unnamed).  To detach ONE named endpoint use
+    ``DELETE /findings/{id}/endpoints/{finding_host_id}``."""
     finding = _load(db, project, finding_id)
     FindingService(db).remove_host(finding=finding, host_id=host_id)
+    db.commit()
+    return _serialize(_load(db, project, finding_id))
+
+
+@router.delete(
+    "/findings/{finding_id}/endpoints/{finding_host_id}",
+    response_model=FindingResponse,
+    summary="Detach one affected endpoint (a FindingHost row) from the finding",
+)
+def remove_finding_endpoint(
+    finding_id: int,
+    finding_host_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
+):
+    """v2.325.0 — a host may carry several endpoint rows (one per vhost);
+    this removes exactly the one addressed, leaving its siblings.  The
+    response is the finding as it stands; the caller can restore the removed
+    row (name and status) via ``POST /hosts`` with ``endpoints``."""
+    finding = _load(db, project, finding_id)
+    removed = FindingService(db).remove_endpoint(finding=finding, finding_host_id=finding_host_id)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
     db.commit()
     return _serialize(_load(db, project, finding_id))
 

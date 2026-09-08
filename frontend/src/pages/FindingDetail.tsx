@@ -23,7 +23,8 @@ import {
   getFindingHistory,
   setFindingStatus,
   updateFinding,
-  removeFindingHost,
+  FindingHostInfo,
+  removeFindingEndpoint,
   addFindingHosts,
   getHostNotes,
   listProjectMembers,
@@ -200,14 +201,16 @@ const FindingDetail: React.FC = () => {
     }
   };
 
-  const handleRemoveHost = async (hostId: number) => {
+  // v5.195.0 — a host may carry several affected-endpoint rows (one per named
+  // endpoint).  Detach addresses the ROW, so a vhost's siblings survive, and
+  // Undo restores that row's name and per-endpoint status, not a bare host.
+  const handleRemoveEndpoint = async (row: FindingHostInfo) => {
     if (!finding) return;
-    const host = finding.hosts.find((h) => h.host_id === hostId);
-    const label = host?.ip_address || host?.hostname || `Host ${hostId}`;
-    // Detaching deletes the finding↔host link (no in-place re-add UI), so
-    // confirm first and offer an immediate Undo via addFindingHosts.
+    const label = row.fqdn
+      ? `${row.fqdn} (${row.ip_address || `Host ${row.host_id}`})`
+      : row.ip_address || row.hostname || `Host ${row.host_id}`;
     const ok = await confirm({
-      title: 'Detach host from finding?',
+      title: row.fqdn ? 'Detach endpoint from finding?' : 'Detach host from finding?',
       body: `"${label}" will be removed from this finding.`,
       resourceName: label,
       severity: 'danger',
@@ -215,20 +218,22 @@ const FindingDetail: React.FC = () => {
     });
     if (!ok) return;
     try {
-      const updated = await removeFindingHost(finding.id, hostId);
+      const updated = await removeFindingEndpoint(finding.id, row.id);
       setFinding(updated);
       toast.success(`Detached ${label}.`, {
         action: {
           label: 'Undo',
           onClick: () => {
-            addFindingHosts(finding.id, [hostId])
+            addFindingHosts(finding.id, [], [
+              { host_id: row.host_id, name_id: row.name_id ?? null, host_status: row.host_status },
+            ])
               .then((reverted) => { setFinding(reverted); toast.success(`Re-attached ${label}.`); })
               .catch((err) => toast.error(formatApiError(err, 'Failed to undo detach.')));
           },
         },
       });
     } catch (err) {
-      toast.error(formatApiError(err, 'Failed to remove host.'));
+      toast.error(formatApiError(err, 'Failed to detach endpoint.'));
     }
   };
 
@@ -389,7 +394,7 @@ const FindingDetail: React.FC = () => {
                   </TableRow>
                 ) : (
                   finding.hosts.map((h) => (
-                    <TableRow key={h.host_id}>
+                    <TableRow key={h.id}>
                       <TableCell className="truncate">
                         <Link to={`/hosts/${h.host_id}`} className="font-mono text-info hover:underline">
                           {h.ip_address || `Host ${h.host_id}`}
@@ -409,8 +414,8 @@ const FindingDetail: React.FC = () => {
                         {canManage && (
                           <Button
                             variant="ghost" size="icon"
-                            onClick={() => handleRemoveHost(h.host_id)}
-                            aria-label={`Detach ${h.ip_address || h.host_id} from finding`}
+                            onClick={() => handleRemoveEndpoint(h)}
+                            aria-label={`Detach ${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id} from finding`}
                           >
                             <Trash2 className="size-4" aria-hidden />
                           </Button>

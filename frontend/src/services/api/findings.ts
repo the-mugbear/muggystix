@@ -16,6 +16,8 @@ export type FindingStatus =
 export type FindingSource = 'note' | 'scanner' | 'execution' | 'manual';
 
 export interface FindingHostInfo {
+  /** The affected-endpoint ROW id — a host may carry one row per named endpoint. */
+  id: number;
   host_id: number;
   ip_address: string | null;
   hostname: string | null;
@@ -127,13 +129,33 @@ export const setFindingStatus = async (
   return response.data;
 };
 
-export const addFindingHosts = async (findingId: number, hostIds: number[]): Promise<Finding> => {
-  const response = await api.post<Finding>(`${p()}/findings/${findingId}/hosts`, { host_ids: hostIds });
+export interface FindingEndpointRef {
+  host_id: number;
+  name_id?: number | null;
+  host_status?: string | null;
+}
+
+export const addFindingHosts = async (
+  findingId: number,
+  hostIds: number[],
+  endpoints: FindingEndpointRef[] = [],
+): Promise<Finding> => {
+  const response = await api.post<Finding>(`${p()}/findings/${findingId}/hosts`, {
+    host_ids: hostIds,
+    endpoints,
+  });
   return response.data;
 };
 
+/** Detach EVERY endpoint row on a host. Prefer removeFindingEndpoint for one row. */
 export const removeFindingHost = async (findingId: number, hostId: number): Promise<Finding> => {
   const response = await api.delete<Finding>(`${p()}/findings/${findingId}/hosts/${hostId}`);
+  return response.data;
+};
+
+/** v5.195.0 — detach exactly one affected endpoint (a FindingHost row). */
+export const removeFindingEndpoint = async (findingId: number, findingHostId: number): Promise<Finding> => {
+  const response = await api.delete<Finding>(`${p()}/findings/${findingId}/endpoints/${findingHostId}`);
   return response.data;
 };
 

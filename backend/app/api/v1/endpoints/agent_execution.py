@@ -65,35 +65,13 @@ def _validate_observed_ip(raw) -> "str | None":
 
 
 def _record_tested_binding(db: Session, entry, result) -> None:
-    """v2.324.0 — a TESTED observation says "an EXECUTED command against this
-    name reached THIS address".  It is recorded only when the result row
-    establishes both facts (status executed AND the agent reported
-    observed_ip); an unknown address stays unknown — the inventory IP is
-    never assumed, because rotating DNS is exactly why it can't be.
-
-    Keyed to the result (dns_records.exec_result_id): re-recording or
-    correcting the result replaces its observation, so a test downgraded to
-    skipped withdraws the evidence.  Best effort: never blocks the result.
-    """
-    from app.db import models as _m
-    from app.db.models import DNS_OBS_TESTED
-    from app.services.dns_name_service import record_observation
+    """Online wrapper around ``tested_binding_service.sync_tested_binding``
+    (the ONE rule, shared with the offline bundle import): owns this
+    request's commit, and is best effort — evidence bookkeeping never blocks
+    the result that was already persisted."""
+    from app.services.tested_binding_service import sync_tested_binding
     try:
-        db.query(_m.DNSRecord).filter(_m.DNSRecord.exec_result_id == result.id).delete(
-            synchronize_session=False,
-        )
-        if (
-            result.status == TestExecutionStatus.EXECUTED.value
-            and result.observed_ip
-            and entry.name_id is not None
-            and entry.target_name is not None
-            and entry.host is not None
-        ):
-            record_observation(
-                db, project_id=entry.host.project_id, name=entry.target_name.fqdn,
-                record_type=DNS_OBS_TESTED, value=result.observed_ip,
-                exec_result_id=result.id, observed_at=result.executed_at,
-            )
+        sync_tested_binding(db, entry, result)
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()

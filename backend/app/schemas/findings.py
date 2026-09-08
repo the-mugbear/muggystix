@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class FindingHostInfo(BaseModel):
+    # v2.325.0 — the affected-endpoint ROW id.  A host may carry several rows
+    # (one per named endpoint); detach/restore address this id, not host_id.
+    id: int
     host_id: int
     ip_address: Optional[str] = None
     hostname: Optional[str] = None
@@ -120,5 +123,16 @@ class FindingStatusUpdateRequest(BaseModel):
     summary: Optional[str] = None
 
 
+class FindingEndpointRef(BaseModel):
+    """One affected endpoint to (re)attach: a host, optionally AS a named
+    endpoint, optionally with the per-endpoint status to restore (Undo)."""
+    host_id: int
+    name_id: Optional[int] = None
+    host_status: Optional[str] = None
+
+
 class FindingHostsRequest(BaseModel):
-    host_ids: List[int]
+    # Plain hosts (unnamed, host-level associations) …
+    host_ids: List[int] = []
+    # … and/or explicit endpoints (v2.325.0).  Either may be empty.
+    endpoints: List[FindingEndpointRef] = []

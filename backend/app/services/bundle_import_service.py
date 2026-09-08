@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.tested_binding_service import sync_tested_binding
 from app.db.models_agent import (
     AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
     ExecutionSession, ExecutionSessionStatus, ExecutionSessionMode,
@@ -317,13 +318,20 @@ def _ingest_results(
         if existing:
             for k, v in payload.items():
                 setattr(existing, k, v)
+            row = existing
         else:
-            db.add(TestExecutionResult(
+            row = TestExecutionResult(
                 execution_session_id=session.id,
                 entry_id=entry_id,
                 test_index=test_index,
                 **payload,
-            ))
+            )
+            db.add(row)
+        # v2.325.0 — TESTED evidence follows the result whichever way it
+        # arrived (online endpoint or this offline import): the same shared
+        # rule, no commit here (import_results_file's caller owns it).
+        db.flush()
+        sync_tested_binding(db, entry, row)
         ingested += 1
         if status in ("executed", "skipped", "failed", "not_applicable"):
             per_entry_completed[entry_id] = per_entry_completed.get(entry_id, 0) + 1
