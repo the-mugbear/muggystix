@@ -104,6 +104,7 @@ npm test -- --run    # Vitest suites
 ./scripts/status.sh        # quick container health check
 ./scripts/collect-logs.sh  # bundle backend + worker + report-worker + db + nginx logs for support
 ./scripts/seed_demo_data.py  # populate a realistic demo project (so Posture, Segments/Patterns, and Findings are evaluable)
+./scripts/seed_named_assets.py  # then layer the named-asset scenario on it (Names inventory, domain scope, vhosts, named plan entries); --reset rebuilds it
 ```
 
 ## Schema & Migrations
