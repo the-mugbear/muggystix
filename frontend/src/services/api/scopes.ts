@@ -49,6 +49,8 @@ export interface SubnetFileUploadResponse {
   message: string;
   scope_id: number;
   subnets_added: number;
+  /** Domain rows in the same file land in scope_domains (backend 2.326.0). */
+  domains_added?: number;
   filename: string;
 }
 
@@ -77,6 +79,12 @@ export interface TopTechnology {
 export interface ScopeCoverageSummary {
   total_scopes: number;
   total_subnets: number;
+  /** Domain-scope entries (backend 2.322.0). */
+  total_domains: number;
+  /** Hosts with no subnet mapping that an in-scope name resolves to — the
+   *  third coverage state; not in scoped_hosts, already subtracted from
+   *  out_of_scope_hosts. */
+  name_reachable_hosts: number;
   total_hosts: number;
   scoped_hosts: number;
   out_of_scope_hosts: number;

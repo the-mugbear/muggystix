@@ -908,6 +908,8 @@ class SubnetFileUploadResponse(BaseModel):
     message: str
     scope_id: int
     subnets_added: int
+    # v2.326.0 — domain rows in the same file land in scope_domains.
+    domains_added: int = 0
     filename: str
 
 class DNSRecordBase(BaseModel):

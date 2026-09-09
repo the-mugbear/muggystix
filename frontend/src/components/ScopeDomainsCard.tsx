@@ -26,6 +26,7 @@ import {
   TableRow,
 } from './ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { InfoTip } from './ui/info-tip';
 
 /**
  * ScopeDomainsCard — the domains declared in scope, alongside the subnet
@@ -41,11 +42,39 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 interface ScopeDomainsCardProps {
   scopeId: number;
+  /** Bump to force a reload — the scope-file upload can add domain rows
+   *  from outside this card. */
+  refreshKey?: number;
   /** Called after any change so the parent can refresh coverage numbers. */
   onChanged?: () => void;
 }
 
-const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged }) => {
+// Plain-English help for the name-scope presentation (5.198.0).  Name scope
+// is the newest and least self-evident part of the page — three coverage
+// states, exact-vs-subdomain membership, and a count that is derived from the
+// names inventory rather than from what the operator typed — so each is
+// explained on an explicit (i).
+const TIPS = {
+  domains:
+    'A name is in scope when an entry here covers it. This is independent of subnet scope: ' +
+    'an in-scope name does not make the address it resolves to in scope, and an in-scope subnet ' +
+    'does not make names in scope. A host reached only through an in-scope name is shown in ' +
+    'Scope Coverage as "via in-scope name" — neither in nor out of subnet scope.',
+  match:
+    'Exact: only this one name. Name + subdomains: this name and every name under it ' +
+    '(portal.example.com does not cover dev.portal.example.com unless subdomains are included). ' +
+    'Re-adding an entry can widen it to include subdomains but never narrows it.',
+  includeSub:
+    'Also cover every subdomain of each name entered. Typing *.example.com does the same for ' +
+    'that entry regardless of this box.',
+  namesCovered:
+    'How many names in this project\'s inventory the entry currently covers — not how many you ' +
+    'uploaded. An exact entry covers at most one; a subdomains entry counts every descendant. ' +
+    '0 means nothing imported or observed yet matches; names arrive from name imports, dnsx / ' +
+    'httpx / amass uploads and certificates. Counts are per entry and overlap when entries nest.',
+} as const;
+
+const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey = 0, onChanged }) => {
   const toast = useToast();
   const [confirmDialog, confirm] = useConfirm();
   const [rows, setRows] = useState<ScopeDomainRow[] | null>(null);
@@ -88,7 +117,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeId]);
+  }, [scopeId, refreshKey]);
 
   const handleAdd = async () => {
     // One per line or comma/whitespace-separated; "*.example.com" is accepted.
@@ -152,6 +181,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
         <div className="flex flex-wrap items-center gap-xs border-b border-border p-sm">
           <Globe className="size-4 text-primary" aria-hidden />
           <span className="font-medium">Domains in scope</span>
+          <InfoTip text={TIPS.domains} label="About domain scope" />
           {rows && <Badge variant="outline">{total.toLocaleString()}</Badge>}
           <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
             Names covered here are in scope; the addresses they resolve to are not made subnet-in-scope.
@@ -172,10 +202,13 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
               className="font-mono"
             />
           </div>
-          <label className="flex items-center gap-xs text-metadata">
-            <Checkbox checked={includeSub} onCheckedChange={(v) => setIncludeSub(v === true)} />
-            Include subdomains
-          </label>
+          <span className="flex items-center gap-xs text-metadata">
+            <label className="flex items-center gap-xs">
+              <Checkbox checked={includeSub} onCheckedChange={(v) => setIncludeSub(v === true)} />
+              Include subdomains
+            </label>
+            <InfoTip text={TIPS.includeSub} label="About include subdomains" />
+          </span>
           <Button size="sm" onClick={handleAdd} disabled={adding || !domainInput.trim()}>
             {adding ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Plus className="size-4" aria-hidden />}
             Add
@@ -200,8 +233,18 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, onChanged 
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[45%]">Domain</TableHead>
-                  <TableHead className="w-[20%]">Match</TableHead>
-                  <TableHead className="w-[20%] text-right">Names covered</TableHead>
+                  <TableHead className="w-[20%]">
+                    <span className="inline-flex items-center gap-xxs">
+                      Match
+                      <InfoTip text={TIPS.match} label="About match" />
+                    </span>
+                  </TableHead>
+                  <TableHead className="w-[20%] text-right">
+                    <span className="inline-flex items-center gap-xxs">
+                      Names covered
+                      <InfoTip text={TIPS.namesCovered} label="About names covered" />
+                    </span>
+                  </TableHead>
                   <TableHead className="w-[15%]" />
                 </TableRow>
               </TableHeader>

@@ -16,7 +16,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Loader2, RefreshCw, ShieldAlert, AlertTriangle, ShieldCheck, Info, ArrowRight,
+  Loader2, RefreshCw, ShieldAlert, AlertTriangle, ShieldCheck, ArrowRight,
   Copy, Download, FileText,
 } from 'lucide-react';
 
@@ -40,23 +40,11 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { InfoTip } from '../components/ui/info-tip';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
 
-// Plain-English "how is this derived?" help — systemic analysis is the least
-// self-evident view, so each tier explains its method on an explicit (i).
-const InfoTip: React.FC<{ text: string }> = ({ text }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <button type="button" aria-label="How is this derived?"
-        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Info className="size-3.5" aria-hidden />
-      </button>
-    </TooltipTrigger>
-    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
-  </Tooltip>
-);
 
 type BadgeVariant =
   | 'default' | 'secondary' | 'destructive' | 'success'

@@ -11,79 +11,155 @@ class SubnetParser:
         self.db = db
         self._trie = None  # Lazy-loaded IP trie
 
-    def parse_subnet_csv(self, file_content: str) -> List[Tuple[str, List[str], str, str]]:
-        """Parse a subnet CSV where each row is one entry:
+    # ------------------------------------------------------------------
+    # Scope-file parsing (v2.326.0).  A scope file is a mix of subnets and
+    # domain names: any row that isn't a CIDR/IP is treated as a name and
+    # validated with the same normaliser DNSName uses, so ``*.example.com``,
+    # a trailing dot or an IDN label all behave exactly as the domains
+    # card would.  Subnet rows and domain rows are returned separately —
+    # they land in different tables and name scope never confers subnet
+    # scope.  Anything that is neither raises so a typo isn't dropped.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _classify(raw: str, where: str) -> Tuple[str, str, bool]:
+        """``(kind, value, include_subdomains)`` for one scope entry.
 
-            <subnet>[, <label1> <label2> ...][, <description>][, <site>]
-
-        Column 1 is the subnet (CIDR or single IP, normalized via
-        ``ip_network(strict=False)`` so ``10.0.0.5`` → ``10.0.0.5/32``);
-        column 2 (optional) is one or more whitespace-delimited label names;
-        column 3 (optional) is a free-text description; column 4 (optional)
-        is the site/location.  Returns ``[(cidr, [labels], description,
-        site), ...]`` with per-row labels deduped and empty strings for a
-        missing description/site.
-
-        Blank rows and ``#`` comments are skipped.  A first-row header whose
-        first cell isn't a valid subnet (e.g. ``subnet,labels,description``)
-        is skipped; an invalid subnet on any later row raises so typos aren't
-        silently dropped.
+        ``kind`` is ``"subnet"`` (value normalised via ``ip_network``) or
+        ``"domain"`` (value as written; the upsert normalises it).  Raises
+        ``ValueError`` naming ``where`` when the entry is neither.
         """
-        out: List[Tuple[str, List[str], str, str]] = []
+        try:
+            network = ipaddress.ip_network(raw, strict=False)
+        except ValueError as net_err:
+            # Lazy import: dns_name_service pulls the ORM models, which the
+            # parser package shouldn't import at module load.
+            from app.services.dns_name_service import InvalidName, normalize_fqdn
+
+            try:
+                _fqdn, kind = normalize_fqdn(raw)
+            except InvalidName as name_err:
+                raise ValueError(
+                    f"Invalid entry on {where}: '{raw}' - not a subnet ({net_err}) "
+                    f"and not a domain name ({name_err})"
+                )
+            return "domain", raw, kind == "wildcard"
+        return "subnet", str(network), False
+
+    def parse_scope_csv(
+        self, file_content: str,
+    ) -> Tuple[List[Tuple[str, List[str], str, str]], List[Tuple[str, bool, str]], int]:
+        """Parse a scope CSV where each row is one entry:
+
+            <subnet or domain>[, <label1> <label2> ...][, <description>][, <site>]
+
+        Column 1 is a subnet (CIDR or single IP, normalized via
+        ``ip_network(strict=False)`` so ``10.0.0.5`` → ``10.0.0.5/32``) or a
+        domain name (``*.example.com`` declares the domain with
+        include-subdomains); column 2 (optional) is one or more
+        whitespace-delimited label names; column 3 (optional) is a free-text
+        description; column 4 (optional) is the site/location.
+
+        Returns ``(subnets, domains, domain_rows_with_subnet_only_columns)``:
+        ``subnets`` is ``[(cidr, [labels], description, site), ...]`` with
+        per-row labels deduped and empty strings for a missing
+        description/site; ``domains`` is ``[(raw_domain, include_subdomains,
+        description), ...]``.  Labels and site are subnet concepts — a domain
+        row carrying them keeps its description and the count of such rows is
+        returned so the caller can say they were ignored.
+
+        Blank rows and ``#`` comments are skipped.  A first-row header is
+        skipped: its first cell is either unparseable or a dotless word such
+        as ``subnet`` / ``entry`` (a valid single-label name, but never a
+        scope declaration on row 1).  An invalid entry on any later row
+        raises so typos aren't silently dropped.
+        """
+        subnets: List[Tuple[str, List[str], str, str]] = []
+        domains: List[Tuple[str, bool, str]] = []
+        ignored_cols = 0
         reader = csv.reader(io.StringIO(file_content))
         for row_num, row in enumerate(reader, 1):
             if not row:
                 continue
-            cidr_raw = row[0].strip()
-            if not cidr_raw or cidr_raw.startswith('#'):
+            raw = row[0].strip()
+            if not raw or raw.startswith('#'):
                 continue
             try:
-                network = ipaddress.ip_network(cidr_raw, strict=False)
-            except ValueError as e:
+                kind, value, include_sub = self._classify(raw, f"row {row_num}")
+            except ValueError:
                 if row_num == 1:
                     continue  # tolerate a header row
-                raise ValueError(f"Invalid subnet on row {row_num}: '{cidr_raw}' - {e}")
+                raise
+            if row_num == 1 and kind == "domain" and "." not in value:
+                # ``subnet``, ``entry``, ``domain`` … are all valid
+                # single-label names; on row 1 a dotless cell is a header.
+                continue
             labels: List[str] = []
             if len(row) > 1 and row[1].strip():
                 # whitespace-delimited; dedup preserving order; cap to the
                 # SubnetLabel.name length (60).
                 seen = set()
-                for raw in row[1].split():
-                    name = raw.strip()[:60]
+                for raw_label in row[1].split():
+                    name = raw_label.strip()[:60]
                     if name and name not in seen:
                         seen.add(name)
                         labels.append(name)
             description = row[2].strip() if len(row) > 2 else ""
             site = (row[3].strip()[:255] if len(row) > 3 else "")
-            out.append((str(network), labels, description, site))
-        if not out:
-            raise ValueError("No valid subnets found in file")
-        return out
+            if kind == "domain":
+                if labels or site:
+                    ignored_cols += 1
+                domains.append((value, include_sub, description))
+            else:
+                subnets.append((value, labels, description, site))
+        if not subnets and not domains:
+            raise ValueError("No valid subnets or domains found in file")
+        return subnets, domains, ignored_cols
 
-    def parse_cidr_list(self, file_content: str) -> List[str]:
-        """Parse the file content into a validated list of CIDR strings.
+    def parse_scope_list(
+        self, file_content: str,
+    ) -> Tuple[List[str], List[Tuple[str, bool, str]]]:
+        """Parse a flat scope list: one subnet or domain per line.
 
-        Used by the v2.9.4 upload path which appends to an existing
-        default scope instead of creating a new one per file.  Each
-        line is validated with ``ipaddress.ip_network(strict=False)``
-        so single-address entries like ``10.0.0.5`` are accepted and
-        normalized to ``10.0.0.5/32``.  Lines starting with ``#`` and
-        blank lines are skipped so user comment files work too.
+        Each line is a CIDR/IP (validated with ``ip_network(strict=False)``
+        so ``10.0.0.5`` is accepted and normalized to ``10.0.0.5/32``) or a
+        domain name (``*.example.com`` declares include-subdomains).  Lines
+        starting with ``#`` and blank lines are skipped so user comment
+        files work too.  Returns ``(cidrs, domains)`` with ``domains`` as
+        ``[(raw_domain, include_subdomains, ""), ...]``.
         """
         lines = file_content.strip().split('\n')
-        valid_cidrs: List[str] = []
+        cidrs: List[str] = []
+        domains: List[Tuple[str, bool, str]] = []
         for line_num, line in enumerate(lines, 1):
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            try:
-                network = ipaddress.ip_network(line, strict=False)
-                valid_cidrs.append(str(network))
-            except ValueError as e:
-                raise ValueError(f"Invalid subnet on line {line_num}: '{line}' - {str(e)}")
-        if not valid_cidrs:
+            kind, value, include_sub = self._classify(line, f"line {line_num}")
+            if kind == "domain":
+                domains.append((value, include_sub, ""))
+            else:
+                cidrs.append(value)
+        if not cidrs and not domains:
+            raise ValueError("No valid subnets or domains found in file")
+        return cidrs, domains
+
+    def parse_subnet_csv(self, file_content: str) -> List[Tuple[str, List[str], str, str]]:
+        """Subnet-only CSV (see ``parse_scope_csv``); a domain row raises."""
+        subnets, domains, _ = self.parse_scope_csv(file_content)
+        if domains:
+            raise ValueError(f"Invalid subnet: '{domains[0][0]}' is a domain name")
+        if not subnets:
             raise ValueError("No valid subnets found in file")
-        return valid_cidrs
+        return subnets
+
+    def parse_cidr_list(self, file_content: str) -> List[str]:
+        """Subnet-only flat list (see ``parse_scope_list``); a domain line raises."""
+        cidrs, domains = self.parse_scope_list(file_content)
+        if domains:
+            raise ValueError(f"Invalid subnet: '{domains[0][0]}' is a domain name")
+        if not cidrs:
+            raise ValueError("No valid subnets found in file")
+        return cidrs
 
     def validate_subnet(self, cidr: str) -> bool:
         """Validate a single subnet CIDR notation."""

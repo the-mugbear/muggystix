@@ -68,6 +68,7 @@ import {
 } from '../components/ui/table';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { InfoTip } from '../components/ui/info-tip';
 import { cn } from '../utils/cn';
 import {
   SubnetLabelManagerDialog,
@@ -103,6 +104,7 @@ const Scopes: React.FC = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [domainsRefreshKey, setDomainsRefreshKey] = useState(0);
 
   const [coverageOpen, setCoverageOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -396,8 +398,11 @@ const Scopes: React.FC = () => {
 
     try {
       const response = await uploadSubnetFile(file);
-      setStatusMessage(response.message || `Subnet file "${file.name}" uploaded successfully!`);
+      setStatusMessage(response.message || `Scope file "${file.name}" uploaded successfully!`);
       await loadData();
+      // The domains card owns its own paged list; a file with domain rows
+      // has to make it reload.
+      if (response.domains_added) setDomainsRefreshKey((k) => k + 1);
       setUploadOpen(false);
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (err: unknown) {
@@ -521,32 +526,72 @@ const Scopes: React.FC = () => {
       {coverage && (
         <Card className="mb-md">
           <CardContent className="p-sm">
-            <button
-              type="button"
-              onClick={toggleCoverage}
-              aria-expanded={coverageOpen}
-              className="flex w-full flex-wrap items-center gap-sm rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <span className="text-section-title font-semibold">Scope Coverage</span>
-              <Badge variant={tone}>{coverage.coverage_percentage.toFixed(1)}% covered</Badge>
+            {/* The toggle and the badges are siblings (not badges inside the
+                toggle) so each (i) can be a real button — nested buttons are
+                invalid and unreachable by keyboard. */}
+            <div className="flex w-full flex-wrap items-center gap-sm">
+              <button
+                type="button"
+                onClick={toggleCoverage}
+                aria-expanded={coverageOpen}
+                className="inline-flex items-center gap-xs rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="text-section-title font-semibold">Scope Coverage</span>
+                <span className="inline-flex size-7 items-center justify-center rounded-control text-muted-foreground">
+                  {coverageOpen ? (
+                    <ChevronUp className="size-4" aria-hidden />
+                  ) : (
+                    <ChevronDown className="size-4" aria-hidden />
+                  )}
+                </span>
+              </button>
+              <span className="inline-flex items-center gap-xxs">
+                <Badge variant={tone}>{coverage.coverage_percentage.toFixed(1)}% covered</Badge>
+                <InfoTip
+                  label="About coverage"
+                  text="Share of hosts that fall inside a declared subnet. Hosts reached only through an in-scope name are not counted here — name scope never confers subnet scope."
+                />
+              </span>
               <Badge variant="outline">{coverage.total_hosts} hosts</Badge>
-              <Badge variant="outline" className="border-success/40 text-success">
-                {coverage.scoped_hosts} in scope
-              </Badge>
-              {coverage.out_of_scope_hosts > 0 && (
-                <Badge variant="outline" className="border-destructive/40 text-destructive">
-                  {coverage.out_of_scope_hosts} out of scope
+              <span className="inline-flex items-center gap-xxs">
+                <Badge variant="outline" className="border-success/40 text-success">
+                  {coverage.scoped_hosts} in scope
                 </Badge>
+                <InfoTip label="About in scope" text="Hosts whose address is inside at least one declared subnet." />
+              </span>
+              {coverage.name_reachable_hosts > 0 && (
+                <span className="inline-flex items-center gap-xxs">
+                  <Badge variant="info-outline">
+                    {coverage.name_reachable_hosts} via in-scope name
+                  </Badge>
+                  <InfoTip
+                    label="About via in-scope name"
+                    text="Hosts in no declared subnet that an in-scope name currently resolves to. A third state: not out of scope, but not subnet-in-scope either — the name is approved, the address is not. Declare the subnet if the address itself should be in scope."
+                  />
+                </span>
+              )}
+              {coverage.out_of_scope_hosts > 0 && (
+                <span className="inline-flex items-center gap-xxs">
+                  <Badge variant="outline" className="border-destructive/40 text-destructive">
+                    {coverage.out_of_scope_hosts} out of scope
+                  </Badge>
+                  <InfoTip
+                    label="About out of scope"
+                    text="Hosts in no declared subnet and not reached by any in-scope name."
+                  />
+                </span>
               )}
               <Badge variant="outline">{coverage.total_subnets} subnets</Badge>
-              <span className="ml-auto inline-flex size-7 items-center justify-center rounded-control text-muted-foreground">
-                {coverageOpen ? (
-                  <ChevronUp className="size-4" aria-hidden />
-                ) : (
-                  <ChevronDown className="size-4" aria-hidden />
-                )}
-              </span>
-            </button>
+              {coverage.total_domains > 0 && (
+                <span className="inline-flex items-center gap-xxs">
+                  <Badge variant="outline">{coverage.total_domains} domains</Badge>
+                  <InfoTip
+                    label="About domains"
+                    text="Domain-scope entries declared below. They put names in scope, independently of subnets."
+                  />
+                </span>
+              )}
+            </div>
 
             {coverageOpen && (
               <div className="pt-sm">
@@ -611,7 +656,7 @@ const Scopes: React.FC = () => {
                 ) : (
                   <Alert variant="info" className="mt-xs">
                     <AlertDescription>
-                      No subnet entries yet. Add one above or upload a subnet file.
+                      No subnet entries yet. Add one above or upload a scope file.
                     </AlertDescription>
                   </Alert>
                 )}
@@ -650,7 +695,9 @@ const Scopes: React.FC = () => {
 
       {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
           coverage card on change (name-reachable hosts move between states). */}
-      {scope != null && <ScopeDomainsCard scopeId={scope.id} onChanged={loadData} />}
+      {scope != null && (
+        <ScopeDomainsCard scopeId={scope.id} refreshKey={domainsRefreshKey} onChanged={loadData} />
+      )}
 
       {scope == null ? (
         <Card>
@@ -1066,22 +1113,25 @@ const Scopes: React.FC = () => {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Upload Subnet File</DialogTitle>
+            <DialogTitle>Upload Scope File</DialogTitle>
             <DialogDescription>
-              Append subnets to this project's scope.  Accepts
-              <code className="font-mono"> .txt </code>(one CIDR/IP per line) or
-              <code className="font-mono"> .csv </code>(one entry per row: subnet in
+              Append subnets and domains to this project's scope.  Accepts
+              <code className="font-mono"> .txt </code>(one CIDR, IP or domain per line) or
+              <code className="font-mono"> .csv </code>(one entry per row: subnet or domain in
               column 1, optional space-delimited labels in column 2, optional
               description in column 3, optional site in column 4).
             </DialogDescription>
           </DialogHeader>
           <p className="text-metadata text-muted-foreground">
-            <code className="font-mono">.txt</code> — one subnet per line. {' '}
+            <code className="font-mono">.txt</code> — one entry per line. {' '}
             <code className="font-mono">.csv</code> — per row{' '}
             <code className="font-mono">192.168.1.0/24,prod internet-facing,UK DMZ,London DC</code>{' '}
-            (label, description + site columns optional). Re-uploading is safe: duplicate
-            subnets are skipped, labels are <em>added</em> (never replaced), and a
-            description updates only when provided.
+            (label, description + site columns optional). A domain row such as{' '}
+            <code className="font-mono">portal.example.com</code> declares that exact name;{' '}
+            <code className="font-mono">*.example.com</code> declares the domain with subdomains
+            (labels and site apply to subnets only). Re-uploading is safe: duplicate
+            entries are skipped, labels are <em>added</em> (never replaced), a domain
+            only ever widens, and a description updates only when provided.
           </p>
           <div
             {...getRootProps()}

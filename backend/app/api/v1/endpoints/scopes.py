@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 from typing import List, Optional
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query, Request
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
@@ -134,13 +135,20 @@ async def upload_subnet_file(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Upload a subnet file and append its entries to the project's scope.
+    """Upload a scope file and append its entries to the project's scope.
 
     Per v2.9.4, a project has exactly one conceptual scope.  Every
     uploaded file's CIDRs (and single IPs, which are accepted via
     ``ipaddress.ip_network(strict=False)``) are appended to that
     scope.  Duplicate entries already present in the scope are
     silently skipped so re-uploading the same file is idempotent.
+
+    v2.326.0: a row that isn't a subnet is a domain name.  Domain rows go
+    to ``scope_domains`` through the same upsert as the domains card
+    (``*.example.com`` → ``example.com`` + include_subdomains), so a
+    client-supplied scope list mixing ranges and FQDNs uploads in one go.
+    Name scope and subnet scope stay independent — a domain row never
+    creates a subnet, and vice versa.
     """
     # Audit finding C3: the previous implementation read the entire
     # upload into memory via ``await file.read()`` with no size check,
@@ -177,147 +185,198 @@ async def upload_subnet_file(
             detail="File must be UTF-8 encoded text"
         )
 
-    # .csv → row-per-subnet with optional space-delimited labels in column 2;
-    # .txt → flat CIDR list (no labels).  Both normalize identically.
-    is_csv = file.filename.lower().endswith('.csv')
-    try:
-        parser = SubnetParser(db)
-        if is_csv:
-            entries = parser.parse_subnet_csv(file_content)
-        else:
-            entries = [(c, [], "", "") for c in parser.parse_cidr_list(file_content)]
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Everything from here is synchronous DB/CPU work.  The handler is
+    # ``async`` only for the bounded upload read above; running the parse,
+    # writes and project-wide correlation inline would block this API
+    # process's event loop for the duration, so it goes to the threadpool
+    # (the same place FastAPI runs plain ``def`` endpoints).
+    def _ingest() -> SubnetFileUploadResponse:
+        # .csv → row-per-entry with optional space-delimited labels in column 2;
+        # .txt → flat list (no labels).  Both normalize identically and both
+        # split subnet rows from domain rows.
+        is_csv = file.filename.lower().endswith('.csv')
+        domain_rows_ignored_cols = 0
+        try:
+            parser = SubnetParser(db)
+            if is_csv:
+                entries, domain_entries, domain_rows_ignored_cols = parser.parse_scope_csv(file_content)
+            else:
+                cidrs, domain_entries = parser.parse_scope_list(file_content)
+                entries = [(c, [], "", "") for c in cidrs]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
-    if len(entries) > MAX_SUBNETS_PER_UPLOAD:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"File contains {len(entries):,} subnet entries; "
-                f"maximum per upload is {MAX_SUBNETS_PER_UPLOAD:,}. "
-                f"Split the file into smaller uploads or use the manual "
-                f"Add Subnet flow for individual entries."
-            ),
+        if len(entries) + len(domain_entries) > MAX_SUBNETS_PER_UPLOAD:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"File contains {len(entries) + len(domain_entries):,} scope entries; "
+                    f"maximum per upload is {MAX_SUBNETS_PER_UPLOAD:,}. "
+                    f"Split the file into smaller uploads or use the manual "
+                    f"Add Subnet flow for individual entries."
+                ),
+            )
+
+        # Resolve (or create) the project's single scope.  Subnets dedup by cidr
+        # (never a duplicate row); labels merge (add, never replace) so repeated
+        # uploads accumulate labels onto the same subnet.
+        scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
+        existing_subnets = {
+            s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
+        }
+        added = 0
+        descriptions_set = 0
+        sites_set = 0
+        site_cache: dict = {}  # name -> Site, get-or-created once per upload
+        for cidr, _labels, description, site in entries:
+            site_obj = _get_or_create_site(db, project.id, site, current_user.id, site_cache) if site else None
+            sub = existing_subnets.get(cidr)
+            if sub is None:
+                sub = Subnet(
+                    cidr=cidr, scope_id=scope.id,
+                    description=(description or None),
+                    site=(site or None), site_id=(site_obj.id if site_obj else None),
+                )
+                db.add(sub)
+                existing_subnets[cidr] = sub
+                added += 1
+                if description:
+                    descriptions_set += 1
+                if site:
+                    sites_set += 1
+            else:
+                # Update description/site on an existing subnet when the CSV
+                # provides them (empty cols leave the existing values intact).
+                if description:
+                    sub.description = description
+                    descriptions_set += 1
+                if site:
+                    sub.site = site
+                    sub.site_id = site_obj.id if site_obj else None
+                    sites_set += 1
+        # One flush for the whole batch — populates .id on every pending Subnet
+        # (the existing_subnets map holds live object refs) for the label
+        # assignments below.  Avoids a per-row round-trip (and a regression on the
+        # label-less .txt path, which never flushed in the loop before).
+        db.flush()
+
+        # Labels: get-or-create the project label, then add only assignments that
+        # don't already exist (the uq_subnet_label_assignment dedup, applied in
+        # code) — existing labels on a subnet are left intact.
+        label_cache: dict = {}
+
+        def _get_label(name: str) -> SubnetLabel:
+            lbl = label_cache.get(name)
+            if lbl is None:
+                lbl = (
+                    db.query(SubnetLabel)
+                    .filter(SubnetLabel.project_id == project.id, SubnetLabel.name == name)
+                    .first()
+                )
+                if lbl is None:
+                    lbl = SubnetLabel(project_id=project.id, name=name, created_by_id=current_user.id)
+                    db.add(lbl)
+                    db.flush()
+                label_cache[name] = lbl
+            return lbl
+
+        affected_ids = [existing_subnets[c].id for c, _, _, _ in entries]
+        existing_assignments = set()
+        if affected_ids:
+            for sid, lid in (
+                db.query(SubnetLabelAssignment.subnet_id, SubnetLabelAssignment.label_id)
+                .filter(SubnetLabelAssignment.subnet_id.in_(affected_ids))
+                .all()
+            ):
+                existing_assignments.add((sid, lid))
+
+        labels_applied = 0
+        for cidr, label_names, _description, _site in entries:
+            if not label_names:
+                continue
+            sub = existing_subnets[cidr]
+            for name in label_names:
+                lbl = _get_label(name)
+                key = (sub.id, lbl.id)
+                if key in existing_assignments:
+                    continue
+                db.add(SubnetLabelAssignment(
+                    subnet_id=sub.id, label_id=lbl.id, created_by_id=current_user.id,
+                ))
+                existing_assignments.add(key)
+                labels_applied += 1
+
+        # Domain rows: same upsert as POST /scopes/{id}/domains, so an existing
+        # entry widens (exact → include_subdomains) and never narrows.  The
+        # parser already validated every name, so ``invalid`` is empty here;
+        # it is asserted rather than trusted.
+        domains_added = domains_updated = 0
+        if domain_entries:
+            domains_added, domains_updated, invalid_domains = dns_name_service.upsert_scope_domains(
+                db, scope, domain_entries, created_by_id=current_user.id,
+            )
+            if invalid_domains:
+                db.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid domain entries: " + "; ".join(invalid_domains[:5]),
+                )
+
+        db.commit()
+
+        correlation_service = SubnetCorrelationService(db)
+        correlation_service.invalidate_subnet_cache()
+        correlated_hosts = None
+        # Only a NEW subnet changes host membership; a duplicate-only or
+        # description/label-only upload must not trigger the project-wide rebuild.
+        if added:
+            try:
+                correlated_hosts = correlation_service.correlate_all_hosts_to_subnets(project_id=project.id)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning("Subnet correlation after upload failed: %s", exc)
+
+        skipped = len(entries) - added
+        parts = []
+        if entries or not domain_entries:
+            part = f"{added} subnet(s)"
+            if skipped > 0:
+                part += f" ({skipped} duplicate{'s' if skipped != 1 else ''} skipped)"
+            parts.append(part)
+        if domain_entries:
+            skipped_domains = len(domain_entries) - domains_added - domains_updated
+            part = f"{domains_added} domain(s)"
+            extras = []
+            if domains_updated:
+                extras.append(f"{domains_updated} widened to include subdomains")
+            if skipped_domains > 0:
+                extras.append(f"{skipped_domains} duplicate{'s' if skipped_domains != 1 else ''} skipped")
+            if extras:
+                part += f" ({', '.join(extras)})"
+            parts.append(part)
+        message = "Added " + " and ".join(parts) + " to the project scope"
+        if domain_rows_ignored_cols > 0:
+            message += (
+                f"; labels/site ignored on {domain_rows_ignored_cols} domain "
+                f"row{'s' if domain_rows_ignored_cols != 1 else ''} (subnet-only columns)"
+            )
+        if labels_applied > 0:
+            message += f"; applied {labels_applied} label assignment{'s' if labels_applied != 1 else ''}"
+        if descriptions_set > 0:
+            message += f"; set {descriptions_set} description{'s' if descriptions_set != 1 else ''}"
+        if sites_set > 0:
+            message += f"; set {sites_set} site{'s' if sites_set != 1 else ''}"
+        if correlated_hosts is not None:
+            message += f"; correlated {correlated_hosts} host-subnet relationships"
+
+        return SubnetFileUploadResponse(
+            message=message,
+            scope_id=scope.id,
+            subnets_added=added,
+            domains_added=domains_added,
+            filename=file.filename
         )
 
-    # Resolve (or create) the project's single scope.  Subnets dedup by cidr
-    # (never a duplicate row); labels merge (add, never replace) so repeated
-    # uploads accumulate labels onto the same subnet.
-    scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
-    existing_subnets = {
-        s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
-    }
-    added = 0
-    descriptions_set = 0
-    sites_set = 0
-    site_cache: dict = {}  # name -> Site, get-or-created once per upload
-    for cidr, _labels, description, site in entries:
-        site_obj = _get_or_create_site(db, project.id, site, current_user.id, site_cache) if site else None
-        sub = existing_subnets.get(cidr)
-        if sub is None:
-            sub = Subnet(
-                cidr=cidr, scope_id=scope.id,
-                description=(description or None),
-                site=(site or None), site_id=(site_obj.id if site_obj else None),
-            )
-            db.add(sub)
-            existing_subnets[cidr] = sub
-            added += 1
-            if description:
-                descriptions_set += 1
-            if site:
-                sites_set += 1
-        else:
-            # Update description/site on an existing subnet when the CSV
-            # provides them (empty cols leave the existing values intact).
-            if description:
-                sub.description = description
-                descriptions_set += 1
-            if site:
-                sub.site = site
-                sub.site_id = site_obj.id if site_obj else None
-                sites_set += 1
-    # One flush for the whole batch — populates .id on every pending Subnet
-    # (the existing_subnets map holds live object refs) for the label
-    # assignments below.  Avoids a per-row round-trip (and a regression on the
-    # label-less .txt path, which never flushed in the loop before).
-    db.flush()
-
-    # Labels: get-or-create the project label, then add only assignments that
-    # don't already exist (the uq_subnet_label_assignment dedup, applied in
-    # code) — existing labels on a subnet are left intact.
-    label_cache: dict = {}
-
-    def _get_label(name: str) -> SubnetLabel:
-        lbl = label_cache.get(name)
-        if lbl is None:
-            lbl = (
-                db.query(SubnetLabel)
-                .filter(SubnetLabel.project_id == project.id, SubnetLabel.name == name)
-                .first()
-            )
-            if lbl is None:
-                lbl = SubnetLabel(project_id=project.id, name=name, created_by_id=current_user.id)
-                db.add(lbl)
-                db.flush()
-            label_cache[name] = lbl
-        return lbl
-
-    affected_ids = [existing_subnets[c].id for c, _, _, _ in entries]
-    existing_assignments = set()
-    if affected_ids:
-        for sid, lid in (
-            db.query(SubnetLabelAssignment.subnet_id, SubnetLabelAssignment.label_id)
-            .filter(SubnetLabelAssignment.subnet_id.in_(affected_ids))
-            .all()
-        ):
-            existing_assignments.add((sid, lid))
-
-    labels_applied = 0
-    for cidr, label_names, _description, _site in entries:
-        if not label_names:
-            continue
-        sub = existing_subnets[cidr]
-        for name in label_names:
-            lbl = _get_label(name)
-            key = (sub.id, lbl.id)
-            if key in existing_assignments:
-                continue
-            db.add(SubnetLabelAssignment(
-                subnet_id=sub.id, label_id=lbl.id, created_by_id=current_user.id,
-            ))
-            existing_assignments.add(key)
-            labels_applied += 1
-
-    db.commit()
-
-    correlation_service = SubnetCorrelationService(db)
-    correlation_service.invalidate_subnet_cache()
-    correlated_hosts = None
-    try:
-        correlated_hosts = correlation_service.correlate_all_hosts_to_subnets(project_id=project.id)
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logger.warning("Subnet correlation after upload failed: %s", exc)
-
-    skipped = len(entries) - added
-    message = f"Added {added} subnet(s) to the project scope"
-    if skipped > 0:
-        message += f" ({skipped} duplicate{'s' if skipped != 1 else ''} skipped)"
-    if labels_applied > 0:
-        message += f"; applied {labels_applied} label assignment{'s' if labels_applied != 1 else ''}"
-    if descriptions_set > 0:
-        message += f"; set {descriptions_set} description{'s' if descriptions_set != 1 else ''}"
-    if sites_set > 0:
-        message += f"; set {sites_set} site{'s' if sites_set != 1 else ''}"
-    if correlated_hosts is not None:
-        message += f"; correlated {correlated_hosts} host-subnet relationships"
-
-    return SubnetFileUploadResponse(
-        message=message,
-        scope_id=scope.id,
-        subnets_added=added,
-        filename=file.filename
-    )
+    return await run_in_threadpool(_ingest)
 
 def _serialize_scope_with_subnets(
     db: Session,

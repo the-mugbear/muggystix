@@ -17,7 +17,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Copy, Download, Info, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Download, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
 import {
   getSubnetInsights,
@@ -41,6 +41,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { InfoTip } from '../components/ui/info-tip';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
@@ -78,20 +79,6 @@ function medianAgeLabel(days: number | null): string {
   return `${days}d`;
 }
 
-// Plain-English "what is this metric and how is it derived?" help — every
-// ranking input is justified on an explicit (i), not left for the operator to
-// infer (this surface drives where they spend time).
-const InfoTip: React.FC<{ text: string }> = ({ text }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <button type="button" aria-label="How is this derived?"
-        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Info className="size-3.5" aria-hidden />
-      </button>
-    </TooltipTrigger>
-    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
-  </Tooltip>
-);
 
 // Render the current page of subnet insights as a shareable Markdown table.
 function subnetsToMarkdown(data: SubnetInsightsResponse, projectName?: string): string {

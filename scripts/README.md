@@ -12,6 +12,7 @@ This directory contains utility scripts for deployment and maintenance.
   3. Reconfigure IP address
   4. Nuclear clean (destroy ALL data and rebuild)
   5. Security status check
+- **`upgrade-instance.sh`** - Upgrade a file-copy deployment (no git on the host). Precondition, done by hand first: rename the running instance's folder to `<name>_backup_<date>`, copy the new source tree next to it and rename it to the **original** folder name (docker compose keys the database volume on the folder name — `<name>_postgres_data`). Then, from the new folder, `./scripts/upgrade-instance.sh`: it verifies that volume exists (refuses otherwise, `--allow-fresh-db` to override), carries `.env`, `ssl/certs/*`, the uploads dir (moved; `--copy-uploads` to copy), a custom `NGINX_CONFIG` and `.deploy-rollback-state` across, reports `.env` keys the new `.env.example` adds and any top-level files only the old folder has, then runs `deploy.sh` option 1 and checks the API's reported version against `platform_version.json`. Idempotent: identical files are skipped, differing ones abort rather than overwrite. `--no-deploy` stops before the deploy, `--from <dir>` names the old folder when auto-detection is ambiguous.
 
 ### Maintenance Scripts
 

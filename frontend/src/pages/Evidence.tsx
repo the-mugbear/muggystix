@@ -13,7 +13,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, RefreshCw, Info, ShieldAlert, Wrench, AlertTriangle } from 'lucide-react';
+import { Loader2, RefreshCw, ShieldAlert, Wrench, AlertTriangle } from 'lucide-react';
 
 import {
   getEvidenceCoverage,
@@ -27,18 +27,8 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { InfoTip } from '../components/ui/info-tip';
 
-const InfoTip: React.FC<{ text: string }> = ({ text }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <button type="button" aria-label="How is this derived?"
-        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Info className="size-3.5" aria-hidden />
-      </button>
-    </TooltipTrigger>
-    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
-  </Tooltip>
-);
 
 // Coverage → bar colour: red under a third, amber under two thirds, green above.
 const coverageColor = (pct: number): string =>
