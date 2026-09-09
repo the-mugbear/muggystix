@@ -9,8 +9,8 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '../utils/severity';
-import { Link, useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, Loader2, Trash2 } from 'lucide-react';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, ExternalLink, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 
 import {
   Finding,
@@ -52,6 +52,7 @@ import {
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
 import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
+import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 // Severity is an editable attribute (not a lifecycle transition, so it isn't
@@ -64,6 +65,10 @@ const FindingDetail: React.FC = () => {
   const id = Number(findingId);
   const toast = useToast();
   const navigate = useNavigate();
+  // M1 — the list hands its queue URL over as `from`; validated to an
+  // internal /findings path so a crafted link can't send the operator off-site.
+  const [searchParams] = useSearchParams();
+  const returnTo = safeFindingsReturn(searchParams.get(RETURN_PARAM));
   const { hasPermission, user } = useAuth();
   // Findings routes admit viewers (read-only); analyst+ may dispose/detach.
   // Gate the write affordances so viewers see history without 403-bait controls.
@@ -75,8 +80,19 @@ const FindingDetail: React.FC = () => {
   // finding to closure (distinct from a host's review analyst).
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
+  // M2 — history is ancillary: it loads with its own state and never gates
+  // the finding itself.
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // C2 — a metadata edit refreshes in the background: the page stays
+  // mounted (so the comment composer keeps its draft) and only the edited
+  // control shows a pending state.
+  const [refreshing, setRefreshing] = useState<'status' | 'severity' | null>(null);
+  // H1-style split for the source-evidence thread: a failed fetch is shown
+  // as unavailable, not as "no evidence".
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
   // Terminal-disposition "why" prompt — mirrors the /findings list so a
   // status change on this page also captures the audit rationale.
   const [summaryPrompt, setSummaryPrompt] = useState<{ status: FindingStatus } | null>(null);
@@ -85,12 +101,23 @@ const FindingDetail: React.FC = () => {
   // shown inline (the page previously only linked out to it).
   const [evidenceThread, setEvidenceThread] = useState<Annotation[]>([]);
 
-  const load = useCallback(async () => {
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      setHistory(await getFindingHistory(id));
+      setHistoryError(null);
+    } catch (err) {
+      setHistoryError(formatApiError(err, 'History unavailable.'));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [id]);
+
+  // Initial load: the skeleton shows only while there is no finding yet.
+  const loadFinding = useCallback(async () => {
     setLoading(true);
     try {
-      const [f, h] = await Promise.all([getFinding(id), getFindingHistory(id)]);
-      setFinding(f);
-      setHistory(h);
+      setFinding(await getFinding(id));
       setError(null);
     } catch (err) {
       setError(formatApiError(err, 'Failed to load finding.'));
@@ -99,7 +126,23 @@ const FindingDetail: React.FC = () => {
     }
   }, [id]);
 
-  useEffect(() => { void load(); }, [load]);
+  // Background refresh after an edit: content stays mounted; a failed refresh
+  // keeps what is on screen and says so rather than blanking the page.
+  const refresh = useCallback(async (what: 'status' | 'severity') => {
+    setRefreshing(what);
+    try {
+      const [f, h] = await Promise.all([getFinding(id), getFindingHistory(id)]);
+      setFinding(f);
+      setHistory(h);
+      setHistoryError(null);
+    } catch (err) {
+      toast.warning(formatApiError(err, 'Saved, but the page could not refresh — reload to see the change.'));
+    } finally {
+      setRefreshing(null);
+    }
+  }, [id, toast]);
+
+  useEffect(() => { void loadFinding(); void loadHistory(); }, [loadFinding, loadHistory]);
 
   // Roster for the owner picker (analyst+ only — viewers can't reassign).
   useEffect(() => {
@@ -130,6 +173,7 @@ const FindingDetail: React.FC = () => {
       return;
     }
     let cancelled = false;
+    setEvidenceError(null);
     getHostNotes(evidenceHostId)
       .then((notes) => {
         if (cancelled) return;
@@ -147,8 +191,10 @@ const FindingDetail: React.FC = () => {
         }
         setEvidenceThread(notes.filter((n) => inThread.has(n.id)).sort((a, b) => a.id - b.id));
       })
-      .catch(() => {
-        if (!cancelled) setEvidenceThread([]);
+      .catch((err) => {
+        if (cancelled) return;
+        setEvidenceThread([]);
+        setEvidenceError(formatApiError(err, 'Evidence note unavailable.'));
       });
     return () => {
       cancelled = true;
@@ -159,7 +205,7 @@ const FindingDetail: React.FC = () => {
     if (!finding) return;
     try {
       await setFindingStatus(finding.id, status, summary);
-      await load(); // refresh status + history trail together
+      await refresh('status'); // status + history trail together, in the background
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update status.'));
     }
@@ -183,7 +229,7 @@ const FindingDetail: React.FC = () => {
     if (!finding || severity === finding.severity) return;
     try {
       await updateFinding(finding.id, { severity });
-      await load(); // refresh so the headline badge + rollups reflect the change
+      await refresh('severity'); // headline badge + rollups, in the background
       toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update severity.'));
@@ -237,21 +283,24 @@ const FindingDetail: React.FC = () => {
     }
   };
 
-  if (loading) return <DetailSkeleton />;
+  if (loading && !finding) return <DetailSkeleton />;
   if (error || !finding) {
     return (
       <div className="p-md md:p-lg">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/findings')}>
+        <Button variant="ghost" size="sm" onClick={() => navigate(returnTo)}>
           <ArrowLeft className="size-4" aria-hidden /> Findings
         </Button>
         <p className="mt-md text-destructive">{error || 'Finding not found.'}</p>
+        <Button variant="outline" size="sm" className="mt-sm" onClick={() => void loadFinding()}>
+          <RefreshCw className="size-4" aria-hidden /> Retry
+        </Button>
       </div>
     );
   }
 
   return (
     <div className="p-md md:p-lg">
-      <Button variant="ghost" size="sm" onClick={() => navigate('/findings')} className="mb-sm">
+      <Button variant="ghost" size="sm" onClick={() => navigate(returnTo)} className="mb-sm">
         <ArrowLeft className="size-4" aria-hidden /> Findings
       </Button>
 
@@ -266,7 +315,8 @@ const FindingDetail: React.FC = () => {
         <div className="flex items-center gap-xs">
           <span className="text-muted-foreground">Status</span>
           {canManage ? (
-            <Select value={finding.status} onValueChange={(v) => handleStatus(v as FindingStatus)}>
+            <Select value={finding.status} onValueChange={(v) => handleStatus(v as FindingStatus)}
+              disabled={refreshing !== null}>
               <SelectTrigger className="h-7 w-[10rem] text-caption" aria-label="Finding status">
                 <SelectValue />
               </SelectTrigger>
@@ -279,11 +329,13 @@ const FindingDetail: React.FC = () => {
           ) : (
             <Badge variant="muted">{STATUS_LABEL[finding.status]}</Badge>
           )}
+          {refreshing === 'status' && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Saving status" />}
         </div>
         <div className="flex items-center gap-xs">
           <span className="text-muted-foreground">Severity</span>
           {canManage ? (
-            <Select value={finding.severity} onValueChange={(v) => handleSeverity(v as FindingSeverity)}>
+            <Select value={finding.severity} onValueChange={(v) => handleSeverity(v as FindingSeverity)}
+              disabled={refreshing !== null}>
               <SelectTrigger className="h-7 w-[8rem] text-caption" aria-label="Finding severity">
                 <SelectValue />
               </SelectTrigger>
@@ -296,6 +348,7 @@ const FindingDetail: React.FC = () => {
           ) : (
             <Badge variant="muted">{SEVERITY_LABEL[finding.severity]}</Badge>
           )}
+          {refreshing === 'severity' && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Saving severity" />}
         </div>
         <div className="flex items-center gap-xs">
           <span className="text-muted-foreground">Owner</span>
@@ -341,6 +394,17 @@ const FindingDetail: React.FC = () => {
         )}
       </div>
 
+      {evidenceError && (
+        <Card className="mb-md">
+          <CardHeader><CardTitle>Evidence note</CardTitle></CardHeader>
+          <CardContent>
+            <p className="text-caption text-destructive">{evidenceError}</p>
+            {evidenceHref && (
+              <Link to={evidenceHref} className="text-caption text-info hover:underline">Open on the host</Link>
+            )}
+          </CardContent>
+        </Card>
+      )}
       {evidenceThread.length > 0 && (
         <Card className="mb-md">
           <CardHeader><CardTitle>Evidence note</CardTitle></CardHeader>
@@ -433,7 +497,18 @@ const FindingDetail: React.FC = () => {
       <Card>
         <CardHeader><CardTitle>Disposition history</CardTitle></CardHeader>
         <CardContent>
-          {history.length === 0 ? (
+          {historyLoading && history.length === 0 ? (
+            <div className="flex items-center gap-xs text-caption text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden /> Loading history…
+            </div>
+          ) : historyError ? (
+            <div className="flex flex-wrap items-center gap-sm">
+              <p className="text-caption text-destructive">History unavailable — {historyError}</p>
+              <Button variant="outline" size="sm" onClick={() => void loadHistory()} disabled={historyLoading}>
+                <RefreshCw className="size-4" aria-hidden /> Retry
+              </Button>
+            </div>
+          ) : history.length === 0 ? (
             <p className="text-caption text-muted-foreground">No status changes recorded yet.</p>
           ) : (
             <ul className="flex flex-col gap-sm">

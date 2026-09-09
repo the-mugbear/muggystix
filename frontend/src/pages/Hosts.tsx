@@ -1123,6 +1123,20 @@ export default function Hosts() {
   // reachable via the "Open standalone" link inside the sheet, or by
   // bookmark / deep link.
   const [inspectedHostId, setInspectedHostId] = useState<number | null>(null);
+  // UX review C1: the inspector reports whether its note composer holds an
+  // unsaved draft; every queue transition (Previous/Next/Next unreviewed,
+  // close, Open standalone, vuln pivot) asks before discarding it.
+  const inspectorDirtyRef = useRef(false);
+  const confirmDiscardDraft = async (): Promise<boolean> => {
+    if (!inspectorDirtyRef.current) return true;
+    const ip = hosts.find((h) => h.id === inspectedHostId)?.ip_address ?? 'this host';
+    return confirm({
+      title: 'Discard unsaved note?',
+      body: `The note you started for ${ip} (text or pasted screenshots) has not been saved. Leave anyway?`,
+      severity: 'warning',
+      confirmLabel: 'Discard note',
+    });
+  };
 
   // Keyboard row cursor for the list (1c).  -1 = no cursor yet.  j/k (and
   // arrows) move it and Enter opens the host; when the inspector is already
@@ -1221,8 +1235,9 @@ export default function Hosts() {
     return status !== 'reviewed' && status !== 'in_review';
   };
 
-  const stepInspector = (delta: 1 | -1) => {
+  const stepInspector = async (delta: 1 | -1) => {
     if (inspectedIndex < 0) return;
+    if (!(await confirmDiscardDraft())) return;
     const target = hosts[inspectedIndex + delta];
     if (target) { setInspectedHostId(target.id); return; }
     // Crossed the page boundary — turn the page and open its near edge.
@@ -1237,8 +1252,9 @@ export default function Hosts() {
 
   // Jump to the next host that still needs review, scanning forward across
   // pages and skipping ones already Reviewed.
-  const stepToNextUnreviewed = () => {
+  const stepToNextUnreviewed = async () => {
     if (inspectedIndex < 0) return;
+    if (!(await confirmDiscardDraft())) return;
     for (let i = inspectedIndex + 1; i < hosts.length; i += 1) {
       if (hostNeedsReview(hosts[i])) { setInspectedHostId(hosts[i].id); return; }
     }
@@ -2282,7 +2298,10 @@ export default function Hosts() {
       <SideSheet
         open={inspectedHostId !== null}
         onOpenChange={(open) => {
-          if (!open) setInspectedHostId(null);
+          if (open) return;
+          void confirmDiscardDraft().then((ok) => {
+            if (ok) setInspectedHostId(null);
+          });
         }}
       >
         <SideSheetContent width="xl">
@@ -2332,8 +2351,9 @@ export default function Hosts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
+                    onClick={async () => {
                       const id = inspectedHostId;
+                      if (!(await confirmDiscardDraft())) return;
                       setInspectedHostId(null);
                       navigateToStandalone(id);
                     }}
@@ -2359,7 +2379,11 @@ export default function Hosts() {
                 onFollowChange={(id, follow) =>
                   setHosts((prev) => prev.map((h) => (h.id === id ? { ...h, follow } : h)))
                 }
-                onQueryHosts={(q) => {
+                onDirtyChange={(dirty) => {
+                  inspectorDirtyRef.current = dirty;
+                }}
+                onQueryHosts={async (q) => {
+                  if (!(await confirmDiscardDraft())) return;
                   // Close the sheet, then REPLACE the filter state with just
                   // this query. navigate() does NOT work here: the Hosts page
                   // is already mounted, so its URL→filter restore (init-only)

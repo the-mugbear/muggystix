@@ -75,6 +75,7 @@ import type {
   ConflictHistoryEntry,
   FollowStatus,
   Annotation,
+  NoteAttachment,
   NoteStatus,
   NoteType,
   HostTestPlanEntry,
@@ -215,6 +216,12 @@ const confidenceBadgeVariant = (score: number): 'success' | 'warning' | 'destruc
 };
 
 
+interface PendingImage {
+  file: File;
+  url: string;
+  error?: string;
+}
+
 export interface HostInspectorProps {
   hostId: number;
   /**
@@ -244,6 +251,12 @@ export interface HostInspectorProps {
    * itself.
    */
   onQueryHosts?: (query: string) => void;
+  /**
+   * Fires whenever the note composer becomes dirty or clean (unsaved text or
+   * pending/failed screenshots).  The Hosts queue uses it to confirm before
+   * Previous/Next/close discard a draft (UX review C1).
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export const HostInspector: React.FC<HostInspectorProps> = ({
@@ -252,6 +265,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   onHostLoaded,
   onFollowChange,
   onQueryHosts,
+  onDirtyChange,
 }) => {
   const navigate = useNavigate();
   const toast = useToast();
@@ -342,7 +356,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   }, [host]);
   const [noteBody, setNoteBody] = useState('');
   // Images pasted/attached into the composer, uploaded to the note on save.
-  const [pendingImages, setPendingImages] = useState<{ file: File; url: string }[]>([]);
+  // `error` marks a file whose upload failed after the note itself was
+  // created; it stays here (bound to `attachmentRetryNoteId`) until the user
+  // retries or removes it — never silently dropped (UX review C3).
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [attachmentRetryNoteId, setAttachmentRetryNoteId] = useState<number | null>(null);
   const [noteStatus, setNoteStatus] = useState<NoteStatus>('open');
   const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
@@ -518,6 +536,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   // Monotonic counter to guard against stale responses during rapid navigation.
   const fetchIdRef = React.useRef(0);
+  // The host this panel currently shows.  Async note/attachment completions
+  // compare against it so a late response never writes into another host's
+  // panel after the queue moved on (UX review C1).
+  const hostIdRef = React.useRef(hostId);
+  hostIdRef.current = hostId;
+  const onDirtyChangeRef = React.useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  }, [onDirtyChange]);
+  const composerDirty = noteBody.trim().length > 0 || pendingImages.length > 0;
+  useEffect(() => {
+    onDirtyChangeRef.current?.(composerDirty);
+  }, [composerDirty]);
+  // Once every failed file is retried or removed there is nothing left to
+  // bind the retry note to.
+  useEffect(() => {
+    if (attachmentRetryNoteId !== null && !pendingImages.some((p) => p.error)) {
+      setAttachmentRetryNoteId(null);
+    }
+  }, [attachmentRetryNoteId, pendingImages]);
   const onHostLoadedRef = React.useRef(onHostLoaded);
   onHostLoadedRef.current = onHostLoaded;
 
@@ -571,6 +609,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setNoteError(null);
     setReplyTo(null);
     setReplyBody('');
+    // The draft belongs to the previous host: pending screenshots must not
+    // ride along and end up attached to this one (UX review C1).  Object
+    // URLs are revoked here and nowhere else on a host change.
+    setPendingImages((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.url));
+      return [];
+    });
+    setAttachmentRetryNoteId(null);
 
     // Audit PRF·H8: previously a single Promise.all blocked the host
     // panel on the slowest of three fetches.  Now the primary host
@@ -779,44 +825,92 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     });
   }, []);
 
+  // Attach one already-uploaded file's metadata to a note in both local
+  // copies (the notes list and host.notes) so thumbnails show without a
+  // reload.
+  const appendAttachment = useCallback((noteId: number, attachment: NoteAttachment) => {
+    const add = (n: Annotation) =>
+      n.id === noteId ? { ...n, attachments: [...(n.attachments ?? []), attachment] } : n;
+    setNotes((previous) => previous.map(add));
+    setHost((previous) =>
+      previous ? { ...previous, notes: (previous.notes ?? []).map(add) } : previous,
+    );
+  }, []);
+
   const handleCreateNote = async () => {
     if (!noteBody.trim()) {
       setNoteError('Add a short note before saving.');
       return;
     }
+    // Snapshot the target: the queue may move to another host while the
+    // request is in flight, and this completion must then do nothing to the
+    // panel (the host-change effect already discarded the draft).
+    const submitHostId = hostId;
+    // Files still bound to an earlier note's retry queue stay with that note;
+    // only fresh files go on the new one.
+    const toUpload = pendingImages.filter((p) => !p.error);
     setNoteSubmitting(true);
     try {
-      const response = await createAnnotation(hostId, {
+      const response = await createAnnotation(submitHostId, {
         body: noteBody.trim(),
         status: noteStatus,
       });
-      // Upload any pasted/attached images to the new note, then attach the
-      // resulting metadata so the thumbnails show without a reload.
-      const uploaded = [];
-      for (const { file } of pendingImages) {
+      const uploaded: NoteAttachment[] = [];
+      const failed: PendingImage[] = [];
+      for (const img of toUpload) {
         try {
-          uploaded.push(await uploadNoteAttachment(hostId, response.id, file));
+          uploaded.push(await uploadNoteAttachment(submitHostId, response.id, img.file));
+          URL.revokeObjectURL(img.url);
         } catch (e) {
-          console.error('Failed to upload pasted image:', e);
+          failed.push({ ...img, error: formatApiError(e, 'Upload failed.') });
         }
       }
+      if (submitHostId !== hostIdRef.current) return;
       const noteWithImages = uploaded.length ? { ...response, attachments: uploaded } : response;
       setNotes((previous) => [noteWithImages, ...previous]);
       setHost((previous) =>
         previous ? { ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] } : previous,
       );
-      pendingImages.forEach((p) => URL.revokeObjectURL(p.url));
-      setPendingImages([]);
+      // Keep the failed files (with their previews) so they can be retried
+      // against the note that now exists — the clipboard is gone, this is
+      // the only copy (UX review C3).
+      setPendingImages((prev) => [...prev.filter((p) => p.error), ...failed]);
+      if (failed.length) setAttachmentRetryNoteId(response.id);
       setNoteBody('');
       setNoteStatus('open');
       setNoteError(null);
     } catch (err) {
+      if (submitHostId !== hostIdRef.current) return;
       console.error('Failed to save note:', err);
       setNoteError('Unable to save note right now. Please try again.');
     } finally {
-      setNoteSubmitting(false);
+      if (submitHostId === hostIdRef.current) setNoteSubmitting(false);
     }
   };
+
+  // Retry one failed attachment against the note it was meant for.  Never
+  // creates a second note.
+  const retryPendingImage = async (idx: number) => {
+    const target = pendingImages[idx];
+    if (!target || attachmentRetryNoteId === null) return;
+    const submitHostId = hostId;
+    const noteId = attachmentRetryNoteId;
+    setPendingImages((prev) => prev.map((p, i) => (i === idx ? { ...p, error: 'Uploading…' } : p)));
+    try {
+      const attachment = await uploadNoteAttachment(submitHostId, noteId, target.file);
+      if (submitHostId !== hostIdRef.current) return;
+      URL.revokeObjectURL(target.url);
+      setPendingImages((prev) => prev.filter((p) => p.url !== target.url));
+      appendAttachment(noteId, attachment);
+    } catch (e) {
+      if (submitHostId !== hostIdRef.current) return;
+      setPendingImages((prev) =>
+        prev.map((p) => (p.url === target.url ? { ...p, error: formatApiError(e, 'Upload failed.') } : p)),
+      );
+    }
+  };
+
+  const failedAttachmentCount = pendingImages.filter((p) => p.error && p.error !== 'Uploading…').length;
 
   const handleDeleteNote = async (noteId: number) => {
     const note = notes.find((n) => n.id === noteId);
@@ -1529,14 +1623,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               onPaste={handleComposerPaste}
               disabled={noteSubmitting}
             />
+            {attachmentRetryNoteId !== null && failedAttachmentCount > 0 && (
+              <Alert variant="warning">
+                <AlertDescription>
+                  Note saved · {failedAttachmentCount} attachment{failedAttachmentCount === 1 ? '' : 's'} failed.
+                  Retry or remove each below — the note itself is already recorded.
+                </AlertDescription>
+              </Alert>
+            )}
             {pendingImages.length > 0 && (
               <div className="flex flex-wrap gap-xs">
                 {pendingImages.map((img, idx) => (
-                  <div key={img.url} className="group relative">
+                  <div key={img.url} className="group relative flex flex-col items-center gap-xxs">
                     <img
                       src={img.url}
                       alt={`Pasted image ${idx + 1}`}
-                      className="size-16 rounded-control border border-border object-cover"
+                      title={img.error}
+                      className={cn(
+                        'size-16 rounded-control border object-cover',
+                        img.error ? 'border-destructive' : 'border-border',
+                      )}
                     />
                     <button
                       type="button"
@@ -1547,6 +1653,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     >
                       <X className="size-3" aria-hidden />
                     </button>
+                    {img.error && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-xs text-caption"
+                        onClick={() => retryPendingImage(idx)}
+                        disabled={noteSubmitting || img.error === 'Uploading…'}
+                        aria-label={`Retry uploading pasted image ${idx + 1}`}
+                      >
+                        {img.error === 'Uploading…' ? 'Uploading…' : 'Retry'}
+                      </Button>
+                    )}
                   </div>
                 ))}
               </div>

@@ -74,13 +74,18 @@ export interface FindingFilters {
   offset?: number;
 }
 
-export const listFindings = async (filters: FindingFilters = {}): Promise<FindingListResponse> => {
+export const listFindings = async (
+  filters: FindingFilters = {},
+  // Lets the caller abort a superseded request (Findings page: a newer filter
+  // set cancels the in-flight one so a slow response can't overwrite it).
+  signal?: AbortSignal,
+): Promise<FindingListResponse> => {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([k, v]) => {
     if (v !== undefined && v !== null) params.set(k, String(v));
   });
   const qs = params.toString();
-  const response = await api.get<FindingListResponse>(`${p()}/findings${qs ? `?${qs}` : ''}`);
+  const response = await api.get<FindingListResponse>(`${p()}/findings${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 

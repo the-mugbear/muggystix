@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDistanceToNow } from 'date-fns';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useSearchParams } from 'react-router-dom';
+import { findingDetailHref } from '../utils/findingsReturn';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
 
 import {
@@ -30,7 +31,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { formatApiError } from '../utils/apiErrors';
+import { formatApiError, asAxiosError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import SeverityBar from '../components/ui/SeverityBar';
@@ -109,16 +110,26 @@ const Findings: React.FC = () => {
   const ownerFilter = (searchParams.get('owner') as OwnerFilterValue | null) ?? 'any';
   const searchValue = searchParams.get('search') ?? '';
 
-  const setFilterParam = useCallback(
-    (key: string, value: string, defaultValue: string) => {
+  // One writer for every URL-backed param: a default value clears the key so
+  // a clean URL stays clean. Filter keys (membership) also reset `page`, so
+  // we never sit on an out-of-range page after the result set shrinks —
+  // done here rather than in an effect so a deep link to page 3 survives
+  // mount.
+  const setUrlParam = useCallback(
+    (key: string, value: string, defaultValue: string, resetsPage = false) => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         if (value === defaultValue) next.delete(key);
         else next.set(key, value);
+        if (resetsPage) next.delete('page');
         return next;
       }, { replace: true });
     },
     [setSearchParams],
+  );
+  const setFilterParam = useCallback(
+    (key: string, value: string, defaultValue: string) => setUrlParam(key, value, defaultValue, true),
+    [setUrlParam],
   );
   const setStatusFilter = (v: StatusFilterValue) => setFilterParam('status', v, 'active');
   const setSeverityFilter = (v: FindingSeverity | 'all') => setFilterParam('severity', v, 'all');
@@ -133,12 +144,29 @@ const Findings: React.FC = () => {
     return () => clearTimeout(t);
   }, [searchInput, setFilterParam]);
 
-  const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
+  // Page + sort live in the URL too (UX review M1): the detail page hands
+  // this exact URL back on its "Findings" action, so an analyst working a
+  // narrowed, sorted, paged queue lands on the same row set, not page 1 of
+  // everything. `page` is 1-based in the URL, 0-based here.
+  const page = Math.max(0, (Number(searchParams.get('page')) || 1) - 1);
+  const pageSize = (() => {
+    const n = Number(searchParams.get('page_size'));
+    return [25, 50, 100, 200].includes(n) ? n : 50;
+  })();
   // Column sort (server-side — sorting only the current page would mislead
   // under pagination). null = backend default (newest-first).
-  const [sortBy, setSortBy] = useState<FindingSortField | null>(null);
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const sortBy = (searchParams.get('sort') as FindingSortField | null) ?? null;
+  const sortDir: 'asc' | 'desc' = searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
+  const setPage = useCallback((p: number) => setUrlParam('page', String(p + 1), '1'), [setUrlParam]);
+  const setPageSize = useCallback((n: number) => setUrlParam('page_size', String(n), '50', true), [setUrlParam]);
+  const setSort = useCallback((field: FindingSortField | null, dir: 'asc' | 'desc') => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (field) { next.set('sort', field); next.set('dir', dir); } else { next.delete('sort'); next.delete('dir'); }
+      next.delete('page');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   // Bulk triage — selected finding ids. Survives sort + pagination (see the
   // membership guard below), so this set can span pages.
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -154,10 +182,6 @@ const Findings: React.FC = () => {
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
     || sourceFilter !== 'all' || ownerFilter !== 'any' || searchValue !== '';
-
-  // A filter change resets to the first page so we never sit on an
-  // out-of-range page after the result set shrinks.
-  useEffect(() => { setPage(0); }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue]);
 
   // Bulk-selection safety — mirrors the guard in Hosts.tsx. The selected set is
   // only meaningful for the result set it was made against: a filter change
@@ -200,9 +224,8 @@ const Findings: React.FC = () => {
     severity: 'asc', host_count: 'desc', title: 'asc', status: 'asc', source: 'asc', created_at: 'desc',
   };
   const handleSort = (field: FindingSortField) => {
-    if (sortBy === field) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else { setSortBy(field); setSortDir(SORT_DEFAULT_DIR[field]); }
-    setPage(0);
+    if (sortBy === field) setSort(field, sortDir === 'asc' ? 'desc' : 'asc');
+    else setSort(field, SORT_DEFAULT_DIR[field]);
   };
   const SortHead: React.FC<{ field: FindingSortField; label: string; className?: string }> = ({ field, label, className }) => (
     <TableHead className={className}
@@ -217,21 +240,40 @@ const Findings: React.FC = () => {
     </TableHead>
   );
 
+  // Latest-request ownership: each fetch aborts the previous one and bumps a
+  // generation counter; every state write checks it is still the newest
+  // request, so a slow response for filter set A can never land under B's
+  // active filters (nor can A's failure replace B's error state).
+  const findingsAbortRef = useRef<AbortController | null>(null);
+  const fetchGenRef = useRef(0);
+
   const fetchFindings = useCallback(async () => {
+    findingsAbortRef.current?.abort();
+    const controller = new AbortController();
+    findingsAbortRef.current = controller;
+    const gen = ++fetchGenRef.current;
+    const isCurrent = () => gen === fetchGenRef.current && !controller.signal.aborted;
+
     setLoading(true);
     try {
-      const res = await listFindings(filters);
+      const res = await listFindings(filters, controller.signal);
+      if (!isCurrent()) return;
       setFindings(res.items);
       setTotal(res.total);
       setSevCounts(res.severity_counts ?? {});
       setError(null);
     } catch (err) {
+      { const e = asAxiosError(err); if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return; }
+      if (!isCurrent()) return;
       setError(formatApiError(err, 'Failed to load findings.'));
       toast.error(formatApiError(err, 'Failed to load findings.'));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [filters, toast]);
+
+  // Abort whatever is in flight on unmount.
+  useEffect(() => () => findingsAbortRef.current?.abort(), []);
 
   useEffect(() => {
     fetchFindings();
@@ -604,7 +646,7 @@ const Findings: React.FC = () => {
                         all its replies/discussion) so promote isn't a one-way
                         trip that drops the context. */}
                     <Link
-                      to={`/findings/${f.id}`}
+                      to={findingDetailHref(f.id, searchParams.toString())}
                       className="block truncate text-info hover:underline"
                       title={`${f.title} — open finding`}
                     >
@@ -682,7 +724,7 @@ const Findings: React.FC = () => {
                 pageSize={pageSize}
                 totalCount={total}
                 onPageChange={setPage}
-                onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+                onPageSizeChange={(s) => { setPageSize(s); }}
                 pageSizeOptions={[25, 50, 100, 200]}
                 leftLabel={null}
               />

@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Clock, Eye, HelpCircle, Info, Loader2, RefreshCw, ShieldAlert,
+  AlertTriangle, ArrowUpRight, Clock, Eye, HelpCircle, Loader2, RefreshCw, ShieldAlert,
   ShieldCheck, Telescope, Layers, UserCheck,
 } from 'lucide-react';
 
@@ -29,7 +29,9 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+// Plain-English "what is this / how it's derived" help — this is a management
+// surface, so every metric explains itself on an explicit (i).
+import { InfoTip } from '../components/ui/info-tip';
 import { Meter } from '../components/posture/PostureCharts';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
@@ -49,20 +51,6 @@ const SevDot: React.FC<{ severity: Severity }> = ({ severity }) => (
     style={{ background: SEVERITY_HSL[severity] }} aria-hidden />
 );
 
-// Plain-English "what is this / how it's derived" help — this is a management
-// surface, so every metric explains itself on an explicit (i), not by making
-// the operator guess. (Distinct from hiding the DATA behind hover.)
-const InfoTip: React.FC<{ text: string }> = ({ text }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <button type="button" aria-label="What is this and how is it derived?"
-        className="inline-flex shrink-0 rounded text-muted-foreground/70 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Info className="size-3.5" aria-hidden />
-      </button>
-    </TooltipTrigger>
-    <TooltipContent className="max-w-xs text-left text-caption leading-snug">{text}</TooltipContent>
-  </Tooltip>
-);
 
 // Evidence currency — how fresh the snapshot is. Stale/absent scans are
 // themselves a posture signal, so this rides next to the headline.
@@ -455,7 +443,7 @@ const Stat: React.FC<{
 
 // ---------------------------------------------------------------------------
 // Condition × segment heatmap — the systemic hero. Rows are pattern families,
-// columns are sites; each cell shows affected/assessed (not just a colour), and
+// columns are sites; each cell shows affected / in-scope hosts (not just a colour), and
 // links to exactly those hosts.
 // ---------------------------------------------------------------------------
 // Cell tint scales with the affected fraction so the eye lands on the worst
@@ -467,14 +455,14 @@ const heatCellStyle = (fraction: number): React.CSSProperties => {
   return { backgroundColor: `hsl(var(--destructive) / ${alpha.toFixed(2)})` };
 };
 
-const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) => {
+export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const hm = data.heatmap;
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-xs">
           Where weaknesses concentrate
-          <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / assessed hosts — how many of the site's hosts carry that family of weakness. Darker = a larger share affected. Click a cell to open exactly those hosts. 'Assessed' is the site's in-scope host count for now; per-domain coverage refines it later." />
+          <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / in-scope hosts — how many of the site's in-scope inventory carry that family of weakness. The denominator is inventory, not hosts that were actually checked for this family, so a quiet cell means 'none observed', not 'checked and clean'. Darker = a larger share affected. Click a cell to open exactly those hosts." />
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -504,7 +492,7 @@ const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) 
                       <span className="block truncate text-caption font-medium text-foreground" title={seg.label}>
                         {seg.label}
                       </span>
-                      <span className="block text-caption text-muted-foreground">n={seg.assessed}</span>
+                      <span className="block text-caption text-muted-foreground">{seg.assessed} in scope</span>
                     </th>
                   ))}
                 </tr>
@@ -522,7 +510,7 @@ const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) 
                         ? familyCellHostsHref(row.conditions, cell.drilldown_filter?.site)
                         : null;
                       const label = `${cell.numerator}/${cell.denominator}`;
-                      const title = `${row.family_label} — ${cell.numerator} of ${cell.denominator} hosts affected`;
+                      const title = `${row.family_label} — ${cell.numerator} of ${cell.denominator} in-scope hosts affected`;
                       const inner = cell.numerator === 0
                         ? <span className="text-muted-foreground">—</span>
                         : <span className="font-medium tabular-nums text-foreground">{label}</span>;
@@ -543,6 +531,10 @@ const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) 
                 ))}
               </tbody>
             </table>
+            <p className="mt-xs text-caption text-muted-foreground">
+              Cells: affected / in-scope hosts in the site. — = none observed, which is not the
+              same as assessed clean.
+            </p>
           </div>
         )}
       </CardContent>
