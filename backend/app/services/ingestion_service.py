@@ -746,10 +746,20 @@ class IngestionService:
                 return
 
             if job_id in self._cancelled:
-                job.status = "failed"
-                job.error_message = "Cancelled before processing started"
-                job.completed_at = datetime.now(timezone.utc)
+                # Fenced like every other lifecycle write: only THIS attempt's
+                # processing row is failed.  A row the reaper re-queued or a
+                # peer re-claimed in the meantime is not ours to touch.
+                written = _transitions.fail(
+                    db, job_id, claimed_at,
+                    error_message="Cancelled before processing started",
+                )
                 db.commit()
+                if written == 0:
+                    logger.warning(
+                        "Ingestion job %s: stale attempt (claimed %s) — "
+                        "cancel-before-start write skipped; the row is no longer "
+                        "this attempt's", job_id, claimed_at,
+                    )
                 return
 
             # Status already set to "processing" by poll_and_run_one;

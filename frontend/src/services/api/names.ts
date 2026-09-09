@@ -135,6 +135,12 @@ export interface ScopeDomainRow {
   name_count: number;
 }
 
+/** A page of entries plus the deduplicated number of names they cover
+ *  between them (per-row `name_count` overlaps when entries nest). */
+export interface ScopeDomainPage extends Paginated<ScopeDomainRow> {
+  names_in_scope_total: number;
+}
+
 export interface ScopeDomainBatchResponse {
   added: number;
   updated: number;
@@ -142,6 +148,7 @@ export interface ScopeDomainBatchResponse {
   /** First page of the scope's domains after the write. */
   domains: ScopeDomainRow[];
   total: number;
+  names_in_scope_total: number;
 }
 
 export const listNames = async (
@@ -196,12 +203,12 @@ export const getHostNames = async (hostId: number): Promise<HostNamesResponse> =
 export const listScopeDomains = async (
   scopeId: number,
   opts: { skip?: number; limit?: number } = {},
-): Promise<Paginated<ScopeDomainRow>> => {
+): Promise<ScopeDomainPage> => {
   const params = new URLSearchParams();
   if (opts.skip !== undefined) params.set('skip', String(opts.skip));
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  const r = await api.get<Paginated<ScopeDomainRow>>(`${p()}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`);
+  const r = await api.get<ScopeDomainPage>(`${p()}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`);
   return r.data;
 };
 

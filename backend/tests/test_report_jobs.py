@@ -234,3 +234,79 @@ def test_report_limits_reflect_generator_caps(client, test_project):
     for fmt in ("json", "markdown-bundle", "agent-package"):
         assert pf[fmt] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
         ReportJobService._render  # the renderer these map onto exists
+
+
+# ---------------------------------------------------------------------------
+# Completion notification — heavy exports outlive the export dialog, so the
+# requester is told when one finishes.  Fenced: a stale attempt never notifies.
+# ---------------------------------------------------------------------------
+def _report_notifications(db, job_id):
+    from app.db.models_project import Notification
+    return (
+        db.query(Notification)
+        .filter(Notification.source_type == "report_job", Notification.source_id == job_id)
+        .all()
+    )
+
+
+def test_completion_notifies_the_requester_once(db_session, test_project, test_user):
+    _make_host(db_session, test_project.id)
+    db_session.commit()
+    service = ReportJobService()
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format="json", report_type="comprehensive", filters={},
+    )
+    assert service.poll_and_run_one() is True
+
+    rows = _report_notifications(db_session, job.id)
+    assert len(rows) == 1
+    n = rows[0]
+    assert n.user_id == test_user.id
+    assert n.type == "report_ready"
+    assert n.project_id == test_project.id
+    assert n.title.startswith("Report ready: ")
+    assert "comprehensive" in n.body and "json" in n.body
+    assert n.actor_id is None
+
+    done = db_session.get(ReportJob, job.id)
+    db_session.refresh(done)
+    service._remove_artifact(done)
+
+
+def test_stale_completion_does_not_notify(db_session, test_project, test_user):
+    _make_host(db_session, test_project.id)
+    db_session.commit()
+    service = ReportJobService()
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format="json", report_type="comprehensive", filters={},
+    )
+    peer_started = datetime.now(timezone.utc)
+    job.status = "processing"
+    job.started_at = peer_started
+    db_session.commit()
+
+    service._run_job(job.id, peer_started - timedelta(minutes=10))
+
+    assert _report_notifications(db_session, job.id) == []
+
+
+def test_failure_notifies_the_requester(db_session, test_project, test_user, monkeypatch):
+    service = ReportJobService()
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format="json", report_type="comprehensive", filters={},
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr(ReportJobService, "_render", _boom, raising=True)
+    assert service.poll_and_run_one() is True
+
+    rows = _report_notifications(db_session, job.id)
+    assert len(rows) == 1
+    assert rows[0].type == "report_failed"
+    assert rows[0].user_id == test_user.id
+    assert "render exploded" in rows[0].body

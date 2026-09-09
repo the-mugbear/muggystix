@@ -68,7 +68,7 @@ vi.mock('../../components/HostFilters', () => ({
 
 vi.mock('../../components/ReportsDialog', () => ({
   __esModule: true,
-  default: () => null,
+  default: ({ open }: { open: boolean }) => <div data-testid="reports-dialog" data-open={String(open)} />,
 }));
 
 vi.mock('../../components/ToolReadyOutput', () => ({
@@ -196,6 +196,12 @@ describe('Hosts', () => {
     mockedApi.clearHostQueryHistory.mockResolvedValue(undefined);
     sessionStorage.clear();
     routerState.search = '';
+  });
+
+  it('opens the export tray when the URL carries ?reports=1 (report-finished deep link)', async () => {
+    routerState.search = '?reports=1&job=7';
+    renderHosts();
+    await waitFor(() => expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'true'));
   });
 
   it('fetches hosts and filter data on mount', async () => {

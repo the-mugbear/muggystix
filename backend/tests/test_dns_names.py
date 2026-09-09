@@ -320,6 +320,21 @@ class TestDomainScope:
         }
         assert in_scope == {"portal.example.com", "a.lab.example.com", "lab.example.com"}
 
+    def test_covered_names_total_is_deduplicated_across_nested_entries(self, db_session, test_project):
+        """A wildcard and one of its exact descendants both count the same
+        name per row; the project total counts it once."""
+        scope = _scope(db_session, test_project)
+        svc.upsert_scope_domains(
+            db_session, scope, [("*.example.com", False, None), ("portal.example.com", False, None)],
+        )
+        svc.get_or_create_name(db_session, test_project.id, "portal.example.com")
+        svc.get_or_create_name(db_session, test_project.id, "outside.test")
+        db_session.flush()
+        domains = db_session.query(models.ScopeDomain).filter_by(scope_id=scope.id).all()
+        per_row = svc.scope_domain_name_counts(db_session, test_project.id, domains)
+        assert sum(per_row.values()) == 2  # counted under both entries
+        assert svc.scope_domains_covered_names_total(db_session, test_project.id) == 1
+
     def test_wildcard_name_is_never_in_scope_by_itself(self, db_session, test_project):
         scope = _scope(db_session, test_project)
         svc.upsert_scope_domains(db_session, scope, [("*.example.com", False, None)])

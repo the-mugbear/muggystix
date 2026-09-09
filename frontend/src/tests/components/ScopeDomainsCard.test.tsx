@@ -19,6 +19,7 @@ vi.mock('../../services/api', () => ({
     total: 2,
     skip: 0,
     limit: 100,
+    names_in_scope_total: 12,
   }),
   addScopeDomains: vi.fn(),
   deleteScopeDomain: vi.fn(),
@@ -38,9 +39,17 @@ describe('ScopeDomainsCard tooltips', () => {
 
     // One distinct accessible name per concept — a screen-reader user can
     // tell "names covered" from "match" without opening each.
-    for (const label of ['About domain scope', 'About include subdomains', 'About match', 'About names covered']) {
+    for (const label of ['About domain scope', 'About include subdomains', 'About match', 'About names covered', 'About names in scope']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
+  });
+
+  it('shows the deduplicated names-in-scope total next to the entry count', async () => {
+    renderCard();
+    await waitFor(() => expect(screen.getByText('*.acme.com')).toBeInTheDocument());
+    // 12 + 0 per row would also be 12 here; the point is the field is the
+    // server's deduplicated figure, not a client-side sum.
+    expect(screen.getByText('12 names in scope')).toBeInTheDocument();
   });
 
   // Radix tooltips do not open under jsdom (no other test opens one either),

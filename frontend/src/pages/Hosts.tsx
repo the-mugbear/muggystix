@@ -255,6 +255,15 @@ export default function Hosts() {
   // a still-loading combobox ("No ports seen yet.") from genuinely empty data.
   const [filterDataLoading, setFilterDataLoading] = useState(true);
   const [reportsDialogOpen, setReportsDialogOpen] = useState(false);
+  // `?reports=1` (the report-finished notification's deep link) opens the
+  // export tray; the job itself is listed there from the API, so no id
+  // plumbing is needed beyond opening the dialog.
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get('reports') === '1') {
+      setReportsDialogOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
   const [toolReadyDialogOpen, setToolReadyDialogOpen] = useState(false);
   const [updatingHostId, setUpdatingHostId] = useState<number | null>(null);
   // v4.51.0 — followFilter + onlyWithNotes now live inside `filters`

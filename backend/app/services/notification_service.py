@@ -397,6 +397,45 @@ class NotificationService:
             "All entries on this plan have been executed.",
         )
 
+    def notify_report_job_finished(self, job) -> Optional[Notification]:
+        """Tell the requester their async report finished (completed or failed).
+
+        Heavy exports run on the report worker and the export dialog no longer
+        has to stay open for them, so completion needs a signal that outlives
+        the dialog.  One notification per terminal transition, to the
+        requester only; ``source_type='report_job'`` + ``source_id`` is what
+        the Activity page deep-links to the export tray with.  Best-effort —
+        the worker wraps this so a notification failure never fails the job.
+        Returns None when the job has no requester (deleted user) or is not
+        in a terminal state.
+        """
+        if not job.requested_by_id or job.status not in ("completed", "failed"):
+            return None
+        fmt = job.format or "report"
+        kind = job.report_type or "comprehensive"
+        if job.status == "completed":
+            title = f"Report ready: {job.result_filename or f'{kind} ({fmt})'}"
+            body = f"{kind} · {fmt}"
+            if getattr(job, "truncated", False):
+                body += " · truncated to the host cap"
+            ntype = "report_ready"
+        else:
+            title = f"Report failed: {kind} ({fmt})"
+            body = (job.error_message or job.last_error or "The report worker reported an error.")[:200]
+            ntype = "report_failed"
+        notification = Notification(
+            user_id=job.requested_by_id,
+            project_id=job.project_id,
+            type=ntype,
+            title=title[:255],
+            body=body,
+            source_type="report_job",
+            source_id=job.id,
+            actor_id=None,
+        )
+        self.db.add(notification)
+        return notification
+
     def notify_host_assignment(
         self,
         assignee: User,

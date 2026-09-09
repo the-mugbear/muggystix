@@ -12,6 +12,8 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.pagination import Paginated
+
 
 class NameAddress(BaseModel):
     """One address a name has been observed at."""
@@ -154,6 +156,13 @@ class ScopeDomainRow(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ScopeDomainPage(Paginated[ScopeDomainRow]):
+    """A page of scope-domain entries plus the deduplicated number of names
+    they cover between them.  Per-row ``name_count`` overlaps when entries
+    nest; this does not."""
+    names_in_scope_total: int = 0
+
+
 class ScopeDomainBatchResponse(BaseModel):
     added: int
     updated: int
@@ -162,6 +171,7 @@ class ScopeDomainBatchResponse(BaseModel):
     # full count so the caller knows whether to page.
     domains: List[ScopeDomainRow]
     total: int = 0
+    names_in_scope_total: int = 0
 
 
 NameDetail.model_rebuild()

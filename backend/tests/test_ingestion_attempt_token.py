@@ -144,3 +144,33 @@ def test_owning_failure_still_lands(db_session, test_project, monkeypatch):
     assert row.message == "Bad file"
     assert row.retry_count == 1
     assert row.parse_error_id is None
+
+
+def test_cancel_before_start_is_fenced_on_the_token(db_session, test_project):
+    """The 'cancelled before processing started' branch goes through the same
+    fenced ``fail`` as every other lifecycle write: a stale attempt must not
+    fail a row a peer now owns; the owning attempt still lands the cancel."""
+    owner_claim = _recent(30)
+    job = _job(db_session, test_project.id, started_at=owner_claim, heartbeat=owner_claim)
+
+    svc = IngestionService()
+    svc._cancelled.add(job.id)
+    try:
+        # Stale token → nothing written.
+        svc._run_job(job.id, owner_claim - timedelta(minutes=10))
+        row = _fresh(db_session, job.id)
+        assert row.status == "processing"
+        assert row.error_message is None
+        assert row.completed_at is None
+
+        # Owning token → the cancel lands with the original wording.  _run_job
+        # clears the in-proc cancel flag on exit, so re-arm it as cancel_job would.
+        svc._cancelled.add(job.id)
+        svc._run_job(job.id, owner_claim)
+        row = _fresh(db_session, job.id)
+        assert row.status == "failed"
+        assert row.error_message == "Cancelled before processing started"
+        assert row.completed_at is not None
+        assert (row.retry_count or 0) == 0  # a cancel is not an attempt
+    finally:
+        svc._cancelled.discard(job.id)

@@ -72,6 +72,10 @@ const TIPS = {
     'uploaded. An exact entry covers at most one; a subdomains entry counts every descendant. ' +
     '0 means nothing imported or observed yet matches; names arrive from name imports, dnsx / ' +
     'httpx / amass uploads and certificates. Counts are per entry and overlap when entries nest.',
+  namesInScope:
+    'Names in this project\'s inventory covered by any entry here, each counted once. ' +
+    'The per-row "Names covered" figures overlap when entries nest (a wildcard and one of its ' +
+    'exact descendants both count the same name), so they can add up to more than this.',
 } as const;
 
 const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey = 0, onChanged }) => {
@@ -79,6 +83,8 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
   const [confirmDialog, confirm] = useConfirm();
   const [rows, setRows] = useState<ScopeDomainRow[] | null>(null);
   const [total, setTotal] = useState(0);
+  // Deduplicated across entries — unlike the per-row "Names covered".
+  const [namesInScope, setNamesInScope] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState('');
   const [includeSub, setIncludeSub] = useState(false);
@@ -95,6 +101,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
       const page = await listScopeDomains(scopeId, { skip: 0, limit: PAGE });
       setRows(page.items);
       setTotal(page.total);
+      setNamesInScope(page.names_in_scope_total ?? 0);
     } catch (err: unknown) {
       setError(formatApiError(err, 'Failed to load scope domains.'));
     }
@@ -134,6 +141,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
       );
       setRows(res.domains);
       setTotal(res.total);
+      setNamesInScope(res.names_in_scope_total ?? 0);
       setDomainInput('');
       const parts: string[] = [];
       if (res.added) parts.push(`${res.added} added`);
@@ -183,6 +191,12 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
           <span className="font-medium">Domains in scope</span>
           <InfoTip text={TIPS.domains} label="About domain scope" />
           {rows && <Badge variant="outline">{total.toLocaleString()}</Badge>}
+          {rows && (
+            <span className="inline-flex items-center gap-xxs">
+              <Badge variant="info-outline">{namesInScope.toLocaleString()} names in scope</Badge>
+              <InfoTip text={TIPS.namesInScope} label="About names in scope" />
+            </span>
+          )}
           <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
             Names covered here are in scope; the addresses they resolve to are not made subnet-in-scope.
           </span>

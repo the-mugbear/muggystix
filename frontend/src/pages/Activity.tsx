@@ -189,12 +189,17 @@ const Activity: React.FC = () => {
   }, []);
 
   // Open a notification's source: mark it read, then deep-link by kind —
-  // a scan update → the scan's hosts; a note/mention → the exact note on its
-  // host; anything else with a host → the host.
+  // a scan update → the scan's hosts; a finished report → the export tray;
+  // a note/mention → the exact note on its host; anything else with a host →
+  // the host.
   const openMention = useCallback((n: NotificationItem) => {
     void dismissMention(n.id);
     if (n.source_type === 'scan' && n.source_id) {
       navigate(`/hosts?scan_ids=${n.source_id}`);
+    } else if (n.source_type === 'report_job' && n.source_id) {
+      // A finished async export: open the export tray on Hosts, where the
+      // job is listed with Download / Retry.
+      navigate(`/hosts?reports=1&job=${n.source_id}`);
     } else if (n.source_type === 'note' && n.host_id && n.source_id) {
       navigate(`/hosts/${n.host_id}#note-${n.source_id}`);
     } else if (n.host_id) {

@@ -13,6 +13,7 @@ from app.db.models import Scope, ScopeDomain, Subnet, HostSubnetMapping, SubnetL
 from app.schemas.dns_names import (
     ScopeDomainBatchCreate,
     ScopeDomainBatchResponse,
+    ScopeDomainPage,
     ScopeDomainRow,
 )
 from app.services import dns_name_service
@@ -1011,11 +1012,14 @@ def _scope_domain_rows(db: Session, project_id: int, domains: List[ScopeDomain])
     ]
 
 
-def _scope_domain_page(db: Session, project_id: int, scope_id: int, skip: int, limit: int) -> Paginated[ScopeDomainRow]:
+def _scope_domain_page(db: Session, project_id: int, scope_id: int, skip: int, limit: int) -> ScopeDomainPage:
     q = db.query(ScopeDomain).filter(ScopeDomain.scope_id == scope_id)
     total = q.with_entities(func.count(ScopeDomain.id)).scalar() or 0
     rows = q.order_by(ScopeDomain.domain.asc()).offset(skip).limit(limit).all()
-    return Paginated.build(_scope_domain_rows(db, project_id, rows), total, skip, limit)
+    page = ScopeDomainPage.build(_scope_domain_rows(db, project_id, rows), total, skip, limit)
+    # Deduplicated across entries — the per-row counts are not.
+    page.names_in_scope_total = dns_name_service.scope_domains_covered_names_total(db, project_id)
+    return page
 
 
 def _load_scope_or_404(db: Session, scope_id: int, project_id: int) -> Scope:
@@ -1027,7 +1031,7 @@ def _load_scope_or_404(db: Session, scope_id: int, project_id: int) -> Scope:
 
 @router.get(
     "/{scope_id}/domains",
-    response_model=Paginated[ScopeDomainRow],
+    response_model=ScopeDomainPage,
     summary="List the domains declared in scope (paged)",
 )
 def list_scope_domains(
@@ -1071,6 +1075,7 @@ def add_scope_domains(
     return ScopeDomainBatchResponse(
         added=added, updated=updated, invalid=invalid,
         domains=page.items, total=page.total,
+        names_in_scope_total=page.names_in_scope_total,
     )
 
 

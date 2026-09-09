@@ -290,6 +290,7 @@ class ReportJobService:
                     "Report job %s completed: %s (%d bytes, truncated=%s)",
                     job_id, filename, len(data), bool(gen.report_truncated),
                 )
+                self._notify_finished(db, job_id)
             except Exception as exc:
                 logger.exception("Report job %s failed", job_id)
                 db.rollback()
@@ -305,10 +306,28 @@ class ReportJobService:
                         "Report job %s: stale attempt (claimed %s) — failure write "
                         "skipped; a peer owns the row", job_id, claimed_at,
                     )
+                else:
+                    self._notify_finished(db, job_id)
         finally:
             stop.set()
             renewer.join(timeout=5)
             db.close()
+
+    def _notify_finished(self, db, job_id: int) -> None:
+        """Notify the requester after a fenced terminal write LANDED (the
+        caller checks rowcount — a stale attempt never notifies).  Runs in the
+        worker's session after the job commit; best-effort, never raises."""
+        try:
+            from app.services.notification_service import NotificationService
+
+            job = db.get(ReportJob, job_id)
+            if job is None:
+                return
+            if NotificationService(db).notify_report_job_finished(job) is not None:
+                db.commit()
+        except Exception:  # noqa: BLE001 — a notification must never fail the job
+            logger.warning("Report job %s: completion notification failed", job_id, exc_info=True)
+            db.rollback()
 
     def _render(
         self, gen, fmt: str, hosts, filters: Dict[str, Any], report_type: str,

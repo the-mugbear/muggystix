@@ -665,6 +665,21 @@ def scope_domain_name_counts(db: Session, project_id: int, domains: Sequence[mod
     return counts
 
 
+def scope_domains_covered_names_total(db: Session, project_id: int) -> int:
+    """Concrete names in the project covered by ANY scope-domain entry,
+    deduplicated — the per-entry counts above overlap when entries nest (a
+    wildcard and one of its exact descendants both count the same name).
+    Same predicate as every other "is this name in scope" answer
+    (``name_in_scope_condition``), so the two can never disagree.  Domain
+    scope is project-wide (one conceptual scope per project)."""
+    return int(
+        db.query(func.count(func.distinct(models.DNSName.id)))
+        .filter(models.DNSName.project_id == project_id, name_in_scope_condition(project_id))
+        .scalar()
+        or 0
+    )
+
+
 # --------------------------------------------------------------------------
 # Import
 # --------------------------------------------------------------------------
