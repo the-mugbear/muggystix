@@ -45,6 +45,7 @@ import {
 } from './ui/select';
 import { cn } from '../utils/cn';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { formatApiError } from '../utils/apiErrors';
 import AiDraftReportDialog from './AiDraftReportDialog';
 
 interface ReportsDialogProps {
@@ -137,13 +138,25 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // a number the server won't honour.
   const [limits, setLimits] = useState<ReportLimits | null>(null);
 
-  const refreshRecentJobs = React.useCallback(async () => {
+  // Refresh failures keep the tray as-is (stale beats blank) but are NOT
+  // swallowed: the poller needs the rejection to back off, and the user needs
+  // to know the status shown may be stale.
+  const [trayStale, setTrayStale] = useState<string | null>(null);
+  const refreshRecentJobs = React.useCallback(async (): Promise<boolean> => {
     try {
       setRecentJobs(await listReportJobs(10));
-    } catch {
-      /* non-fatal — the tray just stays as-is */
+      setTrayStale(null);
+      return true;
+    } catch (err) {
+      setTrayStale(formatApiError(err, 'Could not refresh report status.'));
+      return false;
     }
   }, []);
+  // Poll callback: rejects on failure so useVisibilityPoll backs off; the
+  // fire-and-forget manual callers keep the boolean form.
+  const pollRecentJobs = React.useCallback(async () => {
+    if (!(await refreshRecentJobs())) throw new Error('report tray refresh failed');
+  }, [refreshRecentJobs]);
 
   // Retry / cancel a job from the recent-jobs tray. A 409 means the job's state
   // changed under us (e.g. the worker just claimed a queued job) — surface it
@@ -179,7 +192,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // observing them; reopening resumes from the API.  useVisibilityPoll never
   // overlaps requests and backs off on failure.
   const hasActiveJob = recentJobs.some((j) => j.status === 'queued' || j.status === 'processing');
-  useVisibilityPoll(refreshRecentJobs, open && hasActiveJob ? 2500 : null);
+  useVisibilityPoll(pollRecentJobs, open && hasActiveJob ? 2500 : null);
 
   const allowedFormats = HUMAN_FORMATS[reportType];
 
@@ -528,6 +541,11 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         {recentJobs.length > 0 && (
           <div className="mt-xs border-t border-border pt-sm">
             <p className="text-caption font-semibold text-muted-foreground">Recent reports</p>
+            {trayStale && (
+              <p role="status" className="mt-xxs break-words text-caption text-warning">
+                Status may be stale — {trayStale}
+              </p>
+            )}
             <div className="mt-xxs space-y-xxs">
               {recentJobs.map((job) => {
                 const running = job.status === 'queued' || job.status === 'processing';

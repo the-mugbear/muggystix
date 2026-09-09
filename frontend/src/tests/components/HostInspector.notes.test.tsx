@@ -130,4 +130,39 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     expect(screen.queryByAltText('Pasted image 1')).not.toBeInTheDocument();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:img-1');
   });
+
+  it('C3 regression: a retry targets the note the file failed on, not a later note', async () => {
+    // Note 77 fails its attachment; note 88 (a second save) fails its own.
+    api.createAnnotation
+      .mockResolvedValueOnce({ id: 77, body: 'first', status: 'open', attachments: [] })
+      .mockResolvedValueOnce({ id: 88, body: 'second', status: 'open', attachments: [] });
+    api.uploadNoteAttachment
+      .mockRejectedValueOnce(new Error('boom-77'))
+      .mockRejectedValueOnce(new Error('boom-88'))
+      .mockResolvedValueOnce({ id: 9, filename: 'a.png', content_type: 'image/png', size: 3, url: '/a/9' });
+
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    const textarea = screen.getByLabelText('Note');
+
+    const fileA = new File(['a'], 'a.png', { type: 'image/png' });
+    pasteImage(textarea, fileA);
+    await screen.findByAltText('Pasted image 1');
+    fireEvent.change(textarea, { target: { value: 'first' } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await screen.findByText(/Note saved · 1 attachment failed/);
+
+    const fileB = new File(['b'], 'b.png', { type: 'image/png' });
+    pasteImage(textarea, fileB);
+    await screen.findByAltText('Pasted image 2');
+    fireEvent.change(textarea, { target: { value: 'second' } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await screen.findByText(/Note saved · 2 attachments failed/);
+
+    // Retry the FIRST file: it must go to note 77 even though 88 failed later.
+    fireEvent.click(screen.getByRole('button', { name: /retry uploading pasted image 1/i }));
+    await waitFor(() => expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(3));
+    expect(api.uploadNoteAttachment).toHaveBeenLastCalledWith(1, 77, fileA);
+    expect(api.createAnnotation).toHaveBeenCalledTimes(2);
+  });
 });

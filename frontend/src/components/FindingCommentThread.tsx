@@ -53,6 +53,9 @@ const buildTree = (notes: Annotation[]): ThreadNode[] => {
  *  `noteId` failed — the file is KEPT so it can be retried or removed; a
  *  clipboard-only screenshot has no other copy (UX review C3). */
 interface PendingFile {
+  /** Stable identity — retry/remove reconcile by id, never by array index,
+   *  so a Remove during an in-flight retry can't drop a different file. */
+  id: string;
   file: File;
   error?: string;
   /** The saved comment this file belongs to once the comment itself posted. */
@@ -71,7 +74,9 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [replyTo, setReplyTo] = useState<Annotation | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [retrying, setRetrying] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const nextPendingId = useRef(0);
+  const newPendingId = () => `pf-${++nextPendingId.current}`;
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
@@ -101,7 +106,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
     if (images.length) {
       e.preventDefault();
-      setPending((p) => [...p, ...images.map((file) => ({ file }))]);
+      setPending((p) => [...p, ...images.map((file) => ({ id: newPendingId(), file }))]);
     }
   };
 
@@ -116,13 +121,15 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     }
   };
 
-  const retryFailed = async (index: number) => {
-    const entry = pending[index];
+  const retryFailed = async (id: string) => {
+    const entry = pending.find((e) => e.id === id);
     if (!entry || entry.noteId == null || retrying !== null) return;
-    setRetrying(index);
+    setRetrying(id);
     try {
       const failed = await attachOne(entry, entry.noteId);
-      setPending((p) => p.map((e, i) => (i === index ? failed : e)).filter((e): e is PendingFile => e !== null));
+      // Reconcile by id: if the entry was removed while the upload ran, the
+      // rest of the queue is left untouched.
+      setPending((p) => (failed ? p.map((e) => (e.id === id ? failed : e)) : p.filter((e) => e.id !== id)));
       if (!failed) await load();
       else toast.error(failed.error ?? 'Could not attach file.');
     } finally {
@@ -293,17 +300,17 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
                       {entry.error && entry.noteId != null && (
                         <button
                           type="button"
-                          onClick={() => void retryFailed(i)}
+                          onClick={() => void retryFailed(entry.id)}
                           aria-label={`Retry ${name}`}
                           disabled={retrying !== null}
                           className="shrink-0 hover:text-foreground disabled:opacity-50"
                         >
-                          {retrying === i ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <RefreshCw className="size-3" aria-hidden />}
+                          {retrying === entry.id ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <RefreshCw className="size-3" aria-hidden />}
                         </button>
                       )}
                       <button
                         type="button"
-                        onClick={() => setPending((p) => p.filter((_, j) => j !== i))}
+                        onClick={() => setPending((p) => p.filter((e) => e.id !== entry.id))}
                         aria-label={`Remove ${name}`}
                         className="shrink-0 hover:text-foreground"
                       >

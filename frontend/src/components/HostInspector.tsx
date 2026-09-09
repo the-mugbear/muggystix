@@ -220,6 +220,10 @@ interface PendingImage {
   file: File;
   url: string;
   error?: string;
+  /** The saved note this file belongs to once its upload failed — retry
+   *  targets THIS id, never a later note's (a queue-wide id was wrong when
+   *  two notes in a row had failures). */
+  noteId?: number;
 }
 
 export interface HostInspectorProps {
@@ -357,10 +361,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [noteBody, setNoteBody] = useState('');
   // Images pasted/attached into the composer, uploaded to the note on save.
   // `error` marks a file whose upload failed after the note itself was
-  // created; it stays here (bound to `attachmentRetryNoteId`) until the user
+  // created; it stays here (bound to its own `noteId`) until the user
   // retries or removes it — never silently dropped (UX review C3).
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [attachmentRetryNoteId, setAttachmentRetryNoteId] = useState<number | null>(null);
   const [noteStatus, setNoteStatus] = useState<NoteStatus>('open');
   const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
@@ -549,13 +552,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   useEffect(() => {
     onDirtyChangeRef.current?.(composerDirty);
   }, [composerDirty]);
-  // Once every failed file is retried or removed there is nothing left to
-  // bind the retry note to.
-  useEffect(() => {
-    if (attachmentRetryNoteId !== null && !pendingImages.some((p) => p.error)) {
-      setAttachmentRetryNoteId(null);
-    }
-  }, [attachmentRetryNoteId, pendingImages]);
   const onHostLoadedRef = React.useRef(onHostLoaded);
   onHostLoadedRef.current = onHostLoaded;
 
@@ -616,7 +612,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       prev.forEach((p) => URL.revokeObjectURL(p.url));
       return [];
     });
-    setAttachmentRetryNoteId(null);
 
     // Audit PRF·H8: previously a single Promise.all blocked the host
     // panel on the slowest of three fetches.  Now the primary host
@@ -862,7 +857,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           uploaded.push(await uploadNoteAttachment(submitHostId, response.id, img.file));
           URL.revokeObjectURL(img.url);
         } catch (e) {
-          failed.push({ ...img, error: formatApiError(e, 'Upload failed.') });
+          failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: response.id });
         }
       }
       if (submitHostId !== hostIdRef.current) return;
@@ -875,7 +870,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       // against the note that now exists — the clipboard is gone, this is
       // the only copy (UX review C3).
       setPendingImages((prev) => [...prev.filter((p) => p.error), ...failed]);
-      if (failed.length) setAttachmentRetryNoteId(response.id);
       setNoteBody('');
       setNoteStatus('open');
       setNoteError(null);
@@ -892,9 +886,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // creates a second note.
   const retryPendingImage = async (idx: number) => {
     const target = pendingImages[idx];
-    if (!target || attachmentRetryNoteId === null) return;
+    if (!target || target.noteId == null) return;
     const submitHostId = hostId;
-    const noteId = attachmentRetryNoteId;
+    const noteId = target.noteId;
     setPendingImages((prev) => prev.map((p, i) => (i === idx ? { ...p, error: 'Uploading…' } : p)));
     try {
       const attachment = await uploadNoteAttachment(submitHostId, noteId, target.file);
@@ -1623,7 +1617,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               onPaste={handleComposerPaste}
               disabled={noteSubmitting}
             />
-            {attachmentRetryNoteId !== null && failedAttachmentCount > 0 && (
+            {failedAttachmentCount > 0 && (
               <Alert variant="warning">
                 <AlertDescription>
                   Note saved · {failedAttachmentCount} attachment{failedAttachmentCount === 1 ? '' : 's'} failed.

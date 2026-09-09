@@ -335,18 +335,23 @@ def get_recon_context(
     # way.  The agent needs this to know which names it may resolve/probe
     # without asking (see AGENTS.md "target is in the inventory"); the
     # authoritative full list pages from GET /agent/recon/domains.
+    # Count + a LIMITed projection (same shape as GET /agent/recon/domains):
+    # the cap must bound the database transfer, not just the serialisation.
+    scope_domains_total = (
+        db.query(func.count(models.ScopeDomain.id))
+        .filter(models.ScopeDomain.scope_id == scope.id)
+        .scalar()
+        or 0
+    )
     domain_rows = (
         db.query(models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
         .filter(models.ScopeDomain.scope_id == scope.id)
         .order_by(models.ScopeDomain.id)
+        .limit(_CONTEXT_CIDR_CAP)
         .all()
     )
-    scope_domains_total = len(domain_rows)
     domains_truncated = scope_domains_total > _CONTEXT_CIDR_CAP
-    scope_domains_field = [
-        {"domain": d, "include_subdomains": bool(sub)}
-        for d, sub in (domain_rows[:_CONTEXT_CIDR_CAP] if domains_truncated else domain_rows)
-    ]
+    scope_domains_field = [{"domain": d, "include_subdomains": bool(sub)} for d, sub in domain_rows]
 
     return ReconContextResponse(
         recon_session_id=session.id,

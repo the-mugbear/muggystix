@@ -110,4 +110,35 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
     expect(screen.queryByText('shot.png')).toBeNull();
     expect(mocked.createFindingNote).toHaveBeenCalledTimes(1);
   });
+
+  it('regression: Remove during an in-flight retry never drops a different pending file', async () => {
+    (api.getFindingNotes as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (api.createFindingNote as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 5, body: 'x', attachments: [] });
+    let resolveRetry: (v: unknown) => void = () => {};
+    (api.uploadFindingNoteAttachment as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('A failed'))
+      .mockRejectedValueOnce(new Error('B failed'))
+      .mockImplementationOnce(() => new Promise((r) => { resolveRetry = r; }));
+
+    render(<FindingCommentThread findingId={1} canManage />);
+    await waitFor(() => expect(api.getFindingNotes).toHaveBeenCalled());
+    const textarea = screen.getByLabelText('New comment');
+    const a = new File(['a'], 'A.png', { type: 'image/png' });
+    const b = new File(['b'], 'B.png', { type: 'image/png' });
+    fireEvent.paste(textarea, { clipboardData: { files: [a, b], getData: () => '' } });
+    fireEvent.change(textarea, { target: { value: 'evidence' } });
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await screen.findByText(/2 attachments? failed/);
+
+    // Retry A (deferred), then remove A while it is still uploading.
+    fireEvent.click(screen.getByRole('button', { name: 'Retry A.png' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove A.png' }));
+    expect(screen.queryByText('A.png')).toBeNull();
+    expect(screen.getByText('B.png')).toBeInTheDocument();
+
+    resolveRetry({});
+    // A's completion must not touch B.
+    await waitFor(() => expect(api.uploadFindingNoteAttachment).toHaveBeenCalledTimes(3));
+    expect(screen.getByText('B.png')).toBeInTheDocument();
+  });
 });
