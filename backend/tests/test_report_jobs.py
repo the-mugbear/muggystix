@@ -210,7 +210,8 @@ def test_completion_is_fenced_against_a_reclaimed_lease(
 
     db_session.refresh(job)
     assert job.status == "processing", "a stale worker clobbered the peer's row"
-    assert job.started_at == peer_started
+    # tz-naive compare: SQLite hands the column back naive, Postgres aware.
+    assert job.started_at.replace(tzinfo=None) == peer_started.replace(tzinfo=None)
     assert job.result_path is None, "a stale worker published a result over the peer"
 
 

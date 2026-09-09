@@ -32,8 +32,14 @@ from app.db.models import Host, HostScanHistory, IngestionJob
 # sessions land in the test DB — same pattern as agent_api_log_service.
 from app.db import session as _session_module
 from app.services.parse_error_service import log_parse_error
+from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
 logger = logging.getLogger(__name__)
+
+# v2.328.0 — every lifecycle write (claim / heartbeat / complete / fail /
+# cancel / retry / reap) goes through the shared transition layer so the
+# ingestion and report queues cannot drift on fencing or locking again.
+_transitions = JobTransitions(IngestionJob, name="ingestion")
 
 # Canonical upload allowlist — the single source of truth for which file
 # extensions ingestion accepts.  Enforced inside ``create_job`` so EVERY
@@ -329,21 +335,22 @@ class IngestionService:
         """
         self._cancelled.add(job_id)
         with _session_module.SessionLocal() as db:
-            # Row lock so a worker can't claim the row between this
-            # status check and the write (no-op on SQLite).
-            job = (
-                db.query(IngestionJob)
-                .filter(IngestionJob.id == job_id)
-                .with_for_update()
-                .first()
-            )
-            if not job:
+            # Locked read-check-write (job_transitions.cancel): a worker's
+            # SKIP LOCKED claim cannot land between the status check and
+            # the write.  Ingestion has no 'cancelled' state — a cancel is a
+            # failure with a reason, and a running parse sees it on its next
+            # heartbeat.
+            try:
+                job = _transitions.cancel(
+                    db, job_id,
+                    allowed_from=("queued", "processing"),
+                    to_status="failed",
+                    error_message="Cancelled by user",
+                )
+            except JobNotTransitionable:
                 return False
-            if job.status not in ("queued", "processing"):
+            if job is None:
                 return False
-            job.status = "failed"
-            job.error_message = "Cancelled by user"
-            job.completed_at = datetime.now(timezone.utc)
             db.commit()
             return True
 
@@ -362,23 +369,26 @@ class IngestionService:
         """
         self._cancelled.discard(job_id)
         with _session_module.SessionLocal() as db:
-            job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
-            if not job:
+            def _file_present(job) -> Optional[str]:
+                return None if (job.storage_path and Path(job.storage_path).exists()) else "file_missing"
+
+            try:
+                job = _transitions.retry(
+                    db, job_id,
+                    allowed_from=("failed",),
+                    precondition=_file_present,
+                    increment_retry=True,
+                )
+            except JobNotTransitionable as exc:
+                # ``status`` is either the actual state or the precondition's
+                # reason code.
+                return "file_missing" if exc.status == "file_missing" else "not_failed"
+            if job is None:
                 return "not_found"
-            if job.status != "failed":
-                return "not_failed"
-            if not (job.storage_path and Path(job.storage_path).exists()):
-                return "file_missing"
-            job.retry_count = (job.retry_count or 0) + 1
-            job.status = "queued"
-            job.started_at = None
-            job.last_heartbeat = None
-            job.completed_at = None
-            job.error_message = None
-            job.last_error = None
             job.message = f"Re-queued by user (attempt {job.retry_count})."
+            retry_count = job.retry_count
             db.commit()
-            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
+            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, retry_count)
         # Wake the worker immediately (same pg_notify hint as the upload path).
         self.enqueue_job(job_id)
         return "requeued"
@@ -413,21 +423,12 @@ class IngestionService:
 
         now = datetime.now(timezone.utc)
 
-        params = {"hb": now, "jid": job_id, **({"progress": progress} if progress is not None else {})}
-        predicate = " WHERE id = :jid"
-        if claimed_at is not None:
-            predicate += " AND status = 'processing' AND started_at = :claimed"
-            params["claimed"] = claimed_at
-        res = db.execute(
-            text(
-                "UPDATE ingestion_jobs SET last_heartbeat = :hb"
-                + (", progress = :progress" if progress is not None else "")
-                + predicate
-            ),
-            params,
+        written = _transitions.heartbeat(
+            db, job_id, claimed_at,
+            **({"progress": progress} if progress is not None else {}),
         )
         db.commit()
-        if claimed_at is not None and res.rowcount == 0:
+        if claimed_at is not None and written == 0:
             logger.warning(
                 "Ingestion job %s: stale attempt (claimed %s) — heartbeat skipped; "
                 "another attempt owns the job",
@@ -604,59 +605,49 @@ class IngestionService:
         max_retries = settings.INGESTION_MAX_RETRIES
         db = _session_module.SessionLocal()
         try:
-            orphans = (
-                db.query(IngestionJob)
-                .filter(IngestionJob.status == "processing")
-                .filter(
-                    (IngestionJob.last_heartbeat.is_(None) & (IngestionJob.started_at < cutoff))
-                    | (IngestionJob.last_heartbeat < cutoff)
-                )
-                .all()
-            )
-            if not orphans:
-                return 0
-            now = datetime.now(timezone.utc)
-            permanently_failed = 0
-            for job in orphans:
-                job.retry_count = (job.retry_count or 0) + 1
+            def _decide(job):
                 # Auto-requeue a transient crash (OOM/restart) so a flaky parse
                 # doesn't dead-end the upload — but only while we're under the
                 # retry cap AND the stored upload is still on disk (re-running
                 # without it just fails again at the FileNotFoundError guard).
+                # ``job`` is locked and its retry_count already incremented.
                 file_present = bool(job.storage_path) and Path(job.storage_path).exists()
                 if job.retry_count <= max_retries and file_present:
-                    job.status = "queued"
-                    job.started_at = None
-                    job.last_heartbeat = None
-                    job.completed_at = None
-                    job.last_error = (
-                        f"Orphaned (no heartbeat >{int(cutoff_seconds)}s) — worker likely "
-                        "crashed; automatically re-queued."
-                    )
-                    job.message = f"Re-queued after orphan detection (attempt {job.retry_count}/{max_retries})."
                     logger.warning(
                         "Re-queued orphaned ingestion job %s (attempt %d/%d, started_at=%s, last_heartbeat=%s)",
                         job.id, job.retry_count, max_retries, job.started_at, job.last_heartbeat,
                     )
-                else:
-                    permanently_failed += 1
-                    reason = (
-                        f"exceeded {max_retries} auto-retries"
-                        if job.retry_count > max_retries
-                        else "uploaded file no longer present"
-                    )
-                    job.status = "failed"
-                    job.error_message = (
-                        f"Orphaned — no heartbeat for >{int(cutoff_seconds)}s and {reason}; "
-                        "worker likely crashed. Re-upload to retry."
-                    )
-                    job.message = job.error_message
-                    job.last_error = job.error_message
-                    job.completed_at = now
-                    logger.warning(
-                        "Failed orphaned ingestion job %s (%s, retry_count=%d)",
-                        job.id, reason, job.retry_count,
-                    )
+                    return "requeue", {
+                        "last_error": (
+                            f"Orphaned (no heartbeat >{int(cutoff_seconds)}s) — worker likely "
+                            "crashed; automatically re-queued."
+                        ),
+                        "message": f"Re-queued after orphan detection (attempt {job.retry_count}/{max_retries}).",
+                    }
+                reason = (
+                    f"exceeded {max_retries} auto-retries"
+                    if job.retry_count > max_retries
+                    else "uploaded file no longer present"
+                )
+                err = (
+                    f"Orphaned — no heartbeat for >{int(cutoff_seconds)}s and {reason}; "
+                    "worker likely crashed. Re-upload to retry."
+                )
+                logger.warning(
+                    "Failed orphaned ingestion job %s (%s, retry_count=%d)",
+                    job.id, reason, job.retry_count,
+                )
+                return "fail", {"error_message": err, "message": err, "last_error": err}
+
+            # Each candidate is re-locked (FOR UPDATE SKIP LOCKED) with the
+            # stale predicate re-applied, so a worker that heartbeated in the
+            # meantime keeps its job — see job_transitions.requeue_or_fail_stale.
+            reaped = _transitions.requeue_or_fail_stale(
+                db, cutoff=cutoff, max_retries=max_retries, decide=_decide,
+            )
+            if not reaped.total:
+                return 0
+            permanently_failed = len(reaped.failed)
             db.commit()
             # Alert admins about jobs the reaper could NOT recover (over retry
             # cap / file gone). Routine crash-requeues stay quiet; only the
@@ -670,7 +661,7 @@ class IngestionService:
                 except Exception:
                     db.rollback()
                     logger.warning("Failed to emit queue-health alert", exc_info=True)
-            return len(orphans)
+            return reaped.total
         except Exception:
             db.rollback()
             logger.exception("Orphan reaper failed")
@@ -689,37 +680,17 @@ class IngestionService:
         """
         db = _session_module.SessionLocal()
         try:
-            row = db.execute(
-                text(
-                    "SELECT id FROM ingestion_jobs "
-                    "WHERE status = 'queued' "
-                    "ORDER BY created_at "
-                    "LIMIT 1 "
-                    "FOR UPDATE SKIP LOCKED"
-                )
-            ).fetchone()
-            if row is None:
+            # Lock + flip to processing in one transaction (job_transitions
+            # .claim_oldest_queued).  The returned claimed_at is this
+            # attempt's fencing token: rewritten on every claim, nulled by
+            # the reaper on requeue.  Heartbeat, completion and failure
+            # writes all condition on it, so an attempt whose lease was
+            # reaped and re-claimed by a peer cannot renew the new owner's
+            # heartbeat, publish over its result, or fail it.
+            claimed = _transitions.claim_oldest_queued(db, message="Processing queued file")
+            if claimed is None:
                 return False
-
-            job_id = row[0]
-            # Transition to processing inside the same transaction that
-            # holds the row lock so no other worker can grab it.
-            # started_at doubles as this attempt's fencing token (same
-            # scheme as report_job_service): rewritten on every claim,
-            # nulled by the reaper on requeue.  Heartbeat, completion and
-            # failure writes all condition on it, so an attempt whose lease
-            # was reaped and re-claimed by a peer cannot renew the new
-            # owner's heartbeat, publish over its result, or fail it.
-            claimed_at = datetime.now(timezone.utc)
-            db.execute(
-                text(
-                    "UPDATE ingestion_jobs "
-                    "SET status = 'processing', started_at = :now, last_heartbeat = :now, "
-                    "    message = 'Processing queued file' "
-                    "WHERE id = :jid"
-                ),
-                {"now": claimed_at, "jid": job_id},
-            )
+            job_id, claimed_at = claimed
             db.commit()
         except Exception:
             db.rollback()
@@ -748,33 +719,16 @@ class IngestionService:
         stale attempt's late failure can't clobber a row the reaper already
         re-queued or a peer re-claimed.  Returns True if the row was written.
         """
-        params = {
-            "jid": job_id,
-            "err": error_message,
+        cols = {
+            "error_message": error_message,
             "last_error": last_error,
-            "peid": parse_error_id,
-            "ts": datetime.now(timezone.utc),
+            "parse_error_id": parse_error_id,
         }
-        set_msg = ""
         if message is not None:
-            set_msg = "message = :msg, "
-            params["msg"] = message
-        predicate = "WHERE id = :jid"
-        if claimed_at is not None:
-            predicate += " AND status = 'processing' AND started_at = :claimed"
-            params["claimed"] = claimed_at
-        res = db.execute(
-            text(
-                "UPDATE ingestion_jobs SET status = 'failed', error_message = :err, "
-                + set_msg
-                + "retry_count = COALESCE(retry_count, 0) + 1, "
-                "last_error = :last_error, parse_error_id = :peid, completed_at = :ts "
-                + predicate
-            ),
-            params,
-        )
+            cols["message"] = message
+        written = _transitions.fail(db, job_id, claimed_at, increment_retry=True, **cols)
         db.commit()
-        if res.rowcount == 0:
+        if written == 0:
             logger.warning(
                 "Ingestion job %s: stale attempt (claimed %s) — failure write skipped; "
                 "the row is no longer this attempt's to fail",
@@ -814,17 +768,9 @@ class IngestionService:
                 # processing→completed ATOMICALLY; a zero-row update means the job
                 # was cancelled (or reaped) and must NOT be resurrected as
                 # completed, even though the parser's data committed.
-                _params = {"ts": datetime.now(timezone.utc), "jid": job_id}
-                _predicate = "WHERE id=:jid AND status='processing'"
-                if claimed_at is not None:
-                    # Fencing token: a re-claimed job belongs to the newer
-                    # attempt; this one's result must not be published over it.
-                    _predicate += " AND started_at=:claimed"
-                    _params["claimed"] = claimed_at
-                _claimed = db.execute(
-                    text("UPDATE ingestion_jobs SET status='completed', completed_at=:ts " + _predicate),
-                    _params,
-                ).rowcount
+                # Fencing token: a re-claimed job belongs to the newer
+                # attempt; this one's result must not be published over it.
+                _claimed = _transitions.complete(db, job_id, claimed_at)
                 if not _claimed:
                     logger.info(
                         "Ingestion job %s no longer 'processing' (cancelled) — not "

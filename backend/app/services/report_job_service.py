@@ -32,6 +32,7 @@ from app.core.config import settings
 from app.db import session as _session_module
 from app.db.models import ReportJob
 from app.db.models_auth import User
+from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,11 @@ logger = logging.getLogger(__name__)
 ASYNC_REPORT_FORMATS = ("json", "agent-package", "markdown-bundle")
 
 _REAP_MAX_RETRIES = 2
+
+# v2.328.0 — shared with IngestionService: one implementation of claim /
+# heartbeat / complete / fail / cancel / retry / reap, so the two queues
+# can't drift on fencing or locking.
+_transitions = JobTransitions(ReportJob, name="report")
 
 
 class ReportJobService:
@@ -95,24 +101,22 @@ class ReportJobService:
         attempt; retry_count is left intact as the running tally of prior
         (auto-reap + manual) retries.
         """
-        job = (
-            db.query(ReportJob)
-            .filter(ReportJob.id == job_id, ReportJob.project_id == project_id)
-            .first()
-        )
+        # Locked read-check-write (job_transitions.retry) — the check and
+        # the requeue happen under one row lock.
+        try:
+            job = _transitions.retry(
+                db, job_id,
+                allowed_from=("failed",),
+                extra_conds=(ReportJob.project_id == project_id,),
+                message="Re-queued by operator",
+                dismissed_at=None,
+            )
+        except JobNotTransitionable as exc:
+            raise ValueError(
+                f"Only a failed job can be retried (this one is '{exc.status}')."
+            ) from exc
         if job is None:
             return None
-        if job.status != "failed":
-            raise ValueError(
-                f"Only a failed job can be retried (this one is '{job.status}')."
-            )
-        job.status = "queued"
-        job.message = "Re-queued by operator"
-        job.error_message = None
-        job.last_error = None
-        job.started_at = None
-        job.completed_at = None
-        job.dismissed_at = None
         db.commit()
         db.refresh(job)
         self.enqueue_job(job.id)
@@ -127,25 +131,24 @@ class ReportJobService:
         'cancelled' row is simply never picked up. Returns None if not found in
         the project (→404); raises ValueError if not queued (→409).
         """
-        # Row lock: without it a worker's FOR UPDATE SKIP LOCKED claim can
-        # land between this status check and the write below, and the
-        # cancel would overwrite a job that is already rendering.  Held for
-        # the rest of this transaction (no-op on SQLite).
-        job = (
-            db.query(ReportJob)
-            .filter(ReportJob.id == job_id, ReportJob.project_id == project_id)
-            .with_for_update()
-            .first()
-        )
+        # Locked read-check-write (job_transitions.cancel): without the lock
+        # a worker's FOR UPDATE SKIP LOCKED claim can land between the status
+        # check and the write, and the cancel would overwrite a job that is
+        # already rendering.
+        try:
+            job = _transitions.cancel(
+                db, job_id,
+                allowed_from=("queued",),
+                to_status="cancelled",
+                extra_conds=(ReportJob.project_id == project_id,),
+                message="Cancelled by operator",
+            )
+        except JobNotTransitionable as exc:
+            raise ValueError(
+                f"Only a queued job can be cancelled (this one is '{exc.status}')."
+            ) from exc
         if job is None:
             return None
-        if job.status != "queued":
-            raise ValueError(
-                f"Only a queued job can be cancelled (this one is '{job.status}')."
-            )
-        job.status = "cancelled"
-        job.message = "Cancelled by operator"
-        job.completed_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(job)
         return job
@@ -158,32 +161,15 @@ class ReportJobService:
         was processed, False if the queue was empty."""
         db = _session_module.SessionLocal()
         try:
-            row = db.execute(
-                text(
-                    "SELECT id FROM report_jobs "
-                    "WHERE status = 'queued' "
-                    "ORDER BY created_at LIMIT 1 "
-                    "FOR UPDATE SKIP LOCKED"
-                )
-            ).fetchone()
-            if row is None:
-                return False
-            job_id = row[0]
             # started_at doubles as this claim's fencing token: it's rewritten
             # on every claim, and the reaper nulls it on requeue. The renewal
             # thread and the completion/failure writes all condition on it, so a
             # worker whose lease was reaped and re-claimed by a peer can neither
             # keep the heartbeat warm nor publish a result over the new owner.
-            claimed_at = datetime.now(timezone.utc)
-            db.execute(
-                text(
-                    "UPDATE report_jobs "
-                    "SET status = 'processing', started_at = :now, last_heartbeat = :now, "
-                    "    message = 'Generating report' "
-                    "WHERE id = :jid"
-                ),
-                {"now": claimed_at, "jid": job_id},
-            )
+            claimed = _transitions.claim_oldest_queued(db, message="Generating report")
+            if claimed is None:
+                return False
+            job_id, claimed_at = claimed
             db.commit()
         except Exception:
             db.rollback()
@@ -194,12 +180,11 @@ class ReportJobService:
         self._run_job(job_id, claimed_at)
         return True
 
-    def update_heartbeat(self, db, job_id: int) -> None:
+    def update_heartbeat(self, db, job_id: int, claimed_at: Optional[datetime] = None) -> None:
+        """Renew the lease.  Pass the claim token (``claimed_at``) wherever it
+        is known — an unfenced heartbeat cannot tell two attempts apart."""
         try:
-            db.execute(
-                text("UPDATE report_jobs SET last_heartbeat = :hb WHERE id = :jid"),
-                {"hb": datetime.now(timezone.utc), "jid": job_id},
-            )
+            _transitions.heartbeat(db, job_id, claimed_at)
             db.commit()
         except Exception:
             db.rollback()
@@ -219,15 +204,9 @@ class ReportJobService:
         while not stop.wait(interval):
             db = _session_module.SessionLocal()
             try:
-                res = db.execute(
-                    text(
-                        "UPDATE report_jobs SET last_heartbeat = :hb "
-                        "WHERE id = :jid AND status = 'processing' AND started_at = :claimed"
-                    ),
-                    {"hb": datetime.now(timezone.utc), "jid": job_id, "claimed": claimed_at},
-                )
+                written = _transitions.heartbeat(db, job_id, claimed_at)
                 db.commit()
-                if res.rowcount == 0:
+                if written == 0:
                     return  # lease lost (reaped + reclaimed) — stop renewing
             except Exception:
                 db.rollback()
@@ -287,29 +266,20 @@ class ReportJobService:
                 # started_at), this UPDATE matches zero rows — we must not clobber
                 # the peer's row nor leave two "completed" writers racing. In that
                 # case our artifact is orphaned, so discard it.
-                result = db.execute(
-                    text(
-                        "UPDATE report_jobs SET "
-                        "status = 'completed', completed_at = :now, result_path = :rp, "
-                        "result_filename = :fn, media_type = :mt, file_size = :sz, "
-                        "truncated = :tr, message = :msg, expires_at = :exp, last_error = NULL "
-                        "WHERE id = :jid AND status = 'processing' AND started_at = :claimed"
-                    ),
-                    {
-                        "now": now,
-                        "rp": str(artifact),
-                        "fn": filename,
-                        "mt": media_type,
-                        "sz": len(data),
-                        "tr": bool(gen.report_truncated),
-                        "msg": f"Generated {filename}" + (" (truncated)" if gen.report_truncated else ""),
-                        "exp": now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
-                        "jid": job_id,
-                        "claimed": claimed_at,
-                    },
+                written = _transitions.complete(
+                    db, job_id, claimed_at,
+                    completed_at=now,
+                    result_path=str(artifact),
+                    result_filename=filename,
+                    media_type=media_type,
+                    file_size=len(data),
+                    truncated=bool(gen.report_truncated),
+                    message=f"Generated {filename}" + (" (truncated)" if gen.report_truncated else ""),
+                    expires_at=now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
+                    last_error=None,
                 )
                 db.commit()
-                if result.rowcount == 0:
+                if written == 0:
                     logger.warning(
                         "Report job %s lease lost mid-render (reaped/reclaimed) — "
                         "discarding this worker's artifact %s", job_id, job_dir,
@@ -326,15 +296,15 @@ class ReportJobService:
                 msg = str(exc)[:1000]
                 # Fence the failure write too — do not stamp 'failed' onto a row
                 # a peer now owns after a requeue.
-                db.execute(
-                    text(
-                        "UPDATE report_jobs SET status = 'failed', error_message = :m, "
-                        "last_error = :m, completed_at = :now "
-                        "WHERE id = :jid AND status = 'processing' AND started_at = :claimed"
-                    ),
-                    {"m": msg, "now": datetime.now(timezone.utc), "jid": job_id, "claimed": claimed_at},
+                written = _transitions.fail(
+                    db, job_id, claimed_at, error_message=msg, last_error=msg,
                 )
                 db.commit()
+                if written == 0:
+                    logger.warning(
+                        "Report job %s: stale attempt (claimed %s) — failure write "
+                        "skipped; a peer owns the row", job_id, claimed_at,
+                    )
         finally:
             stop.set()
             renewer.join(timeout=5)
@@ -363,30 +333,22 @@ class ReportJobService:
         db = _session_module.SessionLocal()
         reaped = 0
         try:
-            stuck = (
-                db.query(ReportJob)
-                .filter(
-                    ReportJob.status == "processing",
-                    (
-                        (ReportJob.last_heartbeat.is_(None) & (ReportJob.started_at < cutoff))
-                        | (ReportJob.last_heartbeat < cutoff)
-                    ),
-                )
-                .all()
-            )
-            for job in stuck:
-                job.retry_count = (job.retry_count or 0) + 1
+            def _decide(job):
+                # ``job`` is locked and retry_count already incremented.
                 if job.retry_count <= _REAP_MAX_RETRIES:
-                    job.status = "queued"
-                    job.started_at = None
-                    job.last_heartbeat = None
-                    job.message = f"Re-queued after stall (attempt {job.retry_count}/{_REAP_MAX_RETRIES})"
-                else:
-                    job.status = "failed"
-                    job.error_message = "Report generation stalled and exceeded its retry budget"
-                    job.last_error = job.error_message
-                    job.completed_at = datetime.now(timezone.utc)
-                reaped += 1
+                    return "requeue", {
+                        "message": f"Re-queued after stall (attempt {job.retry_count}/{_REAP_MAX_RETRIES})",
+                    }
+                err = "Report generation stalled and exceeded its retry budget"
+                return "fail", {"error_message": err, "last_error": err}
+
+            # Each candidate is re-locked (FOR UPDATE SKIP LOCKED) with the
+            # stale predicate re-applied, so a render that heartbeated in the
+            # meantime keeps its job — see job_transitions.requeue_or_fail_stale.
+            result = _transitions.requeue_or_fail_stale(
+                db, cutoff=cutoff, max_retries=_REAP_MAX_RETRIES, decide=_decide,
+            )
+            reaped = result.total
             db.commit()
         except Exception:
             db.rollback()
