@@ -119,17 +119,20 @@ _READ_BACK_ITEMS = {
     "recon": [
         "the working directory every command will run from and write into",
         "which tools you may run without asking, and that anything else stops for approval",
-        "the scope you will scan — the actual CIDRs, and that you will not touch "
-        "anything outside them",
+        "the scope you will scan — the actual CIDRs and, when any are declared, the "
+        "in-scope domains (saying which are exact names and which include subdomains) — "
+        "and that you will not touch anything outside them; a name being in scope does "
+        "not put the address it resolves to in subnet scope",
         "what you will always stop and ask about (unapproved tool, target outside the "
-        "scope, anything written outside that directory, changes to their machine)",
+        "scope — an address outside the CIDRs or a name no declared domain covers — "
+        "anything written outside that directory, changes to their machine)",
     ],
     "plan_generation": [
         "that you will read this project's hosts and findings and write a DRAFT plan — "
         "you run nothing",
         "which tools you may propose tests with, and that a tool outside that set has "
         "to be requested, not substituted",
-        "which hosts you are planning against",
+        "which hosts — and which named endpoints, if any — you are planning against",
         "that the plan goes to them for approval, and that you cannot approve it",
     ],
     "assist": [

@@ -524,6 +524,7 @@ def build_recon_ingest_instructions(
     scope_id: int,
     scope_name: str,
     subnets: list,                 # list of CIDR strings
+    domains: Optional[list] = None,  # list of (domain, include_subdomains) — name scope
     raw_api_key: str,
     user_label: str,
     user_id: Optional[int],
@@ -595,6 +596,32 @@ def build_recon_ingest_instructions(
             f"  the guide's § Scope-size awareness and work in batches."
         )
 
+    # v2.328.0 — name scope.  Rendered only when the scope declares domains,
+    # so a subnet-only scope's prompt is unchanged and the read-back's
+    # "when any are declared" resolves to nothing rather than boilerplate.
+    _DOMAIN_INLINE_CAP = 25
+    domains = list(domains or [])
+    if not domains:
+        domain_block = ""
+    else:
+        def _dom_line(entry):
+            d, sub = entry[0], bool(entry[1])
+            return f"  - `*.{d}` (the domain and every subdomain)" if sub else f"  - `{d}` (exact name only)"
+        shown = "\n".join(_dom_line(e) for e in domains[:_DOMAIN_INLINE_CAP])
+        more = ""
+        if len(domains) > _DOMAIN_INLINE_CAP:
+            more = (
+                f"\n  - … and {len(domains) - _DOMAIN_INLINE_CAP} more "
+                f"({len(domains)} domains total) — page the full list from "
+                f"`GET {base_url}/agent/recon/domains?offset=0&limit=500`."
+            )
+        domain_block = (
+            f"**Domains in scope (names only):**\n{shown}{more}\n"
+            f"  These are the names you may resolve or probe without asking. A name "
+            f"being in scope does **not** put the address it resolves to in subnet "
+            f"scope — an address is in scope only if it falls inside the subnets above.\n\n"
+        )
+
     provenance = build_provenance_block(
         base_url=base_url,
         user_label=user_label,
@@ -629,6 +656,7 @@ def build_recon_ingest_instructions(
         f"generates the test plan separately — **you do not build test plans here**.\n\n"
         f"**Scope:** {scope_name} (id {scope_id}) · **Recon session:** #{recon_session_id}\n"
         f"**Subnets:**\n{scope_list}\n\n"
+        + domain_block
         + render_read_back("recon") + "\n"
         f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
         f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"

@@ -173,3 +173,52 @@ def test_html_report_renders_dossier_and_cross_links(db_session, test_project, t
     assert f'href="#host-{host.id}"' in html
     assert f'href="#finding-{finding.id}"' in html
     assert 'host-dossiers' in html
+
+
+def test_dossier_scope_has_three_states(db_session, test_project, test_user):
+    """v2.328.0 — a host in no declared subnet that an in-scope name currently
+    resolves to is 'via_name': not in_scope (name scope never confers subnet
+    scope), not out_of_scope either.  Same derivation the coverage page uses."""
+    from datetime import datetime, timezone
+    from app.services import dns_name_service as svc
+
+    scope = models.Scope(project_id=test_project.id, name="default")
+    db_session.add(scope)
+    db_session.flush()
+    db_session.add(models.Subnet(scope_id=scope.id, cidr="10.77.0.0/24"))
+    db_session.flush()
+    svc.upsert_scope_domains(db_session, scope, [("portal.example.com", False, None)])
+
+    in_subnet = models.Host(project_id=test_project.id, ip_address="10.77.0.5", state="up")
+    via_name = models.Host(project_id=test_project.id, ip_address="203.0.113.20", state="up")
+    outside = models.Host(project_id=test_project.id, ip_address="203.0.113.99", state="up")
+    db_session.add_all([in_subnet, via_name, outside])
+    db_session.flush()
+    scan = models.Scan(project_id=test_project.id, filename="dnsx.jsonl")
+    db_session.add(scan)
+    db_session.flush()
+    svc.record_observation(
+        db_session, project_id=test_project.id, name="portal.example.com",
+        record_type="A", value="203.0.113.20", scan_id=scan.id,
+        observed_at=datetime.now(timezone.utc),
+    )
+    from app.services.subnet_correlation import SubnetCorrelationService
+    SubnetCorrelationService(db_session).correlate_all_hosts_to_subnets(project_id=test_project.id)
+    db_session.commit()
+
+    from app.services.report_generator import _scope_label
+    gen = _gen(db_session, test_project.id, test_user.id)
+    hosts = [in_subnet, via_name, outside]
+    ctx = gen._build_export_context(hosts)
+    recs = {h.ip_address: gen._build_host_export_record(h, ctx, {})["scope"] for h in hosts}
+
+    assert recs["10.77.0.5"]["status"] == "in_scope"
+    assert recs["10.77.0.5"]["in_scope"] and not recs["10.77.0.5"]["via_name"]
+    assert recs["203.0.113.20"]["status"] == "via_name"
+    assert recs["203.0.113.20"]["via_name"] and not recs["203.0.113.20"]["in_scope"]
+    assert recs["203.0.113.20"]["out_of_scope"] is False
+    assert recs["203.0.113.99"]["status"] == "out_of_scope"
+    assert recs["203.0.113.99"]["out_of_scope"] is True
+    assert [_scope_label(recs[ip]) for ip in ("10.77.0.5", "203.0.113.20", "203.0.113.99")] == [
+        "in-scope", "in-scope via name", "out-of-scope",
+    ]

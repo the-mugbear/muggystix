@@ -313,3 +313,86 @@ def test_recon_upload_rejected_on_terminal_session(
     )
     assert resp.status_code == 409, resp.text
     assert "terminal state" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# v2.328.0 — name scope on the recon surface
+# ---------------------------------------------------------------------------
+
+def _declare_domains(db, scope, entries):
+    from app.services import dns_name_service as svc
+    added, _updated, invalid = svc.upsert_scope_domains(db, scope, entries)
+    assert not invalid, invalid
+    db.commit()
+    return added
+
+
+def test_recon_context_carries_scope_domains(client, db_session, recon_key, recon_scope):
+    """The context lists declared domains (exact vs include_subdomains) next
+    to the CIDRs, with the same truncation contract as scope_cidrs."""
+    _declare_domains(db_session, recon_scope, [
+        ("portal.example.com", False, None),
+        ("*.lab.example.com", False, None),   # wildcard → base + include_subdomains
+    ])
+    body = client.get("/api/v1/agent/recon/context", headers={"X-API-Key": recon_key}).json()
+    assert body["scope_domains_total"] == 2
+    assert body["domains_truncated"] is False
+    assert {(d["domain"], d["include_subdomains"]) for d in body["scope_domains"]} == {
+        ("portal.example.com", False),
+        ("lab.example.com", True),
+    }
+    # A subnet-only scope reports an empty, non-truncated list (no drift for
+    # agents that never declared names).
+    assert "10.99.0.0/24" in body["scope_cidrs"]
+
+
+def test_recon_context_truncates_domains_past_the_cap(client, db_session, recon_key, recon_scope):
+    _declare_domains(db_session, recon_scope, [(f"n{i}.example.com", False, None) for i in range(101)])
+    body = client.get("/api/v1/agent/recon/context", headers={"X-API-Key": recon_key}).json()
+    assert body["scope_domains_total"] == 101
+    assert body["domains_truncated"] is True
+    assert len(body["scope_domains"]) == 100
+
+
+def test_recon_domains_endpoint_pages_like_subnets(client, db_session, recon_key, recon_scope):
+    _declare_domains(db_session, recon_scope, [(f"p{i}.example.com", False, None) for i in range(7)])
+    first = client.get(
+        "/api/v1/agent/recon/domains?offset=0&limit=5", headers={"X-API-Key": recon_key},
+    )
+    assert first.status_code == 200, first.text
+    b1 = first.json()
+    assert b1["total"] == 7 and b1["returned"] == 5 and b1["has_more"] is True
+    assert b1["scope_id"] == recon_scope.id
+    assert all(set(d) == {"domain", "include_subdomains"} for d in b1["domains"])
+    b2 = client.get(
+        "/api/v1/agent/recon/domains?offset=5&limit=5", headers={"X-API-Key": recon_key},
+    ).json()
+    assert b2["returned"] == 2 and b2["has_more"] is False
+    assert {d["domain"] for d in b1["domains"]} | {d["domain"] for d in b2["domains"]} == {
+        f"p{i}.example.com" for i in range(7)
+    }
+    b3 = client.get(
+        "/api/v1/agent/recon/domains?offset=10&limit=5", headers={"X-API-Key": recon_key},
+    ).json()
+    assert b3["domains"] == [] and b3["has_more"] is False
+    assert "does not make the address" in b3["note"]
+
+
+def test_recon_domains_rejects_a_key_that_is_not_recon_scoped(
+    client, db_session, test_agent, recon_scope,
+):
+    """Same guard as /recon/subnets: the endpoint sits behind require_recon_scope."""
+    from app.db.models_agent import AgentSession
+
+    bogus = AgentSession(
+        workflow="totally_bogus", project_id=recon_scope.project_id,
+        agent_id=test_agent.id, scope_id=recon_scope.id, status="active",
+    )
+    db_session.add(bogus)
+    db_session.flush()
+    raw = _mint_agent_key_for_session(
+        db_session, test_agent=test_agent, agent_session_id=bogus.id,
+        raw="nm_agent_sessbound_dom_" + "d" * 25,
+    )
+    resp = client.get("/api/v1/agent/recon/domains", headers={"X-API-Key": raw})
+    assert resp.status_code == 403, resp.text

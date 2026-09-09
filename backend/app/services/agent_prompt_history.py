@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.64.0",
+        "app_version": "2.328.0",
+        "summary": (
+            "Name scope on the recon surface. The recon prompt and "
+            "GET /agent/recon/context now carry the scope's declared domains "
+            "(`scope_domains`, exact vs include_subdomains; `domains_truncated` "
+            "→ page GET /agent/recon/domains). The approval rule 'target is in "
+            "the inventory' gains the name case: a hostname target may be "
+            "resolved or probed without asking only when it is a name BlueStick "
+            "already knows AND a declared domain covers it; any other name stops "
+            "and asks. A name in scope never puts the address it resolves to in "
+            "subnet scope. The recon read-back states the in-scope domains; the "
+            "plan-generation read-back names the named endpoints it plans against."
+        ),
+    },
+    {
         "version": "1.63.0",
         "app_version": "2.323.0",
         "summary": (

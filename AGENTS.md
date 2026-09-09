@@ -161,7 +161,7 @@ Do not paste the rules verbatim. A recital is something you can produce without 
 
 A recon read-back:
 
-> I'm working recon session #12 for scope **acme-dmz** (`10.10.0.0/24`, `10.10.4.0/24`). Everything runs from `./networkmapper-acme-recon-12` and every output file lands there. I'll run nmap, masscan, httpx, dnsx and whatweb without asking — they're in BlueStick's approved set. I'll stop and ask before anything else: a tool that isn't approved, a target outside those two ranges, writing anywhere but that folder, or installing or changing anything on your machine.
+> I'm working recon session #12 for scope **acme-dmz** (`10.10.0.0/24`, `10.10.4.0/24`; names: `portal.acme.com` exactly and anything under `*.lab.acme.com`). Everything runs from `./networkmapper-acme-recon-12` and every output file lands there. I'll run nmap, masscan, httpx, dnsx and whatweb without asking — they're in BlueStick's approved set. I'll stop and ask before anything else: a tool that isn't approved, an address outside those two ranges or a name those domains don't cover, writing anywhere but that folder, or installing or changing anything on your machine. An address one of those names resolves to isn't in scope just because the name is.
 
 A plan-generation read-back — no commands, so it's about data:
 
@@ -203,7 +203,7 @@ Do not delete the directory when you finish — the operator may want the raw to
 That directory is not just for tidiness — it is where "you may proceed" stops. A command runs **without waiting for approval** only when all three hold:
 
 1. **The tool is approved.** It appears in BlueStick's approved set — the recon tool catalogue, or `GET /api/v1/references/tools?status=approved`. If what you need is not there, ask for it (`suggest_tool`, or `POST /api/v1/agent/tool-suggestions` with your reasoning) rather than reaching for a substitute nobody vetted. A recorded ask is how the set grows; a silent substitution is how it stops meaning anything.
-2. **The target is in the inventory.** The host is one this project already knows about — from the scope you were given, or a host id you read from the API. Never a host you inferred, and never one outside the scope.
+2. **The target is in the inventory.** The host is one this project already knows about — from the scope you were given, or a host id you read from the API. Never a host you inferred, and never one outside the scope. **A hostname target is approved without asking only when both hold:** it is a name BlueStick already knows (listed by the context or `GET /agent/recon/domains`, or a `names[]` entry on a host you read) **and** a declared in-scope domain covers it — exactly, or as a subdomain of an `include_subdomains` entry. Resolving or probing any other name stops and asks. And the address a name resolves to is **not** thereby in scope: an address is in scope only when it falls inside the scope's subnets. `portal.acme.com` in scope + resolves to `203.0.113.7` outside every CIDR = you may probe the name; you may not sweep the address's neighbours or treat `203.0.113.7` as subnet-in-scope.
 3. **The output lands here.** Every file the command writes goes into this working directory. `-oX nmap.xml`, not `-oX /tmp/nmap.xml`; no writes to a home directory, a system path, or another session's folder.
 
 **Anything else stops and asks first.** Reading or writing outside this directory, installing software, changing settings or credentials, touching a host that is not in the inventory, running an unapproved tool — present it, explain why you need it, and wait.
@@ -451,8 +451,10 @@ When you see it:
 ```bash
 # 1. Orient yourself — get the scope's CIDRs, size analysis, recommended sequence, tool catalog
 GET /agent/recon/context
-# → { recon_session_id, scope_id, scope_cidrs, scope_size, recommended_sequence,
+# → { recon_session_id, scope_id, scope_cidrs, scope_domains, scope_size, recommended_sequence,
 #     known_host_summary, tool_catalog, session_status, started_at, prompt_version }
+#   (scope_domains: [{domain, include_subdomains}] — the names you may resolve/probe;
+#    name scope never puts a resolved address in subnet scope.)
 #   (prompt_version: compare to your instructions block; mismatch → re-fetch the guide.)
 
 # 2. Pick a tool from the catalog (or adapt), propose command, get user approval, run locally
@@ -618,6 +620,14 @@ A scope can contain **thousands** of subnet CIDRs. To keep the prompt and `/reco
 - The **recon prompt inlines at most ~25 CIDRs**. Past that you'll see `… and N more` plus a pointer to the paginated endpoint.
 - **`/recon/context` caps `scope_cidrs` at 100.** Two new fields tell you when: `scope_cidrs_total` (the true count) and `subnets_truncated` (boolean). If `subnets_truncated` is true, `scope_cidrs` is only a sample — do **not** treat it as the whole scope.
 - The **authoritative full list** comes from `GET /agent/recon/subnets?offset=0&limit=500`. Walk `offset` in `limit`-sized pages until the response's `subnets` array is empty (`has_more: false`). Ordered by subnet id, so paging is stable.
+- **Domains are bounded the same way.** `/recon/context` caps `scope_domains` at 100 (`scope_domains_total`, `domains_truncated`); the full list pages from `GET /agent/recon/domains?offset=0&limit=500` with the same shape (`domains[]`, `has_more`).
+
+#### Name scope — what a declared domain does and does not mean
+
+A scope can declare **domains** alongside subnets. Each entry is exact (`portal.acme.com` — that one name) or `include_subdomains` (`*.lab.acme.com` — the domain and everything under it; `portal.acme.com` does **not** cover `dev.portal.acme.com` unless its entry includes subdomains). Declared domains are the names you may resolve (dnsx, amass, subfinder) and probe (httpx, whatweb) under the approval exception. Two rules follow:
+
+- **Name scope is independent of subnet scope.** An in-scope name resolving to `203.0.113.7` does not put `203.0.113.7` — or its neighbours — in subnet scope. Probe the name; do not scan the address range around it. A host reached only through an in-scope name is reported by BlueStick as *"reachable via in-scope name"*, a third state that is neither in nor out of subnet scope. If the operator wants the address itself in scope, they declare the subnet.
+- **A name you discovered is not a name you may probe.** Subdomain enumeration will surface names outside every declared domain. Upload them (they become named assets and stay out of scope), but do not resolve-and-probe them further without asking.
 
 **Plan for it — work in batches.** On a large multi-thousand-subnet scope you cannot hold every CIDR in context, run one scan, and be done — and you must **not** point one nmap/masscan run at the whole scope and upload one giant file. Instead: page a chunk of CIDRs → scan that chunk → upload (with a distinct metadata-bearing filename, see the Scan-naming convention above) → poll → next chunk. Report progress between batches; don't queue ten scans and upload them all at the end.
 
@@ -874,8 +884,9 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/agent/recon/context` | Scope CIDRs + known hosts + tool catalog |
+| GET | `/agent/recon/context` | Scope CIDRs + in-scope domains + known hosts + tool catalog |
 | GET | `/agent/recon/subnets` | Paginated subnet list for very large scopes (default 500, max 2000 per page — see Recon workflow prose) |
+| GET | `/agent/recon/domains` | Paginated in-scope domain list (`{domain, include_subdomains}`), same paging shape — the names you may resolve/probe without asking |
 | POST | `/agent/recon/sessions/{session_id}/environment` | Record this recon session's operator-environment probe |
 | POST | `/agent/recon/upload` | **Submit scanner output here** — multipart upload, any supported tool format |
 | GET | `/agent/recon/jobs/{id}` | Poll an upload's parse status |

@@ -173,3 +173,49 @@ def test_agents_md_carries_the_read_back_for_every_workflow_slice():
         assert "Say the rules back before you start" in sliced, (
             f"the {workflow} slice lost the read-back section"
         )
+
+
+# ---------------------------------------------------------------------------
+# Name scope in the read-back and the recon prompt (v2.328.0)
+# ---------------------------------------------------------------------------
+
+def test_recon_read_back_covers_name_scope():
+    """The recon agent must restate the in-scope domains (exact vs
+    subdomains) and that a name in scope does not put its address in subnet
+    scope; plan generation names the named endpoints it plans against."""
+    from app.services.agent_policy import render_read_back
+
+    recon = render_read_back("recon")
+    assert "in-scope domains" in recon
+    assert "include subdomains" in recon
+    assert "does not put the address it resolves to in subnet scope" in recon
+    assert "a name no declared domain covers" in recon
+    assert "named endpoints" in render_read_back("plan_generation")
+    # Execution and assist are unchanged — they never resolve names.
+    assert "domain" not in render_read_back("execution")
+    assert "domain" not in render_read_back("assist")
+
+
+def test_recon_prompt_inlines_domains_only_when_declared():
+    from app.services.agent_prompt_service import build_recon_ingest_instructions
+
+    common = dict(request=None, recon_session_id=1, scope_id=2, scope_name="dmz",
+                  subnets=["10.0.0.0/24"], raw_api_key="k", user_label="u", user_id=1)
+    without = build_recon_ingest_instructions(**common)
+    assert "Domains in scope" not in without
+
+    with_domains = build_recon_ingest_instructions(
+        **common, domains=[("portal.example.com", False), ("lab.example.com", True)],
+    )
+    assert "**Domains in scope (names only):**" in with_domains
+    assert "`portal.example.com` (exact name only)" in with_domains
+    assert "`*.lab.example.com` (the domain and every subdomain)" in with_domains
+    assert "does **not** put the address it resolves to in subnet scope" in with_domains
+
+    # Past the inline cap the prompt points at the paginated endpoint instead
+    # of dumping every name into the context window.
+    many = build_recon_ingest_instructions(
+        **common, domains=[(f"n{i}.example.com", False) for i in range(30)],
+    )
+    assert "and 5 more (30 domains total)" in many
+    assert "/agent/recon/domains?offset=0&limit=500" in many

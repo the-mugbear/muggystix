@@ -977,6 +977,14 @@ class ReconContextResponse(BaseModel):
     scope_cidrs: List[str]
     scope_cidrs_total: int = 0
     subnets_truncated: bool = False
+    # v2.328.0 — name scope.  Each entry is {domain, include_subdomains};
+    # an include_subdomains entry covers every descendant, an exact entry
+    # only that one name.  Bounded like scope_cidrs: when domains_truncated
+    # is true, page the full list from GET /agent/recon/domains.  A name in
+    # scope does NOT put the address it resolves to in subnet scope.
+    scope_domains: List[Dict[str, Any]] = Field(default_factory=list)
+    scope_domains_total: int = 0
+    domains_truncated: bool = False
     known_host_summary: Dict[str, Any]
     tool_catalog: List[Dict[str, Any]]
     session_status: str

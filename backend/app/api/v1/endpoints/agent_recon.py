@@ -331,6 +331,23 @@ def get_recon_context(
         subnet_cidrs[:_CONTEXT_CIDR_CAP] if subnets_truncated else subnet_cidrs
     )
 
+    # v2.328.0 — name scope rides along with the CIDRs, bounded the same
+    # way.  The agent needs this to know which names it may resolve/probe
+    # without asking (see AGENTS.md "target is in the inventory"); the
+    # authoritative full list pages from GET /agent/recon/domains.
+    domain_rows = (
+        db.query(models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
+        .filter(models.ScopeDomain.scope_id == scope.id)
+        .order_by(models.ScopeDomain.id)
+        .all()
+    )
+    scope_domains_total = len(domain_rows)
+    domains_truncated = scope_domains_total > _CONTEXT_CIDR_CAP
+    scope_domains_field = [
+        {"domain": d, "include_subdomains": bool(sub)}
+        for d, sub in (domain_rows[:_CONTEXT_CIDR_CAP] if domains_truncated else domain_rows)
+    ]
+
     return ReconContextResponse(
         recon_session_id=session.id,
         scope_id=scope.id,
@@ -339,6 +356,9 @@ def get_recon_context(
         scope_cidrs=scope_cidrs_field,
         scope_cidrs_total=scope_cidrs_total,
         subnets_truncated=subnets_truncated,
+        scope_domains=scope_domains_field,
+        scope_domains_total=scope_domains_total,
+        domains_truncated=domains_truncated,
         known_host_summary=known_host_summary,
         tool_catalog=_build_tool_catalog(subnet_cidrs, scope_size),
         session_status=session.status,
@@ -403,6 +423,59 @@ def get_recon_subnets(
         # Empty `subnets` signals the caller to stop paging.
         "subnets": cidrs,
         "has_more": offset + len(cidrs) < total,
+    }
+
+
+@router.get(
+    "/recon/domains",
+    summary="Paginated authoritative in-scope domain list for the recon scope",
+)
+def get_recon_domains(
+    request: Request,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+    agent: Agent = Depends(require_recon_scope),
+    db: Session = Depends(get_db),
+):
+    """Return the recon scope's declared domains, paginated (v2.328.0).
+
+    Mirrors ``/recon/subnets``: ``/recon/context`` caps ``scope_domains``
+    at 100, so walk ``offset`` here until ``domains`` comes back empty.
+    Each entry is ``{domain, include_subdomains}`` — an exact entry covers
+    only that name, an include_subdomains entry covers every descendant.
+    These are the names the agent may resolve or probe without asking; a
+    name being in scope never puts the address it resolves to in subnet
+    scope.  Ordered by row id so paging is deterministic.
+    """
+    session = _load_recon_session(db, request)
+    total = (
+        db.query(func.count(models.ScopeDomain.id))
+        .filter(models.ScopeDomain.scope_id == session.scope_id)
+        .scalar()
+    ) or 0
+    rows = (
+        db.query(models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
+        .filter(models.ScopeDomain.scope_id == session.scope_id)
+        .order_by(models.ScopeDomain.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    domains = [{"domain": d, "include_subdomains": bool(sub)} for d, sub in rows]
+    return {
+        "recon_session_id": session.id,
+        "scope_id": session.scope_id,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(domains),
+        # Empty `domains` signals the caller to stop paging.
+        "domains": domains,
+        "has_more": offset + len(domains) < total,
+        "note": (
+            "Name scope is independent of subnet scope: an in-scope name does not "
+            "make the address it resolves to in scope."
+        ),
     }
 
 

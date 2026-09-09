@@ -1446,6 +1446,28 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "recon_list_domains": {
+        "description": (
+            "The authoritative, paginated list of domains declared in scope for this "
+            "recon scope ({domain, include_subdomains}) — the names you may resolve or "
+            "probe without asking. Use it when recon_get_context reports "
+            "domains_truncated. A name in scope does not put the address it resolves "
+            "to in subnet scope."
+        ),
+        "workflows": _RECON,
+        "method": "GET",
+        "path": "/api/v1/agent/recon/domains",
+        "query_params": ["limit", "offset"],
+        "defaults": {"limit": 100},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
     "recon_get_job": {
         "description": (
             "Poll an upload's parse status. Upload itself is a file POST you run with "

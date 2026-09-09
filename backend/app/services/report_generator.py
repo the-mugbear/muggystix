@@ -62,6 +62,18 @@ def _id_chunks(ids, size: int = 1000):
 
 
 
+
+def _scope_label(scope: Dict[str, Any]) -> str:
+    """Human label for a host record's scope block — three states, one place.
+    ``in-scope via name`` is a host in no declared subnet that an in-scope
+    name currently resolves to; it is NOT subnet-in-scope."""
+    status = scope.get("status")
+    if status == "via_name" or (status is None and scope.get("via_name")):
+        return "in-scope via name"
+    if scope.get("in_scope"):
+        return "in-scope"
+    return "out-of-scope"
+
 class ReportGenerator:
     SCHEMA_VERSION = "1.0"
     # Derived from the canonical SEVERITY_KEYS (critical=0 … unknown=5) so the
@@ -2143,9 +2155,27 @@ class ReportGenerator:
         tester_summaries_map = self._tester_summaries_by_host(host_ids)
         names_map = self._names_by_host(host_ids)
 
+        # v2.328.0 — the third coverage state, from the ONE shared derivation
+        # (scope_coverage / host_query use the same predicate): hosts in no
+        # declared subnet that an in-scope name currently resolves to.
+        name_reachable_ids: set = set()
+        if host_ids and self.project_id:
+            from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
+            for chunk_start in range(0, len(host_ids), 1000):
+                chunk = host_ids[chunk_start:chunk_start + 1000]
+                name_reachable_ids.update(
+                    hid for (hid,) in self.db.query(models.Host.id)
+                    .filter(
+                        models.Host.id.in_(chunk),
+                        host_reachable_via_in_scope_name_condition(self.project_id),
+                    )
+                    .all()
+                )
+
         return {
             "follow_map": follow_map,
             "subnet_map": subnet_map,
+            "name_reachable_ids": name_reachable_ids,
             "host_confidence_map": host_confidence_map,
             "port_confidence_map": port_confidence_map,
             "host_conflicts_map": host_conflicts_map,
@@ -2214,8 +2244,19 @@ class ReportGenerator:
                 "state_reason": host.state_reason,
             },
             "scope": {
+                # Three states (v2.328.0): subnet-in-scope, reachable only via
+                # an in-scope name, or out of scope.  ``in_scope`` keeps its
+                # subnet meaning; ``via_name`` is the third state and is
+                # never counted as in_scope (name scope does not confer subnet
+                # scope); ``out_of_scope`` is neither.
                 "in_scope": bool(subnet_entries),
-                "out_of_scope": not bool(subnet_entries),
+                "via_name": (not subnet_entries) and host.id in context.get("name_reachable_ids", set()),
+                "out_of_scope": not subnet_entries and host.id not in context.get("name_reachable_ids", set()),
+                "status": (
+                    "in_scope" if subnet_entries
+                    else "via_name" if host.id in context.get("name_reachable_ids", set())
+                    else "out_of_scope"
+                ),
                 "site": primary_site,
                 "subnets": subnet_entries,
             },
@@ -2486,7 +2527,7 @@ class ReportGenerator:
             ),
         )[:25]
         for host in priority_hosts:
-            scope = "in-scope" if host["scope"]["in_scope"] else "out-of-scope"
+            scope = _scope_label(host["scope"])
             key_services = ", ".join(
                 f"{port['port_number']}/{port['service'].get('name') or 'unknown'}"
                 for port in host["ports"]
@@ -2513,7 +2554,7 @@ class ReportGenerator:
                 f"### {host['identity']['ip_address']} - {host['identity'].get('hostname') or 'unresolved'}",
                 f"- State: {host['identity'].get('state') or 'unknown'}",
                 f"- Site: {host['scope'].get('site') or 'unassigned'}",
-                f"- Scope: {'in-scope' if host['scope']['in_scope'] else 'out-of-scope'}",
+                f"- Scope: {_scope_label(host['scope'])}",
                 f"- OS: {host['os'].get('name') or 'unknown'}",
                 f"- First seen: {host['timeline'].get('first_seen') or 'unknown'}",
                 f"- Last seen: {host['timeline'].get('last_seen') or 'unknown'}",
@@ -2615,7 +2656,7 @@ class ReportGenerator:
                 host["identity"].get("state") or "",
                 host["scope"].get("site") or "",
                 subnet_str,
-                "in-scope" if host["scope"]["in_scope"] else "out-of-scope",
+                _scope_label(host["scope"]),
                 (host.get("risk") or {}).get("risk_score") or "",
                 host["vulnerability_summary"]["critical"],
                 host["vulnerability_summary"]["high"],
