@@ -31,7 +31,8 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { formatApiError, asAxiosError } from '../utils/apiErrors';
+import { formatApiError } from '../utils/apiErrors';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import SeverityBar from '../components/ui/SeverityBar';
@@ -240,40 +241,27 @@ const Findings: React.FC = () => {
     </TableHead>
   );
 
-  // Latest-request ownership: each fetch aborts the previous one and bumps a
-  // generation counter; every state write checks it is still the newest
-  // request, so a slow response for filter set A can never land under B's
-  // active filters (nor can A's failure replace B's error state).
-  const findingsAbortRef = useRef<AbortController | null>(null);
-  const fetchGenRef = useRef(0);
+  // Latest-request ownership (useLatestRequest): a slow response for filter
+  // set A can never land under B's active filters, nor can A's failure
+  // replace B's error state — anything but the newest request is `stale`
+  // and writes nothing.
+  const runFindingsRequest = useLatestRequest();
 
   const fetchFindings = useCallback(async () => {
-    findingsAbortRef.current?.abort();
-    const controller = new AbortController();
-    findingsAbortRef.current = controller;
-    const gen = ++fetchGenRef.current;
-    const isCurrent = () => gen === fetchGenRef.current && !controller.signal.aborted;
-
     setLoading(true);
-    try {
-      const res = await listFindings(filters, controller.signal);
-      if (!isCurrent()) return;
-      setFindings(res.items);
-      setTotal(res.total);
-      setSevCounts(res.severity_counts ?? {});
+    const r = await runFindingsRequest((signal) => listFindings(filters, signal));
+    if (r.stale) return;
+    if (r.ok) {
+      setFindings(r.value.items);
+      setTotal(r.value.total);
+      setSevCounts(r.value.severity_counts ?? {});
       setError(null);
-    } catch (err) {
-      { const e = asAxiosError(err); if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return; }
-      if (!isCurrent()) return;
-      setError(formatApiError(err, 'Failed to load findings.'));
-      toast.error(formatApiError(err, 'Failed to load findings.'));
-    } finally {
-      if (isCurrent()) setLoading(false);
+    } else {
+      setError(formatApiError(r.error, 'Failed to load findings.'));
+      toast.error(formatApiError(r.error, 'Failed to load findings.'));
     }
-  }, [filters, toast]);
-
-  // Abort whatever is in flight on unmount.
-  useEffect(() => () => findingsAbortRef.current?.abort(), []);
+    setLoading(false);
+  }, [filters, toast, runFindingsRequest]);
 
   useEffect(() => {
     fetchFindings();

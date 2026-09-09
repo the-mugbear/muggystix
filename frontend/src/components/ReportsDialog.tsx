@@ -15,7 +15,6 @@ import {
 import {
   generateHostsReport,
   enqueueReportJob,
-  getReportJob,
   downloadReportJob,
   listReportJobs,
   getReportLimits,
@@ -45,6 +44,7 @@ import {
   SelectValue,
 } from './ui/select';
 import { cn } from '../utils/cn';
+import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import AiDraftReportDialog from './AiDraftReportDialog';
 
 interface ReportsDialogProps {
@@ -113,8 +113,15 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   const [reportType, setReportType] = useState<ReportType>('comprehensive');
   const [format, setFormat] = useState<HumanFormat>('html');
   // Tracks which action is in flight ('html', 'agent-package', …) so only that
-  // button spins and the rest disable.
+  // button spins and the rest disable.  For the streamed formats (csv/html)
+  // this covers the whole synchronous download; for the worker formats it
+  // covers only the enqueue call — the job itself runs server-side and the
+  // dialog may be closed while it does (see trackedJobId).
   const [busy, setBusy] = useState<string | null>(null);
+  // The worker job the operator just started from this dialog.  Its row in
+  // the tray is the source of truth for status; this id only decides which
+  // job gets the inline "queued / ready to download / failed" panel.
+  const [trackedJobId, setTrackedJobId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Set when the server reports it capped the export (X-Report-Truncated): the
   // file still downloaded, so we keep the dialog open and warn rather than close.
@@ -167,14 +174,12 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   }, [open, refreshRecentJobs]);
 
   // While the dialog is open and a job is still running, poll the tray so it
-  // advances queued → processing → completed without a manual refresh.
-  useEffect(() => {
-    if (!open) return;
-    const active = recentJobs.some((j) => j.status === 'queued' || j.status === 'processing');
-    if (!active) return;
-    const t = setInterval(refreshRecentJobs, 2500);
-    return () => clearInterval(t);
-  }, [open, recentJobs, refreshRecentJobs]);
+  // advances queued → processing → completed without a manual refresh.  The
+  // jobs are persisted server-side, so closing the dialog just stops
+  // observing them; reopening resumes from the API.  useVisibilityPoll never
+  // overlaps requests and backs off on failure.
+  const hasActiveJob = recentJobs.some((j) => j.status === 'queued' || j.status === 'processing');
+  useVisibilityPoll(refreshRecentJobs, open && hasActiveJob ? 2500 : null);
 
   const allowedFormats = HUMAN_FORMATS[reportType];
 
@@ -208,27 +213,14 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         return;
       }
 
-      // Heavy formats run on the report worker: enqueue → poll → download.
-      let job = await enqueueReportJob(fmt as AsyncReportFormat, filters, type);
-      refreshRecentJobs(); // surface it in the tray immediately
-      // Cap the wait at the server-side report timeout (~15 min) so a wedged
-      // job doesn't poll forever.
-      const maxAttempts = 450; // 450 × 2s = 15 min
-      let attempts = 0;
-      while ((job.status === 'queued' || job.status === 'processing') && attempts < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 2000));
-        attempts += 1;
-        job = await getReportJob(job.id);
-      }
+      // Heavy formats run on the report worker.  Enqueue and hand the job to
+      // the tray: the dialog no longer holds the operator hostage for up to
+      // 15 minutes — they can continue working and come back (or reopen) to
+      // download.  The job row is persisted, so nothing is lost on close.
+      const job = await enqueueReportJob(fmt as AsyncReportFormat, filters, type);
+      setTrackedJobId(job.id);
+      setRecentJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)]);
       refreshRecentJobs();
-      if (job.status === 'completed') {
-        const { truncated: wasTruncated } = await downloadReportJob(job.id);
-        settleDownload(wasTruncated);
-      } else if (job.status === 'failed') {
-        setError(`Report generation failed: ${job.error_message || job.last_error || 'unknown error'}`);
-      } else {
-        setError('Report is taking longer than expected — it may still finish; try again shortly.');
-      }
     } catch (err) {
       setError(`Failed to generate report: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -279,6 +271,24 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   const bundlesOverCap = bundleCap != null && totalHosts > bundleCap;
   const isBusy = busy !== null;
 
+  // The job started from this dialog, as the tray currently knows it.
+  const trackedJob = trackedJobId != null ? recentJobs.find((j) => j.id === trackedJobId) ?? null : null;
+  const trackedRunning = trackedJob?.status === 'queued' || trackedJob?.status === 'processing';
+
+  const downloadTracked = async () => {
+    if (!trackedJob) return;
+    setBusy(`download-${trackedJob.id}`);
+    try {
+      const { truncated: wasTruncated } = await downloadReportJob(trackedJob.id);
+      setTrackedJobId(null);
+      settleDownload(wasTruncated);
+    } catch (err) {
+      setError(`Failed to download report: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && !isBusy && onClose()}>
       <DialogContent size="md">
@@ -305,6 +315,52 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
           </Alert>
         )}
 
+        {/* The worker job started from here.  Generation is server-side and
+            durable, so the operator is told they can leave; when it finishes
+            while the dialog is open, the download is one click away. */}
+        {trackedJob && trackedRunning && (
+          <Alert variant="info" data-testid="tracked-job-running">
+            <AlertDescription className="flex flex-wrap items-center gap-xs">
+              <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+              <span className="min-w-0 flex-1">
+                <strong>{trackedJob.format}</strong> report {trackedJob.status} on the report worker.
+                It will appear under <strong>Recent reports</strong> — you can close this dialog and
+                keep working; reopen it to download.
+              </span>
+              <Button size="sm" variant="outline" className="shrink-0" onClick={onClose}>
+                Continue working
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+        {trackedJob && trackedJob.status === 'completed' && (
+          <Alert variant="success" data-testid="tracked-job-ready">
+            <AlertDescription className="flex flex-wrap items-center gap-xs">
+              <span className="min-w-0 flex-1">
+                <strong>{trackedJob.format}</strong> report is ready
+                {trackedJob.truncated ? ' (capped — see the warning after download)' : ''}.
+              </span>
+              <Button size="sm" className="shrink-0" onClick={downloadTracked} disabled={isBusy}>
+                {busy === `download-${trackedJob.id}` ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Download className="size-4" aria-hidden />
+                )}
+                Download
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+        {trackedJob && trackedJob.status === 'failed' && (
+          <Alert variant="destructive" data-testid="tracked-job-failed">
+            <AlertDescription>
+              Report generation failed:{' '}
+              {trackedJob.error_message || trackedJob.last_error || 'unknown error'}. Retry it from{' '}
+              <strong>Recent reports</strong> below.
+            </AlertDescription>
+          </Alert>
+        )}
+
         <div className="space-y-xs">
           <p className="text-metadata text-muted-foreground">
             Based on your current filters this covers <strong>{totalHosts.toLocaleString()}</strong> host
@@ -326,8 +382,9 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             </p>
           )}
           <p className="text-caption text-muted-foreground">
-            JSON and the .zip bundles are generated in the background and download
-            automatically when ready — large reports may take a moment.
+            JSON and the .zip bundles are generated in the background on the report worker.
+            You can close this dialog while they run; download them from{' '}
+            <strong>Recent reports</strong> when ready.
           </p>
           {activeFilters.length > 0 && (
             <div className="space-y-xxs">

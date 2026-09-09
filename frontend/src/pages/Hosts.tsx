@@ -50,7 +50,8 @@ import type {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { asAxiosError, formatApiError } from '../utils/apiErrors';
+import { formatApiError } from '../utils/apiErrors';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import HostFilters, { HostFilterOptions } from '../components/HostFilters';
 import HostCommandBar from '../components/hosts/HostCommandBar';
 import { dslFromFilters, type DslConversion } from '../components/hosts/dslFromFilters';
@@ -456,8 +457,10 @@ export default function Hosts() {
     }
   }, [filterSignature, isInitialized]);
 
-  const hostsAbortRef = useRef<AbortController | null>(null);
-  const filterAbortRef = useRef<AbortController | null>(null);
+  // Two independent request lanes (rows vs filter facets) — see
+  // useLatestRequest: each aborts its own predecessor, never the other's.
+  const runHostsRequest = useLatestRequest();
+  const runFilterDataRequest = useLatestRequest();
   // True once the first host fetch has completed.  Gates the full-page
   // skeleton so it only shows on initial load — never on a refetch whose
   // current result happens to be empty (e.g. toggling a filter that matches
@@ -466,54 +469,39 @@ export default function Hosts() {
   const hasFetchedOnceRef = useRef(false);
 
   const fetchHosts = async () => {
-    hostsAbortRef.current?.abort();
-    const controller = new AbortController();
-    hostsAbortRef.current = controller;
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await getHosts(buildFilterParams(), controller.signal);
-      if (!controller.signal.aborted) {
-        setHosts(data.items);
-        setTotalHosts(data.total ?? 0);
-        setVulnError(data.vulnerability_error ?? false);
-      }
-    } catch (err: unknown) {
-      { const e = asAxiosError(err); if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return; }
-      console.error('Error fetching hosts:', err);
-      setError(formatApiError(err, 'Failed to fetch hosts. Please try again.'));
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-        hasFetchedOnceRef.current = true;
-      }
+    setLoading(true);
+    setError(null);
+    const params = buildFilterParams();
+    const r = await runHostsRequest((signal) => getHosts(params, signal));
+    if (r.stale) return;
+    if (r.ok) {
+      setHosts(r.value.items);
+      setTotalHosts(r.value.total ?? 0);
+      setVulnError(r.value.vulnerability_error ?? false);
+    } else {
+      console.error('Error fetching hosts:', r.error);
+      setError(formatApiError(r.error, 'Failed to fetch hosts. Please try again.'));
     }
+    setLoading(false);
+    hasFetchedOnceRef.current = true;
   };
 
   const fetchFilterData = async (
     params?: Record<string, string | boolean | number | string[] | undefined>,
   ) => {
-    filterAbortRef.current?.abort();
-    const controller = new AbortController();
-    filterAbortRef.current = controller;
     setFilterDataLoading(true);
-    try {
-      const data = await getHostFilterData(params, controller.signal);
-      if (!controller.signal.aborted) {
-        setFilterData(data);
-        setFilterDataError(null);
-      }
-    } catch (err: unknown) {
-      { const e = asAxiosError(err); if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return; }
-      console.error('Error fetching filter data:', err);
-      if (!controller.signal.aborted) {
-        setFilterDataError(
-          formatApiError(err, 'Filter options failed to refresh — dropdowns may be stale.'),
-        );
-      }
-    } finally {
-      if (!controller.signal.aborted) setFilterDataLoading(false);
+    const r = await runFilterDataRequest((signal) => getHostFilterData(params, signal));
+    if (r.stale) return;
+    if (r.ok) {
+      setFilterData(r.value);
+      setFilterDataError(null);
+    } else {
+      console.error('Error fetching filter data:', r.error);
+      setFilterDataError(
+        formatApiError(r.error, 'Filter options failed to refresh — dropdowns may be stale.'),
+      );
     }
+    setFilterDataLoading(false);
   };
 
   // v2.86.5 — defer the initial filter-facets fetch until AFTER the
