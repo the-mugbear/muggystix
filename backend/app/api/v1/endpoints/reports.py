@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Any
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -160,6 +161,39 @@ def enqueue_report_job(
     )
     service.enqueue_job(job.id)
     return job
+
+
+class ReportLimits(BaseModel):
+    """Effective host caps per export format for THIS deployment, so the export
+    dialog can state the real number before the user waits for a report
+    (the frontend used to hardcode the streamed cap for every format while
+    the worker applied the much lower in-memory one to JSON/zip)."""
+    in_memory_host_cap: int
+    streamed_host_cap: int
+    # format -> cap; None means the format streams the full set uncapped.
+    per_format: Dict[str, Optional[int]]
+
+
+# Formats the worker builds whole-in-memory (bounded by the in-memory cap).
+# Mirrors ReportJobService._render; a new async format must be listed here.
+_IN_MEMORY_FORMATS = ("json", "markdown-bundle", "agent-package")
+
+
+@router.get("/limits", response_model=ReportLimits)
+def report_limits():
+    """Per-format host caps.  csv streams unbounded; html streams up to the
+    streamed cap; every async format is capped at the in-memory cap."""
+    per_format: Dict[str, Optional[int]] = {
+        "csv": None,
+        "html": ReportGenerator.MAX_REPORT_HOSTS,
+    }
+    for fmt in _IN_MEMORY_FORMATS:
+        per_format[fmt] = ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
+    return ReportLimits(
+        in_memory_host_cap=ReportGenerator.MAX_INMEMORY_REPORT_HOSTS,
+        streamed_host_cap=ReportGenerator.MAX_REPORT_HOSTS,
+        per_format=per_format,
+    )
 
 
 @router.get("/jobs", response_model=List[ReportJobSchema])

@@ -576,6 +576,20 @@ export interface ReportJob {
   dismissed_at?: string | null;
 }
 
+// Effective per-format host caps for this deployment — the dialog shows the
+// real number for the selected format instead of a hardcoded one.
+export interface ReportLimits {
+  in_memory_host_cap: number;
+  streamed_host_cap: number;
+  /** format -> cap; null means the format streams the full set uncapped. */
+  per_format: Record<string, number | null>;
+}
+
+export const getReportLimits = async (): Promise<ReportLimits> => {
+  const response = await api.get(`${p()}/reports/limits`);
+  return response.data as ReportLimits;
+};
+
 export const enqueueReportJob = async (
   format: AsyncReportFormat,
   filters: Record<string, string | number | boolean | string[] | undefined>,

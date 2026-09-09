@@ -127,9 +127,14 @@ class ReportJobService:
         'cancelled' row is simply never picked up. Returns None if not found in
         the project (→404); raises ValueError if not queued (→409).
         """
+        # Row lock: without it a worker's FOR UPDATE SKIP LOCKED claim can
+        # land between this status check and the write below, and the
+        # cancel would overwrite a job that is already rendering.  Held for
+        # the rest of this transaction (no-op on SQLite).
         job = (
             db.query(ReportJob)
             .filter(ReportJob.id == job_id, ReportJob.project_id == project_id)
+            .with_for_update()
             .first()
         )
         if job is None:

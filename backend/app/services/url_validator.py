@@ -207,24 +207,29 @@ def is_integration_private_allowed(integration_type: str) -> bool:
 # IP-pinning httpx transport — closes the DNS-rebinding window
 # ---------------------------------------------------------------------------
 
-def _host_resolves_safely(host: str, *, allow_private: bool = False) -> None:
-    """Raise ValueError if any A/AAAA record for host is forbidden.
+def _host_resolves_safely(host: str, *, allow_private: bool = False) -> list:
+    """Resolve ``host`` and return its addresses (deduplicated, resolver
+    order) — or raise ValueError if ANY A/AAAA record is forbidden.
 
     Shared by require_public_http_url and the pinned transport so both
     paths apply the exact same policy.  ``_ALWAYS_FORBIDDEN_NETWORKS``
     (cloud metadata, link-local, multicast) is rejected regardless of
-    ``allow_private``.
+    ``allow_private``.  Returning the vetted addresses is what lets the
+    transport connect to exactly what was checked instead of resolving
+    a second time.
     """
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise ValueError(f"Could not resolve {host!r}: {exc}")
     seen: set = set()
+    safe: list = []
     for _family, _type, _proto, _canon, sockaddr in infos:
         ip_str = sockaddr[0]
         if ip_str in seen:
             continue
         seen.add(ip_str)
+        safe.append(ip_str)
         try:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
@@ -242,6 +247,41 @@ def _host_resolves_safely(host: str, *, allow_private: bool = False) -> None:
                 raise ValueError(
                     f"Host {host!r} resolves to a private address ({addr})."
                 )
+    if not safe:
+        raise ValueError(f"Host {host!r} resolved to no addresses.")
+    return safe
+
+
+def _pin_request(request, original_host: str, ip: str):
+    """Return ``request`` re-targeted at ``ip`` while keeping the name.
+
+    A literal IP already in the URL is left alone (nothing to pin).  For a
+    name: the URL host becomes the numeric address (IPv6 bracketed by
+    httpx), ``Host`` carries the original name (+ non-default port), and
+    for https the ``sni_hostname`` extension carries the name so
+    certificate verification is unchanged.
+    """
+    import httpx
+
+    try:
+        ipaddress.ip_address(original_host.strip("[]"))
+        return request  # already numeric
+    except ValueError:
+        pass
+    url = request.url.copy_with(host=ip)
+    headers = request.headers.copy()
+    default_port = 443 if url.scheme == "https" else 80
+    host_header = original_host
+    if url.port is not None and url.port != default_port:
+        host_header = f"{original_host}:{url.port}"
+    headers["Host"] = host_header
+    extensions = dict(request.extensions or {})
+    if url.scheme == "https":
+        extensions["sni_hostname"] = original_host
+    pinned = httpx.Request(
+        request.method, url, headers=headers, stream=request.stream, extensions=extensions,
+    )
+    return pinned
 
 
 def safe_http_client(
@@ -250,25 +290,25 @@ def safe_http_client(
     timeout: float = 15.0,
     verify: bool = True,
 ):
-    """Return an httpx.Client that re-validates every outbound hostname.
+    """Return an httpx.Client that pins every outbound connection to the
+    address it validated.
 
-    This exists because ``require_public_http_url`` has a TOCTOU window:
-    the validator resolves DNS once at save-time or request-time, but
-    the actual socket connect happens later inside httpx — a malicious
-    DNS record with a short TTL (or a DNS-rebinding name server) can
-    return a public IP during validation and a private IP at connect
-    time.
+    ``require_public_http_url`` has a TOCTOU window: it resolves DNS once
+    at save-time or request-time, but the socket connect happens later
+    inside httpx — a DNS record with a short TTL (or a rebinding name
+    server) can answer with a public IP during validation and a private
+    one at connect time.  Re-checking immediately before the connect (the
+    previous design) only narrowed that window; the transport still
+    resolved the name a second time.
 
-    The transport we install here hooks ``handle_request`` and runs
-    ``_host_resolves_safely`` on every hop — including redirects —
-    immediately before httpx hands the request to httpcore.  The window
-    between that check and the TCP connect is not zero, but it is small
-    and defeats every practical DNS-rebinding variant seen in the wild.
-
-    A full fix (pin the resolved IP into an explicit socket passed to
-    httpcore) would require a private httpcore backend and is not worth
-    the maintenance burden for the handful of egress call sites we
-    have.  Revisit if we ever proxy arbitrary user-supplied URLs.
+    The transport installed here closes it: on every request (including
+    each hop, since redirects are refused anyway) it resolves the host
+    through ``_host_resolves_safely``, takes the first vetted address, and
+    rewrites the request URL to that numeric address.  The original name
+    is preserved where it matters — the ``Host`` header (so virtual
+    hosting works) and the ``sni_hostname`` extension (so TLS still
+    verifies the certificate against the name, not the IP).  httpcore then
+    connects to the literal IP and never consults DNS.
     """
     import httpx  # local import — httpx is already a dep
 
@@ -280,9 +320,10 @@ def safe_http_client(
                 # metadata / link-local / multicast — the two-tier
                 # policy lives inside _host_resolves_safely.
                 try:
-                    _host_resolves_safely(host, allow_private=allow_private)
+                    addrs = _host_resolves_safely(host, allow_private=allow_private)
                 except ValueError as exc:
                     raise httpx.ConnectError(str(exc)) from exc
+                request = _pin_request(request, host, addrs[0])
             return super().handle_request(request)
 
     return httpx.Client(

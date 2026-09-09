@@ -18,11 +18,13 @@ import {
   getReportJob,
   downloadReportJob,
   listReportJobs,
+  getReportLimits,
   dismissReportJob,
   retryReportJob,
   cancelReportJob,
   type AsyncReportFormat,
   type ReportJob,
+  type ReportLimits,
 } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -55,11 +57,6 @@ interface ReportsDialogProps {
 type ReportType = 'inventory' | 'comprehensive';
 type HumanFormat = 'html' | 'csv' | 'json';
 type StructuredFormat = 'markdown-bundle' | 'agent-package';
-
-// Keep in sync with the backend REPORT_MAX_HOSTS. The CSV inventory streams the
-// full set; every other format (HTML streamed, and the async JSON/.zip bundles
-// generated on the report worker) caps here.
-const REPORT_HOST_CAP = 50000;
 
 const REPORT_TYPES: Array<{ value: ReportType; label: string; description: string }> = [
   {
@@ -128,6 +125,10 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // "Draft with AI (beta)" — opens a separate dialog that asks a configured LLM
   // to draft a narrative report from the project's promoted findings.
   const [aiDraftOpen, setAiDraftOpen] = useState(false);
+  // Effective per-format host caps for this deployment (GET /reports/limits).
+  // null until loaded — the over-cap warning stays hidden rather than showing
+  // a number the server won't honour.
+  const [limits, setLimits] = useState<ReportLimits | null>(null);
 
   const refreshRecentJobs = React.useCallback(async () => {
     try {
@@ -161,6 +162,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
       setTruncated(false);
       setError(null);
       refreshRecentJobs();
+      getReportLimits().then(setLimits, () => setLimits(null));
     }
   }, [open, refreshRecentJobs]);
 
@@ -266,9 +268,15 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
     return out;
   }, [filters]);
 
-  // Every format except the streamed CSV caps at REPORT_HOST_CAP (the heavy
-  // formats now generate on the report worker, so they get the full cap back).
-  const overCap = totalHosts > REPORT_HOST_CAP;
+  // Cap for the CURRENTLY selected human format (CSV streams uncapped → null).
+  // JSON/zip build in memory on the worker and cap far lower than the streamed
+  // HTML, so the number shown must be per format, not one global constant.
+  const selectedCap: number | null = limits ? limits.per_format[format] ?? null : null;
+  const overCap = selectedCap != null && totalHosts > selectedCap;
+  const formatLabel = allowedFormats.find((f) => f.value === format)?.label ?? format.toUpperCase();
+  // The .zip bundles share the in-memory cap; warn on them too when it applies.
+  const bundleCap = limits?.in_memory_host_cap ?? null;
+  const bundlesOverCap = bundleCap != null && totalHosts > bundleCap;
   const isBusy = busy !== null;
 
   return (
@@ -302,15 +310,20 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             Based on your current filters this covers <strong>{totalHosts.toLocaleString()}</strong> host
             {totalHosts === 1 ? '' : 's'}.
           </p>
-          {overCap && (
+          {overCap && selectedCap != null && (
             <Alert variant="warning">
               <AlertDescription>
-                Your filters match {totalHosts.toLocaleString()} hosts. HTML, JSON and the
-                .zip bundles include the first {REPORT_HOST_CAP.toLocaleString()} — narrow your
-                filters to capture everything, or use the <strong>CSV</strong> inventory which
-                streams the full set.
+                <strong>{formatLabel}</strong> includes the first {selectedCap.toLocaleString()} of{' '}
+                {totalHosts.toLocaleString()} matching hosts — narrow your filters to capture
+                everything, or use the <strong>CSV</strong> inventory which streams the full set.
               </AlertDescription>
             </Alert>
+          )}
+          {!overCap && bundlesOverCap && bundleCap != null && (
+            <p className="text-caption text-muted-foreground">
+              The .zip bundles below include the first {bundleCap.toLocaleString()} of{' '}
+              {totalHosts.toLocaleString()} matching hosts.
+            </p>
           )}
           <p className="text-caption text-muted-foreground">
             JSON and the .zip bundles are generated in the background and download

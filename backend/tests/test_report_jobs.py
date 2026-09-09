@@ -212,3 +212,24 @@ def test_completion_is_fenced_against_a_reclaimed_lease(
     assert job.status == "processing", "a stale worker clobbered the peer's row"
     assert job.started_at == peer_started
     assert job.result_path is None, "a stale worker published a result over the peer"
+
+
+def test_report_limits_reflect_generator_caps(client, test_project):
+    """GET /reports/limits reports the caps the worker/endpoints actually apply,
+    per format, so the dialog never shows a number the server won't honour."""
+    from app.services.report_generator import ReportGenerator
+    from app.services.report_job_service import ReportJobService
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/reports/limits")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) == {"in_memory_host_cap", "streamed_host_cap", "per_format"}
+    assert body["in_memory_host_cap"] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
+    assert body["streamed_host_cap"] == ReportGenerator.MAX_REPORT_HOSTS
+    pf = body["per_format"]
+    assert pf["csv"] is None
+    assert pf["html"] == ReportGenerator.MAX_REPORT_HOSTS
+    # Every format the worker can render is listed at the in-memory cap.
+    for fmt in ("json", "markdown-bundle", "agent-package"):
+        assert pf[fmt] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
+        ReportJobService._render  # the renderer these map onto exists

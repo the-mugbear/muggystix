@@ -152,3 +152,105 @@ class TestIntegrationPolicy:
         string is what callers see when integration_type is unset
         and we want fail-closed semantics."""
         assert is_integration_private_allowed(itype) is False
+
+
+# ---------------------------------------------------------------------------
+# DNS-rebinding pin: the transport must connect to the address it validated,
+# not re-resolve the name (which a rebinding resolver can answer differently).
+# ---------------------------------------------------------------------------
+import socket as _socket
+
+import httpx
+
+from app.services import url_validator as _uv
+from app.services.url_validator import safe_http_client
+
+
+def _addrinfo(ip: str):
+    fam = _socket.AF_INET6 if ":" in ip else _socket.AF_INET
+    return [(fam, _socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+
+class TestPinnedTransport:
+    def _capture(self, monkeypatch):
+        seen = {}
+
+        def fake_handle(self, request):
+            seen["request"] = request
+            return httpx.Response(200, request=request, content=b"ok")
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fake_handle)
+        return seen
+
+    def test_connects_to_validated_ip_even_when_dns_rebinds(self, monkeypatch):
+        answers = iter([_addrinfo("93.184.216.34"), _addrinfo("169.254.169.254")])
+        calls = []
+
+        def fake_getaddrinfo(host, *args, **kwargs):
+            calls.append(host)
+            return next(answers)
+
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", fake_getaddrinfo)
+        seen = self._capture(monkeypatch)
+
+        with safe_http_client() as client:
+            resp = client.get("https://example.test:8443/path?q=1")
+        assert resp.status_code == 200
+
+        req = seen["request"]
+        # The socket target is the vetted address — the second (rebound) DNS
+        # answer was never consulted by the transport.
+        assert req.url.host == "93.184.216.34"
+        assert req.url.port == 8443
+        assert req.url.path == "/path" and req.url.query == b"q=1"
+        assert calls == ["example.test"]
+        # Name preserved where it matters: virtual host + TLS verification.
+        assert req.headers["host"] == "example.test:8443"
+        assert req.extensions["sni_hostname"] == "example.test"
+
+    def test_http_default_port_host_header_has_no_port(self, monkeypatch):
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", lambda h, *a, **k: _addrinfo("93.184.216.34"))
+        seen = self._capture(monkeypatch)
+        with safe_http_client() as client:
+            client.get("http://example.test/")
+        req = seen["request"]
+        assert req.url.host == "93.184.216.34"
+        assert req.headers["host"] == "example.test"
+        assert "sni_hostname" not in req.extensions
+
+    def test_ipv6_answer_is_pinned_bracketed(self, monkeypatch):
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", lambda h, *a, **k: _addrinfo("2606:2800:220:1:248:1893:25c8:1946"))
+        seen = self._capture(monkeypatch)
+        with safe_http_client() as client:
+            client.get("https://example.test/")
+        req = seen["request"]
+        assert req.url.host == "2606:2800:220:1:248:1893:25c8:1946"
+        assert str(req.url).startswith("https://[2606:2800:")
+        assert req.headers["host"] == "example.test"
+
+    def test_literal_ip_url_left_alone(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        with safe_http_client() as client:
+            client.get("http://93.184.216.34/x")
+        req = seen["request"]
+        assert req.url.host == "93.184.216.34"
+        assert req.headers["host"] == "93.184.216.34"
+
+    def test_forbidden_answer_still_rejected_before_connect(self, monkeypatch):
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", lambda h, *a, **k: _addrinfo("169.254.169.254"))
+        seen = self._capture(monkeypatch)
+        with safe_http_client() as client:
+            with pytest.raises(httpx.ConnectError):
+                client.get("http://metadata.test/")
+        assert "request" not in seen  # never reached the transport
+
+    def test_mixed_answers_rejected_when_any_is_forbidden(self, monkeypatch):
+        monkeypatch.setattr(
+            _uv.socket, "getaddrinfo",
+            lambda h, *a, **k: _addrinfo("93.184.216.34") + _addrinfo("10.0.0.5"),
+        )
+        seen = self._capture(monkeypatch)
+        with safe_http_client() as client:
+            with pytest.raises(httpx.ConnectError):
+                client.get("http://split.test/")
+        assert "request" not in seen

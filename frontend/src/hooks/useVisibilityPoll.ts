@@ -9,6 +9,13 @@ import { useEffect, useRef } from 'react';
  * immediately so the user sees fresh data rather than the last value
  * from before they backgrounded the tab.
  *
+ * Scheduling is settle-then-wait, not a fixed interval: the next run is
+ * scheduled `intervalMs` after the previous callback settles, and a tick
+ * that arrives while one is still in flight is skipped.  A slow endpoint
+ * therefore never accumulates overlapping requests (which could also
+ * resolve out of order).  A rejected callback backs the delay off —
+ * doubling up to 4× the interval — and a success resets it.
+ *
  * Pass `enabled = false` (or null intervalMs) to suspend polling.
  *
  * Use cases: notification badge poll, agent activity rail, active
@@ -27,41 +34,74 @@ export function useVisibilityPoll(
   useEffect(() => {
     if (!enabled || intervalMs == null || intervalMs <= 0) return;
 
-    let timer: ReturnType<typeof setInterval> | null = null;
+    const MAX_BACKOFF_FACTOR = 4;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
+    let backoffFactor = 1;
+    let stopped = false;
 
     const isVisible = () =>
       typeof document === 'undefined' || document.visibilityState === 'visible';
 
-    const start = () => {
-      if (timer != null) return;
-      timer = setInterval(() => {
-        if (isVisible()) {
-          void callbackRef.current();
-        }
-      }, intervalMs);
-    };
-
-    const stop = () => {
+    const clearTimer = () => {
       if (timer != null) {
-        clearInterval(timer);
+        clearTimeout(timer);
         timer = null;
       }
+    };
+
+    const schedule = () => {
+      clearTimer();
+      if (stopped || !isVisible()) return;
+      timer = setTimeout(run, intervalMs * backoffFactor);
+    };
+
+    // One tick: skip if a previous callback is still settling, otherwise run
+    // it and schedule the next tick relative to when it settles.
+    const run = () => {
+      clearTimer();
+      if (stopped || !isVisible()) return;
+      if (inFlight) {
+        schedule();
+        return;
+      }
+      inFlight = true;
+      let result: void | Promise<void>;
+      try {
+        result = callbackRef.current();
+      } catch {
+        result = Promise.reject();
+      }
+      Promise.resolve(result).then(
+        () => {
+          inFlight = false;
+          backoffFactor = 1;
+          schedule();
+        },
+        () => {
+          inFlight = false;
+          backoffFactor = Math.min(backoffFactor * 2, MAX_BACKOFF_FACTOR);
+          schedule();
+        },
+      );
     };
 
     const onVisibilityChange = () => {
       if (isVisible()) {
         // Re-sync immediately on return — the user expects current data.
-        void callbackRef.current();
-        start();
+        // Still one-at-a-time: if a callback is mid-flight, run() just
+        // reschedules instead of starting a second one.
+        run();
       } else {
-        stop();
+        clearTimer();
       }
     };
 
-    if (isVisible()) start();
+    if (isVisible()) schedule();
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
-      stop();
+      stopped = true;
+      clearTimer();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [intervalMs, enabled]);

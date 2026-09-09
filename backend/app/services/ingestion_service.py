@@ -63,7 +63,9 @@ def report_progress(progress: str) -> None:
     job_id = getattr(_active_job, "job_id", None)
     if svc is None or db is None or job_id is None:
         return
-    svc.update_heartbeat(db, job_id, progress)
+    svc.update_heartbeat(
+        db, job_id, progress, claimed_at=getattr(_active_job, "claimed_at", None),
+    )
 
 
 ParserDescriptor = Tuple[str, Type, str]
@@ -327,7 +329,14 @@ class IngestionService:
         """
         self._cancelled.add(job_id)
         with _session_module.SessionLocal() as db:
-            job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
+            # Row lock so a worker can't claim the row between this
+            # status check and the write (no-op on SQLite).
+            job = (
+                db.query(IngestionJob)
+                .filter(IngestionJob.id == job_id)
+                .with_for_update()
+                .first()
+            )
             if not job:
                 return False
             if job.status not in ("queued", "processing"):
@@ -374,8 +383,23 @@ class IngestionService:
         self.enqueue_job(job_id)
         return "requeued"
 
-    def update_heartbeat(self, db: Session, job_id: int, progress: Optional[str] = None) -> None:
+    def update_heartbeat(
+        self,
+        db: Session,
+        job_id: int,
+        progress: Optional[str] = None,
+        *,
+        claimed_at: Optional[datetime] = None,
+    ) -> None:
         """Update heartbeat timestamp and optional progress text.
+
+        ``claimed_at`` is the attempt's fencing token (the ``started_at`` the
+        claim wrote — see ``poll_and_run_one``).  When given, the write is
+        conditioned on ``status = 'processing' AND started_at = :claimed`` so
+        a stale attempt — one the orphan reaper re-queued and a peer
+        re-claimed — can neither keep the new owner's lease warm nor
+        overwrite its progress.  A zero-row update raises ``ParseFailure``:
+        this attempt no longer owns the job and must stop writing scan data.
 
         Raises ``ParseFailure`` if the job has been cancelled or has exceeded
         the configured timeout, giving the active parser a chance to bail out.
@@ -389,15 +413,30 @@ class IngestionService:
 
         now = datetime.now(timezone.utc)
 
-        db.execute(
+        params = {"hb": now, "jid": job_id, **({"progress": progress} if progress is not None else {})}
+        predicate = " WHERE id = :jid"
+        if claimed_at is not None:
+            predicate += " AND status = 'processing' AND started_at = :claimed"
+            params["claimed"] = claimed_at
+        res = db.execute(
             text(
                 "UPDATE ingestion_jobs SET last_heartbeat = :hb"
                 + (", progress = :progress" if progress is not None else "")
-                + " WHERE id = :jid"
+                + predicate
             ),
-            {"hb": now, "jid": job_id, **({"progress": progress} if progress is not None else {})},
+            params,
         )
         db.commit()
+        if claimed_at is not None and res.rowcount == 0:
+            logger.warning(
+                "Ingestion job %s: stale attempt (claimed %s) — heartbeat skipped; "
+                "another attempt owns the job",
+                job_id, claimed_at,
+            )
+            raise ParseFailure(
+                "Job re-claimed by another worker",
+                user_message="Superseded by a newer attempt",
+            )
 
         # Single DB read for both cancellation (cross-process) and timeout checks
         job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
@@ -665,6 +704,13 @@ class IngestionService:
             job_id = row[0]
             # Transition to processing inside the same transaction that
             # holds the row lock so no other worker can grab it.
+            # started_at doubles as this attempt's fencing token (same
+            # scheme as report_job_service): rewritten on every claim,
+            # nulled by the reaper on requeue.  Heartbeat, completion and
+            # failure writes all condition on it, so an attempt whose lease
+            # was reaped and re-claimed by a peer cannot renew the new
+            # owner's heartbeat, publish over its result, or fail it.
+            claimed_at = datetime.now(timezone.utc)
             db.execute(
                 text(
                     "UPDATE ingestion_jobs "
@@ -672,7 +718,7 @@ class IngestionService:
                     "    message = 'Processing queued file' "
                     "WHERE id = :jid"
                 ),
-                {"now": datetime.now(timezone.utc), "jid": job_id},
+                {"now": claimed_at, "jid": job_id},
             )
             db.commit()
         except Exception:
@@ -682,10 +728,62 @@ class IngestionService:
             db.close()
 
         # Now process outside the row-lock transaction.
-        self._run_job(job_id)
+        self._run_job(job_id, claimed_at=claimed_at)
         return True
 
-    def _run_job(self, job_id: int) -> None:
+    def _fail_job_guarded(
+        self,
+        db: Session,
+        job_id: int,
+        claimed_at: Optional[datetime],
+        *,
+        error_message: str,
+        message: Optional[str],
+        last_error: Optional[str],
+        parse_error_id: Optional[str],
+    ) -> bool:
+        """Transition processing→failed for THIS attempt only.
+
+        Conditioned on the fencing token (when the caller has one) so a
+        stale attempt's late failure can't clobber a row the reaper already
+        re-queued or a peer re-claimed.  Returns True if the row was written.
+        """
+        params = {
+            "jid": job_id,
+            "err": error_message,
+            "last_error": last_error,
+            "peid": parse_error_id,
+            "ts": datetime.now(timezone.utc),
+        }
+        set_msg = ""
+        if message is not None:
+            set_msg = "message = :msg, "
+            params["msg"] = message
+        predicate = "WHERE id = :jid"
+        if claimed_at is not None:
+            predicate += " AND status = 'processing' AND started_at = :claimed"
+            params["claimed"] = claimed_at
+        res = db.execute(
+            text(
+                "UPDATE ingestion_jobs SET status = 'failed', error_message = :err, "
+                + set_msg
+                + "retry_count = COALESCE(retry_count, 0) + 1, "
+                "last_error = :last_error, parse_error_id = :peid, completed_at = :ts "
+                + predicate
+            ),
+            params,
+        )
+        db.commit()
+        if res.rowcount == 0:
+            logger.warning(
+                "Ingestion job %s: stale attempt (claimed %s) — failure write skipped; "
+                "the row is no longer this attempt's to fail",
+                job_id, claimed_at,
+            )
+            return False
+        return True
+
+    def _run_job(self, job_id: int, claimed_at: Optional[datetime] = None) -> None:
         db = _session_module.SessionLocal()
         try:
             job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
@@ -705,6 +803,7 @@ class IngestionService:
             _active_job.service = self
             _active_job.db = db
             _active_job.job_id = job_id
+            _active_job.claimed_at = claimed_at
 
             result = self._process_job(db, job)
             job = db.get(IngestionJob, job_id)  # Refresh job state
@@ -715,12 +814,16 @@ class IngestionService:
                 # processing→completed ATOMICALLY; a zero-row update means the job
                 # was cancelled (or reaped) and must NOT be resurrected as
                 # completed, even though the parser's data committed.
+                _params = {"ts": datetime.now(timezone.utc), "jid": job_id}
+                _predicate = "WHERE id=:jid AND status='processing'"
+                if claimed_at is not None:
+                    # Fencing token: a re-claimed job belongs to the newer
+                    # attempt; this one's result must not be published over it.
+                    _predicate += " AND started_at=:claimed"
+                    _params["claimed"] = claimed_at
                 _claimed = db.execute(
-                    text(
-                        "UPDATE ingestion_jobs SET status='completed', completed_at=:ts "
-                        "WHERE id=:jid AND status='processing'"
-                    ),
-                    {"ts": datetime.now(timezone.utc), "jid": job_id},
+                    text("UPDATE ingestion_jobs SET status='completed', completed_at=:ts " + _predicate),
+                    _params,
                 ).rowcount
                 if not _claimed:
                     logger.info(
@@ -803,26 +906,24 @@ class IngestionService:
                         db.rollback()
         except ParseFailure as exc:
             db.rollback()
-            job = db.get(IngestionJob, job_id)
-            if job:
-                # Audit finding H4: populate the retry_count + last_error
-                # dead-letter columns so the ingestion queue UI can
-                # surface repeated failures distinctly from one-off
-                # errors.  Parse failures are terminal on the first
-                # attempt (the file is structurally invalid, retrying
-                # won't help), so we still transition to 'failed' in
-                # one hop — retry_count records that this job was
-                # attempted once and failed deterministically.
-                job.status = "failed"
-                job.error_message = exc.user_message or exc.underlying_error or str(exc)
-                job.message = job.error_message
-                job.retry_count = (job.retry_count or 0) + 1
-                job.last_error = f"ParseFailure: {job.error_message}"[:4000]
-                if exc.error_id:
-                    job.message = f"{job.message} (Error ID: {exc.error_id})"
-                job.parse_error_id = exc.error_id
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
+            # Audit finding H4: populate the retry_count + last_error
+            # dead-letter columns so the ingestion queue UI can
+            # surface repeated failures distinctly from one-off
+            # errors.  Parse failures are terminal on the first
+            # attempt (the file is structurally invalid, retrying
+            # won't help), so we still transition to 'failed' in
+            # one hop — retry_count records that this job was
+            # attempted once and failed deterministically.
+            # Guarded on the fencing token: a stale attempt must not fail
+            # a row the reaper re-queued or a peer now owns.
+            _err = exc.user_message or exc.underlying_error or str(exc)
+            _msg = f"{_err} (Error ID: {exc.error_id})" if exc.error_id else _err
+            self._fail_job_guarded(
+                db, job_id, claimed_at,
+                error_message=_err, message=_msg,
+                last_error=f"ParseFailure: {_err}"[:4000],
+                parse_error_id=exc.error_id,
+            )
             logger.warning(
                 "Failed ingestion job %s due to parse error: %s",
                 job_id,
@@ -840,24 +941,23 @@ class IngestionService:
             # flipping status back to 'queued'.
             import traceback as _tb
             db.rollback()
-            job = db.get(IngestionJob, job_id)
-            if job:
-                job.status = "failed"
-                # User-facing message stays generic — raw str(exc) on a driver
-                # error carries SQL fragments and container paths into the
-                # upload UI. The full detail lives in last_error below.
-                job.error_message = (
+            # User-facing message stays generic — raw str(exc) on a driver
+            # error carries SQL fragments and container paths into the
+            # upload UI. The full detail lives in last_error below.
+            # Keep a trimmed traceback for the UI — full stack would bloat
+            # the column for huge parse graphs.  Guarded on the fencing token
+            # like the ParseFailure path.
+            tb_text = _tb.format_exc()
+            self._fail_job_guarded(
+                db, job_id, claimed_at,
+                error_message=(
                     "Processing failed unexpectedly. See details or retry; "
                     "if it persists, check the server logs."
-                )
-                job.retry_count = (job.retry_count or 0) + 1
-                # Keep a trimmed traceback for the UI — full stack
-                # would bloat the column for huge parse graphs.
-                tb_text = _tb.format_exc()
-                job.last_error = (tb_text[-4000:] if len(tb_text) > 4000 else tb_text)
-                job.completed_at = datetime.now(timezone.utc)
-                job.parse_error_id = None
-                db.commit()
+                ),
+                message=None,
+                last_error=(tb_text[-4000:] if len(tb_text) > 4000 else tb_text),
+                parse_error_id=None,
+            )
             logger.exception("Failed ingestion job %s", job_id)
         finally:
             _active_job.service = None

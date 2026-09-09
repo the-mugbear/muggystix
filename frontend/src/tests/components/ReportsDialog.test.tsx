@@ -10,12 +10,35 @@ vi.mock('../../services/api', () => ({
   getReportJob: vi.fn(),
   downloadReportJob: vi.fn(),
   listReportJobs: vi.fn().mockResolvedValue([]),
+  getReportLimits: vi.fn().mockResolvedValue({
+    in_memory_host_cap: 2000,
+    streamed_host_cap: 50000,
+    per_format: { csv: null, html: 50000, json: 2000, 'markdown-bundle': 2000, 'agent-package': 2000 },
+  }),
   dismissReportJob: vi.fn(),
 }));
 
 describe('ReportsDialog — async report jobs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  // Review 2026-09-09 UX#1 — the cap shown must be the server's effective cap
+  // for the SELECTED format, never a hardcoded constant.
+  it('warns with the per-format cap from /reports/limits', async () => {
+    render(<ReportsDialog open onClose={vi.fn()} filters={{}} totalHosts={3000} />);
+    await waitFor(() => expect(api.getReportLimits).toHaveBeenCalled());
+    // Default selection is comprehensive/HTML: 3,000 < 50,000 → no warning …
+    await waitFor(() => expect(screen.queryByText(/includes the first/)).toBeNull());
+    // … but the zip bundles are over their in-memory cap, so the note shows.
+    expect(screen.getByText(/\.zip bundles below include the first 2,000/)).toBeInTheDocument();
+  });
+
+  it('shows no cap number until limits have loaded', async () => {
+    (api.getReportLimits as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise(() => {}));
+    render(<ReportsDialog open onClose={vi.fn()} filters={{}} totalHosts={999999} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText(/includes the first/)).toBeNull();
   });
 
   it('enqueues a job for a heavy (zip) format and downloads on completion', async () => {
