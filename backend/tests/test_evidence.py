@@ -47,6 +47,8 @@ def test_domains_eligible_and_assessed(db_session, test_project):
     assert dom["web_tls"]["numerator"] == 1 and dom["web_tls"]["denominator"] == 1
     # Auth: host B eligible (445), but no SMB-signing/NetExec evidence → 0/1.
     assert dom["auth_smb_ad"]["numerator"] == 0 and dom["auth_smb_ad"]["denominator"] == 1
+    # OS identification (2.329.0): of the 2 port-bearing hosts, none has an OS name.
+    assert dom["os_detection"]["numerator"] == 0 and dom["os_detection"]["denominator"] == 2
 
     tools = {t["tool"] for t in out["contributing_tools"]}
     assert "nmap" in tools

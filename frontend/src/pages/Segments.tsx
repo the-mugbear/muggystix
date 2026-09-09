@@ -17,7 +17,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Copy, Download, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { downloadSystemicReport } from '../services/api/insights';
 
 import {
   getSubnetInsights,
@@ -528,6 +529,20 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
 // ---------------------------------------------------------------------------
 const SitePanel: React.FC = () => {
   const { currentProject } = useProject();
+  const siteToast = useToast();
+  const [briefingSite, setBriefingSite] = useState<string | null>(null);
+  // Per-site briefing: the executive systemic report with hotspots / outliers
+  // / profiles scoped to this site — what a site owner takes to their meeting.
+  const createSiteBriefing = async (site: string) => {
+    setBriefingSite(site);
+    try {
+      await downloadSystemicReport(site);
+    } catch (e) {
+      siteToast.error(formatApiError(e, `Could not create the briefing for ${site}.`));
+    } finally {
+      setBriefingSite(null);
+    }
+  };
   const [sites, setSites] = useState<PostureSite[] | null>(null);
   const [adopted, setAdopted] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -615,6 +630,20 @@ const SitePanel: React.FC = () => {
                         <span className="block truncate text-caption text-muted-foreground" title={s.owner_name}>
                           {s.owner_name}
                         </span>
+                      )}
+                      {s.site && !s.unassigned && (
+                        <button
+                          type="button"
+                          onClick={() => createSiteBriefing(s.site as string)}
+                          disabled={briefingSite !== null}
+                          aria-label={`Create briefing for ${s.site}`}
+                          className="mt-xxs inline-flex items-center gap-xxs text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded disabled:opacity-60"
+                        >
+                          {briefingSite === s.site
+                            ? <Loader2 className="size-3 animate-spin" aria-hidden />
+                            : <FileText className="size-3" aria-hidden />}
+                          Briefing
+                        </button>
                       )}
                     </TableCell>
                     <TableCell className="align-top">

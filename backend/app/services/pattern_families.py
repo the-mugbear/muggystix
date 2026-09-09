@@ -23,7 +23,7 @@ current has: DSL does not offer for monocultures.
 """
 from __future__ import annotations
 
-from typing import Dict, Literal, Optional
+from typing import Dict, Literal, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Classification — how widely a weakness has spread. Replaces the earlier
@@ -115,6 +115,38 @@ _CONDITION_FAMILY: Dict[str, str] = {
     "weak_auth": "identity_auth",
     "smb_signing": "lateral_movement",
 }
+
+
+# Pattern family → the assessment domain (evidence_service.EVIDENCE_DOMAINS key)
+# whose evidence can DETECT that family.  This is what turns the heatmap's
+# denominator from "hosts in the site" into "hosts that were actually checked":
+# a host outside the family's domain evidence set was never looked at for it,
+# and "0 affected" there must read as unassessed, not clean.  One rationale
+# per family; ``test_pattern_families`` fails if a family is unmapped or maps
+# to a domain the evidence service doesn't compute.
+FAMILY_EVIDENCE_DOMAIN: Dict[str, Tuple[str, str]] = {
+    "identity_auth": ("auth_smb_ad",
+        "Guest/anonymous auth is judged from NetExec results — the auth/SMB/AD domain's evidence."),
+    "encryption_trust": ("web_tls",
+        "Expired / self-signed certs and weak protocols are observed on fingerprinted web interfaces."),
+    "lifecycle_patching": ("os_detection",
+        "End-of-life is judged from the fingerprinted OS name; a host with no OS identification was never checked."),
+    "legacy_cleartext": ("port_discovery",
+        "Cleartext services are judged from open port numbers, so any port-scanned host was checked."),
+    "lateral_movement": ("auth_smb_ad",
+        "SMB signing posture is an SMB/NetExec observation."),
+    "vuln_monoculture": ("vuln_assessment",
+        "Per-plugin monocultures come from vulnerability scanner findings."),
+    "technology_monoculture": ("web_tls",
+        "Technology concentration is read from web-interface fingerprints."),
+}
+
+
+def evidence_domain_for_family(family_key: str) -> str:
+    """Domain key whose evidence detects ``family_key``.  KeyError on an
+    unmapped family — deliberately loud, so a new family can't silently ship
+    with an inventory denominator."""
+    return FAMILY_EVIDENCE_DOMAIN[family_key][0]
 
 
 def family_for_condition(condition_key: str) -> Optional[PatternFamily]:

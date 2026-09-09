@@ -56,10 +56,13 @@ from app.services.subnet_insight_service import (
 )
 from app.services.pattern_families import (
     classify,
+    evidence_domain_for_family,
     family_for_condition,
     family_for_vuln,
     FAMILIES,
+    _CONDITION_FAMILY,
 )
+from app.services.evidence_service import DOMAIN_LABELS, assessed_host_ids
 from app.schemas.metric import ratio_metric
 
 # A weakness must touch at least this fraction of in-scope hosts before it's
@@ -405,8 +408,13 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         })
     diagnostic_profiles.sort(key=lambda r: (-len(r["conditions"]), -r["host_count"]))
 
+    # Per assessment domain, the in-scope hosts that carry evidence for it —
+    # the heatmap's honest denominator (evidence_service owns the definition).
+    assessed_by_domain: Dict[str, Set[int]] = {
+        k: v & in_scope for k, v in assessed_host_ids(db, project_id).items()
+    }
     family_matrix = _build_family_site_matrix(
-        affected, host_site, in_scope, subnet_meta,
+        affected, host_site, in_scope, subnet_meta, assessed_by_domain,
     )
     family_summary = _build_family_summary(
         affected, host_subnet, host_site, cond_class, total_hosts,
@@ -488,17 +496,34 @@ def _build_family_site_matrix(
     host_site: Dict[int, Optional[int]],
     in_scope: Set[int],
     subnet_meta: Dict[int, Dict[str, Any]],
+    assessed_by_domain: Optional[Dict[str, Set[int]]] = None,
 ) -> Dict[str, Any]:
     """Condition-family × site matrix — the Overview heatmap.
 
     Rows are pattern families (each carrying the per-host conditions that roll up
     to it); columns are sites (plus an 'unassigned' column when in-scope hosts
-    have no site). Each cell is a Metric: numerator = hosts in this site affected
-    by any of the family's conditions, denominator = in-scope hosts in this site
-    (Phase 2 uses the full site population as the assessed denominator; per-domain
-    eligibility refines this in Phase 4). ``drilldown_filter`` carries the family's
-    condition keys + the site so the frontend can open exactly those hosts.
+    have no site).  Every family that has per-host conditions gets a row, even
+    with nothing affected — that is exactly the row that has to say "checked
+    and clean" or "never assessed".
+
+    Each cell is a Metric plus the three counts it is made of:
+      ``affected``   hosts in this site hit by any of the family's conditions
+      ``assessed``   in-scope hosts in this site that carry evidence in the
+                     family's assessment domain (``pattern_families.
+                     FAMILY_EVIDENCE_DOMAIN`` → ``evidence_service.
+                     assessed_host_ids``) — the DENOMINATOR (``value`` =
+                     affected / assessed)
+      ``in_scope``   the site's in-scope inventory (the pre-2.329 denominator,
+                     kept for reference)
+      ``unassessed`` ``assessed == 0``: nothing in this site was checked for
+                     this family, which is a different thing from
+                     ``affected == 0``
+    Assessed sets are never summed across domains.  Segments carry ``in_scope``
+    (``assessed`` is kept as its alias for older readers — the per-cell value is
+    the authoritative one).  ``drilldown_filter`` carries the family's condition
+    keys + the site so the frontend can open exactly those hosts.
     """
+    assessed_by_domain = assessed_by_domain or {}
     # site_id -> label (from subnet metadata; a site may span several subnets).
     site_label: Dict[int, str] = {}
     for meta in subnet_meta.values():
@@ -520,6 +545,9 @@ def _build_family_site_matrix(
         {
             "key": k,
             "label": site_label.get(int(k)) if k != UNASSIGNED else "Unassigned",
+            "in_scope": len(seg_hosts[k]),
+            # Legacy alias of in_scope (was the denominator before per-domain
+            # evidence existed); cells carry the real per-family figure.
             "assessed": len(seg_hosts[k]),
         }
         for k in segment_keys
@@ -530,45 +558,53 @@ def _build_family_site_matrix(
         if s["label"] is None:
             s["label"] = f"Site {s['key']}"
 
-    # Rows: group the per-host condition affected-sets by family.
+    # Rows: group the per-host condition affected-sets by family.  Every family
+    # with conditions is a row (zero affected included) — see the docstring.
     family_conditions: Dict[str, List[str]] = defaultdict(list)
     family_hosts: Dict[str, Set[int]] = defaultdict(set)
-    family_label: Dict[str, str] = {}
-    for cond_key, hosts in affected.items():
+    for cond_key in affected:
         fam = family_for_condition(cond_key)
         if fam is None:
             continue
         family_conditions[fam.key].append(cond_key)
-        family_hosts[fam.key] |= hosts
-        family_label[fam.key] = fam.label
+        family_hosts[fam.key] |= affected[cond_key]
 
     rows: List[Dict[str, Any]] = []
-    for fam_key, fam_hosts in family_hosts.items():
-        if not fam_hosts:
-            continue
-        conds = sorted(family_conditions[fam_key])
+    for fam_key, conds_list in family_conditions.items():
+        fam = FAMILIES[fam_key]
+        fam_hosts = family_hosts[fam_key]
+        conds = sorted(conds_list)
+        domain = evidence_domain_for_family(fam_key)
+        domain_assessed = assessed_by_domain.get(domain, set())
         cells = []
         for seg in segments:
             seg_set = seg_hosts[seg["key"]]
             hit = len(fam_hosts & seg_set)
+            checked = len(domain_assessed & seg_set)
             cell = ratio_metric(
-                hit, seg["assessed"],
+                hit, checked,
                 drilldown_filter={
                     "conditions": conds,
                     "site": seg["label"] if seg["key"] != UNASSIGNED else None,
                 },
             ).model_dump()
             cell["segment"] = seg["key"]
+            cell["affected"] = hit
+            cell["assessed"] = checked
+            cell["in_scope"] = len(seg_set)
+            cell["unassessed"] = checked == 0
             cells.append(cell)
         rows.append({
             "family": fam_key,
-            "family_label": family_label[fam_key],
+            "family_label": fam.label,
             "conditions": conds,
+            "evidence_domain": domain,
+            "evidence_domain_label": DOMAIN_LABELS.get(domain, domain),
             "affected_total": len(fam_hosts),
             "cells": cells,
         })
-    # Worst-first: families affecting the most hosts at the top.
-    rows.sort(key=lambda r: -r["affected_total"])
+    # Worst-first: families affecting the most hosts at the top; stable by label.
+    rows.sort(key=lambda r: (-r["affected_total"], r["family_label"]))
 
     return {"segments": segments, "rows": rows}
 

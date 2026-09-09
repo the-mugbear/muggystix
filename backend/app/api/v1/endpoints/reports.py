@@ -99,6 +99,10 @@ def generate_hosts_html_report(
 
 @router.get("/systemic.html")
 def generate_systemic_executive_report(
+    site: Optional[str] = Query(
+        None, max_length=255,
+        description="Site name: scope the hotspot / outlier / profile sections to this site (estate-wide patterns stay estate-wide).",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -111,8 +115,11 @@ def generate_systemic_executive_report(
     so this renders synchronously rather than via the async report-job
     pipeline."""
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    html_doc = generator.generate_systemic_executive_html()
-    filename = f"systemic_insights_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    html_doc = generator.generate_systemic_executive_html(site=site or None)
+    slug = ""
+    if site:
+        slug = "_" + "".join(ch if ch.isalnum() else "-" for ch in site)[:40]
+    filename = f"systemic_insights{slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     return Response(
         content=html_doc,
         media_type="text/html",

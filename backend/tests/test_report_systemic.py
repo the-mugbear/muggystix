@@ -78,3 +78,27 @@ def test_executive_html_not_adopted_without_scope(db_session, test_project, test
     """No scoped subnets → the export renders the onboarding state, not a crash."""
     html_doc = _gen(db_session, test_project.id, test_user.id).generate_systemic_executive_html()
     assert "No scoped subnets" in html_doc
+
+
+def test_executive_html_site_filter_scopes_hotspots(db_session, test_project, test_user):
+    """``site=`` narrows the per-site sections (hotspots, outliers, profiles)
+    to that site; estate-wide blind spots stay estate-wide."""
+    _estate_with_eol_blind_spot(db_session, test_project.id)
+    gen = _gen(db_session, test_project.id, test_user.id)
+    whole = gen.generate_systemic_executive_html()
+    assert "HQ" in whole and "Branch" in whole and "Scoped to site" not in whole
+
+    hq = _gen(db_session, test_project.id, test_user.id).generate_systemic_executive_html(site="HQ")
+    assert "Scoped to site: HQ" in hq
+    assert "End-of-life operating systems" in hq          # estate pattern retained
+    hotspots = hq.split("Site &amp; Subnet Hotspots", 1)[1]
+    assert "HQ" in hotspots and "10.1.1.0/24" in hotspots
+    assert "Branch" not in hotspots and "10.2.2.0/24" not in hotspots
+
+
+def test_systemic_html_endpoint_accepts_site(client, db_session, test_project):
+    _estate_with_eol_blind_spot(db_session, test_project.id)
+    r = client.get(f"/api/v1/projects/{test_project.id}/reports/systemic.html?site=HQ")
+    assert r.status_code == 200, r.text
+    assert "Scoped to site: HQ" in r.text
+    assert 'filename=systemic_insights_HQ_' in r.headers["content-disposition"]

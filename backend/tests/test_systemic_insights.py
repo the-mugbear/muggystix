@@ -287,3 +287,85 @@ def test_host_inherits_site_from_labelled_parent_subnet(db_session, test_project
     assert loc["cidr"] == "10.1.2.0/24"
     assert loc["site"] == "DC-East"            # inherited from the labelled /16
     assert loc["site_id"] == site.id
+
+
+# ---------------------------------------------------------------------------
+# Assessed denominator (2.329.0).  A heatmap cell's denominator is the hosts
+# in the site that carry evidence in the family's assessment domain — so a
+# site nobody TLS-scanned reads "unassessed" for TLS families, not "clean".
+# ---------------------------------------------------------------------------
+from app.services.pattern_families import FAMILIES, FAMILY_EVIDENCE_DOMAIN, _CONDITION_FAMILY, evidence_domain_for_family
+from app.services.evidence_service import EVIDENCE_DOMAINS
+
+
+def test_every_family_maps_to_a_computed_evidence_domain():
+    domain_keys = {d["key"] for d in EVIDENCE_DOMAINS}
+    for fam_key in FAMILIES:
+        assert fam_key in FAMILY_EVIDENCE_DOMAIN, f"{fam_key} has no evidence domain — heatmap would fall back to inventory"
+        domain, rationale = FAMILY_EVIDENCE_DOMAIN[fam_key]
+        assert domain in domain_keys, f"{fam_key} maps to {domain!r}, which evidence_service does not compute"
+        assert rationale.strip()
+    # Every condition family (the heatmap rows) resolves without a KeyError.
+    for fam_key in set(_CONDITION_FAMILY.values()):
+        assert evidence_domain_for_family(fam_key) in domain_keys
+
+
+def _matrix_cell(insights, family, segment_label):
+    row = next(r for r in insights["family_matrix"]["rows"] if r["family"] == family)
+    seg = next(s for s in insights["family_matrix"]["segments"] if s["label"] == segment_label)
+    return row, next(c for c in row["cells"] if c["segment"] == seg["key"]), seg
+
+
+def test_heatmap_denominator_is_assessed_not_inventory(db_session, test_project):
+    pid = test_project.id
+    scan, sn_a, sn_b = _estate(db_session, pid)
+    # HQ: three hosts, one with a clean web interface (TLS evidence, no issue).
+    a1 = _host(db_session, pid, "10.1.1.1"); _map(db_session, a1, sn_a)
+    a2 = _host(db_session, pid, "10.1.1.2"); _map(db_session, a2, sn_a)
+    a3 = _host(db_session, pid, "10.1.1.3"); _map(db_session, a3, sn_a)
+    db_session.add(models.WebInterface(
+        host_id=a1.id, project_id=pid, scan_id=scan.id, url="https://10.1.1.1", protocol="https",
+    ))
+    # Branch: two hosts, no web evidence at all.
+    b1 = _host(db_session, pid, "10.2.2.1"); _map(db_session, b1, sn_b)
+    b2 = _host(db_session, pid, "10.2.2.2"); _map(db_session, b2, sn_b)
+    db_session.commit()
+
+    out = compute_systemic_insights(db_session, pid)
+    matrix = out["family_matrix"]
+    # Every condition family is a row even with nothing affected — that is the
+    # row that has to distinguish clean from unassessed.
+    assert {r["family"] for r in matrix["rows"]} == set(_CONDITION_FAMILY.values())
+
+    row, hq, hq_seg = _matrix_cell(out, "encryption_trust", "HQ")
+    assert row["evidence_domain"] == "web_tls"
+    assert row["evidence_domain_label"] == "Web / TLS"
+    assert hq_seg["in_scope"] == 3
+    # HQ: one host checked for TLS, none affected → assessed-and-clean.
+    assert (hq["affected"], hq["assessed"], hq["in_scope"]) == (0, 1, 3)
+    assert hq["unassessed"] is False
+    assert hq["numerator"] == 0 and hq["denominator"] == 1
+
+    _row, br, br_seg = _matrix_cell(out, "encryption_trust", "Branch")
+    # Branch: in scope but nobody looked → unassessed, NOT clean.
+    assert br_seg["in_scope"] == 2
+    assert (br["affected"], br["assessed"], br["in_scope"]) == (0, 0, 2)
+    assert br["unassessed"] is True
+
+    # The denominator is per family: lifecycle (OS identification) has no
+    # evidence anywhere here — every cell unassessed.
+    _row, hq_os, _ = _matrix_cell(out, "lifecycle_patching", "HQ")
+    assert hq_os["unassessed"] is True and hq_os["in_scope"] == 3
+
+
+def test_heatmap_assessed_counts_affected_host_as_assessed(db_session, test_project):
+    pid = test_project.id
+    scan, sn_a, _sn_b = _estate(db_session, pid)
+    a1 = _host(db_session, pid, "10.1.1.1", os_name="Windows XP Professional"); _map(db_session, a1, sn_a)
+    a2 = _host(db_session, pid, "10.1.1.2"); _map(db_session, a2, sn_a)
+    db_session.commit()
+    out = compute_systemic_insights(db_session, pid)
+    _row, cell, _seg = _matrix_cell(out, "lifecycle_patching", "HQ")
+    # One host has an OS name (checked, EOL), one has none (never checked).
+    assert (cell["affected"], cell["assessed"], cell["in_scope"]) == (1, 1, 2)
+    assert cell["value"] == 1.0 and cell["unassessed"] is False

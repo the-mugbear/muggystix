@@ -232,8 +232,11 @@ export const familyCellHostsHref = (
  * authed client (the endpoint needs the JWT) and saved as a blob, mirroring the
  * host-report download.
  */
-export const downloadSystemicReport = async (): Promise<void> => {
-  const response = await api.get(`${p()}/reports/systemic.html`, { responseType: 'blob' });
+/** Download the executive systemic briefing (standalone HTML, synchronous).
+ *  `site` scopes the hotspot / outlier / profile sections to one site. */
+export const downloadSystemicReport = async (site?: string | null): Promise<void> => {
+  const qs = site ? `?site=${encodeURIComponent(site)}` : '';
+  const response = await api.get(`${p()}/reports/systemic.html${qs}`, { responseType: 'blob' });
   const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/html' }));
   const a = document.createElement('a');
   a.href = url;

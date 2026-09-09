@@ -174,7 +174,7 @@ const Patterns: React.FC = () => {
     try {
       await downloadSystemicReport();
     } catch (e) {
-      toast.error(formatApiError(e, 'Could not export the report.'));
+      toast.error(formatApiError(e, 'Could not create the briefing.'));
     } finally {
       setExporting(false);
     }
@@ -222,7 +222,7 @@ const Patterns: React.FC = () => {
             <Download className="size-3.5" aria-hidden /> JSON
           </Button>
           <Button size="sm" variant="outline" onClick={handleExportReport} disabled={loading || exporting}>
-            <FileText className={`size-3.5 ${exporting ? 'animate-pulse' : ''}`} aria-hidden /> Export report
+            <FileText className={`size-3.5 ${exporting ? 'animate-pulse' : ''}`} aria-hidden /> Create briefing
           </Button>
           <Button size="sm" variant="outline" onClick={load} disabled={loading}>
             <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh

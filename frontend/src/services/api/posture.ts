@@ -68,15 +68,25 @@ export interface Metric {
   confidence?: number | null;
 }
 
-/** One cell of the condition-family × site heatmap. */
+/** One cell of the condition-family × site heatmap (backend 2.329.0).
+ *  value = affected / assessed. `assessed` is the site's in-scope hosts that
+ *  carry evidence in the row's assessment domain — the honest denominator;
+ *  `in_scope` is the site inventory; `unassessed` (assessed === 0) is a
+ *  different state from affected === 0. */
 export interface HeatmapCell extends Metric {
   segment: string;
+  affected: number;
+  assessed: number;
+  in_scope: number;
+  unassessed: boolean;
   drilldown_filter?: { conditions: string[]; site: string | null } | null;
 }
 
 export interface HeatmapSegment {
   key: string;
   label: string;
+  in_scope: number;
+  /** Legacy alias of in_scope — the per-cell `assessed` is authoritative. */
   assessed: number;
 }
 
@@ -84,6 +94,9 @@ export interface HeatmapRow {
   family: string;
   family_label: string;
   conditions: string[];
+  /** evidence_service domain whose evidence detects this family. */
+  evidence_domain: string;
+  evidence_domain_label: string;
   affected_total: number;
   cells: HeatmapCell[];
 }

@@ -1534,12 +1534,18 @@ class ReportGenerator:
                 }
         return self._hotspots_cache
 
-    def _generate_hotspots_html(self) -> str:
-        """HTML fragment: a Sites table + a Subnets table, worst-first."""
+    def _generate_hotspots_html(self, site: Optional[str] = None) -> str:
+        """HTML fragment: a Sites table + a Subnets table, worst-first.
+        ``site`` keeps only that site's row and its subnets — the briefing a
+        site owner takes into their own meeting."""
         data = self._build_hotspots()
         parts: List[str] = []
 
         sites = data["sites"]
+        subnets_all = data["subnets"]
+        if site:
+            sites = [s for s in sites if (s.get("site") or "") == site]
+            subnets_all = [s for s in subnets_all if (s.get("site") or "") == site]
         if data["sites_adopted"] and sites:
             rows = []
             for s in sites:
@@ -1569,18 +1575,18 @@ class ReportGenerator:
         elif self.project_id:
             parts.append('<p class="muted">No sites defined — assign subnets to sites to rank site hotspots.</p>')
 
-        subnets = data["subnets"]
+        subnets = subnets_all
         if data["subnets_adopted"] and subnets:
             rows = []
             for s in subnets:
-                site = "—" if not s.get("site") else s["site"]
+                site_name = "—" if not s.get("site") else s["site"]
                 tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
                 sev = s["exposure"]["by_severity"]
                 hy = s["hygiene"]
                 rows.append(
                     "<tr>"
                     f"<td>{html.escape(str(s.get('cidr', '')))}</td>"
-                    f"<td>{html.escape(str(site))}</td>"
+                    f"<td>{html.escape(str(site_name))}</td>"
                     f"<td>{tier}</td>"
                     f"<td>{s.get('host_count', 0)}</td>"
                     f"<td>{s['exposure'].get('weighted_score', 0)}</td>"
@@ -1687,9 +1693,11 @@ class ReportGenerator:
                 self._systemic_cache = compute_systemic_insights(self.db, self.project_id)
         return self._systemic_cache
 
-    def _generate_systemic_html(self) -> str:
+    def _generate_systemic_html(self, site: Optional[str] = None) -> str:
         """HTML fragment: estate blind spots + systemic conditions + segment
-        outliers + diagnostic profiles, worst-first."""
+        outliers + diagnostic profiles, worst-first.  ``site`` narrows the
+        per-subnet sections (outliers, profiles) to that site; the estate-wide
+        blind spots and conditions are by definition not per-site and stay."""
         data = self._build_systemic()
         if not data.get("adopted"):
             return '<p class="muted">No scoped subnets — define a scope to surface systemic patterns across the estate.</p>'
@@ -1697,6 +1705,9 @@ class ReportGenerator:
         conditions = data.get("conditions") or []
         outliers = data.get("segment_outliers") or []
         profiles = data.get("diagnostic_profiles") or []
+        if site:
+            outliers = [o for o in outliers if (o.get("site") or "") == site]
+            profiles = [d for d in profiles if (d.get("site") or "") == site]
         if not blind and not conditions:
             return '<p class="muted">No weakness recurs widely enough across the in-scope estate to suggest a systemic process failure.</p>'
 
@@ -1873,15 +1884,23 @@ class ReportGenerator:
 
         return lines
 
-    def generate_systemic_executive_html(self) -> str:
+    def generate_systemic_executive_html(self, site: Optional[str] = None) -> str:
         """Standalone, lightweight executive systemic report — estate summary +
         blind spots + conditions + outliers + profiles, plus the site/subnet
         hotspots, and NO per-host dossiers.
 
         Purpose-built as a self-contained HTML file for sharing at a high-level
         meeting: the comprehensive host report is the wrong container for a
-        manager.  Bounded systemic payload, so it renders synchronously."""
+        manager.  Bounded systemic payload, so it renders synchronously.
+
+        ``site`` (a site name) scopes the per-site sections — hotspots, segment
+        outliers, diagnostic profiles — to that site so the briefing matches the
+        posture context it was created from.  Estate-wide patterns stay
+        estate-wide: a site briefing still says what the whole estate suffers."""
         data = self._build_systemic()
+        site_note = (
+            f'<div class="report-subtitle">Scoped to site: {html.escape(site)}</div>' if site else ""
+        )
         css = ReportTemplates.get_css_styles()
         generated_at = datetime.now(timezone.utc)
         estate = data.get("estate") or {}
@@ -1911,6 +1930,7 @@ class ReportGenerator:
             <div>
                 <div class="report-title">Systemic Insights</div>
                 <div class="report-subtitle">Estate-wide weakness patterns — executive summary</div>
+                {site_note}
                 <div class="version-tag">Backend v{settings.APP_VERSION} | Frontend v{settings.FRONTEND_VERSION}</div>
             </div>
             <div><strong>Generated:</strong> {generated_at.strftime('%B %d, %Y at %I:%M %p')} UTC</div>
@@ -1922,11 +1942,11 @@ class ReportGenerator:
     </div>
     <div class="section">
         <div class="section-header">Systemic patterns</div>
-        <div class="section-content">{self._generate_systemic_html()}</div>
+        <div class="section-content">{self._generate_systemic_html(site=site)}</div>
     </div>
     <div class="section">
         <div class="section-header">Site &amp; Subnet Hotspots</div>
-        <div class="section-content">{self._generate_hotspots_html()}</div>
+        <div class="section-content">{self._generate_hotspots_html(site=site)}</div>
     </div>
 </body>
 </html>"""

@@ -13,14 +13,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Clock, Eye, HelpCircle, Loader2, RefreshCw, ShieldAlert,
+  AlertTriangle, ArrowUpRight, Clock, Eye, FileText, HelpCircle, Loader2, RefreshCw, ShieldAlert,
   ShieldCheck, Telescope, Layers, UserCheck,
 } from 'lucide-react';
 
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
-import { familyCellHostsHref } from '../services/api/insights';
+import { downloadSystemicReport, familyCellHostsHref } from '../services/api/insights';
+import { useToast } from '../contexts/ToastContext';
 import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
@@ -77,6 +78,22 @@ const SecurityPosture: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [reloadNonce, setReloadNonce] = useState(0);
+  const toast = useToast();
+  const [briefing, setBriefing] = useState(false);
+  // "Create briefing" — the executive systemic report, from this page rather
+  // than via the Hosts export detour. Synchronous standalone HTML; the
+  // Overview has no site selection, so it is estate-wide here (Segments
+  // offers the per-site variant).
+  const createBriefing = useCallback(async () => {
+    setBriefing(true);
+    try {
+      await downloadSystemicReport();
+    } catch (e) {
+      toast.error(formatApiError(e, 'Could not create the briefing.'));
+    } finally {
+      setBriefing(false);
+    }
+  }, [toast]);
   const load = useCallback(() => setReloadNonce((n) => n + 1), []);
 
   // Each fetch aborts the previous in-flight one — a rapid project switch
@@ -114,9 +131,17 @@ const SecurityPosture: React.FC = () => {
           </p>
         </div>
         <div className="flex flex-col items-end gap-xs">
-          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-          </Button>
+          <div className="flex items-center gap-xs">
+            <Button size="sm" variant="outline" onClick={createBriefing} disabled={briefing}>
+              {briefing
+                ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                : <FileText className="size-3.5" aria-hidden />}
+              Create briefing
+            </Button>
+            <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+              <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+            </Button>
+          </div>
           {data && <EvidenceCurrency evidence={data.evidence} />}
         </div>
       </div>
@@ -448,6 +473,13 @@ const Stat: React.FC<{
 // ---------------------------------------------------------------------------
 // Cell tint scales with the affected fraction so the eye lands on the worst
 // cells; the number is always shown (hover is never the only way to read it).
+// Unassessed cells are hatched so they can never be mistaken for a clean 0/N:
+// a diagonal stripe over the muted token, no heat.
+const unassessedCellStyle: React.CSSProperties = {
+  backgroundImage:
+    'repeating-linear-gradient(135deg, hsl(var(--muted-foreground) / 0.18) 0 3px, transparent 3px 8px)',
+};
+
 const heatCellStyle = (fraction: number): React.CSSProperties => {
   if (fraction <= 0) return {};
   // 0.12 → 0.55 alpha over the destructive token as the fraction climbs.
@@ -462,7 +494,7 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
       <CardHeader>
         <CardTitle className="flex items-center gap-xs">
           Where weaknesses concentrate
-          <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / in-scope hosts — how many of the site's in-scope inventory carry that family of weakness. The denominator is inventory, not hosts that were actually checked for this family, so a quiet cell means 'none observed', not 'checked and clean'. Darker = a larger share affected. Click a cell to open exactly those hosts." />
+          <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / assessed hosts — assessed means the site's in-scope hosts that carry evidence in the domain that can detect this family (hover a row label for its domain), so 0 of N is 'checked, none found'. A hatched cell is unassessed: nobody looked, which is not the same as clean. Darker = a larger share affected. Click a cell to open exactly those hosts." />
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -492,7 +524,7 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
                       <span className="block truncate text-caption font-medium text-foreground" title={seg.label}>
                         {seg.label}
                       </span>
-                      <span className="block text-caption text-muted-foreground">{seg.assessed} in scope</span>
+                      <span className="block text-caption text-muted-foreground">{seg.in_scope} in scope</span>
                     </th>
                   ))}
                 </tr>
@@ -501,22 +533,34 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
                 {hm.rows.map((row) => (
                   <tr key={row.family}>
                     <td className="p-xs align-middle">
-                      <span className="block truncate font-medium text-foreground" title={row.family_label}>
+                      <span className="block truncate font-medium text-foreground"
+                        title={`${row.family_label} — assessed via ${row.evidence_domain_label} evidence`}>
                         {row.family_label}
+                      </span>
+                      <span className="block truncate text-caption text-muted-foreground" title={row.evidence_domain_label}>
+                        via {row.evidence_domain_label}
                       </span>
                     </td>
                     {row.cells.map((cell) => {
-                      const href = cell.numerator > 0
+                      const href = cell.affected > 0
                         ? familyCellHostsHref(row.conditions, cell.drilldown_filter?.site)
                         : null;
-                      const label = `${cell.numerator}/${cell.denominator}`;
-                      const title = `${row.family_label} — ${cell.numerator} of ${cell.denominator} in-scope hosts affected`;
-                      const inner = cell.numerator === 0
-                        ? <span className="text-muted-foreground">—</span>
-                        : <span className="font-medium tabular-nums text-foreground">{label}</span>;
+                      // Three states, three presentations: unassessed (hatched,
+                      // "n/a"), assessed-and-clean ("—" over an assessed count),
+                      // affected (count / assessed).
+                      const title = cell.unassessed
+                        ? `${row.family_label} — not assessed: no ${row.evidence_domain_label} evidence for this site's hosts (${cell.in_scope} in scope)`
+                        : `${row.family_label} — ${cell.affected} of ${cell.assessed} assessed hosts affected (${cell.in_scope} in scope)`;
+                      const inner = cell.unassessed
+                        ? <span className="text-caption italic text-muted-foreground">n/a</span>
+                        : cell.affected === 0
+                          ? <span className="text-muted-foreground">0/{cell.assessed}</span>
+                          : <span className="font-medium tabular-nums text-foreground">{cell.affected}/{cell.assessed}</span>;
+                      const style = cell.unassessed ? unassessedCellStyle : heatCellStyle(cell.value);
                       return (
                         <td key={cell.segment} className="p-0 text-center align-middle">
-                          <div className="m-0.5 rounded px-xs py-1" style={heatCellStyle(cell.value)} title={title}>
+                          <div className="m-0.5 rounded px-xs py-1" style={style} title={title}
+                            data-state={cell.unassessed ? 'unassessed' : cell.affected === 0 ? 'clean' : 'affected'}>
                             {href ? (
                               <Link to={href} className="hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                                 aria-label={`${title} — view hosts`}>
@@ -532,8 +576,9 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
               </tbody>
             </table>
             <p className="mt-xs text-caption text-muted-foreground">
-              Cells: affected / in-scope hosts in the site. — = none observed, which is not the
-              same as assessed clean.
+              Cells: affected / assessed hosts in the site, where assessed = hosts with evidence that
+              can detect this family (the row's domain). 0/N = checked, none found. Hatched n/a =
+              unassessed — nobody looked, which is not the same as clean.
             </p>
           </div>
         )}
