@@ -33,14 +33,23 @@ const TOOL_FORMATS = [
   { value: 'nmap', label: 'Nmap', description: 'Space-separated targets for Nmap' },
   { value: 'metasploit', label: 'Metasploit', description: 'RHOSTS format for Metasploit' },
   { value: 'masscan', label: 'Masscan', description: 'Comma-separated targets for Masscan' },
-  { value: 'nuclei', label: 'Nuclei', description: 'URLs for web services, IPs for others' },
+  { value: 'nuclei', label: 'Nuclei', description: 'URLs by bound name for web ports (IP fallback), IPs for others' },
   { value: 'host-port', label: 'Host:Port', description: 'IP:PORT format for each open port' },
-  { value: 'json', label: 'JSON', description: 'Detailed JSON with host information' },
+  { value: 'json', label: 'JSON', description: 'Detailed JSON with host information (includes bound names)' },
+  { value: 'names', label: 'Names', description: 'In-scope names bound to the selected hosts, one per line' },
+  { value: 'web-targets', label: 'Web targets', description: 'URLs by name for web ports, IP fallback' },
 ];
+
+// Formats whose output uses the names currently bound to each address, so
+// the in-scope / all toggle applies.  Mirrors _NAME_AWARE_FORMATS server-side.
+const NAME_AWARE_FORMATS = new Set(['nuclei', 'json', 'names', 'web-targets']);
 
 export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOutputProps) {
   const [selectedFormat, setSelectedFormat] = useState('ip-list');
   const [includePorts, setIncludePorts] = useState(false);
+  // Default in-scope: a declared domain must cover a name before it becomes
+  // a target — the same rule the recon agent guardrail applies.
+  const [inScopeNamesOnly, setInScopeNamesOnly] = useState(true);
   const [output, setOutput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +68,13 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
     setError(null);
     setOutput('');
     try {
-      const apiFilters = { ...filters, includePorts };
+      const apiFilters = {
+        ...filters,
+        includePorts,
+        ...(NAME_AWARE_FORMATS.has(selectedFormat)
+          ? { namesScope: (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all' }
+          : {}),
+      };
       const result = await getToolReadyOutput(selectedFormat, apiFilters);
       setOutput(result);
     } catch (err) {
@@ -133,6 +148,24 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
           />
           <Label htmlFor="tro-include-ports">Include detailed port information</Label>
         </div>
+
+        {NAME_AWARE_FORMATS.has(selectedFormat) && (
+          <div className="flex items-center gap-xs">
+            <Switch
+              id="tro-in-scope-names"
+              checked={inScopeNamesOnly}
+              onCheckedChange={setInScopeNamesOnly}
+            />
+            <Label htmlFor="tro-in-scope-names">
+              {inScopeNamesOnly ? 'In-scope names only' : 'All bound names'}
+            </Label>
+            <span className="min-w-0 truncate text-caption text-muted-foreground">
+              {inScopeNamesOnly
+                ? 'Only names a declared domain covers become targets.'
+                : 'Every name currently bound to the address, in scope or not.'}
+            </span>
+          </div>
+        )}
 
         <Button onClick={generateOutput} disabled={loading} className="w-full">
           {loading ? (

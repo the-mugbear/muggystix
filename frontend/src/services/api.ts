@@ -730,19 +730,26 @@ export const getToolReadyOutput = async (
     sort_order?: string;
     scanId?: number;
     includePorts?: boolean;
+    /** Name-aware formats (names, web-targets, nuclei, json): only names a
+     *  declared domain covers (default) or every bound name. */
+    namesScope?: 'in_scope' | 'all';
   }
 ): Promise<string> => {
   const params = new URLSearchParams();
 
   Object.entries(filters).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
-    // Two keys use non-generic wire names; everything else passes through.
+    // Three keys use non-generic wire names; everything else passes through.
     if (key === 'includePorts') {
       if (value) params.append('include_ports', 'true');
       return;
     }
     if (key === 'scanId') {
       params.append('scan_id', String(value));
+      return;
+    }
+    if (key === 'namesScope') {
+      params.append('names_scope', String(value));
       return;
     }
     // Arrays (orgs/asns/countries) → repeated params, comma-safe.

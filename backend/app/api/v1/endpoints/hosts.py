@@ -1647,6 +1647,15 @@ def get_tool_ready_hosts(
     # Tool-ready-only params (not part of the shared filter bundle).
     scan_id: Optional[int] = Query(None, description="Filter by specific scan ID"),
     include_ports: Optional[bool] = Query(False, description="Include port information in output"),
+    names_scope: str = Query(
+        "in_scope",
+        pattern="^(in_scope|all)$",
+        description=(
+            "For the name-aware formats (names, web-targets, nuclei, json): which names "
+            "currently bound to the selected hosts to use — only names covered by a declared "
+            "domain (default) or every bound name."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -1658,9 +1667,23 @@ def get_tool_ready_hosts(
     - **nmap** — Nmap-compatible target list
     - **metasploit** — Metasploit RHOSTS format
     - **masscan** — Masscan target format
-    - **nuclei** — Nuclei target format
+    - **nuclei** — Nuclei target format: URLs for web ports, IP for the rest.
+      v2.330.0: URLs are built from the names CURRENTLY bound to the address
+      (one URL per name — the vhost behind a load balancer is the target,
+      not the shared address); the IP URL is the fallback when no bound
+      name qualifies.  Previously always the IP.
     - **host-port** — IP:PORT for each open port
-    - **json** — JSON array with host details
+    - **json** — JSON array with host details (``names`` = currently bound
+      names alongside the legacy single ``hostname``)
+    - **names** — one FQDN per line: every name currently bound to a selected
+      host, deduplicated, wildcards excluded (patterns are not targets)
+    - **web-targets** — ``scheme://<fqdn>[:port]`` per (bound name, open web
+      port) for hosts with web ports; IP URL when the host has no bound name
+
+    ``names_scope`` (default ``in_scope``) restricts the name-aware formats
+    to names a declared domain covers; ``all`` uses every bound name.  "Bound"
+    is ``dns_name_service.current_binding_condition`` — the one "currently
+    resolves to" rule — so a name that moved away never lingers as a target.
 
     v2.93.0 — converged onto the shared ``HostFilterParams`` bundle, so
     this export now honours every Hosts-page filter (tags, labels,
@@ -1669,7 +1692,7 @@ def get_tool_ready_hosts(
     """
 
     # Validate format
-    supported_formats = ['ip-list', 'nmap', 'metasploit', 'masscan', 'nuclei', 'host-port', 'json']
+    supported_formats = ['ip-list', 'nmap', 'metasploit', 'masscan', 'nuclei', 'host-port', 'json', 'names', 'web-targets']
     if format not in supported_formats:
         raise HTTPException(
             status_code=400,
@@ -1695,7 +1718,7 @@ def get_tool_ready_hosts(
     # port-bearing formats (host-port, json with include_ports,
     # nuclei) still need the join; for those we keep the existing
     # eager-load shape.  JSON without include_ports also skips.
-    _NEEDS_PORT_DATA = {"host-port", "nuclei"}
+    _NEEDS_PORT_DATA = {"host-port", "nuclei", "web-targets"}
     if format in _NEEDS_PORT_DATA or (format == "json" and include_ports):
         query = query.options(
             selectinload(models.Host.ports).selectinload(models.Port.scripts),
@@ -1731,6 +1754,7 @@ def get_tool_ready_hosts(
     # (the same pattern the matching-ids endpoint at get_hosts_matching_ids
     # already uses) and join directly, keeping the working set at ~MB.
     _IP_ONLY_JOINERS = {"ip-list": "\n", "nmap": " ", "metasploit": " ", "masscan": ","}
+    in_scope_names_only = names_scope != "all"
     if format in _IP_ONLY_JOINERS:
         ip_rows = (
             query.with_entities(models.Host.ip_address)
@@ -1739,6 +1763,15 @@ def get_tool_ready_hosts(
         )
         hosts_returned = len(ip_rows)
         output = _IP_ONLY_JOINERS[format].join(row[0] for row in ip_rows if row[0])
+    elif format == "names":
+        # Names need no port data and no Host entity: project the ids, then
+        # one bound-names query for the whole set.
+        id_rows = query.with_entities(models.Host.id).limit(MAX_TOOL_READY_HOSTS).all()
+        hosts_returned = len(id_rows)
+        names_by_host = _current_names_for_hosts(
+            db, project.id, [row[0] for row in id_rows], in_scope_only=in_scope_names_only,
+        )
+        output = "\n".join(sorted({fq for fqs in names_by_host.values() for fq in fqs}))
     else:
         hosts = query.limit(MAX_TOOL_READY_HOSTS).all()
         hosts_returned = len(hosts)
@@ -1752,7 +1785,14 @@ def get_tool_ready_hosts(
             "port_states": filters.port_states,
             "has_open_ports": filters.has_open_ports,
         }
-        output = _generate_tool_output(hosts, format, include_ports, output_filters)
+        names_by_host = (
+            _current_names_for_hosts(
+                db, project.id, [h.id for h in hosts], in_scope_only=in_scope_names_only,
+            )
+            if format in _NAME_AWARE_FORMATS
+            else {}
+        )
+        output = _generate_tool_output(hosts, format, include_ports, output_filters, names_by_host)
 
     # Set appropriate content type and filename
     content_type, filename = _get_content_type_and_filename(format)
@@ -1842,12 +1882,84 @@ def _get_filtered_output_ports(
     return ports
 
 
+# Formats whose output uses the names currently bound to each address.
+_NAME_AWARE_FORMATS = {"nuclei", "json", "names", "web-targets"}
+
+# The web-port table nuclei always used; web-targets and the name-preferring
+# nuclei share it so the two can never disagree on what counts as "web".
+_WEB_PORTS = (80, 443, 8000, 8080, 8081, 8008, 8443, 8444, 8888)
+_TLS_PORTS = (443, 8443, 8444)
+
+
+def _current_names_for_hosts(
+    db: Session, project_id: int, host_ids: List[int], *, in_scope_only: bool,
+) -> Dict[int, List[str]]:
+    """``host_id -> [fqdn, ...]`` (sorted) for the names CURRENTLY bound to
+    each host's address — ``current_binding_condition`` is the one rule, so an
+    address a name moved away from is never a target.  Concrete names only
+    (a wildcard is a pattern, not a target); ``in_scope_only`` additionally
+    requires a declared domain to cover the name.  One query per 1000 hosts,
+    never one per host."""
+    from app.services import dns_name_service as _dns
+
+    out: Dict[int, List[str]] = {}
+    if not host_ids:
+        return out
+    r = aliased(models.DNSRecord)
+    n = models.DNSName
+    for start in range(0, len(host_ids), 1000):
+        chunk = host_ids[start:start + 1000]
+        q = (
+            db.query(models.Host.id, n.fqdn)
+            .join(r, and_(r.project_id == project_id, r.value == models.Host.ip_address))
+            .join(n, n.id == r.name_id)
+            .filter(
+                models.Host.id.in_(chunk),
+                n.project_id == project_id,
+                n.kind == "fqdn",
+                _dns.current_binding_condition(r),
+            )
+        )
+        if in_scope_only:
+            q = q.filter(_dns.name_in_scope_condition(project_id))
+        for hid, fqdn in q.distinct().all():
+            out.setdefault(hid, []).append(fqdn)
+    for hid in out:
+        out[hid].sort()
+    return out
+
+
+def _web_urls_for_host(
+    host: models.Host, filters: Optional[Dict[str, Optional[str | bool]]], names: List[str],
+) -> List[str]:
+    """URLs for the host's open web ports: one per (bound name, port), or the
+    IP URL per port when no bound name qualifies.  Empty when the host has no
+    open web port."""
+    web_ports = [
+        p.port_number
+        for p in _get_filtered_output_ports(host, filters)
+        if p.state == 'open' and p.port_number in _WEB_PORTS
+    ]
+    if not web_ports:
+        return []
+    targets = names or [host.ip_address]
+    urls: List[str] = []
+    for port_num in web_ports:
+        scheme = 'https' if port_num in _TLS_PORTS else 'http'
+        suffix = '' if port_num in (80, 443) else f":{port_num}"
+        for t in targets:
+            urls.append(f"{scheme}://{t}{suffix}")
+    return urls
+
+
 def _generate_tool_output(
     hosts: List[models.Host],
     format: str,
     include_ports: bool = False,
     filters: Optional[Dict[str, Optional[str | bool]]] = None,
+    names_by_host: Optional[Dict[int, List[str]]] = None,
 ) -> str:
+    names_by_host = names_by_host or {}
     """Generate tool-specific output format"""
     
     if format == 'ip-list':
@@ -1867,28 +1979,19 @@ def _generate_tool_output(
         return ','.join([host.ip_address for host in hosts])
     
     elif format == 'nuclei':
-        # Nuclei target format - URLs for web services, IPs for others
+        # Nuclei target format — URLs for web ports (by bound name, IP
+        # fallback — see _web_urls_for_host), bare IP for non-web hosts.
         targets = []
         for host in hosts:
-            # Check if host has web ports
-            web_ports = []
-            filtered_ports = _get_filtered_output_ports(host, filters)
-            for port in filtered_ports:
-                if port.state == 'open' and port.port_number in [80, 443, 8000, 8080, 8081, 8008, 8443, 8444, 8888]:
-                    web_ports.append(port.port_number)
-            
-            if web_ports:
-                # Generate URLs for web ports
-                for port_num in web_ports:
-                    protocol = 'https' if port_num in [443, 8443, 8444] else 'http'
-                    if port_num in [80, 443]:
-                        targets.append(f"{protocol}://{host.ip_address}")
-                    else:
-                        targets.append(f"{protocol}://{host.ip_address}:{port_num}")
-            else:
-                # Just add IP for non-web hosts
-                targets.append(host.ip_address)
-        
+            urls = _web_urls_for_host(host, filters, names_by_host.get(host.id, []))
+            targets.extend(urls if urls else [host.ip_address])
+        return '\n'.join(targets)
+
+    elif format == 'web-targets':
+        # Only hosts with an open web port; one URL per (bound name, port).
+        targets = []
+        for host in hosts:
+            targets.extend(_web_urls_for_host(host, filters, names_by_host.get(host.id, [])))
         return '\n'.join(targets)
     
     elif format == 'host-port':
@@ -1912,6 +2015,9 @@ def _generate_tool_output(
             host_info = {
                 'ip_address': host.ip_address,
                 'hostname': host.hostname,
+                # Names currently bound to this address (per names_scope);
+                # `hostname` above is the legacy single display name.
+                'names': names_by_host.get(host.id, []),
                 'state': host.state,
                 'os_name': host.os_name,
                 'os_family': host.os_family
@@ -1949,7 +2055,9 @@ def _get_content_type_and_filename(format: str) -> tuple:
         'masscan': ('text/plain', 'masscan-targets.txt'),
         'nuclei': ('text/plain', 'nuclei-targets.txt'),
         'host-port': ('text/plain', 'host-ports.txt'),
-        'json': ('application/json', 'hosts.json')
+        'json': ('application/json', 'hosts.json'),
+        'names': ('text/plain', 'names.txt'),
+        'web-targets': ('text/plain', 'web-targets.txt'),
     }
 
     return format_config.get(format, ('text/plain', 'hosts.txt'))

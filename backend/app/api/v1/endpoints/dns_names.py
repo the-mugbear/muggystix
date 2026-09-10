@@ -21,7 +21,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -124,17 +128,101 @@ def list_names(
 ):
     if state not in _STATES:
         raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
-    n = models.DNSName
-    in_scope = svc.name_in_scope_condition(project.id).label("in_scope")
-    q = db.query(n, in_scope).filter(n.project_id == project.id)
-    if search and search.strip():
-        q = q.filter(n.fqdn.ilike(f"%{escape_like(search.strip().lower())}%", escape="\\"))
-    q = _apply_state_filter(q, state, project.id)
-    total = q.with_entities(func.count(n.id)).order_by(None).scalar() or 0
-    col = {"fqdn": n.fqdn, "last_seen": n.last_seen, "first_seen": n.first_seen}[sort]
-    q = q.order_by(col.desc().nullslast() if order == "desc" else col.asc().nullsfirst(), n.id.asc())
+    q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
+    total = q.with_entities(func.count(models.DNSName.id)).order_by(None).scalar() or 0
     rows = q.offset(skip).limit(limit).all()
     return Paginated.build(_rows_to_schema(db, project.id, rows), total, skip, limit)
+
+
+def _names_query(db: Session, project_id: int, *, search: Optional[str], state: str, sort: str, order: str):
+    """The one filtered/ordered ``(DNSName, in_scope)`` query behind the list
+    and the export, so an export can never cover a different set than the
+    page the operator is looking at."""
+    n = models.DNSName
+    in_scope = svc.name_in_scope_condition(project_id).label("in_scope")
+    q = db.query(n, in_scope).filter(n.project_id == project_id)
+    if search and search.strip():
+        q = q.filter(n.fqdn.ilike(f"%{escape_like(search.strip().lower())}%", escape="\\"))
+    q = _apply_state_filter(q, state, project_id)
+    col = {"fqdn": n.fqdn, "last_seen": n.last_seen, "first_seen": n.first_seen}[sort]
+    return q.order_by(col.desc().nullslast() if order == "desc" else col.asc().nullsfirst(), n.id.asc())
+
+
+_EXPORT_CHUNK = 500
+
+
+@router.get(
+    "/export",
+    # Data egress — same policy as /hosts/tool-ready and /export: viewers read
+    # the inventory but cannot take it out; AUDITOR and above may.
+    dependencies=[Depends(require_project_role(ProjectRole.AUDITOR))],
+    summary="Export the filtered names list (txt: one FQDN per line; csv: with state + current addresses)",
+)
+def export_names(
+    format: str = Query("txt", pattern="^(txt|csv)$"),
+    search: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
+    state: str = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
+    sort: str = Query("fqdn", pattern="^(fqdn|last_seen|first_seen)$"),
+    order: str = Query("asc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Same filters as ``GET /names``; streamed in chunks of 500 so a
+    50k-name inventory never materialises at once.  ``txt`` is one FQDN per
+    line (wildcards included as written — the operator asked for the list,
+    not for targets; use /hosts/tool-ready/names for targets).  ``csv``
+    columns: ``fqdn, kind, in_scope, current_ips, last_seen`` where
+    ``current_ips`` is ``;``-joined and derived by the one "currently
+    resolves to" rule."""
+    if state not in _STATES:
+        raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
+    q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
+    project_id = project.id
+
+    def _txt():
+        offset = 0
+        while True:
+            rows = q.with_entities(models.DNSName.fqdn).offset(offset).limit(_EXPORT_CHUNK).all()
+            if not rows:
+                break
+            yield "".join(f"{r[0]}\n" for r in rows)
+            offset += len(rows)
+            if len(rows) < _EXPORT_CHUNK:
+                break
+
+    def _csv():
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["fqdn", "kind", "in_scope", "current_ips", "last_seen"])
+        yield buf.getvalue()
+        offset = 0
+        while True:
+            rows = q.offset(offset).limit(_EXPORT_CHUNK).all()
+            if not rows:
+                break
+            states = svc.address_state_for_names(db, project_id, [name.id for name, _ in rows])
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            for name, in_scope in rows:
+                current = ";".join(sorted(states[name.id].current)) if name.id in states else ""
+                w.writerow([
+                    name.fqdn, name.kind, "true" if in_scope else "false", current,
+                    name.last_seen.isoformat() if name.last_seen else "",
+                ])
+            yield buf.getvalue()
+            offset += len(rows)
+            if len(rows) < _EXPORT_CHUNK:
+                break
+
+    if format == "csv":
+        return StreamingResponse(
+            _csv(), media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=names.csv"},
+        )
+    return StreamingResponse(
+        _txt(), media_type="text/plain",
+        headers={"Content-Disposition": "attachment; filename=names.txt"},
+    )
 
 
 @router.get("/summary", response_model=NamesSummary, summary="Counts for the names inventory header")

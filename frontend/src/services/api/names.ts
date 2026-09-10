@@ -174,6 +174,30 @@ export const listNames = async (
   return r.data;
 };
 
+/** Download the CURRENT filtered names list — same filters as listNames,
+ *  so the file can never cover a different set than the page shows.  Auth
+ *  header rides on the axios client; a bare <a href> would lose it. */
+export const exportNames = async (
+  format: 'txt' | 'csv',
+  opts: { search?: string; state?: NameStateFilter; sort?: 'fqdn' | 'last_seen' | 'first_seen'; order?: 'asc' | 'desc' } = {},
+): Promise<void> => {
+  const params = new URLSearchParams({ format });
+  if (opts.search) params.set('search', opts.search);
+  if (opts.state) params.set('state', opts.state);
+  if (opts.sort) params.set('sort', opts.sort);
+  if (opts.order) params.set('order', opts.order);
+  const response = await api.get(`${p()}/names/export?${params.toString()}`, { responseType: 'blob' });
+  const mime = format === 'csv' ? 'text/csv' : 'text/plain';
+  const url = window.URL.createObjectURL(new Blob([response.data], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `names.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+};
+
 export const getNamesSummary = async (): Promise<NamesSummary> => {
   const r = await api.get<NamesSummary>(`${p()}/names/summary`);
   return r.data;

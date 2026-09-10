@@ -207,6 +207,18 @@ def test_auditor_can_tool_ready_export(member_client, db_session, test_project, 
     assert resp.status_code != 403, resp.text
 
 
+def test_viewer_cannot_export_names(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "viewer")
+    resp = member_client.get(f"{_proj(test_project)}/names/export?format=txt")
+    assert resp.status_code == 403
+
+
+def test_auditor_can_export_names(member_client, db_session, test_project, member):
+    _set_role(db_session, test_project, member, "auditor")
+    resp = member_client.get(f"{_proj(test_project)}/names/export?format=txt")
+    assert resp.status_code == 200, resp.text
+
+
 def test_analyst_can_bulk_tag(member_client, db_session, test_project, member):
     _set_role(db_session, test_project, member, "analyst")
     host = _host(db_session, test_project)

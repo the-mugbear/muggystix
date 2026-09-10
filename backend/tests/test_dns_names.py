@@ -884,3 +884,45 @@ class TestLegacyConsumers:
         assert body["total"] == 1 and body["items"][0]["resolver_name"] == "1.1.1.1:53"
         scan_body = client.get(f"/api/v1/projects/{test_project.id}/scans/{scan.id}/dns-records").json()
         assert scan_body["total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# GET /names/export — the filtered list, taken out (v2.330.0)
+# ---------------------------------------------------------------------------
+class TestNamesExport:
+    def _seed(self, db_session, test_project):
+        scope = _scope(db_session, test_project)
+        svc.upsert_scope_domains(db_session, scope, [("acme.com", True, None)])
+        svc.record_observation(db_session, project_id=test_project.id, name="portal.acme.com",
+                               record_type="A", value="10.0.0.10")
+        svc.get_or_create_name(db_session, test_project.id, "orphan.other.net")
+        svc.get_or_create_name(db_session, test_project.id, "*.acme.com", "wildcard")
+        db_session.flush()
+
+    def test_txt_is_one_fqdn_per_line_honouring_the_list_filters(self, client, db_session, test_project):
+        self._seed(db_session, test_project)
+        r = client.get(f"/api/v1/projects/{test_project.id}/names/export?format=txt")
+        assert r.status_code == 200, r.text
+        assert r.text.splitlines() == ["*.acme.com", "orphan.other.net", "portal.acme.com"]
+        assert r.headers["content-disposition"].endswith("names.txt")
+
+        r = client.get(f"/api/v1/projects/{test_project.id}/names/export?format=txt&state=in_scope")
+        assert r.text.splitlines() == ["portal.acme.com"]
+        r = client.get(f"/api/v1/projects/{test_project.id}/names/export?format=txt&search=other&order=desc")
+        assert r.text.splitlines() == ["orphan.other.net"]
+
+    def test_csv_carries_state_and_current_addresses(self, client, db_session, test_project):
+        self._seed(db_session, test_project)
+        r = client.get(f"/api/v1/projects/{test_project.id}/names/export?format=csv")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        rows = [ln.split(",") for ln in r.text.splitlines()]
+        assert rows[0] == ["fqdn", "kind", "in_scope", "current_ips", "last_seen"]
+        by_fqdn = {row[0]: row for row in rows[1:]}
+        assert by_fqdn["portal.acme.com"][1:4] == ["fqdn", "true", "10.0.0.10"]
+        assert by_fqdn["orphan.other.net"][1:4] == ["fqdn", "false", ""]
+        assert by_fqdn["*.acme.com"][1:3] == ["wildcard", "false"]
+
+    def test_bad_format_or_state_is_rejected(self, client, db_session, test_project):
+        assert client.get(f"/api/v1/projects/{test_project.id}/names/export?format=xlsx").status_code == 422
+        assert client.get(f"/api/v1/projects/{test_project.id}/names/export?state=nope").status_code == 400

@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Globe, Loader2, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
+import { Download, Globe, Loader2, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
 
 import {
   deleteName,
   getName,
   getNamesSummary,
+  exportNames,
   importNames,
   listNames,
   NameAddress,
@@ -545,8 +546,13 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
 // ---------------------------------------------------------------------------
 const Names: React.FC = () => {
   const { hasPermission } = useAuth();
+  const toast = useToast();
   const canEdit = hasPermission('analyst');
+  // Data egress — the server gates at AUDITOR+ (same policy as the Hosts
+  // tool-ready export); this only hides the affordance from viewers.
+  const canExport = hasPermission('auditor');
   const [searchParams, setSearchParams] = useSearchParams();
+  const [exporting, setExporting] = useState<'txt' | 'csv' | null>(null);
 
   const [rows, setRows] = useState<NameRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -629,6 +635,17 @@ const Names: React.FC = () => {
     reloadSummary();
   };
 
+  const handleExport = async (format: 'txt' | 'csv') => {
+    setExporting(format);
+    try {
+      await exportNames(format, { search: debouncedSearch.trim() || undefined, state });
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to export names.'));
+    } finally {
+      setExporting(null);
+    }
+  };
+
   const countFor = (value: NameStateFilter): number | null => {
     if (!summary) return null;
     switch (value) {
@@ -668,6 +685,30 @@ const Names: React.FC = () => {
           <Button onClick={() => setImportOpen(true)}>
             <Upload className="size-4" aria-hidden /> Import names
           </Button>
+        )}
+        {canExport && (
+          <div className="flex items-center gap-xxs" role="group" aria-label="Export the filtered names">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleExport('txt')}
+              disabled={exporting !== null || total === 0}
+              aria-label="Export names as text"
+            >
+              {exporting === 'txt' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Download className="size-4" aria-hidden />}
+              Export .txt
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleExport('csv')}
+              disabled={exporting !== null || total === 0}
+              aria-label="Export names as CSV"
+            >
+              {exporting === 'csv' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Download className="size-4" aria-hidden />}
+              Export .csv
+            </Button>
+          </div>
         )}
         <Button size="sm" variant="outline" onClick={refreshAll}>
           <RefreshCw className="size-4" aria-hidden /> Refresh

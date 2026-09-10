@@ -65,4 +65,12 @@ describe('getToolReadyOutput serialization', () => {
     expect(url).not.toContain('tags=');
     expect(url).not.toContain('include_ports');
   });
+
+  it('maps namesScope to the names_scope wire name (name-aware formats)', async () => {
+    await getToolReadyOutput('web-targets', { q: 'port:443', namesScope: 'all' });
+    const url = (api.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(url).toContain('/hosts/tool-ready/web-targets?');
+    expect(url).toContain('names_scope=all');
+    expect(url).not.toContain('namesScope');
+  });
 });
