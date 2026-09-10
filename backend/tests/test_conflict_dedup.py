@@ -93,6 +93,39 @@ def test_host_scan_history_distinct_row_per_scan(db_session, test_project):
     assert {r.scan_id for r in rows} == {scan.id, scan2.id}
 
 
+def test_second_observation_in_same_scan_does_not_erase_a_definite_state(
+    db_session, test_project
+):
+    """v2.332.3 — a .gnmap file emits "Host: x  Status: Up" and a separate
+    "Host: x  Ports: ..." line; the Ports line carries no status and reached
+    the history writer as 'unknown', overwriting 'up'.  Every gnmap scan then
+    reported 0 up hosts (live upload 2026-09-10, scan 160: 5 hosts, all
+    'unknown', all live 'up').  Unknown/None carry no information."""
+    host = models.Host(project_id=test_project.id, ip_address="10.0.0.77", state="up")
+    scan = models.Scan(project_id=test_project.id, filename="x.gnmap", tool_name="Nmap", scan_type="nmap_gnmap")
+    db_session.add_all([host, scan])
+    db_session.flush()
+    svc = HostDeduplicationService(db_session)
+
+    svc._record_host_scan_history(host.id, scan.id, {"state": "up", "hostname": "h.lab.local", "os_name": "Linux"})
+    svc._record_host_scan_history(host.id, scan.id, {"state": "unknown", "hostname": None, "ports": [{"port_number": 22}]})
+    db_session.flush()
+
+    row = db_session.query(models.HostScanHistory).filter(
+        models.HostScanHistory.host_id == host.id, models.HostScanHistory.scan_id == scan.id,
+    ).one()
+    assert row.state_at_scan == "up", "'unknown' must not overwrite a definite state"
+    assert row.hostname_at_scan == "h.lab.local", "None must not erase a name"
+    assert row.os_info_updated is True
+
+    # A definite later value still wins — this is not "first write sticks".
+    svc._record_host_scan_history(host.id, scan.id, {"state": "down", "hostname": "h2.lab.local"})
+    db_session.flush()
+    db_session.refresh(row)
+    assert row.state_at_scan == "down"
+    assert row.hostname_at_scan == "h2.lab.local"
+
+
 def test_port_scan_history_deduped_within_one_scan(db_session, test_project):
     host, scan = _mk_host_and_scan(db_session, test_project.id, "10.9.2.3")
     port = models.Port(host_id=host.id, port_number=443, protocol="tcp", state="open")

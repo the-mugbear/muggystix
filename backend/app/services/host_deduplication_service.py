@@ -624,10 +624,24 @@ class HostDeduplicationService:
             ).first()
 
         if existing_history:
-            # Update existing history entry
-            existing_history.state_at_scan = host_data.get('state')
-            existing_history.hostname_at_scan = host_data.get('hostname')
-            existing_history.os_info_updated = bool(host_data.get('os_name'))
+            # Update existing history entry.  v2.332.3 — a later observation
+            # of the same host in the SAME scan must not erase a definite one:
+            # a .gnmap file emits a "Status: Up" line and a separate "Ports:"
+            # line per host, and the Ports line (no Status) arrived here as
+            # 'unknown' and overwrote 'up', so every gnmap scan reported 0 up
+            # hosts.  'unknown'/None carry no information; a definite state
+            # or a name is only replaced by another definite value.
+            new_state = host_data.get('state')
+            if new_state and new_state != 'unknown':
+                existing_history.state_at_scan = new_state
+            elif not existing_history.state_at_scan:
+                existing_history.state_at_scan = new_state
+            new_hostname = host_data.get('hostname')
+            if new_hostname:
+                existing_history.hostname_at_scan = new_hostname
+            existing_history.os_info_updated = (
+                existing_history.os_info_updated or bool(host_data.get('os_name'))
+            )
             # Never downgrade created→updated: if any record of this (host,
             # scan) marked the scan as the creator, keep it.
             if is_new:
