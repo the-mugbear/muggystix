@@ -154,11 +154,14 @@ async def upload_subnet_file(
     # Audit finding C3: the previous implementation read the entire
     # upload into memory via ``await file.read()`` with no size check,
     # so an authenticated analyst could OOM a worker with a 2GB file.
-    # Cap at 2MB (fits ~50K CIDRs comfortably) and reject oversize
-    # before allocating.  Keep the cap in sync with the frontend
-    # upload dialog copy on the Scopes page.
+    # The byte cap is the memory guard: 2 MB holds ~50K plain CIDR lines.
+    # The entry cap bounds the single transaction this handler runs (one
+    # flush for the batch, then a trie-based re-correlation of the project's
+    # hosts) and is sized to what the byte cap can actually carry — v2.332.4
+    # raised it from the 10,000 that was borrowed from the test-plan import
+    # cap at audit time, when this path was still per-row and O(n²).
     MAX_SUBNET_FILE_BYTES = 2 * 1024 * 1024  # 2 MB
-    MAX_SUBNETS_PER_UPLOAD = 10_000
+    MAX_SUBNETS_PER_UPLOAD = 50_000
 
     allowed_extensions = ['.txt', '.csv']
     if not any(file.filename.lower().endswith(ext) for ext in allowed_extensions):
@@ -213,8 +216,7 @@ async def upload_subnet_file(
                 detail=(
                     f"File contains {len(entries) + len(domain_entries):,} scope entries; "
                     f"maximum per upload is {MAX_SUBNETS_PER_UPLOAD:,}. "
-                    f"Split the file into smaller uploads or use the manual "
-                    f"Add Subnet flow for individual entries."
+                    f"Split the file into smaller uploads."
                 ),
             )
 
