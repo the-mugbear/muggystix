@@ -79,6 +79,63 @@ def test_colliding_target_does_not_abort_upload(db_session, test_project, tmp_pa
     # The session is healthy afterwards — a follow-up query does not raise.
     assert db_session.query(models.WebInterface).count() >= 1
 
+    # v2.332.2 — the dropped target is reported as skipped AND leaves no trace
+    # on the scan history: its note() used to land before the rollback, so the
+    # snapshot carried b.example.com from a target the job said it skipped.
+    assert parser.last_parse_stats["skipped"] == 1
+    assert parser.last_parse_stats["partial"] is True
+    hist = (
+        db_session.query(models.HostScanHistory)
+        .join(models.Host, models.HostScanHistory.host_id == models.Host.id)
+        .filter(models.HostScanHistory.scan_id == scan.id, models.Host.ip_address == "10.7.0.9")
+        .one()
+    )
+    assert hist.hostname_at_scan == "a.example.com", "a rolled-back target must not reach the history"
+    assert hist.state_at_scan == "up"
+    assert hist.host_created is True
+
+
+def test_rolled_back_host_creation_does_not_poison_later_targets(
+    db_session, test_project, tmp_path, monkeypatch
+):
+    """A Host created inside a target's savepoint is gone once that savepoint
+    rolls back, but it stayed in the per-file cache — so the next target for
+    the same address reused a transient object and failed too (v2.332.2)."""
+    from app.parsers import testssl_parser as mod
+
+    records = [
+        {"id": "TLS1", "ip": "x.example.com/10.7.0.10", "port": "443", "severity": "LOW", "finding": "offered"},
+        {"id": "TLS1", "ip": "x.example.com/10.7.0.10", "port": "8443", "severity": "LOW", "finding": "offered"},
+    ]
+    path = _fixture(tmp_path, records)
+
+    # Fail the FIRST target after its host was created, then let the rest run.
+    real_bind = mod.bind_hostname
+    calls = {"n": 0}
+
+    def flaky_bind(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("injected after host creation")
+        return real_bind(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "bind_hostname", flaky_bind)
+
+    parser = TestsslParser(db_session)
+    scan = parser.parse_file(str(path), path.name, project_id=test_project.id)
+
+    rows = db_session.query(models.WebInterface).filter(models.WebInterface.scan_id == scan.id).all()
+    assert [r.port for r in rows] == [8443], "the second target must import cleanly"
+    assert parser.last_parse_stats["skipped"] == 1
+    host = db_session.query(models.Host).filter(
+        models.Host.project_id == test_project.id, models.Host.ip_address == "10.7.0.10"
+    ).one()
+    assert rows[0].host_id == host.id
+    hist = db_session.query(models.HostScanHistory).filter(
+        models.HostScanHistory.scan_id == scan.id, models.HostScanHistory.host_id == host.id
+    ).one()
+    assert hist.host_created is True, "the surviving target is the one that created the host"
+
 
 def test_parse_strong_only_is_not_weak(db_session, test_project, tmp_path):
     records = [

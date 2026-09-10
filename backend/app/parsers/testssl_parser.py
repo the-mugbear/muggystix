@@ -177,6 +177,16 @@ class TestsslParser:
             # error left the transaction in pending_rollback and the next flush
             # raised PendingRollbackError, aborting the whole upload. Mirrors the
             # dnsx parser / persist_host_observation isolation.
+            # What this target adds to the per-file caches, so a rollback can
+            # evict exactly that (v2.332.2).  A Host/Port row created inside a
+            # savepoint that is then rolled back is gone from the database but
+            # was still in the cache, so a later target for the same address
+            # reused a transient object and failed on a foreign key it could
+            # not satisfy.  Entries that were cached BEFORE this target are
+            # untouched by the rollback and stay.
+            host_was_cached = ip in self._host_cache
+            port_key = None
+            port_was_cached = True
             sp = self.db.begin_nested()
             try:
                 resolved = resolve_host_cached(self.db, self._project_id, ip,
@@ -185,10 +195,8 @@ class TestsslParser:
                 if host_row is None:
                     sp.rollback()
                     continue
-                # A TLS assessment completed a handshake: the host is up now.
-                self._observed.note(
-                    host_row, created=resolved.created, state="up", hostname=hostname,
-                )
+                port_key = (host_row.id, port)
+                port_was_cached = port_key in self._port_cache
                 port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
                 # weak is True if any weak protocol offered; False if only strong
                 # protocols were observed; None when protocols weren't enumerated.
@@ -218,8 +226,24 @@ class TestsslParser:
                 self.db.flush()
                 sp.commit()
                 written += 1
+                # Only a COMMITTED target is an observation (v2.332.2).  Noting
+                # before the commit let a target that then rolled back — the
+                # second hostname on one ip:port collides on the URL key — put
+                # its hostname on the scan history while being reported as
+                # skipped.  A TLS assessment completed a handshake: up now.
+                self._observed.note(
+                    host_row, created=resolved.created, state="up", hostname=hostname,
+                )
             except Exception as exc:
                 sp.rollback()
+                if not host_was_cached:
+                    self._host_cache.pop(ip, None)
+                if port_key is not None and not port_was_cached:
+                    self._port_cache.pop(port_key, None)
+                # The name cache has no per-entry provenance; a DNSName created
+                # in this savepoint would be reused transient.  A fresh cache
+                # costs re-queries only.
+                self._name_cache = ObservationCache()
                 logger.warning("testssl: skipping target %s:%s due to %s", ip, port, exc)
                 skipped_targets.append(f"{ip}:{port} ({exc})")
 
