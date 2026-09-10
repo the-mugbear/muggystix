@@ -161,7 +161,7 @@ class HttpxParser:
         # Without this, web-only ingests don't contribute to
         # /agent/recon/summary because that query joins through
         # host_scan_history, not web_interfaces.
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen)
+        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
 
         self.db.commit()
 

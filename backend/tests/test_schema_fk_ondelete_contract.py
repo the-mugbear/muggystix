@@ -233,7 +233,9 @@ EXPECTED_ONDELETE = {
     ('user_sessions', 'user_id'): 'CASCADE',
     ('vulnerabilities', 'host_id'): 'CASCADE',
     ('vulnerabilities', 'port_id'): 'SET NULL',
-    ('vulnerabilities', 'scan_id'): 'CASCADE',
+    # v2.332.0 — first-seen scan; a finding outlives the scan that introduced it.
+    ('vulnerabilities', 'scan_id'): 'SET NULL',
+    ('vulnerabilities', 'last_seen_scan_id'): 'SET NULL',
     ('webhook_configs', 'created_by_id'): 'SET NULL',
     ('webhook_configs', 'project_id'): 'CASCADE',
     ('webhook_deliveries', 'project_id'): 'CASCADE',

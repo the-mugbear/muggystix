@@ -174,6 +174,44 @@ class TestHttpxIngest:
             )
             assert wi is not None
 
+    def test_scan_history_says_which_hosts_this_scan_introduced(
+        self, db_session, test_project, httpx_fixture_jsonl
+    ):
+        """v2.332.0 — the web parsers wrote bare (host, scan) membership rows,
+        so every httpx / whatweb / eyewitness / testssl scan reported 0 new
+        hosts and 0 up hosts even on a first-ever import, and the notification
+        path filed each host as "changed".  Now the row carries the same
+        create/update decision and snapshot the dedup path records."""
+        from app.db import models
+        from app.parsers.httpx_parser import HttpxParser
+
+        # One of the two addresses is already known to the project.
+        known = models.Host(
+            project_id=test_project.id, ip_address="10.99.1.10", state="down",
+        )
+        db_session.add(known)
+        db_session.commit()
+
+        parser = HttpxParser(db_session)
+        scan = parser.parse_file(
+            str(httpx_fixture_jsonl),
+            httpx_fixture_jsonl.name,
+            project_id=test_project.id,
+        )
+        rows = {
+            h.ip_address: hist
+            for hist, h in (
+                db_session.query(models.HostScanHistory, models.Host)
+                .join(models.Host, models.HostScanHistory.host_id == models.Host.id)
+                .filter(models.HostScanHistory.scan_id == scan.id)
+                .all()
+            )
+        }
+        assert set(rows) == {"10.99.1.10", "10.99.1.20"}
+        assert rows["10.99.1.20"].host_created is True, "first-ever observation must count as new"
+        assert rows["10.99.1.10"].host_created is False, "a known host is not introduced twice"
+        assert rows["10.99.1.20"].state_at_scan == "up", "up_hosts reads state_at_scan"
+
     def test_reingest_updates_in_place(
         self, db_session, test_project, httpx_fixture_jsonl
     ):

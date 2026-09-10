@@ -16,6 +16,7 @@ import {
   Loader2,
   Search,
   SquareArrowOutUpRight,
+  Info,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -76,32 +77,11 @@ import {
   AccordionTrigger,
 } from '../components/ui/accordion';
 import { cn } from '../utils/cn';
+import { SUPPORTED_FORMATS } from '../data/uploadFormats';
 
 
-// v4.60.0 — full list synced with documentation/UPLOAD_FORMATS.md.
-// Alphabetised within sections so operators can scan; recent
-// additions (dnsx, httpx, DirBuster family, RustScan) are tagged so
-// the auto-detect contract is clear.  Filename hints help the
-// content-detection dispatcher when the upload's extension is
-// ambiguous (e.g. ``out.json`` could be many tools).
-const SUPPORTED_FORMATS: Array<{ tool: string; formats: string; desc: string }> = [
-  { tool: 'Nmap', formats: '.xml / .gnmap', desc: 'XML and grepable output.' },
-  { tool: 'Masscan', formats: '.xml / .json / .txt', desc: 'High-speed port scan; XML/JSON exports or --output-filename list.' },
-  { tool: 'RustScan', formats: '.txt', desc: 'Bracketed-list output (e.g. "10.0.0.1 -> [22,80]"). Include "rustscan" in filename for auto-detect.' },
-  { tool: 'Naabu', formats: '.json / .txt', desc: 'Host:port discovery output.' },
-  { tool: 'Nessus', formats: '.nessus / .xml', desc: 'Vulnerability scan exports.' },
-  { tool: 'OpenVAS / Greenbone', formats: '.xml', desc: 'Streaming-parsed for large reports (v2.86.11+).' },
-  { tool: 'httpx (ProjectDiscovery)', formats: '.json / .jsonl', desc: 'Web fingerprint output; feeds the web_interfaces view alongside EyeWitness.' },
-  { tool: 'dnsx (ProjectDiscovery)', formats: '.json / .jsonl', desc: 'DNS resolution against operator-supplied resolvers. PTR answers populate Host.hostname; per-record resolver attribution is preserved (v2.89.0).' },
-  { tool: 'Amass / Subfinder', formats: '.json / .txt', desc: 'Subdomain discovery; best results with exports that include resolved IPs.' },
-  { tool: 'EyeWitness', formats: '.json / .csv / .zip', desc: 'Web screenshot metadata. ZIP bundle accepted; bomb-caps applied (≤50MB/file, ≤500MB/bundle).' },
-  { tool: 'Nikto', formats: '.json / .csv / .txt', desc: 'Web findings exports.' },
-  { tool: 'NetExec (NXC)', formats: '.json / .txt', desc: 'SMB/LDAP/WMI/WinRM enumeration via Spider or standard text report.' },
-  { tool: 'SMBMap', formats: '.json / .txt', desc: 'SMB enumeration output; preserves standard "[+] <ip>" host lines.' },
-  { tool: 'BloodHound / SharpHound', formats: '.json', desc: 'Extracted JSON (not the ZIP bundle). Files ≥50MB stream via ijson.' },
-  { tool: 'DirBuster / Gobuster / Feroxbuster / ffuf / Dirsearch', formats: '.json / .csv / .txt', desc: 'Directory brute-force output (unified parser). Include tool name in filename for best auto-detect.' },
-  { tool: 'DNS records (CSV)', formats: '.csv', desc: 'Columns: record_type, name, address. Used for ad-hoc DNS enrichment.' },
-];
+// The advertised upload formats live in data/uploadFormats.ts (v5.204.0),
+// where a test pins them to documentation/UPLOAD_FORMATS.md.
 
 const ProgressBar: React.FC<{ value: number; tone?: 'default' | 'success' | 'destructive' }> = ({
   value,
@@ -1076,7 +1056,8 @@ export default function Scans() {
                     // never parsed look exactly like hosts that were down.
                     const skipped = job.skipped_count ?? 0;
                     const isDegraded =
-                      job.status === 'completed' && (skipped > 0 || !!job.parser_warnings);
+                      job.status === 'completed' &&
+                      (skipped > 0 || !!job.parser_warnings || !!job.partial);
                     const canExpand = isFailure || isDegraded;
 
                     return (
@@ -1176,9 +1157,11 @@ export default function Scans() {
                                   className="w-fit border-warning/40 text-warning"
                                   title={job.parser_warnings || undefined}
                                 >
-                                  {skipped > 0
-                                    ? `${skipped} record${skipped === 1 ? '' : 's'} skipped`
-                                    : 'imported with warnings'}
+                                  {job.partial
+                                    ? `partial import${skipped > 0 ? ` · ${skipped} skipped` : ''}`
+                                    : skipped > 0
+                                      ? `${skipped} record${skipped === 1 ? '' : 's'} skipped`
+                                      : 'imported with warnings'}
                                 </Badge>
                                 {job.parser_warnings && (
                                   <p
@@ -1484,10 +1467,13 @@ export default function Scans() {
                     {renderSortHeader('created_at', 'Uploaded', 'w-[14%]')}
                     <TableHead className="w-[16%]">Window</TableHead>
                     {renderSortHeader('new_hosts', 'New hosts', 'w-[11%]')}
-                    <TableHead className="w-[11%]" title="Already-known hosts this scan re-observed and updated">
-                      Modified
+                    {/* v5.204.0 — was "Modified". The number is total observed
+                        minus new; it says nothing about whether any value
+                        changed, and a header that said it did was read that way. */}
+                    <TableHead className="w-[11%]" title="Already-known hosts this scan observed. Not a count of changed values — that is not measured yet.">
+                      Existing hosts
                     </TableHead>
-                    <TableHead className="w-[14%]" title="Vulnerabilities by severity and the open TCP/UDP port split for this scan">
+                    <TableHead className="w-[14%]" title="Vulnerabilities FIRST recorded by this scan, by severity, and the open TCP/UDP port split for this scan">
                       Findings / ports
                     </TableHead>
                     <TableHead className="w-[10%]">Actions</TableHead>
@@ -1820,17 +1806,20 @@ export default function Scans() {
                     </span>
                   </li>
                 )}
-                {deletionImpact.vulnerabilities_removed > 0 && (
+                {/* v5.204.0 — findings first recorded by this scan are KEPT
+                    (they belong to the host); only their "first seen by"
+                    pointer goes. Findings on removed hosts go with the host. */}
+                {deletionImpact.vulnerabilities_detached > 0 && (
                   <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <Info className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     <span>
                       <span className="font-medium">
-                        {deletionImpact.vulnerabilities_removed.toLocaleString()}
+                        {deletionImpact.vulnerabilities_detached.toLocaleString()}
                       </span>{' '}
-                      {deletionImpact.vulnerabilities_removed === 1
+                      {deletionImpact.vulnerabilities_detached === 1
                         ? 'vulnerability'
                         : 'vulnerabilities'}{' '}
-                      recorded by this scan
+                      first recorded by this scan are kept on their hosts, but lose that attribution
                     </span>
                   </li>
                 )}

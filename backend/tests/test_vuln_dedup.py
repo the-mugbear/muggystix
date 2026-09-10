@@ -241,8 +241,11 @@ def test_nessus_backfills_cvss_on_reupload(db_session, test_project):
 
 
 def test_repeated_plugin_across_scans_dedups(db_session, test_project):
-    """The same finding in two separate scans collapses onto one row,
-    with scan_id advanced to the latest scan."""
+    """The same finding in two separate scans collapses onto one row.
+    v2.332.0: ``scan_id`` stays on the scan that FIRST recorded it and the
+    re-observation lands on ``last_seen_scan_id`` — it used to move, which
+    changed earlier scans' severity rollups retroactively and, with CASCADE,
+    deleted old findings when the newest scan was deleted."""
     host, scan_a = _mk_host_and_scan(db_session, test_project.id, "10.9.0.3")
     svc = VulnerabilityService(db_session)
     svc.process_nessus_vulnerabilities(host, _nessus_host("10.9.0.3", [_vuln("33850", 22)]), scan_a)
@@ -260,4 +263,34 @@ def test_repeated_plugin_across_scans_dedups(db_session, test_project):
         .all()
     )
     assert len(rows) == 1
-    assert rows[0].scan_id == scan_b.id
+    assert rows[0].scan_id == scan_a.id
+    assert rows[0].last_seen_scan_id == scan_b.id
+
+
+def test_deleting_the_latest_scan_keeps_findings_it_did_not_introduce(
+    db_session, test_project
+):
+    """The landmine behind the old attribution: the newest scan re-observed a
+    finding, took over its scan_id, and deleting that scan cascaded the
+    finding away.  Now the pointer is SET NULL and the row survives on its
+    host."""
+    host, scan_a = _mk_host_and_scan(db_session, test_project.id, "10.9.0.4")
+    svc = VulnerabilityService(db_session)
+    svc.process_nessus_vulnerabilities(host, _nessus_host("10.9.0.4", [_vuln("33850", 22)]), scan_a)
+    db_session.flush()
+    scan_b = models.Scan(project_id=test_project.id, filename="n3.nessus", tool_name="Nessus", scan_type="nessus")
+    db_session.add(scan_b)
+    db_session.flush()
+    svc.process_nessus_vulnerabilities(host, _nessus_host("10.9.0.4", [_vuln("33850", 22)]), scan_b)
+    db_session.commit()
+
+    db_session.delete(scan_b)
+    db_session.commit()
+
+    row = (
+        db_session.query(Vulnerability)
+        .filter(Vulnerability.host_id == host.id, Vulnerability.plugin_id == "33850")
+        .one()
+    )
+    assert row.scan_id == scan_a.id
+    assert row.last_seen_scan_id is None

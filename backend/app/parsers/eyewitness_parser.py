@@ -294,7 +294,7 @@ class EyewitnessParser:
 
         # v2.12.2: write HostScanHistory rows so /agent/recon/summary
         # counts EyeWitness ingests against the per-session host total.
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen)
+        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
         self.db.commit()
         self._finalize(scan)
         logger.info("EyeWitness CSV %s: %d rows written, %d skipped", filename, written, skipped)
@@ -348,7 +348,7 @@ class EyewitnessParser:
                 skipped += 1
         # v2.12.2: same host_scan_history fix as httpx_parser.  Web-only
         # ingests must contribute to recon-session host counts.
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen)
+        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
         return written, skipped
 
     def _write_row(

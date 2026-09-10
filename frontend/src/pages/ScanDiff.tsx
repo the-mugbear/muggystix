@@ -538,7 +538,10 @@ const ScanDiff: React.FC = () => {
                 <Badge variant="info">{diff.counts.new_hosts.toLocaleString()} new hosts</Badge>
                 <Badge variant="warning">{diff.counts.dropped_hosts.toLocaleString()} dropped hosts</Badge>
                 <Badge variant="info">{diff.counts.newly_open_ports.toLocaleString()} newly-open ports</Badge>
-                <Badge variant="warning">{diff.counts.closed_ports.toLocaleString()} closed ports</Badge>
+                <Badge variant="warning">{diff.counts.closed_ports.toLocaleString()} no longer open</Badge>
+                {/* v5.204.0 — never a warning colour: B did not test these,
+                    so nothing is known about them. Absence is not remediation. */}
+                <Badge variant="outline">{diff.counts.not_observed_ports.toLocaleString()} not tested in B</Badge>
                 <Badge variant="outline">{diff.counts.host_state_changes.toLocaleString()} state changes</Badge>
               </div>
             </CardContent>
@@ -575,12 +578,26 @@ const ScanDiff: React.FC = () => {
               emptyMessage="No ports newly opened in B."
             />
             <PortListCard
-              title="Closed ports"
-              subtitle="open in A, not open (or absent) in B"
+              title="No longer open"
+              subtitle="open in A; B tested the port and found it closed or filtered"
               count={diff.counts.closed_ports}
               cap={diff.row_cap}
               rows={diff.closed_ports}
-              emptyMessage="No ports closed since A."
+              emptyMessage="Every port open in A that B tested was still open."
+            />
+          </div>
+          {/* v5.204.0 — split out of "closed". A port B never probed (a
+              narrower port range, a different tool, a host outside B's
+              targets) used to be counted as closed, which turned "we did not
+              look" into remediation evidence. */}
+          <div className="mt-md grid grid-cols-1 gap-md">
+            <PortListCard
+              title="Not tested in B"
+              subtitle="open in A; B has no observation for the port at all — its state is unknown, not closed"
+              count={diff.counts.not_observed_ports}
+              cap={diff.row_cap}
+              rows={diff.not_observed_ports}
+              emptyMessage="B observed every port that was open in A."
             />
           </div>
         </>

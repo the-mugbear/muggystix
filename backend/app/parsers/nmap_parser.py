@@ -48,6 +48,7 @@ class NmapXMLParser:
         scan: Optional[models.Scan] = None
         scan_id: Optional[int] = None
         hosts_processed = 0
+        hosts_skipped = 0  # host elements that failed to import (v2.332.0)
         parse_warnings: list = []
         # True only for a truncated/unparseable tail — distinct from
         # per-host skips, because it means an unknown number of hosts were
@@ -97,6 +98,7 @@ class NmapXMLParser:
                                 hosts_processed += 1
                             except Exception as e:
                                 logger.warning(f"Skipping malformed host element: {e}")
+                                hosts_skipped += 1
                                 parse_warnings.append(str(e))
                                 try:
                                     host_sp.rollback()
@@ -161,8 +163,13 @@ class NmapXMLParser:
                 f"Scan {filename} completed with {len(parse_warnings)} warning(s): "
                 f"{hosts_processed} hosts recovered"
             )
+        # v2.332.0 — ``skipped`` is the number of host elements that failed to
+        # import, not the warning count: a truncated file adds ONE warning
+        # while losing an unknown number of hosts, and reporting "1 skipped"
+        # for that understated it as a single bad row.  Truncation travels as
+        # ``partial`` + the warning text instead.
         self.last_parse_stats = {
-            "skipped": len(parse_warnings),
+            "skipped": hosts_skipped,
             "warnings": " | ".join(parse_warnings) if parse_warnings else None,
             "summary": (
                 f"{hosts_processed} host{'s' if hosts_processed != 1 else ''}"

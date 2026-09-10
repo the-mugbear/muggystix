@@ -166,6 +166,9 @@ class TestsslParser:
 
         written = 0
         host_ids_seen: set = set()
+        # v2.332.0 — a target whose savepoint rolled back was logged and then
+        # reported as a clean import ("skipped": 0).  Count it.
+        skipped_targets: list = []
         for (ip, hostname, port), t in targets.items():
             # Per-target SAVEPOINT so a single row's integrity failure (e.g. a
             # (scan_id, url, source) collision) rolls back JUST this target
@@ -213,8 +216,9 @@ class TestsslParser:
             except Exception as exc:
                 sp.rollback()
                 logger.warning("testssl: skipping target %s:%s due to %s", ip, port, exc)
+                skipped_targets.append(f"{ip}:{port} ({exc})")
 
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen)
+        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
         self.db.commit()
         try:
             correlate_scan(self.db, scan.id)
@@ -224,8 +228,15 @@ class TestsslParser:
         elapsed = time.time() - start
         logger.info("testssl %s: %d TLS interface(s) written in %.2fs", filename, written, elapsed)
         self.last_parse_stats = {
-            "skipped": 0,
-            "warnings": None,
+            "skipped": len(skipped_targets),
+            "warnings": (
+                f"{len(skipped_targets)} target(s) failed to import: "
+                + "; ".join(skipped_targets[:10])
+                + (" …" if len(skipped_targets) > 10 else "")
+                if skipped_targets
+                else None
+            ),
             "summary": f"{written} TLS target{'s' if written != 1 else ''}",
+            "partial": bool(skipped_targets),
         }
         return scan

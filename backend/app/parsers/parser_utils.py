@@ -173,7 +173,12 @@ def correlate_scan(db: Session, scan_id: int) -> None:
     SubnetCorrelationService(db).batch_correlate_scan_hosts_to_subnets(scan_id)
 
 
-def record_hosts_in_scan(db: Session, scan_id: int, host_ids: set[int]) -> None:
+def record_hosts_in_scan(
+    db: Session,
+    scan_id: int,
+    host_ids: set[int],
+    host_cache: Optional[Dict[str, Any]] = None,
+) -> None:
     """Record HostScanHistory rows for the given (scan, host) pairs.
 
     v2.12.2 — extracted from httpx parser after recon session #3 surfaced
@@ -182,23 +187,56 @@ def record_hosts_in_scan(db: Session, scan_id: int, host_ids: set[int]) -> None:
     joins through host_scan_history).  Idempotent: existing pairs are
     skipped silently.
 
+    v2.332.0 — writes the same snapshot fields the dedup path writes
+    (``host_created``, ``state_at_scan``, ``hostname_at_scan``) when the
+    parser hands over its ``host_cache`` (the ``ip -> Host`` memo from
+    ``resolve_host_cached``).  Before this the web parsers wrote bare
+    membership rows, so every httpx / whatweb / eyewitness / testssl scan
+    reported 0 new hosts and 0 up hosts even on a first-ever import, and the
+    notification path filed every host it touched as "changed".
+
     Call after the parser has flushed its primary rows so the host_ids
     are stable.  Pass an empty set for a no-op (file with no resolved
     hosts).
     """
     if not host_ids:
         return
-    existing_pairs = {
-        (row.host_id, row.scan_id)
+    hosts_by_id: Dict[int, models.Host] = {}
+    if host_cache:
+        hosts_by_id = {
+            h.id: h for h in host_cache.values() if h is not None and h.id in host_ids
+        }
+    existing_rows = {
+        row.host_id: row
         for row in db.query(models.HostScanHistory).filter(
             models.HostScanHistory.scan_id == scan_id,
             models.HostScanHistory.host_id.in_(host_ids),
         )
     }
     for host_id in host_ids:
-        if (host_id, scan_id) in existing_pairs:
+        host = hosts_by_id.get(host_id)
+        created = bool(getattr(host, CREATED_MARKER, False)) if host is not None else False
+        existing = existing_rows.get(host_id)
+        if existing is not None:
+            # Never downgrade created→updated (same rule as the dedup path).
+            if created:
+                existing.host_created = True
             continue
-        db.add(models.HostScanHistory(host_id=host_id, scan_id=scan_id))
+        db.add(
+            models.HostScanHistory(
+                host_id=host_id,
+                scan_id=scan_id,
+                host_created=created,
+                state_at_scan=(host.state if host is not None else None),
+                hostname_at_scan=(host.hostname if host is not None else None),
+            )
+        )
+
+
+# Non-mapped marker set on a ``Host`` instance by ``resolve_host_cached`` when
+# THIS parse created the row, so ``record_hosts_in_scan`` can report it as new
+# without a second query.  Instance-local: it never reaches the database.
+CREATED_MARKER = "_created_by_this_parse"
 
 
 def map_numeric_severity(score: Optional[float]) -> VulnerabilitySeverity:
@@ -293,7 +331,9 @@ def upsert_vulnerability(
     existing = query.first()
     if existing:
         existing.last_seen = datetime.utcnow()
-        existing.scan_id = scan_id
+        # v2.332.0 — scan_id is "first recorded by" and never moves; the
+        # re-observation lands on last_seen_scan_id.
+        existing.last_seen_scan_id = scan_id
         existing.severity = severity
         # Title can change across scans for the same plugin_id — keep latest.
         if title:
@@ -321,6 +361,7 @@ def upsert_vulnerability(
         cve_id=cve_id,
         solution=solution,
         references=json.dumps(references) if references else None,
+        last_seen_scan_id=scan_id,
     )
     db.add(vulnerability)
     db.flush()
@@ -374,6 +415,10 @@ def resolve_host_cached(
         )
         db.add(host)
         db.flush()
+        # The create/update decision is the ground truth for "what this scan
+        # introduced"; record it on the instance so record_hosts_in_scan can
+        # write host_created without re-deriving it (v2.332.0).
+        setattr(host, CREATED_MARKER, True)
     elif host is not None and hostname:
         apply_hostname_candidate(host, hostname, "scanner")
 

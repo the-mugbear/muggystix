@@ -171,3 +171,39 @@ def test_ingestion_advances_last_seen_but_a_non_scan_update_does_not(
     db_session.commit()
     db_session.refresh(host)
     assert host.last_seen > stale, "ingestion did not advance last_seen"
+
+
+def test_snapshot_service_name_is_what_this_scan_recorded(
+    client, db_session, test_project
+):
+    """v2.332.0 — service_name used to come from the live Port row, so a later
+    scan re-fingerprinting a port rewrote every older scan's "as scanned"
+    view.  The per-scan value has been in PortScanHistory.service_info all
+    along; the snapshot now reads it, and reports nothing (not the live
+    value) when the scan recorded no service."""
+    pid = test_project.id
+    scan = _scan(db_session, pid, "monday.xml")
+    host = models.Host(project_id=pid, ip_address="10.60.0.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    db_session.add(models.HostScanHistory(
+        host_id=host.id, scan_id=scan.id, state_at_scan="up",
+        discovered_at=datetime.now(timezone.utc),
+    ))
+    # Live row says http today; THIS scan saw ssh on it.
+    p22 = _port(db_session, host, 22, current_state="open")
+    db_session.add(models.PortScanHistory(
+        port_id=p22.id, scan_id=scan.id, state_at_scan="open",
+        service_info='{"service_name": "ssh", "service_product": "OpenSSH"}',
+    ))
+    # This scan recorded no service at all for 8080.
+    p8080 = _port(db_session, host, 8080, current_state="open")
+    db_session.add(models.PortScanHistory(
+        port_id=p8080.id, scan_id=scan.id, state_at_scan="open", service_info=None,
+    ))
+    db_session.commit()
+
+    body = client.get(f"/api/v1/projects/{pid}/scans/{scan.id}/host-snapshots").json()
+    ports = {p["port_number"]: p for p in body["items"][0]["ports"]}
+    assert ports[22]["service_name"] == "ssh", "live Port.service_name leaked into the scan record"
+    assert ports[8080]["service_name"] is None, "a scan that recorded no service must not borrow today's"

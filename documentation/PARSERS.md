@@ -204,9 +204,10 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
 - **dns CSV** expects `record_type` + `name` + `address` columns (with aliases);
   gated by a header heuristic so an arbitrary CSV doesn't become a silent
   zero-record DNS scan.
-- **amass** **requires a resolved IP** — hostname-only rows are silently
-  dropped (the defining behavior). Tags the scan `subfinder` when the filename
-  says so.
+- **amass** creates a host only for rows with a resolved IP; hostname-only
+  rows are **kept** as unresolved names in the Names inventory (a `DNSName` +
+  `DISCOVERED` observation with no host — pre-v2.322.0 they were dropped).
+  Tags the scan `subfinder` when the filename says so.
 - **subnet_parser** is **not** a scan parser (no `parse_file`, no `Scan`). It's
   used by the **Scope import** page: `parse_subnet_csv` returns
   `(cidr, [labels], description, site)` tuples (labels ≤60 chars, site ≤255);

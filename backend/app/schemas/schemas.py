@@ -248,7 +248,8 @@ class HostVulnerability(BaseModel):
     cvss_score: Optional[float] = None
     cvss_vector: Optional[str] = None
     cve_id: Optional[str] = None
-    scan_id: Optional[int] = None
+    scan_id: Optional[int] = None          # first recorded by (v2.332.0: never moves)
+    last_seen_scan_id: Optional[int] = None
     port_id: Optional[int] = None
     port_number: Optional[int] = None
     protocol: Optional[str] = None
@@ -702,6 +703,8 @@ class IngestionJobSchema(BaseModel):
     # upload path first-class.
     skipped_count: Optional[int] = None
     parser_warnings: Optional[str] = None
+    # v2.332.0 — parser stopped early; see IngestionJob.partial.
+    partial: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

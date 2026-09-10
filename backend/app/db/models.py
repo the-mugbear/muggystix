@@ -275,7 +275,15 @@ class Scan(Base):
     # per-scan.  eyewitness_results table is dropped in init.py since no data
     # existed to migrate.
     web_interfaces = relationship("WebInterface", back_populates="scan", cascade="all, delete-orphan")
-    vulnerabilities = relationship("Vulnerability", back_populates="scan", cascade="all, delete-orphan")
+    # v2.332.0 — findings outlive the scan that first recorded them (FK is
+    # SET NULL, see Vulnerability.scan_id); no ORM delete cascade, and
+    # passive_deletes so a scan delete leaves the pointer to the database.
+    vulnerabilities = relationship(
+        "Vulnerability",
+        back_populates="scan",
+        foreign_keys="Vulnerability.scan_id",
+        passive_deletes=True,
+    )
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
 
     __table_args__ = (
@@ -800,6 +808,11 @@ class IngestionJob(Base):
     # up as such in the UI.
     skipped_count = Column(Integer, nullable=False, default=0, server_default="0")
     parser_warnings = Column(Text, nullable=True)
+    # v2.332.0 — the parser stopped early (truncated file, import aborted
+    # part-way).  Distinct from skipped_count: a truncated nmap file loses an
+    # UNKNOWN number of hosts and adds one warning, so a count cannot carry
+    # it.  A partial job must stay visibly partial in every list that shows it.
+    partial = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     # v2.86.2 — operator-set "I've seen this" marker for failed jobs.
     # Pre-fix, failed jobs sat in the Ingestion Queue forever with no
     # action affordance so they read as a permanent error banner.  Now

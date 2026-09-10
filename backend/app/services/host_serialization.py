@@ -408,7 +408,10 @@ def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None
         # spine dedups on — two implementations of "is this the same issue?"
         # would drift, and the UI would claim a merge the database didn't make.
         "issue_key": issue_key_for(vuln),
+        # scan_id = first recorded by; last_seen_scan_id = most recent
+        # re-observation (v2.332.0 — scan_id used to move on every re-upload).
         "scan_id": vuln.scan_id,
+        "last_seen_scan_id": vuln.last_seen_scan_id,
         "port_id": vuln.port_id,
         "port_number": port_number,
         "protocol": protocol,

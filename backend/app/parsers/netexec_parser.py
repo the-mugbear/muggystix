@@ -449,7 +449,29 @@ class NetexecParser:
             self.db.flush()
 
     def _store_netexec_result(self, host_id: int, scan_id: int, host_data: Dict[str, Any], raw_output: str):
-        """Store netexec-specific enumeration results"""
+        """Store netexec-specific enumeration results.
+
+        One row per (scan, host, protocol, port, username): a scan is one
+        observation, so a later upload of the same file is a new scan and a
+        new row BY DESIGN (that is the per-scan evidence trail).  Within one
+        scan, the same line appearing twice used to insert twice (v2.332.0).
+        """
+        protocol = host_data.get('protocol', 'unknown')
+        port = host_data.get('port')
+        username = host_data.get('username')
+        duplicate = (
+            self.db.query(NetexecResult.id)
+            .filter(
+                NetexecResult.scan_id == scan_id,
+                NetexecResult.host_id == host_id,
+                NetexecResult.protocol == protocol,
+                NetexecResult.port == port,
+                NetexecResult.username == username,
+            )
+            .first()
+        )
+        if duplicate is not None:
+            return
 
         result = NetexecResult(
             scan_id=scan_id,
@@ -467,6 +489,9 @@ class NetexecParser:
         )
 
         self.db.add(result)
+        # autoflush is off: flush so the existence check above sees this row
+        # for a repeat later in the same file.
+        self.db.flush()
 
     def _looks_like_ip(self, text: str) -> bool:
         """Check if text looks like an IP address"""

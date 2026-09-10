@@ -5,6 +5,185 @@ what's intentionally left for later.)
 
 ---
 
+## Scans — upload contribution and parsing metrics review, 2026-09-09
+
+- [x] **Review actionability before implementation.** A user wants to see the
+  specific new data an upload contributed, with a summary of what was parsed
+  and associated metrics. The assessment below came from a read-only source
+  review, not live uploads or executed tests. Another agent should validate the
+  findings against current code, identify existing reusable functionality,
+  separate corrective fixes from new features, and propose bounded work items
+  with dependencies, effort/risk, and acceptance criteria. Treat the complexity
+  ratings as preliminary, not implementation commitments.
+
+### Validation outcome — 2026-09-10 (code-verified; corrective release shipped as 2.332.0 / 5.204.0)
+
+**Verdicts on the seven findings.** Six confirmed, one half-stale:
+1 Modified label — confirmed (`updated_hosts = total − new`, request-time arithmetic).
+2 Web-parser attribution — confirmed (bare membership rows; httpx/WhatWeb/EyeWitness/testssl always 0 new, 0 up).
+3 Mutable attribution — confirmed; nuance: port service info IS preserved per scan (`PortScanHistory.service_info`), script output is not.
+4 Quality metrics — confirmed and worse: only 8 of 20 parsers set stats; `partial` was published but never read.
+5 Compare closed ports — confirmed on logic (absent-in-B counted as closed).
+6 Snapshot fidelity — confirmed (service from live Port row; `service_info` had no reader).
+7 Format drift — UI list confirmed; Amass claim stale in PARSERS.md only (parser keeps name-only rows).
+Extra defects found: NetExec duplicate rows for repeated lines within one file; vulnerability CASCADE deleting old findings when the newest scan is deleted; out-of-scope host table is dead (endpoints always 0).
+
+**Shipped (corrective, 2.332.0 / 5.204.0):** label fix; web-parser `host_created`/state snapshot; snapshot service from `service_info`; compare split into `closed_ports` vs `not_observed_ports`; `ingestion_jobs.partial` + nmap/testssl skipped semantics; formats list + doc pin test + PARSERS.md; NetExec within-scan dedupe; **D2** — `vulnerabilities.scan_id` = first-recorded-by (SET NULL) + `last_seen_scan_id`.
+
+**Not done (mechanical follow-up):** `last_parse_stats` for the 12 parsers that still publish nothing (amass, bloodhound, dirbuster, dns, masscan, naabu, nessus, netexec, nikto, openvas, rustscan, smbmap). Effort M, no design.
+
+**Decisions taken (do not reopen without new evidence):**
+- **D1 Changed = allowlisted fields, decided at write time from the dedup precedence branch.** Hosts: state, OS name, OS family (hostname is a name observation, not a host change). Ports: state, service name, product, version (not extrainfo/method/confidence). Script output: re-observed only, never "changed". Timestamps, confidence, attribution: never. Gives Added / Changed / Re-observed / Not applied from the same branch; no whole-row diff heuristics.
+- **D2 Vulnerability attribution: `scan_id` = first recorded by, never moves; `last_seen_scan_id` = latest re-observation. SHIPPED.** Per-scan severity rollup on /scans now means "introduced by this scan". History before the migration is unrecoverable (kept as last-touched).
+- **D3 Baseline = import order.** Contribution is computed against project knowledge at ingestion time and recorded then, never recomputed. Observation time is displayed beside import time so out-of-order uploads are visible; it is never used to re-baseline.
+- **D4 Keep the compare page**, relabelled (done). It answers "what differs between two observations", Import results answers "what did this upload add". Once `port_created` exists, compare gains "first observed in B" for free.
+
+**Reusable substrate for the Import results feature (verified):** `HostScanHistory.host_created` (ground-truth create decision), `PortScanHistory.service_info` (per-scan service), `DNSRecord` (immutable per scan by design), `WebInterface` (scan-owned, unique per scan+url+source), `NetexecResult` (append-only per scan), `ConflictHistory.previous_scan_id/new_scan_id` (host state + OS changes only), `IngestionJob` quality trio. Gaps: no `port_created`, no merge-outcome column, no vulnerability observation history, no script-output history.
+
+**Smallest useful first release (next):** an Import results panel on ScanDetail built only from the substrate above — hosts added / existing observed, ports observed with as-scanned service, DNS observations by kind, web interfaces, findings first recorded, quality (skipped / warnings / partial). Show Changed and Re-observed as *not measured* until the step below lands. No new tables.
+Then, in order: (1) `port_created` + merge-outcome column on `PortScanHistory` written at dedup time (M) → real Added/Changed/Re-observed for ports; (2) vulnerability observation table (L) only if D1's itemised finding changes are wanted. Skip: before/after project-total subtraction; BloodHound edges, SMBMap shares, structured directory paths (separate features).
+
+### Proposed meaning of “unique”
+
+Compare an upload with project knowledge immediately before ingestion. Define
+the ingestion ordering/baseline explicitly, including concurrent writes and
+older scan files uploaded later; source observation time and import time are
+different facts.
+
+| Classification | Meaning |
+| --- | --- |
+| Added | Previously unknown host, endpoint, DNS fact, finding, or other supported item. |
+| Changed | Meaningful stored value changed, such as a service version. |
+| Re-observed | Existing item confirmed without a meaningful change; timestamp refresh alone does not count as changed. |
+| Not applied | Parsed value did not replace existing data because of merge/precedence rules. |
+| Skipped / unsupported | Record could not be imported, or the format's data category is not supported. Keep these reasons distinct. |
+
+Count duplicates **within the file** separately. Input rows, accepted records,
+distinct observations, and resulting entities are different units and need not
+have equal counts. “First introduced by this upload” is historical;
+“only ever observed by this upload” is a separate metric that changes as later
+uploads arrive. Avoid one combined “unique data” total across unlike units.
+
+### Findings to validate
+
+- [ ] **Misleading “Modified” label:** `frontend/src/pages/Scans.tsx` displays
+  `updated_hosts` as Modified, but this counts already-known hosts observed by
+  the scan, not necessarily meaningful changes. Consider “Existing hosts
+  observed” until actual changes are measured.
+- [ ] **Web-parser new-host attribution:**
+  `backend/app/parsers/parser_utils.py::resolve_host_cached` can create hosts,
+  while `record_hosts_in_scan` records membership without `host_created` or host
+  snapshot fields. Check httpx, WhatWeb, EyeWitness, and testssl for undercounted
+  new hosts and incomplete snapshots.
+- [ ] **Mutable vulnerability/script attribution:**
+  `parser_utils.py::upsert_vulnerability` and
+  `backend/app/services/vulnerability_service.py` move existing findings'
+  `scan_id` to the latest upload. `/scans` aggregates vulnerabilities by that
+  field, so earlier upload counts can change. The host deduplication service
+  similarly overwrites script output and scan attribution. Determine the
+  historical observation model needed before promising immutable results.
+- [ ] **Inconsistent quality metrics:** `last_parse_stats` is optional;
+  `backend/app/services/ingestion_service.py` defaults absent stats to zero
+  skipped. Nmap uses warning count in its skipped field; testssl can log a
+  skipped target while returning zero skipped. Audit all parsers for accurate
+  denominators, partial imports, unsupported content, and truncation reasons.
+- [ ] **Scan comparison is not contribution accounting:**
+  `backend/app/api/v1/endpoints/scans.py::compare_scans` compares two scans'
+  host/port observations, not prior project knowledge. Its closed-port set
+  includes ports absent from the second scan's open set. Distinguish explicitly
+  closed from not observed/tested; absence is not remediation evidence.
+- [ ] **Snapshot fidelity:** `get_scan_host_snapshots` reads service names from
+  current `Port` rows despite the as-scanned presentation; inspect use of
+  `PortScanHistory.service_info` before treating service details as immutable.
+- [ ] **Format guidance drift:** the `/scans` supported-format list omits
+  WhatWeb, testssl, and RDAP. `documentation/PARSERS.md` says Amass name-only
+  rows are dropped, but the current parser retains unresolved names. Reconcile
+  the UI, dispatcher, `UPLOAD_FORMATS.md`, and parser reference; an extension
+  allowlist test alone does not validate per-format capabilities.
+
+### Per-format assessment
+
+Effort below concerns reliable Added / Changed / Re-observed **item detail**,
+beyond basic parsed totals. Verify exact extension/variant coverage through
+the dispatcher as well as the parser; do not expand support based on this table.
+
+| Format | Useful metrics / retained data | Preliminary complexity and gaps |
+| --- | --- | --- |
+| Nmap XML | Hosts, names, states, ports, service fingerprints, OS facts, host/port scripts, incomplete-file warnings. | Medium–high: host/port history is a foundation; need merge outcomes and immutable script evidence. |
+| Nmap GNMAP | Hosts, names, ports/states, supplied service/version strings. | Medium: shared host/port path; less source detail than XML. |
+| Masscan XML / JSON / TXT | Distinct hosts and host/protocol/port combinations, repeated rows. | Medium: separate bulk-SQL upserts need equivalent instrumentation without sacrificing throughput. |
+| Naabu JSON / TXT | Hosts and discovered endpoints. | Low–medium: simple identities/shared persistence; add created/existing outcomes and quality counts. |
+| RustScan TXT | Hosts and discovered endpoints. | Low–medium: distinguish ordinary console lines from malformed observations. |
+| Nessus XML / .nessus | Hosts, findings by service/severity, CVEs, plugin evidence, host attributes, write failures. | High: separate batched persistence and mutable finding attribution; need immutable observations and creation/change outcomes. |
+| OpenVAS / Greenbone XML | Hosts, ports, NVT findings, severity/CVSS, CVEs, malformed results. | High: shared finding updates overwrite attribution; identity includes source identifier and affected host/service. |
+| Nikto JSON / CSV / TXT | Tested endpoints, findings, supplied severity/CVEs. | High: finding-history gap; named virtual hosts must remain distinct on shared IPs. |
+| httpx JSON / JSONL | Web endpoints, status/title, technologies, headers, favicon/TLS metadata. | Medium: scan-owned web observations exist; need endpoint identity, semantic comparisons, and corrected host attribution. |
+| WhatWeb JSON / JSONL | Web endpoints, technologies, titles, server headers/status. | Medium: similar web path; compare supported fields only, not absent TLS fields. |
+| EyeWitness JSON / CSV / ZIP | Web observations, screenshots actually stored, missing assets, titles/statuses, skipped records. | Medium–high: distinguish metadata from assets; hashes detect identical images, but visual differences are not automatically new security facts. |
+| testssl JSON | TLS targets, weak protocols, certificate expiry/self-signed information. | Medium for retained fields; high for full checks: many source checks are folded into selected web-interface fields, not individual findings. |
+| dnsx JSON / JSONL | Names, DNS observations by type/resolver, addresses, PTR enrichment, resolution failures. | Medium: scan-owned observations help; separate new facts, another resolver's confirmation, and TTL changes. |
+| DNS CSV | Names, types/values, address bindings, hostname enrichment. | Medium: standardize counters and comparison through shared DNS observations. |
+| Amass / Subfinder JSON / TXT | New/unresolved/resolved names, address bindings, hosts introduced. | Medium: useful name-only imports can legitimately create zero hosts. |
+| NetExec JSON / TXT | Host/domain/OS/signing facts, protocol/authentication results, supplied shares, conflicts. | High: scan-owned results exist, but comparisons span structured data, raw output, confidence, and precedence. |
+| SMBMap JSON / TXT | Hosts and SMB endpoint observations. | Low–medium for current output; share details are not retained. New-share metrics require expanded ingestion/storage. |
+| BloodHound / SharpHound JSON | Computer hosts/names, objects lacking usable addresses, unsupported categories. | Low–medium for current inventory import. AD edges/ACLs/users/groups/attack paths are outside current coverage; adding them is a separate large feature. |
+| DirBuster / Gobuster / Feroxbuster / ffuf / Dirsearch JSON / CSV / TXT | Endpoints, discovered paths, response codes/sizes, retained versus truncated paths. | High for specific new paths: flattened into service_extrainfo with a 50-entry cap; require structured path observations. |
+| RDAP JSON / NDJSON | Netblocks, organizations/ASNs, refreshed registrations, host associations. | High: registration rows are overwritten; scan_id reaches the parser but is not persisted on attribution rows. Can enrich many hosts while reporting zero scanned hosts. |
+
+Subnet CSV import belongs to the Scope workflow and does not create a Scan.
+Consider the same vocabulary later, but keep it outside this initial scope.
+
+### Proposed user experience
+
+- [ ] A persistent **Import results** view linked from the completed ingestion
+  job and scan row, showing detected format, parser version, import status,
+  parsing totals, limitations, and format-appropriate contribution categories.
+- [ ] Clickable Added / Changed / Re-observed / Not applied counts for hosts,
+  endpoints, DNS facts, findings, and other applicable entities. Drill-down
+  shows specific items, prior/imported values, applied result, source evidence,
+  filters, pagination, and an export.
+- [ ] Keep input-record quality separate from entity contributions. Distinguish
+  **zero**, **not supported**, and **not measured**. Partial results must remain
+  visibly partial; a successful import does not imply full format coverage.
+- [ ] Expose parser limitations at upload and in results, especially BloodHound
+  inventory-only support, SMBMap share omission, directory-path truncation,
+  and testssl's selected-field extraction.
+
+### Candidate implementation sequence — reviewer to refine
+
+1. Correct misleading labels and attribution/quality defects; standardize
+   format-specific parsed summaries and the capability catalog.
+2. Capture merge outcomes during persistence for hosts, ports, DNS, and web
+   observations. Avoid before/after project-total subtraction: it cannot
+   identify individual contributions or reliably handle concurrent changes.
+3. Extend existing history where appropriate and add missing immutable
+   observations for findings, scripts, structured paths, and RDAP attribution.
+   Preserve source-specific identities; a CVE alone is not a finding identity.
+4. Persist cheap list-page aggregates alongside paginated detail. Review typed
+   schema versus opaque evidence storage, indexing, streaming/bulk performance,
+   retry idempotency, savepoint rollbacks, partial batch commits, and deletion
+   semantics. Do not persist a counter for a write that rolled back.
+5. Mark historical coverage honestly. Reconstruct only what retained evidence
+   supports; prior values and original contributions may be unrecoverable.
+
+### Required review deliverable and validation
+
+- [ ] Produce an actionability assessment: confirmed versus stale findings,
+  smallest useful first release, per-format coverage, schema/API/UI changes,
+  dependencies, effort/risk, migration limits, and proposed implementation
+  tickets. Identify product decisions that remain unresolved instead of
+  silently selecting meanings for “new” or “changed.”
+- [ ] Define representative fixtures for every supported parser/variant and
+  test **upload A → repeat A → upload B with one controlled change**. A's
+  historical results stay stable, the repeat adds no semantic novelty, and B
+  identifies the exact changed item.
+- [ ] Cover within-file duplicates, unresolved names, shared-IP virtual hosts,
+  malformed/truncated files, unsupported categories, merge-rejected values,
+  retries/partial commits, concurrent writes, deletion, and large-file query
+  budgets. Verify absent observations are not reported as closed/resolved.
+
+---
+
 ## AI Assist tool surface — plan, 2026-08-19
 
 The assist tool set is now derived from the analyst's job rather than added
@@ -94,145 +273,3 @@ that produced it.
   `/assist-sessions` in 2.284.0.
 
 ---
-
-## Orphan inventory — 2026-08-10
-
-A whole-repo sweep for code that was built and then stranded: client functions with no
-caller, endpoints with no UI, columns nothing reads. Findings below are **verified**, not
-raw detector output — three candidates were dropped after checking (a same-module helper
-flagged as uncalled, plus host tags and host assignment, which *are* surfaced through bulk
-variants).
-
-**Detector caveat worth remembering:** "backend route has no frontend reference" is a
-misleading test on its own. An orphaned client function still contains the URL literal, so
-the route looks reached. Every route below was confirmed by checking whether the *calling
-function* has a caller — not just whether the path appears in the frontend.
-
-Clean on this sweep, for the record: no orphaned DB tables (71 DB / 70 model + alembic), no
-never-imported React components, no uncalled backend service functions, only 2 TODO markers
-in backend code.
-
-### A. Broken — client calls an endpoint that does not exist
-
-- [x] **DONE (2.242.0) — stub deleted.** ~~`getAnnotationHistory` → `GET /hosts/{id}/notes/{id}/history` — no such route.**
-      The endpoint isn't in the app's 316 routes; the note-history feature was removed or
-      never landed, and the client stub survived. Would 404 the moment anything wired it
-      up.~~ Removed along with its `AnnotationStatusHistoryEntry` type; note
-      status changes remain visible in the finding-comment threads (2.184.0).
-
-### B. Backend feature is live, nothing in the UI reaches it
-
-Each has a working, tested endpoint and no path for a user to get to it. These are product
-decisions (surface it or remove it), not cleanup.
-
-- [x] **DONE (2.243.0).** Tag management panel in Project Settings — rename, recolor,
-      delete, with a delete confirm that states the host count it will affect.
-- [x] **DONE (2.244.0) — deleted.** Confirmed superseded: `GET /workbench` batches all
-      four from the same `operations_read_service` functions (incl. `new_scan_count`) and
-      is what Operations calls. Tests ported to the service functions.
-- [x] **DONE (2.243.0).** Delivery outbox in Project Settings — last 100 attempts with
-      status / attempts / HTTP code / error text, status filter, retry on failed rows.
-- [x] **DONE (2.243.0).** Audit log viewer in System Settings (admin-only, deployment-wide
-      — login and user-admin events aren't project-scoped).
-- [x] **DONE (2.243.0) — and the original claim was wrong.** DNS was never "entirely
-      unsurfaced": per-host (`/hosts/{id}/dns-records`) and per-scan DNS already rendered.
-      Only the three `/dns/*` endpoints were unreached. Resolved by adding a "Resolve now"
-      action to the host DNS card (`/dns/lookup`), deleting the redundant `/dns/records`,
-      and leaving zone transfer **deliberately API-only** — it targets the domain's
-      authoritative NS, reads as active recon, and takes an unvalidated domain with no
-      scope check or throttle. Recorded in the handler docstring so a later sweep doesn't
-      re-flag it as an orphan.
-- [x] **DONE (2.295.0) — and the answer was "delete the credential", not "build the UI".**
-      The question this item asked to settle first ("are unscoped agent keys actually
-      used?") answered itself: zero in prod, no minting outside `POST /agents/`, and no
-      workflow that needs one. So the whole `/agents/*` router went, along with
-      `deny_scoped_keys` + `POST /agent/test-plans` (reachable only by that key) and the
-      v2.65.0 legacy-hit probe. Unscoped keys are rejected at authentication.
-- [x] **DONE (2.244.0).** Orphaned `createFinding` client removed; the route is KEPT and
-      documented as deliberately API-only. Closing off manual creation would narrow the
-      product without anyone asking.
-- [x] **DONE (2.244.0) — and the answer was "retired product model", not "missing UI".**
-      From `scopes.py`: *"As of v2.9.4 the user never names or manages a 'scope
-      container' — a project has exactly one scope conceptually."* `POST /scopes/` and
-      `PATCH /scopes/{id}` deleted with their clients; `getScope`/`getScopeHostMappings`
-      clients removed (the host-mappings route kept as API-only). Also fixed the Scopes
-      empty state, which told users to "Create one" — an action the UI cannot perform.
-- [x] **DONE (2.244.0).** Both singular routes deleted — but only after checking: the
-      bulk route only ADDS, so detach would have been lost had `PUT /subnets/{id}/labels`
-      not existed. Tests pin both that the PUT detaches and that the singular routes
-      stay gone.
-- [x] **DONE (2.244.0) — deleted.** Aggregate distributions, no consumer, nothing acting
-      on them.
-
-### C. Dead client code — superseded by bulk variants
-
-- [x] **DONE (2.242.0).** All seven client functions and both orphaned types removed, and
-      the now-unreachable singular backend routes retired with them (`POST /hosts/tags`,
-      `POST /hosts/{id}/tags`, `DELETE /hosts/{id}/tags/{tag_id}`,
-      `POST|DELETE /hosts/{id}/assign`).
-
-      **This is where the `host_assigned` webhook bug surfaced.** The singular assign route
-      was the only place that dispatched the event, so retiring it would have silently
-      deleted a feature users can subscribe to — one that had never worked, because the UI
-      only ever called the bulk path. The dispatch moved to `/bulk/assign`. Worth
-      remembering as a pattern: *the unreachable route was the only one doing part of the
-      job.* Check what a dead route uniquely does before deleting it.
-
-### D. Dead schema — columns nothing reads or writes
-
-- [x] **DONE (2.242.0) — whole table dropped.** ~~`SecurityPolicy` — 14 of its columns are referenced nowhere in the app~~
-      (`password_min_length`, `password_require_*`, `max_failed_login_attempts`,
-      `lockout_duration_minutes`, `session_timeout_minutes`, `max_concurrent_sessions`,
-      `password_expiry_days`, `audit_retention_days`, `require_audit_login`,
-      `require_audit_data_access`, `updated_by_id`). The table advertises a configurable
-      password/session policy that nothing enforces — the same shape as the `allowed_ips`
-      column dropped in 2.240.4. Either implement enforcement or drop the columns; leaving
-      them is a standing misrepresentation of what the system does. Dropping just the
-      columns would have left an `id`+timestamps husk, so the table went too.
-- [x] **DONE (2.242.0).** `NetworkAttribution.cloud_service` — left behind when the `cloud:` DSL filter was
-      withdrawn (2026-08). No reader, no writer.
-- [x] **DONE (2.242.0).** `User.last_activity_seen_at`, `UserSession.device_info`,
-      `ImportedResultFile.imported_at` — never read.
-
-### E. Partial writers — column exists, only some paths populate it
-
-- [x] **PARTLY DONE (2.245.0) — and the original entry was wrong about the cause.**
-      Serialization shipped (`cert_status` on host detail, rendered in ProvenanceCard),
-      along with a query fix: the host-detail fetch filtered `cert_subject_org IS NOT
-      NULL`, dropping every DV certificate — which has no organisation but does have an
-      expiry.
-
-      whatweb and eyewitness are **not** missing writers: neither format carries
-      certificate data (`tls_info=None, # whatweb has no structured TLS block`). Null is
-      correct there.
-
-- [ ] **Parse nmap `ssl-cert` NSE output into the typed cert columns.** The real coverage
-      gap. `nmap --script ssl-cert` is far more common in recon than httpx TLS probing,
-      and its output is already stored as `Script` rows — just never parsed. Precedent
-      exists: `_detect_smb_signing` extracts `Host.smb_signing` from NSE text the same way.
-      **Open design question:** the cert columns live on `WebInterface`, which nmap never
-      creates. Either synthesise a WebInterface row per TLS port (lights up the existing
-      ProvenanceCard path for free, but widens what a "web interface" means — nmap can see
-      TLS on 993/imaps, which is not a web interface) or give Port its own cert columns
-      (truer semantics, but a second home for the same fact). Needs a call before building.
-
-### F. Loaded gun
-
-- [x] **DONE (2.242.0).** ~~`getReconSession(id, { includeHosts: true })`~~ — client option
-      removed and the backend path capped at 2000 rows with a `hosts_truncated` flag,
-      matching the agent-path treatment from 2.241.0.
-
----
-
-## Risk scoring — removed, not hidden
-
-**Status:** hidden from the UI 2026-06-06; **scaffolding since deleted**.
-
-⚠️ The re-enable procedure previously documented here was stale — it pointed at code that
-no longer exists. Verified 2026-08-10: `frontend/src/config/featureFlags.ts` does not
-exist, `RISK_SCORING_ENABLED` appears nowhere in the repo, and `HostRiskAssessment`,
-`risk_predicate`, and `_b_risk` are all absent from the backend.
-
-Risk scoring is therefore **a rebuild, not a flag flip**. The original intent stands if it
-is ever revisited: scoring weights should be admin-tunable, since the unpopulated
-`HostRiskAssessment` table (every host scoring 0) is what made the first version useless.

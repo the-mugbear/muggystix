@@ -52,6 +52,9 @@ export interface IngestionJob {
   // one, which for scan data means missing hosts look like absent hosts.
   skipped_count?: number | null;
   parser_warnings?: string | null;
+  /** v5.204.0 — the parser stopped early (truncated file). Distinct from
+   *  skipped_count: a truncated file loses an unknown number of records. */
+  partial?: boolean;
 }
 
 

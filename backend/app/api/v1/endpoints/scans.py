@@ -64,7 +64,13 @@ class ScanDeletionImpact(BaseModel):
         default_factory=list, description="Up to 10 IPs of the hosts that will be removed"
     )
     ports_removed: int = Field(..., ge=0, description="Open ports on the removed (orphan) hosts")
-    vulnerabilities_removed: int = Field(..., ge=0, description="Vulnerabilities recorded by this scan")
+    # v2.332.0 — findings are no longer deleted with the scan that first
+    # recorded them (their scan pointer is SET NULL instead); the number here
+    # is how many lose that attribution, not how many disappear.
+    vulnerabilities_detached: int = Field(
+        ..., ge=0,
+        description="Vulnerabilities first recorded by this scan; kept, but lose that attribution",
+    )
     web_interfaces_removed: int = Field(..., ge=0, description="Web interfaces/screenshots from this scan")
 
 
@@ -150,7 +156,13 @@ class ScanDiffCounts(BaseModel):
     dropped_hosts: int = 0
     host_state_changes: int = 0
     newly_open_ports: int = 0
+    # v2.332.0 — split.  ``closed_ports`` is open in A and observed NOT open
+    # in B (B tested it and got closed/filtered).  ``not_observed_ports`` is
+    # open in A with no observation in B at all (different port range, tool,
+    # or target list).  They used to be one number labelled "closed", which
+    # presented "we didn't look" as remediation evidence.
     closed_ports: int = 0
+    not_observed_ports: int = 0
 
 
 class ScanDiffResponse(BaseModel):
@@ -164,6 +176,7 @@ class ScanDiffResponse(BaseModel):
     host_state_changes: List[ScanDiffHostStateChange] = Field(default_factory=list)
     newly_open_ports: List[ScanDiffPortChange] = Field(default_factory=list)
     closed_ports: List[ScanDiffPortChange] = Field(default_factory=list)
+    not_observed_ports: List[ScanDiffPortChange] = Field(default_factory=list)
 
 
 _AUTH_RESPONSES = {
@@ -717,13 +730,34 @@ def compare_scans(
             .all()
         )
     ]
+    # v2.332.0 — "open in A, not open in B" is two different facts and only
+    # one of them is remediation evidence.  Closed: B has an observation for
+    # the port and it is not open.  Not observed: B has no row for the port —
+    # B never tested it (different port range, tool or target list), so
+    # nothing can be said about it.  Both were previously one "closed" list.
+    b_any_ports_subq = (
+        db.query(models.PortScanHistory.port_id)
+        .filter(models.PortScanHistory.scan_id == b)
+    )
     closed_ids = [
         pid for (pid,) in (
             db.query(models.PortScanHistory.port_id)
             .filter(
                 models.PortScanHistory.scan_id == a,
                 models.PortScanHistory.state_at_scan == "open",
+                models.PortScanHistory.port_id.in_(b_any_ports_subq),
                 ~models.PortScanHistory.port_id.in_(b_open_ports_subq),
+            )
+            .all()
+        )
+    ]
+    not_observed_ids = [
+        pid for (pid,) in (
+            db.query(models.PortScanHistory.port_id)
+            .filter(
+                models.PortScanHistory.scan_id == a,
+                models.PortScanHistory.state_at_scan == "open",
+                ~models.PortScanHistory.port_id.in_(b_any_ports_subq),
             )
             .all()
         )
@@ -735,6 +769,7 @@ def compare_scans(
         host_state_changes=len(changed_host_ids),
         newly_open_ports=len(newly_open_ids),
         closed_ports=len(closed_ids),
+        not_observed_ports=len(not_observed_ids),
     )
 
     # Resolve host metadata only for the rows we'll actually return.
@@ -768,7 +803,9 @@ def compare_scans(
             ))
 
     # Resolve port metadata (Port -> Host) only for capped port rows.
-    port_ids_needed = set(newly_open_ids[:cap]) | set(closed_ids[:cap])
+    port_ids_needed = (
+        set(newly_open_ids[:cap]) | set(closed_ids[:cap]) | set(not_observed_ids[:cap])
+    )
     port_meta: Dict[int, tuple] = {}
     if port_ids_needed:
         for pid, pnum, proto, svc, hid, ip in (
@@ -840,6 +877,7 @@ def compare_scans(
         host_state_changes=host_state_change_rows,
         newly_open_ports=port_rows(newly_open_ids),
         closed_ports=port_rows(closed_ids),
+        not_observed_ports=port_rows(not_observed_ids),
     )
 
 
@@ -949,9 +987,15 @@ def get_scan_deletion_impact(
             {"ids": orphan_host_ids},
         ).scalar() or 0
 
-    vulnerabilities_removed = db.execute(
-        text("SELECT COUNT(*) FROM vulnerabilities WHERE scan_id = :scan_id"),
-        {"scan_id": scan_id},
+    # Findings on orphan hosts go with the host (CASCADE on host_id); findings
+    # this scan first recorded on surviving hosts are kept and lose the
+    # pointer (SET NULL on scan_id, v2.332.0).  Report the latter.
+    vulnerabilities_detached = db.execute(
+        text(
+            "SELECT COUNT(*) FROM vulnerabilities "
+            "WHERE scan_id = :scan_id AND host_id != ALL(:orphan_ids)"
+        ),
+        {"scan_id": scan_id, "orphan_ids": orphan_host_ids or []},
     ).scalar() or 0
     web_interfaces_removed = db.execute(
         text("SELECT COUNT(*) FROM web_interfaces WHERE scan_id = :scan_id"),
@@ -965,7 +1009,7 @@ def get_scan_deletion_impact(
         hosts_kept=max(0, hosts_observed - len(orphan_host_ids)),
         sample_removed_ips=sample_removed_ips,
         ports_removed=ports_removed,
-        vulnerabilities_removed=vulnerabilities_removed,
+        vulnerabilities_detached=vulnerabilities_detached,
         web_interfaces_removed=web_interfaces_removed,
     )
 
@@ -1239,6 +1283,26 @@ def get_scan_command_explanation(
 # today's value under a historical heading.
 # ---------------------------------------------------------------------------
 
+def _service_name_at_scan(service_info: Optional[str]) -> Optional[str]:
+    """The service name THIS scan recorded for a port, from the
+    ``PortScanHistory.service_info`` JSON the dedup path writes per (port,
+    scan).  NULL means the scan recorded no service — reported as none, never
+    filled from the live Port row (that would leak a later scan's value into
+    an as-scanned view)."""
+    if not service_info:
+        return None
+    try:
+        import json
+
+        data = json.loads(service_info)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = data.get("service_name")
+    return name if isinstance(name, str) and name else None
+
+
 class ScanPortSnapshot(BaseModel):
     port_number: int
     protocol: Optional[str] = None
@@ -1327,15 +1391,19 @@ def get_scan_host_snapshots(
     ports_by_host: Dict[int, List[ScanPortSnapshot]] = {}
     if host_ids:
         # One query for the page's observed ports.  Joined to Port only for
-        # its identity columns (number/protocol/service); membership and state
-        # come from the observation.
+        # its identity columns (number/protocol); membership, state AND the
+        # service come from the observation.  v2.332.0 — service_name used to
+        # be read from the live Port row, so a later scan re-fingerprinting a
+        # port silently rewrote every older scan's "as scanned" view.  The
+        # per-scan value has been written to PortScanHistory.service_info all
+        # along; this is its first reader.
         port_rows = (
             db.query(
                 models.Port.host_id,
                 models.Port.port_number,
                 models.Port.protocol,
-                models.Port.service_name,
                 models.PortScanHistory.state_at_scan,
+                models.PortScanHistory.service_info,
             )
             .select_from(models.PortScanHistory)
             .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
@@ -1346,13 +1414,13 @@ def get_scan_host_snapshots(
             .order_by(models.Port.port_number)
             .all()
         )
-        for host_id, number, protocol, service, state_at_scan in port_rows:
+        for host_id, number, protocol, state_at_scan, service_info in port_rows:
             ports_by_host.setdefault(host_id, []).append(
                 ScanPortSnapshot(
                     port_number=number,
                     protocol=protocol,
                     state_at_scan=state_at_scan,
-                    service_name=service,
+                    service_name=_service_name_at_scan(service_info),
                 )
             )
 

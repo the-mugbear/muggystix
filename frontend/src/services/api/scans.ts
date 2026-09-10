@@ -122,7 +122,9 @@ export interface ScanDeletionImpact {
   hosts_kept: number;
   sample_removed_ips: string[];
   ports_removed: number;
-  vulnerabilities_removed: number;
+  /** Findings first recorded by this scan on surviving hosts: kept, lose
+   *  that attribution (v5.204.0 — they used to be deleted with the scan). */
+  vulnerabilities_detached: number;
   web_interfaces_removed: number;
 }
 
@@ -176,7 +178,10 @@ export interface ScanDiffCounts {
   dropped_hosts: number;
   host_state_changes: number;
   newly_open_ports: number;
+  /** Open in A; B tested the port and found it not open. */
   closed_ports: number;
+  /** Open in A; B has no observation for the port. Unknown, not closed. */
+  not_observed_ports: number;
 }
 
 export interface ScanDiffResponse {
@@ -189,6 +194,7 @@ export interface ScanDiffResponse {
   host_state_changes: ScanDiffHostStateChange[];
   newly_open_ports: ScanDiffPortChange[];
   closed_ports: ScanDiffPortChange[];
+  not_observed_ports: ScanDiffPortChange[];
 }
 
 export const compareScans = async (a: number, b: number): Promise<ScanDiffResponse> => {

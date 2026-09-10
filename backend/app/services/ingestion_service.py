@@ -800,6 +800,7 @@ class IngestionService:
                 # skipped" instead of a silent partial success.
                 job.skipped_count = result.get("skipped_count", 0)
                 job.parser_warnings = result.get("parser_warnings")
+                job.partial = bool(result.get("partial", False))
                 # Final import-count summary (e.g. "6 DNS records").  Only
                 # overwrite when the parser supplied one — streaming parsers
                 # (nmap) already left a meaningful "N hosts" in progress.
@@ -1175,6 +1176,10 @@ class IngestionService:
             "tool_name": tool_name,
             "skipped_count": int(parse_stats.get("skipped", 0)) if parse_stats else 0,
             "parser_warnings": " | ".join(warnings_parts) if warnings_parts else None,
+            # v2.332.0 — parsers have published ``partial`` (truncated file /
+            # import stopped early) since v2.232.0; nothing read it, so a
+            # truncated nmap file reached the UI as "1 record skipped".
+            "partial": bool(parse_stats.get("partial")) if parse_stats else False,
             # Final import-count summary for the job's progress column.  Fast
             # parsers (dnsx/httpx/whatweb/eyewitness) never stream report_progress,
             # so without this their completed jobs showed an empty progress

@@ -92,6 +92,9 @@ def test_scan_compare_reports_host_and_port_deltas(client, db_session, test_proj
     _seen_port(db_session, p_close, scan_a, "open")
     _seen_port(db_session, p_close, scan_b, "closed")
     _seen_port(db_session, p_newhost, scan_b, "open")
+    # v2.332.0 — open in A, NEVER probed by B: unknown, not closed.
+    p_unseen = _mk_port(db_session, h_common, 8443)
+    _seen_port(db_session, p_unseen, scan_a, "open")
     db_session.commit()
 
     resp = client.get(
@@ -106,7 +109,13 @@ def test_scan_compare_reports_host_and_port_deltas(client, db_session, test_proj
     assert counts["dropped_hosts"] == 1
     assert counts["host_state_changes"] == 1
     assert counts["newly_open_ports"] == 2   # p_open + p_newhost
-    assert counts["closed_ports"] == 1       # p_close
+    assert counts["closed_ports"] == 1       # p_close — B tested it, found it closed
+    # p_unseen has no B observation: it must NOT read as closed.  Absence is
+    # not remediation evidence.
+    assert counts["not_observed_ports"] == 1
+    assert {r["port_number"] for r in body["closed_ports"]} == {443}
+    assert {r["port_number"] for r in body["not_observed_ports"]} == {8443}
+    assert body["not_observed_ports"][0]["state_b"] is None
 
     assert {r["ip_address"] for r in body["new_hosts"]} == {"10.0.0.3"}
     assert {r["ip_address"] for r in body["dropped_hosts"]} == {"10.0.0.2"}
@@ -117,7 +126,7 @@ def test_scan_compare_reports_host_and_port_deltas(client, db_session, test_proj
     # Side stats reflect each scan's own observations.
     assert body["scan_a"]["total_hosts"] == 3
     assert body["scan_a"]["up_hosts"] == 2   # common + dropped up; flip down
-    assert body["scan_a"]["open_ports"] == 2  # p_stable + p_close
+    assert body["scan_a"]["open_ports"] == 3  # p_stable + p_close + p_unseen
     assert body["scan_b"]["total_hosts"] == 3
     assert body["scan_b"]["up_hosts"] == 3
     assert body["scan_b"]["open_ports"] == 3  # p_stable + p_open + p_newhost
