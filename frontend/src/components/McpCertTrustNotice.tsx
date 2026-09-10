@@ -70,21 +70,59 @@ const McpCertTrustNotice: React.FC = () => {
               ) : (
                 <>
                   BlueStick defaults to a self-signed certificate. Until your client trusts it, every
-                  MCP connection is refused. Run this once, then <strong>restart the client</strong>{' '}
-                  (the trust variable is read at startup):
+                  MCP connection is refused, and the client’s error (“self-signed certificate”,
+                  “unable to verify”) does not say a one-time setup fixes it. The script only
+                  prepares trust — it writes the certificate under your home directory and adds it
+                  to what your client already trusts; it turns nothing off.
                 </>
               )}
             </p>
+            {/* v5.203.0 — explicit steps. "Run this, then restart" skipped the
+                one operators miss: the script runs in a child shell and cannot
+                export into the shell that launched it, so a client restarted
+                from a shell without the exports still refuses the connection. */}
+            <ol className="mb-xs list-decimal space-y-xxs pl-md text-caption text-muted-foreground">
+              <li>
+                Download, <strong>read</strong>, then run it on the machine that runs the client:
+              </li>
+            </ol>
             <CodeBlock text={commands} label="certificate trust setup" />
+            <ol
+              className="mt-xs list-decimal space-y-xxs pl-md text-caption text-muted-foreground"
+              start={2}
+            >
+              <li>
+                Compare the SHA-256 it prints
+                {fingerprint ? (
+                  <>
+                    {' '}against{' '}
+                    <span className="break-all font-mono text-foreground">{fingerprint}</span>
+                  </>
+                ) : (
+                  <> against the one on the MCP reference page</>
+                )}
+                . Installing a trust anchor without checking it is trusting whatever answered.
+              </li>
+              <li>
+                <strong>Add the two exports it prints to your shell profile</strong> (
+                <span className="font-mono">NODE_EXTRA_CA_CERTS</span> for VS Code and Claude Code,{' '}
+                <span className="font-mono">SSL_CERT_DIR</span> for Codex). The script cannot set
+                them for you.
+              </li>
+              <li>
+                Open a <strong>new shell</strong> and launch the client from it. Both variables are
+                read at client start; a client restarted from a shell without them is unchanged.
+              </li>
+              <li>
+                Check the client’s own status (
+                <span className="font-mono">claude mcp list</span>, Codex’s{' '}
+                <span className="font-mono">/mcp</span>, VS Code’s “MCP: List Servers”) — then ask the
+                verification prompt below. Only an authenticated tool call proves the key works.
+              </li>
+            </ol>
             <p className="mt-xs text-caption text-muted-foreground">
-              Read the script before running — it installs a trust anchor.
-              {fingerprint ? (
-                <>
-                  {' '}It prints a SHA-256 that must match{' '}
-                  <span className="break-all font-mono text-foreground">{fingerprint}</span>.
-                </>
-              ) : null}{' '}
-              Full walkthrough (per-client variables, VS Code vs Codex) on the{' '}
+              Prefer to set it up by hand, or on a remote host? The per-client variables and the
+              raw certificate are on the{' '}
               <Link to="/reference/mcp" className="underline">
                 MCP reference
               </Link>

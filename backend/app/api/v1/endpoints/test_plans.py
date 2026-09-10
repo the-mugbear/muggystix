@@ -416,7 +416,12 @@ def generate_test_plan(
         api_key=raw_key,
         instructions=instructions,
         mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="plan_generation"),
+        mcp_clients=build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="plan_generation",
+            expected={"project_name": project.name, "session_label": f"plan #{plan.id}"},
+        ),
     )
 
 
@@ -1026,7 +1031,12 @@ def resume_plan_generation(
         api_key=raw_key,
         instructions=instructions,
         mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="plan_generation"),
+        mcp_clients=build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="plan_generation",
+            expected={"project_name": project.name, "session_label": f"plan #{plan.id}"},
+        ),
     )
 
 
@@ -1979,7 +1989,15 @@ def execute_test_plan(
         api_key=raw_key,
         instructions=instructions,
         mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="execution"),
+        mcp_clients=build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="execution",
+            expected={
+                "project_name": project.name,
+                "session_label": f"execution session #{session.id} on plan #{plan.id}",
+            },
+        ),
     )
 
 
@@ -2141,7 +2159,15 @@ def resume_execution_session(
         api_key=raw_key,
         instructions=instructions,
         mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="execution"),
+        mcp_clients=build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="execution",
+            expected={
+                "project_name": project.name,
+                "session_label": f"execution session #{session.id} on plan #{plan.id}",
+            },
+        ),
     )
 
 

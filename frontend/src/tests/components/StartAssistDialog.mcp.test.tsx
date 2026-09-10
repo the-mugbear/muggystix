@@ -78,6 +78,9 @@ const result = (): StartAssistResponse => ({
       path: '',
       payload: `claude mcp add --transport http bluestick-assist ${URL} --header "X-API-Key: ${KEY}"`,
       hint: 'Run in your project directory.',
+      verify_check: '`claude mcp list` should report bluestick-assist as Connected.',
+      verify_prompt: 'Using the bluestick-assist MCP server, call agent_identity.',
+      verify_expected: 'A working connection answers with project “engagement”, assist session #12.',
     },
     {
       id: 'codex',
@@ -147,6 +150,26 @@ describe('StartAssistDialog — MCP setup', () => {
     await switchTab('Claude Code');
     await screen.findByText('Run this command');
     expect(screen.getByText(/^claude mcp add --transport http/)).toBeInTheDocument();
+  });
+
+  it('hands the operator a verification prompt after the config (v5.203.0)', async () => {
+    // The config used to be the end of the story. "Registered" says nothing
+    // about the key, and the tool list is public, so the only proof is an
+    // authenticated tool call — the prompt that makes one, copyable, with what
+    // its answer should contain for THIS session.
+    await openAndStart();
+    await switchTab('Claude Code');
+    await screen.findByText('Then verify it works');
+    expect(screen.getByText(/call agent_identity/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy verification prompt/i })).toBeInTheDocument();
+    expect(screen.getByText(/assist session #12/)).toBeInTheDocument();
+    expect(screen.getByText(/claude mcp list/)).toBeInTheDocument();
+  });
+
+  it('renders the config alone when a recipe carries no verification', async () => {
+    // The reference page's sample recipes and older payloads have none.
+    await openAndStart();
+    expect(screen.queryByText('Then verify it works')).not.toBeInTheDocument();
   });
 
   it('puts the curl prompt behind a tab rather than above the MCP setup', async () => {

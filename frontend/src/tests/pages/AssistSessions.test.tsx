@@ -62,6 +62,8 @@ const row = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   key_expires_at: null,
   call_count: 14,
   note_count: 2,
+  connection: 'mcp',
+  first_call_at: '2026-08-19T10:02:00Z',
   ...over,
 });
 

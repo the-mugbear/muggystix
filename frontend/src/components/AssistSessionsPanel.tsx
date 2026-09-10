@@ -123,11 +123,39 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                       the session's capability grant. Grants are gone: a session
                       acts with its operator's own project permissions, so there
                       is no per-session authority to report here. */}
-                  {/* A session whose agent never connected is worth
-                      distinguishing from an idle one — it usually means the
-                      key was minted and the prompt never pasted. */}
-                  {!s.environment_probed && (
-                    <Badge variant="outline">Not yet connected</Badge>
+                  {/* v5.203.0 — connection state from observed calls, not the
+                      environment probe (a client can skip the probe and still
+                      work, or post it via curl and never use MCP). "Waiting"
+                      is the common dead end: key minted, client never
+                      connected. A past call proves the client connected, not
+                      that it is still running — so this is never a green
+                      "live" badge; "last used" beside it is the liveness cue. */}
+                  {s.connection === 'none' ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Badge variant="outline" tabIndex={0}>
+                          Waiting for client
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-sm">
+                        No authenticated call has reached this session yet. Configure
+                        your client, relaunch it, and ask it the verification prompt
+                        from the start dialog.
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Badge variant="outline" tabIndex={0}>
+                          {s.connection === 'mcp' ? 'MCP verified' : 'Connected via curl'}
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-sm">
+                        {s.connection === 'mcp'
+                          ? 'An authenticated tool call arrived through the MCP transport — the client, the certificate trust, and the key all work.'
+                          : 'Calls arrived by direct HTTP (the pasted-prompt path). The key works; no MCP client has used it.'}
+                      </TooltipContent>
+                    </Tooltip>
                   )}
                   {/* The field that decides "end it or let it lapse". A null
                       expiry means no live key remains, which is a different

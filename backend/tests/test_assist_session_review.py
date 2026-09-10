@@ -130,6 +130,72 @@ def test_the_list_says_which_sessions_actually_did_anything(
     }
     assert rows[busy]["call_count"] == 1
     assert rows[idle]["call_count"] == 0
+    # v2.331.0 — the row also says HOW the agent reached the session, from
+    # observed calls. A hand-inserted row with no transport marker is a direct
+    # call; no rows at all is "never connected".
+    assert rows[busy]["connection"] == "curl"
+    assert rows[busy]["first_call_at"] is not None
+    assert rows[idle]["connection"] == "none"
+    assert rows[idle]["first_call_at"] is None
+
+
+def test_connection_state_comes_from_observed_calls_not_the_probe(
+    client, db_session, test_project
+):
+    """"Not yet connected" used to read the environment probe, which measures
+    the wrong thing: a client can call tools over MCP without ever posting it,
+    and a curl can post it without MCP being involved. The state now comes from
+    the audit log, and the transport marker on each row is set server-side by
+    the MCP loopback — a direct client cannot claim it."""
+    over_mcp = _start(client, test_project.id)
+    over_curl = _start(client, test_project.id)
+    mcp_sid = over_mcp["assist_session_id"]
+    curl_sid = over_curl["assist_session_id"]
+
+    # One authenticated tool call through the transport, no probe.
+    r = client.post(
+        "/api/v1/mcp",
+        json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "agent_identity", "arguments": {}},
+        },
+        headers={"X-API-Key": over_mcp["api_key"]},
+    )
+    assert r.status_code == 200, r.text
+    assert not r.json()["result"].get("isError"), r.text
+
+    # The same call by direct HTTP — the pasted-prompt path — with a header
+    # that tries to pass itself off as the MCP transport.
+    r = client.get(
+        "/api/v1/agent/identity",
+        headers={"X-API-Key": over_curl["api_key"], "X-BlueStick-MCP": "1"},
+    )
+    assert r.status_code == 200, r.text
+
+    rows = {
+        row["id"]: row
+        for row in client.get(f"/api/v1/projects/{test_project.id}/assist/sessions").json()
+    }
+    assert rows[mcp_sid]["connection"] == "mcp"
+    assert rows[curl_sid]["connection"] == "curl"
+    # Neither posted a probe; the old signal would have called both unconnected.
+    assert rows[mcp_sid]["environment_probed"] is False
+    assert rows[curl_sid]["environment_probed"] is False
+
+    # The audit rows carry the marker the list derived this from.
+    mcp_rows = db_session.query(AgentApiCall).filter(
+        AgentApiCall.assist_session_id == mcp_sid
+    ).all()
+    assert mcp_rows and all(row.via_mcp is True for row in mcp_rows)
+    curl_rows = db_session.query(AgentApiCall).filter(
+        AgentApiCall.assist_session_id == curl_sid
+    ).all()
+    assert curl_rows and all(row.via_mcp is False for row in curl_rows)
+
+    # The detail view is built from the same row, so it agrees.
+    detail = _detail(client, test_project.id, mcp_sid)
+    assert detail["connection"] == "mcp"
+    assert detail["call_count"] == len(mcp_rows)
 
 
 def test_activity_feed_is_scoped_to_the_one_session(client, db_session, test_project):

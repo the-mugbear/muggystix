@@ -78,6 +78,7 @@ from app.api.v1.endpoints.mcp_tools import (
     tool_list_payload,
 )
 from app.services import mcp_telemetry_service as mcp_telemetry
+from app.services.agent_api_log_service import mcp_loopback_active
 from app.services.agent_prompt_service import resolve_base_url
 
 logger = logging.getLogger(__name__)
@@ -323,12 +324,19 @@ async def _loopback(
         raise_app_exceptions=False,
         **({"client": caller} if caller else {}),
     )
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://mcp.loopback"
-    ) as client:
-        return await client.request(
-            method, path, params=params or None, json=json_body, headers=headers
-        )
+    # Mark the inner request as MCP-originated for the audit log (v2.331.0).
+    # A contextvar, not a header: the loopback runs in this task, so the inner
+    # middleware sees it, and no external caller can set it.
+    token = mcp_loopback_active.set(True)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://mcp.loopback"
+        ) as client:
+            return await client.request(
+                method, path, params=params or None, json=json_body, headers=headers
+            )
+    finally:
+        mcp_loopback_active.reset(token)
 
 
 async def _dispatch_tool(

@@ -175,7 +175,11 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
             <AuthorityBadge
               operator={session.started_by_username}
             />
-            {!session.environment_probed && (
+            {/* v5.203.0 — from observed calls, not the environment probe; the
+                probe is optional and proves nothing about the transport. Same
+                vocabulary as the start dialog's live-sessions panel so the two
+                never disagree about one session again. */}
+            {session.connection === 'none' ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Badge variant="outline" tabIndex={0}>
@@ -183,8 +187,21 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
                   </Badge>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-sm">
-                  No environment probe arrived — the key was minted and the agent
-                  never started, so there is nothing to review here.
+                  No authenticated call ever reached this session — the key was minted
+                  and no client used it, so there is nothing to review here.
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="outline" tabIndex={0}>
+                    {session.connection === 'mcp' ? 'MCP verified' : 'Connected via curl'}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  {session.connection === 'mcp'
+                    ? 'At least one authenticated tool call arrived through the MCP transport.'
+                    : 'Calls arrived by direct HTTP (the pasted-prompt path); no MCP client used this key.'}
                 </TooltipContent>
               </Tooltip>
             )}

@@ -402,6 +402,49 @@ def test_every_session_start_emits_client_setup(client, test_project, scope_with
     assert recon["api_key"] in recon_payloads
 
 
+def test_every_recipe_carries_the_verification_handoff(
+    client, test_project, scope_with_subnets
+):
+    """The recipe used to end at "config installed". Nothing said how to find
+    out whether it worked, and the two signals a client offers both mislead:
+    a server can be REGISTERED with a dead key, and tools/list succeeds without
+    a key by design. The only proof is an authenticated tool call, so every
+    recipe now ends with the prompt that makes one — naming the server, and
+    the project + session it should answer with — plus the client's own
+    "connected" check, which differs per client (Codex's `mcp list` is only
+    "configured")."""
+    plan = _plan_key(client, test_project)
+    recon = _recon_key(client, test_project, scope_with_subnets)
+    assist = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "verify"}
+    ).json()
+
+    for body, server, label in (
+        (plan, "bluestick-plan", f"plan #{plan['plan_id']}"),
+        (recon, "bluestick-recon", f"recon session #{recon['recon_session_id']}"),
+        (assist, "bluestick-assist", f"assist session #{assist['assist_session_id']}"),
+    ):
+        for entry in body["mcp_clients"]:
+            prompt = entry["verify_prompt"]
+            assert server in prompt, entry["id"]
+            assert "agent_identity" in prompt
+            # The failure mode this exists to prevent: a model with no tools
+            # answering from general knowledge and reading as connected.
+            assert "not available" in prompt
+            expected = entry["verify_expected"]
+            assert test_project.name in expected
+            assert label in expected, (entry["id"], expected)
+            assert entry["verify_check"], entry["id"]
+            assert server in entry["verify_check"]
+
+    by_id = {e["id"]: e for e in assist["mcp_clients"]}
+    # Codex is the client whose obvious check proves the least.
+    assert "CONFIGURED" in by_id["codex"]["verify_check"]
+    assert "/mcp" in by_id["codex"]["verify_check"]
+    assert "claude mcp list" in by_id["claude_code"]["verify_check"]
+    assert "List Servers" in by_id["vscode"]["verify_check"]
+
+
 def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
     client, test_project, scope_with_subnets
 ):
@@ -439,10 +482,16 @@ def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
                 )
             else:
                 assert "NODE_EXTRA_CA_CERTS" in setup["hint"]
-            # Both recipes point at the helper that installs it, and say the
-            # variable is read at startup — the step operators actually miss.
+            # Both recipes point at the helper that installs it, and spell out
+            # the two steps operators actually miss (v2.331.0): the script
+            # cannot export into the shell that ran it, so the exports go in a
+            # profile, and the client is relaunched from a NEW shell because
+            # the variables are read at client start.
             assert "trust-cert.sh" in setup["hint"]
-            assert "RESTART" in setup["hint"]
+            assert "cannot apply" in setup["hint"]
+            assert "shell profile" in setup["hint"]
+            assert "new shell" in setup["hint"]
+            assert "client start" in setup["hint"]
 
 
 # ---------------------------------------------------------------------------

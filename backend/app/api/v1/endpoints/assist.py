@@ -28,7 +28,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_project, require_project_role
@@ -162,6 +162,13 @@ class McpClientSetup(BaseModel):
     payload: str
     # One line under the payload: what to do with it.
     hint: str
+    # v2.331.0 — the handoff the recipes used to stop short of: how this client
+    # shows "connected", the first prompt to give the agent, and what the answer
+    # looks like from the session that was actually minted.  See
+    # ``mcp_client_setup_service.verify_prompt``.
+    verify_check: str = ""
+    verify_prompt: str = ""
+    verify_expected: str = ""
 
 
 # --- MCP client setup -------------------------------------------------------
@@ -171,10 +178,20 @@ class McpClientSetup(BaseModel):
 # replaces is why two of the three original recipes silently didn't work.
 
 
-def _build_mcp_clients(mcp_url: str, raw_key: str) -> List["McpClientSetup"]:
+def _build_mcp_clients(
+    mcp_url: str, raw_key: str, *, project_name: str, assist_session_id: int
+) -> List["McpClientSetup"]:
     return [
         McpClientSetup(**client)
-        for client in build_mcp_clients(mcp_url, raw_key, workflow="assist")
+        for client in build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="assist",
+            expected={
+                "project_name": project_name,
+                "session_label": f"assist session #{assist_session_id}",
+            },
+        )
     ]
 
 
@@ -228,6 +245,16 @@ class AssistSessionRow(BaseModel):
     # should be visibly distinguishable from one that did the work.
     call_count: int = 0
     note_count: int = 0
+    # v2.331.0 — how the agent reached this session, from observed calls:
+    #   "none" — no authenticated call yet (key minted, client never connected)
+    #   "mcp"  — at least one call arrived through the MCP transport
+    #   "curl" — calls arrived, all by direct HTTP (the pasted-prompt path)
+    # Replaces the probe-based "not yet connected", which a client can skip
+    # and still work, or post via curl and never use MCP.  Not a liveness
+    # claim: MCP is request/response, so a past call says the client connected,
+    # not that it is still running — pair with last_activity_at for that.
+    connection: str = "none"
+    first_call_at: Optional[datetime] = None
 
 
 class AssistSessionNote(BaseModel):
@@ -436,7 +463,12 @@ def start_assist_session(
     # MCP connection details. resolve_base_url returns ".../api/v1"; the MCP
     # transport is mounted at /api/v1/mcp, so the endpoint is base_url + "/mcp".
     mcp_url = f"{resolve_base_url(request)}/mcp"
-    mcp_clients = _build_mcp_clients(mcp_url, raw_key)
+    mcp_clients = _build_mcp_clients(
+        mcp_url,
+        raw_key,
+        project_name=project.name,
+        assist_session_id=assist_session.id,
+    )
 
     return StartAssistResponse(
         assist_session_id=assist_session.id,
@@ -583,7 +615,7 @@ def list_assist_sessions(
 
     session_ids = [s.id for s, _ in rows]
     expiry_by_session = key_expiry_for_sessions(db, session_ids)
-    calls_by_session = _call_counts(db, session_ids)
+    activity_by_session = _session_activity(db, session_ids)
     notes_by_session = _note_counts(db, [s for s, _ in rows])
 
     return [
@@ -592,8 +624,8 @@ def list_assist_sessions(
             username,
             expiry_by_session.get(s.id),
             now=now,
-            call_count=calls_by_session.get(s.id, 0),
             note_count=notes_by_session.get(s.id, 0),
+            activity=activity_by_session.get(s.id),
         )
         for s, username in rows
     ]
@@ -605,8 +637,8 @@ def _session_row(
     key_expires_at,
     *,
     now,
-    call_count: int = 0,
     note_count: int = 0,
+    activity: Optional["_SessionActivity"] = None,
 ) -> AssistSessionRow:
     """Map one session to its wire row.
 
@@ -615,6 +647,7 @@ def _session_row(
     both — and the one you forget is the one that silently reads as its default.
     """
     agent_session = session.agent_session
+    activity = activity or _SessionActivity()
     return AssistSessionRow(
         id=session.id,
         project_id=session.project_id,
@@ -627,25 +660,61 @@ def _session_row(
         last_activity_at=session.last_activity_at,
         environment_probed=session.environment_probed_at is not None,
         key_expires_at=key_expires_at,
-        call_count=call_count,
+        call_count=activity.call_count,
         note_count=note_count,
+        connection=activity.connection,
+        first_call_at=activity.first_call_at,
     )
 
 
-def _call_counts(db: Session, session_ids: List[int]) -> dict:
-    """Audited call count per session, in one grouped query.
+class _SessionActivity:
+    """What the audit log says about one session, in the shape the row needs."""
+
+    __slots__ = ("call_count", "connection", "first_call_at")
+
+    def __init__(
+        self,
+        call_count: int = 0,
+        via_mcp: bool = False,
+        first_call_at: Optional[datetime] = None,
+    ):
+        self.call_count = call_count
+        self.first_call_at = first_call_at
+        if call_count == 0:
+            self.connection = "none"
+        else:
+            self.connection = "mcp" if via_mcp else "curl"
+
+
+def _session_activity(db: Session, session_ids: List[int]) -> dict:
+    """Audited call count, transport, and first-call time per session, in one
+    grouped query.
 
     The list is the entry point to the review page, so "did this session do
     anything?" has to be answerable without opening each one — a session with
     zero calls is the common dead end (key minted, prompt never pasted) and
     reads identically to a busy one without this.
+
+    v2.331.0 — also whether any call came through MCP.  Every audited row is an
+    authenticated call (the middleware writes nothing for a request that never
+    authenticated), so one row is proof the key was accepted, and ``via_mcp``
+    on any of them is proof the MCP transport carried it.  ``max(case)`` rather
+    than ``bool_or`` so the test suite's SQLite runs the same query.
     """
     if not session_ids:
         return {}
+    mcp_seen = func.max(case((AgentApiCall.via_mcp.is_(True), 1), else_=0))
     return {
-        sid: count
-        for sid, count in (
-            db.query(AgentApiCall.assist_session_id, func.count(AgentApiCall.id))
+        sid: _SessionActivity(
+            call_count=count, via_mcp=bool(via_mcp), first_call_at=first_at
+        )
+        for sid, count, via_mcp, first_at in (
+            db.query(
+                AgentApiCall.assist_session_id,
+                func.count(AgentApiCall.id),
+                mcp_seen,
+                func.min(AgentApiCall.created_at),
+            )
             .filter(AgentApiCall.assist_session_id.in_(session_ids))
             .group_by(AgentApiCall.assist_session_id)
             .all()
@@ -751,11 +820,7 @@ def get_assist_session(
             )
         ]
 
-    call_count = (
-        db.query(func.count(AgentApiCall.id))
-        .filter(AgentApiCall.assist_session_id == session.id)
-        .scalar()
-    ) or 0
+    activity = _session_activity(db, [session.id]).get(session.id)
     feedback_count = (
         db.query(func.count(AgentFeedback.id))
         .filter(AgentFeedback.assist_session_id == session.id)
@@ -770,8 +835,8 @@ def get_assist_session(
             username,
             key_expires_at,
             now=now,
-            call_count=call_count,
             note_count=note_total,
+            activity=activity,
         ).model_dump(),
         environment=session.environment,
         environment_probed_at=session.environment_probed_at,

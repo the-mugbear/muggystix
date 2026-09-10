@@ -181,15 +181,21 @@ $(if [[ "$MIRRORED" -gt 0 ]]; then
     echo "  rather than exporting it in your shell profile."
   fi)
 
-Add these to your shell profile (~/.bashrc, ~/.zshrc):
+NOT DONE YET — this script cannot set variables in the shell that ran it.
+Add these to your shell profile (~/.bashrc, ~/.zshrc) yourself:
 
     export NODE_EXTRA_CA_CERTS="$CERT_DEST"   # VS Code Copilot, Claude Code
     export SSL_CERT_DIR="$HASH_DIR"           # Codex
 
-Both are read when the client process STARTS, so restart the client (or open a
-new shell and relaunch it) — exporting them inside an already-running session
-changes nothing for that session.
+Then open a NEW shell and launch the client from it. Both variables are read
+when the client process STARTS: exporting them into a running client, or
+restarting it from a shell that never sourced the profile, changes nothing.
 
-Verify:
-    claude mcp list      # bluestick-* should report Connected
+Verify — "configured" and "connected" are different checks:
+    claude mcp list      # Claude Code: bluestick-* should report Connected
+    codex mcp list       # Codex: shows the server is CONFIGURED only;
+                         #   inside \`codex\`, /mcp shows whether it connected
+    VS Code              # "MCP: List Servers" (command palette) shows Running
+Then ask the agent the verification prompt from the session dialog — an
+authenticated tool call is the only proof the key works end to end.
 EOF

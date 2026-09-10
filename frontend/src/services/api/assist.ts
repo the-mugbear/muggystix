@@ -15,6 +15,13 @@ export interface McpClientSetup {
   path: string;
   payload: string;
   hint: string;
+  /** v5.203.0 — the handoff after the config: how this client shows
+   *  "connected", the first prompt to give the agent, and what its answer
+   *  should contain for the session that was actually minted. Optional so
+   *  fixtures and older payloads still render the config alone. */
+  verify_check?: string;
+  verify_prompt?: string;
+  verify_expected?: string;
 }
 
 export interface StartAssistResponse {
@@ -68,6 +75,13 @@ export interface AssistSessionRow {
    *  to a busy one without these. */
   call_count: number;
   note_count: number;
+  /** v5.203.0 — how the agent reached this session, from observed calls:
+   *  'none' = no authenticated call yet; 'mcp' = at least one call arrived
+   *  through the MCP transport; 'curl' = calls arrived, all by direct HTTP.
+   *  A past call proves the client connected, not that it is still running —
+   *  read it with last_activity_at. */
+  connection: 'none' | 'mcp' | 'curl';
+  first_call_at: string | null;
 }
 
 /** A note this session's agent wrote — its only durable output; everything

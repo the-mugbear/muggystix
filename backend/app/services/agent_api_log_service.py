@@ -27,6 +27,7 @@ Design constraints:
 """
 from __future__ import annotations
 
+import contextvars
 import ipaddress
 import json
 import logging
@@ -85,6 +86,22 @@ AGENT_AUDITED_PUBLIC_PATHS = frozenset({
     "/api/v1/agents-guide",
     "/api/v1/references/tools",
 })
+
+
+# v2.331.0 — set (True) by the MCP transport for the duration of an in-process
+# loopback call, so the audit row can say whether the call arrived over MCP or
+# by direct HTTP (curl / a script).  A contextvar rather than a header because
+# a header is caller-supplied: any external client could stamp itself as MCP
+# and a session would read as "verified over MCP" on the strength of a curl.
+# The loopback runs inside the same task as the inbound MCP request, so the
+# inner request's middleware sees the value; a direct request never does.
+#
+# This is what lets the session list answer "did the client actually connect?"
+# from an observed authenticated call, instead of from the environment probe —
+# which a client can skip (and still work) or post via curl (and never use MCP).
+mcp_loopback_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "mcp_loopback_active", default=False
+)
 
 
 def is_agent_audited_path(path: str) -> bool:
@@ -454,6 +471,9 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 body_captured = True
         request.state._agent_audit_body_captured = body_captured  # type: ignore[attr-defined]
         request.state._agent_audit_body_skip_reason = body_skip_reason  # type: ignore[attr-defined]
+        # Read on the request path: the background writer runs in a thread
+        # pool with its own context, where the contextvar is unset.
+        request.state._agent_audit_via_mcp = mcp_loopback_active.get()  # type: ignore[attr-defined]
 
         started = time.monotonic()
         try:
@@ -673,6 +693,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 referenced_entry_ids=entry_ids or None,
                 referenced_target_ips=target_ips or None,
                 error_class=error_class,
+                via_mcp=bool(getattr(request.state, "_agent_audit_via_mcp", False)),
             )
             db.add(row)
             # v2.64.0 — refresh AssistSession.last_activity_at on every

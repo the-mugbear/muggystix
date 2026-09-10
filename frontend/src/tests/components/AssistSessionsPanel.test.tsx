@@ -29,8 +29,10 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   last_activity_at: new Date(Date.now() - 5 * 60_000).toISOString(),
   environment_probed: true,
   key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
-  call_count: 0,
+  call_count: 3,
   note_count: 0,
+  connection: 'mcp',
+  first_call_at: new Date(Date.now() - 30 * 60_000).toISOString(),
   ...over,
 });
 
@@ -67,12 +69,35 @@ describe('AssistSessionsPanel', () => {
   // there is no per-session authority to distinguish; the panel would have been
   // reporting a distinction that no longer exists.
 
-  it('flags a session whose agent never connected', () => {
-    // Key minted, prompt never pasted — different from merely idle, and the
-    // operator usually wants to end it.
-    renderPanel([session({ environment_probed: false, last_activity_at: null })]);
-    expect(screen.getByText('Not yet connected')).toBeInTheDocument();
+  it('flags a session no client has reached yet', () => {
+    // Key minted, client never connected — different from merely idle, and the
+    // operator usually wants to end it. v5.203.0: decided by observed calls,
+    // not the environment probe — a probed session with no calls is still
+    // waiting, and an unprobed one with calls is connected.
+    renderPanel([
+      session({
+        connection: 'none',
+        call_count: 0,
+        first_call_at: null,
+        environment_probed: true,
+        last_activity_at: null,
+      }),
+    ]);
+    expect(screen.getByText('Waiting for client')).toBeInTheDocument();
     expect(screen.getByText(/not used yet/)).toBeInTheDocument();
+  });
+
+  it('says how the agent reached the session, from observed calls', () => {
+    // Never a green "live" badge: MCP is request/response, so a past call
+    // proves the client connected, not that it is still running.
+    renderPanel([session({ connection: 'mcp', environment_probed: false })]);
+    expect(screen.getByText('MCP verified')).toBeInTheDocument();
+    expect(screen.queryByText('Waiting for client')).not.toBeInTheDocument();
+  });
+
+  it('distinguishes the pasted-prompt path from an MCP client', () => {
+    renderPanel([session({ connection: 'curl' })]);
+    expect(screen.getByText('Connected via curl')).toBeInTheDocument();
   });
 
   it('ends a session only after confirmation, then refreshes', async () => {

@@ -1355,6 +1355,14 @@ class AgentApiCall(Base):
     # audit log for crash-cased requests SQL-side.
     error_class = Column(String(64), nullable=True, index=True)
 
+    # v2.331.0 — True when the call arrived through the MCP transport's
+    # in-process loopback, False for direct HTTP (curl / a script), NULL for
+    # rows written before the column existed.  Set from a server-side
+    # contextvar, never a header, so a direct client cannot claim it.  This is
+    # what the assist-session list reads to say "connected over MCP" from an
+    # observed authenticated call rather than from the environment probe.
+    via_mcp = Column(Boolean, nullable=True)
+
     # Host-touched index — the answer to "did the agent query the right
     # hosts?".  Parsed from the path params, query, and request body by
     # the middleware.  Arrays so a single multi-host call (e.g. /context

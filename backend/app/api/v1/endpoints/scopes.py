@@ -1354,7 +1354,15 @@ def start_recon_session(
         instructions=instructions,
         key_ttl_hours=resolve_ttl_hours(None),
         mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="recon"),
+        mcp_clients=build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="recon",
+            expected={
+                "project_name": project.name,
+                "session_label": f"recon session #{recon_session.id} on scope “{scope.name}”",
+            },
+        ),
     )
 
 
@@ -1506,5 +1514,13 @@ def resume_recon_session(
         instructions=instructions,
         key_ttl_hours=resolve_ttl_hours(None),
         mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(mcp_url, raw_key, workflow="recon"),
+        mcp_clients=build_mcp_clients(
+            mcp_url,
+            raw_key,
+            workflow="recon",
+            expected={
+                "project_name": project.name,
+                "session_label": f"recon session #{recon_session.id} on scope “{scope.name}”",
+            },
+        ),
     )

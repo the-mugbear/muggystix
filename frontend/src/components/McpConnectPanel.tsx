@@ -13,6 +13,7 @@ import React, { useState } from 'react';
 import { CheckCircle2, Copy } from 'lucide-react';
 
 import { Button } from './ui/button';
+import { CodeBlock } from './ui/code-block';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { copyToClipboard } from '../utils/clipboard';
@@ -26,6 +27,12 @@ export interface McpClientSetup {
   path: string;
   payload: string;
   hint: string;
+  /** v5.203.0 — the handoff the config used to stop short of. All optional:
+   *  the reference page's sample recipes and older fixtures render the
+   *  config alone. */
+  verify_check?: string;
+  verify_prompt?: string;
+  verify_expected?: string;
 }
 
 interface Props {
@@ -104,6 +111,36 @@ const McpConnectPanel: React.FC<Props> = ({ clients, blurb, withCertTrust = fals
               {client.payload}
             </div>
             <p className="mt-xxs text-caption text-muted-foreground">{client.hint}</p>
+            {/* v5.203.0 — the handoff. The config block used to be the end of
+                the story, and the two signals a client offers both mislead:
+                "registered" says nothing about the key, and the tool list
+                appears without one by design. The only proof is an
+                authenticated tool call, so hand the operator the prompt that
+                makes one and what its answer should say. */}
+            {client.verify_prompt ? (
+              <div className="mt-sm border-t border-border pt-sm">
+                <p className="mb-xxs text-metadata font-semibold">Then verify it works</p>
+                <p className="mb-xs text-caption text-muted-foreground">
+                  Your client makes the connection after you configure and relaunch it;
+                  you then ask the agent to use BlueStick’s tools.{' '}
+                  {client.verify_check ?? ''}
+                </p>
+                <p className="mb-xxs text-caption text-muted-foreground">
+                  Seeing the tools listed is not proof — the list is public. Ask this first;
+                  it is the one check that proves the key works end to end:
+                </p>
+                <CodeBlock
+                  text={client.verify_prompt}
+                  label="verification prompt"
+                  className="max-h-40 whitespace-pre-wrap break-words"
+                />
+                {client.verify_expected ? (
+                  <p className="mt-xxs text-caption text-muted-foreground">
+                    {client.verify_expected}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </TabsContent>
         ))}
       </Tabs>
