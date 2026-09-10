@@ -834,6 +834,12 @@ const Operations: React.FC = () => {
   const navigate = useNavigate();
   const { hasPermission } = useAuth();
   const canApprovePlans = hasPermission('analyst');
+  // 5.204.3 — the "scope registered, no hosts" setup card's Start Agentic
+  // Recon button used to navigate('/scopes') and leave the operator to find
+  // the real button there; it now opens the shared recon dialog in place.
+  // Recon needs analyst+, same gate as the scan-freshness rows below.
+  const canStartRecon = hasPermission('analyst');
+  const recon = useReconPlan();
 
   const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(true);
@@ -972,9 +978,22 @@ const Operations: React.FC = () => {
   const isBrandNewProject =
     !!coverage && coverage.total_hosts === 0 && coverage.total_scopes === 0;
 
+  // Single-scope projects (the setup-card case, since a project has one
+  // conceptual scope) open the dialog directly; anything else goes to the
+  // recon runs list, which owns the scope picker.
+  const handleStartRecon = useCallback(() => {
+    const scopes = coverage?.scopes ?? [];
+    if (scopes.length === 1) {
+      recon.openFor(scopes[0].scope_id, displayScopeName(scopes[0].scope_name));
+      return;
+    }
+    navigate('/recon/runs');
+  }, [coverage, recon, navigate]);
+
   // v4.29.0 — assist-session entry.  Lives on Operations because
   // it's the project-level coordination hub; recon-start lives on
-  // Scopes (it's scope-level), plan-generate on Test Plans.
+  // Scopes (it's scope-level) and on the setup card above, plan-generate
+  // on Test Plans.
   const [assistDialogOpen, setAssistDialogOpen] = useState(false);
   // An active assist session is an outstanding agent key. Surface the count on
   // the entry point so an operator doesn't mint a second one without knowing
@@ -1079,7 +1098,11 @@ const Operations: React.FC = () => {
               <strong>Agentic Reconnaissance</strong> against your registered scope.
             </p>
             <div className="flex flex-wrap justify-center gap-sm">
-              <Button onClick={() => navigate('/scopes')}>Start Agentic Recon</Button>
+              {canStartRecon && (
+                <Button onClick={handleStartRecon}>
+                  <Rocket className="size-4" aria-hidden /> Start Agentic Recon
+                </Button>
+              )}
               <Button variant="outline" onClick={() => navigate('/scans')}>
                 Upload an Existing Scan
               </Button>
@@ -1087,6 +1110,8 @@ const Operations: React.FC = () => {
           </CardContent>
         </Card>
       )}
+      {/* Opens when recon.scopeId becomes non-null via handleStartRecon. */}
+      <StartReconDialog recon={recon} />
 
       {coverage && coverage.total_hosts > 0 && (
         <>

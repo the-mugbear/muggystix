@@ -272,4 +272,47 @@ describe('Operations page', () => {
     });
     expect(screen.queryByText('Failed to load Operations data.')).not.toBeInTheDocument();
   });
+
+  // 5.204.3 — the setup card's Start Agentic Recon used to navigate('/scopes')
+  // (a dead end: the operator had to find the real button there). It now opens
+  // the shared recon dialog for the registered scope, in place.
+  it('setup card: Start Agentic Recon opens the recon dialog for the single scope', async () => {
+    mockedApi.getProjectCoverage.mockResolvedValue({
+      ...baseCoverage,
+      total_hosts: 0,
+      hosts_with_plan_entry: 0,
+      hosts_with_execution_result: 0,
+      hosts_no_plan: 0,
+      hosts_no_execution: 0,
+      hosts_outside_scope: 0,
+    });
+    renderPage();
+    const button = await screen.findByRole('button', { name: /Start Agentic Recon/ });
+    fireEvent.click(button);
+    expect(
+      await screen.findByText('Start Agentic Reconnaissance — Internal /24'),
+    ).toBeInTheDocument();
+    expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
+  });
+
+  it('setup card: with several scopes, Start Agentic Recon goes to the recon runs picker', async () => {
+    mockedApi.getProjectCoverage.mockResolvedValue({
+      ...baseCoverage,
+      total_hosts: 0,
+      hosts_with_plan_entry: 0,
+      hosts_with_execution_result: 0,
+      hosts_no_plan: 0,
+      hosts_no_execution: 0,
+      hosts_outside_scope: 0,
+      total_scopes: 2,
+      scopes: [
+        ...baseCoverage.scopes,
+        { ...baseCoverage.scopes[0], scope_id: 11, scope_name: 'DMZ' },
+      ],
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /Start Agentic Recon/ }));
+    expect(navigateSpy).toHaveBeenCalledWith('/recon/runs');
+    expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
+  });
 });
