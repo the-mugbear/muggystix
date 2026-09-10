@@ -235,7 +235,14 @@ class PortScanHistory(Base):
     # Port state at time of this scan
     state_at_scan = Column(String)
     service_info = Column(Text)  # JSON of service details at this scan
-    
+    # v2.333.0 — typed copies of what /scans aggregates per scan (column-vs-blob
+    # policy: a value a view counts across rows gets a column, not a JSON grep).
+    # service_name = the service name this scan reported for the port (the same
+    # value service_info carries); port_created mirrors host_created: True iff
+    # this scan created the ports_v2 row, i.e. it introduced the port.
+    service_name = Column(String)
+    port_created = Column(Boolean, nullable=False, server_default=text("false"), default=False)
+
     # Relationships
     port = relationship("Port")
     scan = relationship("Scan")
@@ -251,6 +258,28 @@ class PortScanHistory(Base):
 
 # Additional models needed for the application
 
+# Where Scan.start_time / end_time came from (v2.333.0).  The columns are
+# naive; what a naive value MEANS depends on this:
+#   tool_run     — the tool recorded when the run started/finished as an
+#                  absolute instant (epoch, or a timestamp with an offset).
+#                  Stored as naive UTC.
+#   tool_records — the output has no run start/finish, but its records carry
+#                  absolute timestamps; the window is first..last record.
+#                  Stored as naive UTC.
+#   tool_clock   — the tool printed the scanner machine's local wall clock
+#                  with no zone (gnmap "scan initiated …", a nikto Start Time
+#                  without "(GMT…)").  Stored exactly as written; NOT UTC, and
+#                  must not be converted to the viewer's zone.
+#   NULL         — start_time NULL: the output carries no scan time; only the
+#                  upload time (created_at) is known.  start_time set with a
+#                  NULL source: a row ingested before sources were recorded
+#                  (treated as UTC, the long-standing convention).
+SCAN_TIME_TOOL_RUN = "tool_run"
+SCAN_TIME_TOOL_RECORDS = "tool_records"
+SCAN_TIME_TOOL_CLOCK = "tool_clock"
+SCAN_TIME_SOURCES = (SCAN_TIME_TOOL_RUN, SCAN_TIME_TOOL_RECORDS, SCAN_TIME_TOOL_CLOCK)
+
+
 class Scan(Base):
     __tablename__ = "scans"
 
@@ -261,6 +290,8 @@ class Scan(Base):
     tool_name = Column(String)
     start_time = Column(DateTime)
     end_time = Column(DateTime)
+    # One of SCAN_TIME_SOURCES, or NULL — see the block above.
+    time_source = Column(String(16))
     command_line = Column(Text)
     version = Column(String)
     xml_output_version = Column(String)

@@ -15,6 +15,7 @@ from __future__ import annotations
 # comment block in that module.
 import logging
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from typing import Optional
 
 from lxml.etree import XMLSyntaxError
@@ -23,11 +24,13 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.parser_utils import (
+    ScanClock,
     correlate_scan,
     ensure_scan,
     extract_first_ip,
     map_numeric_severity,
     map_text_severity,
+    parse_rfc3339,
     persist_host_observation,
     upsert_vulnerability,
 )
@@ -42,6 +45,22 @@ logger = logging.getLogger(__name__)
 # at once.  100 is a balance: small enough that the session stays
 # bounded, large enough that the per-flush overhead doesn't dominate.
 _FLUSH_BATCH_SIZE = 100
+
+
+def _observe_report_time(clock: ScanClock, raw: Optional[str]) -> None:
+    """A GVM report's ``<scan_start>`` / ``<scan_end>`` (ISO 8601, normally
+    with an offset).  A value without one is the scanner's wall clock."""
+    if not raw or not raw.strip():
+        return
+    value = raw.strip()
+    aware = parse_rfc3339(value)
+    if aware is not None:
+        clock.observe(aware)
+        return
+    try:
+        clock.observe_clock(datetime.fromisoformat(value))
+    except ValueError:
+        return
 
 
 class OpenVASParser:
@@ -62,8 +81,15 @@ class OpenVASParser:
         try:
             context = iterparse_safe(file_path, events=("end",))
             processed = 0
+            # v2.333.0 — the report records its own run window; it used to be
+            # ignored and start_time was the upload time.
+            clock = ScanClock(models.SCAN_TIME_TOOL_RUN)
             for _event, elem in context:
-                if strip_namespace(elem.tag) != "result":
+                tag = strip_namespace(elem.tag)
+                if tag in ("scan_start", "scan_end"):
+                    _observe_report_time(clock, elem.text)
+                    continue
+                if tag != "result":
                     continue
                 # Per-result savepoint so one malformed <result> (a dedup
                 # flush failure, over-long field, etc.) is skipped rather than
@@ -85,6 +111,7 @@ class OpenVASParser:
         except (ET.ParseError, XMLSyntaxError) as exc:
             raise ValueError(f"Invalid or truncated OpenVAS XML: {exc}") from exc
 
+        clock.apply(scan)
         correlate_scan(self.db, scan.id)
         return scan
 

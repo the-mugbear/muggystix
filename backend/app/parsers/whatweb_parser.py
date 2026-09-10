@@ -41,7 +41,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import time
-from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -124,7 +123,6 @@ class WhatwebParser:
             filename=filename,
             scan_type="web_fingerprint",
             tool_name="whatweb",
-            created_at=datetime.utcnow(),
             project_id=self._project_id,
         )
         self.db.add(scan)

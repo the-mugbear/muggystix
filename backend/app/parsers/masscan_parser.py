@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.parser_utils import correlate_scan
+from app.parsers.parser_utils import ScanClock, correlate_scan, epoch_to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,9 @@ class MasscanParser:
         self._project_id = kwargs.get("project_id")
         start = time.time()
         scan = self._create_scan_record(filename)
+        # JSON records and list lines carry per-record epoch timestamps; the
+        # XML format records a run start/finish instead (set directly).
+        self._clock = ScanClock()
 
         try:
             logger.info(
@@ -83,6 +86,7 @@ class MasscanParser:
                 residual = self._collect_list(file_path, _flush)
 
             _flush(residual)
+            self._clock.apply(scan)
 
             if counters["hosts"] == 0:
                 # Fail closed — pre-v2.55.0 this path committed an
@@ -177,6 +181,8 @@ class MasscanParser:
                     scan.command_line = elem.get("args")
                     scan.tool_name = elem.get("scanner", "masscan")
                     scan.start_time = self._parse_timestamp(elem.get("start"))
+                    if scan.start_time is not None:
+                        scan.time_source = models.SCAN_TIME_TOOL_RUN
 
                 if event == "end" and tag == "host":
                     host_info = self._extract_xml_host(elem)
@@ -185,10 +191,11 @@ class MasscanParser:
                     clear_element(elem)
                     self._maybe_flush(host_ports, flush)
                 elif event == "end" and tag == "finished":
+                    # Epoch only: `timestr` is the scanner's zone-less local
+                    # clock and would not be comparable with the epoch start.
                     end_time = self._parse_timestamp(elem.get("time"))
-                    if end_time is None:
-                        end_time = self._parse_timestr(elem.get("timestr"))
-                    scan.end_time = end_time or scan.end_time
+                    if end_time is not None and scan.start_time is not None and end_time >= scan.start_time:
+                        scan.end_time = end_time
         except etree.XMLSyntaxError as exc:
             line = getattr(exc, "lineno", "?")
             position = getattr(exc, "position", None)
@@ -199,9 +206,8 @@ class MasscanParser:
                 file_path, line, column, len(host_ports), exc,
             )
 
-        if scan.end_time is None:
-            scan.end_time = datetime.utcnow()
-
+        # v2.333.0 — no utcnow() fallback: a truncated file has no known end,
+        # and the upload time is not when the scan finished.
         return dict(host_ports)
 
     def _collect_json(
@@ -215,6 +221,7 @@ class MasscanParser:
             ip_address = entry.get("ip") or entry.get("addr")
             if not ip_address:
                 continue
+            self._observe_epoch(entry.get("timestamp"))
             for port_info in entry.get("ports", []):
                 try:
                     port_number = int(port_info.get("port"))
@@ -254,6 +261,9 @@ class MasscanParser:
                 if line.startswith("Timestamp:") and "Host:" in line and "Ports:" in line:
                     parsed = self._parse_timestamp_line(line)
                     if parsed:
+                        ts_match = re.match(r"Timestamp:\s*(\d+)", line)
+                        if ts_match:
+                            self._observe_epoch(ts_match.group(1))
                         ip_address, ports = parsed
                         host_ports[ip_address].extend(ports)
                         self._maybe_flush(host_ports, flush)
@@ -275,6 +285,9 @@ class MasscanParser:
                     port_number = int(port_str)
                 except ValueError:
                     continue
+                # `open tcp 80 10.0.0.1 1711938600` — 5th field is epoch.
+                if len(parts) >= 5:
+                    self._observe_epoch(parts[4])
                 host_ports[ip_address].append({
                     "port_number": port_number,
                     "protocol": protocol,
@@ -558,10 +571,19 @@ class MasscanParser:
             "AND length(EXCLUDED.service_name) > length(ports_v2.service_name) "
             "THEN EXCLUDED.service_name "
             "ELSE ports_v2.service_name END "
-            "RETURNING id, host_id, port_number, protocol"
+            # (xmax = 0): this INSERT created the row, vs. the DO UPDATE
+            # branch touching an existing one — the port_created decision
+            # (same technique as _upsert_hosts_batch).
+            "RETURNING id, host_id, port_number, protocol, (xmax = 0) AS inserted"
         )
         result = self.db.execute(text(sql), params)
         port_rows = list(result)
+        # What THIS scan reported for each port (the ports_v2 merge above may
+        # have kept an older, longer name).
+        reported_service = {
+            (host_id, pd["port_number"], pd.get("protocol", "tcp")): pd.get("service_name") or None
+            for host_id, pd in rows
+        }
 
         # Insert port_scan_history
         if port_rows:
@@ -569,9 +591,14 @@ class MasscanParser:
             ph_params: Dict[str, Any] = {"scan_id": scan_id}
             for idx, row in enumerate(port_rows):
                 ph_params[f"pid_{idx}"] = row.id
-                ph_values.append(f"(:pid_{idx}, :scan_id, 'open')")
+                ph_params[f"svc_{idx}"] = reported_service.get(
+                    (row.host_id, row.port_number, row.protocol)
+                )
+                created = "true" if row.inserted else "false"
+                ph_values.append(f"(:pid_{idx}, :scan_id, 'open', :svc_{idx}, {created})")
             sql = (
-                "INSERT INTO port_scan_history (port_id, scan_id, state_at_scan) "
+                "INSERT INTO port_scan_history "
+                "(port_id, scan_id, state_at_scan, service_name, port_created) "
                 "VALUES " + ", ".join(ph_values) + " "
                 "ON CONFLICT (port_id, scan_id) DO NOTHING"
             )
@@ -634,7 +661,6 @@ class MasscanParser:
             filename=filename,
             scan_type="port_scan",
             tool_name="masscan",
-            created_at=datetime.utcnow(),
             project_id=self._project_id,
         )
         self.db.add(scan)
@@ -730,20 +756,13 @@ class MasscanParser:
                 logger.warning("Trailing JSON buffer ignored while parsing Masscan output")
 
     def _parse_timestamp(self, timestamp: Optional[str]) -> Optional[datetime]:
-        if not timestamp:
-            return None
-        try:
-            return datetime.fromtimestamp(int(timestamp))
-        except (ValueError, TypeError):
-            return None
+        # v2.333.0 — was datetime.fromtimestamp: the CONTAINER's local time,
+        # which only matched nmap's UTC convention while TZ was unset.
+        return epoch_to_utc(timestamp)
 
-    def _parse_timestr(self, timestr: Optional[str]) -> Optional[datetime]:
-        if not timestr:
-            return None
-        for fmt in ('%a %b %d %H:%M:%S %Y', '%Y-%m-%d %H:%M:%S'):
-            try:
-                return datetime.strptime(timestr, fmt)
-            except ValueError:
-                continue
-        logger.warning("Masscan parser unable to parse finished timestamp string '%s'", timestr)
-        return None
+    # Set per parse in parse_file; None when a collector is driven directly.
+    _clock: Optional[ScanClock] = None
+
+    def _observe_epoch(self, raw: Any) -> None:
+        if self._clock is not None:
+            self._clock.observe(epoch_to_utc(raw))

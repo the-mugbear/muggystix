@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,7 @@ from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.streaming_json import iter_json_records
 from app.parsers.parser_utils import (
+    ScanClock,
     correlate_scan,
     ensure_scan,
     extract_first_ip,
@@ -26,6 +28,15 @@ TARGET_IP_PATTERN = re.compile(r"Target IP:\s*((?:\d{1,3}\.){3}\d{1,3})", re.IGN
 TARGET_HOST_PATTERN = re.compile(r"Target Host(?:name)?:\s*([^\s]+)", re.IGNORECASE)
 TARGET_PORT_PATTERN = re.compile(r"Target Port:\s*(\d+)", re.IGNORECASE)
 FINDING_PATTERN = re.compile(r"^\+\s+(.*)")
+# `+ Start Time:   2024-04-01 02:00:00 (GMT-4)` / `+ End Time: … (GMT-4) (95 seconds)`.
+# The (GMT±h) suffix makes it an absolute instant; without it the value is the
+# scanner's wall clock.  These are run metadata, not findings.
+TIME_LINE_PATTERN = re.compile(
+    r"^\+\s+(Start|End) Time:\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
+    r"(?:\s+\(GMT([+-]?)(\d{1,2})(?::?(\d{2}))?\))?",
+    re.IGNORECASE,
+)
+HOSTS_TESTED_PATTERN = re.compile(r"^\+\s+\d+\s+host\(s\)\s+tested", re.IGNORECASE)
 
 
 class NiktoParser:
@@ -44,6 +55,8 @@ class NiktoParser:
             project_id=self._project_id,
         )
         suffix = Path(filename).suffix.lower()
+        # Only the text report carries run times; JSON/CSV have none.
+        self._clock = ScanClock(models.SCAN_TIME_TOOL_RUN)
 
         if suffix == ".json":
             self._parse_json(file_path, scan)
@@ -52,6 +65,7 @@ class NiktoParser:
         else:
             self._parse_text(file_path, scan)
 
+        self._clock.apply(scan)
         correlate_scan(self.db, scan.id)
         return scan
 
@@ -102,6 +116,19 @@ class NiktoParser:
                     severity=map_text_severity(row.get("severity")) if row.get("severity") else map_text_severity("low"),
                 )
 
+    def _observe_time_line(self, match: re.Match) -> None:
+        try:
+            wall = datetime.strptime(match.group(2), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return
+        if match.group(4) is not None:
+            offset = timedelta(hours=int(match.group(4)), minutes=int(match.group(5) or 0))
+            if match.group(3) == "-":
+                offset = -offset
+            self._clock.observe(wall.replace(tzinfo=timezone(offset)))
+        else:
+            self._clock.observe_clock(wall)
+
     def _parse_text(self, file_path: str, scan: models.Scan) -> None:
         current_ip: Optional[str] = None
         current_hostname: Optional[str] = None
@@ -118,6 +145,16 @@ class NiktoParser:
                 port_match = TARGET_PORT_PATTERN.search(line)
                 if port_match:
                     current_port = int(port_match.group(1))
+
+                # v2.333.0 — run metadata, not findings: these lines used to
+                # match FINDING_PATTERN and every host got a LOW "Start Time:
+                # …" vulnerability, while the scan window stayed empty.
+                time_match = TIME_LINE_PATTERN.match(line.strip())
+                if time_match:
+                    self._observe_time_line(time_match)
+                    continue
+                if HOSTS_TESTED_PATTERN.match(line.strip()):
+                    continue
 
                 finding_match = FINDING_PATTERN.match(line.strip())
                 if finding_match and current_ip:

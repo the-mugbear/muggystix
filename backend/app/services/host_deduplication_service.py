@@ -680,17 +680,27 @@ class HostDeduplicationService:
             'service_conf': port_data.get('service_conf')
         }
 
+        # v2.333.0 — typed copy of the name inside service_info (what /scans
+        # counts as "service identified"), kept in lockstep with the JSON.
+        service_name = port_data.get('service_name') or None
+
         if existing_history:
             # Update existing history entry
             existing_history.state_at_scan = port_data.get('state')
             existing_history.service_info = json.dumps(service_info) if any(service_info.values()) else None
+            existing_history.service_name = service_name
+            # Never downgrade created→re-observed (same rule as host_created).
+            if is_new:
+                existing_history.port_created = True
         else:
             # Create new history entry
             history = PortScanHistory(
                 port_id=port_id,
                 scan_id=scan_id,
                 state_at_scan=port_data.get('state'),
-                service_info=json.dumps(service_info) if any(service_info.values()) else None
+                service_info=json.dumps(service_info) if any(service_info.values()) else None,
+                service_name=service_name,
+                port_created=is_new,  # dedup create/update decision — ground truth
             )
             self.db.add(history)
             self._pending_port_history[key] = history

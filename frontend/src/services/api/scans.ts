@@ -9,18 +9,68 @@
 import { api, p } from './client';
 
 export interface ScanVulnerabilitySummary {
+  /** Findings FIRST recorded by this scan. */
   total: number;
   critical: number;
   high: number;
   medium: number;
   low: number;
   info: number;
+  // v2.333.0
+  hosts_affected?: number;
+  hosts_critical_high?: number;
+  exploitable?: number;
+}
+
+/**
+ * Where a scan's start/end came from (backend models.SCAN_TIME_SOURCES).
+ * tool_run / tool_records arrive with a UTC offset and are converted to the
+ * viewer's zone; tool_clock is the scanner's zone-less wall clock and arrives
+ * WITHOUT an offset — show it as written. null + start_time = legacy row
+ * (assumed UTC); null start_time = the file carries no scan time.
+ */
+export type ScanTimeSource = 'tool_run' | 'tool_records' | 'tool_clock';
+
+/** Web interfaces a scan wrote (v2.333.0). */
+export interface ScanWebSummary {
+  interfaces: number;
+  new_urls: number;
+  hosts: number;
+  https: number;
+  status_2xx: number;
+  status_3xx: number;
+  status_4xx: number;
+  status_5xx: number;
+  cert_expired: number;
+  cert_self_signed: number;
+  weak_tls: number;
+  screenshots: number;
+}
+
+/** Name observations a scan wrote (v2.333.0). */
+export interface ScanDnsSummary {
+  records: number;
+  names: number;
+  new_names: number;
+  /** record_type -> count; includes observation kinds (DISCOVERED, SCANNER, HTTP, CERT, IMPORT). */
+  by_type: Record<string, number>;
+}
+
+/** netexec results a scan wrote (v2.333.0). */
+export interface ScanAuthSummary {
+  hosts: number;
+  protocols: string[];
+  valid_accounts: number;
 }
 
 export interface ScanPortBreakdown {
   unique_ports: number;
   open_tcp_ports: number;
   open_udp_ports: number;
+  /** Open ports this scan introduced (v2.333.0). */
+  new_open_ports?: number;
+  /** Open ports this scan named a service for (v2.333.0). */
+  open_with_service?: number;
 }
 
 export interface Scan {
@@ -30,6 +80,7 @@ export interface Scan {
   tool_name: string | null;
   start_time?: string | null;
   end_time?: string | null;
+  time_source?: ScanTimeSource | null;
   created_at: string;
   total_hosts: number;
   up_hosts: number;
@@ -45,6 +96,12 @@ export interface Scan {
   uploaded_by?: string | null;
   port_breakdown?: ScanPortBreakdown | null;
   vulnerability_summary?: ScanVulnerabilitySummary | null;
+  // v2.333.0 — hosts it fingerprinted an OS for, and per-kind blocks
+  // (present only when the scan wrote such rows).
+  os_fingerprinted?: number;
+  web?: ScanWebSummary | null;
+  dns?: ScanDnsSummary | null;
+  auth?: ScanAuthSummary | null;
 }
 
 export const getScans = async (
@@ -54,7 +111,7 @@ export const getScans = async (
     search?: string;
     tool?: string;
     createdAfter?: string;
-    sortBy?: 'created_at' | 'filename' | 'tool_name' | 'file_size' | 'duration_seconds' | 'total_hosts' | 'new_hosts';
+    sortBy?: 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'file_size' | 'duration_seconds' | 'total_hosts' | 'new_hosts';
     sortOrder?: 'asc' | 'desc';
     signal?: AbortSignal;
   },

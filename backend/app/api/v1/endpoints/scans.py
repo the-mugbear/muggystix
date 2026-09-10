@@ -2,12 +2,13 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, case, distinct, and_, text, or_
+from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, desc, case, distinct, and_, text, or_, exists
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import get_db
 from app.db import models
+from app.db.models_confidence import NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.schemas.pagination import Paginated
 from app.schemas.schemas import (
@@ -15,6 +16,9 @@ from app.schemas.schemas import (
     ScanSummary,
     ScanPortBreakdown,
     ScanVulnerabilitySummary,
+    ScanWebSummary,
+    ScanDnsSummary,
+    ScanAuthSummary,
     OutOfScopeHost,
     DNSRecord,
 )
@@ -213,6 +217,136 @@ def _apply_scan_inventory_filters(query, *, search, tool, created_after):
     return query
 
 
+def _web_contribution(db: Session, project_id: int, scan_ids: List[int]) -> Dict[int, ScanWebSummary]:
+    """v2.333.0 — per-scan web-interface rollup for the /scans list.
+
+    web_interfaces rows are per-scan observations (unique on scan+url+source),
+    so every count here is what THIS scan recorded.  ``new_urls`` = URLs no
+    earlier scan in the project had recorded (earlier = lower scan id, i.e.
+    uploaded before).  ``cert_expired`` compares against the upload time, the
+    one tz-aware instant every scan has.
+    """
+    if not scan_ids:
+        return {}
+    wi = models.WebInterface
+    earlier = aliased(models.WebInterface)
+    earlier_scan = aliased(models.Scan)
+    seen_before = exists().where(and_(
+        earlier.url == wi.url,
+        earlier.scan_id < wi.scan_id,
+        earlier_scan.id == earlier.scan_id,
+        earlier_scan.project_id == project_id,
+    ))
+
+    def _status(lo: int, hi: int):
+        return func.sum(case((and_(wi.status_code >= lo, wi.status_code < hi), 1), else_=0))
+
+    rows = (
+        db.query(
+            wi.scan_id.label("scan_id"),
+            func.count(wi.id).label("interfaces"),
+            func.sum(case((~seen_before, 1), else_=0)).label("new_urls"),
+            func.count(distinct(wi.host_id)).label("hosts"),
+            func.sum(case((wi.protocol == "https", 1), else_=0)).label("https"),
+            _status(200, 300).label("s2"),
+            _status(300, 400).label("s3"),
+            _status(400, 500).label("s4"),
+            _status(500, 600).label("s5"),
+            func.sum(case((and_(wi.cert_not_after.isnot(None),
+                                wi.cert_not_after < models.Scan.created_at), 1), else_=0)).label("cert_expired"),
+            func.sum(case((wi.cert_self_signed.is_(True), 1), else_=0)).label("self_signed"),
+            func.sum(case((wi.tls_weak_protocol.is_(True), 1), else_=0)).label("weak_tls"),
+            func.sum(case((wi.screenshot_path.isnot(None), 1), else_=0)).label("screenshots"),
+        )
+        .join(models.Scan, models.Scan.id == wi.scan_id)
+        .filter(wi.scan_id.in_(scan_ids))
+        .group_by(wi.scan_id)
+        .all()
+    )
+    return {
+        r.scan_id: ScanWebSummary(
+            interfaces=r.interfaces or 0, new_urls=r.new_urls or 0, hosts=r.hosts or 0,
+            https=r.https or 0, status_2xx=r.s2 or 0, status_3xx=r.s3 or 0,
+            status_4xx=r.s4 or 0, status_5xx=r.s5 or 0, cert_expired=r.cert_expired or 0,
+            cert_self_signed=r.self_signed or 0, weak_tls=r.weak_tls or 0,
+            screenshots=r.screenshots or 0,
+        )
+        for r in rows
+    }
+
+
+def _dns_contribution(db: Session, scan_ids: List[int]) -> Dict[int, ScanDnsSummary]:
+    """v2.333.0 — per-scan name-observation rollup.  dns_records rows are
+    immutable per-scan observations; ``new_names`` = names with no record from
+    an earlier scan (names are project-scoped, so name_id alone correlates).
+    Observations with no scan (agent exec results) are not counted as prior."""
+    if not scan_ids:
+        return {}
+    dr = models.DNSRecord
+    earlier = aliased(models.DNSRecord)
+    seen_before = exists().where(and_(earlier.name_id == dr.name_id, earlier.scan_id < dr.scan_id))
+    totals = (
+        db.query(
+            dr.scan_id.label("scan_id"),
+            func.count(dr.id).label("records"),
+            func.count(distinct(dr.name_id)).label("names"),
+            func.count(distinct(case((~seen_before, dr.name_id)))).label("new_names"),
+        )
+        .filter(dr.scan_id.in_(scan_ids))
+        .group_by(dr.scan_id)
+        .all()
+    )
+    by_type: Dict[int, Dict[str, int]] = {}
+    for scan_id, record_type, count in (
+        db.query(dr.scan_id, dr.record_type, func.count(dr.id))
+        .filter(dr.scan_id.in_(scan_ids))
+        .group_by(dr.scan_id, dr.record_type)
+        .all()
+    ):
+        by_type.setdefault(scan_id, {})[record_type] = count
+    return {
+        r.scan_id: ScanDnsSummary(
+            records=r.records or 0, names=r.names or 0, new_names=r.new_names or 0,
+            by_type=by_type.get(r.scan_id, {}),
+        )
+        for r in totals
+    }
+
+
+def _auth_contribution(db: Session, scan_ids: List[int]) -> Dict[int, ScanAuthSummary]:
+    """v2.333.0 — per-scan netexec rollup (hosts enumerated, protocols,
+    distinct usernames that authenticated)."""
+    if not scan_ids:
+        return {}
+    nr = NetexecResult
+    valid_user = case(
+        (and_(nr.auth_success.is_(True), nr.username.isnot(None), nr.username != ""), nr.username)
+    )
+    totals = (
+        db.query(
+            nr.scan_id.label("scan_id"),
+            func.count(distinct(nr.host_id)).label("hosts"),
+            func.count(distinct(valid_user)).label("valid_accounts"),
+        )
+        .filter(nr.scan_id.in_(scan_ids))
+        .group_by(nr.scan_id)
+        .all()
+    )
+    protocols: Dict[int, List[str]] = {}
+    for scan_id, protocol in (
+        db.query(nr.scan_id, nr.protocol).filter(nr.scan_id.in_(scan_ids)).distinct().all()
+    ):
+        if protocol:
+            protocols.setdefault(scan_id, []).append(protocol.lower())
+    return {
+        r.scan_id: ScanAuthSummary(
+            hosts=r.hosts or 0, valid_accounts=r.valid_accounts or 0,
+            protocols=sorted(set(protocols.get(r.scan_id, []))),
+        )
+        for r in totals
+    }
+
+
 @router.get("/", response_model=List[ScanSummary])
 def get_scans(
     # v2.86.4 — pagination caps added (was bare ``int = 100`` with no
@@ -245,10 +379,12 @@ def get_scans(
     ),
     sort_by: Optional[str] = Query(
         None,
-        pattern="^(created_at|filename|tool_name|total_hosts|new_hosts)$",
+        pattern="^(created_at|start_time|filename|tool_name|total_hosts|new_hosts)$",
         description=(
             "Sort column for the inventory.  Allowed: created_at "
-            "(default), filename, tool_name, total_hosts, new_hosts.  Drives "
+            "(default), start_time (when the scan ran; scans whose output "
+            "carries no time sort last), filename, tool_name, total_hosts, "
+            "new_hosts.  Drives "
             "the sortable column headers on the /scans desktop table "
             "(v2.83.0)."
         ),
@@ -274,11 +410,14 @@ def get_scans(
             models.Scan.command_line,
             models.Scan.version,
             models.Scan.uploaded_by_id,
+            models.Scan.time_source,
             func.count(models.HostScanHistory.id).label('total_hosts'),
             func.sum(case((models.HostScanHistory.state_at_scan == 'up', 1), else_=0)).label('up_hosts'),
             # Hosts this scan first discovered (created the row) — the rest of
             # its observed hosts were already known and got updated.
             func.sum(case((models.HostScanHistory.host_created == True, 1), else_=0)).label('new_hosts'),  # noqa: E712
+            # v2.333.0 — hosts this scan supplied OS information for.
+            func.sum(case((models.HostScanHistory.os_info_updated.is_(True), 1), else_=0)).label('os_fingerprinted'),
         )
         .select_from(models.Scan)
         .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
@@ -303,6 +442,7 @@ def get_scans(
             models.Scan.command_line,
             models.Scan.version,
             models.Scan.uploaded_by_id,
+            models.Scan.time_source,
         )
     )
     # v2.83.0 — sortable column headers on the /scans desktop table.
@@ -315,12 +455,18 @@ def get_scans(
         "tool_name": models.Scan.tool_name,
         "total_hosts": func.count(models.HostScanHistory.id),
         "new_hosts": func.sum(case((models.HostScanHistory.host_created == True, 1), else_=0)),  # noqa: E712
+        # v2.333.0 — when the scan ran.  A scanner wall clock (tool_clock)
+        # sorts as if UTC; scans with no time in the file sort last.
+        "start_time": models.Scan.start_time,
     }
     sort_column = _SORT_COLUMNS.get(sort_by or "created_at", models.Scan.created_at)
     order_direction = desc if (sort_order or "desc").lower() == "desc" else (lambda c: c)
+    ordering = order_direction(sort_column)
+    if sort_by == "start_time":
+        ordering = ordering.nullslast()
     scans_query = (
         scans_query
-        .order_by(order_direction(sort_column))
+        .order_by(ordering, models.Scan.id.desc())
         .offset(skip)
         .limit(limit)
     )
@@ -370,6 +516,22 @@ def get_scans(
                         else_=0,
                     )
                 ).label('open_udp_ports'),
+                # v2.333.0 — open ports this scan introduced / named a service for.
+                func.sum(
+                    case(
+                        (and_(models.PortScanHistory.state_at_scan == 'open',
+                              models.PortScanHistory.port_created.is_(True)), 1),
+                        else_=0,
+                    )
+                ).label('new_open_ports'),
+                func.sum(
+                    case(
+                        (and_(models.PortScanHistory.state_at_scan == 'open',
+                              models.PortScanHistory.service_name.isnot(None),
+                              models.PortScanHistory.service_name != ''), 1),
+                        else_=0,
+                    )
+                ).label('open_with_service'),
             )
             .select_from(models.PortScanHistory)
             .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
@@ -405,12 +567,27 @@ def get_scans(
                 func.sum(case((Vulnerability.severity == VulnerabilitySeverity.MEDIUM, 1), else_=0)).label('medium'),
                 func.sum(case((Vulnerability.severity == VulnerabilitySeverity.LOW, 1), else_=0)).label('low'),
                 func.sum(case((Vulnerability.severity == VulnerabilitySeverity.INFO, 1), else_=0)).label('info'),
+                # v2.333.0 — spread and exploitability of what the scan found.
+                func.count(distinct(Vulnerability.host_id)).label('hosts_affected'),
+                func.count(distinct(case(
+                    (Vulnerability.severity.in_([VulnerabilitySeverity.CRITICAL,
+                                                  VulnerabilitySeverity.HIGH]),
+                     Vulnerability.host_id),
+                ))).label('hosts_critical_high'),
+                func.sum(case((Vulnerability.exploitable.is_(True), 1), else_=0)).label('exploitable'),
             )
             .filter(Vulnerability.scan_id.in_(scan_ids))
             .group_by(Vulnerability.scan_id)
             .all()
         )
         vuln_stats_map = {row.scan_id: row for row in vuln_stats_rows}
+
+    # v2.333.0 — what each scan contributed beyond hosts/ports/findings, read
+    # from the rows the scan itself wrote.  Data-driven like the vuln block
+    # above (no tool-name gate): a block appears when the scan wrote such rows.
+    web_stats_map = _web_contribution(db, project.id, scan_ids)
+    dns_stats_map = _dns_contribution(db, scan_ids)
+    auth_stats_map = _auth_contribution(db, scan_ids)
 
     # Batch-resolve uploader usernames (multi-analyst attribution on the
     # Scans list).  One query keyed by the distinct uploader ids in this
@@ -434,6 +611,8 @@ def get_scans(
                 unique_ports=port_stats.unique_ports or 0,
                 open_tcp_ports=port_stats.open_tcp_ports or 0,
                 open_udp_ports=port_stats.open_udp_ports or 0,
+                new_open_ports=port_stats.new_open_ports or 0,
+                open_with_service=port_stats.open_with_service or 0,
             )
 
         vulnerability_summary = None
@@ -446,6 +625,9 @@ def get_scans(
                 medium=vuln_stats.medium or 0,
                 low=vuln_stats.low or 0,
                 info=vuln_stats.info or 0,
+                hosts_affected=vuln_stats.hosts_affected or 0,
+                hosts_critical_high=vuln_stats.hosts_critical_high or 0,
+                exploitable=vuln_stats.exploitable or 0,
             )
 
         scan_summaries.append(ScanSummary(
@@ -467,6 +649,11 @@ def get_scans(
             port_breakdown=port_breakdown,
             vulnerability_summary=vulnerability_summary,
             uploaded_by=uploader_map.get(result.uploaded_by_id),
+            time_source=result.time_source,
+            os_fingerprinted=result.os_fingerprinted or 0,
+            web=web_stats_map.get(result.id),
+            dns=dns_stats_map.get(result.id),
+            auth=auth_stats_map.get(result.id),
         ))
 
     return scan_summaries

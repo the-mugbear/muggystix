@@ -53,6 +53,8 @@ from app.parsers.parser_utils import (
     correlate_scan,
     ensure_scan,
     persist_host_observation,
+    ScanClock,
+    parse_rfc3339,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import (
@@ -67,14 +69,18 @@ logger = logging.getLogger(__name__)
 
 def _parse_timestamp(raw: Any) -> Optional[datetime]:
     """dnsx emits ``timestamp`` as RFC 3339 (``2026-09-08T10:11:12.123Z``).
-    Returns an aware datetime or None — a bad stamp is not a bad record."""
+    Returns an aware datetime or None — a bad stamp is not a bad record.
+
+    v2.333.0 — goes through parser_utils.parse_rfc3339 first: Go writes
+    nanosecond fractions, which fromisoformat rejected, so real dnsx output
+    fell back to the ingest time."""
+    aware = parse_rfc3339(raw)
+    if aware is not None:
+        return aware
     if not isinstance(raw, str) or not raw.strip():
         return None
-    s = raw.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
     try:
-        dt = datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(raw.strip())
     except ValueError:
         return None
     if dt.tzinfo is None:
@@ -168,6 +174,9 @@ class DnsxParser:
             scan_type="dns_resolution",
             project_id=self._project_id,
         )
+        # Every dnsx -json record carries a timestamp; the scan window is
+        # first..last record.
+        clock = ScanClock()
 
         records_written = 0
         ptr_hosts_updated = 0
@@ -201,6 +210,7 @@ class DnsxParser:
 
             ttl = row.get("ttl") if isinstance(row.get("ttl"), int) else None
             observed_at = _parse_timestamp(row.get("timestamp"))
+            clock.observe(observed_at)
 
             # Per-record isolation: wrap each row's answer-persistence in a
             # SAVEPOINT so one malformed answer (a bad value, an unexpected
@@ -228,6 +238,8 @@ class DnsxParser:
                 # persists instead of being deduped away.
                 self._name_cache.forget(journal)
                 logger.warning("dnsx: skipping malformed record host=%r: %s", host, exc)
+
+        clock.apply(scan)
 
         if records_written == 0:
             raise ValueError(

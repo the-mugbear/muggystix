@@ -1,7 +1,6 @@
 import csv
 import re
 from typing import Dict, List, Optional
-from datetime import datetime
 from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import correlate_scan
@@ -45,7 +44,6 @@ class DNSParser:
             filename=filename,
             scan_type='dns_records',
             tool_name='dns',
-            created_at=datetime.utcnow(),
             project_id=self._project_id,
         )
         self.db.add(scan)

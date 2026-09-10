@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -161,7 +160,7 @@ class TestsslParser:
 
         scan = models.Scan(
             filename=filename, scan_type="web_vulnerability_scan", tool_name="testssl",
-            created_at=datetime.utcnow(), project_id=self._project_id,
+            project_id=self._project_id,
         )
         self.db.add(scan)
         self.db.flush()

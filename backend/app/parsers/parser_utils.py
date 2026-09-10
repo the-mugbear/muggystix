@@ -4,7 +4,7 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -34,17 +34,135 @@ def ensure_scan(
     command_line: Optional[str] = None,
     project_id: Optional[int] = None,
 ) -> models.Scan:
+    # v2.333.0 — no start_time here.  This used to stamp the upload time into
+    # start_time, so /scans showed "Scanned: <upload time>" for every tool
+    # whose output carries no run time, indistinguishable from a real scanner
+    # timestamp.  A parser that finds a time in the file sets it (with its
+    # source) via ScanClock; otherwise start_time stays NULL and the UI says
+    # the file carries no scan time.  created_at is the upload time.
     scan = models.Scan(
         filename=filename,
         tool_name=tool_name,
         scan_type=scan_type,
         command_line=command_line,
-        start_time=datetime.utcnow(),
         project_id=project_id,
     )
     db.add(scan)
     db.flush()
     return scan
+
+
+# ---------------------------------------------------------------------------
+# Scan time helpers (v2.333.0)
+#
+# Scan.start_time / end_time are naive columns; Scan.time_source says what a
+# naive value means (see models.SCAN_TIME_SOURCES).  Every parser converts a
+# tool timestamp through these so "naive = UTC" holds for tool_run /
+# tool_records, and a zone-less wall clock is flagged tool_clock instead of
+# being silently passed off as UTC.
+# ---------------------------------------------------------------------------
+
+_RFC3339_FRACTION = re.compile(r"(\.\d{6})\d+")
+
+
+def to_utc_naive(value: Optional[datetime]) -> Optional[datetime]:
+    """Aware -> the same instant as naive UTC.  Naive values are assumed to
+    already be UTC (callers only pass naive values they produced as UTC)."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def epoch_to_utc(raw: Any) -> Optional[datetime]:
+    """Unix epoch seconds (int/float/str) -> naive UTC, or None.
+
+    Never ``datetime.fromtimestamp`` — that returns the CONTAINER's local
+    time, which is UTC only until someone sets TZ."""
+    if raw is None or raw == "":
+        return None
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    try:
+        return datetime(1970, 1, 1) + timedelta(seconds=seconds)
+    except OverflowError:
+        return None
+
+
+def parse_rfc3339(raw: Any) -> Optional[datetime]:
+    """RFC 3339 / ISO 8601 with an offset or ``Z`` -> AWARE datetime.
+
+    Go tools (httpx, naabu, dnsx) write nanosecond fractions
+    (``2026-09-08T10:11:12.123456789Z``), which ``fromisoformat`` rejects;
+    the fraction is trimmed to microseconds.  A value with no offset is
+    ambiguous and returns None — callers must not guess a zone."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    s = _RFC3339_FRACTION.sub(r"\1", s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return None
+    return dt
+
+
+class ScanClock:
+    """Accumulates the scan window from timestamps found in a tool's output.
+
+    ``observe`` takes an aware datetime or a naive UTC one (e.g. from
+    ``epoch_to_utc``); ``observe_clock`` takes a zone-less wall clock.  An
+    absolute time always beats a wall clock.  ``apply`` writes the window and
+    its source onto the Scan, and never overwrites a window the parser set
+    from an explicit run start/finish.
+    """
+
+    def __init__(self, source: str = models.SCAN_TIME_TOOL_RECORDS):
+        self.source = source
+        self.first: Optional[datetime] = None
+        self.last: Optional[datetime] = None
+        self._clock_first: Optional[datetime] = None
+        self._clock_last: Optional[datetime] = None
+
+    def observe(self, value: Optional[datetime]) -> None:
+        value = to_utc_naive(value)
+        if value is None:
+            return
+        if self.first is None or value < self.first:
+            self.first = value
+        if self.last is None or value > self.last:
+            self.last = value
+
+    def observe_clock(self, value: Optional[datetime]) -> None:
+        if value is None:
+            return
+        value = value.replace(tzinfo=None)
+        if self._clock_first is None or value < self._clock_first:
+            self._clock_first = value
+        if self._clock_last is None or value > self._clock_last:
+            self._clock_last = value
+
+    def apply(self, scan: models.Scan) -> None:
+        if scan.start_time is not None:
+            return
+        if self.first is not None:
+            scan.start_time = self.first
+            scan.end_time = self.last if self.last and self.last > self.first else None
+            scan.time_source = self.source
+        elif self._clock_first is not None:
+            scan.start_time = self._clock_first
+            last = self._clock_last
+            scan.end_time = last if last and last > self._clock_first else None
+            scan.time_source = models.SCAN_TIME_TOOL_CLOCK
 
 
 def normalize_ip(value: Optional[str]) -> Optional[str]:

@@ -166,10 +166,16 @@ class GnmapParser:
                 scan.command_line = cmd_match.group(1)
 
         if 'scan initiated' in line and scan.start_time is None:
-            time_match = re.search(r'scan initiated (.+)$', line)
+            # v2.333.0 — stop at " as: <command>".  nmap writes
+            # "# Nmap 7.94 scan initiated Mon Jul 15 10:30:01 2024 as: nmap …",
+            # and the old greedy (.+)$ handed the command to strptime, which
+            # failed silently: no nmap .gnmap ever had a start time.
+            time_match = re.search(r'scan initiated (.+?)(?:\s+as:|$)', line)
             if time_match:
                 try:
                     scan.start_time = datetime.strptime(time_match.group(1), '%a %b %d %H:%M:%S %Y')
+                    # gnmap prints the scanner's local ctime with no zone.
+                    scan.time_source = models.SCAN_TIME_TOOL_CLOCK
                 except ValueError:
                     pass
 

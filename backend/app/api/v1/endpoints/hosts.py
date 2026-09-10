@@ -30,6 +30,7 @@ from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHis
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
 from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
+from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
     Host as HostSchema,
     HostListResponse,
@@ -990,7 +991,7 @@ def get_host_filter_data_v2(
     # Scans — scoped to project so analysts see project-relevant scans
     scans = db.query(
         models.Scan.id, models.Scan.filename, models.Scan.tool_name,
-        models.Scan.created_at, models.Scan.start_time
+        models.Scan.created_at, models.Scan.start_time, models.Scan.time_source
     ).filter(models.Scan.project_id == project.id).order_by(models.Scan.created_at.desc()).limit(100).all()
 
     # Tags — project-scoped definitions + assignment counts (v2.71.0).
@@ -1164,7 +1165,12 @@ def get_host_filter_data_v2(
             {
                 'id': s.id, 'filename': s.filename, 'tool_name': s.tool_name,
                 'created_at': s.created_at.isoformat() if s.created_at else None,
-                'start_time': s.start_time.isoformat() if s.start_time else None,
+                # v2.333.0 — tz-tagged per time_source (app.services.scan_time).
+                'start_time': (
+                    scan_time_for_api(s.start_time, s.time_source).isoformat()
+                    if s.start_time else None
+                ),
+                'time_source': s.time_source,
             }
             for s in scans
         ],

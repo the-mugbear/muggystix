@@ -15,6 +15,32 @@ from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
 from app.core.config import settings
+from app.parsers.parser_utils import ScanClock, epoch_to_utc
+
+
+def _observe_nessus_host_times(clock: ScanClock, props: Dict[str, str]) -> None:
+    """Nessus records when it scanned each HOST, not when the scan ran.
+
+    ``HOST_START_TIMESTAMP`` / ``HOST_END_TIMESTAMP`` (epoch, recent exports)
+    are absolute; ``HOST_START`` / ``HOST_END`` are the scanner's local ctime
+    with no zone and are used only when no epoch is present.  The scan window
+    is first host start .. last host end (v2.333.0 — before this every Nessus
+    scan had a NULL window: the parser never read these tags).
+    """
+    start = epoch_to_utc(props.get("HOST_START_TIMESTAMP"))
+    end = epoch_to_utc(props.get("HOST_END_TIMESTAMP"))
+    if start is not None or end is not None:
+        clock.observe(start)
+        clock.observe(end)
+        return
+    for key in ("HOST_START", "HOST_END"):
+        raw = props.get(key)
+        if not raw:
+            continue
+        try:
+            clock.observe_clock(datetime.strptime(raw.strip(), "%a %b %d %H:%M:%S %Y"))
+        except ValueError:
+            continue
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +82,10 @@ class NessusIntegrationService:
             vulnerabilities_found = 0
             vuln_write_failures = 0
             severity_counts = {"info": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
+            clock = ScanClock()
 
             for nessus_host in hosts_iter:
+                _observe_nessus_host_times(clock, nessus_host.host_properties or {})
                 result = self._process_nessus_host(nessus_host, scan, project_id=project_id)
                 if result:
                     host, vuln_stats = result
@@ -99,6 +127,8 @@ class NessusIntegrationService:
                     scan.start_time = scan_info['start_time']
                 if scan_info.get('end_time') and not scan.end_time:
                     scan.end_time = scan_info['end_time']
+            if scan:
+                clock.apply(scan)
 
             self.db.commit()
 
@@ -238,7 +268,6 @@ class NessusIntegrationService:
             start_time=scan_info.get('start_time'),
             end_time=scan_info.get('end_time'),
             version=scan_info.get('scanner_version'),
-            created_at=datetime.utcnow(),
             project_id=project_id,
         )
 

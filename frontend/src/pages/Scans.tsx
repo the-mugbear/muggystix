@@ -50,7 +50,9 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
-import SeverityBar from '../components/ui/SeverityBar';
+import ScanContribution from '../components/scans/ScanContribution';
+import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
+import { formatDuration } from '../utils/scanTime';
 import {
   Dialog,
   DialogContent,
@@ -100,24 +102,6 @@ const ProgressBar: React.FC<{ value: number; tone?: 'default' | 'success' | 'des
   </div>
 );
 
-const formatDateTime = (value: Date | string | null | undefined): string => {
-  if (!value) return 'Unknown';
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) return 'Unknown';
-  return d.toLocaleString();
-};
-
-const formatDuration = (ms: number): string => {
-  if (ms <= 0) return 'Instant';
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 0) return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-  return `${seconds}s`;
-};
 
 
 export default function Scans() {
@@ -193,7 +177,7 @@ export default function Scans() {
     { label: 'Last 30d', days: 30 },
     { label: 'Last 90d', days: 90 },
   ];
-  type SortBy = 'created_at' | 'filename' | 'tool_name' | 'total_hosts' | 'new_hosts';
+  type SortBy = 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'total_hosts' | 'new_hosts';
   type SortOrder = 'asc' | 'desc';
 
   const [urlParams, setUrlParams] = useSearchParams();
@@ -207,7 +191,7 @@ export default function Scans() {
   });
   const [sortBy, setSortBy] = useState<SortBy>(() => {
     const raw = urlParams.get('sort_by') as SortBy | null;
-    return raw && ['created_at', 'filename', 'tool_name', 'total_hosts', 'new_hosts'].includes(raw)
+    return raw && ['created_at', 'start_time', 'filename', 'tool_name', 'total_hosts', 'new_hosts'].includes(raw)
       ? raw
       : 'created_at';
   });
@@ -708,15 +692,6 @@ export default function Scans() {
     } finally {
       setDeleteLoading(false);
     }
-  };
-
-  const getScanWindow = (scan: Scan) => {
-    const start = scan.start_time ? new Date(scan.start_time) : new Date(scan.created_at);
-    let end = scan.end_time ? new Date(scan.end_time) : new Date(scan.created_at);
-    if (Number.isNaN(start.getTime())) start.setTime(new Date(scan.created_at).getTime());
-    if (Number.isNaN(end.getTime()) || end < start) end = new Date(start.getTime());
-    const durationMs = Math.max(end.getTime() - start.getTime(), 0);
-    return { start, end, durationMs };
   };
 
   // v2.59.0 — Scan Timeline removed from this page and replaced by the
@@ -1432,6 +1407,7 @@ export default function Scans() {
             </div>
           </div>
 
+          {scans.length > 0 && <ViewerZoneNote className="mb-xs" />}
           {scans.length === 0 ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
@@ -1463,25 +1439,25 @@ export default function Scans() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    {renderSortHeader('filename', 'Scan', 'w-[24%]')}
-                    {renderSortHeader('created_at', 'Uploaded', 'w-[14%]')}
-                    <TableHead className="w-[16%]">Window</TableHead>
-                    {renderSortHeader('new_hosts', 'New hosts', 'w-[11%]')}
-                    {/* v5.204.0 — was "Modified". The number is total observed
-                        minus new; it says nothing about whether any value
-                        changed, and a header that said it did was read that way. */}
-                    <TableHead className="w-[11%]" title="Already-known hosts this scan observed. Not a count of changed values — that is not measured yet.">
-                      Existing hosts
-                    </TableHead>
-                    <TableHead className="w-[14%]" title="Vulnerabilities FIRST recorded by this scan, counted at their CURRENT severity (a later scan may have re-rated them), plus the open TCP/UDP port split for this scan">
-                      Findings / ports
+                    {renderSortHeader('filename', 'Scan', 'w-[22%]')}
+                    {/* v5.205.0 — when the scan RAN, per its own output, with
+                        where that time came from; the upload time is its own
+                        column. The old "Window" silently fell back to the
+                        upload time and read naive UTC as local time. */}
+                    {renderSortHeader('start_time', 'Ran', 'w-[16%]')}
+                    {renderSortHeader('created_at', 'Uploaded', 'w-[13%]')}
+                    {renderSortHeader('new_hosts', 'New hosts', 'w-[9%]')}
+                    <TableHead
+                      className="w-[30%]"
+                      title="What this scan added or observed, counted from the rows it wrote. Hover a line for what it counts."
+                    >
+                      What it contributed
                     </TableHead>
                     <TableHead className="w-[10%]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {scans.map((scan) => {
-                    const windowInfo = getScanWindow(scan);
                     const isExpanded = expandedScanIds.includes(scan.id);
                     const hasCommand = !!(scan.command_line && scan.command_line.trim());
                     return (
@@ -1538,64 +1514,37 @@ export default function Scans() {
                               </Tooltip>
                             </div>
                           </TableCell>
-                          <TableCell>
-                            <p className="text-metadata">{formatDateTime(scan.created_at)}</p>
-                            {scan.start_time && (
-                              <p className="mt-xxs text-caption text-muted-foreground">
-                                Scanned: {formatDateTime(scan.start_time)}
-                              </p>
-                            )}
+                          <TableCell className="min-w-0">
+                            <ScanRunCell scan={scan} />
                           </TableCell>
-                          <TableCell>
-                            <p className="text-metadata">{formatDateTime(windowInfo.start)}</p>
-                            <p className="mt-xxs text-caption text-muted-foreground">
-                              {formatDuration(windowInfo.durationMs)}
-                            </p>
+                          <TableCell className="min-w-0">
+                            <ScanUploadedCell scan={scan} />
                           </TableCell>
-                          {/* What the scan INTRODUCED, not a re-observation
-                              count that's already on the host pages: hosts
-                              first discovered here vs already-known hosts it
-                              touched. */}
-                          <TableCell title="Hosts this scan discovered for the first time">
+                          {/* What the scan INTRODUCED, out of what it saw:
+                              hosts first discovered here, over every host it
+                              observed (new + already known). */}
+                          <TableCell title="Hosts this scan added to the inventory, out of all the hosts it observed">
                             {scan.total_hosts === 0 ? (
                               <span className="text-caption text-muted-foreground">No hosts</span>
-                            ) : scan.new_hosts > 0 ? (
-                              <span className="tabular-nums font-semibold text-success">+{scan.new_hosts}</span>
                             ) : (
-                              <span className="tabular-nums text-muted-foreground">0</span>
+                              <>
+                                {scan.new_hosts > 0 ? (
+                                  <span className="tabular-nums font-semibold text-success">+{scan.new_hosts.toLocaleString()}</span>
+                                ) : (
+                                  <span className="tabular-nums text-muted-foreground">0</span>
+                                )}
+                                <p className="mt-xxs text-caption tabular-nums text-muted-foreground">
+                                  of {scan.total_hosts.toLocaleString()} seen
+                                </p>
+                              </>
                             )}
                           </TableCell>
-                          <TableCell title="Already-known hosts this scan re-observed and updated">
-                            {scan.total_hosts === 0 ? (
-                              <span className="text-caption text-muted-foreground">—</span>
-                            ) : (
-                              <span className={`tabular-nums ${scan.updated_hosts > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
-                                {scan.updated_hosts}
-                              </span>
-                            )}
-                          </TableCell>
-                          {/* Per-scan vuln + port rollups. Older scans predate
-                              these summaries, so both blocks guard on presence
-                              and fall back to a dash. */}
+                          {/* v5.205.0 — per-kind contribution (ports, findings,
+                              web interfaces, names, auth), ordered by what the
+                              tool is for. Replaces "Existing hosts" (now the
+                              "of N seen" line) and "Findings / ports". */}
                           <TableCell className="min-w-0">
-                            {scan.vulnerability_summary && scan.vulnerability_summary.total > 0 ? (
-                              <div className="flex items-center gap-xs">
-                                <span className="w-6 shrink-0 tabular-nums text-caption text-foreground">
-                                  {scan.vulnerability_summary.total}
-                                </span>
-                                <div className="min-w-0 flex-1">
-                                  <SeverityBar counts={scan.vulnerability_summary} variant="compact" />
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-caption text-muted-foreground">No findings</span>
-                            )}
-                            {scan.port_breakdown
-                              && (scan.port_breakdown.open_tcp_ports > 0 || scan.port_breakdown.open_udp_ports > 0) && (
-                              <p className="mt-xxs truncate text-caption tabular-nums text-muted-foreground">
-                                {scan.port_breakdown.open_tcp_ports} TCP · {scan.port_breakdown.open_udp_ports} UDP
-                              </p>
-                            )}
+                            <ScanContribution scan={scan} />
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap items-center gap-xs">
@@ -1626,7 +1575,7 @@ export default function Scans() {
                         </TableRow>
                         {hasCommand && isExpanded && (
                           <TableRow>
-                            <TableCell colSpan={7} className="py-sm">
+                            <TableCell colSpan={6} className="py-sm">
                               {commandDetail(scan)}
                             </TableCell>
                           </TableRow>

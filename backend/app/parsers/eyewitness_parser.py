@@ -30,7 +30,6 @@ import re
 import shutil
 import time
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -309,7 +308,6 @@ class EyewitnessParser:
             filename=filename,
             scan_type="web_screenshot",
             tool_name="eyewitness",
-            created_at=datetime.utcnow(),
             project_id=self._project_id,
         )
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from lxml import etree
 from sqlalchemy.orm import Session
 from app.db import models
+from app.parsers.parser_utils import epoch_to_utc
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
@@ -202,9 +203,14 @@ class NmapXMLParser:
         tool_name = 'masscan' if scanner == 'masscan' else 'nmap'
         scan_type = 'port_scan' if tool_name == 'masscan' else 'nmap'
 
+        # `start` is epoch seconds (an absolute instant); `startstr` is the
+        # scanner machine's ctime with no zone — only a fallback, and flagged
+        # as such so the UI doesn't present it as UTC.
         start_time = self._parse_epoch_timestamp(nmaprun_elem.get('start'))
+        time_source = models.SCAN_TIME_TOOL_RUN if start_time else None
         if start_time is None:
             start_time = self._parse_timestr(nmaprun_elem.get('startstr'))
+            time_source = models.SCAN_TIME_TOOL_CLOCK if start_time else None
 
         scan = models.Scan(
             filename=filename,
@@ -214,6 +220,7 @@ class NmapXMLParser:
             command_line=nmaprun_elem.get('args', ''),
             tool_name=tool_name,
             start_time=start_time,
+            time_source=time_source,
             project_id=self._project_id,
         )
 
@@ -233,22 +240,20 @@ class NmapXMLParser:
         self.db.add(scan_info)
 
     def _update_scan_end_time(self, scan: models.Scan, finished_elem: etree.Element) -> None:
-        end_time = self._parse_epoch_timestamp(finished_elem.get('time'))
-        if end_time is None:
+        # v2.333.0 — the end must be the same KIND of value as the start (an
+        # epoch end next to a wall-clock start would give a duration off by
+        # the scanner's UTC offset), and a missing <finished> (truncated
+        # file) leaves end_time NULL.  It used to fall back to utcnow(), i.e.
+        # the upload time, presented as when the scan finished.
+        if scan.time_source == models.SCAN_TIME_TOOL_CLOCK:
             end_time = self._parse_timestr(finished_elem.get('timestr'))
-
-        if end_time is not None:
+        else:
+            end_time = self._parse_epoch_timestamp(finished_elem.get('time'))
+        if end_time is not None and scan.start_time is not None and end_time >= scan.start_time:
             scan.end_time = end_time
-        elif scan.end_time is None:
-            scan.end_time = datetime.utcnow()
 
     def _parse_epoch_timestamp(self, raw: Optional[str]) -> Optional[datetime]:
-        if not raw:
-            return None
-        try:
-            return datetime.utcfromtimestamp(int(raw))
-        except (TypeError, ValueError):
-            return None
+        return epoch_to_utc(raw)
 
     def _parse_timestr(self, raw: Optional[str]) -> Optional[datetime]:
         if not raw:

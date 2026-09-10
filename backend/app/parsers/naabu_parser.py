@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
+    ScanClock,
     correlate_scan,
     ensure_scan,
     extract_first_ip,
     parse_host_port_token,
+    parse_rfc3339,
     persist_host_observation,
 )
 from app.parsers.streaming_json import iter_json_records
@@ -33,6 +35,8 @@ class NaabuParser:
         )
         suffix = Path(filename).suffix.lower()
         hosts: Dict[str, List[dict]] = {}
+        # naabu -json stamps every record (RFC 3339); plain text has no time.
+        clock = ScanClock()
 
         if suffix in (".json", ".jsonl"):
             # Streams large naabu exports via ijson instead of loading
@@ -45,6 +49,7 @@ class NaabuParser:
             # JSON line as a `host:port` token — zero hosts ingested.
             rows = iter_json_records(file_path, tool_label="Naabu JSON")
             for row in rows:
+                clock.observe(parse_rfc3339(row.get("timestamp")))
                 ip_address = extract_first_ip(str(row.get("ip") or row.get("host") or row.get("url") or ""))
                 port = row.get("port")
                 if not ip_address or port in (None, ""):
@@ -82,6 +87,7 @@ class NaabuParser:
                 f"file is empty or not naabu output."
             )
 
+        clock.apply(scan)
         for ip_address, ports in hosts.items():
             persist_host_observation(
                 dedup_service=self.dedup_service,

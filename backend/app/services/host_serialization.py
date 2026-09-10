@@ -97,14 +97,20 @@ def discovery_dict(history) -> dict:
     ``discovered_at`` is the INGEST time; ``scan_start``/``scan_end`` are when
     the tool was actually probing — what SOC-alert correlation needs.
     """
+    from app.services.scan_time import scan_time_for_api
+
     scan = getattr(history, "scan", None)
+    time_source = getattr(scan, "time_source", None) if scan else None
     return {
         "scan_id": history.scan_id,
         "scan_filename": getattr(scan, "filename", None) if scan else None,
         "scan_type": getattr(scan, "scan_type", None) if scan else None,
         "tool_name": getattr(scan, "tool_name", None) if scan else None,
-        "scan_start": getattr(scan, "start_time", None) if scan else None,
-        "scan_end": getattr(scan, "end_time", None) if scan else None,
+        # v2.333.0 — tz-tagged per the scan's time_source (see scan_time.py)
+        # so the host timeline shows scanner times in the viewer's zone.
+        "scan_start": scan_time_for_api(getattr(scan, "start_time", None), time_source) if scan else None,
+        "scan_end": scan_time_for_api(getattr(scan, "end_time", None), time_source) if scan else None,
+        "scan_time_source": time_source,
         "command_line": getattr(scan, "command_line", None) if scan else None,
         "discovered_at": history.discovered_at,
     }

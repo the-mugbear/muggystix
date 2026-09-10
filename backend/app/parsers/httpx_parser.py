@@ -38,7 +38,6 @@ import ipaddress
 import json
 import logging
 import time
-from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -50,7 +49,9 @@ from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, deriv
 from app.services.dns_name_service import ObservationCache, bind_url_name, record_observation
 from app.parsers.parser_utils import (
     correlate_scan,
+    ScanClock,
     ScanHostObservations,
+    parse_rfc3339,
     record_hosts_in_scan,
     resolve_host_cached,
     resolve_port_cached,
@@ -137,7 +138,6 @@ class HttpxParser:
             filename=filename,
             scan_type="web_fingerprint",
             tool_name="httpx",
-            created_at=datetime.utcnow(),
             project_id=self._project_id,
         )
         self.db.add(scan)
@@ -145,7 +145,12 @@ class HttpxParser:
 
         written = 0
         skipped = 0
+        # Every httpx -json record carries an RFC 3339 `timestamp`; the scan
+        # window is first..last probe (v2.333.0 — it used to be left NULL).
+        clock = ScanClock()
         for record in records:
+            if isinstance(record, dict):
+                clock.observe(parse_rfc3339(record.get("timestamp")))
             try:
                 host_id = self._upsert_record(record, scan)
                 if host_id:
@@ -162,6 +167,7 @@ class HttpxParser:
         # /agent/recon/summary because that query joins through
         # host_scan_history, not web_interfaces.
         record_hosts_in_scan(self.db, scan.id, self._observed)
+        clock.apply(scan)
 
         self.db.commit()
 

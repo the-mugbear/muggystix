@@ -22,6 +22,8 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { formatApiError } from '../utils/apiErrors';
 import { formatHostForUrl } from '../utils/webLinks';
+import { ScanTimeSourceNote } from '../components/scans/ScanTimeCells';
+import { describeScanRun, describeUpload } from '../utils/scanTime';
 
 type BadgeTone = 'success' | 'destructive' | 'warning' | 'muted';
 const hostStateVariant = (s: string | null): BadgeTone =>
@@ -63,24 +65,6 @@ const getWebUrl = (ip: string, port: WebPortLike): string => {
   return `${protocol}://${formatHostForUrl(ip)}:${port.port_number}`;
 };
 
-const fmtDateTime = (v?: Date | string | null) => {
-  if (!v) return 'Unknown';
-  const d = v instanceof Date ? v : new Date(v);
-  if (Number.isNaN(d.getTime())) return 'Unknown';
-  return d.toLocaleString();
-};
-
-const fmtDuration = (ms?: number | null) => {
-  if (!ms || ms <= 0) return 'Instant';
-  const sec = Math.floor(ms / 1000);
-  const min = Math.floor(sec / 60);
-  const hr = Math.floor(min / 60);
-  const day = Math.floor(hr / 24);
-  if (day > 0) return `${day}d ${hr % 24}h`;
-  if (hr > 0) return `${hr}h ${min % 60}m`;
-  if (min > 0) return `${min}m ${sec % 60}s`;
-  return `${sec}s`;
-};
 
 const ScanDetail: React.FC = () => {
   const { scanId } = useParams<{ scanId: string }>();
@@ -183,11 +167,12 @@ const ScanDetail: React.FC = () => {
   // hosts than we fetched — surface that so the counts don't look buggy.
   const hostsCapped = hosts.length < totalHostCount;
 
-  const rawStart = scan.start_time ? new Date(scan.start_time) : new Date(scan.created_at);
-  const validStart = Number.isNaN(rawStart.getTime()) ? new Date(scan.created_at) : rawStart;
-  const rawEnd = scan.end_time ? new Date(scan.end_time) : validStart;
-  const validEnd = Number.isNaN(rawEnd.getTime()) || rawEnd < validStart ? validStart : rawEnd;
-  const scanDurationMs = Math.max(validEnd.getTime() - validStart.getTime(), 0);
+  // v5.205.0 — same wording as the /scans list: when the scan ran per its own
+  // output (or that the file doesn't say), where that time came from, and the
+  // upload time separately. The old card fell back to the upload time as
+  // "Start" and read a naive UTC value as the viewer's local time.
+  const run = describeScanRun(scan);
+  const upload = describeUpload(scan);
 
   return (
     <div className="p-md md:p-lg">
@@ -223,10 +208,22 @@ const ScanDetail: React.FC = () => {
         <StatCard label="Total Ports" value={totalPortCount} />
         <Card>
           <CardContent className="p-md">
-            <p className="text-caption text-muted-foreground">Scan Window</p>
-            <p className="text-metadata text-foreground">Start: {fmtDateTime(validStart)}</p>
-            <p className="text-caption text-muted-foreground">End: {fmtDateTime(validEnd)}</p>
-            <p className="text-caption text-muted-foreground">Duration: {fmtDuration(scanDurationMs)}</p>
+            <p className="text-caption text-muted-foreground">Scan window</p>
+            <p className="text-metadata text-foreground">Ran: {run.startLabel ?? 'Not recorded in the file'}</p>
+            {run.endLabel && <p className="text-caption text-muted-foreground">Ended: {run.endLabel}</p>}
+            {run.durationLabel && (
+              <p className="text-caption text-muted-foreground">Duration: {run.durationLabel}</p>
+            )}
+            <p className="text-caption text-muted-foreground" title={upload.explanation}>
+              Uploaded: {upload.label}
+            </p>
+            <ScanTimeSourceNote
+              className="mt-xxs"
+              label={run.sourceLabel}
+              explanation={run.explanation}
+              utc={run.utcLabel}
+              caution={run.kind === 'tool_clock'}
+            />
           </CardContent>
         </Card>
         {/* Vulnerability severity rollup — only for scans that recorded any. */}

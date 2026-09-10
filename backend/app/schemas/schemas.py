@@ -1,7 +1,7 @@
 import re
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 
 _SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -502,11 +502,29 @@ class ScanInfo(ScanInfoBase):
     
     model_config = ConfigDict(from_attributes=True)
 
-class ScanBase(BaseModel):
+class _ScanRunWindow(BaseModel):
+    """Tags ``start_time``/``end_time`` per ``time_source`` so the JSON says
+    what the value is: absolute times go out with a UTC offset (the browser
+    converts them to the viewer's zone), a scanner wall clock goes out naive
+    (shown as written).  One rule — ``app.services.scan_time``."""
+
+    @model_validator(mode="after")
+    def _tag_run_window(self):
+        from app.services.scan_time import scan_time_for_api
+
+        source = getattr(self, "time_source", None)
+        self.start_time = scan_time_for_api(self.start_time, source)
+        self.end_time = scan_time_for_api(self.end_time, source)
+        return self
+
+
+class ScanBase(_ScanRunWindow):
     filename: str
     scan_type: Optional[str] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    # tool_run | tool_records | tool_clock | None — see models.SCAN_TIME_SOURCES.
+    time_source: Optional[str] = None
     command_line: Optional[str] = None
     version: Optional[str] = None
     xml_output_version: Optional[str] = None
@@ -531,24 +549,72 @@ class ScanPortBreakdown(BaseModel):
     unique_ports: int = 0
     open_tcp_ports: int = 0
     open_udp_ports: int = 0
+    # v2.333.0 — open ports this scan INTRODUCED (port_scan_history.port_created)
+    # and open ports it named a service for (port_scan_history.service_name).
+    new_open_ports: int = 0
+    open_with_service: int = 0
 
 
 class ScanVulnerabilitySummary(BaseModel):
+    # Findings FIRST recorded by this scan (Vulnerability.scan_id = first-seen).
     total: int = 0
     critical: int = 0
     high: int = 0
     medium: int = 0
     low: int = 0
     info: int = 0
+    # v2.333.0
+    hosts_affected: int = 0
+    hosts_critical_high: int = 0
+    exploitable: int = 0
 
 
-class ScanSummary(BaseModel):
+class ScanWebSummary(BaseModel):
+    """Web interfaces this scan wrote (web_interfaces rows are per-scan)."""
+    interfaces: int = 0
+    # URLs no earlier scan in the project had recorded.
+    new_urls: int = 0
+    hosts: int = 0
+    https: int = 0
+    status_2xx: int = 0
+    status_3xx: int = 0
+    status_4xx: int = 0
+    status_5xx: int = 0
+    # Certificate not_after before the scan was uploaded.
+    cert_expired: int = 0
+    cert_self_signed: int = 0
+    weak_tls: int = 0
+    screenshots: int = 0
+
+
+class ScanDnsSummary(BaseModel):
+    """Name observations this scan wrote (dns_records rows are per-scan)."""
+    records: int = 0
+    names: int = 0
+    # Names no earlier scan had observed.
+    new_names: int = 0
+    # record_type -> count: real RR types plus the observation kinds
+    # (DISCOVERED = named but unresolved, SCANNER, HTTP, CERT, IMPORT).
+    by_type: Dict[str, int] = Field(default_factory=dict)
+
+
+class ScanAuthSummary(BaseModel):
+    """Authentication/enumeration results (netexec_results)."""
+    hosts: int = 0
+    protocols: List[str] = Field(default_factory=list)
+    # Distinct usernames that authenticated successfully.
+    valid_accounts: int = 0
+
+
+class ScanSummary(_ScanRunWindow):
     id: int
     filename: str
     scan_type: Optional[str] = None
     tool_name: Optional[str] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    # tool_run | tool_records | tool_clock | None — see models.SCAN_TIME_SOURCES.
+    time_source: Optional[str] = None
     created_at: datetime
     total_hosts: int
     up_hosts: int
@@ -566,6 +632,12 @@ class ScanSummary(BaseModel):
     uploaded_by: Optional[str] = None
     port_breakdown: Optional[ScanPortBreakdown] = None
     vulnerability_summary: Optional[ScanVulnerabilitySummary] = None
+    # v2.333.0 — hosts this scan fingerprinted an OS for, and per-kind
+    # contribution blocks (present only when the scan wrote such rows).
+    os_fingerprinted: int = 0
+    web: Optional[ScanWebSummary] = None
+    dns: Optional[ScanDnsSummary] = None
+    auth: Optional[ScanAuthSummary] = None
 
     model_config = ConfigDict(from_attributes=True)
 
