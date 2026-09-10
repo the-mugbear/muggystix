@@ -202,7 +202,7 @@ export function contributionRows(scan: ContributionScan): ContributionRow[] {
       key: 'auth',
       label: 'Auth',
       parts,
-      hint: 'Hosts this scan enumerated, over which protocols, and how many distinct accounts authenticated successfully.',
+      hint: 'Hosts this scan enumerated, over which protocols, and how many distinct accounts authenticated successfully. An account is DOMAIN\\user, counted once however many hosts accepted it; an account with no domain counts once per host.',
     };
   }
 

@@ -43,7 +43,7 @@ import ipaddress
 import logging
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -71,21 +71,14 @@ def _parse_timestamp(raw: Any) -> Optional[datetime]:
     """dnsx emits ``timestamp`` as RFC 3339 (``2026-09-08T10:11:12.123Z``).
     Returns an aware datetime or None — a bad stamp is not a bad record.
 
-    v2.333.0 — goes through parser_utils.parse_rfc3339 first: Go writes
-    nanosecond fractions, which fromisoformat rejected, so real dnsx output
-    fell back to the ingest time."""
-    aware = parse_rfc3339(raw)
-    if aware is not None:
-        return aware
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        dt = datetime.fromisoformat(raw.strip())
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    v2.333.1 — parser_utils.parse_rfc3339 is the only rule.  This used to
+    fall back to reading a value WITHOUT an offset as UTC; since 2.333.0 that
+    invented instant also became the scan window, labelled tool_records and
+    shown as absolute.  dnsx always writes an offset, so a zone-less value is
+    foreign or hand-edited: it is dropped, the observation takes the ingest
+    time (record_observation's default, as for every timeless parser), and
+    it contributes nothing to the scan window."""
+    return parse_rfc3339(raw)
 
 
 # Record-type fields dnsx surfaces and the canonical record_type

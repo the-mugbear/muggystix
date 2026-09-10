@@ -125,7 +125,12 @@ class NiktoParser:
             offset = timedelta(hours=int(match.group(4)), minutes=int(match.group(5) or 0))
             if match.group(3) == "-":
                 offset = -offset
-            self._clock.observe(wall.replace(tzinfo=timezone(offset)))
+            try:
+                zone = timezone(offset)
+            except ValueError:
+                # "(GMT+99)": not a real offset.  Drop the time, keep the file.
+                return
+            self._clock.observe(wall.replace(tzinfo=zone))
         else:
             self._clock.observe_clock(wall)
 

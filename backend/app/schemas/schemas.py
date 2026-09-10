@@ -602,7 +602,8 @@ class ScanAuthSummary(BaseModel):
     """Authentication/enumeration results (netexec_results)."""
     hosts: int = 0
     protocols: List[str] = Field(default_factory=list)
-    # Distinct usernames that authenticated successfully.
+    # Distinct accounts that authenticated successfully: DOMAIN\user
+    # (case-insensitive) counted once across hosts; no domain = per host.
     valid_accounts: int = 0
 
 

@@ -472,3 +472,164 @@ class TestScansListContribution:
 
         assert order("desc") == [june.id, january.id, none.id]
         assert order("asc") == [january.id, june.id, none.id]
+
+
+# ---------------------------------------------------------------------------
+# v2.333.1 — review follow-up
+#
+# Invariants: an unusable OPTIONAL time never costs the observations it came
+# with; a zone-less time is never presented as an absolute one; an account
+# count counts accounts.
+# ---------------------------------------------------------------------------
+
+
+class TestUnusableTimesNeverAbortAnImport:
+    @pytest.mark.parametrize("raw", ["NaN", "nan", "inf", "-inf", "1e400", float("nan"), float("inf")])
+    def test_nonfinite_epochs_are_unknown(self, raw):
+        assert epoch_to_utc(raw) is None
+
+    @pytest.mark.parametrize("raw", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+    def test_instants_that_cannot_be_expressed_in_utc_are_rejected(self, raw):
+        assert parse_rfc3339(raw) is None
+
+    def test_the_clock_never_raises(self):
+        clock = ScanClock()
+        clock.observe(datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=1))))  # overflows as UTC
+        clock.observe_clock("not a datetime")  # type: ignore[arg-type]
+        scan = models.Scan(filename="x")
+        clock.apply(scan)
+        assert scan.start_time is None and scan.time_source is None
+
+    @pg_only
+    def test_masscan_nan_timestamp_keeps_the_record(self, db_session, test_project, tmp_path):
+        from app.parsers.masscan_parser import MasscanParser
+
+        pid = test_project.id
+        records = [
+            {"ip": "10.9.9.1", "timestamp": "NaN", "ports": [{"port": 80, "proto": "tcp", "status": "open"}]},
+            {"ip": "10.9.9.2", "timestamp": "1711936800", "ports": [{"port": 22, "proto": "tcp", "status": "open"}]},
+        ]
+        scan = MasscanParser(db_session).parse_file(
+            _write(tmp_path, "nan.json", json.dumps(records)), "nan.json", project_id=pid
+        )
+        observed = {
+            h.host.ip_address
+            for h in db_session.query(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id)
+        }
+        assert observed == {"10.9.9.1", "10.9.9.2"}
+        assert db_session.query(models.PortScanHistory).filter(models.PortScanHistory.scan_id == scan.id).count() == 2
+        # The good record still dates the scan; the NaN one contributes nothing.
+        assert (scan.start_time, scan.end_time) == (_epoch(1711936800), None)
+
+        only_nan = MasscanParser(db_session).parse_file(
+            _write(tmp_path, "nan2.json", json.dumps(records[:1])), "nan2.json", project_id=pid
+        )
+        assert only_nan.start_time is None and only_nan.time_source is None
+
+    def test_nmap_nan_epochs_keep_the_scan(self, db_session, test_project, tmp_path):
+        from app.parsers.nmap_parser import NmapXMLParser
+
+        xml = (
+            '<?xml version="1.0"?><nmaprun scanner="nmap" start="NaN" version="7.94">'
+            '<host><status state="up"/><address addr="10.9.9.4" addrtype="ipv4"/>'
+            '<ports><port protocol="tcp" portid="22"><state state="open"/></port></ports></host>'
+            '<runstats><finished time="NaN"/></runstats></nmaprun>'
+        )
+        scan = NmapXMLParser(db_session).parse_file(
+            _write(tmp_path, "nan.xml", xml), "nan.xml", project_id=test_project.id
+        )
+        assert (scan.start_time, scan.end_time, scan.time_source) == (None, None, None)
+        assert db_session.query(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id).count() == 1
+
+    def test_httpx_out_of_range_timestamp_keeps_the_interface(self, db_session, test_project, tmp_path):
+        from app.parsers.httpx_parser import HttpxParser
+
+        record = {"timestamp": "0001-01-01T00:00:00+01:00", "url": "https://10.9.9.5/", "host": "10.9.9.5",
+                  "port": "443", "scheme": "https", "status_code": 200}
+        scan = HttpxParser(db_session).parse_file(
+            _write(tmp_path, "far.jsonl", json.dumps(record)), "far.jsonl", project_id=test_project.id
+        )
+        assert db_session.query(models.WebInterface).filter(models.WebInterface.scan_id == scan.id).count() == 1
+        assert scan.start_time is None
+
+    def test_nikto_impossible_offset_keeps_the_findings(self, db_session, test_project, tmp_path):
+        from app.parsers.nikto_parser import NiktoParser
+
+        text = TestParserTimeSources._NIKTO.format(zone=" (GMT+99)")
+        scan = NiktoParser(db_session).parse_file(
+            _write(tmp_path, "k.txt", text), "k.txt", project_id=test_project.id
+        )
+        assert db_session.query(Vulnerability).filter(Vulnerability.scan_id == scan.id).count() == 1
+        assert scan.start_time is None
+
+
+class TestDnsxTimestamps:
+    @staticmethod
+    def _parse(db_session, test_project, tmp_path, rows):
+        from app.parsers.dnsx_parser import DnsxParser
+
+        return DnsxParser(db_session).parse_file(
+            _write(tmp_path, "d.jsonl", "\n".join(json.dumps(r) for r in rows)),
+            "d.jsonl", project_id=test_project.id,
+        )
+
+    def test_a_zoneless_timestamp_is_not_presented_as_an_absolute_window(self, db_session, test_project, tmp_path):
+        scan = self._parse(db_session, test_project, tmp_path, [
+            {"host": "a.zoneless.example", "a": ["10.9.10.1"], "status_code": "NOERROR",
+             "timestamp": "2026-09-01T10:00:00"},
+        ])
+        assert scan.start_time is None and scan.time_source is None
+        record = (
+            db_session.query(models.DNSRecord)
+            .filter(models.DNSRecord.scan_id == scan.id, models.DNSRecord.record_type == "A")
+            .one()
+        )
+        # Not the invented instant: the observation takes the ingest time.
+        assert record.observed_at != datetime(2026, 9, 1, 10, tzinfo=timezone.utc)
+
+    def test_offset_timestamps_set_the_window_and_zoneless_ones_are_left_out(self, db_session, test_project, tmp_path):
+        scan = self._parse(db_session, test_project, tmp_path, [
+            {"host": "b.example", "a": ["10.9.10.2"], "status_code": "NOERROR",
+             "timestamp": "2026-09-01T06:00:00-04:00"},
+            {"host": "c.example", "a": ["10.9.10.3"], "status_code": "NOERROR",
+             "timestamp": "2026-09-01T10:30:00.123456789Z"},
+            {"host": "d.example", "a": ["10.9.10.4"], "status_code": "NOERROR",
+             "timestamp": "2026-09-01T23:00:00"},
+        ])
+        assert scan.time_source == models.SCAN_TIME_TOOL_RECORDS
+        assert (scan.start_time, scan.end_time) == (
+            datetime(2026, 9, 1, 10), datetime(2026, 9, 1, 10, 30, 0, 123456)
+        )
+
+
+class TestAuthAccountIdentity:
+    def test_accounts_are_domain_qualified_and_case_insensitive(self, client, db_session, test_project):
+        pid = test_project.id
+        scan = models.Scan(project_id=pid, filename="nxc.txt", tool_name="netexec", scan_type="netexec")
+        db_session.add(scan)
+        db_session.flush()
+        h1 = models.Host(ip_address="10.9.11.1", project_id=pid, state="up")
+        h2 = models.Host(ip_address="10.9.11.2", project_id=pid, state="up")
+        db_session.add_all([h1, h2])
+        db_session.flush()
+        results = [
+            # (host, protocol, port, domain, username, success)
+            (h1, "smb", 445, "CORP", "svc", True),     # CORP\svc
+            (h2, "smb", 445, "corp", "SVC", True),     # the same account on another host
+            (h1, "ldap", 389, "LAB", "svc", True),     # a different account, same username
+            (h1, "winrm", 5985, None, "admin", True),  # no domain: local to h1
+            (h2, "winrm", 5985, None, "admin", True),  # no domain: local to h2
+            (h2, "rdp", 3389, "CORP", "guest", False),  # failed: not an account
+            (h1, "mssql", 1433, "CORP", "", True),     # null session: not an account
+        ]
+        for host, protocol, port, domain, username, success in results:
+            db_session.add(NetexecResult(
+                scan_id=scan.id, host_id=host.id, protocol=protocol, port=port,
+                domain_name=domain, username=username, auth_success=success,
+            ))
+        db_session.commit()
+
+        row = {r["id"]: r for r in client.get(f"/api/v1/projects/{pid}/scans/").json()}[scan.id]
+        # CORP\svc, LAB\svc, admin@h1, admin@h2.
+        assert row["auth"]["valid_accounts"] == 4
+        assert row["auth"]["hosts"] == 2

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, NamedTuple, Optional, Tuple
@@ -86,11 +87,14 @@ def epoch_to_utc(raw: Any) -> Optional[datetime]:
         seconds = float(raw)
     except (TypeError, ValueError):
         return None
-    if seconds <= 0:
+    # float() accepts "NaN" / "inf"; timedelta then raises ValueError on NaN,
+    # which escaped this function and rolled back a whole import over one
+    # optional field (v2.333.1).
+    if not math.isfinite(seconds) or seconds <= 0:
         return None
     try:
         return datetime(1970, 1, 1) + timedelta(seconds=seconds)
-    except OverflowError:
+    except (OverflowError, ValueError):
         return None
 
 
@@ -109,9 +113,12 @@ def parse_rfc3339(raw: Any) -> Optional[datetime]:
     s = _RFC3339_FRACTION.sub(r"\1", s)
     try:
         dt = datetime.fromisoformat(s)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
+        if dt.tzinfo is None:
+            return None
+        # Reject instants that parse but can't be expressed in UTC
+        # (0001-01-01T00:00:00+01:00) — converting them later overflows.
+        dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
     return dt
 
@@ -124,6 +131,11 @@ class ScanClock:
     absolute time always beats a wall clock.  ``apply`` writes the window and
     its source onto the Scan, and never overwrites a window the parser set
     from an explicit run start/finish.
+
+    Contract (v2.333.1): observing NEVER raises.  A scan time is optional
+    metadata; parsers call ``observe`` outside their per-record error
+    handling, so a value that can't be used is dropped here rather than
+    rolling back the observations it arrived with.
     """
 
     def __init__(self, source: str = models.SCAN_TIME_TOOL_RECORDS):
@@ -134,7 +146,10 @@ class ScanClock:
         self._clock_last: Optional[datetime] = None
 
     def observe(self, value: Optional[datetime]) -> None:
-        value = to_utc_naive(value)
+        try:
+            value = to_utc_naive(value)
+        except (OverflowError, ValueError, TypeError, AttributeError):
+            return
         if value is None:
             return
         if self.first is None or value < self.first:
@@ -143,7 +158,7 @@ class ScanClock:
             self.last = value
 
     def observe_clock(self, value: Optional[datetime]) -> None:
-        if value is None:
+        if not isinstance(value, datetime):
             return
         value = value.replace(tzinfo=None)
         if self._clock_first is None or value < self._clock_first:
