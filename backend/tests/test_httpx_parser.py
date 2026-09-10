@@ -211,6 +211,11 @@ class TestHttpxIngest:
         assert rows["10.99.1.20"].host_created is True, "first-ever observation must count as new"
         assert rows["10.99.1.10"].host_created is False, "a known host is not introduced twice"
         assert rows["10.99.1.20"].state_at_scan == "up", "up_hosts reads state_at_scan"
+        # v2.332.1 — the known host was DOWN in the inventory and answered an
+        # HTTP probe: the observation is "up", not a copy of the stale row.
+        assert rows["10.99.1.10"].state_at_scan == "up", (
+            "an HTTP response is an up observation, whatever the inventory said"
+        )
 
     def test_reingest_updates_in_place(
         self, db_session, test_project, httpx_fixture_jsonl
@@ -625,7 +630,7 @@ class TestRecordHostsInScanHelper:
         self, db_session, test_project
     ):
         from app.db import models
-        from app.parsers.parser_utils import record_hosts_in_scan
+        from app.parsers.parser_utils import ScanHostObservations, record_hosts_in_scan
 
         host1 = models.Host(ip_address="10.0.0.1", state="up", project_id=test_project.id)
         host2 = models.Host(ip_address="10.0.0.2", state="up", project_id=test_project.id)
@@ -636,7 +641,10 @@ class TestRecordHostsInScanHelper:
         db_session.add(scan)
         db_session.flush()
 
-        record_hosts_in_scan(db_session, scan.id, {host1.id, host2.id})
+        observed = ScanHostObservations()
+        observed.note(host1, created=False, state="up")
+        observed.note(host2, created=False, state="up")
+        record_hosts_in_scan(db_session, scan.id, observed)
         db_session.commit()
 
         rows = db_session.query(models.HostScanHistory).filter(
@@ -649,7 +657,7 @@ class TestRecordHostsInScanHelper:
         self, db_session, test_project
     ):
         from app.db import models
-        from app.parsers.parser_utils import record_hosts_in_scan
+        from app.parsers.parser_utils import ScanHostObservations, record_hosts_in_scan
 
         host = models.Host(ip_address="10.0.0.3", state="up", project_id=test_project.id)
         db_session.add(host)
@@ -659,9 +667,11 @@ class TestRecordHostsInScanHelper:
         db_session.add(scan)
         db_session.flush()
 
-        record_hosts_in_scan(db_session, scan.id, {host.id})
+        observed = ScanHostObservations()
+        observed.note(host, created=False, state="up")
+        record_hosts_in_scan(db_session, scan.id, observed)
         db_session.commit()
-        record_hosts_in_scan(db_session, scan.id, {host.id})
+        record_hosts_in_scan(db_session, scan.id, observed)
         db_session.commit()
 
         rows = db_session.query(models.HostScanHistory).filter(

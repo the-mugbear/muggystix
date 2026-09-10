@@ -42,6 +42,7 @@ from app.services.dns_name_service import ObservationCache, bind_url_name
 from app.db import models
 from app.parsers.parser_utils import (
     correlate_scan,
+    ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
     resolve_port_cached,
@@ -124,6 +125,7 @@ class EyewitnessParser:
         # for).  Streaming-safe: filled lazily, including the Host rows this
         # parse creates.  Reset per upload (one parse_file == one scan).
         self._host_cache: dict = {}   # ip -> Host (or None when unresolvable)
+        self._observed = ScanHostObservations()
         self._port_cache: dict = {}   # (host_id, port_number) -> Port or None
         start = time.time()
         logger.info("Starting EyeWitness parse of %s", filename)
@@ -274,7 +276,6 @@ class EyewitnessParser:
         self.db.add(scan)
         self.db.flush()
 
-        host_ids_seen: set = set()
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             reader = csv.DictReader(f)
             written = 0
@@ -286,15 +287,13 @@ class EyewitnessParser:
                         skipped += 1
                     else:
                         written += 1
-                        if host_id is not True:
-                            host_ids_seen.add(host_id)
                 except Exception as exc:
                     logger.warning("EyeWitness CSV row skipped: %s", exc)
                     skipped += 1
 
         # v2.12.2: write HostScanHistory rows so /agent/recon/summary
         # counts EyeWitness ingests against the per-session host total.
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
+        record_hosts_in_scan(self.db, scan.id, self._observed)
         self.db.commit()
         self._finalize(scan)
         logger.info("EyeWitness CSV %s: %d rows written, %d skipped", filename, written, skipped)
@@ -333,7 +332,6 @@ class EyewitnessParser:
         )
         written = 0
         skipped = 0
-        host_ids_seen: set = set()
         for record in records:
             try:
                 host_id = self._write_row(record, scan, screenshot_dir_rel=screenshot_dir_rel)
@@ -341,14 +339,12 @@ class EyewitnessParser:
                     skipped += 1
                 else:
                     written += 1
-                    if host_id is not True:  # _write_row returns True for "wrote, no host_id"
-                        host_ids_seen.add(host_id)
             except Exception as exc:
                 logger.warning("EyeWitness record skipped: %s", exc)
                 skipped += 1
         # v2.12.2: same host_scan_history fix as httpx_parser.  Web-only
         # ingests must contribute to recon-session host counts.
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
+        record_hosts_in_scan(self.db, scan.id, self._observed)
         return written, skipped
 
     def _write_row(
@@ -383,8 +379,10 @@ class EyewitnessParser:
         # Resolve host (create on demand) and port, both cached per-file via the
         # shared helper (eyewitness creates hosts without a hostname).
         host_row = None
+        host_created = False
         if ip:
-            host_row = resolve_host_cached(self.db, self._project_id, ip, self._host_cache)
+            resolved = resolve_host_cached(self.db, self._project_id, ip, self._host_cache)
+            host_row, host_created = resolved.host, resolved.created
         port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
 
         # Screenshot handling.  If we extracted from a zip, the record's
@@ -415,6 +413,14 @@ class EyewitnessParser:
             record.get("response_code") or record.get("Response Code") or record.get("status_code")
         )
         page_text = record.get("page_text") or record.get("Page Text")
+        # What THIS record proves about the host: a response code means it
+        # answered (up); a capture with no code is an attempt whose outcome is
+        # unknown, and stays unknown rather than borrowing the inventory state.
+        self._observed.note(
+            host_row,
+            created=host_created,
+            state="up" if response_code else None,
+        )
 
         existing = (
             self.db.query(models.WebInterface)

@@ -538,7 +538,7 @@ const ScanDiff: React.FC = () => {
                 <Badge variant="info">{diff.counts.new_hosts.toLocaleString()} new hosts</Badge>
                 <Badge variant="warning">{diff.counts.dropped_hosts.toLocaleString()} dropped hosts</Badge>
                 <Badge variant="info">{diff.counts.newly_open_ports.toLocaleString()} newly-open ports</Badge>
-                <Badge variant="warning">{diff.counts.closed_ports.toLocaleString()} no longer open</Badge>
+                <Badge variant="warning">{diff.counts.closed_ports.toLocaleString()} not open in B</Badge>
                 {/* v5.204.0 — never a warning colour: B did not test these,
                     so nothing is known about them. Absence is not remediation. */}
                 <Badge variant="outline">{diff.counts.not_observed_ports.toLocaleString()} not tested in B</Badge>
@@ -577,9 +577,13 @@ const ScanDiff: React.FC = () => {
               rows={diff.newly_open_ports}
               emptyMessage="No ports newly opened in B."
             />
+            {/* v5.204.1 — "no longer open" over-claimed: B's observation can
+                be closed, filtered, or an inconclusive state like
+                open|filtered. The B column on each row carries the actual
+                state; the title only says it was not "open". */}
             <PortListCard
-              title="No longer open"
-              subtitle="open in A; B tested the port and found it closed or filtered"
+              title="Not open in B"
+              subtitle="open in A; B observed a different state — closed, filtered, or inconclusive (see the B column)"
               count={diff.counts.closed_ports}
               cap={diff.row_cap}
               rows={diff.closed_ports}

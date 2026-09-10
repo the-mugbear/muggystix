@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -173,13 +173,67 @@ def correlate_scan(db: Session, scan_id: int) -> None:
     SubnetCorrelationService(db).batch_correlate_scan_hosts_to_subnets(scan_id)
 
 
+class HostObservation(NamedTuple):
+    """What one parse observed about one host — the inputs
+    ``HostScanHistory`` needs, stated by the parser rather than read back from
+    the mutable inventory row."""
+    host_id: int
+    created: bool
+    state: Optional[str]
+    hostname: Optional[str]
+
+
+class ScanHostObservations:
+    """Accumulates per-host observations over one file parse for
+    ``record_hosts_in_scan`` (v2.332.1).
+
+    Explicit on purpose.  The first cut of this (v2.332.0) had the writer read
+    ``Host.state`` off the cached ORM row and a hidden created-marker attribute
+    off the same object — so a known-DOWN host that answered an HTTP probe was
+    recorded as observed *down*, and creation attribution depended on an
+    instance attribute surviving until another helper read it.  Here the parser
+    says what it saw; the inventory row is never consulted.
+
+    ``note`` never downgrades: a host created by this parse stays ``created``
+    on later notes, and a definite state is not replaced by ``None``.
+    """
+
+    def __init__(self) -> None:
+        self._rows: Dict[int, HostObservation] = {}
+
+    def note(
+        self,
+        host: Optional[models.Host],
+        *,
+        created: bool,
+        state: Optional[str],
+        hostname: Optional[str] = None,
+    ) -> None:
+        if host is None or host.id is None:
+            return
+        prev = self._rows.get(host.id)
+        self._rows[host.id] = HostObservation(
+            host_id=host.id,
+            created=created or (prev.created if prev else False),
+            state=state if state is not None else (prev.state if prev else None),
+            hostname=hostname or (prev.hostname if prev else None) or host.hostname,
+        )
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows.values())
+
+    @property
+    def host_ids(self) -> set[int]:
+        return set(self._rows)
+
+
 def record_hosts_in_scan(
-    db: Session,
-    scan_id: int,
-    host_ids: set[int],
-    host_cache: Optional[Dict[str, Any]] = None,
+    db: Session, scan_id: int, observations: ScanHostObservations
 ) -> None:
-    """Record HostScanHistory rows for the given (scan, host) pairs.
+    """Record HostScanHistory rows for what this scan observed.
 
     v2.12.2 — extracted from httpx parser after recon session #3 surfaced
     that web-fingerprint parsers (httpx, eyewitness, future nikto) skip
@@ -188,24 +242,19 @@ def record_hosts_in_scan(
     skipped silently.
 
     v2.332.0 — writes the same snapshot fields the dedup path writes
-    (``host_created``, ``state_at_scan``, ``hostname_at_scan``) when the
-    parser hands over its ``host_cache`` (the ``ip -> Host`` memo from
-    ``resolve_host_cached``).  Before this the web parsers wrote bare
-    membership rows, so every httpx / whatweb / eyewitness / testssl scan
-    reported 0 new hosts and 0 up hosts even on a first-ever import, and the
-    notification path filed every host it touched as "changed".
+    (``host_created``, ``state_at_scan``, ``hostname_at_scan``).  Before this
+    the web parsers wrote bare membership rows, so every httpx / whatweb /
+    eyewitness / testssl scan reported 0 new hosts and 0 up hosts even on a
+    first-ever import, and the notification path filed every host as
+    "changed".  v2.332.1 — inputs are the parser's explicit observations
+    (see ``ScanHostObservations``), not the inventory row.
 
-    Call after the parser has flushed its primary rows so the host_ids
-    are stable.  Pass an empty set for a no-op (file with no resolved
-    hosts).
+    Call after the parser has flushed its primary rows so the host ids are
+    stable.  An empty accumulator is a no-op (file with no resolved hosts).
     """
-    if not host_ids:
+    if not observations:
         return
-    hosts_by_id: Dict[int, models.Host] = {}
-    if host_cache:
-        hosts_by_id = {
-            h.id: h for h in host_cache.values() if h is not None and h.id in host_ids
-        }
+    host_ids = observations.host_ids
     existing_rows = {
         row.host_id: row
         for row in db.query(models.HostScanHistory).filter(
@@ -213,30 +262,22 @@ def record_hosts_in_scan(
             models.HostScanHistory.host_id.in_(host_ids),
         )
     }
-    for host_id in host_ids:
-        host = hosts_by_id.get(host_id)
-        created = bool(getattr(host, CREATED_MARKER, False)) if host is not None else False
-        existing = existing_rows.get(host_id)
+    for obs in observations:
+        existing = existing_rows.get(obs.host_id)
         if existing is not None:
             # Never downgrade created→updated (same rule as the dedup path).
-            if created:
+            if obs.created:
                 existing.host_created = True
             continue
         db.add(
             models.HostScanHistory(
-                host_id=host_id,
+                host_id=obs.host_id,
                 scan_id=scan_id,
-                host_created=created,
-                state_at_scan=(host.state if host is not None else None),
-                hostname_at_scan=(host.hostname if host is not None else None),
+                host_created=obs.created,
+                state_at_scan=obs.state,
+                hostname_at_scan=obs.hostname,
             )
         )
-
-
-# Non-mapped marker set on a ``Host`` instance by ``resolve_host_cached`` when
-# THIS parse created the row, so ``record_hosts_in_scan`` can report it as new
-# without a second query.  Instance-local: it never reaches the database.
-CREATED_MARKER = "_created_by_this_parse"
 
 
 def map_numeric_severity(score: Optional[float]) -> VulnerabilitySeverity:
@@ -378,6 +419,14 @@ def upsert_vulnerability(
 # its own copy of this; these are the single shared version.
 
 
+class ResolvedHost(NamedTuple):
+    """``resolve_host_cached``'s answer: the row, and whether THIS call created
+    it.  ``created`` is the ground truth for "what this scan introduced" and is
+    reported once, on the creating call; cache hits answer ``False``."""
+    host: Optional[models.Host]
+    created: bool
+
+
 def resolve_host_cached(
     db: Session,
     project_id: Optional[int],
@@ -386,7 +435,7 @@ def resolve_host_cached(
     *,
     hostname: Optional[str] = None,
     create: bool = True,
-) -> Optional[models.Host]:
+) -> ResolvedHost:
     """Look up (or create) a ``Host`` by ``(ip, project)``, memoized in
     ``host_cache`` (``ip -> Host``).  On a cache hit, still enrich a missing
     ``hostname`` if one was newly learned — matches the per-record behaviour the
@@ -401,13 +450,14 @@ def resolve_host_cached(
         host = host_cache[ip]
         if host is not None and hostname:
             apply_hostname_candidate(host, hostname, "scanner")
-        return host
+        return ResolvedHost(host, False)
 
     host = (
         db.query(models.Host)
         .filter(models.Host.ip_address == ip, models.Host.project_id == project_id)
         .first()
     )
+    created = False
     if host is None and create:
         host = models.Host(
             ip_address=ip, hostname=hostname, state="up", project_id=project_id,
@@ -415,15 +465,12 @@ def resolve_host_cached(
         )
         db.add(host)
         db.flush()
-        # The create/update decision is the ground truth for "what this scan
-        # introduced"; record it on the instance so record_hosts_in_scan can
-        # write host_created without re-deriving it (v2.332.0).
-        setattr(host, CREATED_MARKER, True)
+        created = True
     elif host is not None and hostname:
         apply_hostname_candidate(host, hostname, "scanner")
 
     host_cache[ip] = host
-    return host
+    return ResolvedHost(host, created)
 
 
 def resolve_port_cached(

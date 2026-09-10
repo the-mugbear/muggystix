@@ -1389,6 +1389,13 @@ def get_scan_host_snapshots(
 
     host_ids = [host.id for _hist, host in rows]
     ports_by_host: Dict[int, List[ScanPortSnapshot]] = {}
+    # Per-host totals counted for EVERY observed row; snapshot objects (and
+    # the service_info JSON decode) built only for the first _SNAPSHOT_PORT_CAP
+    # per host (v2.332.1).  The cap used to be applied after constructing a
+    # snapshot for every row, so a page of broad-scan hosts materialised and
+    # parsed thousands of objects it then threw away.
+    observed_counts: Dict[int, int] = {}
+    open_counts: Dict[int, int] = {}
     if host_ids:
         # One query for the page's observed ports.  Joined to Port only for
         # its identity columns (number/protocol); membership, state AND the
@@ -1415,7 +1422,13 @@ def get_scan_host_snapshots(
             .all()
         )
         for host_id, number, protocol, state_at_scan, service_info in port_rows:
-            ports_by_host.setdefault(host_id, []).append(
+            observed_counts[host_id] = observed_counts.get(host_id, 0) + 1
+            if state_at_scan == "open":
+                open_counts[host_id] = open_counts.get(host_id, 0) + 1
+            shown = ports_by_host.setdefault(host_id, [])
+            if len(shown) >= _SNAPSHOT_PORT_CAP:
+                continue
+            shown.append(
                 ScanPortSnapshot(
                     port_number=number,
                     protocol=protocol,
@@ -1426,16 +1439,15 @@ def get_scan_host_snapshots(
 
     items = []
     for hist, host in rows:
-        observed = ports_by_host.get(host.id, [])
         items.append(ScanHostSnapshot(
             host_id=host.id,
             ip_address=host.ip_address,
             hostname_at_scan=hist.hostname_at_scan,
             state_at_scan=hist.state_at_scan,
             host_created=bool(hist.host_created),
-            observed_port_count=len(observed),
-            open_port_count=sum(1 for p in observed if p.state_at_scan == "open"),
-            ports=observed[:_SNAPSHOT_PORT_CAP],
+            observed_port_count=observed_counts.get(host.id, 0),
+            open_port_count=open_counts.get(host.id, 0),
+            ports=ports_by_host.get(host.id, []),
         ))
     return Paginated[ScanHostSnapshot].build(items, total, skip, limit)
 

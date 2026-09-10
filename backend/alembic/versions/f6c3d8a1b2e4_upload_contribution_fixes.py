@@ -82,6 +82,25 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Guard FIRST, before any mutation.  Rows whose first scan was deleted
+    # since the upgrade have no scan to return to.  The upgrade's whole point
+    # was that those findings SURVIVE their scan; a downgrade that quietly
+    # deleted them would turn a schema rollback into evidence loss.  Refuse,
+    # and say what to do instead.
+    orphaned = op.get_bind().execute(
+        sa.text("SELECT COUNT(*) FROM vulnerabilities WHERE scan_id IS NULL")
+    ).scalar()
+    if orphaned:
+        raise RuntimeError(
+            f"Cannot downgrade f6c3d8a1b2e4: {orphaned} vulnerability row(s) have "
+            "scan_id IS NULL (their first scan was deleted after the upgrade). "
+            "The pre-upgrade schema requires a scan on every finding. Either "
+            "re-attribute them first (UPDATE vulnerabilities SET scan_id = "
+            "last_seen_scan_id WHERE scan_id IS NULL AND last_seen_scan_id IS "
+            "NOT NULL), export and delete the remainder deliberately, or keep "
+            "this revision. Nothing was changed."
+        )
+
     op.drop_column("ingestion_jobs", "partial")
 
     op.drop_index("ix_vulnerabilities_last_seen_scan_id", table_name="vulnerabilities")
@@ -92,9 +111,6 @@ def downgrade() -> None:
     op.drop_constraint(
         "vulnerabilities_scan_id_fkey", "vulnerabilities", type_="foreignkey"
     )
-    # Rows whose first scan was deleted since the upgrade have no scan to
-    # return to; drop them rather than fail the NOT NULL restore.
-    op.execute("DELETE FROM vulnerabilities WHERE scan_id IS NULL")
     op.create_foreign_key(
         "vulnerabilities_scan_id_fkey",
         "vulnerabilities",

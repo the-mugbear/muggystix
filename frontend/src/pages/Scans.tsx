@@ -1473,7 +1473,7 @@ export default function Scans() {
                     <TableHead className="w-[11%]" title="Already-known hosts this scan observed. Not a count of changed values — that is not measured yet.">
                       Existing hosts
                     </TableHead>
-                    <TableHead className="w-[14%]" title="Vulnerabilities FIRST recorded by this scan, by severity, and the open TCP/UDP port split for this scan">
+                    <TableHead className="w-[14%]" title="Vulnerabilities FIRST recorded by this scan, counted at their CURRENT severity (a later scan may have re-rated them), plus the open TCP/UDP port split for this scan">
                       Findings / ports
                     </TableHead>
                     <TableHead className="w-[10%]">Actions</TableHead>

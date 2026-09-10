@@ -294,3 +294,35 @@ def test_deleting_the_latest_scan_keeps_findings_it_did_not_introduce(
     )
     assert row.scan_id == scan_a.id
     assert row.last_seen_scan_id is None
+
+
+def test_first_scan_attribution_counts_current_severity(db_session, test_project):
+    """The contract behind the /scans severity rollup, stated explicitly
+    (v2.332.1): a finding is counted under the scan that FIRST recorded it, at
+    its CURRENT severity.  Freezing scan_id does not freeze severity — the
+    Vulnerability row is the current finding record, and a later scan that
+    re-rates it changes what the first scan's rollup shows.  An immutable
+    per-upload summary needs a per-scan observation table, not two pointers;
+    until then the UI says "current severity" and this test pins the shape."""
+    from app.parsers.parser_utils import upsert_vulnerability
+    from app.db.models_vulnerability import VulnerabilitySource, VulnerabilitySeverity
+
+    host, scan_a = _mk_host_and_scan(db_session, test_project.id, "10.9.0.5")
+    scan_b = models.Scan(project_id=test_project.id, filename="o2.xml", tool_name="OpenVAS", scan_type="openvas")
+    db_session.add(scan_b)
+    db_session.flush()
+
+    kwargs = dict(
+        host_id=host.id, port_id=None, plugin_id="1.3.6.1.4.1.25623.1.0.1",
+        title="Weak cipher", description=None, cve_id=None, cvss_score=None,
+        solution=None, references=None, source=VulnerabilitySource.OPENVAS,
+    )
+    first = upsert_vulnerability(db=db_session, scan_id=scan_a.id, severity=VulnerabilitySeverity.MEDIUM, **kwargs)
+    db_session.flush()
+    again = upsert_vulnerability(db=db_session, scan_id=scan_b.id, severity=VulnerabilitySeverity.CRITICAL, **kwargs)
+    db_session.flush()
+
+    assert again.id == first.id
+    assert again.scan_id == scan_a.id, "attribution stays with the first scan"
+    assert again.last_seen_scan_id == scan_b.id
+    assert again.severity == VulnerabilitySeverity.CRITICAL, "the row is the CURRENT finding"

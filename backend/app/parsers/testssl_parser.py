@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import (
     correlate_scan,
+    ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
     resolve_port_cached,
@@ -109,6 +110,7 @@ class TestsslParser:
         self.db = db
         self._project_id: Optional[int] = None
         self._host_cache: dict = {}
+        self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         self._name_cache = ObservationCache()
 
@@ -165,7 +167,6 @@ class TestsslParser:
         self.db.flush()
 
         written = 0
-        host_ids_seen: set = set()
         # v2.332.0 — a target whose savepoint rolled back was logged and then
         # reported as a clean import ("skipped": 0).  Count it.
         skipped_targets: list = []
@@ -178,11 +179,16 @@ class TestsslParser:
             # dnsx parser / persist_host_observation isolation.
             sp = self.db.begin_nested()
             try:
-                host_row = resolve_host_cached(self.db, self._project_id, ip,
+                resolved = resolve_host_cached(self.db, self._project_id, ip,
                                                self._host_cache, hostname=hostname)
+                host_row = resolved.host
                 if host_row is None:
                     sp.rollback()
                     continue
+                # A TLS assessment completed a handshake: the host is up now.
+                self._observed.note(
+                    host_row, created=resolved.created, state="up", hostname=hostname,
+                )
                 port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
                 # weak is True if any weak protocol offered; False if only strong
                 # protocols were observed; None when protocols weren't enumerated.
@@ -212,13 +218,12 @@ class TestsslParser:
                 self.db.flush()
                 sp.commit()
                 written += 1
-                host_ids_seen.add(host_row.id)
             except Exception as exc:
                 sp.rollback()
                 logger.warning("testssl: skipping target %s:%s due to %s", ip, port, exc)
                 skipped_targets.append(f"{ip}:{port} ({exc})")
 
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
+        record_hosts_in_scan(self.db, scan.id, self._observed)
         self.db.commit()
         try:
             correlate_scan(self.db, scan.id)

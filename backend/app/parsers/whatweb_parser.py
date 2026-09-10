@@ -50,6 +50,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import (
     correlate_scan,
+    ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
     resolve_port_cached,
@@ -104,6 +105,7 @@ class WhatwebParser:
         # Per-file host/port resolution caches — collapse the per-record Host
         # and Port lookups (many records share a host) to a dict hit.
         self._host_cache: dict = {}
+        self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         self._name_cache = ObservationCache()
 
@@ -130,13 +132,11 @@ class WhatwebParser:
 
         written = 0
         skipped = 0
-        host_ids_seen: set = set()
         for record in records:
             try:
                 host_id = self._upsert_record(record, scan)
                 if host_id:
                     written += 1
-                    host_ids_seen.add(host_id)
                 else:
                     skipped += 1
             except Exception as exc:  # noqa: BLE001 — one bad record mustn't sink the upload
@@ -146,7 +146,7 @@ class WhatwebParser:
         # Write HostScanHistory rows so /agent/recon/summary's per-host
         # breakdown + hosts_discovered count see this scan (the summary
         # query joins through host_scan_history, not web_interfaces).
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
+        record_hosts_in_scan(self.db, scan.id, self._observed)
 
         self.db.commit()
 
@@ -209,9 +209,12 @@ class WhatwebParser:
 
         # Resolve host (create on demand — whatweb hit it, it's real) and port,
         # both cached per-file.  Mirrors the httpx parser via the shared helper.
-        host_row = resolve_host_cached(
+        resolved = resolve_host_cached(
             self.db, self._project_id, ip, self._host_cache, hostname=hostname,
         )
+        host_row = resolved.host
+        # A WhatWeb hit is an HTTP response: the host is up now (v2.332.1).
+        self._observed.note(host_row, created=resolved.created, state="up", hostname=hostname)
         port_row = resolve_port_cached(
             self.db, host_row, port, self._port_cache,
         )

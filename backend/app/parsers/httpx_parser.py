@@ -50,6 +50,7 @@ from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, deriv
 from app.services.dns_name_service import ObservationCache, bind_url_name, record_observation
 from app.parsers.parser_utils import (
     correlate_scan,
+    ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
     resolve_port_cached,
@@ -115,6 +116,7 @@ class HttpxParser:
         # Per-file host/port resolution caches — collapse the per-record Host
         # and Port lookups (many records share a host) to a dict hit.
         self._host_cache: dict = {}
+        self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         # v2.322.0 — named-asset bookkeeping (see dns_name_service).
         self._name_cache = ObservationCache()
@@ -143,13 +145,11 @@ class HttpxParser:
 
         written = 0
         skipped = 0
-        host_ids_seen: set = set()
         for record in records:
             try:
                 host_id = self._upsert_record(record, scan)
                 if host_id:
                     written += 1
-                    host_ids_seen.add(host_id)
                 else:
                     skipped += 1
             except Exception as exc:
@@ -161,7 +161,7 @@ class HttpxParser:
         # Without this, web-only ingests don't contribute to
         # /agent/recon/summary because that query joins through
         # host_scan_history, not web_interfaces.
-        record_hosts_in_scan(self.db, scan.id, host_ids_seen, host_cache=self._host_cache)
+        record_hosts_in_scan(self.db, scan.id, self._observed)
 
         self.db.commit()
 
@@ -248,9 +248,13 @@ class HttpxParser:
         # Resolve host (create on demand — httpx hit it, it's real) and port,
         # both cached per-file.  Enriches a missing hostname on a cache/db hit
         # from the value httpx learned (TLS cert SAN, ``input``, etc.).
-        host_row = resolve_host_cached(
+        resolved = resolve_host_cached(
             self.db, self._project_id, ip, self._host_cache, hostname=hostname,
         )
+        host_row = resolved.host
+        # An HTTP response is evidence the host is up NOW, whatever the
+        # inventory row says (v2.332.1 — the snapshot used to copy Host.state).
+        self._observed.note(host_row, created=resolved.created, state="up", hostname=hostname)
         port_row = resolve_port_cached(
             self.db, host_row, port, self._port_cache,
         )
