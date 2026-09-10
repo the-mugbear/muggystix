@@ -378,11 +378,20 @@ class MasscanParser:
     def _upsert_hosts_batch(
         self, scan_id: int, ips: List[str]
     ) -> Dict[str, int]:
-        """Upsert a batch of hosts and return {ip: host_id} mapping."""
+        """Upsert a batch of hosts and return {ip: host_id} mapping.
+
+        v2.332.5 — records ``host_scan_history.host_created`` for the IPs this
+        scan inserted, the same create/update decision the dedup service
+        persists.  This bulk path wrote bare membership rows, so every host a
+        masscan import introduced counted as "already known" and the scan
+        showed 0 new hosts on /scans.
+        """
         if not ips:
             return {}
 
         project_id = self._project_id
+        # IPs whose hosts_v2 row THIS scan inserted (vs. updated).
+        created_ips: set = set()
 
         # Find existing hosts (scoped to project)
         host_query = (
@@ -425,23 +434,30 @@ class MasscanParser:
                         f"(:ip_{idx}, 'up', :scan_id, NULL)"
                     )
             if project_id is not None:
+                # (xmax = 0) is true only for a row this INSERT created; a
+                # row the ON CONFLICT ... DO UPDATE branch touched carries the
+                # updating transaction's xid.  That is the insert-vs-update
+                # decision host_scan_history.host_created records.
                 sql = (
                     "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
                     "VALUES " + ", ".join(values_clauses) + " "
                     "ON CONFLICT (project_id, ip_address) DO UPDATE SET "
                     "last_seen = NOW(), last_updated_scan_id = :scan_id, state = 'up' "
-                    "RETURNING id, ip_address"
+                    "RETURNING id, ip_address, (xmax = 0) AS inserted"
                 )
             else:
+                # DO NOTHING returns only the rows it inserted.
                 sql = (
                     "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
                     "VALUES " + ", ".join(values_clauses) + " "
                     "ON CONFLICT DO NOTHING "
-                    "RETURNING id, ip_address"
+                    "RETURNING id, ip_address, true AS inserted"
                 )
             result = self.db.execute(text(sql), params)
             for row in result:
                 existing_map[row.ip_address] = row.id
+                if row.inserted:
+                    created_ips.add(row.ip_address)
 
             # Backfill any IPs the RETURNING clause didn't yield.  The
             # no-project branch uses ON CONFLICT DO NOTHING, which returns
@@ -466,10 +482,11 @@ class MasscanParser:
         for idx, (ip, host_id) in enumerate(existing_map.items()):
             if ip in ips:  # only for this batch
                 h_params[f"hid_{idx}"] = host_id
-                history_values.append(f"(:hid_{idx}, :scan_id, 'up')")
+                created = "true" if ip in created_ips else "false"
+                history_values.append(f"(:hid_{idx}, :scan_id, 'up', {created})")
         if history_values:
             sql = (
-                "INSERT INTO host_scan_history (host_id, scan_id, state_at_scan) "
+                "INSERT INTO host_scan_history (host_id, scan_id, state_at_scan, host_created) "
                 "VALUES " + ", ".join(history_values) + " "
                 "ON CONFLICT (host_id, scan_id) DO NOTHING"
             )
