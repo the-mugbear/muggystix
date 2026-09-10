@@ -1430,3 +1430,95 @@ def test_omitting_the_retired_flag_still_works(client, test_project):
         json={"purpose": "current client"},
     )
     assert resp.status_code == 201, resp.text
+
+
+# ---------------------------------------------------------------------------
+# v2.330.0 — name scope on the assist surface
+# ---------------------------------------------------------------------------
+
+def _seed_names(db_session, test_project):
+    """One scope with two domain entries; five names; one host that two of
+    the names currently resolve to; one in-scope name that never resolved."""
+    from app.db import models
+    from app.services import dns_name_service as svc
+
+    scope = models.Scope(project_id=test_project.id, name="default")
+    db_session.add(scope)
+    db_session.flush()
+    svc.upsert_scope_domains(
+        db_session, scope,
+        [("portal.example.com", False, None), ("*.lab.example.com", False, None)],
+    )
+    host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
+    db_session.add(host)
+    db_session.flush()
+    # portal + a.lab resolve to the shared address; ghost.lab is in scope but
+    # unresolved (IMPORT only); other.example.com is out of scope and resolved.
+    for fqdn, ip in (("portal.example.com", "203.0.113.20"), ("a.lab.example.com", "203.0.113.20"), ("other.example.com", "198.51.100.9")):
+        svc.record_observation(db_session, project_id=test_project.id, name=fqdn, record_type="A", value=ip)
+    svc.import_names(db_session, project_id=test_project.id, raw_names=["ghost.lab.example.com"], created_by_id=None)
+    svc.get_or_create_name(db_session, test_project.id, "*.wild.example.com", kind="wildcard")
+    db_session.commit()
+    return scope, host
+
+
+def test_assist_scopes_carry_domains_and_dedup_names_total(client, test_project, db_session):
+    _seed_names(db_session, test_project)
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+    resp = client.get("/api/v1/agent/assist/scopes", headers=headers)
+    assert resp.status_code == 200, resp.text
+    (scope,) = resp.json()
+    assert scope["domains"] == [
+        {"domain": "lab.example.com", "include_subdomains": True},
+        {"domain": "portal.example.com", "include_subdomains": False},
+    ]
+    assert scope["domain_total"] == 2 and scope["domains_truncated"] is False
+    # portal + a.lab + ghost.lab = 3 distinct in-scope names.
+    assert scope["names_in_scope_total"] == 3
+
+
+def test_assist_context_reports_domain_and_name_counts(client, test_project, db_session):
+    _seed_names(db_session, test_project)
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+    ctx = client.get("/api/v1/agent/assist/context", headers=headers).json()
+    assert ctx["totals"]["domain_count"] == 2
+    assert ctx["names"] == {"total": 5, "in_scope": 3, "in_scope_unresolved": 1}
+
+
+def test_assist_names_filters_and_paging(client, test_project, db_session):
+    _, host = _seed_names(db_session, test_project)
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+
+    body = client.get("/api/v1/agent/assist/names", headers=headers).json()
+    assert body["total"] == 5 and body["returned"] == 5 and body["has_more"] is False
+    by_fqdn = {r["fqdn"]: r for r in body["items"]}
+    assert by_fqdn["portal.example.com"]["in_scope"] is True
+    assert by_fqdn["portal.example.com"]["current_ips"] == ["203.0.113.20"]
+    assert by_fqdn["portal.example.com"]["sources"] == ["A"]
+    assert by_fqdn["ghost.lab.example.com"]["in_scope"] is True
+    assert by_fqdn["ghost.lab.example.com"]["current_ips"] == []
+    assert by_fqdn["ghost.lab.example.com"]["sources"] == ["IMPORT"]
+    assert by_fqdn["other.example.com"]["in_scope"] is False
+    assert by_fqdn["*.wild.example.com"]["kind"] == "wildcard"
+
+    # The actionable queue: in scope, never resolved.
+    queue = client.get("/api/v1/agent/assist/names?in_scope=true&resolved=false", headers=headers).json()
+    assert [r["fqdn"] for r in queue["items"]] == ["ghost.lab.example.com"]
+    # Names currently bound to one host's address.
+    bound = client.get(f"/api/v1/agent/assist/names?host_id={host.id}", headers=headers).json()
+    assert [r["fqdn"] for r in bound["items"]] == ["a.lab.example.com", "portal.example.com"]
+    assert client.get("/api/v1/agent/assist/names?host_id=999999", headers=headers).status_code == 404
+    # Substring + kind + paging.
+    assert client.get("/api/v1/agent/assist/names?q=LAB", headers=headers).json()["total"] == 2
+    assert client.get("/api/v1/agent/assist/names?kind=wildcard", headers=headers).json()["total"] == 1
+    page = client.get("/api/v1/agent/assist/names?limit=2&offset=2", headers=headers).json()
+    assert page["returned"] == 2 and page["offset"] == 2 and page["has_more"] is True
+
+
+def test_assist_names_rejects_a_plan_scoped_key(client, test_project, test_plan):
+    resp = client.post(f"/api/v1/projects/{test_project.id}/test-plans/generate", json={"title": "not assist"})
+    assert resp.status_code == 201, resp.text
+    plan_headers = _auth_headers(resp.json()["api_key"])
+    denied = client.get("/api/v1/agent/assist/names", headers=plan_headers)
+    assert denied.status_code == 403, denied.text
+

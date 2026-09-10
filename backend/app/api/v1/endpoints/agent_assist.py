@@ -43,6 +43,9 @@ from app.api.deps import require_assist_scope
 from app.api.v1.endpoints.agent_schemas import (
     AssistFinding,
     AssistFindingsResponse,
+    AssistNameRow,
+    AssistNamesResponse,
+    ScopeDomainBrief,
     EnvironmentProbeRequest,
     EnvironmentProbeResponse,
     EnvironmentSummary,
@@ -59,6 +62,8 @@ from app.api.v1.endpoints.agent_common import (
     _batch_host_enrichment,
 )
 from app.services.agent_environment_probe_service import apply_environment_probe
+from app.services import dns_name_service
+from app.services.host_query_common import escape_like
 from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.systemic_insight_service import compute_systemic_insights
@@ -276,6 +281,33 @@ def get_assist_context(
         or 0
     )
 
+    # v2.330.0 — name scope.  Three COUNTs: how many names the project knows,
+    # how many a declared domain covers, and how many of THOSE have never
+    # resolved.  The last one is the actionable figure: an in-scope name with
+    # no A/AAAA answer is work the operator still owes (resolve it, or drop it
+    # from scope) — see /assist/names?in_scope=true&resolved=false.
+    domain_count_total = (
+        db.query(func.count(models.ScopeDomain.id))
+        .join(models.Scope, models.Scope.id == models.ScopeDomain.scope_id)
+        .filter(models.Scope.project_id == project.id)
+        .scalar()
+        or 0
+    )
+    _n = models.DNSName
+    _names_base = db.query(func.count(_n.id)).filter(_n.project_id == project.id)
+    names_total = _names_base.scalar() or 0
+    names_in_scope = (
+        _names_base.filter(dns_name_service.name_in_scope_condition(project.id)).scalar() or 0
+        if domain_count_total else 0
+    )
+    names_in_scope_unresolved = (
+        _names_base.filter(
+            dns_name_service.name_in_scope_condition(project.id),
+            ~dns_name_service.resolving_exists_condition(),
+        ).scalar() or 0
+        if names_in_scope else 0
+    )
+
     return {
         "prompt_version": PROMPT_VERSION,
         "session": {
@@ -297,6 +329,17 @@ def get_assist_context(
             "open_port_count": open_port_count,
             "scope_count": scope_count_total,
             "scan_count": scan_count_total,
+            # Declared domain-scope entries across the project's scopes.
+            "domain_count": domain_count_total,
+        },
+        # Name scope is independent of subnet scope: an in-scope name does not
+        # put the address it resolves to in scope.  ``in_scope_unresolved`` is
+        # the actionable number — names approved for testing that have never
+        # resolved in any upload.
+        "names": {
+            "total": names_total,
+            "in_scope": names_in_scope,
+            "in_scope_unresolved": names_in_scope_unresolved,
         },
         "scopes": [
             {
@@ -1607,7 +1650,7 @@ def list_assist_recent_notes(
 @router.get(
     "/assist/scopes",
     response_model=List[ScopeBrief],
-    summary="List project scopes with their subnet CIDRs",
+    summary="List project scopes with their subnet CIDRs and declared domains",
 )
 def list_assist_scopes(
     request: Request,
@@ -1623,6 +1666,13 @@ def list_assist_scopes(
     An assist key is rejected on every /agent/recon/* endpoint, so full
     CIDR enumeration is NOT reachable from this workflow — complete
     enumeration requires a recon session.
+
+    v2.330.0 — each scope also carries its declared ``domains`` (same 100
+    cap, ``domain_total`` / ``domains_truncated``) and
+    ``names_in_scope_total`` (distinct inventory names any entry covers).
+    Name scope is independent of subnet scope: an in-scope name does not
+    make the address it resolves to subnet-in-scope, and an in-scope
+    subnet does not make names in scope.
     """
     session = _load_assist_session(db, request)
     scopes = (
@@ -1649,6 +1699,23 @@ def list_assist_scopes(
         bucket = cidrs_by_scope.setdefault(scope_id, [])
         if len(bucket) < _SUBNET_CAP:
             bucket.append(cidr)
+    # Per-scope domain lists, capped the same way.
+    domain_rows = (
+        db.query(models.ScopeDomain.scope_id, models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
+        .filter(models.ScopeDomain.scope_id.in_(scope_ids))
+        .order_by(models.ScopeDomain.scope_id, models.ScopeDomain.domain)
+        .all()
+    )
+    domains_by_scope: dict[int, list[ScopeDomainBrief]] = {}
+    domain_total_by_scope: dict[int, int] = {}
+    for scope_id, domain, include_sub in domain_rows:
+        domain_total_by_scope[scope_id] = domain_total_by_scope.get(scope_id, 0) + 1
+        bucket = domains_by_scope.setdefault(scope_id, [])
+        if len(bucket) < _SUBNET_CAP:
+            bucket.append(ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub)))
+    names_in_scope_total = (
+        dns_name_service.scope_domains_covered_names_total(db, session.project_id) if domain_rows else 0
+    )
     return [
         ScopeBrief(
             id=s.id,
@@ -1657,9 +1724,109 @@ def list_assist_scopes(
             subnets=cidrs_by_scope.get(s.id, []),
             subnet_total=total_by_scope.get(s.id, 0),
             subnets_truncated=total_by_scope.get(s.id, 0) > _SUBNET_CAP,
+            domains=domains_by_scope.get(s.id, []),
+            domain_total=domain_total_by_scope.get(s.id, 0),
+            domains_truncated=domain_total_by_scope.get(s.id, 0) > _SUBNET_CAP,
+            names_in_scope_total=names_in_scope_total,
         )
         for s in scopes
     ]
+
+
+# ---------------------------------------------------------------------------
+# Names — the named-asset inventory (read-only, v2.330.0)
+# ---------------------------------------------------------------------------
+
+_ASSIST_NAME_IP_CAP = 10
+
+
+@router.get(
+    "/assist/names",
+    response_model=AssistNamesResponse,
+    summary="List the project's named assets (FQDNs) with scope and current addresses",
+)
+def list_assist_names(
+    request: Request,
+    q: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
+    in_scope: Optional[bool] = Query(None, description="Only names a declared domain covers (true) or does not (false)"),
+    resolved: Optional[bool] = Query(None, description="Only names with (true) / without (false) a current A/AAAA answer"),
+    host_id: Optional[int] = Query(None, description="Only names that currently resolve to this host's address"),
+    kind: Optional[str] = Query(None, pattern="^(fqdn|wildcard)$", description="fqdn | wildcard"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(require_assist_scope),
+    db: Session = Depends(get_db),
+):
+    """The names inventory, the same predicates the Names page uses
+    (``name_in_scope_condition``, ``resolving_exists_condition``,
+    ``current_binding_condition``), so this view can never disagree with it.
+
+    How to act on it: ``in_scope=true&resolved=false`` is the queue — names
+    approved for testing that no upload has ever resolved (chase them with
+    dnsx/amass output, or drop them from scope).  A name whose
+    ``current_ips`` is shared with other names (a load balancer / vhost)
+    must be tested BY NAME — the address alone reaches a different site.
+    A name in scope does not put its address in subnet scope.
+    """
+    session = _load_assist_session(db, request)
+    pid = session.project_id
+    n = models.DNSName
+    in_scope_col = dns_name_service.name_in_scope_condition(pid).label("in_scope")
+    query = db.query(n, in_scope_col).filter(n.project_id == pid)
+    if q and q.strip():
+        query = query.filter(n.fqdn.ilike(f"%{escape_like(q.strip().lower())}%", escape="\\"))
+    if in_scope is True:
+        query = query.filter(dns_name_service.name_in_scope_condition(pid))
+    elif in_scope is False:
+        query = query.filter(~dns_name_service.name_in_scope_condition(pid))
+    if resolved is True:
+        query = query.filter(dns_name_service.resolving_exists_condition())
+    elif resolved is False:
+        query = query.filter(~dns_name_service.resolving_exists_condition())
+    if kind:
+        query = query.filter(n.kind == kind)
+    if host_id is not None:
+        host = (
+            db.query(models.Host.ip_address)
+            .filter(models.Host.id == host_id, models.Host.project_id == pid)
+            .first()
+        )
+        if host is None:
+            raise HTTPException(status_code=404, detail="Host not found in this project")
+        r = models.DNSRecord
+        query = query.filter(
+            db.query(r.id)
+            .filter(
+                r.name_id == n.id,
+                r.project_id == pid,
+                r.value == host.ip_address,
+                dns_name_service.current_binding_condition(r),
+            )
+            .exists()
+        )
+    total = query.with_entities(func.count(n.id)).order_by(None).scalar() or 0
+    rows = query.order_by(n.fqdn.asc(), n.id.asc()).offset(offset).limit(limit).all()
+    states = dns_name_service.address_state_for_names(db, pid, [name.id for name, _ in rows])
+    items = []
+    for name, is_in_scope in rows:
+        st = states[name.id]
+        ips = sorted(st.current)
+        items.append(
+            AssistNameRow(
+                id=name.id,
+                fqdn=name.fqdn,
+                kind=name.kind,
+                in_scope=bool(is_in_scope),
+                current_ips=ips[:_ASSIST_NAME_IP_CAP],
+                current_ip_total=len(ips),
+                last_seen=name.last_seen,
+                sources=sorted(st.evidence),
+            )
+        )
+    return AssistNamesResponse(
+        items=items, total=total, offset=offset, limit=limit,
+        returned=len(items), has_more=offset + len(items) < total,
+    )
 
 
 # ---------------------------------------------------------------------------

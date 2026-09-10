@@ -234,6 +234,13 @@ class ScanBrief(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ScopeDomainBrief(BaseModel):
+    """One declared domain-scope entry (v2.330.0).  ``include_subdomains``
+    False = exactly this name; True = this name and every name under it."""
+    domain: str
+    include_subdomains: bool = False
+
+
 class ScopeBrief(BaseModel):
     id: int
     name: str
@@ -244,8 +251,48 @@ class ScopeBrief(BaseModel):
     # count; ``subnets_truncated`` is True when the list was clipped.
     subnet_total: int = 0
     subnets_truncated: bool = False
+    # v2.330.0 — domain scope alongside subnet scope, capped the same way.
+    # Name scope is INDEPENDENT of subnet scope: a name in scope does not put
+    # the address it resolves to in scope, and vice versa.
+    domains: List[ScopeDomainBrief] = Field(default_factory=list)
+    domain_total: int = 0
+    domains_truncated: bool = False
+    # Distinct names in the project's inventory covered by ANY domain entry
+    # (deduplicated across nested entries).  Project-wide — a project has one
+    # conceptual scope — so every ScopeBrief in a project carries the same value.
+    names_in_scope_total: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AssistNameRow(BaseModel):
+    """One named asset as the assist surface sees it (v2.330.0).  A name is an
+    identity, not an address: ``current_ips`` is DERIVED from the latest
+    A/AAAA observation batch, never stored."""
+    id: int
+    fqdn: str
+    kind: str                       # 'fqdn' | 'wildcard'
+    # Covered by a declared domain-scope entry.  Does NOT make current_ips
+    # subnet-in-scope.
+    in_scope: bool
+    # Addresses the name currently resolves to (capped at 10; ``current_ip_total``
+    # is the true count).  Empty = unresolved (imported / seen in a cert or
+    # HTTP evidence, but no A/AAAA answer recorded yet).
+    current_ips: List[str] = Field(default_factory=list)
+    current_ip_total: int = 0
+    last_seen: Optional[datetime] = None
+    # Observation kinds recorded for the name (A, AAAA, CNAME, PTR, IMPORT,
+    # HTTP, CERT, SCANNER, TESTED, ...).
+    sources: List[str] = Field(default_factory=list)
+
+
+class AssistNamesResponse(BaseModel):
+    items: List[AssistNameRow] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    returned: int = 0
+    has_more: bool = False
 
 
 class ProjectInfo(BaseModel):

@@ -725,11 +725,48 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         },
     },
     "assist_list_scopes": {
-        "description": "List the network scopes (CIDR boundaries) defined for this project.",
+        "description": (
+            "List this project's scopes: subnet CIDRs and declared domains "
+            "(each capped at 100 with *_total / *_truncated). Name scope is "
+            "independent of subnet scope — a name in scope does not put the "
+            "address it resolves to in scope, and vice versa. "
+            "names_in_scope_total is the deduplicated count of inventory names "
+            "the domain entries cover."
+        ),
         "workflows": _ASSIST,
         "method": "GET",
         "path": "/api/v1/agent/assist/scopes",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_list_names": {
+        "description": (
+            "List the project's named assets (FQDNs) with in_scope, the "
+            "addresses each currently resolves to (derived from the latest "
+            "A/AAAA observations, never stored) and its evidence sources. "
+            "in_scope means a declared domain covers the name; it does NOT make "
+            "the address subnet-in-scope. The actionable queue is "
+            "in_scope=true&resolved=false — approved names no upload has ever "
+            "resolved. A name whose address is shared with other names (load "
+            "balancer / vhost) must be tested by name, not by IP. host_id lists "
+            "the names currently bound to one host's address."
+        ),
+        "workflows": _ASSIST,
+        "method": "GET",
+        "path": "/api/v1/agent/assist/names",
+        "query_params": ["q", "in_scope", "resolved", "host_id", "kind", "limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "q": {"type": "string", "description": "Case-insensitive substring on the FQDN."},
+                "in_scope": {"type": "boolean", "description": "Only names a declared domain covers (true) / does not (false)."},
+                "resolved": {"type": "boolean", "description": "Only names with (true) / without (false) a current A/AAAA answer."},
+                "host_id": {"type": "integer", "description": "Only names currently resolving to this host's address."},
+                "kind": {"type": "string", "enum": ["fqdn", "wildcard"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "additionalProperties": False,
+        },
     },
     "assist_list_scans": {
         "description": "List the scans ingested into this project (most recent first).",
