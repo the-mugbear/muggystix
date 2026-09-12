@@ -22,21 +22,23 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import Agent, ReconSession, ReconSessionStatus
-from app.api.deps import require_recon_scope
+from app.api.deps import check_agent_rate_limit
+from app.services.agent_session_service import (
+    open_recon_phase, resolve_recon_phase,
+)
 
 from app.api.v1.endpoints.agent_schemas import (
     ReconContextResponse, ReconUploadResponse,
     ReconJobStatus,
-    ReconSummaryResponse, ReconCompleteRequest,
+    ReconSummaryResponse, ReconCompleteRequest, ReconStartRequest,
     ReconDownload, ReconDownloads,
-    EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
+    EnvironmentSummary,
 )
-from app.api.v1.endpoints.agent_common import _scoped_host_ids_subq
+from app.api.v1.endpoints.agent_common import _scoped_host_ids_subq, load_agent_session
 from app.services.agent_prompt_history import PROMPT_VERSION
 # v2.27.0 — recon-context helpers extracted to two focused service modules.
 # The endpoint handlers in this file call into them via these aliases so
 # the route file stays focused on HTTP / auth / response shaping.
-from app.services.agent_environment_probe_service import apply_environment_probe
 from app.services.recon_summary_service import (
     recon_session_host_breakdown as _recon_session_host_breakdown,
     recon_session_host_count as _recon_session_host_count,
@@ -188,50 +190,18 @@ def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Opti
 
 
 def _load_recon_session(db: Session, request: Request) -> ReconSession:
-    """Resolve the ReconSession for the caller's recon-scoped key.
+    """The reconnaissance run this call is about.
 
-    The key binds to one AgentSession (recon workflow), and each ReconSession is
-    1:1 with its AgentSession via ``recon_sessions.agent_session_id`` — so the
-    call's session resolves deterministically. This is what replaced the old
-    "newest active session under the scope" heuristic (the root cause of the
-    concurrent-recon collision bug, where two agents holding scope-only keys had
-    their /recon/upload calls routed to whichever session started later); with
-    the contract phase dropping ``api_keys.recon_session_id`` / ``scope_id``, the
-    AgentSession IS the binding and the heuristic fallback is gone for good.
-
-    404 if there's no usable session — the bound session was deleted.
+    v2.337.0 — a key is no longer scoped to one recon run; the operator's
+    session may have several open.  Resolve from the session, honouring an
+    optional ``recon_session_id`` query parameter (which must belong to the
+    session).  A session with exactly one active run needs no parameter; none
+    open is a 409 that points at ``POST /agent/recon/start``.
     """
-    agent_session_id = getattr(request.state, "agent_session_id", None)
-    scope_id = getattr(request.state, "scoped_scope_id", None)
-    if agent_session_id is None or scope_id is None:
-        # Unreachable — require_recon_scope already gates on the recon workflow,
-        # and get_current_agent sets both for a recon key.
-        raise HTTPException(status_code=403, detail="Recon scope not bound")
-
-    session = (
-        db.query(ReconSession)
-        .filter(ReconSession.agent_session_id == agent_session_id)
-        .first()
-    )
-    # Defence-in-depth: the key's scope must still match the session's scope.
-    if session is not None and session.scope_id != scope_id:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "API key's bound recon session belongs to a "
-                "different scope — refusing to serve."
-            ),
-        )
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No active reconnaissance session for this scope. "
-                "Ask the user to click 'Start Agentic Recon' on the "
-                "Scopes page again."
-            ),
-        )
-    return session
+    session = load_agent_session(db, request)
+    raw = request.query_params.get("recon_session_id")
+    recon_id = int(raw) if raw and raw.isdigit() else None
+    return resolve_recon_phase(db, session.id, recon_id)
 
 
 @router.get(
@@ -241,7 +211,7 @@ def _load_recon_session(db: Session, request: Request) -> ReconSession:
 )
 def get_recon_context(
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return the recon session's scope, already-known hosts, and a
@@ -256,11 +226,14 @@ def get_recon_context(
     scope = db.query(models.Scope).filter(models.Scope.id == session.scope_id).first()
     if not scope:
         raise HTTPException(status_code=404, detail="Scope not found (deleted?)")
-
     subnet_cidrs = [
         row[0] for row in db.query(models.Subnet.cidr).filter(models.Subnet.scope_id == scope.id).all()
     ]
+    return _recon_context_payload(db, session, scope, agent, subnet_cidrs, include_read_back=False)
 
+
+def _recon_context_payload(db, session, scope, agent, subnet_cidrs, *, include_read_back):
+    """Build the ReconContextResponse shared by /recon/start and /recon/context."""
     # Summarise already-known hosts inside *this scope* (not the whole
     # project) so the agent can decide whether it's re-running against
     # a populated scope or starting fresh.  v2.11.1 — previously this
@@ -353,11 +326,31 @@ def get_recon_context(
     domains_truncated = scope_domains_total > _CONTEXT_CIDR_CAP
     scope_domains_field = [{"domain": d, "include_subdomains": bool(sub)} for d, sub in domain_rows]
 
+    read_back = None
+    if include_read_back:
+        from app.services.agent_policy import render_phase_read_back
+        facts = [
+            "the CIDRs you will scan: " + (
+                ", ".join(scope_cidrs_field) + (f" (+{scope_cidrs_total - len(scope_cidrs_field)} more)" if subnets_truncated else "")
+            ),
+        ]
+        if scope_domains_field:
+            facts.append(
+                "in-scope domains (names only, resolving them does not scope their addresses): "
+                + ", ".join(
+                    (f"*.{d['domain']}" if d["include_subdomains"] else d["domain"])
+                    for d in scope_domains_field
+                )
+            )
+        facts.append("the working directory you will run every tool from and write output into")
+        read_back = render_phase_read_back("recon", facts=facts)
+
     return ReconContextResponse(
         recon_session_id=session.id,
         scope_id=scope.id,
         scope_name=scope.name,
         prompt_version=PROMPT_VERSION,
+        read_back=read_back,
         scope_cidrs=scope_cidrs_field,
         scope_cidrs_total=scope_cidrs_total,
         subnets_truncated=subnets_truncated,
@@ -371,8 +364,7 @@ def get_recon_context(
         scope_size=scope_size,
         recommended_sequence=recommended_sequence,
         known_hosts_probe=known_hosts_probe,
-        # v2.23.0 — echo the recon environment probe.  None until the
-        # agent posts /recon/sessions/{id}/environment.
+        # Echo the session's environment probe (snapshotted onto the run).
         environment=(
             EnvironmentSummary(**session.environment)
             if session.environment else None
@@ -388,7 +380,7 @@ def get_recon_subnets(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return the recon scope's subnet CIDRs, paginated (v2.45.4).
@@ -439,7 +431,7 @@ def get_recon_domains(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return the recon scope's declared domains, paginated (v2.328.0).
@@ -512,7 +504,7 @@ def _stream(generator, media_type: str, filename: str) -> StreamingResponse:
 )
 def download_recon_hosts_ndjson(
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Complete per-host breakdown, one JSON object per line.
@@ -542,7 +534,7 @@ def download_recon_hosts_ndjson(
 )
 def download_recon_live_hosts(
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """One IP per line, IP-sorted — feed straight to ``nmap -iL``.
@@ -566,7 +558,7 @@ def download_recon_live_hosts(
 )
 def download_recon_web_targets(
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """One URL per line for every discovered web port — ``httpx -l`` input."""
@@ -587,70 +579,47 @@ def download_recon_web_targets(
 # `Get-NetTCPConnection` from a Kali Linux box).
 
 @router.post(
-    "/recon/sessions/{session_id}/environment",
-    response_model=EnvironmentProbeResponse,
-    summary="Record this recon session's operator environment",
+    "/recon/start",
+    response_model=ReconContextResponse,
+    status_code=201,
+    summary="Open a reconnaissance run against a scope in this session",
 )
-def record_recon_environment(
-    body: EnvironmentProbeRequest,
+def start_recon_phase(
+    body: ReconStartRequest,
     request: Request,
-    session_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Record the agent's environment probe for a recon session.
+    """Open a recon run on ``scope_id`` and return its context.
 
-    Re-POSTing replaces the previous probe — useful for long-running
-    sessions where the operator installs additional tools mid-run.
+    v2.337.0 — replaces the operator-side "Start Agentic Recon" mint.  The
+    session already holds the operator's authority and environment probe; this
+    picks the scope to work.  A run already open on the scope is reused.  The
+    response is the same ``/recon/context`` shape plus the phase read-back the
+    agent must state before scanning — the CIDRs and in-scope domains are the
+    facts it restates, which is the moment they exist and can be wrong.
     """
-    # Resolve through the shared helper so the v2.45.0 per-session key
-    # binding is honoured.  A scope-only check (session.scope_id ==
-    # scoped_scope_id) is NOT enough: two concurrent recons share a
-    # scope, so a key bound to session X could otherwise overwrite a
-    # different active session Y's environment probe (and corrupt Y's
-    # audit attribution).  _load_recon_session enforces the binding;
-    # we then assert the path matches what the key resolved to.
-    session = _load_recon_session(db, request)
-    if session.id != session_id:
+    session = load_agent_session(db, request)
+    scope = (
+        db.query(models.Scope)
+        .filter(models.Scope.id == body.scope_id, models.Scope.project_id == agent.project_id)
+        .first()
+    )
+    if not scope:
+        raise HTTPException(status_code=404, detail="Scope not found in this project")
+    subnet_cidrs = [
+        row[0] for row in db.query(models.Subnet.cidr).filter(models.Subnet.scope_id == scope.id).all()
+    ]
+    if not subnet_cidrs:
         raise HTTPException(
-            status_code=403,
-            detail="Not your recon session — the API key is bound to a different session.",
+            status_code=400,
+            detail="Scope has no subnets registered — upload a subnet file first.",
         )
-
-    # v2.43.3 (AUD-C1 + AUD-O3): write path moved to the shared
-    # `apply_environment_probe` service.  It enforces the audit
-    # invariant — historical sessions stay immutable, so probes are
-    # rejected with 409 once `session.status` is no longer in the
-    # allowed set.  Mirrors the execution-side guard.
-    # Recon sessions only have ACTIVE → COMPLETED/FAILED/ABANDONED
-    # transitions.  PAUSED is an execution-session concept (see
-    # ExecutionSessionStatus) — referencing ReconSessionStatus.PAUSED
-    # here AttributeError'd every env probe before this fix (v2.44.3),
-    # which the agent saw as a generic 500 because the unhandled
-    # exception handler v2.44.2 hadn't shipped yet at the time the
-    # bug landed in v2.43.3 (the extraction of apply_environment_probe).
-    apply_environment_probe(
-        session=session,
-        body=body,
-        request=request,
-        agent=agent,
-        active_statuses={ReconSessionStatus.ACTIVE.value},
-        session_kind="recon",
-    )
+    run = open_recon_phase(db, session=session, scope=scope, notes=body.notes)
     db.commit()
-    db.refresh(session)
-
-    return EnvironmentProbeResponse(
-        session_id=session.id,
-        session_type="recon",
-        probed_at=session.environment_probed_at,
-        probed_by_user_id=session.environment_probed_by_user_id,
-        probed_from_ip=session.environment_probed_from_ip,
-        environment=EnvironmentSummary(**session.environment),
-        agent_model=session.generated_by_model,
-        agent_tool=session.generated_by_tool,
-        agent_prompt_version=session.prompt_version,
-    )
+    db.refresh(run)
+    # Reuse the context builder so /start and /context never drift.
+    return _recon_context_payload(db, run, scope, agent, subnet_cidrs, include_read_back=True)
 
 
 @router.post(
@@ -673,7 +642,7 @@ async def upload_recon_output(
             "batch, shown on /scans as a single row (v2.335.0)."
         ),
     ),
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Multipart upload wrapper around the existing ingestion pipeline.
@@ -786,7 +755,7 @@ async def upload_recon_output(
 def get_recon_job(
     job_id: int,
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return the status of an IngestionJob the agent previously
@@ -837,7 +806,7 @@ def get_recon_job(
 )
 def get_recon_summary(
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return the live counts for this recon session.
@@ -925,7 +894,7 @@ def get_recon_summary(
 def complete_recon_session(
     body: ReconCompleteRequest,
     request: Request,
-    agent: Agent = Depends(require_recon_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Transition the recon session from active to completed.

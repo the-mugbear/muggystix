@@ -24,25 +24,22 @@ from app.db.models_agent import (
 )
 from app.core.config import settings as _settings
 from app.core.security import log_audit_event
-from app.api.deps import (
-    check_agent_rate_limit,
-    require_execution_session_scope,
-    require_plan_generation_scope,
-    require_plan_scope,
-)
+from app.api.deps import check_agent_rate_limit
 from app.services.test_plan_service import TestPlanService
 from app.services.notification_service import NotificationService
 from app.services.agent_prompt_history import PROMPT_VERSION
-from app.services.agent_environment_probe_service import apply_environment_probe
+from app.services.agent_session_service import (
+    open_execution_phase, resolve_execution_phase,
+)
 
 from app.api.v1.endpoints.agent_schemas import (
     ExecutionHostContext, ExecutionContextResponse,
     SanityCheckRequest, TestResultRequest, CompleteEntryRequest,
-    ExecutionProgressResponse, PlanResponse,
-    EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
+    ExecutionProgressResponse, PlanResponse, ExecutionStartRequest,
     ExecutionSessionCompleteRequest, ExecutionSessionCompleteResponse,
+    EnvironmentSummary,
 )
-from app.api.v1.endpoints.agent_common import _plan_response
+from app.api.v1.endpoints.agent_common import _plan_response, load_agent_session
 
 logger = logging.getLogger(__name__)
 
@@ -124,15 +121,13 @@ def _require_executable_plan(plan) -> None:
 )
 def submit_test_plan(
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_generation_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
 
     if not plan.description:
         raise HTTPException(
@@ -159,105 +154,33 @@ def submit_test_plan(
     return _plan_response(plan, db)
 
 
-# --- Environment probe (v2.23.0) ---
+# --- Open an execution run (v2.337.0) ---
 #
-# MUST be the agent's first call after starting an execution session.
-# The probe result is per-session (and via Agent.owner_id, per-user); it
-# is echoed back on subsequent /execution-context responses so the
-# agent's prompt-render reflects what's actually on the operator's
-# host instead of any assumed POSIX defaults.  See AGENTS.md §
-# Environment probe.
+# Replaces the operator-side "Execute with AI" mint.  The session already holds
+# the operator's authority and environment probe; this picks the plan to
+# execute.  The plan MUST be human-approved — that gate is the one control the
+# session consolidation keeps intact.
 
 @router.post(
-    "/execution-sessions/{session_id}/environment",
-    response_model=EnvironmentProbeResponse,
-    summary="Record this execution session's operator environment",
+    "/execution-sessions/start",
+    response_model=ExecutionContextResponse,
+    status_code=201,
+    summary="Open an execution run on an approved plan in this session",
 )
-def record_execution_environment(
-    body: EnvironmentProbeRequest,
+def start_execution_phase(
+    body: ExecutionStartRequest,
     request: Request,
-    session_id: int = Path(..., gt=0),
-    # v2.310.0 — the shared workflow guard for session-id-keyed execution
-    # routes. It replaces the inline checks that drifted apart between this
-    # route and its sibling; see require_execution_session_scope.
-    agent: Agent = Depends(require_execution_session_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Record the agent's environment probe for an execution session.
-
-    Called once at session start so subsequent ``/execution-context``
-    responses echo back the same data — the agent then translates each
-    plan entry's intent into commands shaped to *this* host's tooling
-    rather than to any platform-wide assumption.
-
-    Re-POSTing is allowed: a long-running session that survives an OS
-    upgrade or a tool install can refresh the probe.  The newest write
-    wins (the audit timestamp + ip make stale data legible).
-    """
-    session = (
-        db.query(ExecutionSession)
-        .filter(ExecutionSession.id == session_id)
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="Execution session not found")
-
-    # The URL is keyed by session_id, not plan_id, so require_plan_scope
-    # can't gate this directly.  Enforce the same audit chain here:
-    # (session → plan → agent → owner_id) must match the calling agent
-    # AND the API key's plan-scope (if it is plan-scoped) must match
-    # the session's plan.  Unscoped keys are allowed if they belong to
-    # the same agent.  v2.25.0 — also reject recon-scoped keys: they
-    # have scoped_plan_id=None but scoped_scope_id set, which would
-    # otherwise pass the "plan_id is None → skip plan check" branch
-    # and let a recon key write into an execution session it should
-    # have nothing to do with.
-    # v2.310.0 — the assist/recon rejection moved to
-    # ``require_execution_session_scope`` on the route, shared with /complete.
-    # Per-plan scoping stays here: only the handler knows which plan the
-    # session hangs off.
-    plan = session.test_plan
-    if not plan or plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your execution session")
-    scoped_plan = getattr(request.state, "scoped_plan_id", None)
-    if scoped_plan is not None and scoped_plan != plan.id:
-        raise HTTPException(
-            status_code=403,
-            detail="This API key is scoped to a different test plan.",
-        )
-
-    # v2.43.3 (AUD-C1 + AUD-O3): the write path moved to the shared
-    # `apply_environment_probe` service.  It enforces the audit
-    # invariant — historical sessions stay immutable, so probes are
-    # rejected with 409 once `session.status` is no longer in the
-    # allowed set.  Attribution-preservation semantics (don't overwrite
-    # a non-null prior value with None) live in the helper too so they
-    # can't drift between this endpoint and the recon equivalent.
-    apply_environment_probe(
-        session=session,
-        body=body,
-        request=request,
-        agent=agent,
-        active_statuses={
-            ExecutionSessionStatus.ACTIVE.value,
-            ExecutionSessionStatus.PAUSED.value,
-        },
-        session_kind="execution",
-    )
+    session = load_agent_session(db, request)
+    svc = TestPlanService(db)
+    plan = svc.get_plan(body.plan_id, agent.project_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Test plan not found")
+    run = open_execution_phase(db, session=session, plan=plan)
     db.commit()
-    db.refresh(session)
-
-    return EnvironmentProbeResponse(
-        session_id=session.id,
-        session_type="execution",
-        probed_at=session.environment_probed_at,
-        probed_by_user_id=session.environment_probed_by_user_id,
-        probed_from_ip=session.environment_probed_from_ip,
-        environment=EnvironmentSummary(**session.environment),
-        agent_model=session.generated_by_model,
-        agent_tool=session.generated_by_tool,
-        agent_prompt_version=session.prompt_version,
-    )
+    return _execution_context_payload(db, plan, run, agent.name, include_read_back=True)
 
 
 # --- Execution context ---
@@ -269,7 +192,7 @@ def record_execution_environment(
 )
 def get_execution_context(
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return the plan's entries with per-test detail and known services,
@@ -283,8 +206,6 @@ def get_execution_context(
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
     # v2.316.0 — was an inline 400 that duplicated _require_executable_plan and
     # disagreed with the write paths (which 409). Same condition, one helper,
     # one status code now.
@@ -301,10 +222,17 @@ def get_execution_context(
     )
     if not session:
         raise HTTPException(
-            status_code=400,
-            detail="No active execution session for this plan. Start one via the UI first.",
+            status_code=409,
+            detail=(
+                "No active execution run for this plan. Open one with "
+                "POST /agent/execution-sessions/start {\"plan_id\": " + str(plan.id) + "}."
+            ),
         )
+    return _execution_context_payload(db, plan, session, agent.name, include_read_back=False)
 
+
+def _execution_context_payload(db, plan, session, agent_name, *, include_read_back):
+    """Build ExecutionContextResponse — shared by /start and /execution-context."""
     entries = (
         db.query(TestPlanEntry)
         .filter(TestPlanEntry.test_plan_id == plan.id)
@@ -429,14 +357,25 @@ def get_execution_context(
         "entry_count": len(entries),
     }
 
+    read_back = None
+    if include_read_back:
+        from app.services.agent_policy import render_phase_read_back
+        ips = [h.ip_address for h in result_hosts][:10]
+        more = len(result_hosts) - len(ips)
+        host_line = ", ".join(ips) + (f" (+{more} more)" if more > 0 else "")
+        read_back = render_phase_read_back("execution", facts=[
+            f"the {len(result_hosts)} host(s) this approved plan covers — by IP: {host_line}",
+            "the working directory every command will run from and write into",
+        ])
+
     return ExecutionContextResponse(
         plan=plan_dict,
         session_id=session.id,
-        agent_name=agent.name,
+        agent_name=agent_name,
         prompt_version=PROMPT_VERSION,
+        read_back=read_back,
         hosts=result_hosts,
-        # v2.23.0 — echo the per-session environment probe.  None until
-        # the agent posts /execution-sessions/{id}/environment.
+        # Echo the session's environment probe (snapshotted onto the run).
         environment=(
             EnvironmentSummary(**session.environment)
             if session.environment else None
@@ -455,7 +394,7 @@ def record_sanity_check(
     body: SanityCheckRequest,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Record a sanity check result for a host before test execution.
@@ -466,7 +405,7 @@ def record_sanity_check(
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
-    if not plan or plan.agent_id != agent.id:
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan not found or not yours")
 
     _require_executable_plan(plan)
@@ -559,7 +498,7 @@ def record_test_result(
     body: TestResultRequest,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Record the result of a single test execution.
@@ -570,7 +509,7 @@ def record_test_result(
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
-    if not plan or plan.agent_id != agent.id:
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan not found or not yours")
 
     entry = svc.get_entry(entry_id, plan_id)
@@ -757,7 +696,7 @@ def complete_entry_execution(
     body: CompleteEntryRequest,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Mark a test plan entry as completed after the agent finishes
@@ -768,7 +707,7 @@ def complete_entry_execution(
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
-    if not plan or plan.agent_id != agent.id:
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan not found or not yours")
 
     entry = svc.get_entry(entry_id, plan_id)
@@ -1005,13 +944,13 @@ def complete_entry_execution(
 )
 def get_execution_progress(
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return a summary of execution progress for the active session."""
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
-    if not plan or plan.agent_id != agent.id:
+    if not plan:
         raise HTTPException(status_code=404, detail="Plan not found or not yours")
 
     session = (
@@ -1162,7 +1101,7 @@ def complete_execution_session(
     # v2.310.0 — the shared workflow guard for session-id-keyed execution
     # routes. It replaces the inline checks that drifted apart between this
     # route and its sibling; see require_execution_session_scope.
-    agent: Agent = Depends(require_execution_session_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Transition the execution session from active/paused to a terminal state (v2.45.2).
@@ -1220,26 +1159,19 @@ def complete_execution_session(
         .filter(ExecutionSession.id == session_id)
         .first()
     )
-    if not session or not plan or plan.agent_id != agent.id:
+    if not session or not plan:
         raise HTTPException(
             status_code=404,
             detail="Execution session not found or not bound to your plan",
         )
 
-    # v2.84.1 — the URL is keyed by session_id, not plan_id, so
-    # require_plan_scope can't gate this directly (it declares plan_id as a
-    # Path() param, which FastAPI would then demand in the URL template -> 422
-    # on every request).  v2.310.0 moved the assist/recon rejection to
-    # ``require_execution_session_scope`` on the route, shared with
-    # /environment: this route relied on the ``write:execution`` capability to
-    # turn assist keys away, and when that was deleted an assist key could mark
-    # someone else's execution session completed.  What stays here is the
-    # per-plan check, because only the handler knows this session's plan.
-    scoped_plan = getattr(request.state, "scoped_plan_id", None)
-    if scoped_plan is not None and scoped_plan != plan.id:
+    # v2.337.0 — the run must belong to THIS agent session (the ownership
+    # boundary the per-key scope used to carry).  A session that did not open
+    # this run cannot close it.
+    if session.agent_session_id != getattr(request.state, "agent_session_id", None):
         raise HTTPException(
             status_code=403,
-            detail="This API key is scoped to a different test plan.",
+            detail="This execution run was opened by a different session.",
         )
 
     terminal_states = {

@@ -35,9 +35,6 @@ from app.db.models_agent import (
     ActorType,
     Agent,
     AgentSession,
-    AssistSession,
-    ExecutionSession,
-    ReconSession,
 )
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
@@ -51,6 +48,8 @@ from app.core.security import check_permissions
 from app.db.models_tools import TOOL_APPROVED
 from app.services.host_follow_service import HostFollowService
 from app.services.tool_registry_service import record_suggestion
+from app.services.agent_session_service import session_phase_summary, propagate_probe
+from app.services.agent_environment_probe_service import apply_environment_probe
 
 from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
@@ -59,10 +58,11 @@ from app.api.v1.endpoints.agent_schemas import (
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest,
     AgentHostUpdate, AgentHostUpdateResponse,
     AgentToolSuggestionRequest, AgentToolSuggestionResponse,
+    EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
 )
 from app.api.v1.endpoints.agent_common import (
     _scoped_host_ids_subq, _scoped_scan_ids_subq,
-    _apply_agent_host_filters, _batch_host_enrichment,
+    _apply_agent_host_filters, _batch_host_enrichment, load_agent_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,51 +121,6 @@ def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
 # ---------------------------------------------------------------------------
 # Data-read endpoints
 # ---------------------------------------------------------------------------
-
-def _workflow_session_row(db: Session, request: Request, session):
-    """The per-workflow session row — AssistSession / ReconSession / ExecutionSession.
-
-    ``AgentSession`` unified the *binding*; the workflow tables it points at were
-    kept (composition, not inheritance), so `/agent/recon/sessions/{id}/…` and
-    `/agent/execution-sessions/{id}/…` are keyed by ReconSession / ExecutionSession
-    ids — different numbers from the AgentSession id a key resolves to. Returning
-    both is the difference between a caller filling that path itself and getting
-    a 404 it can't diagnose.
-
-    v2.313.0 — returns the row rather than just its id, because the environment
-    probe lives on it too.  ``apply_environment_probe`` is handed the *detail*
-    row by all three workflows, so ``AgentSession.environment_probed_at`` is
-    written by nothing and identity read a column that is always NULL: an agent that
-    had just recorded its environment was told ``environment_probed: false``
-    while ``assist_session_info`` said true, on every workflow.  (The unused
-    columns on ``agent_sessions`` are left alone — removing them is part of the
-    session-table expand/contract, not of fixing a wrong answer.)
-    """
-    if session is not None:
-        model = {
-            "assist": AssistSession,
-            "recon": ReconSession,
-            "execution": ExecutionSession,
-        }.get(session.workflow)
-        if model is not None:
-            found = (
-                db.query(model)
-                .filter(model.agent_session_id == session.id)
-                .first()
-            )
-            if found is not None:
-                return found
-    # Legacy keys minted before the unified binding carry the id on the key row
-    # itself. plan_generation has no per-workflow session at all — None is the
-    # honest answer there, not a fallback to something unrelated.
-    legacy_assist = getattr(request.state, "scoped_assist_session_id", None)
-    if legacy_assist is not None:
-        return db.query(AssistSession).filter(AssistSession.id == legacy_assist).first()
-    legacy_recon = getattr(request.state, "scoped_recon_session_id", None)
-    if legacy_recon is not None:
-        return db.query(ReconSession).filter(ReconSession.id == legacy_recon).first()
-    return None
-
 
 class SessionRenewResponse(BaseModel):
     """The new deadline on the SAME token — nothing to re-bootstrap."""
@@ -255,10 +210,6 @@ def get_agent_identity(
     session are what every other call is scoped to, and the operator is who the
     key acts for — which its own writes would reveal one 403 at a time anyway.
     """
-    # No legacy-hit log here: unlike the browse routes below, this one is
-    # meant to be called by every workflow, so an unscoped caller is not a
-    # deprecation signal.
-    workflow_family = getattr(request.state, "key_workflow", None)
     session_id = getattr(request.state, "agent_session_id", None)
     session = (
         db.query(AgentSession).filter(AgentSession.id == session_id).first()
@@ -285,19 +236,23 @@ def get_agent_identity(
         and check_permissions(project_role, ProjectRole.ANALYST.value)
     )
 
-    workflow_session = _workflow_session_row(db, request, session)
+    # v2.337.0 — the phases this session has open, so the MCP layer can fill
+    # tool arguments (a recon_session_id, an execution session's plan_id) and
+    # the client can see what is in flight without probing surfaces.
+    phases = session_phase_summary(db, session) if session is not None else {}
 
     return AgentIdentity(
-        # Fall back to the coarse family for a legacy key with no session row —
-        # it is the most specific thing that is still true.
-        workflow=(session.workflow if session is not None else workflow_family),
-        workflow_family=workflow_family,
+        workflow=(session.workflow if session is not None else None),
+        workflow_family=(session.workflow if session is not None else None),
         session_id=session_id,
+        # A single active phase resolves cleanly; ambiguity (several open)
+        # returns None here and the agent names the one it means per call.
         workflow_session_id=(
-            workflow_session.id if workflow_session is not None else None
+            phases.get("recon_session_id") or phases.get("execution_session_id")
         ),
-        plan_id=getattr(request.state, "key_plan_id", None),
-        scope_id=getattr(request.state, "scoped_scope_id", None),
+        plan_id=phases.get("plan_id"),
+        scope_id=None,
+        open_phases=phases,
         project_id=agent.project_id,
         project_name=(
             db.query(Project.name).filter(Project.id == agent.project_id).scalar()
@@ -306,15 +261,56 @@ def get_agent_identity(
         agent_name=agent.name,
         operator=operator,
         can_write_project_data=can_write_project_data,
-        # Read from the row the probe actually writes — see
-        # _workflow_session_row. Reading `session` here reported false forever.
         environment_probed=(
-            workflow_session is not None
-            and workflow_session.environment_probed_at is not None
+            session is not None and session.environment_probed_at is not None
         ),
         key_expires_at=getattr(request.state, "key_expires_at", None),
         renew_path=AGENT_SESSION_RENEW_PATH,
         renewable_until=session_renewal_deadline(session),
+    )
+
+
+@router.post(
+    "/session/environment",
+    response_model=EnvironmentProbeResponse,
+    summary="Record this session's operator environment (MANDATORY first step)",
+)
+def record_session_environment(
+    body: EnvironmentProbeRequest,
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Persist the environment probe onto the session (v2.337.0).
+
+    One probe per session — it replaces the three per-phase probe endpoints.
+    The probe is snapshotted onto every recon/execution run the session opens
+    (and refreshed on the open runs when re-posted) so command-flavour choices
+    match this operator's host. Session-metadata write: allowed for any
+    operator whose membership is current, regardless of role.
+    """
+    session = load_agent_session(db, request)
+    apply_environment_probe(
+        session=session,
+        body=body,
+        request=request,
+        agent=agent,
+        active_statuses={"active"},
+        session_kind="session",
+    )
+    propagate_probe(db, session)
+    db.commit()
+    db.refresh(session)
+    return EnvironmentProbeResponse(
+        session_id=session.id,
+        session_type="session",
+        probed_at=session.environment_probed_at,
+        probed_by_user_id=session.environment_probed_by_user_id,
+        probed_from_ip=session.environment_probed_from_ip,
+        environment=EnvironmentSummary(**(session.environment or {})),
+        agent_model=session.generated_by_model,
+        agent_tool=session.generated_by_tool,
+        agent_prompt_version=session.prompt_version,
     )
 
 

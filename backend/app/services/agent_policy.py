@@ -103,12 +103,28 @@ _READ_BACK_HEADER = (
     "**FIRST MESSAGE — state the ground rules back to the operator (mandatory):**"
 )
 
-# Per-workflow: the four things the operator needs to hear before work starts.
-# Recon and execution run commands on the machine; plan generation and assist
-# only read and write data, so asking them to recite a working directory would
-# be reciting something that does not apply — and a rule that obviously does not
-# apply is how a read-back turns into boilerplate nobody reads.
+# v2.337.0 — one session spans every kind of work, so the read-back is in two
+# layers.  At session start the agent states the SESSION's bounds (project,
+# operator, what it may write, that nothing runs until a phase is opened).
+# When it opens a phase that runs commands — a recon run, an execution run —
+# the phase-start response carries a second read-back for THAT phase's bounds
+# (this scope's CIDRs, this plan's hosts, the working directory), which is the
+# moment those facts exist and can be wrong.  Drafting a plan gets its own,
+# shorter one.  Reciting a working directory at session start, before any
+# scope is chosen, would be boilerplate nobody reads.
 _READ_BACK_ITEMS = {
+    "project": [
+        "which project you are working in, and as whom — the operator whose "
+        "permissions this session carries",
+        "what you may write, if anything (notes, review status, hostname/OS, "
+        "draft plans; scan data only through a recon run), and that you cannot "
+        "approve a plan",
+        "that you will run nothing against any host until you have opened a "
+        "reconnaissance or execution run and read its bounds back to them",
+        "what you will stop and ask about before acting (an unapproved tool, a "
+        "target outside a declared scope, anything written outside the working "
+        "directory, changes to their machine)",
+    ],
     "execution": [
         "the working directory every command will run from and write into",
         "which tools you may run without asking, and that anything else stops for approval",
@@ -145,17 +161,20 @@ _READ_BACK_ITEMS = {
 }
 
 
-def render_read_back(workflow: str) -> str:
-    """The mandatory "say the rules back" block for *workflow*.
+def render_read_back(workflow: str = "project") -> str:
+    """The mandatory "say the rules back" block for a session or a phase.
 
-    Falls back to the assist items for an unknown workflow — the least-privileged
-    set, so a new workflow that forgets to register here under-claims rather than
-    over-claims.
+    ``project`` is the session-start block.  ``recon`` / ``execution`` /
+    ``plan_generation`` are the phase-start blocks the start endpoints return
+    in their ``read_back`` field.  Falls back to the ``project`` items for an
+    unknown key — the least-privileged set, so a new phase that forgets to
+    register here under-claims rather than over-claims.
     """
-    items = _READ_BACK_ITEMS.get(workflow, _READ_BACK_ITEMS["assist"])
+    items = _READ_BACK_ITEMS.get(workflow, _READ_BACK_ITEMS["project"])
+    what = "tool call or command" if workflow == "project" else "command in this phase"
     lines = [
         _READ_BACK_HEADER,
-        "Before your first tool call or command, tell the operator — in your own "
+        f"Before your first {what}, tell the operator — in your own "
         "words, specific to this session, not a recital of this text:",
     ]
     lines.extend(f"- {item}" for item in items)
@@ -165,6 +184,20 @@ def render_read_back(workflow: str) -> str:
         "act, which is the only chance either of you gets."
     )
     return "\n".join(lines) + "\n"
+
+
+def render_phase_read_back(phase: str, *, facts: List[str]) -> str:
+    """The read-back a phase-start response carries, with the phase's own
+    facts (the CIDRs, the plan's hosts, the working directory) listed so the
+    agent restates THESE rather than a template.
+
+    ``facts`` are the concrete bounds; the generic items say what to cover.
+    """
+    block = render_read_back(phase)
+    if facts:
+        block += "\nThe bounds of this phase, which your read-back must name:\n"
+        block += "\n".join(f"- {f}" for f in facts) + "\n"
+    return block
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from app.db.session import get_db
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models import HostFollow
 from app.db.models_auth import User, UserRole, APIKey
-from app.db.models_agent import Agent, AgentRateBucket
+from app.db.models_agent import Agent, AgentRateBucket, AgentSessionWorkflow
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import settings
 from app.core.security import check_permissions
@@ -228,19 +228,11 @@ def authenticate_for_renewal(
     request.state.api_key_prefix = api_key_obj.key_prefix
     session = api_key_obj.agent_session
     request.state.agent_session_id = session.id if session is not None else None
-    # Per-workflow attribution, so a renewal lands on the same timeline as the
-    # calls around it rather than as an orphan row. Mirrors get_current_agent's
-    # normalization so the audit middleware can resolve the recon/assist detail
-    # session from agent_session_id (the legacy assist_session_id column is gone).
-    if session is not None:
-        if session.workflow in ("plan_generation", "execution"):
-            request.state.key_workflow = "plan"
-            request.state.scoped_plan_id = session.plan_id
-        elif session.workflow == "recon":
-            request.state.key_workflow = "recon"
-            request.state.scoped_scope_id = session.scope_id
-        elif session.workflow == "assist":
-            request.state.key_workflow = "assist"
+    # Same attribution the normal chain stamps (see get_current_agent), so a
+    # renewal lands on the session's timeline rather than as an orphan row.
+    request.state.agent_session_workflow = (
+        session.workflow if session is not None else None
+    )
     return api_key_obj
 
 
@@ -342,74 +334,63 @@ def get_current_agent(
     if not agent:
         raise HTTPException(status_code=401, detail="Agent inactive or not found")
 
-    # v2.116.0 (WS2c) — the key's scope binding is its AgentSession (the four
-    # legacy per-workflow FK columns were DROPPED in the contract phase). Every
-    # agent key carries one — mint paths set it and a backfill guaranteed it —
-    # so a null binding on an agent key is an orphaned/corrupt credential. Fail
-    # CLOSED rather than treat it as unscoped, which was historically the
-    # MOST-privileged outcome (unscoped global keys, abolished v2.295.0).
+    # The key's binding is its AgentSession.  Every agent key carries one —
+    # mint paths set it and a backfill guaranteed it — so a null binding on an
+    # agent key is an orphaned/corrupt credential.  Fail CLOSED rather than
+    # treat it as unscoped, which was historically the MOST-privileged outcome
+    # (unscoped global keys, abolished v2.295.0).
     agent_session = api_key_obj.agent_session
     if agent_session is None:
         logger.warning(
             "rejecting agent key %s (agent_id=%s) with no AgentSession binding — "
-            "unscoped global keys were removed in v2.295.0 and the legacy scope "
-            "columns in the contract phase; start a workflow session to mint one",
+            "start an agent session from the project UI to mint one",
             api_key_obj.key_prefix, api_key_obj.agent_id,
         )
         raise HTTPException(
             status_code=403,
             detail=(
-                "This agent key has no workflow-session binding. Start a "
-                "plan-generation, execution, recon, or assist session from the "
-                "project UI to mint a scoped key."
+                "This agent key is not bound to a session. Start an agent "
+                "session from the project's Agent Sessions page to mint one."
             ),
         )
-
-    _wf = agent_session.workflow
-    # The UN-normalized workflow, kept alongside the normalized key_workflow
-    # (v2.318.0): key_workflow collapses plan_generation + execution into "plan"
-    # for the shared per-plan scope check, but the plan-DRAFTING writes must tell
-    # them apart — an execution key records results, it does not draft entries.
-    request.state.key_workflow_raw = _wf
-    if _wf in ("plan_generation", "execution"):
-        request.state.key_workflow = "plan"
-        request.state.key_plan_id = agent_session.plan_id
-    elif _wf == "recon":
-        request.state.key_workflow = "recon"
-        request.state.key_plan_id = None
-    elif _wf == "assist":
-        request.state.key_workflow = "assist"
-        request.state.key_plan_id = None
-    else:
-        # Fail CLOSED: bound to a session whose workflow this code can't classify
-        # (data corruption, or a new workflow added without teaching the guards).
+    if agent_session.status != "active":
+        # An ended session's keys are revoked on the way out, so this is only
+        # reachable for a session lapsed by the sweep between two requests.
+        # A key must not outlive its session.
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "session_ended",
+                "recoverable": False,
+                "message": (
+                    "This key's session has ended. Ask the operator to start a "
+                    "new session; save any output you are holding first."
+                ),
+            },
+        )
+    if agent_session.workflow not in {w.value for w in AgentSessionWorkflow}:
+        # Fail CLOSED on a row this code can't classify (data corruption).
         logger.warning(
             "agent key %s bound to agent_session %s with unrecognized workflow "
             "%r — denying",
-            api_key_obj.key_prefix, agent_session.id, _wf,
+            api_key_obj.key_prefix, agent_session.id, agent_session.workflow,
         )
         raise HTTPException(
             status_code=403,
-            detail="API key is bound to an unrecognized workflow; regenerate it.",
+            detail="API key is bound to an unrecognized session kind; start a new session.",
         )
 
+    # v2.337.0 — a key no longer binds a workflow, a plan or a scope.  What
+    # the agent is working on is a phase it opens (recon run / plan draft /
+    # execution run), resolved by the handlers from the session.  The label
+    # is stashed only so the audit middleware can attach legacy detail rows.
     request.state.agent_session_id = agent_session.id
-    # Scope bindings downstream deps read off request.state, now derived from the
-    # AgentSession rather than the dropped columns. plan_id / scope_id come
-    # straight off the session (no query); the recon/assist DETAIL-session ids
-    # are resolved where they're actually needed (the session loaders + the audit
-    # middleware) from agent_session_id, so they are not pre-stashed here.
-    request.state.scoped_plan_id = (
-        agent_session.plan_id if _wf in ("plan_generation", "execution") else None
-    )
-    request.state.scoped_scope_id = agent_session.scope_id if _wf == "recon" else None
+    request.state.agent_session_workflow = agent_session.workflow
 
     # The human this session acts on behalf of.  ``enforce_agent_operator_access``
     # resolves their role against this on every request, and agent-authored
     # notes are attributed to them with actor_type='agent'.
-    request.state.key_operator_id = (
-        agent_session.started_by_id if agent_session is not None else None
-    )
+    request.state.key_operator_id = agent_session.started_by_id
 
     # v2.24.0 — agent_api_call middleware reads these after the response
     # is returned (when request.state survives via Starlette's request
@@ -607,9 +588,9 @@ AGENT_SESSION_METADATA_WRITES = frozenset({
     # reach it). Listed for completeness — if it were ever moved back under the
     # gate, it must not become a project write.
     ("POST", "/session/renew"),
-    ("POST", "/assist/sessions/{session_id}/environment"),
-    ("POST", "/execution-sessions/{session_id}/environment"),
-    ("POST", "/recon/sessions/{session_id}/environment"),
+    # v2.337.0 — one probe per session, on the session (the three per-phase
+    # probe routes are gone with the per-workflow keys).
+    ("POST", "/session/environment"),
     ("POST", "/feedback"),
     ("POST", "/tool-suggestions"),
 })
@@ -768,234 +749,16 @@ def enforce_agent_operator_access(
     return agent
 
 
-def require_plan_scope(
-    request: Request,
-    plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
-) -> Agent:
-    # v2.91.4 (third code review #3) — body is sync.  `def` so the
-    # FastAPI dispatcher uses the thread pool.
-    """Rate-limited agent auth + per-plan scope enforcement.
-
-    Use on any agent endpoint that takes a ``plan_id`` path parameter.
-    If the caller's API key is scoped to a specific test plan (the
-    normal case for keys minted by ``/generate`` or ``/execute``), the
-    request ``plan_id`` must match — otherwise 403.
-
-    v2.295.0 — unscoped global keys no longer reach this check at all;
-    they are rejected during authentication.  This guard previously let
-    them through to *every* plan in the project.
-
-    **Also rejects scope-bound (recon) keys outright** — recon keys
-    have no business touching test plans.  Use ``require_recon_scope``
-    on recon endpoints instead.  Same for assist keys — they're
-    read-only and have no business creating or touching plans.
-    """
-    # WS2c — single workflow check (was a three-way deny-matrix over the
-    # legacy scoped_plan/scope/assist columns).
-    workflow = getattr(request.state, "key_workflow", None)
-    if workflow == "recon":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a reconnaissance run against "
-                "a scope and cannot access test plan endpoints. Recon "
-                "keys upload scanner output; they do not create plans. "
-                "Use /agent/recon/* or generate a plan-generation key."
-            ),
-        )
-    if workflow == "assist":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a read-only assist session "
-                "and cannot access test plan endpoints. Use /agent/assist/* "
-                "for queries; generate a plan-generation key from the "
-                "Test Plans UI for plan work."
-            ),
-        )
-    if workflow == "plan":
-        key_plan_id = getattr(request.state, "key_plan_id", None)
-        if key_plan_id is not None and key_plan_id != plan_id:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "This API key is scoped to a different test plan. "
-                    "Per-plan keys cannot access endpoints for other plans — "
-                    "generate a new key for the plan you're working on."
-                ),
-            )
-    return agent
-
-
-def require_plan_generation_scope(
-    request: Request,
-    plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
-) -> Agent:
-    """Per-plan scope PLUS: the key must belong to the plan_generation workflow.
-
-    v2.318.0.  ``require_plan_scope`` normalizes plan_generation and execution
-    into one ``"plan"`` workflow (they share the per-plan binding), which is
-    right for the reads and for the execution endpoints.  But the plan-DRAFTING
-    WRITES — add/patch entries, edit the plan, submit — are stage-2 work: an
-    execution key records results against an APPROVED plan, it must not mutate
-    the plan's entry set.  The service even allows ``add_entries`` on an
-    approved/in_progress plan (for the operator's JWT/UI path), so without this
-    an execution agent could inject un-vetted entries into the plan it is
-    executing — the ``_EXEC`` tool list implies it cannot, but the endpoint let
-    it.  Legacy keys (``key_workflow_raw`` unset) are unaffected; only a key
-    explicitly bound to the ``execution`` workflow is refused here.
-    """
-    if getattr(request.state, "key_workflow_raw", None) == "execution":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This is an execution-session key; it records results against "
-                "an approved plan and cannot draft or modify plan entries. "
-                "Plan authoring is the plan-generation workflow — generate a "
-                "plan-generation key, or edit the plan in the UI."
-            ),
-        )
-    return agent
-
-
-def require_execution_session_scope(
-    request: Request,
-    agent: Agent = Depends(check_agent_rate_limit),
-) -> Agent:
-    """Workflow guard for execution routes keyed by ``session_id``.
-
-    v2.310.0.  ``require_plan_scope`` cannot gate these — it reads a ``plan_id``
-    path parameter, and these URLs carry an execution-session id instead. So the
-    boundary was enforced inline, per route, and that is how it went wrong:
-
-    Both routes used to sit behind ``require_capability(write:execution)``,
-    which was doing two jobs at once — granting authority, and keeping assist
-    keys out, since assist sessions never carried that capability. Deleting the
-    capability system (v2.309.0) removed the second job silently. The
-    ``/environment`` route got its boundary restored because a test covered it;
-    ``/complete`` did not, and an assist key could mark someone else's execution
-    session completed — a terminal state transition, recorded as the agent's.
-
-    One shared guard so the next session-id-keyed route inherits it instead of
-    re-deriving it. Per-plan scoping still belongs to the handler, which knows
-    which plan the session hangs off.
-    """
-    workflow = getattr(request.state, "key_workflow", None)
-    if workflow == "assist":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to an assist session and cannot act on "
-                "execution sessions. Use the plan-scoped key minted by /execute."
-            ),
-        )
-    if workflow == "recon" or getattr(request.state, "scoped_scope_id", None) is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a reconnaissance run and cannot act "
-                "on execution sessions. Use the plan-scoped key minted by "
-                "/execute."
-            ),
-        )
-    return agent
-
-
-def require_recon_scope(
-    request: Request,
-    agent: Agent = Depends(check_agent_rate_limit),
-) -> Agent:
-    """Rate-limited agent auth + recon-scope enforcement.
-
-    Use on any ``/agent/recon/*`` endpoint.  The caller's API key must
-    have ``scope_id`` set — plan-scoped keys (from /generate or
-    /execute), assist keys, and unscoped global keys are all rejected.
-    The ReconSession / scope the key binds to is available on
-    ``request.state.scoped_scope_id`` for the handler to use.
-
-    v2.11.0 — part of the agentic recon ingest workflow.  Recon is
-    strictly an ingestion pipeline; the agent discovers hosts, not
-    plans them.
-    """
-    workflow = getattr(request.state, "key_workflow", None)
-    if workflow == "assist":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is scoped to a read-only assist session "
-                "and cannot access recon endpoints. Recon ingest writes "
-                "scan output; assist keys are read-only. Start a recon "
-                "session via /projects/{id}/scopes/{scope_id}/recon/start."
-            ),
-        )
-    if workflow != "recon":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This endpoint requires a reconnaissance-scoped API key "
-                "(minted by POST /projects/{id}/scopes/{scope_id}/recon/start). "
-                "Plan-generation and execution keys do not have access to "
-                "recon endpoints."
-            ),
-        )
-    return agent
-
-
-def require_assist_scope(
-    request: Request,
-    agent: Agent = Depends(check_agent_rate_limit),
-) -> Agent:
-    """Rate-limited agent auth + assist-session scope enforcement.
-
-    v2.64.0 — used on every ``/agent/assist/*`` endpoint.  The
-    caller's API key must have ``assist_session_id`` set; plan-
-    scoped, recon-scoped, and unscoped global keys are all rejected.
-    The AssistSession id is available on
-    ``request.state.scoped_assist_session_id``; the handler
-    resolves the session row from there.
-
-    Assist sessions are intentionally read-only (no execution, no
-    plan creation, no follow mutations in v1).  The router-level
-    decision keeps things simple: only GETs are exposed under
-    /agent/assist/, plus a single POST for the environment probe.
-    """
-    workflow = getattr(request.state, "key_workflow", None)
-    if workflow == "plan":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is plan-scoped and cannot access assist "
-                "endpoints. Start an assist session via POST "
-                "/projects/{id}/assist/start to mint an assist key."
-            ),
-        )
-    if workflow == "recon":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This API key is recon-scoped and cannot access assist "
-                "endpoints. Start an assist session via POST "
-                "/projects/{id}/assist/start to mint an assist key."
-            ),
-        )
-    if workflow != "assist":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This endpoint requires an assist-scoped API key "
-                "(minted by POST /projects/{id}/assist/start). "
-                "Plan-generation, execution, and recon keys do not "
-                "have access to assist endpoints."
-            ),
-        )
-    # Stash the key's agent project so _load_assist_session can re-assert
-    # session.project_id == agent.project_id (defence-in-depth against a
-    # hand-edited api_keys row pairing an agent with another project's
-    # session — mirrors the recon loader's scope_id re-check).
-    request.state.scoped_agent_project_id = agent.project_id
-    return agent
+# v2.337.0 — ``require_plan_scope``, ``require_plan_generation_scope``,
+# ``require_execution_session_scope``, ``require_recon_scope`` and
+# ``require_assist_scope`` are gone.  They gated each agent router on the
+# workflow a key was minted for; a key no longer has one.  What they were
+# also doing — binding a call to its plan / scope / session — now happens in
+# the handlers, which resolve the PHASE the call is about (the recon run,
+# the plan, the execution run) from the session the key belongs to, and the
+# object-level gates (plan must be approved to execute, an execution run
+# belongs to one session, a recon run is opened against a scope in the
+# project) are what keep the record trustworthy.
 
 
 # v2.295.0 — ``deny_scoped_keys`` is gone with the unscoped global key.  It

@@ -1,19 +1,22 @@
 """
 Agent Prompt Service
 
-Builds the human-readable instruction blocks handed to AI agents for two
-flows: (1) populating a new test plan, and (2) executing an approved test
-plan.  Both flows previously had their instructions hardcoded inline in
-``test_plans.py``; centralizing them here lets us version the prompts,
-emit identical text from future export-bundle / report flows, and attach
-a ``prompt_version`` to any feedback collected from agents.
+v2.337.0 — the four per-workflow prompts (plan generation, execution, recon,
+assist) collapse into ONE session prompt.  A single project-scoped session
+lets the agent query the inventory, open a reconnaissance run against a scope,
+draft a plan, and execute an approved one; the operational detail for each of
+those is served by the workflow-sliced guide (``/agents-guide?workflow=…``)
+and by the read-back each phase-start endpoint returns, not by four separate
+start prompts.
 
-The ``PROMPT_VERSION`` constant MUST be bumped whenever the instruction
-content changes in a way that affects agent behavior.  Agent feedback
-records stamp this version so prompt revisions can be compared over time.
-Bump it by PREPENDING an entry to ``PROMPT_VERSION_HISTORY`` in
-``agent_prompt_history`` — the constant below is derived from the newest
-entry, so the version and its changelog can never drift.
+``build_session_instructions`` is the session-start block.  The per-phase
+read-backs live in ``agent_policy.render_phase_read_back`` and are emitted by
+the phase-start endpoints.
+
+The ``PROMPT_VERSION`` constant MUST be bumped whenever the instruction content
+changes in a way that affects agent behavior — prepend an entry to
+``PROMPT_VERSION_HISTORY`` in ``agent_prompt_history`` (the constant is derived
+from the newest entry, so version and changelog can't drift).
 """
 
 import json
@@ -23,36 +26,24 @@ from typing import Any, Dict, List, Optional
 from fastapi import Request
 
 from app.core.config import settings
-# PROMPT_VERSION is derived from the newest PROMPT_VERSION_HISTORY entry and
-# re-exported here so existing importers (bundle_service, etc.) keep importing
-# it from agent_prompt_service unchanged.  The ~6.6 KB changelog that used to
-# be a trailing comment on this constant now lives as structured data in
-# agent_prompt_history.
 from app.services.agent_prompt_history import PROMPT_VERSION
-from app.services.agent_policy import render_read_back, render_key_expiry_guidance, render_safety_rules
+from app.services.agent_policy import (
+    render_read_back,
+    render_key_expiry_guidance,
+    render_safety_rules,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# The system identity UUID is immutable after first boot, so cache the first
-# successful lookup process-wide instead of opening a fresh SessionLocal() +
-# round-trip on every prompt/context render.  Only a non-None result is
-# cached — a None means the row isn't seeded yet (first-boot race), and we
-# want to keep retrying until it appears.
 _INSTANCE_ID_CACHE: Optional[str] = None
 
 
 def _load_instance_id() -> Optional[str]:
     """Look up the system identity UUID for the provenance block.
 
-    Returns None if the row isn't seeded yet (first boot in progress)
-    so callers can render a graceful "(pending)" placeholder.
-
-    Logs at exception level if the lookup fails for any other reason
-    (DB unreachable, schema drift, ORM mapping error) so a real
-    bootstrap problem surfaces in operator logs instead of being
-    silently masked by the same "(pending)" placeholder that a fresh
-    install legitimately produces (review C-PR-5).
+    Returns None if the row isn't seeded yet (first boot). Logs at exception
+    level for any other failure so a real bootstrap problem surfaces.
     """
     global _INSTANCE_ID_CACHE
     if _INSTANCE_ID_CACHE is not None:
@@ -62,25 +53,16 @@ def _load_instance_id() -> Optional[str]:
         from app.db.session import SessionLocal
         from app.db.models_auth import SystemIdentity
         with SessionLocal() as db:
-            # Ordered so every worker agrees on which row is the identity —
-            # see seed_system_identity (v2.298.0). An agent checks its
-            # instructions against this value; two workers naming different
-            # instances would make that check worse than useless.
             row = db.query(SystemIdentity).order_by(SystemIdentity.id).first()
             _INSTANCE_ID_CACHE = row.instance_id if row else None
             return _INSTANCE_ID_CACHE
     except (OperationalError, ProgrammingError) as exc:
-        # Expected during boot before migrations land or if Postgres is
-        # briefly unavailable. Log at warning so an operator notices a
-        # persistent failure but doesn't get paged for first-boot races.
         logger.warning(
             "system_identity lookup failed (db or schema unavailable); "
             "provenance block will show '(pending)': %s", exc,
         )
         return None
     except Exception:
-        # Anything else — ORM mapper drift, programming error in this
-        # path — is a real bug we want to see.
         logger.exception(
             "Unexpected error loading system_identity for provenance block; "
             "provenance block will show '(pending)' but check the bootstrap path"
@@ -97,26 +79,7 @@ def build_provenance_block(
     target_label: str,
     timestamp_iso: str,
 ) -> str:
-    """Prepend a standardized provenance + identity-check header to any agent prompt.
-
-    This is the trust anchor for hesitant agents.  The block tells the
-    agent:
-
-      1. Which BlueStick instance generated this prompt (UUID)
-      2. Who authorized the action and when
-      3. How to verify once, up front, that the URL they're being
-         asked to curl is the same instance the prompt claims
-      4. What to do if the check fails
-
-    Verification is a single call to ``/.well-known/networkmapper.json``
-    at the start of the session.  Once the check passes, the session
-    is trusted for the duration of the agent's API key — the block
-    does not tell the agent to re-check on every request.
-
-    See ``_seed_system_identity`` in ``main.py`` for where the
-    instance_id is generated, and the ``/.well-known/networkmapper.json``
-    endpoint for what the agent will see when it verifies.
-    """
+    """Prepend the standardized provenance + identity-check header to a prompt."""
     instance_id = _load_instance_id() or "(pending — retry after first boot)"
     origin = base_url.rsplit("/api/v1", 1)[0]
     user_suffix = f" (id {user_id})" if user_id is not None else ""
@@ -143,14 +106,7 @@ def build_provenance_block(
 
 
 def resolve_base_url(request: Optional[Request]) -> str:
-    """Return the externally-reachable ``{origin}/api/v1`` base URL.
-
-    The request host may be an internal Docker hostname that remote agents
-    can't reach.  Prefer the first configured CORS origin (which matches
-    the user-facing URL), fall back to X-Forwarded-Host, then the request
-    host.  Works when ``request`` is ``None`` (e.g. background tasks) by
-    falling back to a localhost default.
-    """
+    """Return the externally-reachable ``{origin}/api/v1`` base URL."""
     cors = settings.CORS_ORIGINS
     if cors:
         origin = cors[0].rstrip("/")
@@ -165,24 +121,11 @@ def resolve_base_url(request: Optional[Request]) -> str:
             origin = f"{scheme}://{host_hdr}"
     else:
         origin = "https://localhost:3000"
-
     return f"{origin}/api/v1"
 
 
 def _feedback_section(base_url: str, source: str, context: Dict[str, Any]) -> str:
-    """Standard feedback-request block appended to every agent prompt.
-
-    Agents are asked to POST structured feedback at the end of the
-    workflow so developers can track API friction, missing tools, and
-    prompt-clarity issues across runs.  ``source`` identifies which
-    prompt produced the feedback (``plan_generation`` or
-    ``in_session_execution``) and ``context`` carries plan / session
-    identifiers the agent should echo back verbatim.
-    """
-    # Use json.dumps for the value side so future non-int context (str /
-    # bool / None) still emits valid JSON; ``repr`` only happens to work
-    # while every caller passes int IDs.  Keys stay as plain strings —
-    # the existing callers only use ASCII identifiers.
+    """Standard feedback-request block appended to the session prompt."""
     ctx_lines = "\n".join(f'  "{k}": {json.dumps(v)},' for k, v in context.items())
     return (
         f"\n---\n\n"
@@ -202,43 +145,24 @@ def _feedback_section(base_url: str, source: str, context: Dict[str, Any]) -> st
         f"  ],\n"
         f'  "tool_suggestions": [\n'
         f'    // CLI binaries only (e.g. "naabu", "nuclei", "subfinder").\n'
-        f'    // Workflow hints, grouping strategies, or general suggestions\n'
-        f'    // belong in `friction_notes`, not here.\n'
         f'    {{"name": "binary-name", "category": "recon|enum|exploit|post|reporting", "rationale": "what this binary does that the catalog is missing"}}\n'
         f"  ],\n"
         f'  "friction_notes": "Free-text: what was confusing, what took extra effort, what you had to guess.",\n'
         f'  "agent_metrics": {{\n'
         f'    "agent_name": "claude-code|codex|chatgpt|other",\n'
-        f'    "model": "model id if known (e.g. claude-opus-4-6)",\n'
-        f'    "context_window_tokens": 0,\n'
-        f'    "context_used_tokens": 0,\n'
-        f'    "context_used_pct": 0.0,\n'
-        f'    "input_tokens_total": 0,\n'
-        f'    "output_tokens_total": 0,\n'
-        f'    "cache_read_tokens": 0,\n'
-        f'    "cache_write_tokens": 0,\n'
+        f'    "model": "model id if known",\n'
         f'    "tool_calls_total": 0,\n'
-        f'    "wall_clock_seconds": 0,\n'
-        f'    "notes": "Any other metrics you can report (cost estimate, rate-limit hits, compactions, etc.)"\n'
+        f'    "notes": "cost estimate, rate-limit hits, compactions, etc."\n'
         f"  }}\n"
         f"}}\n"
         f"```\n\n"
-        f"**Metrics guidance:** Report any of the `agent_metrics` fields you can access — "
-        f"omit (or set to `null`) anything your environment does not expose. If you cannot "
-        f"access *any* metrics, still submit `agent_metrics` with `agent_name` filled in and "
-        f"a brief note explaining why. This data is used to compare agents and refine prompts.\n"
+        f"**Metrics guidance:** report any `agent_metrics` fields you can access; "
+        f"omit anything your environment does not expose.\n"
     )
 
 
 def _render_filter_criteria(fc: Dict[str, Any]) -> str:
-    """Render the user's host-filter selections as a readable bullet list.
-
-    ``fc`` is the ``filter_criteria`` dict the user assembled in the
-    test-plan UI (subnets / ports / services / vuln toggles / min risk
-    score / search).  The old prompt just dumped the raw dict repr,
-    which was so easy to miss that users reported the filters "did not
-    seem to change the provided instructions" at all.
-    """
+    """Render the user's host-filter selections as a readable bullet list."""
     labels = {
         "subnets": "Subnets",
         "ports": "Ports",
@@ -259,1076 +183,225 @@ def _render_filter_criteria(fc: Dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "  - (none)"
 
 
-def build_plan_generation_instructions(
-    *,
-    request: Optional[Request],
-    plan_id: int,
-    plan_title: str,
-    raw_api_key: str,
-    user_label: str,
-    user_id: Optional[int],
-    filter_criteria: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Instructions for an agent populating a newly-created test plan."""
-    from datetime import datetime, timezone
-    base_url = resolve_base_url(request)
-    # v2.9.6: the ``?workflow=`` query parameter returns only the
-    # plan-generation + shared sections of AGENTS.md, saving ~1400
-    # tokens per fetch vs the full file.  See _slice_agents_md in
-    # backend/app/main.py for the filter semantics.
-    agents_guide_url = f"{base_url}/agents-guide?workflow=plan_generation"
-
-    provenance = build_provenance_block(
-        base_url=base_url,
-        user_label=user_label,
-        user_id=user_id,
-        action="test plan generation",
-        target_label=f"test plan #{plan_id} ({plan_title})",
-        timestamp_iso=datetime.now(timezone.utc).isoformat(),
-    )
-
-    instructions = (
-        provenance +
-        f"## Agent Instructions\n\n"
-        f"You have been assigned to populate a test plan in BlueStick.\n\n"
-        + render_read_back("plan_generation") + "\n"
-        + f"**Workflow-scoped guide:** {agents_guide_url}\n"
-        f"Fetch with `curl -sk '{agents_guide_url}'` for the endpoint schemas, "
-        f"entry format, attribution requirements, and examples you need for "
-        f"plan generation.  The URL includes a workflow filter so you only "
-        f"get the sections relevant to this flow (not the execution docs).\n\n"
-        f"**Base URL:** {base_url}/agent\n\n"
-        f"**Prompt version:** {PROMPT_VERSION}\n\n"
-        f"**Network access:** The API uses HTTPS with a self-signed certificate. "
-        f"All `curl` commands require the `-sk` flags (silent + insecure) to skip "
-        f"certificate verification. If curl to this URL fails due to sandbox "
-        f"restrictions, ask the user to run the command for you or to provide an "
-        f"alternate reachable URL.\n\n"
-        f"**Authentication (include on every request):**\n"
-        f"```\n"
-        f"X-API-Key: {raw_api_key}\n"
-        f"```\n\n"
-        + render_key_expiry_guidance() + "\n"
-        f"**Your Task (complete all steps without stopping):**\n"
-        f"1. `GET {base_url}/agent/test-plans/{plan_id}/context`\n"
-        f"   Fetch candidate hosts. **This endpoint is paginated** — it returns at "
-        f"most `limit` hosts per call (default 500). When `summary.has_more` is "
-        f"true there are more candidates: call it again with "
-        f"`?after_host_id={{summary.next_cursor}}` and keep paging until "
-        f"`has_more` is false. `has_more: true` means *fetch the next page* — it "
-        f"is NOT a cap holding hosts back. You are responsible for **every** "
-        f"candidate host across all pages, not just the first 500. A page can "
-        f"legitimately return zero `candidate_hosts` while the prior page's "
-        f"`has_more` was true (boundary case when the previous page was exactly "
-        f"`limit`) — treat an empty page as *done*, not an error. Report a brief "
-        f"summary to the user (total host count, vuln breakdown), then "
-        f"**continue automatically** to step 2.\n"
-        f"2. `PATCH {base_url}/agent/test-plans/{plan_id}`\n"
-        f"   Set the plan description summarizing your scope, methodology, and "
-        f"prioritization approach.  **Also stamp your identity** so the audit "
-        f"trail records which agent populated the plan: include "
-        f"`generated_by_model` (e.g. `claude-opus-4-7`), `generated_by_tool` "
-        f"(e.g. `claude-code`, `codex`, `chatgpt`), and `prompt_version` "
-        f'(echo back `"{PROMPT_VERSION}"` from this prompt).  These fields '
-        f"are write-once; a later PATCH editing only the description will "
-        f"not overwrite them.\n"
-        f"3. `POST {base_url}/agent/test-plans/{plan_id}/entries`\n"
-        f"   Add structured test entries for candidate hosts.  The context "
-        f"response (step 1) carries `entry_template`, `entry_batch_example`, "
-        f"and `entry_schema` — pattern-match on them directly instead of "
-        f"inferring the request shape from these instructions.  Body is the "
-        f"`entry_batch_example` shape (`{{\"entries\": [...]}}`), up to 500 "
-        f"entries per call. If you selected more than 500 hosts across the paged "
-        f"context, POST in **multiple batches of ≤500** until every selected host "
-        f"has an entry.\n"
-        f"4. `GET {base_url}/agent/test-plans/{plan_id}/validate`\n"
-        f"   Dry-run validation — check warnings before submitting.\n"
-        f"5. `POST {base_url}/agent/test-plans/{plan_id}/submit`\n"
-        f"   Submit the plan for human review.\n\n"
-        f"**Selection policy:** Create entries for all hosts with critical or high "
-        f"vulnerabilities. Include medium-vuln hosts if they expose multiple services "
-        f"or high-value ports (SMB, RDP, databases). Skip hosts with zero open ports.\n\n"
-        f"**Describe tests as INTENT, not commands (v2.23.0).**  Each `proposed_tests` "
-        f"entry should state *what is being verified* and *what evidence proves it* — "
-        f"e.g. \"enumerate SMB sessions; evidence is a list of sessions or an explicit "
-        f"`access denied`.\"  The agent who executes the plan probes its own host "
-        f"environment and translates each intent into the right command flavour "
-        f"(`enum4linux -S {{ip}}` from Kali vs `Get-SmbSession` inline-PowerShell on "
-        f"Windows).  A `command` field is welcome as a *suggestion* but the executing "
-        f"agent is authoritative — do not assume the executor shares the recon "
-        f"environment (a Kali recon may be followed by a Windows execution by a "
-        f"different operator).\n\n"
-        f"**Build on recon — don't re-discover.**  These hosts have already been "
-        f"scanned: each candidate's open ports, services, and versions are in "
-        f"`candidate_hosts[].ports` / `.services` (recon records a service-version "
-        f"scan for every live host). Propose **targeted validation/exploitation** that "
-        f"*consumes* that data — validate THIS finding, exercise THIS service on the "
-        f"KNOWN open ports. Do **not** propose discovery or service-version scans "
-        f"(`nmap -sn`, `nmap -sV`, full-port sweeps) as tests: recon already ran them, "
-        f"so re-running is wasted work and IDS noise, not a test. A host with no vulns "
-        f"and nothing left to validate doesn't need an entry.\n\n"
-        f"**Plan ID:** {plan_id}\n"
-        f"**Plan Title:** {plan_title}\n"
-    )
-    if filter_criteria:
-        instructions += (
-            f"\n**Host filters applied by the user:**\n"
-            f"{_render_filter_criteria(filter_criteria)}\n\n"
-            f"The candidate host list returned by `GET .../test-plans/{plan_id}/context` "
-            f"in step 1 is **already narrowed to these filters** — you do not need to "
-            f"re-apply them yourself. The `summary.matching_filter` field in that "
-            f"response tells you how many hosts matched. Apply the selection policy "
-            f"above *on top of* this pre-filtered set: the filters decide which hosts "
-            f"are candidates, the selection policy decides which candidates become test "
-            f"entries. If the filtered set is empty or much smaller than expected, "
-            f"report that to the user rather than widening the scope on your own.\n"
-        )
-
-    instructions += _feedback_section(
-        base_url=base_url,
-        source="plan_generation",
-        context={"test_plan_id": plan_id},
-    )
-    return instructions
-
-
 def _integration_block(integrations: list) -> str:
-    """Render a list of decrypted integration credentials as a prompt section.
+    """Render decrypted scanner-integration credentials as a prompt section.
 
-    ``integrations`` is a list of dicts produced by
-    ``integration_service.decrypt_integration``.  The secrets are
-    inlined in plaintext so a terminal-side agent (Claude Code, Codex,
-    manual operator) can use them directly without a second round trip.
-
-    Security boundary (enforced, not assumed):
-      - The frontend ``InAppAgentPanel`` MUST call
-        ``sanitizePromptForLlm`` (see
-        ``frontend/src/utils/promptSanitizer.ts``) before POSTing any
-        prompt derived from this block to a hosted LLM provider.  That
-        sanitizer strips the agent API key line and replaces inlined
-        credentials on every bullet labelled ``Access key / Secret key
-        / Password / Username / API key / PDCP token / Secret`` with a
-        ``[REDACTED]`` marker.
-      - The redaction only runs on the in-app LLM path.  The copy-paste
-        flow that shows the user the full instructions block (for them
-        to hand to an out-of-band terminal agent) intentionally still
-        contains the plaintext — the user is the one pasting it, they
-        already authorized the exposure by creating the integration.
-      - Changing the ``  - <Label>:`` bullet shape below without
-        updating ``promptSanitizer.ts`` to match WILL leak secrets to
-        whichever LLM provider is configured.  Keep the two in sync.
+    Security boundary (enforced, not assumed): the frontend ``InAppAgentPanel``
+    MUST call ``sanitizePromptForLlm`` before POSTing any prompt derived from
+    this block to a hosted LLM.  Changing the ``  - <Label>:`` bullet shape
+    without updating ``promptSanitizer.ts`` WILL leak secrets — keep them in
+    sync.  The copy-paste flow intentionally keeps plaintext (the user pasting
+    it authorized the exposure by creating the integration).
     """
     if not integrations:
         return (
-            "\n### Credentialed scanners available\n"
-            "No integration credentials are configured for this project. "
-            "If you think a vulnerability scanner, template runner, or "
-            "web-app scanner would help, ask the user to configure one "
-            "at **Scanner Integrations** in the sidebar and resume.\n"
+            "\n### Credentialed scanners\n"
+            "No scanner integrations are configured for this project. If a "
+            "vulnerability scanner, template runner, or web-app scanner would "
+            "help, ask the user to configure one at **Scanner Integrations** in "
+            "the sidebar. Use them from a reconnaissance run — feed their output "
+            "to `POST /agent/recon/upload` like any other scanner.\n"
         )
-    lines = ["\n### Credentialed scanners available\n"]
+    lines = ["\n### Credentialed scanners\n"]
     lines.append(
-        "The user has configured the following scanner credentials. "
-        "Use them **only** against in-scope targets, and always show the "
-        "exact invocation to the user before running it.\n"
+        "The user has configured these scanner credentials. Use them **only** "
+        "against in-scope targets inside a reconnaissance run, and always show "
+        "the exact invocation to the user before running it.\n"
     )
     for i in integrations:
         itype = i.get("integration_type", "generic_api")
         name = i.get("name") or "(unnamed)"
         base = i.get("base_url") or "(no base URL)"
         if itype == "nessus":
-            # v2.49.4 — operator can set `extra_config.max_hosts_per_scan`
-            # when creating the integration (their Nessus license cap).
-            # Surface it so the agent splits big scopes into multiple
-            # Nessus scans instead of submitting one oversize scan that
-            # Nessus rejects or truncates.
             extra = i.get("extra_config") or {}
             max_hosts = extra.get("max_hosts_per_scan") if isinstance(extra, dict) else None
             chunking_note = (
-                f"    **License cap**: this Nessus install is configured "
-                f"with `max_hosts_per_scan = {max_hosts}`.  If a target "
-                f"chunk you'd submit exceeds that, split into multiple "
-                f"Nessus scans of {max_hosts} hosts each — run them "
-                f"sequentially (Nessus serializes on the license) and "
-                f"tag each scan name with `<n_of_m>` so the operator "
-                f"can correlate.\n"
-                if max_hosts
-                else (
-                    f"    **License cap**: no `max_hosts_per_scan` was "
-                    f"configured on this integration.  If you discover "
-                    f"Nessus refuses to start a scan past a certain "
-                    f"size, ask the operator for the per-scan host "
-                    f"limit (typically 256 / 512 / 1024 on Nessus Pro) "
-                    f"and chunk to that.\n"
-                )
+                f"    **License cap**: `max_hosts_per_scan = {max_hosts}`. Split "
+                f"larger chunks into sequential scans of {max_hosts} hosts.\n"
+                if max_hosts else
+                "    **License cap**: none configured. If Nessus refuses a scan "
+                "past a size, ask the operator for the per-scan host limit and chunk to it.\n"
             )
             lines.append(
                 f"- **Nessus — `{name}`**\n"
                 f"  - URL: `{base}`\n"
                 f"  - Access key: `{i.get('secret') or '(missing)'}`\n"
                 f"  - Secret key: `{i.get('secret2') or '(missing)'}`\n"
-                f"  - Guidance: launch a policy scan via the Nessus REST API "
-                f"    against the target list, poll for completion, pull the "
-                f"    report as CSV or .nessus, and feed findings into your "
-                f"    test-plan entries.\n"
+                f"  - Guidance: launch a policy scan via the Nessus REST API against the "
+                f"    target list, poll for completion, pull the .nessus/CSV report, and "
+                f"    upload it.\n"
                 f"{chunking_note}"
             )
         elif itype == "openvas":
+            gmp_port = (i.get("extra_config") or {}).get("gmp_port", 9390) if isinstance(i.get("extra_config"), dict) else 9390
             lines.append(
-                f"- **OpenVAS / GVM — `{name}`**\n"
-                f"  - URL: `{base}`\n"
+                f"- **OpenVAS / Greenbone — `{name}`**\n"
+                f"  - URL: `{base}` · GMP port: `{gmp_port}`\n"
                 f"  - Username: `{i.get('secret') or '(missing)'}`\n"
                 f"  - Password: `{i.get('secret2') or '(missing)'}`\n"
-                f"  - Guidance: use `gvm-tools` or the GMP API to create a "
-                f"    target + task against in-scope subnets, kick it off, "
-                f"    and parse the XML report when complete.\n"
+                f"  - Guidance: use `gvm-cli` / `gvm-tools` (approved) over GMP to create a "
+                f"    target + task against in-scope subnets, start it, poll, then export "
+                f"    the XML report and upload it. The GSA web URL cannot drive scans; GMP can.\n"
             )
         elif itype == "nuclei":
             lines.append(
                 f"- **Nuclei — `{name}`**\n"
                 f"  - PDCP token: `{i.get('secret') or '(not set)'}`\n"
-                f"  - Guidance: run nuclei against identified web services "
-                f"    with the default template set; consider `-severity critical,high` "
-                f"    for an initial pass. If the PDCP token is set, enable "
-                f"    cloud templates.\n"
+                f"  - Guidance: run nuclei against identified web services; "
+                f"`-severity critical,high` for an initial pass.\n"
             )
         elif itype == "burp":
             lines.append(
                 f"- **Burp — `{name}`**\n"
                 f"  - URL: `{base}`\n"
                 f"  - API key: `{i.get('secret') or '(missing)'}`\n"
-                f"  - Guidance: use the Burp Enterprise / Professional REST "
-                f"    API to launch scans against any web targets you discover.\n"
+                f"  - Guidance: use the Burp Enterprise / Professional REST API against "
+                f"    discovered web targets.\n"
             )
         else:
             lines.append(
                 f"- **{itype} — `{name}`**\n"
                 f"  - URL: `{base}`\n"
                 f"  - Secret: `{i.get('secret') or '(not set)'}`\n"
-                f"  - Guidance: ask the user for the exact invocation if the "
-                f"    tool's usage isn't obvious from its name.\n"
+                f"  - Guidance: ask the user for the exact invocation if it isn't obvious.\n"
             )
     lines.append(
-        "\nWhen results are available, record them as test-plan entries "
-        "(severity-scored) so the human reviewer sees the same data as "
-        "your manual findings. Do not blindly dump raw scanner output — "
-        "summarize per host.\n"
+        "\nUpload scanner output to the recon run so it lands in the same "
+        "hosts/ports/findings tables as everything else; don't dump raw output "
+        "into notes.\n"
     )
     return "".join(lines)
 
 
-def build_recon_ingest_instructions(
+def build_session_instructions(
     *,
     request: Optional[Request],
-    recon_session_id: int,
-    scope_id: int,
-    scope_name: str,
-    subnets: list,                 # list of CIDR strings
-    domains: Optional[list] = None,  # list of (domain, include_subdomains) — name scope
-    raw_api_key: str,
-    user_label: str,
-    user_id: Optional[int],
-    integrations: Optional[list] = None,  # decrypted integration dicts, optional
-    resumed: bool = False,
-    project_slug: str = "default",
-) -> str:
-    """Instructions for an agent performing reconnaissance against a scope.
-
-    ``resumed=True`` prepends a RESUMED-SESSION notice — used when an
-    interrupted recon session is re-issued via the recon resume
-    endpoint, so the agent reads prior progress from
-    ``/agent/recon/summary`` instead of repeating coverage.
-
-    v2.11.0 — complete rewrite.  The previous implementation told the
-    agent to create TestPlanEntry rows from recon findings, which was
-    backwards: recon's job is to **populate host data** (via the
-    existing ingestion pipeline), not to build a list of things-to-test
-    against host data that doesn't exist yet.  Test plans come after
-    recon, as a separate workflow the user explicitly triggers.
-
-    The new workflow:
-
-      1. Agent verifies provenance (one curl against /.well-known/).
-      2. Agent fetches scope context (CIDRs + already-known hosts +
-         tool-catalog suggestions).
-      3. Agent proposes a tool command to the user, gets approval,
-         runs the tool locally, saves output to a file.
-      4. Agent POSTs the file to /agent/recon/upload which wraps the
-         existing upload pipeline — every parser we already support
-         works automatically (nmap XML, masscan, gnmap, nessus, etc).
-      5. Agent polls /agent/recon/jobs/{id} until the parse completes.
-      6. Agent GETs /agent/recon/summary for the rolling host/port
-         count and decides what to run next.
-      7. Agent repeats 3–6 until satisfied, then POSTs /complete.
-      8. Submits structured feedback.
-
-    Results land in the same scans/hosts/ports tables as human uploads,
-    deduped against existing scan data, correlated to the scope's
-    subnets, and enriched with any configured vulnerability sources.
-    """
-    from datetime import datetime, timezone
-    base_url = resolve_base_url(request)
-    agents_guide_url = f"{base_url}/agents-guide?workflow=reconnaissance"
-
-    # v2.45.4 — cap the inline subnet list.  A scope with thousands of
-    # CIDRs previously emitted one prompt line each, ballooning the
-    # prompt past the agent's context window before any work began.
-    # Beyond the cap, render a summary + a pointer to the paginated
-    # endpoint (GET /agent/recon/subnets) that returns the authoritative
-    # full list.  The agent's /recon/context call also carries
-    # scope_size + a bounded sample for the same reason.
-    _SUBNET_INLINE_CAP = 25
-    if not subnets:
-        scope_list = "  (none registered yet)"
-    elif len(subnets) <= _SUBNET_INLINE_CAP:
-        scope_list = "\n".join(f"  - `{c}`" for c in subnets)
-    else:
-        shown = "\n".join(f"  - `{c}`" for c in subnets[:_SUBNET_INLINE_CAP])
-        scope_list = (
-            f"{shown}\n"
-            f"  - … and {len(subnets) - _SUBNET_INLINE_CAP} more "
-            f"({len(subnets)} subnets total)\n\n"
-            f"  **This scope is large — the list above is truncated.**  Fetch the\n"
-            f"  authoritative, complete subnet list from the paginated endpoint:\n"
-            f"  `GET {base_url}/agent/recon/subnets?offset=0&limit=500`\n"
-            f"  (walk `offset` until the response's `subnets` array is empty).\n"
-            f"  Do NOT assume the whole scope fits in one discovery pass — see\n"
-            f"  the guide's § Scope-size awareness and work in batches."
-        )
-
-    # v2.328.0 — name scope.  Rendered only when the scope declares domains,
-    # so a subnet-only scope's prompt is unchanged and the read-back's
-    # "when any are declared" resolves to nothing rather than boilerplate.
-    _DOMAIN_INLINE_CAP = 25
-    domains = list(domains or [])
-    if not domains:
-        domain_block = ""
-    else:
-        def _dom_line(entry):
-            d, sub = entry[0], bool(entry[1])
-            return f"  - `*.{d}` (the domain and every subdomain)" if sub else f"  - `{d}` (exact name only)"
-        shown = "\n".join(_dom_line(e) for e in domains[:_DOMAIN_INLINE_CAP])
-        more = ""
-        if len(domains) > _DOMAIN_INLINE_CAP:
-            more = (
-                f"\n  - … and {len(domains) - _DOMAIN_INLINE_CAP} more "
-                f"({len(domains)} domains total) — page the full list from "
-                f"`GET {base_url}/agent/recon/domains?offset=0&limit=500`."
-            )
-        domain_block = (
-            f"**Domains in scope (names only):**\n{shown}{more}\n"
-            f"  These are the names you may resolve or probe without asking. A name "
-            f"being in scope does **not** put the address it resolves to in subnet "
-            f"scope — an address is in scope only if it falls inside the subnets above.\n\n"
-        )
-
-    provenance = build_provenance_block(
-        base_url=base_url,
-        user_label=user_label,
-        user_id=user_id,
-        action="reconnaissance (host discovery + ingest)",
-        target_label=f"scope #{scope_id} ({scope_name}); recon session #{recon_session_id}",
-        timestamp_iso=datetime.now(timezone.utc).isoformat(),
-    )
-
-    # v2.47.0 — recon session re-issued via the resume endpoint after an
-    # interruption: steer the agent to read prior progress before scanning.
-    resume_notice = ""
-    if resumed:
-        resume_notice = (
-            "> **⟳ RESUMED RECON SESSION.** This recon session was "
-            "interrupted and resumed with a fresh API key. Prior uploads "
-            "are already ingested — `GET /agent/recon/summary` returns the "
-            "rolling host/port counts and `GET /agent/recon/context` lists "
-            "already-known hosts. Read both before scanning so you continue "
-            "coverage rather than repeating it. Don't re-upload files the "
-            "earlier pass already sent — BlueStick refuses an identical file "
-            "with `409 duplicate_scan`, which means it is already ingested — "
-            "and keep the earlier pass's `batch` labels so new chunks join the "
-            "same batches. "
-            "The environment probe (step 1) is still required for the new "
-            "key.\n\n"
-        )
-
-    instructions = (
-        provenance +
-        resume_notice +
-        f"## Agent Reconnaissance Instructions\n\n"
-        f"Your job: populate BlueStick's host database for this authorized scope. "
-        f"Run scanners locally, upload raw output, iterate. A human reviews findings and "
-        f"generates the test plan separately — **you do not build test plans here**.\n\n"
-        f"**Scope:** {scope_name} (id {scope_id}) · **Recon session:** #{recon_session_id}\n"
-        f"**Subnets:**\n{scope_list}\n\n"
-        + domain_block
-        + render_read_back("recon") + "\n"
-        f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
-        f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"
-        f"Self-signed cert — `curl` always needs `-sk`. If curl is blocked by your "
-        f"sandbox, ask the user to run it for you.\n\n"
-        + render_key_expiry_guidance() + "\n"
-        f"### Read the guide first — it is binding\n\n"
-        f"```\n"
-        f"curl -sk '{agents_guide_url}'\n"
-        f"```\n\n"
-        f"The guide is the authoritative reference for the safety/approval protocol, "
-        f"environment-probe body shape, scope-size sequencing, tool catalog, preflight "
-        f"script, supported upload formats, exit criteria, and the feedback schema. The "
-        f"checklist below is a *skeleton* — fetch the guide for every field shape, body "
-        f"format, and how-to. Do not improvise from the checklist alone.\n\n"
-        f"**Hard stops the guide does not negotiate:** out-of-scope targets are refused "
-        f"(not approval-asked); intrusive tools (`intrusive: true` in the catalog) ask "
-        f"per-command and never batch under plan-level approval.\n\n"
-        f"### Task checklist\n\n"
-        f"1. **Probe the environment** — `POST {base_url}/agent/recon/sessions/{recon_session_id}/environment` "
-        f"(body shape: guide § Environment probe). Include `agent_model`, `agent_tool`, "
-        f"`agent_prompt_version: \"{PROMPT_VERSION}\"`.\n"
-        f"2. **Run preflight, re-post the probe with `tools_status[]`, then fetch context** — "
-        f"fetch `{base_url}/references/preflight-script` (currently a bash script — "
-        f"if your environment is PowerShell-only with no WSL, fetch it with "
-        f"`curl -sk <url> -o preflight.sh`, inspect, and produce the equivalent "
-        f"`tools_status` payload by hand via `Get-Command` checks for each tool). "
-        f"In bash-capable environments the canonical invocation is "
-        f"`curl -sk {base_url}/references/preflight-script | bash -s -- --json`. "
-        f"Re-POST Step 1's endpoint with the preflight tools list folded in as "
-        f"`tools_status` (shape: guide § Environment probe), then "
-        f"`GET {base_url}/agent/recon/context` for the env-adapted `recommended_sequence`. "
-        f"Report the preflight summary to the user *before* presenting any tool command.\n"
-        f"3. **Present `recommended_sequence` to the user, get plan-level approval** — "
-        f"per the guide's approval protocol. Call out any `swap_reason` entries so the "
-        f"user knows which steps deviated from the canonical plan and why. Default to "
-        f"comprehensive discovery; `known_hosts_probe` is opt-in only when the user "
-        f"explicitly asks for the narrow alternative.\n"
-        f"4. **Execute, upload, poll, summarize, iterate.** "
-        f"**First, before running any tool**, create a session-scoped working "
-        f"directory and `cd` into it — "
-        f"`mkdir -p networkmapper-{project_slug}-recon-{recon_session_id} "
-        f"&& cd networkmapper-{project_slug}-recon-{recon_session_id}` — and run "
-        f"every tool from there. The path includes the project slug so two "
-        f"projects working out of the same parent directory get distinct folders "
-        f"(`networkmapper-homenetwork-recon-1` vs `networkmapper-clienta-recon-1`) "
-        f"and a Nuclear-Clean reset doesn't collide with a leftover.  "
-        f"One operator may run two agents at once; a shared working dir means "
-        f"colliding output files and a process table you can't tell apart. See the "
-        f"guide's § Working directory & concurrent agents. Then: run the tool locally with "
-        f"machine-readable output; `POST {base_url}/agent/recon/upload` (multipart, "
-        f"include `tool_name`, `command_run`, and — on every chunk of a split sweep — "
-        f"the same `batch` label, e.g. `batch=nmap-tcp-top1000`, so the operator sees "
-        f"one batch instead of hundreds of files; guide § Upload batches & duplicates). "
-        f"A `409 duplicate_scan` means that exact file is already ingested: mark it "
-        f"done and move on — never retry, rename, or alter it. Poll "
-        f"`{base_url}/agent/recon/jobs/{{job_id}}` until terminal; verify with "
-        f"`GET {base_url}/agent/recon/summary` (authoritative). Repeat per the guide's "
-        f"§ Phases (discovery → service probe of live hosts → web → deep-dives). "
-        f"**Chunk large scopes** — do NOT scan a multi-thousand-host scope in one pass "
-        f"and upload one giant file. Scan and upload in batches (~256–1024 addresses / "
-        f"~25–50 CIDRs each); see the guide's § Very large scopes for why and how.\n"
-        f"5. **Complete the session — MANDATORY, this is the LAST thing you do.** "
-        f"`POST {base_url}/agent/recon/complete` with `{{\"notes\": \"...\"}}`. "
-        f"**The recon session stays `active` in the operator's UI until this call "
-        f"returns 200** — uploading scans and submitting feedback do NOT complete it. "
-        f"A run that scanned, uploaded, and submitted feedback but skipped this call "
-        f"looks unfinished to the operator forever. Order of your final actions: "
-        f"finish all uploads → submit feedback (below) → `POST /agent/recon/complete` "
-        f"LAST. Confirm you received the 200 before you consider the run done.\n"
-    )
-
-    instructions += _integration_block(integrations or [])
-
-    # v2.85.0 — drop scope_id from the rendered template.  The
-    # AgentFeedback schema only carries recon_session_id (linkable to a
-    # scope by joining ReconSession.scope_id when needed); pre-v2.85.0
-    # the prompt invited the agent to send scope_id and Pydantic
-    # silently dropped it on receive, which made the feedback row's
-    # workflow attribution lossy.
-    instructions += _feedback_section(
-        base_url=base_url,
-        source="reconnaissance",
-        context={"recon_session_id": recon_session_id},
-    )
-    return instructions
-
-
-def build_assist_instructions(
-    *,
-    request: Optional[Request],
-    assist_session_id: int,
+    session_id: int,
     project_id: int,
     project_name: str,
     purpose: Optional[str],
     raw_api_key: str,
     user_label: str,
     user_id: Optional[int],
-) -> str:
-    """Instructions for an agent in an interactive assist session.
-
-    Assist sessions read by default.  No scanning, no test plan
-    creation, no execution — ever.  The agent's job is to answer the
-    operator's questions by querying BlueStick and synthesizing.
-
-    v2.309.0 — there is no per-session write grant any more.  The session
-    acts with the operator's own project permissions, so the prompt states
-    that plainly rather than enumerating a capability list the agent would
-    otherwise have to reconcile against the 403s it actually gets.
-
-    Shorter prompt than recon/plan/execution because the surface is
-    smaller and the safety surface is small (no target traffic).  The
-    biggest risk to flag is "the agent decides to run a scan locally to
-    answer a question" — the operator has not consented to that and the
-    assist key wouldn't accept the upload anyway.  Steer the agent to
-    ask the operator to open a recon session if scanning is the right
-    next step.
-    """
-    from datetime import datetime, timezone
-    base_url = resolve_base_url(request)
-    agents_guide_url = f"{base_url}/agents-guide?workflow=assist"
-
-    # v2.309.0 — no capability flag to branch on. The session's authority is
-    # the operator's project role, resolved per request, so the prompt states
-    # the rule instead of a grant list: an agent that knows "I can do what
-    # {user_label} can do" needs no enumeration, and cannot be told something
-    # the server will later contradict.
-    cannot_writes_line = (
-        f"- **You act as {user_label}** — you can change what they can change "
-        f"(host notes, review status, hostname/OS corrections) and nothing "
-        f"else. Scans, test plans, execution and scan-derived fields are not "
-        f"writable from this session at all. If {user_label}'s project role is "
-        f"read-only, every write is refused — that is not an error to retry.\n\n"
-    )
-
-    provenance = build_provenance_block(
-        base_url=base_url,
-        user_label=user_label,
-        user_id=user_id,
-        action="interactive assist (reads, plus whatever the operator may write)",
-        target_label=f"project #{project_id} ({project_name}); assist session #{assist_session_id}",
-        timestamp_iso=datetime.now(timezone.utc).isoformat(),
-    )
-
-    purpose_line = (
-        f"**The operator stated this purpose:** {purpose.strip()}\n\n"
-        if purpose and purpose.strip()
-        else ""
-    )
-
-    authority_block = (
-            f"## Agent Interactive Assist Instructions\n\n"
-            f"You are in an assist session against project **{project_name}** "
-            f"(id {project_id}).  Your main job is to help the operator query "
-            f"their project — answer questions about hosts, summarize "
-            f"findings, surface relevant scans — by hitting BlueStick's "
-            f"`/agent/assist/*` endpoints and synthesizing the results.\n\n"
-            f"**You act as {user_label}.**  You may record notes, set review "
-            f"status, and correct hostname/OS on any host in this project that "
-            f"they could — and nothing beyond that.  If a write returns 403, "
-            f"their project role does not permit it: that is the guardrail "
-            f"working, not an error to route around.  Do **not** run scans, do "
-            f"**not** create test plans, do **not** execute tests.  The API "
-            f"will refuse all three regardless of role.\n\n"
-            f"### Writing\n\n"
-            f"- **Add a note:** `POST {base_url}/agent/hosts/<host_id>/notes` "
-            f"with `{{\"body\": \"...\", \"status\": \"open\"}}` "
-            f"(status: `open` | `in_progress` | `resolved`).\n"
-            f"- **Set review status:** `POST {base_url}/agent/hosts/<host_id>/follow` "
-            f"with `{{\"status\": \"in_review\"}}` "
-            f"(status: `watching` | `in_review` | `reviewed`).\n"
-            f"- **Correct host attributes:** `PATCH {base_url}/agent/hosts/<host_id>` "
-            f"with `{{\"hostname\": \"...\", \"os_name\": \"...\"}}` — only these "
-            f"two operator-correctable fields; send just the one you're fixing. "
-            f"Use this when your investigation established the real hostname or "
-            f"OS a scan mis-detected. Scan-derived facts (ports, services, "
-            f"vulns) are never editable here.\n"
-            f"- The operator's own hosts are "
-            f"`GET {base_url}/agent/assist/hosts?q=assigned:me` — usually where "
-            f"your notes belong, even though you are not restricted to them.\n\n"
-            f"**Write discipline — read this before your first write.**  Every "
-            f"note you create is stamped as agent-authored and shows up in the "
-            f"operator's UI and in client-facing reports under their name. So:\n"
-            f"1. **Say what you did, then do it** — tell the operator the note "
-            f"you intend to write and let them react. Don't batch-write "
-            f"silently.\n"
-            f"2. **Record observations, not conclusions you can't support.** "
-            f"Write what the data shows and cite the host/port/finding it came "
-            f"from. Never assert a vulnerability you have not seen evidence "
-            f"for in BlueStick's own data.\n"
-            f"3. **Mark uncertainty in the note body.** If you inferred "
-            f"something, say so in the note — a reader six weeks from now "
-            f"cannot tell your guesses from your facts.\n"
-            f"4. **Never mark a host `reviewed` on your own initiative.** "
-            f"Reviewed is a human judgement with client-reportable weight; ask "
-            f"the operator to confirm before setting it.\n\n"
-    )
-
-    instructions = (
-        provenance +
-        authority_block +
-        render_read_back("assist") + "\n"
-        f"{purpose_line}"
-        f"**Assist session:** #{assist_session_id} · **Project:** {project_name}\n"
-        f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
-        f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"
-        f"Self-signed cert — every request must skip TLS verification.\n\n"
-        + render_key_expiry_guidance() + "\n"
-        f"### Invocation — assist runs on any OS\n\n"
-        f"Your \"commands\" here are HTTPS API calls, not shell tools, so this "
-        f"session works the same on **Windows, macOS, and Linux** — only the "
-        f"way you invoke the HTTP client differs. Use the form for *your* shell:\n"
-        f"- **bash / zsh** (Linux, macOS): `curl -sk -H 'X-API-Key: {raw_api_key}' '<url>'`\n"
-        f"- **Windows PowerShell:** use **`curl.exe`** — bare `curl` is an alias "
-        f"for `Invoke-WebRequest` and will NOT accept these flags. "
-        f"`curl.exe -sk -H \"X-API-Key: {raw_api_key}\" \"<url>\"`, or native "
-        f"`Invoke-RestMethod -SkipCertificateCheck -Headers @{{'X-API-Key'='{raw_api_key}'}} '<url>'`.\n"
-        f"- **POST bodies:** single-quoted JSON (`-d '{{...}}'`) is a bash/zsh "
-        f"idiom; in PowerShell pass `-d (ConvertTo-Json $obj)` to `curl.exe` or "
-        f"`-Body ($obj | ConvertTo-Json)` to `Invoke-RestMethod`.\n\n"
-        f"### Read the guide first\n\n"
-        f"bash/zsh: `curl -sk '{agents_guide_url}'`  ·  "
-        f"PowerShell: `curl.exe -sk \"{agents_guide_url}\"`\n\n"
-        f"### Task checklist\n\n"
-        f"1. **Probe the environment** — "
-        f"`POST {base_url}/agent/assist/sessions/{assist_session_id}/environment`. "
-        f"For assist, report just `os_family` (`windows` / `darwin` / `linux`) "
-        f"and `shell` — the recon/execution tool-inventory + preflight flow does "
-        f"**not** apply here (your commands are API calls, not scanner tools). "
-        f"Include `agent_model`, `agent_tool`, "
-        f"`agent_prompt_version: \"{PROMPT_VERSION}\"` for audit symmetry.\n"
-        f"2. **Fetch project context** — "
-        f"`GET {base_url}/agent/assist/context`.  This is a HEADLINE summary, "
-        f"not a full inventory: the `scopes` list is capped at 50 (check "
-        f"`scopes_truncated` — if true, call `/agent/assist/scopes` for the "
-        f"rest) and `recent_scans`/`recent_recon` are capped at 5 each.  For "
-        f"real counts read the `totals` block; never answer 'how many "
-        f"scopes/scans/hosts' from the truncated lists.  Read this before "
-        f"answering any operator question so your synthesis is grounded.\n"
-        f"3. **Answer the operator's question.**  Use:\n"
-        f"   - `GET /agent/assist/hosts?…` (filter shape mirrors the "
-        f"`/hosts` page: `state`, `ports`, `services`, `subnets`, "
-        f"`has_critical_vulns`, `has_high_vulns`, "
-        f"`search`).  **Paginated and capped**: it returns a bare array of at "
-        f"most `limit` hosts (default 500, max 5000) with NO `total`/`has_more` "
-        f"signal.  To answer any count/coverage question you MUST page — start "
-        f"at `offset=0` and re-request with `offset += limit` until a page "
-        f"returns fewer than `limit` rows.  Never report a host count from a "
-        f"single page; a project can have tens of thousands of hosts.\n"
-        f"   - **Large result sets — download, don't page into context:** "
-        f"`GET /agent/assist/hosts.ndjson` (same filters + `q` DSL) streams "
-        f"EVERY matching host, one JSON object per line, uncapped. When a "
-        f"project is too big to page comfortably, redirect it to a file and "
-        f"process it locally so coverage stays complete without reading it "
-        f"whole: `curl -sk -H 'X-API-Key: <key>' '<base>/agent/assist/"
-        f"hosts.ndjson' -o hosts.jsonl` then `jq`/`grep` the file. Report "
-        f"counts from the file (`wc -l`), never from a truncated page.\n"
-        f"   - `GET /agent/assist/hosts/{{host_id}}` for full open-port "
-        f"detail on one host (returns the ENTIRE port list — large for hosts "
-        f"with many open ports; prefer `open_port_count` from the list for "
-        f"triage). `vuln_summary` is severity COUNTS only.\n"
-        f"   - `GET /agent/assist/hosts/{{host_id}}/findings` for the actual "
-        f"findings behind those counts on ONE host — severity, CVE/plugin id, "
-        f"affected port, exploitability, description, remediation (`solution`), "
-        f"and scanner `evidence`. Filter `?severity=critical,high`; paginated "
-        f"with `total`/`has_more`.\n"
-        f"   - **`GET /agent/assist/findings`** for findings across the WHOLE "
-        f"project — severity/status/source/owner/`unowned=true`/host/search, "
-        f"with `total` and a `severity_counts` breakdown for the filter you "
-        f"asked about. A finding spans hosts by design, so `host_count` is how "
-        f"big it is; do NOT rebuild the project view by walking hosts, which "
-        f"counts one finding once per host.\n"
-        f"   - **`GET /agent/assist/vocabulary` BEFORE any `tag:` / `label:` / "
-        f"`site:` / `assigned:<user>` query** — it lists the values this "
-        f"project actually uses. A guessed tag doesn't error, it returns zero "
-        f"hosts, and \"nothing is tagged production\" is a confidently wrong "
-        f"answer to what was really \"what are the tags called here?\".\n"
-        f"   - **`GET /agent/assist/hosts/<id>/notes`** for what the team has "
-        f"already said about a host. Read before you write: a colleague may "
-        f"have recorded the same observation an hour ago, and the answer to "
-        f"\"what do we know about this host\" is often a note rather than scan "
-        f"data.\n"
-        f"   - **`GET /agent/assist/hosts/<id>/testing`** for what the TEAM "
-        f"planned or ran against a host — approved plan entries, the tests "
-        f"proposed, and the recorded results (command, outcome, severity). "
-        f"This is how you tell a scanner's claim from something a human "
-        f"confirmed; say which it is when you report a finding.\n"
-        f"   - **`GET /agent/assist/posture`** for the project's overall "
-        f"security condition — the headline label, a plain-language "
-        f"conclusion, the reasons, and the prioritised next actions. Start "
-        f"here for \"where are we?\" and build an executive summary from it "
-        f"rather than inventing a judgement out of counts. `label` = "
-        f"`insufficient_evidence` means the estate has NOT been assessed "
-        f"enough to judge: report that, never a clean bill of health.\n"
-        f"   - **`GET /agent/assist/patterns`** for the cross-sectional "
-        f"analysis — estate-wide blind spots (\"nearly everything runs an "
-        f"end-of-life OS\"), segment outliers (subnets whose issue density is "
-        f"an outlier against the estate median — the \"this subnet looks "
-        f"worse than the rest\" claim, with the ratio behind it), each "
-        f"condition's spread, and per-family root causes with a recommended "
-        f"control. This is what turns an inventory into an assessment. It "
-        f"compares ACROSS the estate, not over time — never describe it as a "
-        f"trend or say something got better or worse. `adopted=false` means "
-        f"no scoped subnets, so the analysis could not run: say \"not "
-        f"assessable\", never \"no patterns found\".\n"
-        f"   - **`GET /agent/assist/findings/<id>`** for the evidence behind "
-        f"ONE finding — the note a human wrote to justify promoting it, the "
-        f"comment thread, the affected hosts, and references to any attached "
-        f"screenshots. This is what you cite when writing a finding up. "
-        f"Screenshots come back as references, not bytes: fetch each from its "
-        f"`download_path` with the same key (`curl -sk -H 'X-API-Key: <key>' "
-        f"'<base>/agent/assist/attachments/<id>' -o evidence-<id>.png`) and "
-        f"reference the saved file from the report. `scanner_evidence` vs "
-        f"`execution_evidence` says whether a claim rests on a scanner's "
-        f"output or a command a tester ran — state which, they are different "
-        f"assertions.\n"
-        f"   - **`GET /agent/assist/hosts/<id>`** also returns the host's web "
-        f"interfaces — url, page title, server banner, technologies — and a "
-        f"`screenshot_download_path` for each one EyeWitness captured. Same "
-        f"contract as finding attachments: curl it to a file, reference the "
-        f"file. That is a second screenshot store from the note attachments "
-        f"above; this one is captured automatically at ingest, so it exists "
-        f"for hosts nobody has written a note about yet.\n"
-        f"   - **`GET /agent/assist/segments`** for a per-subnet rollup "
-        f"sorted worst-first — exposure (active findings by severity, "
-        f"tier-weighted), neglect (unowned, unreviewed, stale) and hygiene "
-        f"(end-of-life OS, certificate problems, weak auth, risky services), "
-        f"with a recommended action per subnet. The answer to \"where should "
-        f"we look?\" and \"what is wrong with this subnet?\" without counting "
-        f"per subnet yourself. `no_coverage` is a scanning gap, not a clean "
-        f"subnet; `total` above the page size means you are seeing the worst "
-        f"subnets, not all of them.\n"
-        f"   - **`GET /agent/assist/ingestion-issues`** BEFORE you report that "
-        f"something is absent. \"No web servers in that range\" and \"the "
-        f"httpx upload failed to parse\" produce the same empty result "
-        f"everywhere else, and only one of them is a finding about the "
-        f"network. `kind=degraded` is the quiet one: the file parsed and its "
-        f"data is in the project, but rows were dropped, so counts from it are "
-        f"undercounts while the job still reads as completed.\n"
-        f"   - **`GET /agent/assist/notes`** for recent notes across the "
-        f"project (filter `status=open` for the outstanding-work list, "
-        f"`author=me`) — what the team has been doing, as opposed to what a "
-        f"scanner found.\n"
-        f"   - **`GET /agent/assist/coverage`** for how much has actually been "
-        f"assessed, per domain. Every other endpoint tells you what WAS found; "
-        f"cite this whenever an answer or a report implies completeness, so "
-        f"\"no critical findings\" is never read as \"no critical exposure\".\n"
-        f"   - **Counting? Use `GET /agent/assist/hosts/count`** with the same "
-        f"filters and `q` DSL — it returns the TOTAL. A page of "
-        f"`/assist/hosts` is not a count, and an answer that stopped at the "
-        f"first page is wrong in a way the operator cannot see. `assigned:` "
-        f"takes `me` / `any` / `none` / a username, so "
-        f"`has:critical AND assigned:none` is 'critical findings nobody owns'.\n"
-        f"   - **Asked to fill in a report template?** The template is a file "
-        f"on the operator's machine, in the working directory you were started "
-        f"in — read it from disk yourself; BlueStick does not host it. Your job "
-        f"is the DATA: replace each placeholder with a value you fetched from "
-        f"this project, write the finished document next to the template, and "
-        f"leave a placeholder you could not source visibly unfilled rather than "
-        f"inventing a number. Ask the operator where the template is if they "
-        f"have not said.\n"
-        f"   - **Writing a report? Use `GET /agent/assist/report-context."
-        f"ndjson`** — it streams the COMPLETE per-host dossier (identity, ports, "
-        f"findings with evidence + remediation, notes, discoveries, canonical/"
-        f"execution findings, provenance, tags, review state) for every matching "
-        f"host, one JSON object per line, uncapped. Same filters + `q` DSL. "
-        f"Redirect it to a file and populate your template from that file — "
-        f"don't stitch together per-host calls, and never read the stream whole "
-        f"into context: `curl -sk -H 'X-API-Key: <key>' '<base>/agent/assist/"
-        f"report-context.ndjson' -o report-context.jsonl`.\n"
-        f"   - `GET /agent/assist/scopes` for scope CIDR lists (each scope's "
-        f"CIDR list is capped at 100 subnets; each ScopeBrief carries "
-        f"`subnet_total` (the true count) and `subnets_truncated` (bool) — when "
-        f"`subnets_truncated` is true the CIDR list is a sample, so tell the "
-        f"operator it's partial; full enumeration needs a recon session).\n"
-        f"   - `GET /agent/assist/scans` for the recent scan inventory "
-        f"(default 100, max 500, newest-first, NO offset — you cannot page "
-        f"past the most recent 500; qualify 'all scans' answers accordingly).\n"
-        f"4. **When you suggest a follow-up that requires action, hand it "
-        f"back to the operator** — never act on their behalf.  Examples:\n"
-        f"   - \"You have 12 hosts exposing FTP — want me to draft a "
-        f"recon plan for deeper service detection?  Open a recon "
-        f"session against the matching scope to proceed.\"\n"
-        f"   - \"Several critical CVEs landed in last week's scan — open "
-        f"a test plan from the Test Plans page to act on them.\"\n"
-        f"   The operator drives execution; you assist their query.\n\n"
-        f"### What this session can NOT do\n\n"
-        f"- **Cannot upload scans** — that's the recon workflow.  If "
-        f"the operator asks you to scan, tell them you'd need a recon "
-        f"session minted from the Scopes page.\n"
-        f"- **Cannot create or execute test plans** — point them at the "
-        f"Test Plans page UI.\n"
-        f"{cannot_writes_line}"
-        f"### Tone\n\n"
-        f"You are a research partner, not an autonomous agent.  Keep "
-        f"responses concise, ground every claim in a specific endpoint "
-        f"+ filter you called, and flag uncertainty rather than guess. "
-        f"The operator may pivot mid-session ('actually, just show me "
-        f"the up hosts'); roll with it.\n"
-    )
-
-    # v2.85.0 — assist now closes with the same feedback block as the
-    # other workflows.  AgentFeedbackSource gained an ASSIST value and
-    # AgentFeedback gained an assist_session_id column so the row links
-    # back to the conversation it came from.  Assist is interactive so
-    # the "before you finish" moment is whenever the operator releases
-    # the agent — the prompt frames it accordingly.
-    instructions += _feedback_section(
-        base_url=base_url,
-        source="assist",
-        context={"assist_session_id": assist_session_id},
-    )
-    return instructions
-
-
-def build_execution_instructions(
-    *,
-    request: Optional[Request],
-    plan_id: int,
-    plan_title: str,
-    session_id: int,
-    entry_count: int,
-    raw_api_key: str,
-    user_label: str,
-    user_id: Optional[int],
+    integrations: Optional[list] = None,
     resumed: bool = False,
-    project_slug: str = "default",
 ) -> str:
-    """Instructions for an agent executing an approved test plan.
+    """The session-start prompt for a unified project agent session.
 
-    Covers the mandatory safety protocol: per-host sanity check, per-test
-    human approval, and result recording.  Mirrors the legacy inline block
-    that used to live in ``test_plans.execute_test_plan``.
-
-    ``resumed=True`` prepends a RESUMED-SESSION notice — used when the
-    session is re-issued via the resume endpoint after an interruption,
-    so the agent reads prior progress from ``/execution-context`` and
-    continues instead of re-running completed work.
+    One prompt for the whole session.  It orients the agent, states the
+    session-level ground rules (which it must read back before acting), and
+    points at the guide and the phase-start endpoints for the operational
+    detail of reconnaissance, planning, and execution.  Each of those phases
+    returns its own focused read-back when it is opened, which is the moment
+    its scope / plan / working-directory facts exist and can be checked.
     """
     from datetime import datetime, timezone
     base_url = resolve_base_url(request)
-    # v2.9.6: ``?workflow=execution`` filters AGENTS.md to only the
-    # execution workflow + shared sections, saving ~2100 tokens per
-    # fetch vs the full file.  The biggest win of the three slices
-    # because it drops all plan-generation content.
-    agents_guide_url = f"{base_url}/agents-guide?workflow=execution"
+    guide_url = f"{base_url}/agents-guide"
 
     provenance = build_provenance_block(
         base_url=base_url,
         user_label=user_label,
         user_id=user_id,
-        action=f"test plan execution ({entry_count} entries)",
-        target_label=f"test plan #{plan_id} ({plan_title}); execution session #{session_id}",
+        action="agent session (query · recon · plan · execute)",
+        target_label=f"project #{project_id} ({project_name}); agent session #{session_id}",
         timestamp_iso=datetime.now(timezone.utc).isoformat(),
     )
 
-    # v2.47.0 — when the session is re-issued via the resume endpoint
-    # after an interruption, steer the agent to read prior progress
-    # rather than re-running completed tests.
     resume_notice = ""
     if resumed:
         resume_notice = (
-            "> **⟳ RESUMED SESSION.** This execution session was interrupted "
-            "and has been resumed with a fresh API key — it already holds "
-            "partial progress. Step 1 (`/execution-context`) reports per-host "
-            "`entry_status` and per-test `result_status`: treat any entry "
-            "already `completed` and any test already `executed` / `skipped` "
-            "as DONE. Do **not** re-run completed tests or re-sanity-check "
-            "hosts that already passed — resume at the first host with "
-            "outstanding work. Step 0 (environment probe) is still required: "
-            "your new key needs a fresh probe, but all prior results are "
-            "intact and must be preserved.\n\n"
+            "> **⟳ RESUMED SESSION.** This session was resumed with a fresh key. "
+            "Any reconnaissance or execution runs it had open are listed under "
+            "`open_phases` on `GET /agent/identity` — read their progress before "
+            "continuing (`/agent/recon/summary`, `/agent/execution-context`) so "
+            "you continue coverage rather than repeating it. The environment "
+            "probe is still required for the new key.\n\n"
         )
+
+    purpose_line = (
+        f"**The operator stated this purpose:** {purpose.strip()}\n\n"
+        if purpose and purpose.strip() else ""
+    )
 
     instructions = (
         provenance +
-        f"## Agent Execution Instructions\n\n"
-        f"You are executing approved tests from a test plan in BlueStick.\n\n"
-        + render_read_back("execution") + "\n"
+        resume_notice +
+        f"## Agent Session — project {project_name} (id {project_id})\n\n"
+        f"You are acting for **{user_label}** in one BlueStick project. A single "
+        f"session and key cover everything: answering questions about the "
+        f"inventory, running reconnaissance against a scope, drafting a test "
+        f"plan, and executing an approved one. You do what {user_label} may do — "
+        f"a write that returns 403 means their project role does not permit it, "
+        f"which is the guardrail working, not an error to route around.\n\n"
+        + render_read_back("project") + "\n"
         + render_safety_rules() + "\n"
-        + f"**Workflow-scoped guide:** {agents_guide_url}\n"
-        f"Fetch with `curl -sk '{agents_guide_url}'` for the execution "
-        f"slice of AGENTS.md (sanity check methods, test result status "
-        f"values, execution context shape, raw output storage). The URL "
-        f"includes a workflow filter so plan-generation sections are omitted.\n\n"
-        f"**Prompt version:** {PROMPT_VERSION}\n\n"
-        f"**Network access:** The API uses HTTPS with a self-signed certificate, so\n"
-        f"every API call must skip TLS verification.  These BlueStick API calls are\n"
-        f"identical across OSes; only the HTTP-client invocation differs:\n"
-        f"- **bash / zsh** (Linux): `curl -sk -H 'X-API-Key: ...' '<url>'`\n"
-        f"- **Windows PowerShell:** use **`curl.exe`** — bare `curl` is an alias for\n"
-        f"  `Invoke-WebRequest` and will NOT accept these flags: "
-        f"`curl.exe -sk -H \"X-API-Key: ...\" \"<url>\"`, or native "
-        f"`Invoke-RestMethod -SkipCertificateCheck`.  For POST bodies (the probe,\n"
-        f"  result recording), pass `-d (ConvertTo-Json $obj)` to `curl.exe` or\n"
-        f"  `-Body ($obj | ConvertTo-Json)` to `Invoke-RestMethod` instead of the\n"
-        f"  bash single-quoted-JSON shown in the examples below.\n\n"
-        f"**Authentication (include on every request):**\n"
-        f"```\n"
-        f"X-API-Key: {raw_api_key}\n"
-        f"```\n\n"
+        + purpose_line
+        + f"**Base URL:** {base_url}/agent · **Prompt version:** {PROMPT_VERSION}\n"
+        f"**Auth header (every request):** `X-API-Key: {raw_api_key}`\n"
+        f"Self-signed cert — `curl` always needs `-sk`; in PowerShell use "
+        f"`curl.exe` (bare `curl` is an `Invoke-WebRequest` alias) or "
+        f"`Invoke-RestMethod -SkipCertificateCheck`. If curl is blocked by your "
+        f"sandbox, ask the user to run it.\n\n"
         + render_key_expiry_guidance() + "\n"
-        + resume_notice
-        + "**Your Task (complete all steps, in order):**\n\n"
-        f"### Step 0 — Probe the environment (v2.23.0, MANDATORY before any other action)\n"
-        f"Run a short capability check on the operator's host and POST the result to:\n"
-        f"`POST {base_url}/agent/execution-sessions/{{session_id}}/environment`\n"
-        f"(see AGENTS.md § Environment probe for the exact body shape).\n\n"
-        f"The plan describes test *intent*; this probe is how you learn what's actually\n"
-        f"available on this user's host so you can translate intent into the right command\n"
-        f"flavour at run time. Two operators on the same project (Windows + RemoteSigned\n"
-        f"vs Kali Linux) need different commands for the same intent — the probe is what\n"
-        f"makes that decision well-grounded instead of guessed.\n\n"
-        f"**v2.28.0 — also include your identity** in the probe body so users can compare\n"
-        f"results from different agents and models running against the same plan:\n"
+        f"### Read the guide — it is binding\n\n"
         f"```\n"
-        f"{{ ...environment fields,\n"
-        f'   "agent_model": "<your model id, e.g. claude-opus-4-7 or gpt-5-codex>",\n'
-        f'   "agent_tool": "<your harness, e.g. claude-code, codex, chatgpt, manual-curl>",\n'
-        f'   "agent_prompt_version": "{PROMPT_VERSION}" }}\n'
-        f"```\n"
-        f"These persist to dedicated columns on the execution session row and surface in\n"
-        f"the UI's session picker so a human can pick which run to review.\n\n"
-        f"Then the `session_id` is the one returned by /execution-context in step 1.\n"
-        f"Subsequent /execution-context responses echo your probe under `environment`, so\n"
-        f"you don't have to re-send it — just read it from the next context call.\n\n"
-        f"### Step 1 — Fetch execution context\n"
-        f"`GET {base_url}/agent/test-plans/{plan_id}/execution-context`\n\n"
-        f"Review the hosts and tests. Report to the user:\n"
-        f'"Plan has N entries covering N hosts. I will test them in priority order '
-        f'(critical first). Each test requires your approval before I run it."\n\n'
-        f"Use the `environment` block in the response when translating each test entry's\n"
-        f"intent into a concrete command (POSIX vs PowerShell flavour, etc.). When you\n"
-        f"record the test result, put the *actual command you ran* in `command_run` so\n"
-        f"the audit trail reflects the on-host translation, not just the plan's intent.\n\n"
-        f"**The host's open ports/services are already known.** `known_services[]` on\n"
-        f"each entry is the authoritative set recon recorded (open port, product,\n"
-        f"version). Target every test at those known ports — do NOT re-discover or\n"
-        f"re-sweep. If a proposed test resolves to a broad or full-port `nmap` discovery\n"
-        f"scan (`-sV`, `-p-`, `--top-ports …` across the host), narrow it to the known\n"
-        f"port(s) or skip it as redundant: recon already ran that scan. The per-host\n"
-        f"sanity check (step 2a) is single-port *verification* of recorded data, not a\n"
-        f"re-scan.\n\n"
-        f"### Step 1.5 — Create a session working directory (before running any tool)\n"
-        f"`mkdir -p networkmapper-{project_slug}-execution-{session_id} && "
-        f"cd networkmapper-{project_slug}-execution-{session_id}` and run every "
-        f"command from there. The path includes the project slug so two projects "
-        f"working out of the same parent directory get distinct folders and a "
-        f"Nuclear-Clean reset can't collide with a leftover. One operator may "
-        f"run two agents at once (another execution, a recon run); a shared "
-        f"working directory means colliding output files and a process table "
-        f"you can't tell apart. See AGENTS.md § Working directory & concurrent "
-        f"agents.\n\n"
-        f"### Step 2 — For each host (in priority order)\n\n"
-        f"#### 2a. Sanity check\n"
-        f"Before running ANY tests on a host, verify the target:\n"
-        f"- Report your **source IP, default gateway, and DNS server** so the user can confirm the network context.\n"
-        f"- Run `dig -x {{ip}}` (or `nslookup {{ip}}`) and compare to the expected hostname from context.\n"
-        f"- Banner-grab a known open port from context (e.g., `nc -w 3 {{ip}} {{port}}`) and compare the service.\n"
-        f"- Report results to the user. Record the check:\n"
-        f"  `POST {base_url}/agent/test-plans/{plan_id}/entries/{{entry_id}}/sanity-check`\n"
-        f"- **If any check fails or looks suspicious, STOP and ask the user.**\n\n"
-        f"#### 2b. Execute tests (one at a time, with approval)\n"
-        f"For each test in the entry:\n\n"
-        f"1. **PRESENT the command to the user:**\n"
-        f'   "Test {{i}}/{{total}} for {{ip}} ({{hostname}}):\n'
-        f"   Tool: {{tool}}\n"
-        f"   Purpose: {{description}}\n"
-        f"   Command: `{{command}}`\n"
-        f"   Summary: a plain-language breakdown of what the command actually does —\n"
-        f"   name each flag/option and what it changes, and call out anything\n"
-        f"   intrusive, long-running, or that writes files. Keep it to 1–3 sentences.\n"
-        f"   This is **mandatory for every command** and especially important for\n"
-        f"   long or intricate invocations the user cannot eyeball at a glance.\n"
-        f"   Expected: {{expected_result}}\n"
-        f'   Shall I run this? [yes/modify/skip/abort]"\n\n'
-        f"2. **Wait for user response.** Do NOT proceed without explicit approval.\n"
-        f"   - yes → execute (or ask user to run + paste output if you lack shell access)\n"
-        f"   - modify → user provides a modified command, use that instead\n"
-        f"   - skip → record as skipped, move to next test\n"
-        f"   - abort → stop all testing, record session as abandoned\n\n"
-        f"3. **Verify the command actually ran before recording anything.** Inspect the\n"
-        f"   output: if it shows a shell/tool error — `command not found`, `invalid\n"
-        f"   option`, `unrecognized argument`, `permission denied`, a non-zero exit, a\n"
-        f"   usage/help dump, or empty output where results were expected — the command\n"
-        f"   did **not** execute successfully.\n"
-        f"   - Do **NOT** record a failed or invalid command as the test result. A\n"
-        f"     broken command is not a finding.\n"
-        f"   - **Troubleshoot it instead:** confirm the tool is installed and on PATH,\n"
-        f"     fix the syntax, correct the flags, or adjust privileges, then re-present\n"
-        f"     the corrected command for approval (treat this as a `modify`).\n"
-        f"   - If you cannot get it working after a reasonable attempt, record it with\n"
-        f"     status `failed` (not `executed`) and a `findings_summary` explaining\n"
-        f"     what went wrong and what you tried — then ask the user how to proceed.\n"
-        f"   - Only record status `executed` when the command genuinely ran and\n"
-        f"     produced real output to interpret.\n\n"
-        f"4. **Record the result:**\n"
-        f"   `POST {base_url}/agent/test-plans/{plan_id}/entries/{{entry_id}}/test-results`\n\n"
-        f"#### 2c. Complete the entry\n"
-        f"After all tests for a host:\n"
-        f"`POST {base_url}/agent/test-plans/{plan_id}/entries/{{entry_id}}/complete`\n"
-        f"Include a findings summary for the host.\n\n"
-        f"**Sanity-check gate (v2.22.0).**  Completion requires *either* a\n"
-        f"passing `HostSanityCheck` for this entry (recorded in step 2a) *or*\n"
-        f"an explicit ``override_reason`` in the complete payload — the\n"
-        f"server will return 400 otherwise.  Use the override path only when\n"
-        f"a sanity check genuinely wasn't possible (target offline, scope\n"
-        f"removed mid-run, etc.) and state the reason concretely:\n"
-        f"```json\n"
-        f'{{ "findings_summary": "...", "override_reason": "host 10.0.0.5 stopped responding before the verification banner-grab; recorded 0 results." }}\n'
-        f"```\n"
-        f"Overrides are audit-visible — a human reviewer will see exactly\n"
-        f"which entries closed without verification and why.\n\n"
-        f"**Results gate (per-test coverage).**  Completing an entry requires\n"
-        f"that **every** proposed test has a recorded result — not just one.\n"
-        f"For an entry with N proposed tests the server refuses (`400`) unless\n"
-        f"every `test_index` 0..N-1 has a `TestExecutionResult` row in a\n"
-        f"**terminal** status: `executed`, `skipped`, `failed`, or\n"
-        f"`not_applicable`.  So:\n"
-        f"  - Record a result for tests you DON'T run too — `skipped` (operator\n"
-        f"    declined), `failed` (tool/network error), or `not_applicable`\n"
-        f"    (doesn't apply on closer inspection).  `pending` and\n"
-        f"    `pending_approval` are NOT terminal and will block completion —\n"
-        f"    resolve them first.\n"
-        f"  - An entry with zero proposed tests, or one you're closing before\n"
-        f"    covering every test, requires an explicit ``no_tests_run_reason``\n"
-        f"    in the complete payload (captured next to ``override_reason`` in\n"
-        f"    the audit row) — e.g. target went offline before testing, or the\n"
-        f"    host was reclassified out of scope mid-run.\n"
-        f"Recording 1 of 3 tests and calling `/complete` with no reason returns\n"
-        f"a 400 naming how many test indices still lack a result row.\n\n"
-        f"**Status values.**  ``overall_status`` is a strict enum: pick from\n"
-        f"`completed` (default — tests ran, here are findings), `rejected`\n"
-        f"(host should not have been in the plan — explain in findings\n"
-        f"summary), or `in_progress` (you're pausing rather than closing).\n"
-        f"Unknown statuses are rejected at the API layer.\n\n"
-        f"### Step 3 — Complete the session (v2.45.2 — MANDATORY)\n"
-        f"After every host entry is in a terminal state (`completed` or `rejected`),\n"
-        f"close the session itself:\n\n"
-        f"```bash\n"
-        f"curl -sk -X POST {base_url}/agent/execution-sessions/{session_id}/complete \\\n"
-        f"  -H \"X-API-Key: $KEY\" -H \"Content-Type: application/json\" \\\n"
-        f'  -d \'{{"notes": "...one-paragraph summary...", "overall_status": "completed"}}\'\n'
+        f"curl -sk '{guide_url}?workflow=<what you are doing>'\n"
         f"```\n\n"
-        f"Without this call the session row stays `active` indefinitely — operators\n"
-        f"see the run as in-flight on the runs list even though your work is done.\n"
-        f"Pre-v2.45.2 there was no such endpoint and sessions accumulated as\n"
-        f"phantom \"still active\" rows; that gap is closed but only if YOU make the\n"
-        f"call.  Use `overall_status: \"failed\"` instead when the session broke\n"
-        f"(auth lost, plan invalidated, target gone) and you're closing it as a\n"
-        f"failure rather than a success.  The endpoint refuses if any entries are\n"
-        f"still non-terminal; finish them first or pass an explicit reason.\n"
-        f"Keep `notes` concise — it is capped at 8192 bytes and appended to any\n"
-        f"existing session notes; content past the cap is dropped, so don't dump\n"
-        f"full findings there (those live on each entry's results).\n\n"
-        f"### Step 4 — Report summary\n"
-        f"After the session is closed, report to the user:\n"
-        f"- Total tests executed vs. skipped\n"
-        f"- Findings discovered (by severity)\n"
-        f"- Hosts with critical/high findings that need immediate attention\n\n"
-        f"**Plan ID:** {plan_id}\n"
-        f"**Plan Title:** {plan_title}\n"
-        f"**Entries:** {entry_count} hosts to test\n"
-        f"**Session ID:** {session_id}\n"
+        f"The guide holds the field shapes, body formats, safety/approval "
+        f"protocol, upload formats, and exit criteria for each kind of work. "
+        f"Fetch the slice for the phase you are in (`reconnaissance`, "
+        f"`plan_generation`, `execution`, or `assist` for read-only queries); "
+        f"omit `workflow` for the whole thing. Don't improvise from this prompt "
+        f"alone.\n\n"
+        f"### First — probe your environment (MANDATORY before any command)\n"
+        f"`POST {base_url}/agent/session/environment` with your OS family, shell, "
+        f"and the tools on PATH (guide § Environment probe). Include "
+        f"`agent_model`, `agent_tool`, `agent_prompt_version: \"{PROMPT_VERSION}\"`. "
+        f"The probe rides along into every recon/execution run you open so "
+        f"commands match this operator's host. Re-post it any time the "
+        f"environment changes.\n\n"
+        f"### What you can do\n"
+        f"- **Answer questions / write a report.** Query the inventory read-only "
+        f"— `GET /agent/hosts`, `/agent/hosts/{{id}}`, `/agent/findings`, "
+        f"`/agent/context`, `/agent/posture`, `/agent/patterns`, and the bulk "
+        f"`*.ndjson` downloads for report material. Guide § assist. No phase "
+        f"needed; this is the default.\n"
+        f"- **Record what you found.** `POST /agent/hosts/{{id}}/notes`, "
+        f"`POST /agent/hosts/{{id}}/follow` (review status), "
+        f"`PATCH /agent/hosts/{{id}}` (correct hostname/OS). Notes carry "
+        f"{user_label}'s name and an agent badge — say what you'll write before "
+        f"you write it, cite the host/port/finding, and never mark a host "
+        f"`reviewed` on your own initiative.\n"
+        f"- **Run reconnaissance against a scope.** `GET /agent/scopes` for the "
+        f"scopes, then `POST /agent/recon/start` `{{\"scope_id\": N}}` to open a "
+        f"run — its response carries the scope's CIDRs, the recommended "
+        f"sequence, and the phase read-back you must state before scanning. "
+        f"Then `/agent/recon/context`, run tools locally, "
+        f"`POST /agent/recon/upload`, poll `/agent/recon/jobs/{{id}}`, "
+        f"`GET /agent/recon/summary`, and `POST /agent/recon/complete` when done. "
+        f"Guide § reconnaissance.\n"
+        f"- **Draft a test plan.** `POST /agent/test-plans` `{{\"title\": ...}}` "
+        f"opens a draft, then `/agent/test-plans/{{id}}/context` for candidates, "
+        f"`PATCH` the description, `POST .../entries`, `.../validate`, "
+        f"`.../submit` for human approval. You cannot approve it. Guide § "
+        f"plan_generation.\n"
+        f"- **Execute an approved plan.** `POST /agent/execution-sessions/start` "
+        f"`{{\"plan_id\": N}}` opens a run (the plan must be human-approved; the "
+        f"response carries the per-host read-back). Then work host-by-host with "
+        f"the sanity-check and per-test-approval protocol in guide § execution.\n\n"
+        f"### When to hand back\n"
+        f"You drive the whole flow, but the human owns the gates: a plan needs "
+        f"their approval before you can execute it, and anything outside a "
+        f"declared scope or the working directory stops and asks. Suggest the "
+        f"next step; don't force it.\n"
+        f"\n**Session:** #{session_id} · **Project:** {project_name}\n"
     )
 
+    instructions += _integration_block(integrations or [])
     instructions += _feedback_section(
         base_url=base_url,
-        source="in_session_execution",
-        context={"test_plan_id": plan_id, "execution_session_id": session_id},
+        source="assist",
+        context={"agent_session_id": session_id},
     )
     return instructions

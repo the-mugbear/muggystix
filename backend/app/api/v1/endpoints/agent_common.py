@@ -8,18 +8,37 @@ Must not import from the endpoint modules (agent_browse / agent_test_plans
 
 from typing import Dict, List, Optional
 
+from fastapi import HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.db.models_agent import ReconSession, TestPlan, TestPlanEntry
+from app.db.models_agent import AgentSession, ReconSession, TestPlan, TestPlanEntry
 from app.services.test_plan_service import TestPlanService
 
 from app.api.v1.endpoints.agent_schemas import PlanResponse
 
 # Reuse canonical service-port mappings from the hosts endpoint
 from app.api.v1.endpoints.hosts import SERVICE_PORT_MAPPINGS as _SERVICE_PORT_MAP
+
+
+def load_agent_session(db: Session, request: Request) -> AgentSession:
+    """The unified ``AgentSession`` the caller's key belongs to.
+
+    v2.337.0 — every ``/agent/*`` handler resolves its session from here
+    (``get_current_agent`` stashed the id after authenticating).  The phase a
+    call is about (a recon run, an execution run) is resolved from the session
+    by the ``agent_session_service.resolve_*_phase`` helpers, replacing the
+    per-key scope binding the deleted workflow guards used to carry.
+    """
+    session_id = getattr(request.state, "agent_session_id", None)
+    if session_id is None:
+        raise HTTPException(status_code=403, detail="No agent session bound to this key")
+    session = db.query(AgentSession).filter(AgentSession.id == session_id).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agent session not found")
+    return session
 
 
 # ---------------------------------------------------------------------------

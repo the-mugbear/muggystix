@@ -151,10 +151,14 @@ def submit_agent_feedback(
             detail="source=exported_execution is reserved for bundle import, not live feedback",
         )
 
-    scoped_plan_id = getattr(request.state, "scoped_plan_id", None)
-    scoped_scope_id = getattr(request.state, "scoped_scope_id", None)
-    scoped_recon_session_id = getattr(request.state, "scoped_recon_session_id", None)
-    scoped_assist_session_id = getattr(request.state, "scoped_assist_session_id", None)
+    # v2.337.0 — a session is no longer scoped to one workflow, so there is no
+    # per-key workflow to pin `source` against. The row is stamped with the
+    # session id (from the key) and the body's optional phase ids are validated
+    # against the project below. The source↔ID coherence guard stays: it keeps
+    # a single feedback row internally consistent.
+    agent_session_id = getattr(request.state, "agent_session_id", None)
+    scoped_plan_id = None
+    scoped_scope_id = None
 
     # Source ↔ ID coherence guard (v2.85.2).  Runs for EVERY agent,
     # scoped or legacy/unscoped: the body's source string and the
@@ -191,51 +195,14 @@ def submit_agent_feedback(
                 detail="source=assist cannot reference plan/execution/recon IDs",
             )
 
-    # Workflow-contract guard (v2.85.1).  Each scoped key flavor owns
-    # exactly one workflow; reject foreign-flavor `source` values up
-    # front so a recon key bound to session A can't attach feedback to
-    # session B (audit-attribution leak), and so a plan key can't
-    # masquerade as recon/assist.  Source ↔ ID coherence is already
-    # enforced above for every agent; this block adds the scope-pinning
-    # layer for scoped keys.
-    if scoped_plan_id is not None:
-        if body.source not in plan_sources:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Plan-scoped API key cannot submit source={body.source!r}",
-            )
-    elif scoped_scope_id is not None:
-        if body.source != AgentFeedbackSource.RECONNAISSANCE.value:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Recon-scoped API key cannot submit source={body.source!r}",
-            )
-        # If the key is pinned to a specific recon session (v2.45.0+),
-        # the body's recon_session_id (if provided) must match exactly —
-        # scope-level coherence isn't enough.
-        if (scoped_recon_session_id is not None
-                and body.recon_session_id is not None
-                and body.recon_session_id != scoped_recon_session_id):
-            raise HTTPException(
-                status_code=403,
-                detail="This API key is scoped to a different recon session",
-            )
-    elif scoped_assist_session_id is not None:
-        if body.source != AgentFeedbackSource.ASSIST.value:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Assist-scoped API key cannot submit source={body.source!r}",
-            )
-        if (body.assist_session_id is not None
-                and body.assist_session_id != scoped_assist_session_id):
-            raise HTTPException(
-                status_code=403,
-                detail="This API key is scoped to a different assist session",
-            )
+    # v2.337.0 — the per-key workflow-pinning guard is gone with per-workflow
+    # keys. A session can produce feedback about any phase it ran, so `source`
+    # is no longer constrained by the key. The body's optional phase ids are
+    # still validated against the project below, and the row carries the
+    # session id, so attribution stays answerable.
 
-    # Defensive FK validation.  Scoped agent keys (test_plan_id set)
-    # can only reference their own plan; global agent keys can reference
-    # any plan in their project.
+    # Defensive FK validation — the referenced phase must belong to this
+    # agent's project.
     if body.test_plan_id is not None:
         plan = (
             db.query(TestPlan)
@@ -312,6 +279,7 @@ def submit_agent_feedback(
     row = AgentFeedback(
         project_id=agent.project_id,
         agent_id=agent.id,
+        agent_session_id=agent_session_id,
         test_plan_id=body.test_plan_id,
         execution_session_id=body.execution_session_id,
         recon_session_id=body.recon_session_id,

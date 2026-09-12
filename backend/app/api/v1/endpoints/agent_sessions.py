@@ -36,7 +36,7 @@ router = APIRouter()
 # v2.303.0 — assist was missing here, so the surface that calls itself the
 # unified agent-session timeline omitted a whole workflow: an operator could
 # have a live assist key and see nothing on Agent Runs.
-SessionKindLiteral = Literal["recon", "plan_generation", "execution", "assist"]
+SessionKindLiteral = Literal["project", "recon", "plan_generation", "execution", "assist"]
 
 
 class AgentSessionRowResponse(BaseModel):
@@ -64,6 +64,7 @@ class AgentSessionRowResponse(BaseModel):
     # the plan title). "Scope #3" cannot tell a second analyst that a range is
     # already being worked, which is the reason a session declares one.
     target_label: Optional[str] = None
+    purpose: Optional[str] = None
 
 
 class AgentSessionListResponse(BaseModel):
@@ -78,6 +79,7 @@ class AgentSessionListResponse(BaseModel):
 class ModelToolSummaryRow(BaseModel):
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
+    project: int = 0
     recon: int = 0
     plan_generation: int = 0
     execution: int = 0

@@ -555,15 +555,14 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             project_id = getattr(request.state, "agent_project_id", None)
             api_key_id = getattr(request.state, "api_key_id", None)
             api_key_prefix = getattr(request.state, "api_key_prefix", None)
-            scoped_plan_id = getattr(request.state, "scoped_plan_id", None)
-            scoped_scope_id = getattr(request.state, "scoped_scope_id", None)
-            # The detail-session ids (recon_session_id / assist_session_id) are
-            # no longer stashed on request.state — the legacy api_keys columns
-            # were dropped in the contract phase — so resolve them from the key's
-            # agent_session below, gated by workflow so a non-recon/non-assist
-            # call skips the lookup entirely.
-            key_workflow = getattr(request.state, "key_workflow", None)
+            # v2.337.0 — a key no longer binds a workflow/plan/scope. The
+            # durable attribution is the session id; the per-phase FK columns
+            # are filled from what the call's PATH names (a plan_id, a
+            # recon/execution session id), which is what "show every call that
+            # touched this plan" needs.
             agent_session_id = getattr(request.state, "agent_session_id", None)
+            scoped_plan_id = None
+            scoped_scope_id = None
 
             path_params = dict(request.path_params or {})
             query_params = dict(request.query_params or {})
@@ -613,33 +612,40 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 path_params, query_params, body_for_id_scan,
             )
 
-            # Tie the audit row to its recon / assist detail session, resolved
-            # 1:1 from the key's agent_session — the same deterministic binding
-            # the request handler used, no "newest active per scope" heuristic.
+            # Per-phase FKs from the call's own path/query — these say which
+            # plan or run the call touched, independent of the session's other
+            # open phases.
+            assist_session_id = None
+            plan_from_path = path_params.get("plan_id")
+            try:
+                test_plan_id = int(plan_from_path) if plan_from_path is not None else None
+            except (TypeError, ValueError):
+                test_plan_id = None
             recon_session_id = None
-            if key_workflow == "recon" and agent_session_id is not None:
-                from app.db.models_agent import ReconSession
+            raw_recon = (query_params.get("recon_session_id")
+                         if isinstance(query_params, dict) else None)
+            if raw_recon and str(raw_recon).isdigit():
+                recon_session_id = int(raw_recon)
+            elif agent_session_id is not None and "/recon/" in request.url.path:
+                from app.db.models_agent import ReconSession, ReconSessionStatus
                 row = (
                     db.query(ReconSession.id)
-                    .filter(ReconSession.agent_session_id == agent_session_id)
+                    .filter(
+                        ReconSession.agent_session_id == agent_session_id,
+                        ReconSession.status == ReconSessionStatus.ACTIVE.value,
+                    )
+                    .order_by(ReconSession.id.desc())
                     .first()
                 )
                 if row:
                     recon_session_id = row[0]
-            assist_session_id = None
-            if key_workflow == "assist" and agent_session_id is not None:
-                from app.db.models_agent import AssistSession as _AssistSessionLookup
-                row = (
-                    db.query(_AssistSessionLookup.id)
-                    .filter(_AssistSessionLookup.agent_session_id == agent_session_id)
-                    .first()
-                )
-                if row:
-                    assist_session_id = row[0]
-
-            execution_session_id = _active_execution_session_id(
-                db, scoped_plan_id,
-            ) if scoped_plan_id else None
+            exec_from_path = path_params.get("session_id")
+            try:
+                execution_session_id = int(exec_from_path) if exec_from_path is not None else None
+            except (TypeError, ValueError):
+                execution_session_id = None
+            if execution_session_id is None and test_plan_id is not None:
+                execution_session_id = _active_execution_session_id(db, test_plan_id)
 
             # Response size (Content-Length header if present; otherwise
             # we leave it null rather than buffer the streaming body).
@@ -675,7 +681,8 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 source_ip=request.client.host if request.client else None,
                 user_agent=request.headers.get("user-agent"),
                 project_id=project_id,
-                test_plan_id=scoped_plan_id,
+                agent_session_id=agent_session_id,
+                test_plan_id=test_plan_id,
                 execution_session_id=execution_session_id,
                 scope_id=scoped_scope_id,
                 recon_session_id=recon_session_id,
@@ -696,18 +703,15 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 via_mcp=bool(getattr(request.state, "_agent_audit_via_mcp", False)),
             )
             db.add(row)
-            # v2.64.0 — refresh AssistSession.last_activity_at on every
-            # assist call (any status — even a 4xx is "I tried").
-            # Lets the UI show "idle 47m" cheaply without scanning
-            # agent_api_calls.  Recon and execution sessions don't
-            # need this (their summary endpoints carry their own
-            # progress signals); assist is conversational, so an
-            # idle marker is meaningful here.
-            if assist_session_id is not None:
+            # v2.337.0 — refresh the session's last_activity_at on every
+            # authenticated call so the sessions page can show "idle 47m"
+            # without scanning agent_api_calls. (Was per-assist-session; the
+            # marker now lives on the unified AgentSession.)
+            if agent_session_id is not None:
                 from datetime import datetime as _dt, timezone as _tz
-                from app.db.models_agent import AssistSession as _AssistSession
-                db.query(_AssistSession).filter(
-                    _AssistSession.id == assist_session_id
+                from app.db.models_agent import AgentSession as _AgentSession
+                db.query(_AgentSession).filter(
+                    _AgentSession.id == agent_session_id
                 ).update(
                     {"last_activity_at": _dt.now(_tz.utc)},
                     synchronize_session=False,

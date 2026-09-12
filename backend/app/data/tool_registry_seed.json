@@ -243,7 +243,7 @@
   },
   {
     "name": "ffuf",
-    "description": "Fast web fuzzer written in Go. Extremely flexible — can fuzz any part of an HTTP request including URL paths, headers, POST data, and cookies. Output can be filtered by status code, response size, word count, or regex.",
+    "description": "Fast web fuzzer written in Go. Extremely flexible \u2014 can fuzz any part of an HTTP request including URL paths, headers, POST data, and cookies. Output can be filtered by status code, response size, word count, or regex.",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
     "install": "apt install ffuf  # or  go install github.com/ffuf/ffuf/v2@latest",
@@ -288,7 +288,7 @@
   },
   {
     "name": "httpx",
-    "description": "Fast multi-purpose HTTP toolkit by ProjectDiscovery — the canonical first pass over web services. Probes status code, page title, server header, technology stack (Wappalyzer), favicon hash, TLS/CDN signals, and redirect chains, one HTTP request per target. Run it before eyewitness: httpx culls dead targets in seconds where eyewitness spins a headless browser per host. JSONL output ingests directly into BlueStick. Note: in Python-heavy environments the `httpx` name often resolves to the Python httpx CLI (incompatible flags) — install ProjectDiscovery’s binary and call it by explicit path.",
+    "description": "Fast multi-purpose HTTP toolkit by ProjectDiscovery \u2014 the canonical first pass over web services. Probes status code, page title, server header, technology stack (Wappalyzer), favicon hash, TLS/CDN signals, and redirect chains, one HTTP request per target. Run it before eyewitness: httpx culls dead targets in seconds where eyewitness spins a headless browser per host. JSONL output ingests directly into BlueStick. Note: in Python-heavy environments the `httpx` name often resolves to the Python httpx CLI (incompatible flags) \u2014 install ProjectDiscovery\u2019s binary and call it by explicit path.",
     "category": "Web Analysis",
     "ports": "80, 443, 8080, 8443, 8000, 3000",
     "install": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest  # or prebuilt binary from the releases page",
@@ -457,7 +457,7 @@
   },
   {
     "name": "nc",
-    "description": "Netcat — the network swiss army knife. Reads and writes data across TCP/UDP connections. Essential for banner grabbing, port testing, file transfers, and creating reverse/bind shells.",
+    "description": "Netcat \u2014 the network swiss army knife. Reads and writes data across TCP/UDP connections. Essential for banner grabbing, port testing, file transfers, and creating reverse/bind shells.",
     "category": "Network Services",
     "ports": "Any",
     "install": "apt install netcat-openbsd  # usually pre-installed",
@@ -936,5 +936,39 @@
     "requires_privileges": null,
     "output_format": null,
     "ingestible": false
+  },
+  {
+    "name": "gvm-tools",
+    "description": "Greenbone Vulnerability Management command-line clients (gvm-cli, gvm-script) that drive an OpenVAS/GVM scanner over GMP \u2014 create targets and tasks, start scans, and export XML reports. Use with a configured Greenbone integration; the GSA web URL cannot drive scans, GMP can.",
+    "category": "Vulnerability Scanning",
+    "ports": "9390",
+    "install": "pipx install gvm-tools  # or apt install gvm-tools",
+    "url": "https://github.com/greenbone/gvm-tools",
+    "kali": true,
+    "status": "approved",
+    "phases": [
+      "credentialed"
+    ],
+    "intrusive": true,
+    "requires_privileges": false,
+    "output_format": "xml",
+    "ingestible": true
+  },
+  {
+    "name": "gvm-cli",
+    "description": "Single-command GMP client from gvm-tools for scripted Greenbone/OpenVAS control (authenticate, create target/task, start, get_reports). Alias entry so an agent that reaches for `gvm-cli` by name finds it approved.",
+    "category": "Vulnerability Scanning",
+    "ports": "9390",
+    "install": "pipx install gvm-tools",
+    "url": "https://greenbone.github.io/gvm-tools/",
+    "kali": true,
+    "status": "approved",
+    "phases": [
+      "credentialed"
+    ],
+    "intrusive": true,
+    "requires_privileges": false,
+    "output_format": "xml",
+    "ingestible": true
   }
 ]

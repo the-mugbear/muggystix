@@ -51,7 +51,7 @@ from app.services.assist_session_service import (
     has_live_key,
     key_expiry_for_sessions,
 )
-from app.services.agent_prompt_service import build_assist_instructions, resolve_base_url
+from app.services.agent_prompt_service import resolve_base_url
 from app.services.mcp_client_setup_service import build_mcp_clients
 
 router = APIRouter()
@@ -412,44 +412,27 @@ def start_assist_session(
     Recon, plan generation and execution remain ANALYST: they exist to change
     project state.
     """
-    agent = _resolve_assist_agent(db, project=project, user=current_user)
+    # v2.337.0 — "AI Assist" mints the same unified PROJECT session as every
+    # other entry point; there is no separate assist key any more. The session
+    # can query, and (role permitting) go on to recon / plan / execute with the
+    # same key. No AssistSession detail row is created.
+    from app.services.agent_session_service import (
+        create_agent_session, resolve_project_agent, mint_session_key,
+    )
+    from app.services.agent_prompt_service import build_session_instructions
 
-    # v2.309.0 — no capability grant. What this session may write is decided on
-    # every request by the operator's project role (enforce_agent_operator_access),
-    # so there is nothing to opt into at start time and nothing to keep in sync.
-    #
-    # Unified base session first, so the detail row + key both link to it
-    # (R5 — expand-phase completion; was left null for the backfill).
+    agent = resolve_project_agent(db, project_id=project.id, user=current_user)
     base_session = create_agent_session(
-        db,
-        workflow=AgentSessionWorkflow.ASSIST.value,
-        project_id=project.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        status=AssistSessionStatus.ACTIVE.value,
+        db, project_id=project.id, agent_id=agent.id,
+        started_by_id=current_user.id, purpose=body.purpose,
     )
-
-    assist_session = AssistSession(
-        project_id=project.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        status=AssistSessionStatus.ACTIVE.value,
-        purpose=body.purpose,
-        agent_session_id=base_session.id,
+    raw_key = mint_session_key(
+        db, agent=agent, session=base_session,
+        ttl_hours=body.ttl_hours or ASSIST_KEY_DEFAULT_TTL_HOURS,
     )
-    db.add(assist_session)
-    db.flush()
-
-    raw_key = _mint_assist_session_key(
-        db,
-        agent=agent,
-        assist_session=assist_session,
-        ttl_hours=body.ttl_hours,
-        agent_session_id=base_session.id,
-    )
-    instructions = build_assist_instructions(
+    instructions = build_session_instructions(
         request=request,
-        assist_session_id=assist_session.id,
+        session_id=base_session.id,
         project_id=project.id,
         project_name=project.name,
         purpose=body.purpose,
@@ -458,20 +441,15 @@ def start_assist_session(
         user_id=current_user.id,
     )
     db.commit()
-    db.refresh(assist_session)
 
-    # MCP connection details. resolve_base_url returns ".../api/v1"; the MCP
-    # transport is mounted at /api/v1/mcp, so the endpoint is base_url + "/mcp".
     mcp_url = f"{resolve_base_url(request)}/mcp"
     mcp_clients = _build_mcp_clients(
-        mcp_url,
-        raw_key,
+        mcp_url, raw_key,
         project_name=project.name,
-        assist_session_id=assist_session.id,
+        assist_session_id=base_session.id,
     )
-
     return StartAssistResponse(
-        assist_session_id=assist_session.id,
+        assist_session_id=base_session.id,
         project_id=project.id,
         project_name=project.name,
         agent_id=agent.id,

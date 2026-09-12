@@ -14,22 +14,19 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import Agent, TestPlanEntry
-from app.api.deps import (
-    check_agent_rate_limit,
-    require_plan_generation_scope,
-    require_plan_scope,
-)
+from app.api.deps import check_agent_rate_limit
 from app.services.test_plan_service import TestPlanService
 from app.services.agent_prompt_history import PROMPT_VERSION
 
 from app.api.v1.endpoints.agent_schemas import (
     VulnCounts, VulnBrief, PortTuple, CandidateHost, PlanningContext,
-    PlanUpdate, EntryBatch, EntryCreate, AgentEntryUpdate,
+    PlanUpdate, EntryBatch, EntryCreate, AgentEntryUpdate, PlanCreate,
     PlanResponse, EntryResponse, PlanDetailResponse,
     EntryBatchResponse, CoverageInfo, PreSubmitReport,
 )
 from app.api.v1.endpoints.agent_common import (
     _apply_agent_host_filters, _batch_host_enrichment, _plan_response,
+    load_agent_session,
 )
 
 router = APIRouter()
@@ -113,57 +110,68 @@ def _entry_response(entry: TestPlanEntry) -> EntryResponse:
     )
 
 
-# v2.295.0 — ``POST /test-plans`` removed.  It was gated on
-# ``deny_scoped_keys``, which admitted only the unscoped global key; that
-# credential is abolished, so the route could not be called by any key this
-# deployment can mint.  Plan creation stays where it always effectively was:
-# the operator creates the plan over JWT (``POST /projects/{id}/test-plans``
-# or ``/test-plans/generate``) and the agent fills it in through
-# ``plan_update`` / ``plan_add_entry``.
-
-
-@router.get("/test-plans", response_model=List[PlanResponse], summary="List own test plans")
-def list_test_plans(
+@router.post(
+    "/test-plans",
+    response_model=PlanResponse,
+    status_code=201,
+    summary="Open a draft test plan in this session",
+)
+def create_test_plan(
+    body: PlanCreate,
     request: Request,
-    status: Optional[str] = Query(None),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    # Reject recon-/assist-scoped keys explicitly.  Every other
-    # /test-plans/* route runs through require_plan_scope, which denies
-    # these; this list route only depends on check_agent_rate_limit, so
-    # without this guard a recon-scoped key (scoped_plan_id is None) would
-    # fall through the per-plan filter below and receive the agent's full
-    # plan list — breaking the plan/recon workflow isolation contract.
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    scoped_assist = getattr(request.state, "scoped_assist_session_id", None)
-    if scoped_scope is not None or scoped_assist is not None:
-        raise HTTPException(
-            status_code=403,
-            detail="This API key is scoped to a recon/assist session, not plan generation.",
-        )
+    """Create a draft plan attributed to this session (v2.337.0).
 
+    Replaces the operator-side "Generate with AI" mint: the session already
+    carries the operator's authority, so drafting a plan is a phase of it.
+    The agent then fills it in via PATCH / entries and submits for approval.
+    """
+    session = load_agent_session(db, request)
     svc = TestPlanService(db)
-    plans = svc.list_plans(agent.project_id, status_filter=status, agent_id=agent.id)
-    # Per-plan-scoped keys only see their own plan in the listing.
-    scoped = getattr(request.state, "scoped_plan_id", None)
-    if scoped is not None:
-        plans = [p for p in plans if p.id == scoped]
+    plan = svc.create_plan(
+        project_id=agent.project_id,
+        agent_id=agent.id,
+        title=body.title,
+        description=body.description,
+        actor_type="agent",
+        actor_id=agent.id,
+        created_by_user_id=session.started_by_id,
+        filter_criteria=body.filter_criteria.model_dump(exclude_none=True) if body.filter_criteria else None,
+    )
+    plan.agent_session_id = session.id
+    db.commit()
+    db.refresh(plan)
+    return _plan_response(plan, db)
+
+
+@router.get("/test-plans", response_model=List[PlanResponse], summary="List this project's test plans")
+def list_test_plans(
+    request: Request,
+    status: Optional[str] = Query(None),
+    mine: bool = Query(False, description="Only plans this session drafted."),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    svc = TestPlanService(db)
+    plans = svc.list_plans(agent.project_id, status_filter=status)
+    if mine:
+        session_id = getattr(request.state, "agent_session_id", None)
+        plans = [p for p in plans if p.agent_session_id == session_id]
     return [_plan_response(p, db) for p in plans]
 
 
 @router.get("/test-plans/{plan_id}", response_model=PlanDetailResponse, summary="Get test plan")
 def get_test_plan(
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
     return PlanDetailResponse(
         id=plan.id,
         version=plan.version,
@@ -198,7 +206,7 @@ def get_planning_context(
         "full", description="'brief' returns summary fields only (no ports array); "
         "'full' (default) includes full port details per host. Use brief for "
         "candidate selection, full for the hosts you'll create entries for."),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return plan metadata + candidate hosts for entry creation.
@@ -220,8 +228,6 @@ def get_planning_context(
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
 
     filters = plan.filter_criteria or {}
 
@@ -476,15 +482,13 @@ def get_planning_context(
 def update_test_plan(
     body: PlanUpdate,
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_generation_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
 
     plan = svc.update_plan(
         plan, "agent", agent.id,
@@ -506,15 +510,13 @@ def update_test_plan(
 def add_entries(
     body: EntryBatch,
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_generation_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
 
     entries_data = [e.model_dump() for e in body.entries]
     try:
@@ -534,15 +536,13 @@ def update_entry(
     body: AgentEntryUpdate,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_generation_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
 
     entry = svc.get_entry(entry_id, plan_id)
     if not entry:
@@ -574,7 +574,7 @@ def update_entry(
 )
 def validate_test_plan(
     plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_plan_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Return summary stats and warnings without changing state.
@@ -586,8 +586,6 @@ def validate_test_plan(
     plan = svc.get_plan(plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.agent_id != agent.id:
-        raise HTTPException(status_code=403, detail="Not your test plan")
 
     progress = svc.get_progress(plan.id)
     warnings: List[str] = []

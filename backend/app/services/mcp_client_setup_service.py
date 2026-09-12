@@ -26,30 +26,20 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-# Workflow keys match AgentSessionWorkflow values.
-_SERVER_NAMES = {
-    "assist": "bluestick-assist",
-    "recon": "bluestick-recon",
-    "plan_generation": "bluestick-plan",
-    "execution": "bluestick-exec",
-}
-_KEY_ENV_VARS = {
-    "assist": "BLUESTICK_ASSIST_KEY",
-    "recon": "BLUESTICK_RECON_KEY",
-    "plan_generation": "BLUESTICK_PLAN_KEY",
-    "execution": "BLUESTICK_EXEC_KEY",
-}
-# The workflows whose agents run local commands, and therefore need the client
-# sandbox pointed at the working directory.
-_LOCAL_EXECUTION_WORKFLOWS = frozenset({"recon", "execution"})
+# v2.337.0 — one project session, one server entry.  The per-workflow server
+# names (bluestick-recon / -plan / -exec / -assist) are gone: an operator who
+# used to connect four servers now connects one that does everything.  The
+# ``workflow`` argument is accepted for call-site compatibility and ignored.
+_SERVER_NAME = "bluestick"
+_KEY_ENV_VAR = "BLUESTICK_API_KEY"
 
 
-def server_name(workflow: str) -> str:
-    return _SERVER_NAMES.get(workflow, "bluestick")
+def server_name(workflow: str = "project") -> str:
+    return _SERVER_NAME
 
 
-def key_env_var(workflow: str) -> str:
-    return _KEY_ENV_VARS.get(workflow, "BLUESTICK_API_KEY")
+def key_env_var(workflow: str = "project") -> str:
+    return _KEY_ENV_VAR
 
 
 def _mcp_server_entry(mcp_url: str, raw_key: str) -> Dict[str, Any]:
@@ -116,13 +106,12 @@ def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
 def sandbox_note(workflow: str, client_id: str) -> str:
     """Client flags that keep a command-running agent inside its directory.
 
-    Empty for workflows that only call the API.  The wording is deliberately
-    "your client enforces this": the working-directory rule is a real boundary
-    only where the process actually lives, and an operator who believes the
-    server is enforcing it would grant more than they meant to.
+    v2.337.0 — always emitted: a single session can open a reconnaissance or
+    execution run that shells out on the operator's machine, so the client
+    sandbox is the real boundary regardless of what the session does first.
+    The wording is deliberately "your client enforces this": an operator who
+    believes the server is enforcing it would grant more than they meant to.
     """
-    if workflow not in _LOCAL_EXECUTION_WORKFLOWS:
-        return ""
     common = (
         " Run the client FROM the directory you want the run's output in: that "
         "directory is the sandbox, and anything outside it — other paths, machine "
@@ -233,7 +222,7 @@ def build_mcp_clients(
     mcp_url: str,
     raw_key: str,
     *,
-    workflow: str = "assist",
+    workflow: str = "project",
     expected: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Connection recipes, one per supported client, as plain dicts.

@@ -346,6 +346,11 @@ class AgentIdentity(BaseModel):
     workflow_session_id: Optional[int] = None
     plan_id: Optional[int] = None
     scope_id: Optional[int] = None
+    # v2.337.0 — the phases this session currently has open / has produced, so
+    # a client can fill tool arguments and see what is in flight without
+    # probing. Keys: recon_session_id, active_recon_session_ids, plan_id,
+    # execution_session_id, active_execution_session_ids, drafted_plan_ids.
+    open_phases: Dict[str, Any] = Field(default_factory=dict)
     project_id: int
     project_name: Optional[str] = None
     agent_id: int
@@ -412,6 +417,24 @@ class AgentDashboard(BaseModel):
 
 # ``PlanCreate`` removed in v2.295.0 with ``POST /agent/test-plans`` — the
 # agent no longer creates plans, it fills in one the operator created.
+
+
+class _PlanFilterCriteria(BaseModel):
+    """The host filters a drafted plan was scoped against (optional)."""
+    subnets: Optional[List[str]] = None
+    ports: Optional[List[int]] = None
+    services: Optional[List[str]] = None
+    min_severity: Optional[str] = None
+    has_critical_vulns: Optional[bool] = None
+    has_high_vulns: Optional[bool] = None
+    search: Optional[str] = None
+
+
+class PlanCreate(BaseModel):
+    """Body for POST /agent/test-plans — open a draft plan in this session."""
+    title: str = Field(..., max_length=200, min_length=1)
+    description: Optional[str] = None
+    filter_criteria: Optional[_PlanFilterCriteria] = None
 
 
 class PlanUpdate(BaseModel):
@@ -635,11 +658,19 @@ class ExecutionHostContext(BaseModel):
     known_services: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class ExecutionStartRequest(BaseModel):
+    """Body for POST /agent/execution-sessions/start — open an execution run."""
+    plan_id: int = Field(..., gt=0, description="The APPROVED plan to execute.")
+
+
 class ExecutionContextResponse(BaseModel):
     plan: dict
     session_id: int
     agent_name: str
     prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
+    # v2.337.0 — present only on POST /agent/execution-sessions/start: the
+    # per-host read-back to state before testing. Null on /execution-context.
+    read_back: Optional[str] = None
     hosts: List[ExecutionHostContext] = Field(default_factory=list)
     # v2.23.0 — echo back what the agent reported via the probe endpoint.
     # None means no probe has been recorded for this session yet; the
@@ -974,7 +1005,7 @@ class EnvironmentProbeResponse(BaseModel):
     # valid values.  Promoted to a typed Literal so the constraint is
     # compile-time visible (Pydantic v2 enforces) and so the OpenAPI
     # schema surfaces it as an enum for downstream consumers.
-    session_type: Literal["recon", "execution", "assist"]
+    session_type: Literal["session", "recon", "execution", "assist"]
     probed_at: datetime
     probed_by_user_id: Optional[int] = None
     probed_from_ip: Optional[str] = None
@@ -1009,11 +1040,21 @@ class KnownHostsProbeHelper(BaseModel):
     note: str = ""
 
 
+class ReconStartRequest(BaseModel):
+    """Body for POST /agent/recon/start — open a recon run on a scope."""
+    scope_id: int = Field(..., gt=0, description="The scope to reconnoitre (see GET /agent/scopes).")
+    notes: Optional[str] = Field(None, max_length=2000)
+
+
 class ReconContextResponse(BaseModel):
     recon_session_id: int
     scope_id: int
     scope_name: str
     prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
+    # v2.337.0 — present only on POST /agent/recon/start: the phase read-back
+    # the agent must state (the CIDRs, in-scope domains, working directory)
+    # before it scans. Null on GET /agent/recon/context.
+    read_back: Optional[str] = None
     # v2.45.4 — `scope_cidrs` is now a BOUNDED sample, not necessarily
     # the full list.  A scope with thousands of CIDRs would otherwise
     # bloat every /recon/context response (and the agent's context

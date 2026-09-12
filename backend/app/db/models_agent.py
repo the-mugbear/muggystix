@@ -157,6 +157,17 @@ class TestPlan(Base):
         nullable=True,
         index=True,
     )
+    # v2.337.0 — the agent session that drafted this plan, when an agent did.
+    # Plan drafting is a phase of a project session rather than a session of
+    # its own, and this is the phase record.  SET NULL: deleting a session
+    # must not delete the plan it produced (the plan is project data; the
+    # session is provenance).
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     version = Column(Integer, nullable=False, default=1)
     title = Column(String(200), nullable=False)
     description = Column(Text)
@@ -221,6 +232,10 @@ class TestPlan(Base):
     # Relationships
     project = relationship("Project", foreign_keys=[project_id])
     agent = relationship("Agent", back_populates="test_plans")
+    agent_session = relationship(
+        "AgentSession", back_populates="drafted_plans",
+        foreign_keys=[agent_session_id],
+    )
     created_by_user = relationship("User", foreign_keys=[created_by_user_id])
     approved_by = relationship("User", foreign_keys=[approved_by_id])
     rejected_by = relationship("User", foreign_keys=[rejected_by_id])
@@ -447,8 +462,17 @@ class SanityCheckMethod(str, enum.Enum):
 
 
 class AgentSessionWorkflow(str, enum.Enum):
-    """The four agent workflows a key can be scoped to.  Replaces the four
-    mutually-exclusive scope FKs that used to live on ``api_keys``."""
+    """What kind of session a row is.
+
+    v2.337.0 — ``PROJECT`` is the only kind new sessions get.  One
+    project-scoped session lets the same key query the inventory, run
+    reconnaissance against any scope, draft plans, and execute approved ones;
+    the phases it opens are the ``ReconSession`` / ``ExecutionSession`` /
+    ``TestPlan`` rows linked back to it.  The four legacy values remain as
+    LABELS on rows minted before the consolidation so history still reads
+    correctly — nothing gates on them any more (see ``deps.get_current_agent``).
+    """
+    PROJECT = "project"
     PLAN_GENERATION = "plan_generation"
     EXECUTION = "execution"
     RECON = "recon"
@@ -473,26 +497,30 @@ class AgentSessionWorkflow(str, enum.Enum):
 
 
 class AgentSession(Base):
-    """Unified base row for every agent-workflow session (v2.116.0).
+    """The operator's agent session — one key, one project, any phase (v2.337.0).
 
-    One row per plan-generation / execution / recon / assist session.  An
-    agent API key points at exactly one ``AgentSession``
-    (``api_keys.agent_session_id``), and the ``workflow`` discriminator
-    replaces the four mutually-exclusive scope FKs + the per-workflow
-    deny-matrix that used to live on ``api_keys`` / ``deps.py``.
+    An agent API key points at exactly one ``AgentSession``
+    (``api_keys.agent_session_id``).  The session is bound to a project and
+    to the operator who started it; everything the key may do is that
+    operator's project role, checked per request (``enforce_agent_operator_access``).
 
-    Shared lifecycle state (status, timestamps, environment probe, agent/
-    model attribution, notes, owner attribution) lives here.  Workflow-
-    specific state stays in the detail tables (:class:`ExecutionSession`,
-    :class:`ReconSession`, :class:`AssistSession`), each 1:1 with its base
-    row via ``agent_session_id`` — composition, not inheritance, so the
-    detail PKs (referenced by child rows like TestExecutionResult) stay
-    stable.  The detail classes proxy the moved columns through to this
-    base for attribute access; query filters reference the base directly.
+    What the agent is *working on* is recorded per phase, not per key:
 
-    ``plan_id`` / ``scope_id`` are kept as real typed FKs (CASCADE) rather
-    than one polymorphic ``target_id`` so DB-level referential integrity
-    survives the collapse.
+    * a reconnaissance run is a :class:`ReconSession` (bound to a scope),
+    * a drafted plan is a :class:`TestPlan` (``test_plans.agent_session_id``),
+    * an execution run is an :class:`ExecutionSession` (bound to a plan),
+
+    each linked back here through ``agent_session_id`` — one session may open
+    several of each over its life.  ``workflow`` is ``project`` for every
+    session minted since the consolidation; the legacy per-workflow values
+    survive on older rows as labels, with their single detail row
+    (:class:`AssistSession` included) still attached.
+
+    Shared lifecycle state (status, timestamps, the environment probe, the
+    agent/model attribution, the operator's stated purpose, notes) lives here.
+    The phase tables keep their own copies of the probe + attribution columns
+    (they predate this row) — the probe endpoint writes both, so either read
+    is right.
     """
     __tablename__ = "agent_sessions"
 
@@ -511,35 +539,20 @@ class AgentSession(Base):
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
 
-    # Typed targets — plan_id for plan_generation + execution; scope_id for
-    # recon; both null for assist (project-scoped only).
-    #
-    # use_alter on plan_id: test_plans already FKs back to recon_sessions
-    # (plan provenance), and recon_sessions now FKs to agent_sessions, so a
-    # plain agent_sessions→test_plans FK closes a cycle that create_all/
-    # drop_all can't order.  use_alter emits this one FK as a separate ALTER
-    # so metadata DDL (the test suite's create_all) can sort the rest.
-    plan_id = Column(
-        Integer,
-        ForeignKey(
-            "test_plans.id", ondelete="CASCADE",
-            use_alter=True, name="fk_agent_sessions_plan_id",
-        ),
-        nullable=True,
-        index=True,
-    )
-    scope_id = Column(
-        Integer,
-        ForeignKey("scopes.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-
     status = Column(String(20), nullable=False, default="active")
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     # Unified completion timestamp (Assist's "ended_at" maps here).
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # v2.337.0 — what the operator said they were opening the session for
+    # ("looking for FTP exposure", "recon the DMZ then draft a plan").  Shown
+    # on the sessions page so a reviewer sees why, not only what.  Moved here
+    # from ``assist_sessions.purpose``.
+    purpose = Column(Text, nullable=True)
+    # Refreshed by the audit middleware on every authenticated call, so the
+    # UI can show "idle for 47m" without scanning agent_api_calls.
+    last_activity_at = Column(DateTime(timezone=True), nullable=True)
 
     # v2.309.0 — ``capabilities`` and ``capability_constraint`` dropped
     # (migration f1a6c92d4b70). A session's authority is its operator's project
@@ -567,23 +580,24 @@ class AgentSession(Base):
     environment_probed_by = relationship(
         "User", foreign_keys=[environment_probed_by_user_id]
     )
-    plan = relationship("TestPlan")
-    scope = relationship("Scope")
+    # The phases this session opened.  Ordered oldest-first so "what did this
+    # session do" reads as a timeline.
+    recon_sessions = relationship(
+        "ReconSession", back_populates="agent_session",
+        order_by="ReconSession.id", foreign_keys="ReconSession.agent_session_id",
+    )
+    execution_sessions = relationship(
+        "ExecutionSession", back_populates="agent_session",
+        order_by="ExecutionSession.id", foreign_keys="ExecutionSession.agent_session_id",
+    )
+    drafted_plans = relationship(
+        "TestPlan", back_populates="agent_session",
+        order_by="TestPlan.id", foreign_keys="TestPlan.agent_session_id",
+    )
 
     __table_args__ = (
         Index("idx_agent_session_project", "project_id"),
         Index("idx_agent_session_workflow_status", "workflow", "status"),
-        # Workflow/target invariant (R5 contract): a plan workflow must carry a
-        # plan_id, recon must carry a scope_id, assist neither.  Constrains only
-        # KNOWN workflows — an unrecognised workflow passes the CHECK and is
-        # rejected at the auth layer (get_current_agent fails closed), so the
-        # DB and the app agree without making that defence-in-depth unreachable.
-        CheckConstraint(
-            "(workflow NOT IN ('execution','plan_generation') OR plan_id IS NOT NULL) "
-            "AND (workflow <> 'recon' OR scope_id IS NOT NULL) "
-            "AND (workflow <> 'assist' OR (plan_id IS NULL AND scope_id IS NULL))",
-            name="ck_agent_sessions_workflow_target",
-        ),
     )
 
 
@@ -624,10 +638,10 @@ class ExecutionSession(Base):
         default=ExecutionSessionMode.IN_SESSION.value,
     )
     bundle_id = Column(String(64), nullable=True, index=True)
-    # v2.116.0 — 1:1 link to the unified AgentSession base.  Nullable during
-    # the expand phase (backfilled by the migration); becomes the
-    # authoritative home for the shared lifecycle columns in the contract
-    # phase.
+    # The operator session this run belongs to.  v2.337.0 — one session may
+    # open several execution runs (one per plan it works through), so this is
+    # a plain many-to-one, no longer 1:1.  Nullable only for rows that predate
+    # the unified session row.
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="CASCADE"),
@@ -638,12 +652,11 @@ class ExecutionSession(Base):
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Environment probe (v2.23.0).  Filled by the agent on first contact
-    # via POST /agent/execution-sessions/{id}/environment so subsequent
-    # /context responses can echo it back and the agent picks command
-    # flavour from what is actually available on this operator's host.
-    # Per-session by design: the same user running from a different
-    # machine re-probes.  See AGENTS.md § Environment probe.
+    # Environment probe (v2.23.0).  Snapshotted from the parent AgentSession
+    # when the run opens and refreshed whenever the agent re-posts
+    # POST /agent/session/environment, so /execution-context can echo it and
+    # the agent picks command flavour from what is actually available on
+    # this operator's host.  See AGENTS.md § Environment probe.
     environment = Column(JSON, nullable=True)
     environment_probed_at = Column(DateTime(timezone=True), nullable=True)
     environment_probed_by_user_id = Column(
@@ -677,7 +690,10 @@ class ExecutionSession(Base):
     environment_probed_by = relationship(
         "User", foreign_keys=[environment_probed_by_user_id]
     )
-    agent_session = relationship("AgentSession")
+    agent_session = relationship(
+        "AgentSession", back_populates="execution_sessions",
+        foreign_keys=[agent_session_id],
+    )
     test_results = relationship(
         "TestExecutionResult",
         back_populates="execution_session",
@@ -950,6 +966,14 @@ class AgentFeedback(Base):
         nullable=True,
         index=True,
     )
+    # v2.337.0 — the session the feedback came from, stamped from the key
+    # rather than the body.  The per-phase ids above stay optional context.
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     source = Column(String(40), nullable=False)
     prompt_version = Column(String(20))
@@ -978,6 +1002,7 @@ class AgentFeedback(Base):
     execution_session = relationship("ExecutionSession", foreign_keys=[execution_session_id])
     recon_session = relationship("ReconSession", foreign_keys=[recon_session_id])
     assist_session = relationship("AssistSession", foreign_keys=[assist_session_id])
+    agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
 
     __table_args__ = (
@@ -1060,8 +1085,9 @@ class ReconSession(Base):
         default=ReconSessionStatus.ACTIVE.value,
     )
 
-    # v2.116.0 — 1:1 link to the unified AgentSession base (see
-    # ExecutionSession.agent_session_id).  Nullable during the expand phase.
+    # The operator session this run belongs to — many-to-one since v2.337.0
+    # (a session may recon several scopes in turn).  Nullable only for rows
+    # that predate the unified session row.
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="CASCADE"),
@@ -1121,7 +1147,10 @@ class ReconSession(Base):
     environment_probed_by = relationship(
         "User", foreign_keys=[environment_probed_by_user_id]
     )
-    agent_session = relationship("AgentSession")
+    agent_session = relationship(
+        "AgentSession", back_populates="recon_sessions",
+        foreign_keys=[agent_session_id],
+    )
 
     __table_args__ = (
         Index("idx_recon_session_scope", "scope_id"),
@@ -1156,13 +1185,13 @@ class AssistSessionStatus(str, enum.Enum):
 
 
 class AssistSession(Base):
-    """One interactive assist session against a project.
+    """LEGACY — the detail row of an assist session started before v2.337.0.
 
-    Created by POST /projects/{id}/assist/start, which also mints a
-    project-bound, read-only agent API key.  The agent uses the key
-    to call /agent/assist/* endpoints — host queries, project
-    context, single-host detail.  Recon, plan, and execution keys
-    are all rejected by /agent/assist/* (and vice-versa).
+    No new rows are written: the consolidated project session carries
+    ``purpose`` and ``last_activity_at`` itself, and every ``/agent/assist/*``
+    read resolves the caller's :class:`AgentSession` directly.  The table
+    stays so the review pages keep answering for sessions that ran before
+    the consolidation.
     """
     __tablename__ = "assist_sessions"
 
@@ -1295,7 +1324,7 @@ class AgentApiCall(Base):
     source_ip = Column(String(45), nullable=True)
     user_agent = Column(Text, nullable=True)
 
-    # Workflow association — populated from the scoped key + parsed path.
+    # Workflow association — populated from the key's session + parsed path.
     # Nullable (v2.44.5) for the same pre-auth 5xx case as agent_id.
     project_id = Column(
         Integer,
@@ -1303,6 +1332,15 @@ class AgentApiCall(Base):
         nullable=True,
         index=True,
     )
+    # v2.337.0 — the session the key belongs to.  The one attribution every
+    # authenticated call carries; the phase ids below are filled when the
+    # call's path or body names a phase (or the session has exactly one
+    # active phase of that kind).
+    agent_session_id = Column(
+        Integer,
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )  # indexed via idx_agent_api_call_session_created
     test_plan_id = Column(
         Integer,
         ForeignKey("test_plans.id", ondelete="SET NULL"),
@@ -1392,6 +1430,7 @@ class AgentApiCall(Base):
         # assist_session_id folds into this composite (it's the leading column),
         # so the column itself drops `index=True` to avoid a redundant index.
         Index("idx_agent_api_call_assist_created", "assist_session_id", "created_at"),
+        Index("idx_agent_api_call_session_created", "agent_session_id", "created_at"),
         # v2.50.1 — enforce the agent_id+project_id-or-error_class
         # contract at the DB level.  The columns were relaxed to
         # nullable in f9e2d471a8c6 to record pre-auth 5xx (the request

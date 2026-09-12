@@ -40,8 +40,7 @@ from app.core.config import settings as _settings
 from app.services.agent_key_ttl import resolve_expires_at
 from app.services.test_plan_service import TestPlanService
 from app.services.agent_prompt_service import (
-    build_plan_generation_instructions,
-    build_execution_instructions,
+    build_session_instructions,
     resolve_base_url,
 )
 from app.services.mcp_client_setup_service import build_mcp_clients
@@ -369,36 +368,32 @@ def generate_test_plan(
         ),
     )
 
-    # --- Mint a per-plan API key (linked to a unified plan_generation
-    # AgentSession base — R5 expand-completion) ---
+    # --- v2.337.0: mint a unified PROJECT session, link the draft plan to it ---
+    from app.services.agent_session_service import (
+        create_agent_session, mint_session_key,
+    )
+    from app.services.agent_prompt_service import build_session_instructions
+
     base_session = create_agent_session(
         db,
-        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
         project_id=project.id,
         agent_id=agent.id,
         started_by_id=current_user.id,
-        plan_id=plan.id,
+        purpose=f"Draft plan “{plan.title}”",
     )
-    raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    api_key_obj = APIKey(
-        agent_id=agent.id,
-        agent_session_id=base_session.id,
-        name=f"plan-{plan.id}",
-        key_hash=key_hash,
-        key_prefix=raw_key[:14],
-        expires_at=resolve_expires_at(body.ttl_hours),
+    plan.agent_session_id = base_session.id
+    raw_key = mint_session_key(
+        db, agent=agent, session=base_session, ttl_hours=body.ttl_hours,
     )
-    db.add(api_key_obj)
-
-    instructions = build_plan_generation_instructions(
+    instructions = build_session_instructions(
         request=request,
-        plan_id=plan.id,
-        plan_title=plan.title,
+        session_id=base_session.id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=f"Draft plan “{plan.title}”",
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
-        filter_criteria=fc if fc else None,
     )
 
     db.commit()
@@ -417,10 +412,8 @@ def generate_test_plan(
         instructions=instructions,
         mcp_url=mcp_url,
         mcp_clients=build_mcp_clients(
-            mcp_url,
-            raw_key,
-            workflow="plan_generation",
-            expected={"project_name": project.name, "session_label": f"plan #{plan.id}"},
+            mcp_url, raw_key,
+            expected={"project_name": project.name, "session_label": f"agent session #{base_session.id}"},
         ),
     )
 
@@ -931,8 +924,9 @@ def rotate_test_plan_key(
     # intact (transaction rolls back); a successful one leaves exactly one
     # active key (the new one).  /rotate-key uses the deployment-default TTL;
     # for a non-default TTL, callers should use /renew-key instead.
-    raw_key = _mint_plan_agent_key(
-        db, agent=plan.agent, plan=plan, name=f"plan-{plan.id}",
+    raw_key = _mint_continuation_session_key(
+        db, agent=plan.agent, plan=plan, user=current_user,
+        purpose=f"Continue work on plan “{plan.title}”",
     )
     new_key = (
         _plan_api_keys(db, plan.id)
@@ -1005,18 +999,22 @@ def resume_plan_generation(
         db, project=project, user=current_user, prefer_agent_id=plan.agent_id
     )
     plan.agent_id = agent.id
-    raw_key = _mint_plan_agent_key(
-        db, agent=agent, plan=plan, name_suffix="-resume-gen"
+    from app.services.agent_prompt_service import build_session_instructions
+    raw_key = _mint_continuation_session_key(
+        db, agent=agent, plan=plan, user=current_user,
+        purpose=f"Resume drafting plan “{plan.title}”",
     )
-
-    instructions = build_plan_generation_instructions(
+    session_id = plan.agent_session_id
+    instructions = build_session_instructions(
         request=request,
-        plan_id=plan.id,
-        plan_title=plan.title,
+        session_id=session_id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=f"Resume drafting plan “{plan.title}”",
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
-        filter_criteria=plan.filter_criteria,
+        resumed=True,
     )
 
     db.commit()
@@ -1032,10 +1030,8 @@ def resume_plan_generation(
         instructions=instructions,
         mcp_url=mcp_url,
         mcp_clients=build_mcp_clients(
-            mcp_url,
-            raw_key,
-            workflow="plan_generation",
-            expected={"project_name": project.name, "session_label": f"plan #{plan.id}"},
+            mcp_url, raw_key,
+            expected={"project_name": project.name, "session_label": f"agent session #{session_id}"},
         ),
     )
 
@@ -1743,107 +1739,51 @@ def _resolve_execution_agent(
     return agent
 
 
-def _ensure_plan_agent_session(db: Session, *, agent: Agent, plan: TestPlan) -> int:
-    """Return the id of an AgentSession for this plan, reusing the most recent
-    one if present, else creating a plan_generation base.
+def _plan_agent_session_ids(db: Session, plan_id: int):
+    """AgentSession ids connected to this plan (v2.337.0).
 
-    Used by the key-mint helper for callers (rotate-key / resume-generation /
-    resume) that re-mint a plan key without owning a fresh session — so the
-    key still links to the plan's unified session (R5).
+    A plan links to the session that drafted it (test_plans.agent_session_id)
+    and to any session that opened an execution run on it
+    (execution_sessions.agent_session_id). Used to find the plan's live key
+    for the detail page key-status card.
     """
-    existing = (
-        db.query(AgentSession)
-        .filter(AgentSession.plan_id == plan.id)
-        .order_by(AgentSession.id.desc())
-        .first()
+    drafted = db.query(TestPlan.agent_session_id).filter(
+        TestPlan.id == plan_id, TestPlan.agent_session_id.isnot(None)
     )
-    if existing is not None:
-        return existing.id
-    base = create_agent_session(
-        db,
-        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
-        project_id=plan.project_id,
-        agent_id=agent.id,
-        started_by_id=None,
-        plan_id=plan.id,
+    executed = db.query(ExecutionSession.agent_session_id).filter(
+        ExecutionSession.test_plan_id == plan_id,
+        ExecutionSession.agent_session_id.isnot(None),
     )
-    return base.id
+    return drafted.union(executed)
 
 
 def _plan_api_keys(db: Session, plan_id: int):
-    """APIKey query for the keys bound to this plan via their AgentSession.
-
-    Post-contract replacement for ``APIKey.test_plan_id == plan_id`` (that column
-    was dropped): a key links to a plan through its agent_session, whose
-    ``plan_id`` is set for the plan_generation + execution workflows. Both a
-    generation key and an execution key for the plan resolve here, so the
-    revoke-then-mint invariant ("at most one live key per plan") is preserved.
-    """
+    """APIKey query for keys on any session connected to this plan."""
     return db.query(APIKey).filter(
-        APIKey.agent_session_id.in_(
-            db.query(AgentSession.id).filter(AgentSession.plan_id == plan_id)
-        )
+        APIKey.agent_session_id.in_(_plan_agent_session_ids(db, plan_id))
     )
 
 
-def _mint_plan_agent_key(
-    db: Session,
-    *,
-    agent: Agent,
-    plan: TestPlan,
-    name_suffix: str = "",
-    name: Optional[str] = None,
-    agent_session_id: Optional[int] = None,
+def _mint_continuation_session_key(
+    db: Session, *, agent: Agent, plan: TestPlan, user, purpose: str,
 ) -> str:
-    """Mint a fresh per-plan agent API key; return the plaintext key.
+    """Mint a fresh PROJECT session + key for continued work on ``plan`` (v2.337.0).
 
-    Revokes every prior active key for the plan first, so at most one
-    agent key is ever live per plan.  This is load-bearing for safety:
-    agent execution endpoints resolve work by ``(test_plan_id,
-    status=active)`` rather than by key, so if ``/execute`` or
-    ``/resume`` left the previous key usable, two live keys would let
-    two agents write into the same execution session.  Mirrors the
-    revoke-then-mint pattern of the key-regenerate endpoint.
-
-    Flushes the revoke + insert here and translates a partial-unique-index
-    violation (``uq_api_key_plan_active``) into 409 so every caller —
-    /execute, /resume, /rotate-key, /resume-generation — gets the same
-    concurrency semantics instead of a bare 500 when two key-minting
-    requests race on a backend where the plan row lock is a no-op (SQLite)
-    or where no lock is taken (rotate).
+    Used by rotate-key / resume-generation: the operator wants a usable key to
+    keep working the plan after the last one expired. A new session is the unit
+    now, so create one, attach the plan's draft provenance if it had none, and
+    return the plaintext key.
     """
-    _plan_api_keys(db, plan.id).filter(
-        APIKey.is_active.is_(True),
-    ).update({"is_active": False}, synchronize_session=False)
-
-    # Link the key to the plan's unified AgentSession; callers that own a
-    # fresh session pass it explicitly, others reuse/create via the helper (R5).
-    if agent_session_id is None:
-        agent_session_id = _ensure_plan_agent_session(db, agent=agent, plan=plan)
-
-    raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
-    db.add(
-        APIKey(
-            agent_id=agent.id,
-            agent_session_id=agent_session_id,
-            name=name or f"exec-plan-{plan.id}{name_suffix}",
-            key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
-            key_prefix=raw_key[:14],
-            expires_at=resolve_expires_at(None),
-        )
+    from app.services.agent_session_service import (
+        create_agent_session, mint_session_key,
     )
-    try:
-        db.flush()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Another agent key became active for this plan "
-                "concurrently. Refresh and retry."
-            ),
-        ) from exc
-    return raw_key
+    session = create_agent_session(
+        db, project_id=plan.project_id, agent_id=agent.id,
+        started_by_id=getattr(user, "id", None), purpose=purpose,
+    )
+    if plan.agent_session_id is None:
+        plan.agent_session_id = session.id
+    return mint_session_key(db, agent=agent, session=session)
 
 
 @router.post(
@@ -1904,78 +1844,33 @@ def execute_test_plan(
     if entry_count == 0:
         raise HTTPException(status_code=400, detail="Cannot execute an empty test plan.")
 
-    # Resolve the agent and mint a fresh per-plan key.  Minting revokes
-    # any prior active key for the plan (see _mint_plan_agent_key), so
-    # only one agent key is ever live per plan.
-    agent = _resolve_execution_agent(db, project=project, user=current_user)
-    # Unified execution base session, linked to both the key and the
-    # ExecutionSession detail row below (R5 expand-completion).
+    # v2.337.0 — "Execute with AI" mints a unified PROJECT session and opens an
+    # execution run on this plan. open_execution_phase pauses any other active
+    # run on the plan (the one-active-per-plan invariant) and re-checks the
+    # approval gate.
+    from app.services.agent_session_service import (
+        create_agent_session, resolve_project_agent, mint_session_key,
+        open_execution_phase,
+    )
+    from app.services.agent_prompt_service import build_session_instructions
+
+    agent = resolve_project_agent(db, project_id=project.id, user=current_user)
     base_session = create_agent_session(
-        db,
-        workflow=AgentSessionWorkflow.EXECUTION.value,
-        project_id=plan.project_id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        plan_id=plan.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
+        db, project_id=plan.project_id, agent_id=agent.id,
+        started_by_id=current_user.id, purpose=f"Execute plan “{plan.title}”",
     )
-    raw_key = _mint_plan_agent_key(db, agent=agent, plan=plan, agent_session_id=base_session.id)
+    session = open_execution_phase(db, session=base_session, plan=plan)
+    raw_key = mint_session_key(db, agent=agent, session=base_session)
 
-    # --- Pause any existing active session for this plan ---
-    db.query(ExecutionSession).filter(
-        ExecutionSession.test_plan_id == plan.id,
-        ExecutionSession.status == ExecutionSessionStatus.ACTIVE.value,
-    ).update(
-        {"status": ExecutionSessionStatus.PAUSED.value},
-        synchronize_session=False,
-    )
-    # Flush so the partial-unique index sees the PAUSED state before
-    # the new ACTIVE row is inserted; without this the constraint
-    # would reject inside the same transaction.
-    db.flush()
-
-    # --- Create the execution session ---
-    session = ExecutionSession(
-        test_plan_id=plan.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        agent_session_id=base_session.id,
-    )
-    db.add(session)
-    try:
-        db.flush()
-    except IntegrityError as exc:
-        # The partial-unique index on (test_plan_id WHERE status='active')
-        # rejected the insert — another /execute or /resume committed
-        # an ACTIVE session for this plan between our row lock attempt
-        # and the insert (only possible on backends where the row lock
-        # is a no-op, e.g. SQLite).  Translate to 409 so the operator
-        # retries against the now-existing session.
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Another execution session became active for this plan "
-                "concurrently. Refresh and resume the existing session "
-                "instead of starting a new one."
-            ),
-        ) from exc
-
-    # Transition plan to in_progress if it was just approved.
-    if plan.status == "approved":
-        plan.status = "in_progress"
-
-    instructions = build_execution_instructions(
+    instructions = build_session_instructions(
         request=request,
-        plan_id=plan.id,
-        plan_title=plan.title,
-        session_id=session.id,
-        entry_count=entry_count,
+        session_id=base_session.id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=f"Execute plan “{plan.title}”",
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
-        project_slug=project.slug,
     )
 
     db.commit()
@@ -1990,12 +1885,10 @@ def execute_test_plan(
         instructions=instructions,
         mcp_url=mcp_url,
         mcp_clients=build_mcp_clients(
-            mcp_url,
-            raw_key,
-            workflow="execution",
+            mcp_url, raw_key,
             expected={
                 "project_name": project.name,
-                "session_label": f"execution session #{session.id} on plan #{plan.id}",
+                "session_label": f"agent session #{base_session.id}",
             },
         ),
     )
@@ -2084,68 +1977,67 @@ def resume_execution_session(
         .count()
     )
 
-    # Reuse the session's original agent and mint a fresh per-plan key.
-    # Minting revokes the prior (now-orphaned) key — load-bearing: without
-    # it the crashed agent's key would stay usable and a second agent
-    # could write into this same resumed session.
-    agent = _resolve_execution_agent(
-        db, project=project, user=current_user, prefer_agent_id=session.agent_id
+    # v2.337.0 — resume mints a fresh PROJECT session and re-opens THIS run
+    # under it (open_execution_phase reuses a session's own paused run on the
+    # plan; here the run belonged to an old session, so re-point it). A crashed
+    # agent's orphaned key is revoked; prior results/sanity-checks are intact.
+    from app.services.agent_session_service import (
+        create_agent_session, resolve_project_agent, mint_session_key,
+    )
+    from app.services.agent_prompt_service import build_session_instructions
+
+    agent = resolve_project_agent(
+        db, project_id=project.id, user=current_user, prefer_agent_id=session.agent_id
+    )
+    new_session = create_agent_session(
+        db, project_id=project.id, agent_id=agent.id, started_by_id=current_user.id,
+        purpose=f"Resume execution of plan “{plan.title}”",
     )
     session.agent_id = agent.id
-    raw_key = _mint_plan_agent_key(db, agent=agent, plan=plan, name_suffix="-resume")
+    session.agent_session_id = new_session.id
 
-    # One-active-session-per-plan: pause any OTHER active session.
+    # One-active-run-per-plan: pause any OTHER active run, then flip this ACTIVE.
     db.query(ExecutionSession).filter(
         ExecutionSession.test_plan_id == plan.id,
         ExecutionSession.id != session.id,
         ExecutionSession.status == ExecutionSessionStatus.ACTIVE.value,
-    ).update(
-        {"status": ExecutionSessionStatus.PAUSED.value},
-        synchronize_session=False,
-    )
-    # Flush the pause-others UPDATE before flipping this session back
-    # to ACTIVE so the partial-unique index sees them sequentially.
+    ).update({"status": ExecutionSessionStatus.PAUSED.value}, synchronize_session=False)
     db.flush()
-
     session.status = ExecutionSessionStatus.ACTIVE.value
     if plan.status == "approved":
         plan.status = "in_progress"
     try:
         db.flush()
     except IntegrityError as exc:
-        # Same defense-in-depth as /execute: catch the partial-unique
-        # rejection if the plan row lock was a no-op (SQLite).
         db.rollback()
         raise HTTPException(
             status_code=409,
             detail=(
-                "Another execution session became active for this plan "
+                "Another execution run became active for this plan "
                 "concurrently. Refresh the plan and try again."
             ),
         ) from exc
+    raw_key = mint_session_key(db, agent=agent, session=new_session)
 
-    # Checkpoint note for the human-review trail — capped at 8 KiB,
-    # most-recent-kept, consistent with the session-complete notes cap.
     resume_note = (
-        f"[{datetime.now(timezone.utc).isoformat()}] Session resumed by "
+        f"[{datetime.now(timezone.utc).isoformat()}] Run resumed by "
         f"{current_user.full_name or current_user.username} "
-        f"— fresh API key minted (prior key revoked); prior progress preserved."
+        f"— fresh session #{new_session.id} + key; prior progress preserved."
     )
     session.notes = (
         f"{session.notes}\n{resume_note}" if session.notes else resume_note
     )[-8192:]
 
-    instructions = build_execution_instructions(
+    instructions = build_session_instructions(
         request=request,
-        plan_id=plan.id,
-        plan_title=plan.title,
-        session_id=session.id,
-        entry_count=entry_count,
+        session_id=new_session.id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=f"Resume execution of plan “{plan.title}”",
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
         resumed=True,
-        project_slug=project.slug,
     )
 
     db.commit()
@@ -2160,12 +2052,10 @@ def resume_execution_session(
         instructions=instructions,
         mcp_url=mcp_url,
         mcp_clients=build_mcp_clients(
-            mcp_url,
-            raw_key,
-            workflow="execution",
+            mcp_url, raw_key,
             expected={
                 "project_name": project.name,
-                "session_label": f"execution session #{session.id} on plan #{plan.id}",
+                "session_label": f"agent session #{new_session.id}",
             },
         ),
     )

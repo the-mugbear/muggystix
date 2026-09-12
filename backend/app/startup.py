@@ -89,7 +89,7 @@ async def expired_session_cleanup_loop() -> None:
     """
     from app.db.session import SessionLocal
     from app.core.security import cleanup_expired_sessions
-    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.services.agent_session_service import lapse_expired_agent_sessions
 
     while True:
         try:
@@ -105,13 +105,13 @@ async def expired_session_cleanup_loop() -> None:
                     # "active sessions" list accumulated dead ones forever.
                     # Same loop rather than a third task: one hourly sweep, one
                     # advisory lock, one place to look when reaping misbehaves.
-                    lapsed = lapse_expired_assist_sessions(db)
+                    lapsed = lapse_expired_agent_sessions(db)
                 finally:
                     _release_housekeeping_leader(db, _LEADER_LOCK_EXPIRED_SESSIONS)
                 if reaped:
                     logger.info("Reaped %d expired user sessions", reaped)
                 if lapsed:
-                    logger.info("Lapsed %d expired assist sessions", lapsed)
+                    logger.info("Lapsed %d expired agent sessions", lapsed)
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -32,13 +32,12 @@ from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import (
     Agent,
-    AssistSession,
-    AssistSessionStatus,
+    AgentSession,
     ReconSession,
 )
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_auth import User
-from app.api.deps import require_assist_scope
+from app.api.deps import check_agent_rate_limit
 
 from app.api.v1.endpoints.agent_schemas import (
     AssistFinding,
@@ -46,9 +45,6 @@ from app.api.v1.endpoints.agent_schemas import (
     AssistNameRow,
     AssistNamesResponse,
     ScopeDomainBrief,
-    EnvironmentProbeRequest,
-    EnvironmentProbeResponse,
-    EnvironmentSummary,
     HostBrief,
     HostDetail,
     PortBrief,
@@ -60,8 +56,8 @@ from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.api.v1.endpoints.agent_common import (
     _apply_agent_host_filters,
     _batch_host_enrichment,
+    load_agent_session,
 )
-from app.services.agent_environment_probe_service import apply_environment_probe
 from app.services import dns_name_service
 from app.services.host_query_common import escape_like
 from app.services.agent_prompt_history import PROMPT_VERSION
@@ -76,118 +72,15 @@ router = APIRouter()
 # Session resolution
 # ---------------------------------------------------------------------------
 
-def _load_assist_session(db: Session, request: Request) -> AssistSession:
-    """Resolve the AssistSession for the caller's assist-scoped key.
+def _load_assist_session(db: Session, request: Request) -> AgentSession:
+    """The caller's unified agent session (v2.337.0).
 
-    Assist keys bind to one AgentSession (assist workflow), and each
-    AssistSession is 1:1 with its AgentSession via
-    ``assist_sessions.agent_session_id`` — so the session resolves from that
-    (the legacy ``api_keys.assist_session_id`` column was dropped in the
-    contract phase). ``require_assist_scope`` already enforced the assist
-    workflow. Defence-in-depth: also verify the session is still ACTIVE — if a
-    parallel "end session" call landed first, we want this request to 404/410
-    rather than silently serve data on what the human thinks is a closed session.
+    The ``/agent/assist/*`` reads are project-wide and available to every
+    session — a query is a query.  This resolves the session the key belongs
+    to; handlers read ``session.project_id`` off it exactly as before.  The
+    name is kept so the many call sites need no edit.
     """
-    agent_session_id = getattr(request.state, "agent_session_id", None)
-    if agent_session_id is None:
-        raise HTTPException(status_code=403, detail="Assist scope not bound")
-    session = (
-        db.query(AssistSession)
-        .filter(AssistSession.agent_session_id == agent_session_id)
-        .first()
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Assist session not found. The session may have been "
-                "deleted server-side; ask the user to start a new one."
-            ),
-        )
-    if session.status != AssistSessionStatus.ACTIVE.value:
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                f"Assist session is '{session.status}' — start a new "
-                f"session via the BlueStick UI to continue."
-            ),
-        )
-    # Defence-in-depth: the session must belong to the same project as the
-    # authenticating key's agent (guards a corrupted/hand-edited api_keys row
-    # that paired an agent with another project's session).
-    scoped_project = getattr(request.state, "scoped_agent_project_id", None)
-    if scoped_project is not None and session.project_id != scoped_project:
-        raise HTTPException(status_code=403, detail="Assist session does not belong to this project")
-    return session
-
-
-# ---------------------------------------------------------------------------
-# Environment probe
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/assist/sessions/{session_id}/environment",
-    response_model=EnvironmentProbeResponse,
-    summary="Record the operator's environment probe (MANDATORY first step)",
-)
-def record_assist_environment(
-    body: EnvironmentProbeRequest,
-    request: Request,
-    session_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_assist_scope),
-    db: Session = Depends(get_db),
-):
-    """Persist the agent's environment probe onto the assist session.
-
-    Same shape as the recon/execution probe so the audit story stays
-    symmetric across workflows.  For assist, the probe matters less
-    than for recon/execution (assist commands are API calls, not
-    shell invocations) but is captured for two reasons:
-
-    1. Symmetry — future assist features (bulk follow, scan-from-
-       filter) may need it.
-    2. Audit completeness — the operator's environment at the time
-       of the session is part of the "who/where/what" record.
-    """
-    session = _load_assist_session(db, request)
-    if session.id != session_id:
-        # Path param disagrees with the key's binding — refuse.  The
-        # agent should hit /sessions/{their_own_id}/environment, not
-        # someone else's id.
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Path session_id does not match this API key's bound "
-                "session.  Use the session id returned at start time."
-            ),
-        )
-    apply_environment_probe(
-        session=session,
-        body=body,
-        request=request,
-        agent=agent,
-        active_statuses=[AssistSessionStatus.ACTIVE.value],
-        session_kind="assist",
-    )
-    db.commit()
-    # v2.64.1 — initial v2.64.0 commit omitted session_type +
-    # probed_by_user_id + probed_from_ip, which made Pydantic 500 the
-    # response AFTER the DB write committed.  The audit log + the
-    # `environment_probed: true` field on /assist/context revealed
-    # the data had persisted, but the agent saw a confusing 500 and
-    # retried (creating a noisy audit trail).  Match recon/execution
-    # exactly so the response model validates cleanly.
-    return EnvironmentProbeResponse(
-        session_id=session.id,
-        session_type="assist",
-        probed_at=session.environment_probed_at,
-        probed_by_user_id=session.environment_probed_by_user_id,
-        probed_from_ip=session.environment_probed_from_ip,
-        environment=EnvironmentSummary(**(session.environment or {})),
-        agent_model=session.generated_by_model,
-        agent_tool=session.generated_by_tool,
-        agent_prompt_version=session.prompt_version,
-    )
+    return load_agent_session(db, request)
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +93,7 @@ def record_assist_environment(
 )
 def get_assist_context(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Single endpoint giving the agent enough project-level
@@ -379,7 +272,7 @@ def get_assist_context(
 
 def _build_assist_host_query(
     db: Session,
-    session: AssistSession,
+    session: AgentSession,
     *,
     state: Optional[str],
     ports: Optional[str],
@@ -524,7 +417,7 @@ def count_assist_hosts(
     has_high_vulns: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
     q: Optional[str] = Query(None, description="Boolean query DSL — see /assist/hosts."),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """How many hosts match — the whole answer to a counting question.
@@ -584,7 +477,7 @@ def list_assist_hosts(
     ),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Project-scoped host list with the same filter vocabulary as the
@@ -662,7 +555,7 @@ def download_assist_hosts_ndjson(
     has_high_vulns: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
     q: Optional[str] = Query(None, description="Boolean query DSL — same vocabulary as /assist/hosts."),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The complete host set — uncapped, one JSON object per line — for when the
@@ -745,7 +638,7 @@ _TECH_CAP = 12
 def get_assist_host(
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     session = _load_assist_session(db, request)
@@ -850,7 +743,7 @@ def get_assist_host_findings(
     ),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The finding-level read the host DTO's ``vuln_summary`` only counts —
@@ -943,7 +836,7 @@ def download_assist_report_context(
     has_high_vulns: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
     q: Optional[str] = Query(None, description="Boolean query DSL — same vocabulary as /assist/hosts."),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The data source for agent-driven report generation, at scale.
@@ -1042,7 +935,7 @@ def list_assist_findings(
     search: Optional[str] = Query(None, max_length=200, description="Substring match on the title."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Project-wide findings, with the totals an analyst is actually asking for.
@@ -1120,7 +1013,7 @@ def list_assist_host_notes(
     request: Request,
     host_id: int = Path(..., gt=0),
     limit: int = Query(50, ge=1, le=200),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """What people have already said about this host.
@@ -1178,7 +1071,7 @@ class AssistVocabulary(BaseModel):
 )
 def assist_vocabulary(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """What to put after `tag:`, `label:`, `site:`, `assigned:` in a query.
@@ -1233,7 +1126,7 @@ def assist_vocabulary(
 )
 def assist_coverage(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Per-domain assessment coverage — the confidence half of any answer.
@@ -1293,7 +1186,7 @@ class AssistHostTesting(BaseModel):
 def list_assist_host_testing(
     request: Request,
     host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """"Has anyone tested this, and what happened?"
@@ -1429,7 +1322,7 @@ def list_assist_segments(
     request: Request,
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """"Which part of the network is worst?" — and what is wrong with it.
@@ -1566,7 +1459,7 @@ def list_assist_recent_notes(
     limit: int = Query(50, ge=1, le=200),
     status: Optional[str] = Query(None, description="open / in_progress / resolved."),
     author: Optional[str] = Query(None, description="Username, or 'me'."),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """"What has the team been working on?" — newest first.
@@ -1654,7 +1547,7 @@ def list_assist_recent_notes(
 )
 def list_assist_scopes(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """List scopes; per-scope subnet CIDRs included.  Capped at the
@@ -1754,7 +1647,7 @@ def list_assist_names(
     kind: Optional[str] = Query(None, pattern="^(fqdn|wildcard)$", description="fqdn | wildcard"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The names inventory, the same predicates the Names page uses
@@ -1841,7 +1734,7 @@ def list_assist_names(
 def list_assist_scans(
     request: Request,
     limit: int = Query(100, ge=1, le=500),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     session = _load_assist_session(db, request)
@@ -1865,7 +1758,7 @@ def list_assist_scans(
 )
 def get_assist_session_self(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Tiny self-introspection endpoint so the agent can confirm
@@ -1928,7 +1821,7 @@ def get_assist_session_self(
 )
 def get_assist_posture(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """"Where is this project?" in one call.
@@ -1976,7 +1869,7 @@ def get_assist_posture(
 )
 def get_assist_patterns(
     request: Request,
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """"Is this systemic, or is it one box?" — and "which segment is worse?".
@@ -2100,7 +1993,7 @@ class AssistIngestionIssues(BaseModel):
 def list_assist_ingestion_issues(
     request: Request,
     limit: int = Query(25, ge=1, le=100),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """"Is the data actually all here?"
@@ -2344,7 +2237,7 @@ def _serialize_finding_note(note, attachments_by_note) -> "AssistFindingNote":
 def get_assist_finding(
     request: Request,
     finding_id: int = Path(..., ge=1),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The material a write-up cites, for one finding.
@@ -2504,7 +2397,7 @@ def get_assist_finding(
 def download_assist_attachment(
     request: Request,
     attachment_id: int = Path(..., ge=1),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """Serve the bytes behind an attachment reference.
@@ -2550,7 +2443,7 @@ def download_assist_attachment(
 def download_assist_web_screenshot(
     request: Request,
     interface_id: int = Path(..., ge=1),
-    agent: Agent = Depends(require_assist_scope),
+    agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The second screenshot store, given the same treatment as note

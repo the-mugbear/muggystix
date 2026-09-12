@@ -36,6 +36,7 @@ EXPECTED_ONDELETE = {
     ('activity_cursors', 'project_id'): 'CASCADE',
     ('activity_cursors', 'user_id'): 'CASCADE',
     ('agent_api_calls', 'agent_id'): 'CASCADE',
+    ('agent_api_calls', 'agent_session_id'): 'SET NULL',
     # v2.300.0 — rate-limit buckets die with their agent; a counter for a
     # deleted agent can never be consulted again.
     ('agent_rate_buckets', 'agent_id'): 'CASCADE',
@@ -47,6 +48,7 @@ EXPECTED_ONDELETE = {
     ('agent_api_calls', 'scope_id'): 'SET NULL',
     ('agent_api_calls', 'test_plan_id'): 'SET NULL',
     ('agent_feedback', 'agent_id'): 'SET NULL',
+    ('agent_feedback', 'agent_session_id'): 'SET NULL',
     ('agent_feedback', 'assist_session_id'): 'SET NULL',
     ('agent_feedback', 'execution_session_id'): 'SET NULL',
     ('agent_feedback', 'project_id'): 'SET NULL',
@@ -57,9 +59,7 @@ EXPECTED_ONDELETE = {
     ('agents', 'project_id'): 'CASCADE',
     ('agent_sessions', 'agent_id'): 'SET NULL',
     ('agent_sessions', 'environment_probed_by_user_id'): 'SET NULL',
-    ('agent_sessions', 'plan_id'): 'CASCADE',
     ('agent_sessions', 'project_id'): 'CASCADE',
-    ('agent_sessions', 'scope_id'): 'CASCADE',
     ('agent_sessions', 'started_by_id'): 'SET NULL',
     ('annotations', 'agent_session_id'): 'SET NULL',
     ('annotations', 'assignee_id'): 'SET NULL',
@@ -228,6 +228,7 @@ EXPECTED_ONDELETE = {
     ('test_plan_entries', 'test_plan_id'): 'CASCADE',
     ('test_plan_history', 'entry_id'): 'SET NULL',
     ('test_plan_history', 'test_plan_id'): 'CASCADE',
+    ('test_plans', 'agent_session_id'): 'SET NULL',
     ('test_plans', 'agent_id'): 'SET NULL',
     ('test_plans', 'approved_by_id'): 'SET NULL',
     ('test_plans', 'created_by_user_id'): 'SET NULL',

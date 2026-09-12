@@ -345,7 +345,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "NO findings — use assist_list_hosts to locate hosts and "
             "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -360,7 +360,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "owns'. Paginate with limit/offset — but for a COUNT use "
             "assist_count_hosts, not the length of a page. Returns host briefs."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
         "query_params": [
@@ -396,7 +396,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "assist_list_hosts (e.g. 'has:critical AND assigned:none' — critical "
             "findings nobody owns)."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/count",
         "query_params": [
@@ -424,7 +424,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "severity counts, and your review status. Notes and individual "
             "vulnerabilities are separate — use assist_get_host_vulnerabilities for those."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
         "path_params": ["host_id"],
@@ -445,7 +445,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "pass it to assist_get_finding. The triaged project Findings (the spine "
             "assist_list_findings / assist_get_finding work on) are a separate set."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/findings",
         "path_params": ["host_id"],
@@ -479,7 +479,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "scanner rows assist_get_host_vulnerabilities returns; the ids do not "
             "cross between the two."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/findings",
         "query_params": [
@@ -514,7 +514,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "about X\", where the answer often lives in a note rather than in "
             "scan data. Notes carry who wrote them and whether an agent did."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
         "path_params": ["host_id"],
@@ -538,7 +538,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "production\" is a confidently wrong answer to what was really "
             "\"what are the tags called here?\"."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/vocabulary",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -552,7 +552,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "exposure\". Cite it whenever a report or an answer implies "
             "completeness."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/coverage",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -566,7 +566,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "say which it is when you report a finding. Only entries from "
             "approved plans, never rejected ones."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/testing",
         "path_params": ["host_id"],
@@ -592,7 +592,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Compare `total` with the number of subnets returned: the page is "
             "capped, and you are seeing the worst ones, not all of them."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/segments",
         "query_params": ["limit", "offset"],
@@ -616,7 +616,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "means the estate has NOT been assessed enough to judge — it is "
             "not a clean bill of health, and reporting it as one is wrong."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/posture",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -636,7 +636,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "adopted=false means no scoped subnets, so the analysis cannot "
             "run: report 'not assessable', never 'no patterns found'."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/patterns",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -654,7 +654,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "queued/processing mean data is still arriving. If has_issues is "
             "false, an empty result elsewhere is a real absence."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/ingestion-issues",
         "query_params": ["limit"],
@@ -683,7 +683,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "whether a claim rests on a scanner's output or on a command a "
             "tester actually ran; state which, they are different assertions."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/findings/{finding_id}",
         "path_params": ["finding_id"],
@@ -709,7 +709,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Filter by status (open notes are the outstanding-work list this "
             "project actually keeps) or by author ('me' or a username)."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/notes",
         "query_params": ["limit", "status", "author"],
@@ -733,7 +733,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "names_in_scope_total is the deduplicated count of inventory names "
             "the domain entries cover."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/scopes",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -750,7 +750,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "balancer / vhost) must be tested by name, not by IP. host_id lists "
             "the names currently bound to one host's address."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/names",
         "query_params": ["q", "in_scope", "resolved", "host_id", "kind", "limit", "offset"],
@@ -770,7 +770,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_scans": {
         "description": "List the scans ingested into this project (most recent first).",
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
         "query_params": ["limit"],
@@ -788,41 +788,88 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "you may write, call agent_identity and read `can_write_project_data`; "
             "this response does not carry it."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/session",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
-    "assist_record_environment": {
+    "start_recon": {
         "description": (
-            "Record the operator's environment (OS family, shell) on this assist "
-            "session. REQUIRED FIRST STEP — the guide mandates it before other work, "
-            "so BlueStick's guidance matches the machine you're actually on. The "
-            "session is resolved from your key; you do not need to pass session_id."
+            "Open a reconnaissance run against a scope in your session. Returns the "
+            "scope's CIDRs, in-scope domains, the recommended tool sequence, and a "
+            "`read_back` you MUST state to the operator before scanning. List scopes "
+            "with list_scopes. A run already open on the scope is reused."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
-        "metadata_write": True,
-        "path": "/api/v1/agent/assist/sessions/{session_id}/environment",
-        "path_params": ["session_id"],
-        "auto_params": {"session_id": "workflow_session_id"},
-        # Field names mirror EnvironmentSummary exactly — the schema advertises
-        # additionalProperties:false and we reject unknown arguments, so a name
-        # that doesn't exist server-side would be a hard error, not a silently
-        # dropped field.
-        "body_params": _PROBE_BODY_PARAMS,
+        "path": "/api/v1/agent/recon/start",
+        "body_params": ["scope_id", "notes"],
         "input_schema": {
             "type": "object",
             "properties": {
-                "session_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Usually omit — resolved from your API key.",
-                },
-                **_PROBE_PROPERTIES,
+                "scope_id": {"type": "integer", "minimum": 1, "description": "Scope to reconnoitre."},
+                "notes": {"type": "string", "description": "Optional free-text note."},
             },
-            # Assist only needs os_family + shell (see AGENTS.md); the rest are
-            # accepted so a probe built for recon/execution posts unchanged.
+            "required": ["scope_id"],
+            "additionalProperties": False,
+        },
+    },
+    "start_execution": {
+        "description": (
+            "Open an execution run on an APPROVED test plan in your session. Returns "
+            "the plan's hosts and a per-host `read_back` to state before testing. The "
+            "plan must be human-approved (submit it first if it is a draft)."
+        ),
+        "workflows": ALL_WORKFLOWS,
+        "method": "POST",
+        "path": "/api/v1/agent/execution-sessions/start",
+        "body_params": ["plan_id"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "integer", "minimum": 1, "description": "The approved plan to execute."},
+            },
+            "required": ["plan_id"],
+            "additionalProperties": False,
+        },
+    },
+    "create_test_plan": {
+        "description": (
+            "Open a DRAFT test plan in your session. Fill it in with plan_add_entries, "
+            "then submit_test_plan for human approval — you cannot approve it yourself."
+        ),
+        "workflows": ALL_WORKFLOWS,
+        "method": "POST",
+        "path": "/api/v1/agent/test-plans",
+        "body_params": ["title", "description"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Plan title."},
+                "description": {"type": "string", "description": "Optional summary of scope/method."},
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        },
+    },
+    "record_environment": {
+        "description": (
+            "Record the operator's environment (OS family, shell, tools on PATH) "
+            "on your session. REQUIRED FIRST STEP — BlueStick's command guidance, "
+            "and every recon/execution run you open, is shaped to the machine you "
+            "report here. The session is resolved from your key. Re-post it any "
+            "time the environment changes."
+        ),
+        "workflows": ALL_WORKFLOWS,
+        "method": "POST",
+        "metadata_write": True,
+        "path": "/api/v1/agent/session/environment",
+        # Field names mirror EnvironmentSummary exactly — the schema advertises
+        # additionalProperties:false and we reject unknown arguments.
+        "body_params": _PROBE_BODY_PARAMS,
+        "input_schema": {
+            "type": "object",
+            "properties": {**_PROBE_PROPERTIES},
             "required": ["os_family"],
             "additionalProperties": False,
         },
@@ -837,7 +884,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "client-facing reports — record observations tied to host/port/finding "
             "evidence, mark inferences as inferences."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/notes",
         "path_params": ["host_id"],
@@ -867,7 +914,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "mark a host `reviewed` on your own initiative — reviewed is a human "
             "judgement with client-reportable weight; confirm with the operator first."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/follow",
         "path_params": ["host_id"],
@@ -894,7 +941,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "— scan-derived facts (ports, services, vulns) are never mutated here. Send "
             "just the field you're fixing; sending neither is refused with a 400."
         ),
-        "workflows": _ASSIST,
+        "workflows": ALL_WORKFLOWS,
         "method": "PATCH",
         "path": "/api/v1/agent/hosts/{host_id}",
         "path_params": ["host_id"],
@@ -933,7 +980,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "page); use `detail_level=brief` to pick candidates cheaply, then `full` "
             "for the hosts you will write entries for."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/context",
         "path_params": ["plan_id"],
@@ -975,7 +1022,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "plan_list": {
         "description": "List the test plans this agent owns in the project, newest first.",
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans",
         "query_params": ["status"],
@@ -992,7 +1039,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "The plan with its entries — what you have proposed so far, each entry's "
             "status, and the approval state. plan_id is resolved from your key."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}",
         "path_params": ["plan_id"],
@@ -1014,7 +1061,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "drafted it. A description summarising scope, prioritisation and "
             "methodology is REQUIRED before plan_submit will accept the plan."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "PATCH",
         "path": "/api/v1/agent/test-plans/{plan_id}",
         "path_params": ["plan_id"],
@@ -1048,7 +1095,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "strings: only the structured form can be checked against the approved "
             "tool set. Batch related hosts in one call."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries",
         "path_params": ["plan_id"],
@@ -1110,7 +1157,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Revise one entry — usually to act on reviewer feedback before "
             "resubmitting. Send only the fields you are changing."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "PATCH",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}",
         "path_params": ["plan_id", "entry_id"],
@@ -1151,7 +1198,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "coverage. Costs nothing and reports every problem at once, unlike submit, "
             "which stops at the first."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/validate",
         "path_params": ["plan_id"],
@@ -1170,7 +1217,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "nothing in the plan runs until a human approves it, and execution needs "
             "a separate key the operator mints. Run plan_validate first."
         ),
-        "workflows": _PLAN,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/submit",
         "path_params": ["plan_id"],
@@ -1188,41 +1235,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # BlueStick records; the commands run on their host, under their client's
     # sandbox, and the operator approves them there.
     # -----------------------------------------------------------------------
-    "execution_record_environment": {
-        "description": (
-            "Record the operator's environment on this execution session. REQUIRED "
-            "FIRST STEP — the commands you propose have to match the machine they "
-            "will run on (PowerShell execution policy, WSL, what's on PATH). "
-            "session_id is resolved from your key."
-        ),
-        "workflows": _EXEC,
-        "method": "POST",
-        "metadata_write": True,
-        "path": "/api/v1/agent/execution-sessions/{session_id}/environment",
-        "path_params": ["session_id"],
-        "auto_params": {"session_id": "workflow_session_id"},
-        "body_params": _PROBE_BODY_PARAMS,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Usually omit — resolved from your API key.",
-                },
-                **_PROBE_PROPERTIES,
-            },
-            "required": ["os_family"],
-            "additionalProperties": False,
-        },
-    },
     "execution_get_context": {
         "description": (
             "The approved plan to work through: every entry with its host, proposed tests, "
             "priority and current status, plus the environment probe echoed back. "
             "Work entries in the order given. plan_id is resolved from your key."
         ),
-        "workflows": _EXEC,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/execution-context",
         "path_params": ["plan_id"],
@@ -1242,7 +1261,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "completed without a PASSING check on file unless you give "
             "execution_complete_entry an override_reason. Do this per host, per entry."
         ),
-        "workflows": _EXEC,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
         "path_params": ["plan_id", "entry_id"],
@@ -1281,7 +1300,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "test in the entry's proposed_tests. Record results as you go — an entry "
             "cannot complete with no results recorded."
         ),
-        "workflows": _EXEC,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/test-results",
         "path_params": ["plan_id", "entry_id"],
@@ -1337,7 +1356,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "sanity check exists, or you supply override_reason explaining why one was "
             "not possible — that override is audit-visible and a human will read it."
         ),
-        "workflows": _EXEC,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/complete",
         "path_params": ["plan_id", "entry_id"],
@@ -1377,7 +1396,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "remaining. Use it to resume after an interruption instead of re-running "
             "work that is already recorded."
         ),
-        "workflows": _EXEC,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/execution-progress",
         "path_params": ["plan_id"],
@@ -1396,7 +1415,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "when you are stopping because the engagement broke rather than because "
             "the work finished — that distinction is what a reviewer needs."
         ),
-        "workflows": _EXEC,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/execution-sessions/{session_id}/complete",
         "path_params": ["session_id"],
@@ -1425,33 +1444,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # the operator's machine.  The bulk paths (upload, target-file downloads)
     # stay curl — see the module docstring.
     # -----------------------------------------------------------------------
-    "recon_record_environment": {
-        "description": (
-            "Record the operator's environment on this recon session. REQUIRED FIRST "
-            "STEP — which scanners exist on this host decides what you can actually "
-            "run. session_id is resolved from your key."
-        ),
-        "workflows": _RECON,
-        "method": "POST",
-        "metadata_write": True,
-        "path": "/api/v1/agent/recon/sessions/{session_id}/environment",
-        "path_params": ["session_id"],
-        "auto_params": {"session_id": "workflow_session_id"},
-        "body_params": _PROBE_BODY_PARAMS,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Usually omit — resolved from your API key.",
-                },
-                **_PROBE_PROPERTIES,
-            },
-            "required": ["os_family"],
-            "additionalProperties": False,
-        },
-    },
     "recon_get_context": {
         "description": (
             "The scope to work: its CIDRs, what is already known about it, the tool "
@@ -1459,7 +1451,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "For big scopes the CIDR list is capped — recon_list_subnets is "
             "authoritative, and the target files are downloads, not tools."
         ),
-        "workflows": _RECON,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/context",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -1469,7 +1461,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "The authoritative, paginated subnet list for this recon scope — use it "
             "when recon_get_context reports the CIDRs were truncated."
         ),
-        "workflows": _RECON,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/subnets",
         "query_params": ["limit", "offset"],
@@ -1491,7 +1483,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "domains_truncated. A name in scope does not put the address it resolves "
             "to in subnet scope."
         ),
-        "workflows": _RECON,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/domains",
         "query_params": ["limit", "offset"],
@@ -1511,7 +1503,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "curl (see the server instructions); this is how you find out whether it "
             "parsed, and what it produced."
         ),
-        "workflows": _RECON,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/jobs/{job_id}",
         "path_params": ["job_id"],
@@ -1535,7 +1527,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "and to report progress. For the complete lists, use the downloads it "
             "points at rather than paging through here."
         ),
-        "workflows": _RECON,
+        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/summary",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -1546,7 +1538,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "you could not reach, anything the planning stage should know. This is the "
             "handoff to stage 2, so write it for the next reader."
         ),
-        "workflows": _RECON,
+        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/recon/complete",
         "body_params": ["notes"],
@@ -1642,6 +1634,8 @@ def tool_list_payload(*, workflow: Optional[str] = None) -> List[Dict[str, Any]]
             "inputSchema": advertised_schema(spec),
             "annotations": annotations(name, spec),
         }
+        # v2.337.0 — one project session does every kind of work, so tools/list
+        # no longer filters by workflow (`workflow` is accepted for call-site
+        # compatibility and ignored). It was always presentation only.
         for name, spec in TOOLS.items()
-        if workflow is None or workflow in spec["workflows"]
     ]

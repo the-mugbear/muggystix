@@ -1301,62 +1301,34 @@ def start_recon_session(
             detail="Scope has no subnets registered — upload a subnet file first.",
         )
 
-    # Resolve the agent, create the recon session, mint a session-pinned
-    # key.  See the recon-session lifecycle helpers above.
-    from app.db.models_agent import ReconSession, ReconSessionStatus, AgentSessionWorkflow
-    from app.services.agent_session_service import create_agent_session
-    agent = _resolve_recon_agent(db, project=project, user=current_user)
-
-    # Unified base session first, so the detail row + key link to it
-    # (R5 — expand-phase completion).
-    base_session = create_agent_session(
-        db,
-        workflow=AgentSessionWorkflow.RECON.value,
-        project_id=project.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        scope_id=scope.id,
-        status=ReconSessionStatus.ACTIVE.value,
+    # v2.337.0 — "Start Agentic Recon" now mints a unified PROJECT session and
+    # opens a reconnaissance run on this scope. The session can go on to plan
+    # and execute with the same key; this button just pre-selects the scope.
+    from app.services.agent_session_service import (
+        create_agent_session, resolve_project_agent, mint_session_key,
+        open_recon_phase,
     )
+    from app.services.agent_prompt_service import build_session_instructions
 
-    # Create the recon session first so the API key can pin to it.
-    # v2.45.0 — the key is bound to THIS session, not just the scope;
-    # see APIKey.recon_session_id for the concurrent-recon rationale.
-    recon_session = ReconSession(
-        project_id=project.id,
-        scope_id=scope.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        status=ReconSessionStatus.ACTIVE.value,
-        notes=body.notes,
-        agent_session_id=base_session.id,
+    agent = resolve_project_agent(db, project_id=project.id, user=current_user)
+    session = create_agent_session(
+        db, project_id=project.id, agent_id=agent.id,
+        started_by_id=current_user.id, purpose=body.notes,
     )
-    db.add(recon_session)
-    db.flush()
-
-    raw_key = _mint_recon_session_key(
-        db, agent=agent, scope=scope, recon_session=recon_session,
-        agent_session_id=base_session.id,
-    )
-    integrations_decrypted = _load_active_integrations(
-        db, user=current_user, project=project
-    )
-
-    from app.services.agent_prompt_service import build_recon_ingest_instructions
-    instructions = build_recon_ingest_instructions(
+    recon_session = open_recon_phase(db, session=session, scope=scope, notes=body.notes)
+    raw_key = mint_session_key(db, agent=agent, session=session)
+    integrations_decrypted = _load_active_integrations(db, user=current_user, project=project)
+    instructions = build_session_instructions(
         request=request,
-        recon_session_id=recon_session.id,
-        scope_id=scope.id,
-        scope_name=scope.name,
-        subnets=subnet_cidrs,
-        domains=[(d.domain, d.include_subdomains) for d in scope.domains],
+        session_id=session.id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=body.notes,
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
         integrations=integrations_decrypted,
-        project_slug=project.slug,
     )
-
     db.commit()
     db.refresh(recon_session)
 
@@ -1372,12 +1344,10 @@ def start_recon_session(
         key_ttl_hours=resolve_ttl_hours(None),
         mcp_url=mcp_url,
         mcp_clients=build_mcp_clients(
-            mcp_url,
-            raw_key,
-            workflow="recon",
+            mcp_url, raw_key,
             expected={
                 "project_name": project.name,
-                "session_label": f"recon session #{recon_session.id} on scope “{scope.name}”",
+                "session_label": f"agent session #{session.id}",
             },
         ),
     )
@@ -1449,72 +1419,46 @@ def resume_recon_session(
         row[0] for row in db.query(Subnet.cidr).filter(Subnet.scope_id == scope.id).all()
     ]
 
-    # Reuse the session's original agent and mint a fresh session-pinned
-    # key.  Minting revokes the prior (orphaned) key — load-bearing so a
-    # second agent cannot write into this resumed recon session.
-    agent = _resolve_recon_agent(
-        db, project=project, user=current_user, prefer_agent_id=recon_session.agent_id
+    # v2.337.0 — resume mints a fresh session and re-opens the run under it,
+    # so a crashed agent's orphaned key is revoked and a single live key
+    # continues the same recon run (its uploads are intact and deduped).
+    from app.services.agent_session_service import (
+        create_agent_session, resolve_project_agent, mint_session_key,
+    )
+    from app.services.agent_prompt_service import build_session_instructions
+
+    agent = resolve_project_agent(
+        db, project_id=project.id, user=current_user, prefer_agent_id=recon_session.agent_id
+    )
+    session = create_agent_session(
+        db, project_id=project.id, agent_id=agent.id, started_by_id=current_user.id,
+        purpose=f"Resume recon on scope {scope.id}",
     )
     recon_session.agent_id = agent.id
-    # Reuse the session's existing unified base row (created at start) so the
-    # resumed key links to the same AgentSession (R5).
-    #
-    # v2.233.0 — a session started before the agent_sessions backfill has no
-    # base row, so resuming it used to mint a key with agent_session_id NULL:
-    # indistinguishable, on that column alone, from the long-lived *global*
-    # key. The legacy scope columns still classify it correctly today, but the
-    # invariant "every workflow key carries an agent_session_id" is what makes
-    # dropping those columns safe, so backfill on demand instead of minting a
-    # key that violates it.
-    if recon_session.agent_session_id is None:
-        from app.db.models_agent import AgentSessionWorkflow
-        from app.services.agent_session_service import create_agent_session
-
-        backfilled = create_agent_session(
-            db,
-            workflow=AgentSessionWorkflow.RECON.value,
-            project_id=project.id,
-            agent_id=agent.id,
-            started_by_id=recon_session.started_by_id or current_user.id,
-            scope_id=scope.id,
-            status=recon_session.status,
-        )
-        recon_session.agent_session_id = backfilled.id
-        db.flush()
-    raw_key = _mint_recon_session_key(
-        db, agent=agent, scope=scope, recon_session=recon_session, name_suffix="-resume",
-        agent_session_id=recon_session.agent_session_id,
-    )
-    integrations_decrypted = _load_active_integrations(
-        db, user=current_user, project=project
-    )
-
-    from app.services.agent_prompt_service import build_recon_ingest_instructions
-    instructions = build_recon_ingest_instructions(
+    recon_session.agent_session_id = session.id
+    db.flush()
+    raw_key = mint_session_key(db, agent=agent, session=session)
+    integrations_decrypted = _load_active_integrations(db, user=current_user, project=project)
+    instructions = build_session_instructions(
         request=request,
-        recon_session_id=recon_session.id,
-        scope_id=scope.id,
-        scope_name=scope.name,
-        subnets=subnet_cidrs,
-        domains=[(d.domain, d.include_subdomains) for d in scope.domains],
+        session_id=session.id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=f"Resume recon on scope {scope.name}",
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
         integrations=integrations_decrypted,
         resumed=True,
-        project_slug=project.slug,
     )
 
-    # Checkpoint note for the human-review trail — 8 KiB cap, newest kept.
     resume_note = (
-        f"[{datetime.now(timezone.utc).isoformat()}] Recon session resumed "
+        f"[{datetime.now(timezone.utc).isoformat()}] Recon run resumed "
         f"by {current_user.full_name or current_user.username} "
-        f"— fresh API key minted; prior uploads preserved."
+        f"— fresh session #{session.id} + key; prior uploads preserved."
     )
     recon_session.notes = (
-        f"{recon_session.notes}\n{resume_note}"
-        if recon_session.notes
-        else resume_note
+        f"{recon_session.notes}\n{resume_note}" if recon_session.notes else resume_note
     )[-8192:]
 
     db.commit()
@@ -1532,12 +1476,10 @@ def resume_recon_session(
         key_ttl_hours=resolve_ttl_hours(None),
         mcp_url=mcp_url,
         mcp_clients=build_mcp_clients(
-            mcp_url,
-            raw_key,
-            workflow="recon",
+            mcp_url, raw_key,
             expected={
                 "project_name": project.name,
-                "session_label": f"recon session #{recon_session.id} on scope “{scope.name}”",
+                "session_label": f"agent session #{session.id}",
             },
         ),
     )

@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.0.0",
+        "app_version": "2.337.0",
+        "summary": (
+            "One session prompt replaces the four per-workflow prompts. A single "
+            "project-scoped session and key now query the inventory, open a "
+            "reconnaissance run against a scope, draft a test plan, and execute an "
+            "approved one — chosen by opening a phase (POST /agent/recon/start, "
+            "/agent/execution-sessions/start, POST /agent/test-plans), not by "
+            "minting a different key. The read-back is two-layer: session-start "
+            "states the project/authority bounds; each command-running phase "
+            "returns its own read-back (the scope's CIDRs, the plan's hosts, the "
+            "working directory) when opened. One environment probe on the session "
+            "(POST /agent/session/environment) replaces the three per-phase probes "
+            "and propagates to every run. Greenbone: gvm-tools / gvm-cli are now in "
+            "the approved set, matching the integration guidance."
+        ),
+    },
+    {
         "version": "1.65.0",
         "app_version": "2.335.0",
         "summary": (
