@@ -865,7 +865,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
 | POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) — a project write |
 | PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation — a project write. Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
-| POST | `/agent/feedback` | **Submit structured feedback at the end of every workflow.** Pass one of `test_plan_id` / `execution_session_id` / `recon_session_id` / `assist_session_id` so the row links back to the session it came from. See the `## Feedback Requested` block at the end of every prompt for the full payload shape. |
+| POST | `/agent/feedback` | **Submit structured feedback before you finish — required.** Over MCP the tool is `submit_feedback`. Your session is attributed from your key; `source` names the kind of work (`assist` / `reconnaissance` / `plan_generation` / `in_session_execution`) and the matching `recon_session_id` / `test_plan_id` / `execution_session_id` is optional context. See the `## Feedback Requested` block at the end of the session prompt for the payload shape. |
 
 <!-- agents:end -->
 

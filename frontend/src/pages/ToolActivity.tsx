@@ -1,12 +1,18 @@
 /**
  * Tool Activity — cross-project SOC-correlation surface.
  *
- * Answers "what tools were running at 14:32 UTC?" without forcing the
- * analyst to iterate projects.  Pairs with /api/v1/activity/scans-at
- * (point query) and /api/v1/activity/scans-between (window query).
+ * Answers "was this signature, at this time, part of our testing?"
+ * without forcing the analyst to iterate projects.  Pairs with
+ * /api/v1/activity/scans-at (moment ± tolerance) and
+ * /api/v1/activity/scans-between (range) — both take the same
+ * attribution filters (v5.213.0): a tool name / command substring and a
+ * single target IP, applied to the focused query AND the past-7-day
+ * snapshot, so "when did nmap run this week?" is one filter away.
  *
- * v1 scope: scans only.  v2 will fold in agent_api_calls and
- * recon_sessions via the same endpoint's kind discriminator.
+ * Kinds: uploaded scans (scanner timestamps), recon and execution runs
+ * (containers), and the per-command record — `test_result` (a command an
+ * agent reported, with its tool and target host) and `sanity_check` (a
+ * target-verification probe).
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -118,8 +124,22 @@ function kindBadgeVariant(kind: ActivityKind): BadgeVariant {
       return 'info';
     case 'execution_session':
       return 'success';
+    case 'test_result':
+      return 'destructive';
+    case 'sanity_check':
+      return 'muted';
   }
 }
+
+const KIND_LABEL: Record<ActivityKind, string> = {
+  scan: 'scan upload',
+  recon_session: 'recon run',
+  execution_session: 'execution run',
+  test_result: 'command run',
+  sanity_check: 'target probe',
+};
+
+type QueryMode = 'at' | 'between';
 
 // v4.27.0 — routes are TOP-LEVEL (`/scans/:id`, `/recon/runs/:id`,
 // `/executions/:id`).  There is no `/projects/:id/...` nested route
@@ -137,6 +157,11 @@ function deepLinkFor(item: ActivityItem): string {
       return `/recon/runs/${item.ref_id}`;
     case 'execution_session':
       return `/executions/${item.ref_id}`;
+    case 'test_result':
+    case 'sanity_check':
+      // Per-command rows belong to an execution run; that is the page
+      // with the command, its output and the sanity checks around it.
+      return `/executions/${item.parent_id ?? item.ref_id}`;
   }
 }
 
@@ -177,6 +202,18 @@ export const ToolActivity: React.FC = () => {
   // Default timestamp = "now, rounded to the minute"
   const [tsLocal, setTsLocal] = useState<string>(() => toLocalInput(new Date()));
   const [tolerance, setTolerance] = useState<number>(300);
+  // v5.213.0 — a second query shape: a from/to range (≤ 7 days) for
+  // "when did this tool run?" rather than "what ran at this moment?".
+  const [mode, setMode] = useState<QueryMode>('at');
+  const [fromLocal, setFromLocal] = useState<string>(() =>
+    toLocalInput(new Date(Date.now() - 24 * 3600 * 1000)),
+  );
+  const [toLocal, setToLocal] = useState<string>(() => toLocalInput(new Date()));
+  // v5.213.0 — attribution filters.  Applied server-side to the focused
+  // query and to the week snapshot alike, so the snapshot answers "when
+  // did <tool> touch <target> this week?" on its own.
+  const [tool, setTool] = useState('');
+  const [target, setTarget] = useState('');
   const [response, setResponse] = useState<ActivityResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -204,10 +241,19 @@ export const ToolActivity: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getScansAt({
-        ts: localInputToUtcIso(tsLocal),
-        toleranceSeconds: tolerance,
-      });
+      const attribution = { tool: tool || undefined, target: target || undefined };
+      const data =
+        mode === 'at'
+          ? await getScansAt({
+              ts: localInputToUtcIso(tsLocal),
+              toleranceSeconds: tolerance,
+              ...attribution,
+            })
+          : await getScansBetween({
+              from: localInputToUtcIso(fromLocal),
+              to: localInputToUtcIso(toLocal),
+              ...attribution,
+            });
       setResponse(data);
       setProjectFilter(new Set()); // reset chip filter on new search
     } catch (err) {
@@ -216,7 +262,7 @@ export const ToolActivity: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [tsLocal, tolerance]);
+  }, [mode, tsLocal, tolerance, fromLocal, toLocal, tool, target]);
 
   const loadWeek = useCallback(async () => {
     setWeekLoading(true);
@@ -229,6 +275,8 @@ export const ToolActivity: React.FC = () => {
       const data = await getScansBetween({
         from: range.start,
         to: range.end,
+        tool: tool || undefined,
+        target: target || undefined,
       });
       setWeekResponse(data);
     } catch (err) {
@@ -241,7 +289,7 @@ export const ToolActivity: React.FC = () => {
     } finally {
       setWeekLoading(false);
     }
-  }, []);
+  }, [tool, target]);
 
   // Run both on mount — the page lands with the week timeline
   // populated and a fresh "now ± default tolerance" query in the
@@ -291,6 +339,12 @@ export const ToolActivity: React.FC = () => {
   // week-snapshot timeline's highlight band knows where the focus is.
   const queryWindow = useMemo(() => {
     try {
+      if (mode === 'between') {
+        const s = new Date(localInputToUtcIso(fromLocal)).getTime();
+        const e = new Date(localInputToUtcIso(toLocal)).getTime();
+        if (Number.isNaN(s) || Number.isNaN(e) || e < s) return null;
+        return { start: new Date(s).toISOString(), end: new Date(e).toISOString() };
+      }
       const ts = new Date(localInputToUtcIso(tsLocal)).getTime();
       if (Number.isNaN(ts)) return null;
       return {
@@ -300,7 +354,9 @@ export const ToolActivity: React.FC = () => {
     } catch {
       return null;
     }
-  }, [tsLocal, tolerance]);
+  }, [mode, tsLocal, tolerance, fromLocal, toLocal]);
+
+  const attributionActive = Boolean(tool.trim() || target.trim());
 
   // Truthy when the queried window falls within the past 7 days
   // (i.e. the highlight band will actually render on the snapshot).
@@ -330,10 +386,14 @@ export const ToolActivity: React.FC = () => {
       <div>
         <h1 className="text-page-title">Tool Activity</h1>
         <p className="mt-xs text-caption text-muted-foreground">
-          Cross-project SOC correlation: spot activity visually in the
-          past-7-day snapshot below, then drill in with a focused
-          timestamp + tolerance query.  The focused window is rendered
-          as a highlighted band on the snapshot.
+          Cross-project SOC correlation: &ldquo;was this signature, at this
+          time, part of our testing?&rdquo; Name the tool and/or the target
+          address a signature fired on, then look at a moment (± tolerance)
+          or a range. The filters also apply to the past-7-day snapshot, so
+          it shows when that tool ran. Rows are scan uploads (scanner
+          timestamps), recon and execution runs, and the per-command record:
+          commands an agent reported running and the target probes before
+          them, each with its host.
         </p>
       </div>
 
@@ -372,9 +432,12 @@ export const ToolActivity: React.FC = () => {
                   // when thousands matched.
                   const truncated = !!weekResponse?.truncated;
                   const returnedLabel = truncated ? `≥${returned}` : `${returned}`;
+                  const scope = attributionActive
+                    ? ` for ${[tool.trim() && `“${tool.trim()}”`, target.trim() && target.trim()].filter(Boolean).join(' on ')}`
+                    : '';
                   const base = filterActive
-                    ? `Past 7 days · showing ${shown} of ${returnedLabel} (filtered)`
-                    : `Past 7 days · ${returnedLabel} activit${returned === 1 && !truncated ? 'y' : 'ies'}`;
+                    ? `Past 7 days${scope} · showing ${shown} of ${returnedLabel} (filtered)`
+                    : `Past 7 days${scope} · ${returnedLabel} activit${returned === 1 && !truncated ? 'y' : 'ies'}`;
                   // v4.22.0 — truncation reflects server-side cap.
                   // Local project filter chips don't reduce it; only
                   // tightening the window would.
@@ -385,9 +448,10 @@ export const ToolActivity: React.FC = () => {
           }
           helperText={
             <p className="text-metadata text-muted-foreground">
-              Visual scan of every scan / recon session / execution
-              session across the projects you can see.  The blue band
-              shows the current ±tolerance focus window.{' '}
+              Every scan upload, recon / execution run, command run and
+              target probe across the projects you can see
+              {attributionActive ? ', narrowed to the tool / target above' : ''}.
+              The blue band shows the current focus window.{' '}
               {queryWindow && !queryInsideWeek && (
                 <span className="text-warning">
                   Your focus window is outside the past 7 days — the
@@ -403,7 +467,7 @@ export const ToolActivity: React.FC = () => {
 
       <Card>
         <CardHeader>
-          <CardTitle>Correlate to a timestamp</CardTitle>
+          <CardTitle>Correlate</CardTitle>
         </CardHeader>
         <CardContent>
           <form
@@ -411,38 +475,106 @@ export const ToolActivity: React.FC = () => {
             onSubmit={(e) => {
               e.preventDefault();
               search();
+              void loadWeek();
             }}
           >
             <div className="flex flex-col gap-xxs">
-              <Label htmlFor="ts-input">Timestamp (local)</Label>
+              <Label htmlFor="tool-input">Tool</Label>
               <Input
-                id="ts-input"
-                type="datetime-local"
-                value={tsLocal}
-                onChange={(e) => setTsLocal(e.target.value)}
-                step={1}
-                className="w-[240px]"
-                required
+                id="tool-input"
+                type="text"
+                value={tool}
+                onChange={(e) => setTool(e.target.value)}
+                placeholder="e.g. nmap, masscan, ping"
+                maxLength={100}
+                className="w-[200px]"
               />
             </div>
             <div className="flex flex-col gap-xxs">
-              <Label htmlFor="tolerance-input">Tolerance</Label>
-              <Select
-                value={String(tolerance)}
-                onValueChange={(v) => setTolerance(Number(v))}
-              >
-                <SelectTrigger id="tolerance-input" className="w-[200px]">
+              <Label htmlFor="target-input">Target IP</Label>
+              <Input
+                id="target-input"
+                type="text"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                placeholder="e.g. 10.0.0.5"
+                maxLength={45}
+                className="w-[180px]"
+              />
+            </div>
+            <div className="flex flex-col gap-xxs">
+              <Label htmlFor="mode-input">Look at</Label>
+              <Select value={mode} onValueChange={(v) => setMode(v as QueryMode)}>
+                <SelectTrigger id="mode-input" className="w-[160px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TOLERANCE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={String(opt.value)}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="at">A moment</SelectItem>
+                  <SelectItem value="between">A range (≤ 7 days)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {mode === 'at' ? (
+              <>
+                <div className="flex flex-col gap-xxs">
+                  <Label htmlFor="ts-input">Timestamp (local)</Label>
+                  <Input
+                    id="ts-input"
+                    type="datetime-local"
+                    value={tsLocal}
+                    onChange={(e) => setTsLocal(e.target.value)}
+                    step={1}
+                    className="w-[240px]"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-xxs">
+                  <Label htmlFor="tolerance-input">Tolerance</Label>
+                  <Select
+                    value={String(tolerance)}
+                    onValueChange={(v) => setTolerance(Number(v))}
+                  >
+                    <SelectTrigger id="tolerance-input" className="w-[200px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TOLERANCE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={String(opt.value)}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex flex-col gap-xxs">
+                  <Label htmlFor="from-input">From (local)</Label>
+                  <Input
+                    id="from-input"
+                    type="datetime-local"
+                    value={fromLocal}
+                    onChange={(e) => setFromLocal(e.target.value)}
+                    step={1}
+                    className="w-[240px]"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-xxs">
+                  <Label htmlFor="to-input">To (local)</Label>
+                  <Input
+                    id="to-input"
+                    type="datetime-local"
+                    value={toLocal}
+                    onChange={(e) => setToLocal(e.target.value)}
+                    step={1}
+                    className="w-[240px]"
+                    required
+                  />
+                </div>
+              </>
+            )}
             <Button type="submit" disabled={loading}>
               {/* v4.22.0 — keep Search icon during loading so this
                   button reads distinctly from the standalone Refresh
@@ -485,12 +617,20 @@ export const ToolActivity: React.FC = () => {
             </span>
             <span>•</span>
             <span>
-              {response.total} scan{response.total === 1 ? '' : 's'} matched
+              {response.total} activit{response.total === 1 ? 'y' : 'ies'} matched
               across {response.accessible_project_ids.length} accessible
               project{response.accessible_project_ids.length === 1 ? '' : 's'}
+              {attributionActive && (
+                <>
+                  {' '}for{' '}
+                  {tool.trim() && <code className="font-mono">{tool.trim()}</code>}
+                  {tool.trim() && target.trim() && ' on '}
+                  {target.trim() && <code className="font-mono">{target.trim()}</code>}
+                </>
+              )}
               {response.truncated && (
                 <span className="ml-xs text-warning">
-                  (capped — narrow the tolerance to see all)
+                  (capped — narrow the window or filter by tool / target to see all)
                 </span>
               )}
             </span>
@@ -545,21 +685,23 @@ export const ToolActivity: React.FC = () => {
             <CardContent className="p-0">
               {filteredItems.length === 0 ? (
                 <p className="p-md text-caption text-muted-foreground">
-                  No matching scans in this window. Widen the tolerance or
-                  pick a different timestamp.
+                  {attributionActive
+                    ? 'Nothing recorded for that tool / target in this window: no scan observed the host, no agent reported a command or probe against it, and no run covered it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
+                    : 'No activity in this window. Widen the tolerance, pick a different time, or switch to a range.'}
                 </p>
               ) : (
                 <Table style={{ tableLayout: 'fixed', width: '100%' }}>
                   <TableHeader>
                     <TableRow>
                       <TableHead style={{ width: '13%' }}>Start</TableHead>
-                      <TableHead style={{ width: '13%' }}>End</TableHead>
-                      <TableHead style={{ width: '7%' }}>Duration</TableHead>
-                      <TableHead style={{ width: '14%' }}>Project</TableHead>
+                      <TableHead style={{ width: '11%' }}>End</TableHead>
+                      <TableHead style={{ width: '6%' }}>Duration</TableHead>
+                      <TableHead style={{ width: '9%' }}>Kind</TableHead>
+                      <TableHead style={{ width: '12%' }}>Project</TableHead>
                       <TableHead style={{ width: '10%' }}>Tool</TableHead>
-                      <TableHead style={{ width: '7%' }}>Hosts</TableHead>
+                      <TableHead style={{ width: '11%' }}>Target</TableHead>
                       <TableHead>Command</TableHead>
-                      <TableHead style={{ width: '6%' }} />
+                      <TableHead style={{ width: '5%' }} />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -624,16 +766,26 @@ export const ToolActivity: React.FC = () => {
                         <TableCell className="truncate tabular-nums">
                           {durationSeconds(item.start_time, item.end_time)}
                         </TableCell>
+                        <TableCell>
+                          <Badge variant={kindBadgeVariant(item.kind)} className="whitespace-nowrap">
+                            {KIND_LABEL[item.kind]}
+                          </Badge>
+                        </TableCell>
                         <TableCell className="min-w-0 truncate">
                           {safeFallback(item.project_name)}
                         </TableCell>
-                        <TableCell>
-                          <Badge variant={kindBadgeVariant(item.kind)}>
-                            {item.label}
-                          </Badge>
+                        <TableCell className="min-w-0 truncate" title={item.label}>
+                          {item.label}
+                          {item.status && (item.kind === 'test_result' || item.kind === 'sanity_check') && (
+                            <span className="ml-xxs text-caption text-muted-foreground">{item.status}</span>
+                          )}
                         </TableCell>
-                        <TableCell className="tabular-nums">
-                          {item.host_count ?? '—'}
+                        <TableCell className="min-w-0 truncate font-mono text-caption tabular-nums" title={item.target ?? undefined}>
+                          {item.target
+                            ? item.target
+                            : item.host_count != null
+                              ? `${item.host_count} host${item.host_count === 1 ? '' : 's'}`
+                              : '—'}
                         </TableCell>
                         <TableCell className="min-w-0 truncate">
                           <Tooltip>

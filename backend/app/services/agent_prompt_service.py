@@ -19,9 +19,8 @@ changes in a way that affects agent behavior — prepend an entry to
 from the newest entry, so version and changelog can't drift).
 """
 
-import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import Request
 
@@ -124,30 +123,47 @@ def resolve_base_url(request: Optional[Request]) -> str:
     return f"{origin}/api/v1"
 
 
-def _feedback_section(base_url: str, source: str, context: Dict[str, Any]) -> str:
-    """Standard feedback-request block appended to the session prompt."""
-    ctx_lines = "\n".join(f'  "{k}": {json.dumps(v)},' for k, v in context.items())
+def _feedback_section(base_url: str) -> str:
+    """Standard feedback-request block appended to the session prompt.
+
+    v2.339.0 — written for the unified session: ``source`` names the kind of
+    work the session did, the phase ids are optional (the session itself is
+    attributed from the key), and the MCP tool is named so an MCP-connected
+    agent has a way to comply without curl.
+    """
     return (
         f"\n---\n\n"
         f"## Feedback Requested (required)\n\n"
-        f"Before you finish, submit structured feedback so the BlueStick team "
-        f"can improve the APIs, prompts, and tool reference. This is **not optional** — "
-        f"even a short note helps.\n\n"
-        f"`POST {base_url}/agent/feedback`\n\n"
+        f"Before you finish, submit structured feedback. This is **not optional** — "
+        f"even a short note helps. Over MCP call **`submit_feedback`**; over curl "
+        f"`POST {base_url}/agent/feedback`.\n\n"
+        f"**Who reads it:** a coding agent working on BlueStick itself, looking for "
+        f"things to fix or build. Write for that reader: name the endpoint or tool, "
+        f"say what you expected and what actually happened, include the exact error "
+        f"text or the field that was missing, and say what would have let you finish "
+        f"faster. \"The API was fine\" is not useful; \"`assist_list_hosts` gives a page "
+        f"with no total, so I answered a count from one page until I found "
+        f"`assist_count_hosts`\" is. Report pain points as you hit them, not from "
+        f"memory at the end, if that is easier — several submissions are fine.\n\n"
+        f"Your session is attributed from your key; `source` says what kind of work "
+        f"the feedback is about — `assist` for queries and notes only, "
+        f"`reconnaissance` (add `recon_session_id`), `plan_generation` (add "
+        f"`test_plan_id`), or `in_session_execution` (add `execution_session_id`). "
+        f"A session that did several kinds may submit one per kind.\n\n"
         f"```json\n"
         f"{{\n"
-        f'  "source": "{source}",\n'
+        f'  "source": "assist | reconnaissance | plan_generation | in_session_execution",\n'
         f'  "prompt_version": "{PROMPT_VERSION}",\n'
-        f"{ctx_lines}\n"
+        f'  "recon_session_id": null, "test_plan_id": null, "execution_session_id": null,\n'
         f'  "overall_rating": 1-5,\n'
         f'  "api_critiques": [\n'
-        f'    {{"endpoint": "/agent/...", "issue": "what was missing/awkward/wrong", "suggestion": "..."}}\n'
+        f'    {{"endpoint": "/agent/... or tool name", "issue": "expected X, got Y — exact error/field", "suggestion": "the change that would have removed this"}}\n'
         f"  ],\n"
         f'  "tool_suggestions": [\n'
         f'    // CLI binaries only (e.g. "naabu", "nuclei", "subfinder").\n'
         f'    {{"name": "binary-name", "category": "recon|enum|exploit|post|reporting", "rationale": "what this binary does that the catalog is missing"}}\n'
         f"  ],\n"
-        f'  "friction_notes": "Free-text: what was confusing, what took extra effort, what you had to guess.",\n'
+        f'  "friction_notes": "Where you guessed, retried, re-read the guide, or worked around something — one line each, with the tool/endpoint named.",\n'
         f'  "agent_metrics": {{\n'
         f'    "agent_name": "claude-code|codex|chatgpt|other",\n'
         f'    "model": "model id if known",\n'
@@ -400,9 +416,5 @@ def build_session_instructions(
     )
 
     instructions += _integration_block(integrations or [])
-    instructions += _feedback_section(
-        base_url=base_url,
-        source="assist",
-        context={"agent_session_id": session_id},
-    )
+    instructions += _feedback_section(base_url=base_url)
     return instructions

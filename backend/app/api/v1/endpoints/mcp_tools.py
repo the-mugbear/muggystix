@@ -54,7 +54,7 @@ the token bill.  The server ``instructions`` point at them with curl instead.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # The four workflows a key can belong to (AgentSessionWorkflow values).  Kept as
 # plain strings rather than importing the enum: this module is pure data with no
@@ -333,6 +333,65 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     # Assist — interactive read/write over an existing inventory
     # -----------------------------------------------------------------------
+    "submit_feedback": {
+        "description": (
+            "Leave structured feedback about this session — REQUIRED before you "
+            "finish, even a one-line friction note; several submissions as you go "
+            "are fine. It is read by a coding agent working on BlueStick itself, so "
+            "write for that reader: name the tool or endpoint, expected vs actual, "
+            "the exact error text or missing field, and what would have let you "
+            "finish faster. `source` names the kind of work: assist (queries/notes "
+            "only), reconnaissance, plan_generation, or in_session_execution; add "
+            "the matching recon_session_id / test_plan_id / execution_session_id "
+            "when you have one — the session itself is attributed from your key. "
+            "tool_suggestions here are context; suggest_tool files the registry entry."
+        ),
+        "method": "POST",
+        "metadata_write": True,
+        "additive": True,
+        "path": "/api/v1/agent/feedback",
+        "body_params": [
+            "source", "prompt_version", "recon_session_id", "test_plan_id",
+            "execution_session_id", "overall_rating", "api_critiques",
+            "tool_suggestions", "friction_notes", "agent_metrics",
+        ],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "enum": ["assist", "reconnaissance", "plan_generation", "in_session_execution"],
+                    "description": "The kind of work this feedback is about.",
+                },
+                "prompt_version": {"type": "string", "description": "The prompt_version from your instructions block."},
+                "recon_session_id": {"type": "integer", "minimum": 1},
+                "test_plan_id": {"type": "integer", "minimum": 1},
+                "execution_session_id": {"type": "integer", "minimum": 1},
+                "overall_rating": {"type": "integer", "minimum": 1, "maximum": 5},
+                "api_critiques": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {
+                        "endpoint": {"type": "string"}, "issue": {"type": "string"},
+                        "suggestion": {"type": "string"},
+                    }},
+                },
+                "tool_suggestions": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {
+                        "name": {"type": "string"}, "category": {"type": "string"},
+                        "rationale": {"type": "string"},
+                    }},
+                },
+                "friction_notes": {"type": "string", "description": "What was confusing, slow, or guessed."},
+                "agent_metrics": {
+                    "type": "object",
+                    "description": "agent_name, model, tool_calls_total, notes — whatever your environment exposes.",
+                },
+            },
+            "required": ["source"],
+            "additionalProperties": False,
+        },
+    },
     "assist_get_context": {
         "description": (
             "Project orientation for this assist session: host/port/scope/scan "

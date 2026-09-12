@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.2.0",
+        "app_version": "2.339.0",
+        "summary": (
+            "Feedback for the unified session: the closing block names the MCP "
+            "tool (submit_feedback — new; an MCP-connected agent previously had "
+            "no way to file feedback short of curl), states who reads it (a "
+            "coding agent improving BlueStick) and what that reader needs — the "
+            "tool/endpoint named, expected vs actual, exact error text, what "
+            "would have removed the friction — invites submissions as pain "
+            "points are hit, says the session is attributed from the key, and "
+            "asks for `source` per kind of work done (assist / reconnaissance / "
+            "plan_generation / in_session_execution) with the phase id as "
+            "optional context. The old block hard-coded source=assist and an "
+            "agent_session_id field the endpoint does not accept."
+        ),
+    },
+    {
         "version": "2.1.0",
         "app_version": "2.338.0",
         "summary": (

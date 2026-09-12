@@ -11,7 +11,16 @@
  */
 import { api } from './client';
 
-export type ActivityKind = 'scan' | 'recon_session' | 'execution_session';
+/** v5.213.0 — `test_result` (one command an executing agent reported, with
+ *  its tool and target host) and `sanity_check` (one target-verification
+ *  probe) are the per-command, per-target record that answers "was this
+ *  signature against this host at this time ours?". */
+export type ActivityKind =
+  | 'scan'
+  | 'recon_session'
+  | 'execution_session'
+  | 'test_result'
+  | 'sanity_check';
 
 export interface ActivityItem {
   kind: ActivityKind;
@@ -50,6 +59,12 @@ export interface ActivityItem {
   host_count: number | null;
   /** Status string for recon/execution sessions; null for scans. */
   status: string | null;
+  /** v5.213.0 — the IP this row acted on when it is one (test_result,
+   *  sanity_check); null for scans and runs, which cover many. */
+  target: string | null;
+  /** v5.213.0 — for the per-command kinds, the execution run the row
+   *  belongs to (`ref_id` is the row's own id); the deep link goes here. */
+  parent_id: number | null;
 }
 
 /** Legacy alias kept temporarily for callers that still use v1's
@@ -73,8 +88,12 @@ export interface ScansAtParams {
   toleranceSeconds?: number;
   /** Optional list of project ids to narrow the query. */
   projectIds?: number[];
-  /** Optional list of activity kinds to include.  Omit for all three. */
+  /** Optional list of activity kinds to include.  Omit for all. */
   kinds?: ActivityKind[];
+  /** v5.213.0 — attribution filters: tool name / command substring
+   *  (case-insensitive) and one target IP. */
+  tool?: string;
+  target?: string;
 }
 
 export interface ScansBetweenParams {
@@ -82,6 +101,22 @@ export interface ScansBetweenParams {
   to: string;
   projectIds?: number[];
   kinds?: ActivityKind[];
+  tool?: string;
+  target?: string;
+}
+
+function appendAttribution(
+  search: URLSearchParams,
+  params: { projectIds?: number[]; kinds?: ActivityKind[]; tool?: string; target?: string },
+): void {
+  if (params.projectIds && params.projectIds.length > 0) {
+    search.set('project_ids', params.projectIds.join(','));
+  }
+  if (params.kinds && params.kinds.length > 0) {
+    search.set('kinds', params.kinds.join(','));
+  }
+  if (params.tool && params.tool.trim()) search.set('tool', params.tool.trim());
+  if (params.target && params.target.trim()) search.set('target', params.target.trim());
 }
 
 export async function getScansAt(params: ScansAtParams): Promise<ActivityResponse> {
@@ -90,12 +125,7 @@ export async function getScansAt(params: ScansAtParams): Promise<ActivityRespons
   if (params.toleranceSeconds !== undefined) {
     search.set('tolerance_seconds', String(params.toleranceSeconds));
   }
-  if (params.projectIds && params.projectIds.length > 0) {
-    search.set('project_ids', params.projectIds.join(','));
-  }
-  if (params.kinds && params.kinds.length > 0) {
-    search.set('kinds', params.kinds.join(','));
-  }
+  appendAttribution(search, params);
   const { data } = await api.get<ActivityResponse>(
     `/activity/scans-at?${search.toString()}`,
   );
@@ -106,12 +136,7 @@ export async function getScansBetween(params: ScansBetweenParams): Promise<Activ
   const search = new URLSearchParams();
   search.set('from', params.from);
   search.set('to', params.to);
-  if (params.projectIds && params.projectIds.length > 0) {
-    search.set('project_ids', params.projectIds.join(','));
-  }
-  if (params.kinds && params.kinds.length > 0) {
-    search.set('kinds', params.kinds.join(','));
-  }
+  appendAttribution(search, params);
   const { data } = await api.get<ActivityResponse>(
     `/activity/scans-between?${search.toString()}`,
   );

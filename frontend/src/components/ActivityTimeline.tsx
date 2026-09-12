@@ -38,6 +38,10 @@ function dotClass(kind: ActivityKind): string {
       return 'bg-warning';
     case 'execution_session':
       return 'bg-success';
+    case 'test_result':
+      return 'bg-destructive';
+    case 'sanity_check':
+      return 'bg-muted-foreground';
     default:
       return 'bg-primary';
   }
