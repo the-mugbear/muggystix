@@ -96,7 +96,7 @@ router = APIRouter()
 _PREFERRED_PROTOCOL_VERSION = "2025-06-18"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-06-18", "2025-03-26"})
 
-_SERVER_NAME = "bluestick-assist"
+_SERVER_NAME = "bluestick"
 
 # --- pre-auth request ceilings ---------------------------------------------
 # This endpoint is UNAUTHENTICATED at the FastAPI layer (initialize / tools/list

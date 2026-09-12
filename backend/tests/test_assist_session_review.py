@@ -108,6 +108,10 @@ def test_the_list_says_which_sessions_actually_did_anything(
     busy_start = _start(client, test_project.id)
     busy = busy_start["assist_session_id"]
     idle = _start(client, test_project.id)["assist_session_id"]
+    busy_agent_session = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == busy).scalar()
+    )
 
     db_session.add(
         AgentApiCall(
@@ -115,7 +119,7 @@ def test_the_list_says_which_sessions_actually_did_anything(
             # agent_id is required by the attribution CHECK — a row without it
             # is only legal for pre-auth failures, which carry an error_class.
             agent_id=busy_start["agent_id"],
-            assist_session_id=busy,
+            agent_session_id=busy_agent_session,
             method="GET",
             path="/api/v1/agent/assist/hosts",
             status_code=200,
@@ -183,12 +187,14 @@ def test_connection_state_comes_from_observed_calls_not_the_probe(
     assert rows[curl_sid]["environment_probed"] is False
 
     # The audit rows carry the marker the list derived this from.
+    _mcp_as = db_session.query(AssistSession.agent_session_id).filter(AssistSession.id == mcp_sid).scalar()
+    _curl_as = db_session.query(AssistSession.agent_session_id).filter(AssistSession.id == curl_sid).scalar()
     mcp_rows = db_session.query(AgentApiCall).filter(
-        AgentApiCall.assist_session_id == mcp_sid
+        AgentApiCall.agent_session_id == _mcp_as
     ).all()
     assert mcp_rows and all(row.via_mcp is True for row in mcp_rows)
     curl_rows = db_session.query(AgentApiCall).filter(
-        AgentApiCall.assist_session_id == curl_sid
+        AgentApiCall.agent_session_id == _curl_as
     ).all()
     assert curl_rows and all(row.via_mcp is False for row in curl_rows)
 

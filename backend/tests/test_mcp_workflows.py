@@ -114,21 +114,19 @@ def test_identity_classifies_each_workflow_key(client, test_project, scope_with_
         assert resp.status_code == 200, resp.text
         return resp.json()
 
+    # v2.337.0 — every start mints one project session; what it opened shows in
+    # open_phases, not in a per-key workflow.
     plan_id = identity(plan["api_key"])
-    assert plan_id["workflow"] == "plan_generation"
-    assert plan_id["workflow_family"] == "plan"
-    assert plan_id["plan_id"] == plan["plan_id"]
+    assert plan_id["workflow"] == "project"
+    assert plan_id["open_phases"]["plan_id"] == plan["plan_id"]
 
     recon_id = identity(recon["api_key"])
-    assert recon_id["workflow"] == "recon"
-    assert recon_id["scope_id"] == scope_with_subnets.id
-    # The recon URLs are keyed by the ReconSession id, which is a different row
-    # from the AgentSession the key binds to.
+    assert recon_id["workflow"] == "project"
+    assert recon_id["open_phases"]["recon_session_id"] == recon["recon_session_id"]
     assert recon_id["workflow_session_id"] == recon["recon_session_id"]
 
     assist_id = identity(assist["api_key"])
-    assert assist_id["workflow"] == "assist"
-    assert assist_id["workflow_session_id"] == assist["assist_session_id"]
+    assert assist_id["workflow"] == "project"
     assert assist_id["project_id"] == test_project.id
 
 
@@ -149,23 +147,15 @@ def test_each_key_sees_only_its_own_workflows_tools(
     recon = _recon_key(client, test_project, scope_with_subnets)
     assist = _assist_key(client, test_project)
 
-    plan_tools = _tool_names(client, {"X-API-Key": plan["api_key"]})
-    recon_tools = _tool_names(client, {"X-API-Key": recon["api_key"]})
-    assist_tools = _tool_names(client, {"X-API-Key": assist["api_key"]})
-
-    assert "plan_add_entries" in plan_tools and "plan_submit" in plan_tools
-    assert not {t for t in plan_tools if t.startswith(("recon_", "assist_"))}
-
-    assert "recon_get_context" in recon_tools and "recon_get_summary" in recon_tools
-    assert not {t for t in recon_tools if t.startswith(("plan_", "execution_"))}
-
-    assert "assist_list_hosts" in assist_tools
-    assert not {t for t in assist_tools if t.startswith(("plan_", "recon_", "execution_"))}
-
-    # The cross-workflow tools are in all three — an agent must always be able to
-    # ask what it is, and to report a tool it needed but didn't have.
-    for tools in (plan_tools, recon_tools, assist_tools):
-        assert {"agent_identity", "suggest_tool"} <= tools
+    # v2.337.0 — one project session does everything, so every key lists the
+    # FULL catalogue (plan + recon + assist + the phase-start tools). Whether a
+    # call succeeds is the operator's role + the phase state, decided at the
+    # endpoint — the list is presentation.
+    for body in (plan, recon, assist):
+        tools = _tool_names(client, {"X-API-Key": body["api_key"]})
+        assert {"plan_add_entries", "plan_submit", "recon_get_context",
+                "assist_list_hosts", "start_recon", "start_execution",
+                "create_test_plan", "agent_identity", "suggest_tool"} <= tools
 
 
 def test_unauthenticated_list_is_the_documentation_view(client):
@@ -186,11 +176,10 @@ def test_hiding_a_tool_is_presentation_not_authorisation(
     recon = _recon_key(client, test_project, scope_with_subnets)
     headers = {"X-API-Key": recon["api_key"]}
 
-    assert "plan_submit" not in _tool_names(client, headers)
-
-    result = _call(client, headers, "plan_submit", {"plan_id": 1})
+    # Every tool is listed now; the endpoint is still the decider. Submitting a
+    # plan that does not exist reaches the real route and fails there.
+    result = _call(client, headers, "plan_submit", {"plan_id": 999999})
     assert result["isError"] is True
-    assert "403" in result["content"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -216,9 +205,11 @@ def test_an_explicit_argument_beats_the_auto_filled_one(client, test_project):
     second = _plan_key(client, test_project, title="second plan")
     headers = {"X-API-Key": first["api_key"]}
 
+    # v2.337.0 — a project session reads any plan in its project, so an explicit
+    # plan_id is honoured (auto-fill is a default, not a lock to one plan).
     result = _call(client, headers, "plan_get", {"plan_id": second["plan_id"]})
-    assert result["isError"] is True
-    assert "403" in result["content"][0]["text"]
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["id"] == second["plan_id"]
 
 
 def test_recon_probe_resolves_its_own_session_id(
@@ -233,15 +224,16 @@ def test_recon_probe_resolves_its_own_session_id(
     result = _call(
         client,
         headers,
-        "recon_record_environment",
+        "record_environment",
         {"os_family": "linux", "shell": "bash"},
     )
     assert result["isError"] is False, result
-    assert result["structuredContent"]["session_id"] == recon["recon_session_id"]
+    assert result["structuredContent"]["session_type"] == "session"
 
     from app.db.models_agent import ReconSession
 
     db_session.expire_all()
+    # The session probe propagates onto the open recon run.
     session = db_session.get(ReconSession, recon["recon_session_id"])
     assert session.environment_probed_at is not None
     assert session.environment["os_family"] == "linux"
@@ -333,14 +325,11 @@ def test_the_guide_is_reachable_over_mcp_and_sliced_to_the_caller(
     plan_guide = _call(client, {"X-API-Key": plan["api_key"]}, "read_agent_guide")
     plan_text = plan_guide["content"][0]["text"]
 
-    # Sliced from the key, not from an argument a model has to name — the one
-    # wrong answer there hands an agent another workflow's instructions.
-    assert "Workflow C — Populate Host Data" in recon_text
-    assert "Workflow C — Populate Host Data" not in plan_text
-    assert "Workflow A — Build a Test Plan" in plan_text
-
-    # The shared rules ride along in every slice.
+    # v2.337.0 — a project session does every kind of work, so it gets the WHOLE
+    # guide (both the plan and the recon workflow sections), not one slice.
     for text in (recon_text, plan_text):
+        assert "Workflow C — Populate Host Data" in text
+        assert "Workflow A — Build a Test Plan" in text
         assert "Say the rules back before you start" in text
 
 
@@ -390,12 +379,12 @@ def test_every_session_start_emits_client_setup(client, test_project, scope_with
         ids = {c["id"] for c in body["mcp_clients"]}
         assert ids == {"vscode", "claude_code", "codex"}
 
-    # Distinct server names, so connecting a recon session and a plan session to
-    # the same client leaves two servers rather than one overwriting the other.
+    # v2.337.0 — one unified server entry ("bluestick"): a session does every
+    # workflow, so there is no per-workflow server to disambiguate.
     plan_payloads = " ".join(c["payload"] for c in plan["mcp_clients"])
     recon_payloads = " ".join(c["payload"] for c in recon["mcp_clients"])
-    assert "bluestick-plan" in plan_payloads and "bluestick-recon" not in plan_payloads
-    assert "bluestick-recon" in recon_payloads and "bluestick-plan" not in recon_payloads
+    assert "bluestick" in plan_payloads and "bluestick-plan" not in plan_payloads
+    assert "bluestick" in recon_payloads and "bluestick-recon" not in recon_payloads
 
     # And each carries its own live key, not a shared one.
     assert plan["api_key"] in plan_payloads
@@ -419,23 +408,19 @@ def test_every_recipe_carries_the_verification_handoff(
         f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "verify"}
     ).json()
 
-    for body, server, label in (
-        (plan, "bluestick-plan", f"plan #{plan['plan_id']}"),
-        (recon, "bluestick-recon", f"recon session #{recon['recon_session_id']}"),
-        (assist, "bluestick-assist", f"assist session #{assist['assist_session_id']}"),
-    ):
+    for body in (plan, recon, assist):
         for entry in body["mcp_clients"]:
             prompt = entry["verify_prompt"]
-            assert server in prompt, entry["id"]
+            assert "bluestick" in prompt, entry["id"]
             assert "agent_identity" in prompt
             # The failure mode this exists to prevent: a model with no tools
             # answering from general knowledge and reading as connected.
             assert "not available" in prompt
             expected = entry["verify_expected"]
             assert test_project.name in expected
-            assert label in expected, (entry["id"], expected)
+            assert "session #" in expected, (entry["id"], expected)
             assert entry["verify_check"], entry["id"]
-            assert server in entry["verify_check"]
+            assert "bluestick" in entry["verify_check"]
 
     by_id = {e["id"]: e for e in assist["mcp_clients"]}
     # Codex is the client whose obvious check proves the least.
@@ -451,16 +436,16 @@ def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
     """The working-directory boundary is enforced by the client, not by us — so
     the flags that set it belong in the recipe for the workflows that actually
     execute things. Attaching them to plan generation, which only calls the API,
-    would train operators to ignore them."""
+    would train operators to ignore them. v2.337.0: any session can run commands, so the flags ride every recipe."""
     recon = _recon_key(client, test_project, scope_with_subnets)
     plan = _plan_key(client, test_project)
 
-    codex_recon = next(c for c in recon["mcp_clients"] if c["id"] == "codex")
-    assert "--sandbox workspace-write" in codex_recon["hint"]
-    assert "--ask-for-approval" in codex_recon["hint"]
-
-    codex_plan = next(c for c in plan["mcp_clients"] if c["id"] == "codex")
-    assert "--sandbox" not in codex_plan["hint"]
+    # v2.337.0 — any session can open a recon/execution run that shells out, so
+    # the client-sandbox flags ride EVERY recipe now (not just recon/exec).
+    for body in (recon, plan):
+        codex = next(c for c in body["mcp_clients"] if c["id"] == "codex")
+        assert "--sandbox workspace-write" in codex["hint"]
+        assert "--ask-for-approval" in codex["hint"]
 
     # Every recipe still warns about the self-signed certificate, which is the
     # failure every client hits first — but with the mechanism that actually
@@ -570,4 +555,4 @@ def test_a_registry_entry_can_omit_the_params_it_has_none_of(client, test_projec
     assist = _assist_key(client, test_project)
     result = _call(client, {"X-API-Key": assist["api_key"]}, "agent_identity")
     assert result["isError"] is False, result
-    assert result["structuredContent"]["workflow"] == "assist"
+    assert result["structuredContent"]["workflow"] == "project"

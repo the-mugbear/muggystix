@@ -122,38 +122,30 @@ def test_recon_environment_probe_roundtrips(client, recon_key, recon_session_row
     it.
     """
     resp = client.post(
-        f"/api/v1/agent/recon/sessions/{recon_session_row.id}/environment",
+        "/api/v1/agent/session/environment",
         headers={"X-API-Key": recon_key},
         json={"os_family": "linux"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["session_id"] == recon_session_row.id
-    assert body["session_type"] == "recon"
+    assert body["session_type"] == "session"
     assert body["probed_at"] is not None
 
 
-def test_recon_key_blocked_from_assist_plan_and_execution(
+def test_one_session_key_reaches_recon_and_assist_and_plans(
     client, recon_key, test_plan,
 ):
-    """Cross-workflow guarantee: a recon-scoped key must 403 on
-    every other agent surface.  The four-workflow split exists
-    precisely so a compromised key can only act on its workflow;
-    losing this invariant would let a recon key create or execute
-    plans, which it has no business doing."""
+    """v2.337.0 — the cross-workflow boundary is gone: a session that opened a
+    recon run is one project session, so the SAME key also reads the assist
+    inventory and its own test plans. (What a WRITE does is still the
+    operator's role, decided per request — not the key's workflow.)"""
     headers = {"X-API-Key": recon_key}
-
-    # Plan surface (require_plan_scope rejects scope-bound keys)
+    assert client.get("/api/v1/agent/recon/context", headers=headers).status_code == 200
+    assert client.get("/api/v1/agent/assist/context", headers=headers).status_code == 200
     plan = client.get(
         f"/api/v1/agent/test-plans/{test_plan.id}/context", headers=headers,
     )
-    assert plan.status_code == 403, plan.text
-    assert "reconnaissance" in plan.json()["detail"].lower()
-
-    # Assist surface (require_assist_scope rejects recon-bound keys)
-    assist = client.get("/api/v1/agent/assist/context", headers=headers)
-    assert assist.status_code == 403, assist.text
-    assert "recon-scoped" in assist.json()["detail"].lower()
+    assert plan.status_code == 200, plan.text
 
 
 def test_recon_key_unauthorized_when_revoked(client, db_session, recon_key):
@@ -264,7 +256,6 @@ def test_unrecognized_agent_session_workflow_denied(
         workflow="totally_bogus",
         project_id=recon_scope.project_id,
         agent_id=test_agent.id,
-        scope_id=recon_scope.id,
         status="active",
     )
     db_session.add(bogus)
@@ -277,7 +268,7 @@ def test_unrecognized_agent_session_workflow_denied(
         "/api/v1/agent/recon/context", headers={"X-API-Key": raw},
     )
     assert resp.status_code == 403, resp.text
-    assert "unrecognized workflow" in resp.json()["detail"].lower()
+    assert "unrecognized session kind" in resp.json()["detail"].lower()
 
 
 def test_recon_upload_rejects_disallowed_extension(client, recon_key):
@@ -311,8 +302,9 @@ def test_recon_upload_rejected_on_terminal_session(
         headers={"X-API-Key": recon_key},
         files={"file": ("scan.xml", b"<nmaprun></nmaprun>", "text/xml")},
     )
+    # A completed run is no longer this session's active recon phase, so the
+    # upload has no run to ingest into: 409 (nothing mutates the final rollup).
     assert resp.status_code == 409, resp.text
-    assert "terminal state" in resp.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +378,7 @@ def test_recon_domains_rejects_a_key_that_is_not_recon_scoped(
 
     bogus = AgentSession(
         workflow="totally_bogus", project_id=recon_scope.project_id,
-        agent_id=test_agent.id, scope_id=recon_scope.id, status="active",
+        agent_id=test_agent.id, status="active",
     )
     db_session.add(bogus)
     db_session.flush()

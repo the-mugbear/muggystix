@@ -1,23 +1,29 @@
-"""CR5 Refactor #3 — agent safety policy parity.
+"""Agent safety policy parity (rewritten for the v2.337.0 unified session).
 
-The mandatory safety rules are authored once in app.services.agent_policy and
-rendered into both the live execution prompt and the offline bundle
-instructions.  These tests fail if the two surfaces ever diverge again, and if
-AGENTS.md (the authoritative detailed guide) drops one of the rule themes.
+The mandatory safety rules are authored once in ``app.services.agent_policy``
+and rendered into the session prompt and the offline bundle instructions; the
+read-back is two-layer (session bounds at start, phase bounds when a
+command-running phase opens).  These tests fail if the surfaces diverge or if
+AGENTS.md drops a safety theme.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from app.services.agent_policy import SAFETY_RULES, render_safety_rules
-from app.services.agent_prompt_service import build_execution_instructions
+from app.services.agent_policy import (
+    SAFETY_RULES,
+    render_safety_rules,
+    render_read_back,
+    render_phase_read_back,
+)
+from app.services.agent_prompt_service import build_session_instructions
 from app.services.bundle_service import _build_offline_instructions
 
 
-def _live() -> str:
-    return build_execution_instructions(
-        request=None, plan_id=1, plan_title="P", session_id=2, entry_count=3,
-        raw_api_key="k", user_label="u", user_id=1,
+def _session() -> str:
+    return build_session_instructions(
+        request=None, session_id=2, project_id=1, project_name="P",
+        purpose="everything", raw_api_key="k", user_label="u", user_id=1,
     )
 
 
@@ -30,30 +36,27 @@ def _offline() -> str:
 
 def test_both_surfaces_render_the_canonical_block():
     block = render_safety_rules()
-    assert block in _live(), "live execution prompt must render the canonical safety block"
+    assert block in _session(), "the session prompt must render the canonical safety block"
     assert block in _offline(), "offline bundle must render the canonical safety block"
 
 
 def test_every_rule_appears_in_both_surfaces():
-    live, offline = _live(), _offline()
+    session, offline = _session(), _offline()
     for rule in SAFETY_RULES:
-        assert rule in live, f"live prompt missing rule: {rule!r}"
+        assert rule in session, f"session prompt missing rule: {rule!r}"
         assert rule in offline, f"offline bundle missing rule: {rule!r}"
 
 
 def test_agents_md_still_covers_each_safety_theme():
-    """AGENTS.md is the detailed guide (prose), not generated — but it must
-    still carry every safety layer.  Theme keywords, not verbatim text."""
     candidates = [
-        Path(__file__).resolve().parents[1] / "AGENTS.md",   # /app/AGENTS.md (container)
-        Path(__file__).resolve().parents[2] / "AGENTS.md",   # repo root (local)
+        Path(__file__).resolve().parents[1] / "AGENTS.md",
+        Path(__file__).resolve().parents[2] / "AGENTS.md",
     ]
     agents_md = next((p for p in candidates if p.exists()), None)
     if agents_md is None:
         import pytest
         pytest.skip("AGENTS.md not mounted in this environment")
     text = agents_md.read_text().lower()
-    # approval, sanity check, stop-and-ask, and audit/record themes.
     assert "approval" in text
     assert "sanity check" in text
     assert "stop" in text and "ask the user" in text
@@ -61,102 +64,77 @@ def test_agents_md_still_covers_each_safety_theme():
 
 
 # ---------------------------------------------------------------------------
-# The read-back (v2.281.0)
-#
-# BlueStick cannot enforce the guardrails — commands run on the operator's
-# machine and the server sees only what the agent reports.  Requiring the agent
-# to state the bounds first is the thing it CAN do, so the requirement has to be
-# in every workflow's prompt, not just the one that happened to carry the safety
-# block.  These tests pin that, and pin the per-workflow wording: a read-back
-# that recites a working directory to a workflow that never runs a command is
-# how the whole step turns into boilerplate.
+# Read-back: session bounds at start, phase bounds when a phase opens.
 # ---------------------------------------------------------------------------
 
-def _prompts() -> dict:
-    """One rendered prompt per workflow, built the way the endpoints build them."""
-    from app.services.agent_prompt_service import (
-        build_assist_instructions,
-        build_plan_generation_instructions,
-        build_recon_ingest_instructions,
-    )
-
-    return {
-        "execution": _live(),
-        "plan_generation": build_plan_generation_instructions(
-            request=None, plan_id=1, plan_title="P", raw_api_key="k",
-            user_label="u", user_id=1,
-        ),
-        "recon": build_recon_ingest_instructions(
-            request=None, recon_session_id=1, scope_id=2, scope_name="dmz",
-            subnets=["10.0.0.0/24"], raw_api_key="k", user_label="u", user_id=1,
-        ),
-        "assist": build_assist_instructions(
-            request=None, assist_session_id=1, project_id=1, project_name="P",
-            raw_api_key="k", user_label="u", user_id=1, purpose="looking at FTP",
-        ),
-    }
+def test_session_prompt_demands_the_session_read_back():
+    prompt = _session()
+    assert render_read_back("project") in prompt
+    assert "FIRST MESSAGE" in prompt
+    assert "mandatory" in prompt.lower()
 
 
-def test_every_workflow_prompt_demands_the_read_back():
-    from app.services.agent_policy import render_read_back
+def test_session_read_back_states_authority_not_a_working_directory():
+    """The session read-back is about project/authority; a working directory
+    is a phase fact, stated when a command-running phase opens, not at start."""
+    block = render_read_back("project")
+    assert "project" in block
+    assert "run nothing against any host" in block
+    # It does not ask the agent to recite a working directory path — that is a
+    # phase fact. (It may still name "written outside the working directory" as
+    # a stop-condition; that is a rule, not a path recital.)
+    assert "run every tool from" not in block
 
-    for workflow, prompt in _prompts().items():
-        block = render_read_back(workflow)
-        assert block in prompt, f"{workflow} prompt is missing its read-back block"
-        # And it is stated as a first-message obligation, not a suggestion.
-        assert "FIRST MESSAGE" in prompt
-        assert "mandatory" in prompt.lower()
 
-
-def test_the_read_back_is_worded_for_the_work_the_workflow_does():
-    """Recon and execution run commands on the machine; plan generation and
-    assist only move data. Asking the latter to recite a working directory
-    would be reciting something that does not apply."""
-    from app.services.agent_policy import render_read_back
-
-    for workflow in ("recon", "execution"):
-        block = render_read_back(workflow)
+def test_command_running_phases_carry_a_working_directory_read_back():
+    for phase in ("recon", "execution"):
+        block = render_read_back(phase)
         assert "working directory" in block
         assert "without asking" in block
 
-    for workflow in ("plan_generation", "assist"):
-        block = render_read_back(workflow)
-        assert "working directory" not in block
 
-    # Recon states the scope it will scan; execution states the hosts in the
-    # plan. Neither is interchangeable with the other.
-    assert "CIDR" in render_read_back("recon") or "scope" in render_read_back("recon")
+def test_phase_read_back_names_the_concrete_bounds():
+    """render_phase_read_back lists the phase's actual facts so the agent
+    restates THESE, not a template."""
+    recon = render_phase_read_back("recon", facts=[
+        "the CIDRs you will scan: 10.0.0.0/24",
+        "in-scope domains: portal.example.com",
+    ])
+    assert "10.0.0.0/24" in recon
+    assert "portal.example.com" in recon
+    assert render_read_back("recon") in recon  # the generic items ride along
+
+    execution = render_phase_read_back("execution", facts=[
+        "the 3 host(s) this approved plan covers — by IP: 10.0.0.5",
+    ])
+    assert "10.0.0.5" in execution
+
+
+def test_recon_phase_read_back_covers_scope_and_domains():
+    recon = render_read_back("recon")
+    assert "CIDR" in recon or "scope" in recon
+    assert "in-scope domains" in recon
+    assert "does not put the address it resolves to in subnet scope" in recon
+
+
+def test_execution_phase_read_back_names_the_plan_hosts():
     assert "hosts this plan covers" in render_read_back("execution")
-    # Plan generation must say out loud that it runs nothing and cannot approve.
-    plan_block = render_read_back("plan_generation")
-    assert "you run nothing" in plan_block
-    assert "cannot approve" in plan_block
 
 
-def test_an_unregistered_workflow_gets_the_least_privileged_wording():
-    """A workflow added without registering here should under-claim, not
-    over-claim — reciting "these are the tools I may run" for a surface nobody
-    has thought about is the failure that matters."""
-    from app.services.agent_policy import render_read_back
-
-    assert render_read_back("something-new") == render_read_back("assist")
+def test_an_unregistered_phase_gets_the_least_privileged_wording():
+    """A phase added without registering here should under-claim: the fallback
+    is the project (session) items, the least-privileged set."""
+    assert render_read_back("something-new") == render_read_back("project")
 
 
 def test_read_back_asks_for_restatement_not_recital():
-    """A verbatim recital can be produced without having read anything, and
-    gives the operator nothing to check against."""
-    from app.services.agent_policy import render_read_back
-
     block = render_read_back("recon")
     assert "in your own words" in block
     assert "not a recital" in block
 
 
 def test_agents_md_carries_the_read_back_for_every_workflow_slice():
-    """The guide is sliced per workflow; a shared rule filed under one
-    workflow's tag silently vanishes for the other three."""
     import pytest
-
     from app.services.agents_guide_service import slice_agents_md
 
     candidates = [
@@ -173,49 +151,3 @@ def test_agents_md_carries_the_read_back_for_every_workflow_slice():
         assert "Say the rules back before you start" in sliced, (
             f"the {workflow} slice lost the read-back section"
         )
-
-
-# ---------------------------------------------------------------------------
-# Name scope in the read-back and the recon prompt (v2.328.0)
-# ---------------------------------------------------------------------------
-
-def test_recon_read_back_covers_name_scope():
-    """The recon agent must restate the in-scope domains (exact vs
-    subdomains) and that a name in scope does not put its address in subnet
-    scope; plan generation names the named endpoints it plans against."""
-    from app.services.agent_policy import render_read_back
-
-    recon = render_read_back("recon")
-    assert "in-scope domains" in recon
-    assert "include subdomains" in recon
-    assert "does not put the address it resolves to in subnet scope" in recon
-    assert "a name no declared domain covers" in recon
-    assert "named endpoints" in render_read_back("plan_generation")
-    # Execution and assist are unchanged — they never resolve names.
-    assert "domain" not in render_read_back("execution")
-    assert "domain" not in render_read_back("assist")
-
-
-def test_recon_prompt_inlines_domains_only_when_declared():
-    from app.services.agent_prompt_service import build_recon_ingest_instructions
-
-    common = dict(request=None, recon_session_id=1, scope_id=2, scope_name="dmz",
-                  subnets=["10.0.0.0/24"], raw_api_key="k", user_label="u", user_id=1)
-    without = build_recon_ingest_instructions(**common)
-    assert "Domains in scope" not in without
-
-    with_domains = build_recon_ingest_instructions(
-        **common, domains=[("portal.example.com", False), ("lab.example.com", True)],
-    )
-    assert "**Domains in scope (names only):**" in with_domains
-    assert "`portal.example.com` (exact name only)" in with_domains
-    assert "`*.lab.example.com` (the domain and every subdomain)" in with_domains
-    assert "does **not** put the address it resolves to in subnet scope" in with_domains
-
-    # Past the inline cap the prompt points at the paginated endpoint instead
-    # of dumping every name into the context window.
-    many = build_recon_ingest_instructions(
-        **common, domains=[(f"n{i}.example.com", False) for i in range(30)],
-    )
-    assert "and 5 more (30 domains total)" in many
-    assert "/agent/recon/domains?offset=0&limit=500" in many

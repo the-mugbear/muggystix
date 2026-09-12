@@ -74,12 +74,19 @@ def create_agent_session(
     purpose: Optional[str] = None,
     workflow: str = AgentSessionWorkflow.PROJECT.value,
     status: str = SESSION_ACTIVE,
+    plan_id: Optional[int] = None,   # v2.337.0 — accepted + ignored (target
+    scope_id: Optional[int] = None,  # lives on the phase row now); kept so
+                                     # older callers/fixtures don't break.
 ) -> AgentSession:
     """Create + flush an ``AgentSession`` and return it.
 
     ``workflow`` defaults to ``project``; the legacy values are accepted only
-    so tests and backfills can construct historical shapes.
+    so tests and backfills can construct historical shapes.  ``plan_id`` /
+    ``scope_id`` are accepted for backward compatibility and ignored — a
+    session no longer carries a single target; the recon/execution phase rows
+    do (``ReconSession.scope_id`` / ``ExecutionSession.test_plan_id``).
     """
+    _ = (plan_id, scope_id)
     base = AgentSession(
         workflow=workflow,
         project_id=project_id,
@@ -607,7 +614,19 @@ def lapse_expired_agent_sessions(db: Session) -> int:
     deadline has also passed — otherwise the sweep would kill a session whose
     agent is mid-scan and about to renew.  Returns the number ended.
     """
-    from app.api.deps import session_renewal_deadline
+    # Inline the renewal deadline (started_at + max lifetime) rather than
+    # importing it from app.api.deps — the service layer must not import the
+    # router layer (test_service_router_boundary).
+    from datetime import timedelta
+    from app.core.config import settings as _settings
+
+    def session_renewal_deadline(sess):
+        started = getattr(sess, "started_at", None)
+        if started is None:
+            return None
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return started + timedelta(hours=_settings.AGENT_SESSION_MAX_LIFETIME_HOURS)
 
     now = datetime.now(timezone.utc)
     live_expiry = (

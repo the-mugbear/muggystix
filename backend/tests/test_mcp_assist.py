@@ -50,7 +50,7 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     # VS Code: `servers`, workspace-local file.
     vscode = clients["vscode"]
     assert vscode["kind"] == "file" and vscode["path"] == ".vscode/mcp.json"
-    server = json.loads(vscode["payload"])["servers"]["bluestick-assist"]
+    server = json.loads(vscode["payload"])["servers"]["bluestick"]
     assert server["type"] == "http"
     assert server["url"] == body["mcp_url"]
     assert server["headers"]["X-API-Key"] == body["api_key"]
@@ -59,7 +59,7 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     # entry itself, so there is no wrapper key for the operator to get wrong.
     cc = clients["claude_code"]
     assert cc["kind"] == "command" and cc["path"] == ""
-    assert cc["payload"].startswith("claude mcp add --transport http bluestick-assist ")
+    assert cc["payload"].startswith("claude mcp add --transport http bluestick ")
     assert body["mcp_url"] in cc["payload"]
     assert f'--header "X-API-Key: {body["api_key"]}"' in cc["payload"]
 
@@ -68,11 +68,11 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     # never lands on disk in plaintext.
     codex = clients["codex"]
     assert codex["kind"] == "command"
-    assert "--bearer-token-env-var BLUESTICK_ASSIST_KEY" in codex["payload"]
+    assert "--bearer-token-env-var BLUESTICK_API_KEY" in codex["payload"]
     # `read -rs` rather than a literal export: the key stays out of shell
     # history, and out of the shell profile the hint used to recommend —
     # which contradicted the "never lands on disk" claim beside it.
-    assert "read -rs BLUESTICK_ASSIST_KEY" in codex["payload"]
+    assert "read -rs BLUESTICK_API_KEY" in codex["payload"]
     assert f"export {codex['payload'].split()[1]}=" not in codex["payload"]
 
     # Every recipe warns about the self-signed certificate, which blocks every
@@ -113,7 +113,7 @@ def test_initialize_handshake(client):
     # We echo the client's requested protocol version.
     assert result["protocolVersion"] == "2025-06-18"
     assert result["capabilities"]["tools"] == {"listChanged": False}
-    assert result["serverInfo"]["name"] == "bluestick-assist"
+    assert result["serverInfo"]["name"] == "bluestick"
     # The bulk report stream is advertised in instructions, not as a tool —
     # with a REAL url. v2.268.1: this carried a literal "{base}" placeholder
     # that nothing substituted, so every client got an unusable curl.
@@ -583,8 +583,9 @@ def test_tools_list_is_scoped_by_workflow_not_by_grant(client, test_project):
     names = {t["name"] for t in resp.json()["result"]["tools"]}
     assert "assist_list_hosts" in names
     assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= names
-    # Still scoped by workflow: an assist key is not shown recon/plan tooling.
-    assert not {"recon_upload", "plan_submit"} & names
+    # v2.337.0 — one project session does everything, so tools/list is no
+    # longer scoped by workflow: recon and plan tooling are listed too.
+    assert {"start_recon", "start_execution", "create_test_plan"} <= names
 
     # Without a key the full catalogue is still listed — that's the docs view.
     anon = {t["name"] for t in _rpc(
@@ -686,14 +687,14 @@ def test_environment_probe_tool_resolves_the_session_from_the_key(client, test_p
     result = _rpc(client, {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "assist_record_environment",
+            "name": "record_environment",
             "arguments": {"os_family": "linux", "shell": "bash"},
         },
     }, headers={"X-API-Key": body["api_key"]}).json()["result"]
 
     assert result["isError"] is False, result
     assert result["structuredContent"]["environment"]["os_family"] == "linux"
-    assert result["structuredContent"]["session_type"] == "assist"
+    assert result["structuredContent"]["session_type"] == "session"
 
     # And the session now reports it as probed, so the agent's context reflects it.
     info = _rpc(client, {
@@ -786,7 +787,7 @@ def test_probe_accepts_the_attribution_fields_the_prompt_asks_for(client, test_p
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "assist_record_environment",
+            "name": "record_environment",
             "arguments": {
                 "os_family": "linux", "shell": "bash",
                 "agent_model": "claude-opus-5",
@@ -814,7 +815,7 @@ def test_overwriting_tools_are_not_advertised_as_additive(client):
     # bookkeeping, not project data, and re-probing converges — so it is
     # non-destructive and idempotent, and a client may auto-approve it. It still
     # writes, so it is not read-only.
-    probe = tools["assist_record_environment"]
+    probe = tools["record_environment"]
     assert probe["destructiveHint"] is False
     assert probe["idempotentHint"] is True
     assert probe["readOnlyHint"] is False

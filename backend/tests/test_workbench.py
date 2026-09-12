@@ -240,7 +240,7 @@ def test_my_activity_includes_agent_runs(client, db_session, test_project, test_
     db_session.add(scope)
     db_session.flush()
     s = AgentSession(
-        workflow="recon", project_id=test_project.id, scope_id=scope.id,
+        workflow="recon", project_id=test_project.id,
         started_by_id=test_user.id, status="completed",
     )
     db_session.add(s)

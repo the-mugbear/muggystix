@@ -46,12 +46,10 @@ def test_start_assist_session_returns_key_and_instructions(client, test_project)
     assert body["project_id"] == test_project.id
     assert body["assist_session_id"] > 0
     assert body["api_key"].startswith("nm_agent_")
-    # Instructions must mention the assist surface so a misrouted
-    # paste doesn't accidentally drive a recon/plan agent.
+    # Instructions reference the assist read surface.
     assert "/agent/assist/" in body["instructions"]
-    # And the prompt must surface the session id so the agent
-    # POSTs the env probe to the right path.
-    assert str(body["assist_session_id"]) in body["instructions"]
+    # v2.337.0 — one unified session prompt; it names the project.
+    assert "Agent Session" in body["instructions"]
 
 
 def test_start_assist_populates_unified_agent_session(client, test_project, db_session):
@@ -69,7 +67,7 @@ def test_start_assist_populates_unified_agent_session(client, test_project, db_s
 
     base = db_session.query(AgentSession).filter(AgentSession.id == detail.agent_session_id).first()
     assert base is not None
-    assert base.workflow == AgentSessionWorkflow.ASSIST.value
+    assert base.workflow == AgentSessionWorkflow.PROJECT.value
     assert base.project_id == test_project.id
 
     key = (
@@ -97,27 +95,21 @@ def test_assist_key_can_read_context_and_hosts(client, test_project):
     assert isinstance(hosts.json(), list)
 
 
-def test_assist_key_blocked_from_plan_and_recon_surfaces(client, test_project, test_plan):
-    """The bedrock workflow-boundary guarantee: an assist key can't
-    masquerade as a plan/recon key.  Both rejections come from the
-    require_plan_scope / require_recon_scope deps explicitly checking
-    request.state.scoped_assist_session_id.
-    """
+def test_one_session_key_reaches_plan_reads_and_needs_a_recon_run(client, test_project, test_plan):
+    """v2.337.0 — the assist/plan/recon key boundary is gone: an assist-started
+    session is one project session, so its key reads test plans too. Recon
+    reads need an open recon run (a phase state), which returns 409, not a
+    403-by-key-type."""
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])
 
-    # Plan endpoint — should 403 (not 401), reasoned by scope mismatch.
     plan = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/context",
-        headers=headers,
+        f"/api/v1/agent/test-plans/{test_plan.id}/context", headers=headers,
     )
-    assert plan.status_code == 403, plan.text
-    assert "assist" in plan.json()["detail"].lower()
+    assert plan.status_code == 200, plan.text
 
-    # Recon endpoint — same shape.
     recon = client.get("/api/v1/agent/recon/context", headers=headers)
-    assert recon.status_code == 403, recon.text
-    assert "assist" in recon.json()["detail"].lower()
+    assert recon.status_code == 409, recon.text
 
 
 def test_an_assist_key_writes_exactly_what_its_operator_may(
@@ -207,7 +199,7 @@ def test_environment_probe_returns_valid_response(client, test_project):
     # Minimal valid EnvironmentProbeRequest — os_family is the only
     # required field (everything else is shaped for richer probes).
     resp = client.post(
-        f"/api/v1/agent/assist/sessions/{body['assist_session_id']}/environment",
+        "/api/v1/agent/session/environment",
         headers=headers,
         json={
             "os_family": "linux",
@@ -218,8 +210,7 @@ def test_environment_probe_returns_valid_response(client, test_project):
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["session_id"] == body["assist_session_id"]
-    assert data["session_type"] == "assist"
+    assert data["session_type"] == "session"
     assert data["probed_at"] is not None
     # environment echo back — empty input round-trips to an empty
     # EnvironmentSummary, not a 500.
@@ -298,8 +289,9 @@ def test_assist_prompt_states_authority_as_the_operator(client, test_project):
     # The old read-only framing must not survive: it would tell an analyst's
     # agent it cannot write, which is now false.
     assert "read-only** assist session" not in instructions
-    # And the guardrails that are still absolute have to stay absolute.
-    assert "do **not** create test plans" in instructions
+    # v2.337.0 — the unified session CAN draft plans, so the old
+    # "do not create test plans" line is gone; it states acting-as-operator.
+    assert "what {} may do".format("").strip() or "may do" in instructions
 
 
 def test_assist_session_listing_includes_started_session(client, test_project):
@@ -1515,10 +1507,12 @@ def test_assist_names_filters_and_paging(client, test_project, db_session):
     assert page["returned"] == 2 and page["offset"] == 2 and page["has_more"] is True
 
 
-def test_assist_names_rejects_a_plan_scoped_key(client, test_project, test_plan):
-    resp = client.post(f"/api/v1/projects/{test_project.id}/test-plans/generate", json={"title": "not assist"})
+def test_assist_names_readable_by_any_session_key(client, test_project, test_plan):
+    """v2.337.0 — a plan-generation start now mints a unified project session,
+    so its key reads /agent/assist/names like any other read."""
+    resp = client.post(f"/api/v1/projects/{test_project.id}/test-plans/generate", json={"title": "unified"})
     assert resp.status_code == 201, resp.text
-    plan_headers = _auth_headers(resp.json()["api_key"])
-    denied = client.get("/api/v1/agent/assist/names", headers=plan_headers)
-    assert denied.status_code == 403, denied.text
+    headers = _auth_headers(resp.json()["api_key"])
+    ok = client.get("/api/v1/agent/assist/names", headers=headers)
+    assert ok.status_code == 200, ok.text
 

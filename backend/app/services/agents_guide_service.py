@@ -22,6 +22,10 @@ _WORKFLOW_ALIASES = {
     "recon": "reconnaissance",
 }
 
+# v2.337.0 — a unified project session does every kind of work, so it gets the
+# WHOLE guide rather than one workflow's slice. Treated like ``workflow=None``.
+_FULL_GUIDE_WORKFLOWS = {"project"}
+
 
 def slice_agents_md(content: str, workflow: Optional[str]) -> str:
     """Return only the sections of AGENTS.md tagged for the requested workflow.
@@ -47,7 +51,7 @@ def slice_agents_md(content: str, workflow: Optional[str]) -> str:
     Case-insensitive short forms accepted: ``plan`` → ``plan_generation``,
     ``exec`` → ``execution``, ``recon`` → ``reconnaissance``.
     """
-    if workflow is None:
+    if workflow is None or workflow.lower() in _FULL_GUIDE_WORKFLOWS:
         return content
 
     requested = _WORKFLOW_ALIASES.get(workflow.lower(), workflow.lower())

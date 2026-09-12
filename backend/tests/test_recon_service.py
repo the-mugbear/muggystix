@@ -136,8 +136,7 @@ class TestReconSessionStart:
         ).first()
         assert key is not None
         assert key.agent_session is not None
-        assert key.agent_session.workflow == "recon"
-        assert key.agent_session.scope_id == scope_with_subnets.id
+        assert key.agent_session.workflow == "project"
         # Hash should match the plaintext, not equal it
         assert key.key_hash != body["api_key"]
         assert key.key_hash == hashlib.sha256(body["api_key"].encode()).hexdigest()
@@ -202,11 +201,11 @@ class TestReconKeyScopeIsolation:
     def test_recon_key_is_bound_to_a_recon_agent_session(
         self, db_session, recon_session_and_key
     ):
-        """Sanity: the fixture bound the key to a recon-workflow AgentSession."""
+        """Sanity: the fixture bound the key to its AgentSession (the fixture
+        constructs a legacy recon-labelled session directly)."""
         key = recon_session_and_key["api_key"]
         assert key.agent_session_id is not None
         assert key.agent_session.workflow == "recon"
-        assert key.agent_session.scope_id is not None
 
     def test_recon_key_binds_to_correct_scope(
         self, db_session, recon_session_and_key
@@ -215,7 +214,7 @@ class TestReconKeyScopeIsolation:
         key = recon_session_and_key["api_key"]
         # Same AgentSession backs both the key and the recon session.
         assert key.agent_session_id == session.agent_session_id
-        assert key.agent_session.scope_id == session.scope_id
+        assert session.scope_id is not None  # the scope lives on the recon phase row
 
 
 class TestReconSessionLifecycle:
@@ -633,9 +632,10 @@ class TestConcurrentReconSessionIsolation:
     def test_cross_scope_session_binding_rejected(
         self, client, db_session, test_project, test_agent, scope_with_subnets
     ):
-        """Defence-in-depth: if the key's AgentSession carries one scope but the
-        recon session it resolves to belongs to another (a future FK-swap bug or
-        a manually-edited row), the loader must 403 — not serve cross-scope data."""
+        """v2.337.0 — a session is no longer scope-bound; it resolves the recon
+        RUN it opened, whatever scope that run targets. This pins that a
+        session's recon context comes from ITS OWN run (no cross-contamination),
+        not from a URL-supplied or heuristic scope."""
         from app.db.models import Scope, Subnet
         from app.db.models_agent import (
             AgentSessionWorkflow, ReconSession, ReconSessionStatus,
@@ -686,10 +686,9 @@ class TestConcurrentReconSessionIsolation:
             "/api/v1/agent/recon/context",
             headers={"X-API-Key": raw_key},
         )
-        assert resp.status_code == 403, (
-            f"Expected 403 for cross-scope session binding; got {resp.status_code}: {resp.text}"
-        )
-        assert "different scope" in resp.json()["detail"].lower()
+        assert resp.status_code == 200, resp.text
+        # It resolved ITS OWN run's scope, not scope_with_subnets.
+        assert resp.json()["scope_id"] == other_scope.id
 
     def test_key_does_not_fall_back_to_another_session_on_the_scope(
         self, client, db_session, test_project, test_agent, scope_with_subnets
@@ -738,9 +737,12 @@ class TestConcurrentReconSessionIsolation:
             "/api/v1/agent/recon/context",
             headers={"X-API-Key": raw_key},
         )
-        assert resp.status_code == 404, (
-            f"expected 404 (no fallback), got {resp.status_code}: {resp.text}"
+        # No fallback to the decoy: a session with no recon run of its own gets
+        # 409 (open one), never the decoy's context.
+        assert resp.status_code == 409, (
+            f"expected 409 (no active recon run for this session), got {resp.status_code}: {resp.text}"
         )
+        assert "no active reconnaissance run" in resp.text.lower()
 
 
 class TestApplyEnvironmentProbeEnumMembership:

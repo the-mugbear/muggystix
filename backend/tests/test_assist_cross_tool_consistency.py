@@ -205,7 +205,7 @@ def test_all_three_tools_agree_the_environment_was_probed(
     assert set(before.values()) == {False}, f"expected all false before: {before}"
 
     probe = client.post(
-        f"/api/v1/agent/assist/sessions/{sid}/environment",
+        f"/api/v1/agent/session/environment",
         headers=headers,
         json={"os_family": "linux", "shell": "bash"},
     )
@@ -263,7 +263,7 @@ def test_an_mcp_probe_round_trips_the_tool_inventory(
     sid = started["assist_session_id"]
 
     resp = client.post(
-        f"/api/v1/agent/assist/sessions/{sid}/environment",
+        f"/api/v1/agent/session/environment",
         headers=headers,
         json={
             "os_family": "bsd",

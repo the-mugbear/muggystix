@@ -95,15 +95,20 @@ def test_an_agent_reading_a_public_reference_lands_in_its_session_log(
     that records the row but leaves the session view filtering it out still
     fails.
     """
-    from app.db.models_agent import AgentApiCall
+    from app.db.models_agent import AgentApiCall, AssistSession
 
     started = _start_assist(client, test_project.id)
     key = started["api_key"]
     sid = started["assist_session_id"]
+    # v2.337.0 — durable attribution is the unified agent_session_id.
+    agent_session_id = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == sid).scalar()
+    )
 
     before = (
         db_session.query(AgentApiCall)
-        .filter(AgentApiCall.assist_session_id == sid)
+        .filter(AgentApiCall.agent_session_id == agent_session_id)
         .count()
     )
     resp = client.get(path, headers={"X-API-Key": key})
@@ -112,7 +117,7 @@ def test_an_agent_reading_a_public_reference_lands_in_its_session_log(
     db_session.expire_all()
     rows = (
         db_session.query(AgentApiCall)
-        .filter(AgentApiCall.assist_session_id == sid)
+        .filter(AgentApiCall.agent_session_id == agent_session_id)
         .all()
     )
     assert len(rows) == before + 1, (

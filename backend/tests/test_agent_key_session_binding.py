@@ -133,4 +133,4 @@ def test_an_unscoped_key_cannot_authenticate(client, db_session, test_project, t
     resp = client.get("/api/v1/agent/project", headers={"X-API-Key": raw})
     assert resp.status_code == 403, resp.text
     # Post-contract the rejection is about the missing session binding.
-    assert "binding" in resp.json()["detail"].lower()
+    assert "not bound to a session" in resp.json()["detail"].lower()

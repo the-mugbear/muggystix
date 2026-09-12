@@ -318,10 +318,11 @@ def plan_agent_key(db_session, test_agent, test_plan):
     session = AgentSession(
         workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
         project_id=test_plan.project_id, agent_id=test_agent.id,
-        started_by_id=test_agent.owner_id, status="active", plan_id=test_plan.id,
+        started_by_id=test_agent.owner_id, status="active",
     )
     db_session.add(session)
     db_session.flush()
+    test_plan.agent_session_id = session.id
     api_key = APIKey(
         agent_id=test_agent.id,
         agent_session_id=session.id,
@@ -370,10 +371,10 @@ def _mint_workflow_key(db_session, test_agent, test_plan, workflow):
         agent_id=test_agent.id,
         started_by_id=test_agent.owner_id,
         status="active",
-        plan_id=test_plan.id,
     )
     db_session.add(session)
     db_session.flush()
+    test_plan.agent_session_id = session.id
     raw = f"nm_agent_{workflow}_" + "q" * 24
     key = APIKey(
         agent_id=test_agent.id,
@@ -401,22 +402,16 @@ def test_execution_key_cannot_draft_plan_entries(db_session, client, test_agent,
         "proposed_tests": [{"tool": "nmap", "description": "svc"}],
     }]}
 
-    exec_raw = _mint_workflow_key(db_session, test_agent, test_plan, "execution")
-    blocked = client.post(
+    # v2.337.0 — the plan_generation-vs-execution key boundary is gone: one
+    # project session both drafts and executes. Any session key reaches the
+    # entries endpoint (not a 403-by-workflow); authorization is the operator's
+    # role, checked per request.
+    raw = _mint_workflow_key(db_session, test_agent, test_plan, "project")
+    resp = client.post(
         f"/api/v1/agent/test-plans/{test_plan.id}/entries",
-        headers={"X-API-Key": exec_raw}, json=entry_payload,
+        headers={"X-API-Key": raw}, json=entry_payload,
     )
-    assert blocked.status_code == 403, blocked.text
-    assert "execution-session key" in blocked.json()["detail"]
-
-    # A plan_generation key reaches the endpoint (host_id 1 may not exist, but it
-    # gets past the workflow guard — not a 403 from require_plan_generation_scope).
-    plan_raw = _mint_workflow_key(db_session, test_agent, test_plan, "plan_generation")
-    allowed = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries",
-        headers={"X-API-Key": plan_raw}, json=entry_payload,
-    )
-    assert allowed.status_code != 403, allowed.text
+    assert resp.status_code != 403, resp.text
 
 
 def test_archive_plan_abandons_non_terminal(client, test_project, test_plan):
@@ -636,14 +631,13 @@ def test_execution_environment_persists_and_is_echoed(
     db_session.commit()
 
     resp = client.post(
-        f"/api/v1/agent/execution-sessions/{es.id}/environment",
+        f"/api/v1/agent/session/environment",
         headers={"X-API-Key": key, "X-Plan-Id": str(test_plan.id)},  # plan_id only via path on get; key is what matters
         json=_PROBE_BODY,
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["session_id"] == es.id
-    assert body["session_type"] == "execution"
+    assert body["session_type"] == "session"
     assert body["probed_at"] is not None
     assert body["environment"]["os_family"] == "linux"
     assert body["environment"]["tools_available"]["nmap"] is True
@@ -669,13 +663,13 @@ def test_recon_environment_persists_and_is_echoed(
     rs = recon_session["session"]
 
     resp = client.post(
-        f"/api/v1/agent/recon/sessions/{rs.id}/environment",
+        f"/api/v1/agent/session/environment",
         headers={"X-API-Key": recon_agent_key},
         json={**_PROBE_BODY, "os_family": "windows", "powershell_execution_policy": "RemoteSigned"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["session_type"] == "recon"
+    assert body["session_type"] == "session"
     assert body["environment"]["powershell_execution_policy"] == "RemoteSigned"
 
     db_session.refresh(rs)
@@ -755,7 +749,7 @@ def test_execution_probe_rejects_other_users_session(
     # a plan id), so the in-handler check (session.test_plan.agent_id !=
     # caller.agent.id) is the one that must catch this.  403 expected.
     resp = client.post(
-        f"/api/v1/agent/execution-sessions/{es.id}/environment",
+        f"/api/v1/agent/session/environment",
         headers={"X-API-Key": raw},
         json=_PROBE_BODY,
     )
@@ -1192,14 +1186,16 @@ def test_execution_env_probe_rejects_recon_scoped_key(
     # Attempt to write the victim session's environment with the
     # recon-scoped key.  Must be refused.
     resp = client.post(
-        f"/api/v1/agent/execution-sessions/{es.id}/environment",
+        f"/api/v1/agent/session/environment",
         headers={"X-API-Key": raw},
         json={"os_family": "linux", "tools_available": {"nmap": True}},
     )
-    assert resp.status_code == 403, resp.text
-    assert "reconnaissance" in resp.json()["detail"].lower()
+    # v2.337.0 — the probe is session-level; any session key may post it. The
+    # recon session's probe does NOT leak onto an unrelated execution run (es),
+    # because propagate_probe only touches runs opened by THIS session.
+    assert resp.status_code == 200, resp.text
     db_session.refresh(es)
-    assert es.environment is None  # victim untouched
+    assert es.environment is None  # the unrelated execution run is untouched
 
 
 def test_complete_rejects_unknown_overall_status(
@@ -1668,20 +1664,17 @@ def test_activity_stamp_debounced(
     """v2.26.0 — last_used / last_activity_at only updates when the
     persisted value is older than the debounce window.  A request that
     follows a recent one must NOT advance the timestamp."""
+    import hashlib
     from datetime import datetime, timezone, timedelta
     from app.db.models_auth import APIKey
-    from app.db.models_agent import Agent
     key = execution_session_with_key["key"]
     test_plan.status = "approved"
     db_session.commit()
 
     # Stamp both as "just used now" — well inside the debounce window.
     fresh = datetime.now(timezone.utc) - timedelta(seconds=5)
-    from app.db.models_agent import AgentSession
     api_key_row = db_session.query(APIKey).filter(
-        APIKey.agent_session_id.in_(
-            db_session.query(AgentSession.id).filter(AgentSession.plan_id == test_plan.id)
-        )
+        APIKey.key_hash == hashlib.sha256(key.encode()).hexdigest()
     ).first()
     api_key_row.last_used = fresh
     test_agent.last_activity_at = fresh
@@ -1711,6 +1704,7 @@ def test_activity_stamp_writes_when_stale(
 ):
     """Conversely, a stale (or null) timestamp must be advanced on the
     next request — otherwise the value is never written at all."""
+    import hashlib
     from datetime import datetime, timezone, timedelta
     from app.db.models_auth import APIKey
     key = execution_session_with_key["key"]
@@ -1718,11 +1712,8 @@ def test_activity_stamp_writes_when_stale(
     db_session.commit()
 
     stale = datetime.now(timezone.utc) - timedelta(seconds=300)
-    from app.db.models_agent import AgentSession
     api_key_row = db_session.query(APIKey).filter(
-        APIKey.agent_session_id.in_(
-            db_session.query(AgentSession.id).filter(AgentSession.plan_id == test_plan.id)
-        )
+        APIKey.key_hash == hashlib.sha256(key.encode()).hexdigest()
     ).first()
     api_key_row.last_used = stale
     test_agent.last_activity_at = stale
@@ -2046,26 +2037,18 @@ def test_v2_45_2_execution_prompt_includes_session_complete_step():
     """The execution agent prompt must instruct agents to call the new
     /complete endpoint.  Pre-fix, sessions stayed ACTIVE because no
     step in the prompt told the agent to close them."""
-    from app.services.agent_prompt_service import build_execution_instructions
-    prompt = build_execution_instructions(
-        request=None,
-        plan_id=42,
-        plan_title="test",
-        session_id=7,
-        entry_count=3,
-        raw_api_key="nm_agent_xxx",
-        user_label="tester",
-        user_id=1,
-    )
-    assert "/agent/execution-sessions/7/complete" in prompt, (
-        "Execution prompt must include the explicit /complete call. "
-        "Pre-v2.45.2 sessions stayed `active` indefinitely after the "
-        "agent submitted the last entry's results."
-    )
-    assert "overall_status" in prompt, (
-        "Prompt must surface the completed/failed distinction so the "
-        "agent picks the right terminal status."
-    )
+    # v2.337.0 — the per-workflow prompts collapsed into one session prompt;
+    # the step-by-step execution protocol (including the /complete call) lives
+    # in the workflow-sliced guide now. Assert the execution guide slice
+    # carries the complete step and the terminal-status distinction.
+    from pathlib import Path
+    from app.services.agents_guide_service import slice_agents_md
+    candidates = [Path("/app/AGENTS.md"),
+                  Path(__file__).resolve().parents[1] / "AGENTS.md"]
+    text = next((p.read_text() for p in candidates if p.exists()), "")
+    execution_slice = slice_agents_md(text, workflow="execution")
+    assert "execution-sessions/{session_id}/complete" in execution_slice
+    assert "overall_status" in execution_slice
 
 
 def test_xml_root_element_skips_real_nmap_prolog_with_comment():
@@ -2452,7 +2435,7 @@ def test_environment_probe_stamps_session_attribution(
     es = execution_session_with_key["session"]
     key = execution_session_with_key["key"]
     resp = client.post(
-        f"/api/v1/agent/execution-sessions/{es.id}/environment",
+        f"/api/v1/agent/session/environment",
         headers={"X-API-Key": key},
         json={
             "os_family": "linux",
@@ -2600,7 +2583,7 @@ def test_recon_probe_stamps_session_attribution(
     v2.28.0 behaviour on execution_sessions."""
     rs = recon_session["session"]
     resp = client.post(
-        f"/api/v1/agent/recon/sessions/{rs.id}/environment",
+        f"/api/v1/agent/session/environment",
         headers={"X-API-Key": recon_agent_key},
         json={
             "os_family": "linux",

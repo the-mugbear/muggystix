@@ -31,7 +31,14 @@ def _hdr(key):
 
 
 def test_one_key_reaches_identity_recon_and_plan(client, test_project, db_session):
-    key, session_id = _start_session(client, test_project)
+    key, assist_session_id = _start_session(client, test_project)
+    # The start endpoint returns the AssistSession id; the unified session is
+    # the AgentSession it links to.
+    from app.db.models_agent import AssistSession
+    session_id = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == assist_session_id).scalar()
+    )
 
     # The session is a PROJECT session and the key resolves to it.
     row = db_session.query(AgentSession).filter(AgentSession.id == session_id).first()

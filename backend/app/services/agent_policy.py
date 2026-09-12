@@ -170,8 +170,12 @@ def render_read_back(workflow: str = "project") -> str:
     unknown key — the least-privileged set, so a new phase that forgets to
     register here under-claims rather than over-claims.
     """
-    items = _READ_BACK_ITEMS.get(workflow, _READ_BACK_ITEMS["project"])
-    what = "tool call or command" if workflow == "project" else "command in this phase"
+    known = workflow in _READ_BACK_ITEMS
+    items = _READ_BACK_ITEMS[workflow] if known else _READ_BACK_ITEMS["project"]
+    # An unregistered phase falls back to the project (session) wording exactly,
+    # so it under-claims rather than reciting phase bounds nobody defined.
+    is_phase = known and workflow != "project"
+    what = "command in this phase" if is_phase else "tool call or command"
     lines = [
         _READ_BACK_HEADER,
         f"Before your first {what}, tell the operator — in your own "

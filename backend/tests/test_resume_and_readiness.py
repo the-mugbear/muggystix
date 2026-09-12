@@ -22,37 +22,29 @@ import hashlib
 
 import pytest
 
-from app.api.v1.endpoints.test_plans import _mint_plan_agent_key
 from app.db.models_auth import APIKey
+from app.services.agent_session_service import create_agent_session, mint_session_key
 from app.services.recon_planning_service import build_tool_readiness
 
 
 # ---------------------------------------------------------------------------
-# Critical 1 — revoke prior active keys on mint
+# One live key per SESSION (v2.337.0 — keys bind to a session, not a plan).
 # ---------------------------------------------------------------------------
 
 
-def test_mint_plan_agent_key_revokes_prior_active_key_for_plan(
-    db_session, test_plan, test_agent
+def test_mint_session_key_revokes_prior_active_key_for_the_session(
+    db_session, test_project, test_agent
 ):
-    """A prior active key for the same plan is set is_active=False when
-    a new key is minted.  Load-bearing: without this, /execute or
-    /resume would leave two valid keys live, and agent execution
-    endpoints (which resolve work by plan_id+ACTIVE, not by key) would
-    let two agents write into the same session."""
-    from app.db.models_agent import AgentSession, AgentSessionWorkflow
-    from app.services.agent_session_service import create_agent_session
-    prior_session = create_agent_session(
-        db_session,
-        workflow=AgentSessionWorkflow.EXECUTION.value,
-        project_id=test_plan.project_id,
-        agent_id=test_agent.id,
+    """A prior active key on the same session is revoked when a new key is
+    minted — one live key per session, so a resumed session's orphaned key
+    cannot keep writing beside the new one."""
+    session = create_agent_session(
+        db_session, project_id=test_project.id, agent_id=test_agent.id,
         started_by_id=None,
-        plan_id=test_plan.id,
     )
     prior = APIKey(
         agent_id=test_agent.id,
-        agent_session_id=prior_session.id,
+        agent_session_id=session.id,
         name="prior",
         key_hash=hashlib.sha256(b"prior").hexdigest(),
         key_prefix="nm_agent_prio",
@@ -61,67 +53,34 @@ def test_mint_plan_agent_key_revokes_prior_active_key_for_plan(
     db_session.add(prior)
     db_session.commit()
 
-    raw_key = _mint_plan_agent_key(db_session, agent=test_agent, plan=test_plan)
+    raw_key = mint_session_key(db_session, agent=test_agent, session=session)
     db_session.commit()
     db_session.refresh(prior)
 
-    assert prior.is_active is False, "prior plan key must be revoked on re-mint"
+    assert prior.is_active is False, "prior session key must be revoked on re-mint"
     assert raw_key.startswith("nm_agent_")
-
-    active_for_plan = (
+    active = (
         db_session.query(APIKey)
-        .filter(
-            APIKey.agent_session_id.in_(
-                db_session.query(AgentSession.id).filter(
-                    AgentSession.plan_id == test_plan.id
-                )
-            ),
-            APIKey.is_active.is_(True),
-        )
+        .filter(APIKey.agent_session_id == session.id, APIKey.is_active.is_(True))
         .all()
     )
-    assert len(active_for_plan) == 1, "only the newly minted key should be active"
-    assert (
-        active_for_plan[0].key_hash == hashlib.sha256(raw_key.encode()).hexdigest()
-    )
+    assert len(active) == 1
+    assert active[0].key_hash == hashlib.sha256(raw_key.encode()).hexdigest()
 
 
-def test_mint_plan_agent_key_leaves_other_plans_keys_alone(
-    db_session, test_project, test_agent, test_plan
+def test_mint_session_key_leaves_other_sessions_keys_alone(
+    db_session, test_project, test_agent
 ):
-    """The revoke is scoped to test_plan_id — minting a key for plan A
-    must not touch keys for plan B."""
-    from app.db.models_agent import TestPlan, TestPlanStatus
-
-    # v2.65.0 — `(project_id, version)` is unique on test_plans; the
-    # shared `test_plan` fixture already occupies version=1 in this
-    # project, so this sibling has to use a distinct version number.
-    other_plan = TestPlan(
-        project_id=test_project.id,
-        agent_id=test_agent.id,
-        version=2,
-        title="other plan",
-        description="fixture",
-        status=TestPlanStatus.APPROVED.value,
-    )
-    db_session.add(other_plan)
-    db_session.commit()
-    db_session.refresh(other_plan)
-
-    from app.services.agent_session_service import create_agent_session
-    from app.db.models_agent import AgentSessionWorkflow
-    other_session = create_agent_session(
-        db_session,
-        workflow=AgentSessionWorkflow.EXECUTION.value,
-        project_id=other_plan.project_id,
-        agent_id=test_agent.id,
+    """The revoke is scoped to one session — a second concurrent session's
+    key is untouched, so two operators stay isolated."""
+    other = create_agent_session(
+        db_session, project_id=test_project.id, agent_id=test_agent.id,
         started_by_id=None,
-        plan_id=other_plan.id,
     )
     other_key = APIKey(
         agent_id=test_agent.id,
-        agent_session_id=other_session.id,
-        name="other-plan-key",
+        agent_session_id=other.id,
+        name="other-session-key",
         key_hash=hashlib.sha256(b"other").hexdigest(),
         key_prefix="nm_agent_othe",
         is_active=True,
@@ -129,13 +88,15 @@ def test_mint_plan_agent_key_leaves_other_plans_keys_alone(
     db_session.add(other_key)
     db_session.commit()
 
-    _mint_plan_agent_key(db_session, agent=test_agent, plan=test_plan)
+    mine = create_agent_session(
+        db_session, project_id=test_project.id, agent_id=test_agent.id,
+        started_by_id=None,
+    )
+    mint_session_key(db_session, agent=test_agent, session=mine)
     db_session.commit()
     db_session.refresh(other_key)
 
-    assert (
-        other_key.is_active is True
-    ), "minting for plan A must not revoke plan B's key"
+    assert other_key.is_active is True, "minting for one session must not revoke another's key"
 
 
 # ---------------------------------------------------------------------------

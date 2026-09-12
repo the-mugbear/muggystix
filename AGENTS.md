@@ -74,7 +74,7 @@ The API uses HTTPS with a self-signed certificate. All `curl` commands require `
 
 ## Environment probe (MANDATORY first step)
 
-> **Applies to recon, execution, and assist — NOT plan generation.** This step needs a session to POST the probe to (`/agent/{recon/sessions,execution-sessions,assist/sessions}/{session_id}/environment`). Plan-generation has no such session and no probe endpoint: a plan describes test *intent*, and the *executing* agent probes when it runs the plan. If you are a plan-generation agent, skip this section.
+> **Applies to recon, execution, and assist — NOT plan generation.** POST the probe once to your session — `POST /agent/session/environment` (v2.337.0; it replaced the three per-phase probe endpoints). It rides along into every reconnaissance or execution run you open, so a plan you draft is executed with the executor's own probe, not yours.
 
 Before you propose, scan, or run anything else, **probe the operator's environment and report it back to BlueStick.** Two operators on the same project can have very different environments (Windows + RemoteSigned vs Kali Linux), and the right command for one is wrong for the other — the probe is what lets you translate test intent into the correct command (see "Plans describe intent" below).
 
@@ -101,10 +101,10 @@ Run a short capability check appropriate to the shell you're talking to and capt
 
 ### How to report it
 
-POST it to your session's environment endpoint — `.../execution-sessions/{session_id}/environment` for a plan-scoped (execution) key, or `.../recon/sessions/{session_id}/environment` for a scope-bound (recon) key (assist uses `.../assist/sessions/{session_id}/environment`):
+POST it to your session's environment endpoint — `POST /agent/session/environment` (one probe per session, whatever work it goes on to do):
 
 ```bash
-curl -sk -X POST https://<host>/api/v1/agent/execution-sessions/{session_id}/environment \
+curl -sk -X POST https://<host>/api/v1/agent/session/environment \
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"os_family":"linux","os_release":"Kali rolling", ...}'
 ```
@@ -112,7 +112,7 @@ curl -sk -X POST https://<host>/api/v1/agent/execution-sessions/{session_id}/env
 The example above is bash/zsh. **On Windows PowerShell**, the bare `curl` is an alias for `Invoke-WebRequest` and will not accept these flags — use **`curl.exe`** (and double-quote, since single-quoted JSON isn't a PowerShell idiom):
 
 ```powershell
-curl.exe -sk -X POST "https://<host>/api/v1/agent/execution-sessions/{session_id}/environment" `
+curl.exe -sk -X POST "https://<host>/api/v1/agent/session/environment" `
   -H "X-API-Key: $KEY" -H "Content-Type: application/json" `
   -d (@{ os_family = "windows"; os_release = "Windows 11 23H2"; shell = "pwsh" } | ConvertTo-Json -Compress)
 ```
@@ -756,7 +756,7 @@ curl -sk https://<nm-host>/api/v1/references/preflight-script | bash -s -- --str
 curl.exe -sk https://<nm-host>/api/v1/references/preflight-script -o preflight.sh
 ```
 
-Either way, re-POST the resulting `tools_status` payload to `POST /agent/recon/sessions/{id}/environment` so the server can adapt `recommended_sequence`. The script is also at `scripts/preflight.sh` in the repo.
+Either way, re-POST the resulting `tools_status` payload to `POST /agent/session/environment` so the server can adapt `recommended_sequence`. The script is also at `scripts/preflight.sh` in the repo.
 
 The script reports presence + version for 20+ tools (scanners plus support tools curl/jq/xmllint/python3/dig and runtimes go/cargo/pipx/docker), auto-detects the httpx Python-CLI collision (`WARN`, not a false `OK`), checks whether masscan can actually run (sudo-non-interactive or `cap_net_raw=eip`, with the `setcap` fix), and for every missing/warned tool prints install hints pointing **only** at official upstream sources. JSON output matches the `install_hints` shape used elsewhere.
 
@@ -884,7 +884,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/test-plans/{id}/validate` | Dry-run validation (check warnings before submit) |
 | POST | `/agent/test-plans/{id}/submit` | Submit draft for approval (requires description) |
 | GET | `/agent/test-plans/{id}/execution-context` | Execution context — hosts + tests + known services with `{ip}` resolved |
-| POST | `/agent/execution-sessions/{session_id}/environment` | Record this execution session's operator-environment probe |
+| POST | `/agent/session/environment` | Record the operator-environment probe on your session (once; rides into every run) |
 | POST | `/agent/test-plans/{id}/entries/{eid}/sanity-check` | Record per-host target verification |
 | POST | `/agent/test-plans/{id}/entries/{eid}/test-results` | Record one test's execution result |
 | POST | `/agent/test-plans/{id}/entries/{eid}/complete` | Mark entry completed (aggregates results) |
@@ -902,7 +902,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/recon/context` | Scope CIDRs + in-scope domains + known hosts + tool catalog |
 | GET | `/agent/recon/subnets` | Paginated subnet list for very large scopes (default 500, max 2000 per page — see Recon workflow prose) |
 | GET | `/agent/recon/domains` | Paginated in-scope domain list (`{domain, include_subdomains}`), same paging shape — the names you may resolve/probe without asking |
-| POST | `/agent/recon/sessions/{session_id}/environment` | Record this recon session's operator-environment probe |
+| POST | `/agent/recon/start` | Open a reconnaissance run on a scope (body `{scope_id}`); returns its context + read-back |
 | POST | `/agent/recon/upload` | **Submit scanner output here** — multipart upload, any supported tool format |
 | GET | `/agent/recon/jobs/{id}` | Poll an upload's parse status |
 | GET | `/agent/recon/summary` | **Authoritative progress view** — rolling counts + a 50-host sample. Use `hosts_total` for the real count; when `hosts_truncated` is set, fetch the downloads below |
@@ -1204,7 +1204,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /agent/assist/sessions/{session_id}/environment` | Probe (MANDATORY first step; same body shape as recon/execution) |
+| `POST /agent/session/environment` | Probe (MANDATORY first step; one per session) |
 | `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
 | `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `exploitport:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `has:`, **`follow:`**, **`assigned:`** (alias `assignee:`) combined with `AND`/`OR`/`NOT` and parentheses. `has:` values: `eol`, `smb_unsigned`, `weak_auth`, `cert_issue`, `weak_tls`, `cleartext`, `critical`/`high`/`medium`/`low`, `exploit`, `web`, `open_ports`, `tested`, `planned`, `notes`, `stale_review`. `assigned:me`/`follow:` resolve against the operator who started the session; `assigned:`/`assignee:` also take a **username** (case-insensitive) or numeric id. `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
 | `GET  /agent/assist/hosts/{host_id}` | One host with its FULL open-port list (can be large for hosts with many ports — prefer `open_port_count` from the list for triage). Each port's `protocol` is the IP transport (`tcp`/`udp`); the application (smb/http/…) is `service_name`. `open_port_count` = distinct physical open ports. The host's `vuln_summary` is **severity counts only** — for the actual CVEs/evidence use the findings endpoint below. Both list and detail also carry `follow` = the session operator's review status on the host (watching/in_review/reviewed, or null), so you can check it before writing follow. |

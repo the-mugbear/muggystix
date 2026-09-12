@@ -426,6 +426,20 @@ def start_assist_session(
         db, project_id=project.id, agent_id=agent.id,
         started_by_id=current_user.id, purpose=body.purpose,
     )
+    # v2.337.0 — the session is a unified PROJECT session (one key does
+    # everything). An AssistSession detail row is still created, linked to it,
+    # so the /assist-sessions review page keeps a home for assist-initiated
+    # sessions — the same way recon/execution keep their phase rows.
+    assist_session = AssistSession(
+        project_id=project.id,
+        agent_id=agent.id,
+        started_by_id=current_user.id,
+        status=AssistSessionStatus.ACTIVE.value,
+        purpose=body.purpose,
+        agent_session_id=base_session.id,
+    )
+    db.add(assist_session)
+    db.flush()
     raw_key = mint_session_key(
         db, agent=agent, session=base_session,
         ttl_hours=body.ttl_hours or ASSIST_KEY_DEFAULT_TTL_HOURS,
@@ -441,15 +455,16 @@ def start_assist_session(
         user_id=current_user.id,
     )
     db.commit()
+    db.refresh(assist_session)
 
     mcp_url = f"{resolve_base_url(request)}/mcp"
     mcp_clients = _build_mcp_clients(
         mcp_url, raw_key,
         project_name=project.name,
-        assist_session_id=base_session.id,
+        assist_session_id=assist_session.id,
     )
     return StartAssistResponse(
-        assist_session_id=base_session.id,
+        assist_session_id=assist_session.id,
         project_id=project.id,
         project_name=project.name,
         agent_id=agent.id,
@@ -681,6 +696,9 @@ def _session_activity(db: Session, session_ids: List[int]) -> dict:
     """
     if not session_ids:
         return {}
+    # v2.337.0 — calls attribute to the unified agent_session_id now, so join
+    # AgentApiCall → AssistSession on that and group by the AssistSession id
+    # the review page keys on.
     mcp_seen = func.max(case((AgentApiCall.via_mcp.is_(True), 1), else_=0))
     return {
         sid: _SessionActivity(
@@ -688,13 +706,14 @@ def _session_activity(db: Session, session_ids: List[int]) -> dict:
         )
         for sid, count, via_mcp, first_at in (
             db.query(
-                AgentApiCall.assist_session_id,
+                AssistSession.id,
                 func.count(AgentApiCall.id),
                 mcp_seen,
                 func.min(AgentApiCall.created_at),
             )
-            .filter(AgentApiCall.assist_session_id.in_(session_ids))
-            .group_by(AgentApiCall.assist_session_id)
+            .join(AgentApiCall, AgentApiCall.agent_session_id == AssistSession.agent_session_id)
+            .filter(AssistSession.id.in_(session_ids))
+            .group_by(AssistSession.id)
             .all()
         )
     }

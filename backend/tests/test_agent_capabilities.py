@@ -47,9 +47,7 @@ from app.db.models_project import ProjectMembership, ProjectRole
 #: paths because that is what a caller sees.
 OPERATOR_METADATA_WRITES = {
     ("POST", "/api/v1/agent/session/renew"),
-    ("POST", "/api/v1/agent/assist/sessions/{session_id}/environment"),
-    ("POST", "/api/v1/agent/execution-sessions/{session_id}/environment"),
-    ("POST", "/api/v1/agent/recon/sessions/{session_id}/environment"),
+    ("POST", "/api/v1/agent/session/environment"),
     ("POST", "/api/v1/agent/feedback"),
     ("POST", "/api/v1/agent/tool-suggestions"),
 }
