@@ -923,6 +923,50 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
     ).count() == 0
 
 
+def test_auto_params_read_a_fresh_identity_not_the_listing_cache(client, test_project, db_session):
+    """v2.338.1 — found live: a tool's auto-filled plan_id / session_id came
+    from the 60 s identity cache, which predated the phase the agent had just
+    opened (and, across four uvicorn workers, cannot be invalidated), so
+    execution_complete_session completed the PREVIOUS run.  Auto-fill must read
+    the live identity every time — and, being plumbing, add no audit row."""
+    from app.api.v1.endpoints.mcp_assist import _identity_cache
+    from app.db.models_agent import AgentApiCall
+
+    _identity_cache.clear()
+    body = _start_session(client, test_project.id)
+    headers = {"X-API-Key": body["api_key"]}
+
+    def identity_rows():
+        return (
+            db_session.query(AgentApiCall)
+            .filter(AgentApiCall.path == "/api/v1/agent/identity")
+            .count()
+        )
+
+    # Warm the listing cache while no plan exists (plan_id: None).
+    _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
+    warmed = identity_rows()
+
+    created = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "create_test_plan", "arguments": {"title": "fresh-identity"}},
+    }, headers=headers).json()["result"]
+    assert not created.get("isError"), created
+    plan_id = created["structuredContent"]["id"]
+
+    # plan_get with no plan_id: the cache still says None; the live answer is
+    # the plan just opened.
+    got = _rpc(client, {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "plan_get", "arguments": {}},
+    }, headers=headers).json()["result"]
+    assert not got.get("isError"), got
+    assert got["structuredContent"]["id"] == plan_id
+
+    # The fresh lookup was plumbing: no identity row joined the activity log.
+    assert identity_rows() == warmed, "auto-fill identity lookups must not be audited"
+
+
 def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):
     """Workflow + capability filtering is server-initiated plumbing on an audited
     endpoint, so a client that re-lists tools each turn used to add a row to the

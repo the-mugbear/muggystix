@@ -99,6 +99,14 @@ AGENT_AUDITED_PUBLIC_PATHS = frozenset({
 # This is what lets the session list answer "did the client actually connect?"
 # from an observed authenticated call, instead of from the environment probe —
 # which a client can skip (and still work) or post via curl (and never use MCP).
+# v2.338.1 — set by the MCP layer around the identity lookup it makes to fill a
+# tool's auto-parameters (plan_id, session_id).  That lookup is server
+# plumbing, not agent activity: it is not audited, and it must not count as
+# "the agent is alive".  The agent's actual tool call is audited as before.
+agent_audit_plumbing: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agent_audit_plumbing", default=False
+)
+
 mcp_loopback_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "mcp_loopback_active", default=False
 )
@@ -480,6 +488,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
         # Read on the request path: the background writer runs in a thread
         # pool with its own context, where the contextvar is unset.
         request.state._agent_audit_via_mcp = mcp_loopback_active.get()  # type: ignore[attr-defined]
+        plumbing = agent_audit_plumbing.get()
 
         started = time.monotonic()
         try:
@@ -491,7 +500,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             raise
         duration_ms = int((time.monotonic() - started) * 1000)
 
-        if not is_agent_path:
+        if not is_agent_path or plumbing:
             return response
 
         # Resolved only now — the tee fills as the application reads.

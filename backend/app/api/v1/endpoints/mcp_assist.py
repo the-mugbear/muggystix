@@ -79,7 +79,7 @@ from app.api.v1.endpoints.mcp_tools import (
     tool_workflows,
 )
 from app.services import mcp_telemetry_service as mcp_telemetry
-from app.services.agent_api_log_service import mcp_loopback_active
+from app.services.agent_api_log_service import agent_audit_plumbing, mcp_loopback_active
 from app.services.agent_prompt_service import resolve_base_url
 
 logger = logging.getLogger(__name__)
@@ -216,9 +216,17 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
 # ride the same audited endpoint — so a client that re-lists tools each turn fills
 # the operator's activity view with rows nobody asked for (3 of 7 rows in the
 # v2.273.0 end-to-end run).  A short in-process cache collapses those to one per
-# key.  Keyed by a hash so raw key material never sits in the cache, and
-# short-lived so an ended session stops being listed as writable quickly —
-# staleness here is cosmetic anyway, since every actual call re-checks auth.
+# key.  Keyed by a hash so raw key material never sits in the cache.
+#
+# v2.338.1 — the cache serves ``tools/list`` ONLY.  Filling a tool's
+# auto-parameters (plan_id, the execution run's session_id) from it was a
+# correctness bug: the answer changes the moment the agent opens or closes a
+# phase, the backend runs several uvicorn workers each with its own copy, and
+# a call landing on a worker whose copy predates ``start_execution`` completed
+# the PREVIOUS run (seen live, 35 s after the new run opened).  No in-process
+# invalidation can fix a per-worker cache, so auto-fill reads a fresh identity
+# every time — as plumbing (``agent_audit_plumbing``), so it adds no audit row
+# and does not count as agent activity.
 _IDENTITY_TTL_SECONDS = 60
 _identity_cache: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
 
@@ -233,14 +241,14 @@ async def _key_identity(
     *,
     caller: Optional[Tuple[str, int]] = None,
     user_agent: Optional[str] = None,
+    fresh: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """What this key is — workflow, operator, bound plan/session ids.
+    """What this key is — workflow, operator, the phases it has open.
 
-    One lookup answers both questions the server has about a caller: which
-    workflow's tools to list, and which arguments it can fill in on the caller's
-    behalf.  Before v2.278.0 this read ``/agent/assist/session``, which only an
-    assist key could reach — workable while assist was the whole surface, and
-    useless for a recon or plan key.
+    ``fresh=False`` (``tools/list``): a cached answer within the TTL is fine —
+    the listing is the same either way and the audited lookup is what first
+    marks the client as connected.  ``fresh=True`` (auto-parameters): always
+    read the live answer, as unaudited plumbing — see the cache note above.
 
     Returns None when there is no usable key or the lookup fails, which keeps an
     unauthenticated ``tools/list`` returning the full catalog: discovery degrades
@@ -248,9 +256,11 @@ async def _key_identity(
     """
     if not api_key:
         return None
-    cached = _identity_cache.get(_cache_key(api_key))
-    if cached is not None and (time.monotonic() - cached[0]) < _IDENTITY_TTL_SECONDS:
-        return cached[1]
+    if not fresh:
+        cached = _identity_cache.get(_cache_key(api_key))
+        if cached is not None and (time.monotonic() - cached[0]) < _IDENTITY_TTL_SECONDS:
+            return cached[1]
+    token = agent_audit_plumbing.set(True) if fresh else None
     try:
         resp = await _loopback(
             app,
@@ -266,6 +276,9 @@ async def _key_identity(
     except Exception:  # pragma: no cover - defensive
         logger.exception("MCP could not read the caller's identity")
         return None
+    finally:
+        if token is not None:
+            agent_audit_plumbing.reset(token)
     _identity_cache[_cache_key(api_key)] = (time.monotonic(), identity)
     return identity
 
@@ -374,8 +387,10 @@ async def _dispatch_tool(
     # still say which one it means.
     auto = spec.get("auto_params") or {}
     if auto and any(arguments.get(a) is None for a in auto):
+        # Fresh, never cached: the ids change whenever a phase opens or
+        # closes, and a stale one names the wrong run (see the cache note).
         identity = await _key_identity(
-            app, api_key, caller=caller, user_agent=user_agent
+            app, api_key, caller=caller, user_agent=user_agent, fresh=True,
         ) or {}
         for arg, field in auto.items():
             if arguments.get(arg) is None and identity.get(field) is not None:
@@ -435,6 +450,10 @@ async def _dispatch_tool(
         )
 
     text = resp.text
+    if spec["method"] != "GET" and api_key:
+        # A write may have opened or closed a phase; drop this worker's cached
+        # listing-time identity so at least local readers move on too.
+        _identity_cache.pop(_cache_key(api_key), None)
     if resp.status_code >= 400:
         # Surface the real endpoint's error (401/403/404/400) as a tool error so
         # the agent sees exactly why — read-only operator, wrong scope, etc.
