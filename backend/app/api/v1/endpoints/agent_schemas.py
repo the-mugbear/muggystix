@@ -330,25 +330,22 @@ class AgentIdentity(BaseModel):
     its first call, which tools to even offer — which is exactly what the MCP
     server does at ``tools/list`` time.
     """
-    # The fine-grained workflow (plan_generation / execution / recon / assist).
-    # None for a legacy unscoped global key.
+    # ``project`` for every session minted since v2.337.0; the legacy
+    # per-workflow labels survive on older rows.
     workflow: Optional[str] = None
-    # The coarse family the auth guards actually branch on — plan_generation
-    # and execution collapse to "plan" there, and a caller reasoning about
-    # which endpoints it may reach needs the same collapse.
-    workflow_family: Optional[str] = None
     session_id: Optional[int] = None
-    # The id this workflow's own URLs are keyed by — ExecutionSession /
-    # ReconSession / AssistSession, which are separate rows from the unified
-    # AgentSession above.  Without it a caller that knows its session_id would
-    # still guess wrong on POST /agent/recon/sessions/{id}/environment; None for
-    # plan_generation, which has no per-workflow session row.
-    workflow_session_id: Optional[int] = None
+    # v2.338.0 — the three ids the MCP layer fills tool arguments from, each in
+    # its own id space.  ``plan_id`` is the active execution run's plan, else
+    # the newest plan this session drafted.  ``recon_session_id`` /
+    # ``execution_session_id`` are set only when exactly one such run is
+    # active; with several open the agent names the one it means per call.
+    # (The old ``workflow_session_id`` folded recon and execution ids into one
+    # field, so a session with both open handed the recon id to
+    # ``execution_complete``.)  ``open_phases`` carries the full lists.
     plan_id: Optional[int] = None
-    scope_id: Optional[int] = None
-    # v2.337.0 — the phases this session currently has open / has produced, so
-    # a client can fill tool arguments and see what is in flight without
-    # probing. Keys: recon_session_id, active_recon_session_ids, plan_id,
+    recon_session_id: Optional[int] = None
+    execution_session_id: Optional[int] = None
+    # Keys: recon_session_id, active_recon_session_ids, plan_id,
     # execution_session_id, active_execution_session_ids, drafted_plan_ids.
     open_phases: Dict[str, Any] = Field(default_factory=dict)
     project_id: int

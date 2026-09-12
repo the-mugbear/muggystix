@@ -37,11 +37,23 @@ import pytest
 
 
 @pytest.fixture
-def execution_session_row(db_session, test_plan):
+def execution_session_row(db_session, test_plan, execution_key):
+    """An active run on test_plan, owned by ``execution_key``'s session.
+
+    v2.338.0 — a test-result write resolves the run through the caller's
+    session, so the run must belong to the key's session for these tests to
+    reach the sanity-check gate they are about."""
     from app.db.models_agent import ExecutionSession, ExecutionSessionStatus
+    from app.db.models_auth import APIKey
+    base_id = (
+        db_session.query(APIKey.agent_session_id)
+        .filter(APIKey.key_hash == hashlib.sha256(execution_key.encode()).hexdigest())
+        .scalar()
+    )
     session = ExecutionSession(
         test_plan_id=test_plan.id,
         status=ExecutionSessionStatus.ACTIVE.value,
+        agent_session_id=base_id,
     )
     db_session.add(session)
     db_session.commit()
@@ -57,7 +69,7 @@ def execution_key(db_session, test_agent, test_plan):
     base = create_agent_session(
         db_session, workflow=AgentSessionWorkflow.EXECUTION.value,
         project_id=test_plan.project_id, agent_id=test_agent.id,
-        started_by_id=None, plan_id=test_plan.id,
+        started_by_id=None,
     )
     raw = "nm_agent_san_override_" + "y" * 28
     db_session.add(APIKey(

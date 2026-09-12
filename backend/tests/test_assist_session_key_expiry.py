@@ -150,15 +150,46 @@ def test_a_session_whose_key_expired_is_not_reported_active(
     )
 
 
+def _age_past_renewal(db_session, assist_session_id):
+    """Push the unified session's start back past the renewal cap.  The sweep
+    (v2.337.0: ``lapse_expired_agent_sessions``) deliberately leaves an
+    expired-but-renewable session alone — an agent mid-scan can still renew
+    with the same key — so a lapse needs BOTH a dead key and a session past
+    ``AGENT_SESSION_MAX_LIFETIME_HOURS``."""
+    from app.core.config import settings
+    from app.db.models_agent import AgentSession
+    db_session.query(AgentSession).filter(
+        AgentSession.id == _agent_session_id_for(db_session, assist_session_id)
+    ).update(
+        {"started_at": datetime.now(timezone.utc)
+         - timedelta(hours=settings.AGENT_SESSION_MAX_LIFETIME_HOURS + 1)},
+        synchronize_session=False,
+    )
+    db_session.commit()
+
+
 def test_a_live_session_is_left_alone(client, db_session, test_project):
     """The sweep must not end sessions an agent is still using — that would
     revoke work in progress on a timer nobody asked for."""
-    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.services.agent_session_service import lapse_expired_agent_sessions
     from app.db.models_agent import AssistSession
 
     sid = _start(client, test_project.id, ttl_hours=6)["assist_session_id"]
-    assert lapse_expired_assist_sessions(db_session) == 0
+    assert lapse_expired_agent_sessions(db_session) == 0
 
+    db_session.expire_all()
+    assert db_session.get(AssistSession, sid).status == "active"
+
+
+def test_an_expired_but_renewable_session_is_left_alone(client, db_session, test_project):
+    """A dead key on a session still inside its renewal window is the
+    long-scan case: the agent renews with the same key when it wakes."""
+    from app.services.agent_session_service import lapse_expired_agent_sessions
+    from app.db.models_agent import AssistSession
+
+    sid = _start(client, test_project.id)["assist_session_id"]
+    _expire_keys(db_session, sid)
+    assert lapse_expired_agent_sessions(db_session) == 0
     db_session.expire_all()
     assert db_session.get(AssistSession, sid).status == "active"
 
@@ -169,37 +200,42 @@ def test_the_sweep_ends_lapsed_sessions_and_dates_them_honestly(
     """`ended_at` records when access actually stopped — the key's expiry, not
     when the hourly sweep happened to run, which would misdate every lapse by
     up to an hour."""
-    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.services.agent_session_service import lapse_expired_agent_sessions
     from app.db.models_agent import AssistSession
 
     sid = _start(client, test_project.id)["assist_session_id"]
     expired_at = datetime.now(timezone.utc) - timedelta(hours=3)
     _expire_keys(db_session, sid, when=expired_at)
+    _age_past_renewal(db_session, sid)
 
-    assert lapse_expired_assist_sessions(db_session) == 1
+    assert lapse_expired_agent_sessions(db_session) == 1
 
     db_session.expire_all()
     session = db_session.get(AssistSession, sid)
     assert session.status == "ended"
     assert session.ended_at is not None
-    assert abs((session.ended_at - expired_at).total_seconds()) < 2, (
+    ended_at = session.ended_at
+    if ended_at.tzinfo is None:
+        ended_at = ended_at.replace(tzinfo=timezone.utc)
+    assert abs((ended_at - expired_at).total_seconds()) < 2, (
         "ended_at should be when the key died, not when the sweep ran"
     )
 
     # Idempotent: a second pass finds nothing, so concurrent workers can't
     # double-end or rewrite the timestamp.
-    assert lapse_expired_assist_sessions(db_session) == 0
+    assert lapse_expired_agent_sessions(db_session) == 0
 
 
 def test_the_sweep_keeps_the_session_record(client, db_session, test_project):
     """Lapsing is a status change, not a delete — the audit trail is the reason
     the row exists after the key is gone."""
-    from app.services.assist_session_service import lapse_expired_assist_sessions
+    from app.services.agent_session_service import lapse_expired_agent_sessions
     from app.db.models_agent import AssistSession
 
     sid = _start(client, test_project.id, purpose="ftp sweep")["assist_session_id"]
     _expire_keys(db_session, sid)
-    lapse_expired_assist_sessions(db_session)
+    _age_past_renewal(db_session, sid)
+    lapse_expired_agent_sessions(db_session)
 
     db_session.expire_all()
     session = db_session.get(AssistSession, sid)

@@ -336,6 +336,18 @@ def plan_agent_key(db_session, test_agent, test_plan):
     return {"raw": raw, "row": api_key}
 
 
+@pytest.fixture
+def owned_execution_target(db_session, execution_target, plan_agent_key):
+    """``execution_target`` whose run belongs to ``plan_agent_key``'s session.
+
+    v2.338.0 — execution writes resolve the run through the caller's session,
+    so a run nobody's session opened is unreachable by design; the completion
+    tests below are about the sanity-check gate, not about ownership."""
+    execution_target["session"].agent_session_id = plan_agent_key["row"].agent_session_id
+    db_session.commit()
+    return execution_target
+
+
 def test_planning_context_with_candidates_returns_sample_host(client, db_session, test_project, test_plan, plan_agent_key):
     """Regression: GET /agent/test-plans/{id}/context 500'd when the plan
     had >=1 candidate host — the entry-template builder read
@@ -425,7 +437,8 @@ def test_archive_plan_abandons_non_terminal(client, test_project, test_plan):
     assert client.post(base, json={}).status_code == 400
 
 
-def test_complete_rejects_without_sanity_check_or_override(client, execution_target, plan_agent_key, test_plan):
+def test_complete_rejects_without_sanity_check_or_override(client, owned_execution_target, plan_agent_key, test_plan):
+    execution_target = owned_execution_target
     """No passing HostSanityCheck and no override_reason → 400."""
     resp = client.post(
         f"/api/v1/agent/test-plans/{test_plan.id}/entries/{execution_target['entry'].id}/complete",
@@ -436,7 +449,8 @@ def test_complete_rejects_without_sanity_check_or_override(client, execution_tar
     assert "sanity" in resp.json()["detail"].lower()
 
 
-def test_complete_accepts_with_override_reason(client, execution_target, plan_agent_key, test_plan, db_session):
+def test_complete_accepts_with_override_reason(client, owned_execution_target, plan_agent_key, test_plan, db_session):
+    execution_target = owned_execution_target
     """No passing sanity check but an explicit override_reason → accepted,
     the reason is echoed in the response, and — v2.316.0 — a completion-override
     audit event is written so a reviewer can find it without querying a JSON
@@ -472,7 +486,8 @@ def test_complete_accepts_with_override_reason(client, execution_target, plan_ag
     assert "fixture entry has no proposed tests" in event.details["no_tests_run_reason"]
 
 
-def test_complete_accepts_with_passing_sanity_check(client, execution_target, plan_agent_key, test_plan, db_session):
+def test_complete_accepts_with_passing_sanity_check(client, owned_execution_target, plan_agent_key, test_plan, db_session):
+    execution_target = owned_execution_target
     """A passing sanity check on the entry → completion succeeds without
     needing an override."""
     from app.db.models_agent import HostSanityCheck
@@ -549,7 +564,6 @@ def recon_agent_key(db_session, test_agent, recon_session):
         project_id=recon_session["session"].project_id,
         agent_id=test_agent.id,
         started_by_id=None,
-        scope_id=recon_session["scope"].id,
     )
     recon_session["session"].agent_session_id = base.id
     db_session.flush()
@@ -581,7 +595,6 @@ def execution_session_with_key(db_session, test_agent, test_plan):
         project_id=test_plan.project_id,
         agent_id=test_agent.id,
         started_by_id=None,
-        plan_id=test_plan.id,
     )
     session = ExecutionSession(
         test_plan_id=test_plan.id,
@@ -730,7 +743,6 @@ def test_execution_probe_rejects_other_users_session(
         project_id=intruder_plan.project_id,
         agent_id=intruder_agent.id,
         started_by_id=None,
-        plan_id=intruder_plan.id,
     )
     api_key = APIKey(
         agent_id=intruder_agent.id,
@@ -1169,7 +1181,6 @@ def test_execution_env_probe_rejects_recon_scoped_key(
         project_id=test_project.id,
         agent_id=test_agent.id,
         started_by_id=None,
-        scope_id=scope.id,
     )
     rs.agent_session_id = recon_base.id
     db_session.flush()

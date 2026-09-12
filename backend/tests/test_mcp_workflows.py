@@ -123,7 +123,8 @@ def test_identity_classifies_each_workflow_key(client, test_project, scope_with_
     recon_id = identity(recon["api_key"])
     assert recon_id["workflow"] == "project"
     assert recon_id["open_phases"]["recon_session_id"] == recon["recon_session_id"]
-    assert recon_id["workflow_session_id"] == recon["recon_session_id"]
+    assert recon_id["recon_session_id"] == recon["recon_session_id"]
+    assert recon_id["execution_session_id"] is None
 
     assist_id = identity(assist["api_key"])
     assert assist_id["workflow"] == "project"

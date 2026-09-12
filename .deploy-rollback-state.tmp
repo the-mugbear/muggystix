@@ -1,0 +1,2 @@
+backend|networkmapper-backend:latest
+worker|networkmapper-worker:latest

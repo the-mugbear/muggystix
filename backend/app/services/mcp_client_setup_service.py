@@ -1,44 +1,36 @@
 """Per-client MCP connection recipes for a freshly-minted agent key.
 
-Extracted from ``assist.py`` in v2.279.0 and parameterised by workflow, because
-MCP stopped being assist-only: a recon or execution session mints a key with the
-same shape and the operator has the same "how do I point my client at this"
-problem.  Keeping one builder means a fix to a client recipe (VS Code's wrapper
-key, Codex's env-var flag, the self-signed-cert note) lands everywhere at once —
-the divergence this replaces is the reason two of the three original recipes
-silently didn't work.
+Extracted from ``assist.py`` in v2.279.0 because MCP stopped being
+assist-only: every session start mints a key with the same shape and the
+operator has the same "how do I point my client at this" problem.  Keeping one
+builder means a fix to a client recipe (VS Code's wrapper key, Codex's env-var
+flag, the self-signed-cert note) lands everywhere at once — the divergence this
+replaces is the reason two of the three original recipes silently didn't work.
 
-Two things vary per workflow:
-
-* **The server name and key env var.**  Distinct per workflow so an operator who
-  connects a recon session and a plan session to the same client ends up with
-  two servers, not one overwriting the other.
-* **The sandbox advice.**  Recon and execution run *commands on the operator's
-  machine*; assist and plan generation do not.  For those two the recipe carries
-  the client flags that keep the agent inside its working directory, because
-  that boundary is enforced by the client — BlueStick can record what an agent
-  claims it did, and cannot stop a command from running.  Saying so plainly is
-  the honest version; implying the server sandboxes anything would be worse than
-  saying nothing.
+v2.337.0 — one project session, one server entry (``bluestick``) and one key
+env var.  The per-workflow names (bluestick-recon / -plan / -exec / -assist)
+are gone: an operator who used to connect four servers connects one that does
+everything.  Every recipe carries the sandbox advice, because any session can
+open a reconnaissance or execution run that runs *commands on the operator's
+machine*; that boundary is enforced by the client — BlueStick can record what
+an agent claims it did, and cannot stop a command from running.  Saying so
+plainly is the honest version.  v2.338.0 removed the ``workflow`` parameter
+the builders had kept accepting and ignoring.
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
 
-# v2.337.0 — one project session, one server entry.  The per-workflow server
-# names (bluestick-recon / -plan / -exec / -assist) are gone: an operator who
-# used to connect four servers now connects one that does everything.  The
-# ``workflow`` argument is accepted for call-site compatibility and ignored.
 _SERVER_NAME = "bluestick"
 _KEY_ENV_VAR = "BLUESTICK_API_KEY"
 
 
-def server_name(workflow: str = "project") -> str:
+def server_name() -> str:
     return _SERVER_NAME
 
 
-def key_env_var(workflow: str = "project") -> str:
+def key_env_var() -> str:
     return _KEY_ENV_VAR
 
 
@@ -103,7 +95,7 @@ def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
     )
 
 
-def sandbox_note(workflow: str, client_id: str) -> str:
+def sandbox_note(client_id: str) -> str:
     """Client flags that keep a command-running agent inside its directory.
 
     v2.337.0 — always emitted: a single session can open a reconnaissance or
@@ -167,11 +159,11 @@ _VERIFY_CHECKS = {
 }
 
 
-def verify_check(workflow: str, client_id: str) -> str:
-    return _VERIFY_CHECKS.get(client_id, "").format(name=server_name(workflow))
+def verify_check(client_id: str) -> str:
+    return _VERIFY_CHECKS.get(client_id, "").format(name=server_name())
 
 
-def verify_prompt(workflow: str) -> str:
+def verify_prompt() -> str:
     """The first thing to ask the agent, once the client is configured.
 
     Names the server so a client with several BlueStick servers picks the
@@ -180,7 +172,7 @@ def verify_prompt(workflow: str) -> str:
     otherwise a model with no tools answers from general knowledge and the
     operator reads a confident paragraph as a working connection.
     """
-    name = server_name(workflow)
+    name = server_name()
     return (
         f"Using the {name} MCP server, call agent_identity and then read_agent_guide. "
         "Report the project, the session id, the workflow, my operator role, whether "
@@ -192,12 +184,16 @@ def verify_prompt(workflow: str) -> str:
     )
 
 
-def verify_expected(workflow: str, expected: Optional[Dict[str, Any]]) -> str:
+def verify_expected(expected: Optional[Dict[str, Any]]) -> str:
     """What a correct answer to ``verify_prompt`` contains, from the session
     that was actually minted — so the operator compares against facts, not a
     template.  ``expected`` carries ``project_name`` and ``session_label``
-    (e.g. "assist session #12"); either may be absent (the reference page has
+    (e.g. "agent session #12"); either may be absent (the reference page has
     no session), in which case the sentence points at the dialog instead.
+
+    v2.338.0 — the workflow the agent reports is always ``project`` now; the
+    callers that passed "assist" here were telling the operator to expect a
+    word the agent would never say.
     """
     expected = expected or {}
     facts: List[str] = []
@@ -211,7 +207,7 @@ def verify_expected(workflow: str, expected: Optional[Dict[str, Any]]) -> str:
         facts.append("the project and session id this dialog shows")
     return (
         f"A working connection answers with {', '.join(facts)} and workflow "
-        f"“{workflow}”. A different project, a session it cannot name, or “those "
+        f"“project”. A different project, a session it cannot name, or “those "
         "tools are not available” means the client is talking to the wrong "
         "server or the key was not accepted — BlueStick marks the session as "
         "connected only after a call like this reaches it."
@@ -222,7 +218,6 @@ def build_mcp_clients(
     mcp_url: str,
     raw_key: str,
     *,
-    workflow: str = "project",
     expected: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Connection recipes, one per supported client, as plain dicts.
@@ -238,11 +233,11 @@ def build_mcp_clients(
     ``expected`` (v2.331.0) is the project name and session label the
     verification step should see back — see ``verify_expected``.
     """
-    name = server_name(workflow)
-    env_var = key_env_var(workflow)
+    name = server_name()
+    env_var = key_env_var()
     entry = {name: _mcp_server_entry(mcp_url, raw_key)}
-    prompt = verify_prompt(workflow)
-    expected_text = verify_expected(workflow, expected)
+    prompt = verify_prompt()
+    expected_text = verify_expected(expected)
     clients = [
         {
             "id": "vscode",
@@ -254,7 +249,7 @@ def build_mcp_clients(
                 "Save as .vscode/mcp.json in your workspace, then start the server from the "
                 "Copilot MCP panel. The file holds a live key — keep it out of version control. "
                 + tls_note(mcp_url, "vscode")
-                + sandbox_note(workflow, "vscode")
+                + sandbox_note("vscode")
             ),
         },
         {
@@ -270,7 +265,7 @@ def build_mcp_clients(
                 "Run in your project directory. -s local keeps the key in your own config; "
                 "-s project writes .mcp.json into the repo, so do not use it with a live key. "
                 + tls_note(mcp_url, "claude_code")
-                + sandbox_note(workflow, "claude_code")
+                + sandbox_note("claude_code")
             ),
         },
         {
@@ -288,14 +283,14 @@ def build_mcp_clients(
                 "`read -rs` keeps it out of your shell history too; re-run it in each new shell "
                 "rather than writing the key into a profile. "
                 + tls_note(mcp_url, "codex")
-                + sandbox_note(workflow, "codex")
+                + sandbox_note("codex")
             ),
         },
     ]
     # No Cursor recipe (removed v2.275.0): it was the one client whose config
     # shape was never verified against a real install, and nobody here uses it.
     for client in clients:
-        client["verify_check"] = verify_check(workflow, client["id"])
+        client["verify_check"] = verify_check(client["id"])
         client["verify_prompt"] = prompt
         client["verify_expected"] = expected_text
     return clients

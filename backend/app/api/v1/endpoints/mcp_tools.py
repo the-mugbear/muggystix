@@ -216,7 +216,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "act for, and when the key expires. Call this first if you are unsure "
             "which workflow you are in — the available tools differ per workflow."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/identity",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -231,7 +230,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "bounded by the session — ending the session revokes the key regardless. No "
             "arguments: your key identifies its own session (v2.316.0)."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "metadata_write": True,
         "path": "/api/v1/agent/session/renew",
@@ -246,7 +244,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "substantive call. The tool descriptions here are a skeleton; the guide is "
             "the part that tells you how, and it is binding."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agents-guide",
         "query_params": ["workflow"],
@@ -274,7 +271,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "unprompted, and before assuming a tool you know is available here. Pass "
             "status to see the documented-but-not-approved set instead."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/references/tools",
         "query_params": ["status", "category"],
@@ -306,7 +302,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "run anything. Use this instead of silently substituting an unapproved "
             "tool — a recorded ask is how the approved set grows."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/tool-suggestions",
         "body_params": ["name", "rationale", "category", "description"],
@@ -345,7 +340,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "NO findings — use assist_list_hosts to locate hosts and "
             "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -360,7 +354,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "owns'. Paginate with limit/offset — but for a COUNT use "
             "assist_count_hosts, not the length of a page. Returns host briefs."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
         "query_params": [
@@ -396,7 +389,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "assist_list_hosts (e.g. 'has:critical AND assigned:none' — critical "
             "findings nobody owns)."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/count",
         "query_params": [
@@ -424,7 +416,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "severity counts, and your review status. Notes and individual "
             "vulnerabilities are separate — use assist_get_host_vulnerabilities for those."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
         "path_params": ["host_id"],
@@ -445,7 +436,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "pass it to assist_get_finding. The triaged project Findings (the spine "
             "assist_list_findings / assist_get_finding work on) are a separate set."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/findings",
         "path_params": ["host_id"],
@@ -479,7 +469,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "scanner rows assist_get_host_vulnerabilities returns; the ids do not "
             "cross between the two."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/findings",
         "query_params": [
@@ -514,7 +503,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "about X\", where the answer often lives in a note rather than in "
             "scan data. Notes carry who wrote them and whether an agent did."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
         "path_params": ["host_id"],
@@ -538,7 +526,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "production\" is a confidently wrong answer to what was really "
             "\"what are the tags called here?\"."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/vocabulary",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -552,7 +539,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "exposure\". Cite it whenever a report or an answer implies "
             "completeness."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/coverage",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -566,7 +552,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "say which it is when you report a finding. Only entries from "
             "approved plans, never rejected ones."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/testing",
         "path_params": ["host_id"],
@@ -592,7 +577,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Compare `total` with the number of subnets returned: the page is "
             "capped, and you are seeing the worst ones, not all of them."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/segments",
         "query_params": ["limit", "offset"],
@@ -616,7 +600,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "means the estate has NOT been assessed enough to judge — it is "
             "not a clean bill of health, and reporting it as one is wrong."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/posture",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -636,7 +619,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "adopted=false means no scoped subnets, so the analysis cannot "
             "run: report 'not assessable', never 'no patterns found'."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/patterns",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -654,7 +636,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "queued/processing mean data is still arriving. If has_issues is "
             "false, an empty result elsewhere is a real absence."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/ingestion-issues",
         "query_params": ["limit"],
@@ -683,7 +664,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "whether a claim rests on a scanner's output or on a command a "
             "tester actually ran; state which, they are different assertions."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/findings/{finding_id}",
         "path_params": ["finding_id"],
@@ -709,7 +689,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Filter by status (open notes are the outstanding-work list this "
             "project actually keeps) or by author ('me' or a username)."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/notes",
         "query_params": ["limit", "status", "author"],
@@ -733,7 +712,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "names_in_scope_total is the deduplicated count of inventory names "
             "the domain entries cover."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/scopes",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -750,7 +728,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "balancer / vhost) must be tested by name, not by IP. host_id lists "
             "the names currently bound to one host's address."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/names",
         "query_params": ["q", "in_scope", "resolved", "host_id", "kind", "limit", "offset"],
@@ -770,7 +747,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_scans": {
         "description": "List the scans ingested into this project (most recent first).",
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
         "query_params": ["limit"],
@@ -788,7 +764,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "you may write, call agent_identity and read `can_write_project_data`; "
             "this response does not carry it."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/assist/session",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -800,7 +775,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "`read_back` you MUST state to the operator before scanning. List scopes "
             "with list_scopes. A run already open on the scope is reused."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/recon/start",
         "body_params": ["scope_id", "notes"],
@@ -820,7 +794,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "the plan's hosts and a per-host `read_back` to state before testing. The "
             "plan must be human-approved (submit it first if it is a draft)."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/execution-sessions/start",
         "body_params": ["plan_id"],
@@ -838,7 +811,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Open a DRAFT test plan in your session. Fill it in with plan_add_entries, "
             "then submit_test_plan for human approval — you cannot approve it yourself."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans",
         "body_params": ["title", "description"],
@@ -860,7 +832,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "report here. The session is resolved from your key. Re-post it any "
             "time the environment changes."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "metadata_write": True,
         "path": "/api/v1/agent/session/environment",
@@ -884,7 +855,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "client-facing reports — record observations tied to host/port/finding "
             "evidence, mark inferences as inferences."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/notes",
         "path_params": ["host_id"],
@@ -914,7 +884,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "mark a host `reviewed` on your own initiative — reviewed is a human "
             "judgement with client-reportable weight; confirm with the operator first."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/follow",
         "path_params": ["host_id"],
@@ -941,7 +910,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "— scan-derived facts (ports, services, vulns) are never mutated here. Send "
             "just the field you're fixing; sending neither is refused with a 400."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "PATCH",
         "path": "/api/v1/agent/hosts/{host_id}",
         "path_params": ["host_id"],
@@ -980,7 +948,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "page); use `detail_level=brief` to pick candidates cheaply, then `full` "
             "for the hosts you will write entries for."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/context",
         "path_params": ["plan_id"],
@@ -1021,8 +988,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         },
     },
     "plan_list": {
-        "description": "List the test plans this agent owns in the project, newest first.",
-        "workflows": ALL_WORKFLOWS,
+        "description": (
+            "List the project's test plans, newest first. Every plan in the "
+            "project is listed (any session may fill in or execute one its "
+            "operator may); `mine=true` narrows to the plans this session drafted."
+        ),
         "method": "GET",
         "path": "/api/v1/agent/test-plans",
         "query_params": ["status"],
@@ -1039,7 +1009,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "The plan with its entries — what you have proposed so far, each entry's "
             "status, and the approval state. plan_id is resolved from your key."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}",
         "path_params": ["plan_id"],
@@ -1061,7 +1030,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "drafted it. A description summarising scope, prioritisation and "
             "methodology is REQUIRED before plan_submit will accept the plan."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "PATCH",
         "path": "/api/v1/agent/test-plans/{plan_id}",
         "path_params": ["plan_id"],
@@ -1095,7 +1063,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "strings: only the structured form can be checked against the approved "
             "tool set. Batch related hosts in one call."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries",
         "path_params": ["plan_id"],
@@ -1157,7 +1124,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Revise one entry — usually to act on reviewer feedback before "
             "resubmitting. Send only the fields you are changing."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "PATCH",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}",
         "path_params": ["plan_id", "entry_id"],
@@ -1198,7 +1164,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "coverage. Costs nothing and reports every problem at once, unlike submit, "
             "which stops at the first."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/validate",
         "path_params": ["plan_id"],
@@ -1214,10 +1179,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "plan_submit": {
         "description": (
             "Submit the draft for human approval. This ENDS your part of stage 2 — "
-            "nothing in the plan runs until a human approves it, and execution needs "
-            "a separate key the operator mints. Run plan_validate first."
+            "nothing in the plan runs until a human approves it; once they have, "
+            "start_execution opens a run on it in this same session. Run "
+            "plan_validate first."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/submit",
         "path_params": ["plan_id"],
@@ -1241,7 +1206,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "priority and current status, plus the environment probe echoed back. "
             "Work entries in the order given. plan_id is resolved from your key."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/execution-context",
         "path_params": ["plan_id"],
@@ -1261,7 +1225,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "completed without a PASSING check on file unless you give "
             "execution_complete_entry an override_reason. Do this per host, per entry."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
         "path_params": ["plan_id", "entry_id"],
@@ -1300,7 +1263,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "test in the entry's proposed_tests. Record results as you go — an entry "
             "cannot complete with no results recorded."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/test-results",
         "path_params": ["plan_id", "entry_id"],
@@ -1356,7 +1318,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "sanity check exists, or you supply override_reason explaining why one was "
             "not possible — that override is audit-visible and a human will read it."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/complete",
         "path_params": ["plan_id", "entry_id"],
@@ -1396,7 +1357,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "remaining. Use it to resume after an interruption instead of re-running "
             "work that is already recorded."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/execution-progress",
         "path_params": ["plan_id"],
@@ -1415,11 +1375,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "when you are stopping because the engagement broke rather than because "
             "the work finished — that distinction is what a reviewer needs."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/execution-sessions/{session_id}/complete",
         "path_params": ["session_id"],
-        "auto_params": {"session_id": "workflow_session_id"},
+        # v2.338.0 — filled from the execution-specific identity field, not the
+        # old recon-or-execution ``workflow_session_id`` that handed this route
+        # a recon run's id whenever both phases were open.
+        "auto_params": {"session_id": "execution_session_id"},
         "body_params": ["notes", "overall_status"],
         "input_schema": {
             "type": "object",
@@ -1451,7 +1413,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "For big scopes the CIDR list is capped — recon_list_subnets is "
             "authoritative, and the target files are downloads, not tools."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/context",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -1461,7 +1422,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "The authoritative, paginated subnet list for this recon scope — use it "
             "when recon_get_context reports the CIDRs were truncated."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/subnets",
         "query_params": ["limit", "offset"],
@@ -1483,7 +1443,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "domains_truncated. A name in scope does not put the address it resolves "
             "to in subnet scope."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/domains",
         "query_params": ["limit", "offset"],
@@ -1503,7 +1462,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "curl (see the server instructions); this is how you find out whether it "
             "parsed, and what it produced."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/jobs/{job_id}",
         "path_params": ["job_id"],
@@ -1527,7 +1485,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "and to report progress. For the complete lists, use the downloads it "
             "points at rather than paging through here."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "GET",
         "path": "/api/v1/agent/recon/summary",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -1538,7 +1495,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "you could not reach, anything the planning stage should know. This is the "
             "handoff to stage 2, so write it for the next reader."
         ),
-        "workflows": ALL_WORKFLOWS,
         "method": "POST",
         "path": "/api/v1/agent/recon/complete",
         "body_params": ["notes"],
@@ -1551,33 +1507,28 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
-# v2.337.0 — ``workflows`` is now a PRESENTATION tag: which kind of work a tool
-# belongs to, so the MCP reference page can group the catalogue. It no longer
-# gates ``tools/list`` (a single project session sees every tool — see
-# ``tool_list_payload``). Rather than hand-maintain the tag on every entry, the
-# structural edits above set every tool to ``ALL_WORKFLOWS``; here we narrow
-# each back to the kind its name implies, so the page groups meaningfully while
-# the filter stays off. Universal tools (agent_identity, suggest_tool, the
-# guide/approved-set readers, the session probe, and the phase-openers that any
-# session calls) keep the full set and read as "every workflow".
+# v2.337.0 — a single project session sees every tool, so nothing gates
+# ``tools/list`` any more.  What remains is a PRESENTATION grouping for the MCP
+# reference page (which kind of work a tool belongs to), and v2.338.0 derives
+# it from the tool's name in this one function instead of carrying a
+# ``workflows`` field on every entry that a loop then rewrote.  Universal tools
+# (identity, the guide/approved-set readers, the session probe, the phase
+# openers any session calls) report every kind and the page shows them as
+# shared.
 _KIND_BY_PREFIX = (
     ("assist_", _ASSIST),
     ("recon_", _RECON),
     ("plan_", _PLAN),
     ("execution_", _EXEC),
 )
-_UNIVERSAL_TOOLS = {
-    "agent_identity", "suggest_tool", "read_agent_guide", "list_approved_tools",
-    "session_renew", "record_environment",
-    "start_recon", "start_execution", "create_test_plan",
-}
-for _name, _spec in TOOLS.items():
-    if _name in _UNIVERSAL_TOOLS:
-        continue
-    for _prefix, _wf in _KIND_BY_PREFIX:
-        if _name.startswith(_prefix):
-            _spec["workflows"] = _wf
-            break
+
+
+def tool_workflows(name: str) -> frozenset:
+    """The kinds of work ``name`` belongs to, for grouping on the reference page."""
+    for prefix, kinds in _KIND_BY_PREFIX:
+        if name.startswith(prefix):
+            return kinds
+    return ALL_WORKFLOWS
 
 
 def advertised_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1639,12 +1590,8 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     return ann
 
 
-def tool_list_payload(*, workflow: Optional[str] = None) -> List[Dict[str, Any]]:
-    """The ``tools`` array for a ``tools/list`` response.
-
-    ``workflow`` is the caller's key workflow; tools belonging to the other
-    workflows are omitted.  ``None`` means "unknown" — list everything, which
-    is the documentation view an unauthenticated client gets.
+def tool_list_payload() -> List[Dict[str, Any]]:
+    """The ``tools`` array for a ``tools/list`` response — the whole catalogue.
 
     v2.309.0 — the ``granted`` capability filter is gone with the capability
     system. Write tools are listed for every session now, and whether a
@@ -1653,8 +1600,8 @@ def tool_list_payload(*, workflow: Optional[str] = None) -> List[Dict[str, Any]]
     the previous filter implied the listed set was the *permitted* set, when
     the row-level constraint meant a listed write could still be refused.
 
-    The workflow filter remains presentational (see the module docstring): the
-    endpoint behind each tool re-decides on every call.
+    v2.337.0 — the per-workflow filter is gone too: one project session does
+    every kind of work.  The endpoint behind each tool re-decides on every call.
     """
     return [
         {
@@ -1663,8 +1610,5 @@ def tool_list_payload(*, workflow: Optional[str] = None) -> List[Dict[str, Any]]
             "inputSchema": advertised_schema(spec),
             "annotations": annotations(name, spec),
         }
-        # v2.337.0 — one project session does every kind of work, so tools/list
-        # no longer filters by workflow (`workflow` is accepted for call-site
-        # compatibility and ignored). It was always presentation only.
         for name, spec in TOOLS.items()
     ]

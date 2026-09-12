@@ -34,6 +34,15 @@ vi.mock('../../services/api', () => ({
   setCurrentProjectId: vi.fn(),
 }));
 
+// v5.212.0 — the page reads the signed-in user (to offer End on the sessions
+// they own) and toasts the outcome; neither provider is mounted here.
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 3, username: 'alice', role: 'member' } }),
+}));
+vi.mock('../../contexts/ToastContext', () => ({
+  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+}));
+
 import * as api from '../../services/api';
 const mockedApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 

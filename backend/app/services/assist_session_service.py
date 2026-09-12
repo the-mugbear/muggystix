@@ -13,14 +13,13 @@ tidy these up myself?" — and the answer should be no.
 live key cannot be used by anything, so it is not active, and the operator
 should not have to perform that inference (or the cleanup) by hand.
 
-Ending it here is the same transition the End button performs, so the audit
-trail keeps its shape: `ended_at` records when access actually stopped — the
-key's own expiry, not the moment the sweep happened to run, which would
-misdate every lapse by up to an hour.
+v2.337.0 — the hourly sweep itself moved to
+``agent_session_service.lapse_expired_agent_sessions``, which lapses the
+unified session and mirrors the status onto these legacy detail rows; what
+stays here is the derived-status + key-expiry plumbing the review page uses.
 """
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -29,8 +28,6 @@ from sqlalchemy.orm import Session
 
 from app.db.models_agent import AssistSession, AssistSessionStatus
 from app.db.models_auth import APIKey
-
-logger = logging.getLogger(__name__)
 
 
 def effective_status(
@@ -113,54 +110,3 @@ def key_expiry_for_sessions(db: Session, session_ids: List[int]) -> dict:
             .all()
         )
     }
-
-
-def lapse_expired_assist_sessions(db: Session) -> int:
-    """End every active assist session whose keys have all expired.
-
-    Returns the number ended.  Idempotent: a session already `ended` is not
-    matched, so concurrent sweepers can't double-end one.
-    """
-    now = datetime.now(timezone.utc)
-
-    # The sweep DOES want the deployment-wide aggregate: it is looking at every
-    # active session, once an hour, off the request path. That is the opposite
-    # of the list endpoint's need, which is why they no longer share a query.
-    live_expiry = (
-        db.query(
-            AssistSession.id.label("session_id"),
-            func.max(APIKey.expires_at).label("expires_at"),
-        )
-        .join(APIKey, APIKey.agent_session_id == AssistSession.agent_session_id)
-        .filter(APIKey.is_active.is_(True))
-        .group_by(AssistSession.id)
-        .subquery()
-    )
-
-    rows = (
-        db.query(AssistSession, live_expiry.c.expires_at)
-        .outerjoin(live_expiry, live_expiry.c.session_id == AssistSession.id)
-        .filter(AssistSession.status == AssistSessionStatus.ACTIVE.value)
-        .all()
-    )
-
-    lapsed: List[AssistSession] = []
-    for session, expires_at in rows:
-        if expires_at is not None and expires_at > now:
-            continue  # still usable
-        session.status = AssistSessionStatus.ENDED.value
-        # The truthful timestamp is when the credential died. Only fall back to
-        # `now` for the pathological case of an active session with no key row
-        # at all — there is no better answer there, and pretending otherwise
-        # would put a fabricated time in the audit trail.
-        session.ended_at = expires_at or now
-        lapsed.append(session)
-
-    if lapsed:
-        db.commit()
-        logger.info(
-            "Lapsed %d assist session(s) whose keys had expired: %s",
-            len(lapsed),
-            ", ".join(f"#{s.id}" for s in lapsed[:20]),
-        )
-    return len(lapsed)

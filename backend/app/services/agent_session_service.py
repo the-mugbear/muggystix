@@ -42,7 +42,7 @@ from app.db.models_agent import (
     TestPlan,
 )
 from app.db.models_auth import APIKey, User
-from app.services.agent_key_ttl import resolve_expires_at
+from app.services.agent_key_ttl import resolve_expires_at, session_renewal_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +74,14 @@ def create_agent_session(
     purpose: Optional[str] = None,
     workflow: str = AgentSessionWorkflow.PROJECT.value,
     status: str = SESSION_ACTIVE,
-    plan_id: Optional[int] = None,   # v2.337.0 — accepted + ignored (target
-    scope_id: Optional[int] = None,  # lives on the phase row now); kept so
-                                     # older callers/fixtures don't break.
 ) -> AgentSession:
     """Create + flush an ``AgentSession`` and return it.
 
     ``workflow`` defaults to ``project``; the legacy values are accepted only
-    so tests and backfills can construct historical shapes.  ``plan_id`` /
-    ``scope_id`` are accepted for backward compatibility and ignored — a
-    session no longer carries a single target; the recon/execution phase rows
-    do (``ReconSession.scope_id`` / ``ExecutionSession.test_plan_id``).
+    so tests and backfills can construct historical shapes.  A session carries
+    no single target — the recon/execution phase rows do
+    (``ReconSession.scope_id`` / ``ExecutionSession.test_plan_id``).
     """
-    _ = (plan_id, scope_id)
     base = AgentSession(
         workflow=workflow,
         project_id=project_id,
@@ -399,8 +394,13 @@ def open_execution_phase(
     if plan.project_id != session.project_id:
         raise HTTPException(status_code=404, detail="Test plan not found")
     # Serialise concurrent opens on the plan row (Postgres FOR UPDATE; a no-op
-    # on SQLite, where the partial-unique index is the backstop).
-    db.query(TestPlan).filter(TestPlan.id == plan.id).with_for_update().first()
+    # on SQLite, where the partial-unique index is the backstop).  ``refresh``
+    # rather than a bare locking query: the caller loaded ``plan`` before the
+    # lock, and a query that returns an already-loaded object leaves its
+    # attributes untouched, so the status checked below would be the
+    # pre-lock value and a reject that committed while we waited would be
+    # invisible.  Refreshing under the lock reads the state the lock protects.
+    db.refresh(plan, with_for_update=True)
     if plan.status not in ("approved", "in_progress"):
         raise HTTPException(
             status_code=409,
@@ -497,26 +497,19 @@ def session_phase_summary(db: Session, session: AgentSession) -> dict:
     reports and what the MCP layer fills tool arguments from."""
     recon = active_recon_phases(db, session.id)
     execs = active_execution_phases(db, session.id)
-    # The plan a bare ``plan_id`` means: the active execution's plan, else the
-    # newest plan this session drafted.
-    plan_id: Optional[int] = None
-    if len(execs) == 1:
-        plan_id = execs[0].test_plan_id
-    else:
-        latest_plan = (
-            db.query(TestPlan.id)
-            .filter(TestPlan.agent_session_id == session.id)
-            .order_by(TestPlan.id.desc())
-            .first()
-        )
-        if latest_plan is not None:
-            plan_id = latest_plan[0]
     drafted = [
         pid for (pid,) in db.query(TestPlan.id)
         .filter(TestPlan.agent_session_id == session.id)
         .order_by(TestPlan.id)
         .all()
     ]
+    # The plan a bare ``plan_id`` means: the active execution's plan, else the
+    # newest plan this session drafted.
+    plan_id: Optional[int] = None
+    if len(execs) == 1:
+        plan_id = execs[0].test_plan_id
+    elif drafted:
+        plan_id = drafted[-1]
     return {
         "recon_session_id": recon[0].id if len(recon) == 1 else None,
         "active_recon_session_ids": [r.id for r in recon],
@@ -558,21 +551,42 @@ def end_agent_session(
     session.notes = (f"{session.notes}\n{line}" if session.notes else line)[-8192:]
 
 
-def has_live_session_key(now: Optional[datetime] = None):
-    """Correlated EXISTS against the outer ``AgentSession``: an unexpired
-    active key.  Use for filters; fetch the value to display separately."""
-    from sqlalchemy import select
-    now = now or datetime.now(timezone.utc)
-    return (
-        select(APIKey.id)
-        .where(
-            APIKey.agent_session_id == AgentSession.id,
-            APIKey.is_active.is_(True),
-            APIKey.expires_at.isnot(None),
-            APIKey.expires_at > now,
+def supersede_agent_session(
+    db: Session,
+    old_session_id: Optional[int],
+    *,
+    successor: AgentSession,
+    ended_by: Optional[User] = None,
+) -> Optional[AgentSession]:
+    """End the session a resume/rotate is replacing, AFTER its work has been
+    re-pointed at ``successor``.
+
+    v2.338.0.  A resume mints a fresh session and key on the assumption that
+    the previous agent is dead; if the previous key stays live, the operator
+    now holds two credentials for the same run and the "crashed" agent can
+    keep writing beside the new one.  Ending the old session revokes its keys
+    and closes whatever it still had open.  Call this only once the resumed
+    run / plan carries ``successor.id`` — ``end_agent_session`` abandons the
+    old session's active recon runs, and the one being resumed must no longer
+    be among them.  Returns the ended session, or None when there was nothing
+    to end (a run that predates the unified session row).
+    """
+    if old_session_id is None or old_session_id == successor.id:
+        return None
+    old = db.query(AgentSession).filter(AgentSession.id == old_session_id).first()
+    if old is None:
+        return None
+    if old.status == SESSION_ACTIVE:
+        end_agent_session(
+            db, old, ended_by=ended_by,
+            reason=f"superseded by session #{successor.id}",
         )
-        .exists()
-    )
+    else:
+        # Already ended (lapsed by the sweep, or ended by hand) — its keys were
+        # revoked on the way out, but revoke again so a row hand-edited back to
+        # active can't slip through.
+        revoke_session_keys(db, old.id)
+    return old
 
 
 def key_expiry_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
@@ -614,20 +628,6 @@ def lapse_expired_agent_sessions(db: Session) -> int:
     deadline has also passed — otherwise the sweep would kill a session whose
     agent is mid-scan and about to renew.  Returns the number ended.
     """
-    # Inline the renewal deadline (started_at + max lifetime) rather than
-    # importing it from app.api.deps — the service layer must not import the
-    # router layer (test_service_router_boundary).
-    from datetime import timedelta
-    from app.core.config import settings as _settings
-
-    def session_renewal_deadline(sess):
-        started = getattr(sess, "started_at", None)
-        if started is None:
-            return None
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        return started + timedelta(hours=_settings.AGENT_SESSION_MAX_LIFETIME_HOURS)
-
     now = datetime.now(timezone.utc)
     live_expiry = (
         db.query(
@@ -657,13 +657,18 @@ def lapse_expired_agent_sessions(db: Session) -> int:
         # The truthful timestamp is when access actually stopped.
         session.completed_at = expires_at or session.completed_at
         lapsed.append(session)
-    # Legacy assist detail rows mirror the status so their review page agrees.
+    # Assist detail rows mirror the status so their review page agrees, dated
+    # to when access actually stopped (the session's completed_at — the key's
+    # expiry), not to when the sweep happened to run.
     if lapsed:
-        ids = [s.id for s in lapsed]
-        db.query(AssistSession).filter(
-            AssistSession.agent_session_id.in_(ids),
-            AssistSession.status == "active",
-        ).update({"status": "ended", "ended_at": now}, synchronize_session=False)
+        for s in lapsed:
+            db.query(AssistSession).filter(
+                AssistSession.agent_session_id == s.id,
+                AssistSession.status == "active",
+            ).update(
+                {"status": "ended", "ended_at": s.completed_at or now},
+                synchronize_session=False,
+            )
         db.commit()
         logger.info(
             "Lapsed %d agent session(s) whose keys had expired: %s",
@@ -929,25 +934,18 @@ def count_agent_sessions(
 _TARGET_CIDR_CAP = 3
 
 
-def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
-    """Fill ``target_label`` for a page of rows, in two queries.
+def _scope_cidr_labels(db: Session, scope_ids: set) -> dict:
+    """``{scope_id: "10.0.0.0/24, 10.0.1.0/24 +3 more"}`` in one query.
 
-    v2.306.0.  Batched deliberately: this runs on the Agent Runs list, and a
-    per-row lookup would put the timeline back into N+1 for a purely cosmetic
-    field. Two IN() queries regardless of page size.
+    CIDRs only — the ranges are what tell a second analyst a network is
+    already being worked; a scope's name is a relic that the rest of the UI
+    no longer surfaces (v2.334.0) and the label follows suit (v2.338.0).
+    A scope with no subnets labels as ``scope #N`` so the row is never blank.
     """
     from app.db import models
 
-    scope_ids = {r.scope_id for r in rows if r.scope_id is not None}
-    plan_ids = {r.test_plan_id for r in rows if r.test_plan_id is not None}
-
-    scope_labels: dict[int, str] = {}
+    cidrs: dict[int, List[str]] = {}
     if scope_ids:
-        names = dict(
-            db.query(models.Scope.id, models.Scope.name)
-            .filter(models.Scope.id.in_(scope_ids)).all()
-        )
-        cidrs: dict[int, List[str]] = {}
         for sid, cidr in (
             db.query(models.Subnet.scope_id, models.Subnet.cidr)
             .filter(models.Subnet.scope_id.in_(scope_ids))
@@ -955,17 +953,61 @@ def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
             .all()
         ):
             cidrs.setdefault(sid, []).append(cidr)
-        for sid in scope_ids:
-            ranges = cidrs.get(sid, [])
-            shown = ", ".join(ranges[:_TARGET_CIDR_CAP])
-            if len(ranges) > _TARGET_CIDR_CAP:
-                shown += f" +{len(ranges) - _TARGET_CIDR_CAP} more"
-            name = names.get(sid)
-            # The CIDRs are the part another analyst needs; the scope name is
-            # context. Show both when they differ, ranges alone when there is
-            # no name to add.
-            scope_labels[sid] = f"{name} — {shown}" if name and shown else (shown or name or "")
+    labels: dict[int, str] = {}
+    for sid in scope_ids:
+        ranges = cidrs.get(sid, [])
+        shown = ", ".join(ranges[:_TARGET_CIDR_CAP])
+        if len(ranges) > _TARGET_CIDR_CAP:
+            shown += f" +{len(ranges) - _TARGET_CIDR_CAP} more"
+        labels[sid] = shown or f"scope #{sid}"
+    return labels
 
+
+def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
+    """Fill ``target_label`` for a page of rows in a fixed number of queries.
+
+    v2.306.0.  Batched deliberately: this runs on the Agent Runs list, and a
+    per-row lookup would put the timeline back into N+1 for a purely cosmetic
+    field.  Legacy rows carry one target (a scope or a plan); a consolidated
+    session declares its targets per phase, so its label is one line naming
+    the scopes it scanned, the plans it drafted, the plans it executed.
+    """
+    project_ids = [r.id for r in rows if r.kind == "project"]
+
+    # Per-phase targets of the consolidated sessions on this page.
+    recon_by: dict[int, List[int]] = {}
+    drafted_by: dict[int, List[str]] = {}
+    executed_by: dict[int, List[str]] = {}
+    if project_ids:
+        for sid, scope_id in (
+            db.query(ReconSession.agent_session_id, ReconSession.scope_id)
+            .filter(ReconSession.agent_session_id.in_(project_ids))
+            .order_by(ReconSession.id)
+            .all()
+        ):
+            recon_by.setdefault(sid, []).append(scope_id)
+        for sid, title in (
+            db.query(TestPlan.agent_session_id, TestPlan.title)
+            .filter(TestPlan.agent_session_id.in_(project_ids))
+            .order_by(TestPlan.id)
+            .all()
+        ):
+            drafted_by.setdefault(sid, []).append(title)
+        for sid, title in (
+            db.query(ExecutionSession.agent_session_id, TestPlan.title)
+            .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
+            .filter(ExecutionSession.agent_session_id.in_(project_ids))
+            .order_by(ExecutionSession.id)
+            .all()
+        ):
+            executed_by.setdefault(sid, []).append(title)
+
+    # One CIDR lookup for every scope any row on the page refers to.
+    scope_ids = {r.scope_id for r in rows if r.scope_id is not None}
+    scope_ids.update(s for ids in recon_by.values() for s in ids)
+    scope_labels = _scope_cidr_labels(db, scope_ids)
+
+    plan_ids = {r.test_plan_id for r in rows if r.test_plan_id is not None}
     plan_labels: dict[int, str] = {}
     if plan_ids:
         plan_labels = dict(
@@ -975,75 +1017,20 @@ def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
 
     for r in rows:
         if r.kind == "project":
-            continue  # labelled from its phases below
-        if r.scope_id is not None:
+            parts: List[str] = []
+            if r.id in recon_by:
+                parts.append("recon " + "; ".join(scope_labels[s] for s in recon_by[r.id]))
+            if r.id in drafted_by:
+                parts.append("drafted " + "; ".join(drafted_by[r.id]))
+            if r.id in executed_by:
+                parts.append("executed " + "; ".join(executed_by[r.id]))
+            r.target_label = " · ".join(parts) or None
+        elif r.scope_id is not None:
             r.target_label = scope_labels.get(r.scope_id) or None
         elif r.test_plan_id is not None:
             r.target_label = plan_labels.get(r.test_plan_id) or None
         # assist: project-wide by design — no target, and saying so is the UI's
         # job, not a fake label here.
-
-    # v2.337.0 — a consolidated session declares its targets per phase.  Three
-    # grouped queries for the page, then one line per session: the scopes it
-    # scanned, the plans it drafted, the plans it executed.
-    project_ids = [r.id for r in rows if r.kind == "project"]
-    if not project_ids:
-        return
-    recon_by: dict[int, List[str]] = {}
-    for sid, scope_id in (
-        db.query(ReconSession.agent_session_id, ReconSession.scope_id)
-        .filter(ReconSession.agent_session_id.in_(project_ids))
-        .order_by(ReconSession.id)
-        .all()
-    ):
-        recon_by.setdefault(sid, []).append(str(scope_id))
-    recon_scope_ids = {int(s) for v in recon_by.values() for s in v}
-    if recon_scope_ids:
-        cidrs2: dict[int, List[str]] = {}
-        for scope_id, cidr in (
-            db.query(models.Subnet.scope_id, models.Subnet.cidr)
-            .filter(models.Subnet.scope_id.in_(recon_scope_ids))
-            .order_by(models.Subnet.cidr)
-            .all()
-        ):
-            cidrs2.setdefault(scope_id, []).append(cidr)
-        for sid, ids in recon_by.items():
-            parts = []
-            for s in ids:
-                ranges = cidrs2.get(int(s), [])
-                shown = ", ".join(ranges[:_TARGET_CIDR_CAP])
-                if len(ranges) > _TARGET_CIDR_CAP:
-                    shown += f" +{len(ranges) - _TARGET_CIDR_CAP} more"
-                parts.append(shown or f"scope #{s}")
-            recon_by[sid] = parts
-    drafted_by: dict[int, List[str]] = {}
-    for sid, title in (
-        db.query(TestPlan.agent_session_id, TestPlan.title)
-        .filter(TestPlan.agent_session_id.in_(project_ids))
-        .order_by(TestPlan.id)
-        .all()
-    ):
-        drafted_by.setdefault(sid, []).append(title)
-    executed_by: dict[int, List[str]] = {}
-    for sid, title in (
-        db.query(ExecutionSession.agent_session_id, TestPlan.title)
-        .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-        .filter(ExecutionSession.agent_session_id.in_(project_ids))
-        .order_by(ExecutionSession.id)
-        .all()
-    ):
-        executed_by.setdefault(sid, []).append(title)
-    for r in rows:
-        if r.kind != "project":
-            continue
-        parts: List[str] = []
-        if r.id in recon_by:
-            parts.append("recon " + "; ".join(recon_by[r.id]))
-        if r.id in drafted_by:
-            parts.append("drafted " + "; ".join(drafted_by[r.id]))
-        if r.id in executed_by:
-            parts.append("executed " + "; ".join(executed_by[r.id]))
-        r.target_label = " · ".join(parts) or None
 
 
 def list_agent_sessions(

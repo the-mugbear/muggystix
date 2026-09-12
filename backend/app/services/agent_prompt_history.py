@@ -21,6 +21,23 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.1.0",
+        "app_version": "2.338.0",
+        "summary": (
+            "Identity shape: GET /agent/identity reports recon_session_id and "
+            "execution_session_id as separate fields (workflow_session_id, "
+            "workflow_family and scope_id are gone) — MCP execution_complete "
+            "fills its session_id from execution_session_id. Execution writes "
+            "(sanity-check, test-results, complete) now resolve the run through "
+            "the caller's session; a session with no active run on the plan gets "
+            "409 no_active_execution_run instead of writing into another "
+            "session's run. plan_list lists every plan in the project (mine=true "
+            "narrows to this session's drafts); submit no longer claims execution "
+            "needs a separate key. One probe per session applies to every kind of "
+            "work, drafting included."
+        ),
+    },
+    {
         "version": "2.0.0",
         "app_version": "2.337.0",
         "summary": (

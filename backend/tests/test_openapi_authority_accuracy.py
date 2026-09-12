@@ -9,7 +9,7 @@ read-only for a workflow the registry gives write tools — so the description
 can't silently fall out of step with the endpoints again.
 """
 from app.main import _OPENAPI_TAGS
-from app.api.v1.endpoints.mcp_tools import TOOLS, WORKFLOW_ASSIST
+from app.api.v1.endpoints.mcp_tools import TOOLS, WORKFLOW_ASSIST, tool_workflows
 
 
 def _tag_descriptions() -> dict[str, str]:
@@ -18,8 +18,8 @@ def _tag_descriptions() -> dict[str, str]:
 
 def _assist_has_write_tools() -> bool:
     return any(
-        WORKFLOW_ASSIST in spec["workflows"] and spec["method"] != "GET"
-        for spec in TOOLS.values()
+        WORKFLOW_ASSIST in tool_workflows(name) and spec["method"] != "GET"
+        for name, spec in TOOLS.items()
     )
 
 

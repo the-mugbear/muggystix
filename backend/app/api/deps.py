@@ -22,16 +22,17 @@ from app.db.models_agent import Agent, AgentRateBucket, AgentSessionWorkflow
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import settings
 from app.core.security import check_permissions
+# Re-exported: agent_browse reads it from here.  Defined in the service layer
+# (v2.338.0) so the session sweep can share it without importing this module.
+from app.services.agent_key_ttl import session_renewal_deadline  # noqa: F401
 
-# Sentinels: request.state.scoped_plan_id and request.state.scoped_scope_id
-# are unset for JWT-authed requests that never went through the agent auth
-# dep.  Agent-authed requests set them based on which column is populated
-# on the api_keys row:
-#   - test_plan_id set  → scoped_plan_id = int, scoped_scope_id = None
-#   - scope_id set      → scoped_plan_id = None, scoped_scope_id = int   (v2.11.0)
-#   - both null         → legacy/global key, both sentinels = None
-# The two scope columns are mutually exclusive by convention (recon keys
-# are scope-bound, plan keys are plan-bound, neither sets both).
+# What the agent auth dependency leaves on ``request.state`` for handlers and
+# the audit middleware (v2.337.0 — a key binds to one project session, never to
+# a plan or scope):
+#   agent_id, agent_project_id, api_key_id, api_key_prefix, key_expires_at,
+#   agent_session_id, agent_session_workflow, key_operator_id (+ key_operator_role
+#   once ``enforce_agent_operator_access`` has resolved it).
+# None of these are set for JWT-authed requests.
 
 logger = logging.getLogger(__name__)
 
@@ -68,32 +69,6 @@ _AGENT_RATE_SWEEP_EVERY = 500
 #: Path an agent posts to in order to renew its own key. Named once so the
 #: 401 payload and the route can never drift.
 AGENT_SESSION_RENEW_PATH = "/api/v1/agent/session/renew"
-
-
-def _as_utc(value):
-    """Normalise a possibly tz-naive datetime to UTC-aware.
-
-    Some drivers hand back naive datetimes even for ``DateTime(timezone=True)``
-    columns; comparing one to an aware ``now()`` raises TypeError and 500s the
-    request.
-    """
-    if value is None:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-
-def session_renewal_deadline(agent_session) -> Optional[datetime]:
-    """When this session stops being renewable — ``started_at`` + the cap.
-
-    Returns None when there is no session to measure from, which makes the key
-    non-renewable rather than immortal.
-    """
-    if agent_session is None:
-        return None
-    started = _as_utc(getattr(agent_session, "started_at", None))
-    if started is None:
-        return None
-    return started + timedelta(hours=settings.AGENT_SESSION_MAX_LIFETIME_HOURS)
 
 
 def key_is_renewable(agent_session) -> bool:

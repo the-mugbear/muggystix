@@ -7,12 +7,16 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { RefreshCw, Search, ExternalLink, Loader2 } from 'lucide-react';
+import { RefreshCw, Search, ExternalLink, Loader2, Square } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
+import { useConfirm } from '../hooks/useConfirm';
 import {
   AgentSessionKind,
   AgentSessionRow,
   AgentActivitySummary,
   listAgentSessions,
+  endAgentSession,
   getAgentSessionSummary,
   getAgentActivitySummary,
   ModelToolSummaryRow,
@@ -128,8 +132,9 @@ const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ row
       </CardHeader>
       <CardContent>
         <p className="mb-sm text-caption text-muted-foreground">
-          Counts of recon / plan-generation / execution sessions for each agent identity. Use this
-          to compare models running against the same project.
+          Counts of sessions for each agent identity — unified project sessions, plus the
+          legacy recon / plan-generation / execution / assist rows from before the
+          consolidation. Use this to compare models running against the same project.
         </p>
         <div className="overflow-x-auto rounded-panel border border-border">
           <Table className="min-w-[600px]">
@@ -137,6 +142,7 @@ const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ row
               <TableRow>
                 <TableHead>Model</TableHead>
                 <TableHead>Tool / harness</TableHead>
+                <TableHead className="w-20 text-right">Sessions</TableHead>
                 <TableHead className="w-20 text-right">Recon</TableHead>
                 <TableHead className="w-24 text-right">Plan-gen</TableHead>
                 <TableHead className="w-24 text-right">Execution</TableHead>
@@ -157,6 +163,7 @@ const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ row
                   <TableCell>
                     {r.generated_by_tool || <span className="text-caption text-muted-foreground">—</span>}
                   </TableCell>
+                  <TableCell className="text-right">{r.project ?? 0}</TableCell>
                   <TableCell className="text-right">{r.recon}</TableCell>
                   <TableCell className="text-right">{r.plan_generation}</TableCell>
                   <TableCell className="text-right">{r.execution}</TableCell>
@@ -342,6 +349,10 @@ const ProjectActivity: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  const { user } = useAuth();
+  const toast = useToast();
+  const [confirmEl, confirm] = useConfirm();
+  const [endingId, setEndingId] = useState<number | null>(null);
   const [kindFilter, setKindFilter] = useState<'' | AgentSessionKind>('');
   const [modelFilter, setModelFilter] = useState('');
   const [toolFilter, setToolFilter] = useState('');
@@ -392,6 +403,40 @@ const ProjectActivity: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchAll, refreshNonce]);
 
+  // v5.212.0 — the operator's kill switch for a unified project session. The
+  // per-workflow rows have their own detail pages; a project session had none,
+  // so its row on the hub page went nowhere and — worse — a session started from
+  // Scopes / Test Plans / Execute could not be stopped short of its key's TTL.
+  // Owner or project admin only; the backend enforces that and answers 403.
+  const canEnd = (row: AgentSessionRow) =>
+    row.kind === 'project'
+    && row.status === 'active'
+    && (row.user_id === user?.id || user?.role === 'admin');
+
+  const handleEnd = async (row: AgentSessionRow) => {
+    const ok = await confirm({
+      title: `End agent session #${row.id}?`,
+      severity: 'warning',
+      confirmLabel: 'End session',
+      body:
+        'The agent’s API key is revoked immediately; any agent still '
+        + 'running against it gets 401s from its next call. Open reconnaissance '
+        + 'runs are marked abandoned, open execution runs are paused (resumable), '
+        + 'and draft plans are kept. The session record stays for the audit trail.',
+    });
+    if (!ok) return;
+    setEndingId(row.id);
+    try {
+      await endAgentSession(row.id);
+      toast.success(`Agent session #${row.id} ended — its key is revoked.`);
+      setRefreshNonce((n) => n + 1);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not end the agent session.'));
+    } finally {
+      setEndingId(null);
+    }
+  };
+
   const drillInto = (row: AgentSessionRow) => {
     if (row.kind === 'execution') {
       navigate(`/executions/${row.id}`);
@@ -406,6 +451,7 @@ const ProjectActivity: React.FC = () => {
 
   return (
     <div className="p-md md:p-lg">
+      {confirmEl}
       <div className="mb-md flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Runs</h1>
@@ -590,34 +636,63 @@ const ProjectActivity: React.FC = () => {
                           )}
                         </>
                       )}
+                      {r.kind === 'project' && r.purpose && (
+                        <p
+                          className="mt-xxs max-w-full truncate text-caption text-muted-foreground"
+                          title={r.purpose}
+                        >
+                          {r.purpose}
+                        </p>
+                      )}
                     </TableCell>
                     <TableCell>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => drillInto(r)}
-                            aria-label={`Open ${r.kind} session ${r.id}`}
-                            disabled={
-                              // Assist has its own detail page and no target
-                              // id — keyed off the session id alone. Without
-                              // this branch the row's Open button was disabled
-                              // because test_plan_id is (correctly) null.
-                              r.kind === 'project'
-                                ? true
-                                : r.kind === 'assist'
-                                ? false
-                                : r.kind === 'recon'
-                                ? r.scope_id == null
-                                : r.test_plan_id == null
-                            }
-                          >
-                            <ExternalLink className="size-4" aria-hidden />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Open</TooltipContent>
-                      </Tooltip>
+                      {r.kind === 'project' ? (
+                        canEnd(r) && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleEnd(r)}
+                                disabled={endingId === r.id}
+                                aria-label={`End agent session ${r.id}`}
+                              >
+                                {endingId === r.id ? (
+                                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                                ) : (
+                                  <Square className="size-4 text-warning" aria-hidden />
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>End session (revokes its key)</TooltipContent>
+                          </Tooltip>
+                        )
+                      ) : (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => drillInto(r)}
+                              aria-label={`Open ${r.kind} session ${r.id}`}
+                              disabled={
+                                // Assist has its own detail page and no target
+                                // id — keyed off the session id alone. Without
+                                // this branch the row's Open button was disabled
+                                // because test_plan_id is (correctly) null.
+                                r.kind === 'assist'
+                                  ? false
+                                  : r.kind === 'recon'
+                                  ? r.scope_id == null
+                                  : r.test_plan_id == null
+                              }
+                            >
+                              <ExternalLink className="size-4" aria-hidden />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Open</TooltipContent>
+                        </Tooltip>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

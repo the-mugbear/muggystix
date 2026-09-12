@@ -76,6 +76,7 @@ from app.api.v1.endpoints.mcp_tools import (
     TOOLS,
     advertised_schema,
     tool_list_payload,
+    tool_workflows,
 )
 from app.services import mcp_telemetry_service as mcp_telemetry
 from app.services.agent_api_log_service import mcp_loopback_active
@@ -200,10 +201,10 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "kind": "read" if spec["method"] == "GET" else "write",
                 "method": spec["method"],
                 "path": spec["path"],
-                # Which session type sees this tool.  The page documents four
-                # workflows now; without this a reader can't tell why their
-                # client lists eight tools and the page shows thirty.
-                "workflows": sorted(spec["workflows"]),
+                # The kind of work the tool belongs to — a grouping for the
+                # reference page only (every session lists every tool since
+                # v2.337.0); derived from the name in one place, v2.338.0.
+                "workflows": sorted(tool_workflows(name)),
                 "input_schema": advertised_schema(spec),
             }
             for name, spec in _TOOLS.items()
@@ -569,17 +570,19 @@ async def _handle_message(
         return _rpc_result(msg_id, {})
 
     if method == "tools/list":
-        # With a key, list this session's own workflow tools (v2.278.0).
-        # Without a key we list everything — that's the documentation view.
+        # The whole catalogue, with or without a key (v2.337.0 — one project
+        # session does every kind of work, so there is nothing to filter by;
+        # v2.309.0 dropped the capability filter before that).  Whether a
+        # given write succeeds is the operator's project role, decided at the
+        # endpoint.
         #
-        # v2.309.0 — the capability filter is gone with the capability system.
-        # Write tools are listed for every session; whether a given write
-        # succeeds is the operator's project role, decided at the endpoint.
-        identity = await _key_identity(
-            app, api_key, caller=caller, user_agent=user_agent
-        )
-        workflow = identity.get("workflow") if identity else None
-        return _rpc_result(msg_id, {"tools": tool_list_payload(workflow=workflow)})
+        # The identity lookup is kept even though nothing here reads it: it is
+        # the earliest audited ``via_mcp`` call a freshly configured client
+        # makes, which is what flips the session's connection state to "mcp"
+        # before the operator has typed anything.  Cached, so re-listing each
+        # turn does not spam the activity view.
+        await _key_identity(app, api_key, caller=caller, user_agent=user_agent)
+        return _rpc_result(msg_id, {"tools": tool_list_payload()})
 
     if method == "tools/call":
         try:

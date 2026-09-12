@@ -103,6 +103,22 @@ def _truncate_to_byte_cap(text: str, cap: int) -> str:
 _EXECUTABLE_PLAN_STATUSES = ("approved", "in_progress")
 
 
+def _own_active_run(db: Session, request: Request, plan) -> ExecutionSession:
+    """The execution run THIS session has open on ``plan``.
+
+    v2.338.0 — every write on an execution run (sanity check, test result,
+    entry completion) resolves the run through the caller's session rather
+    than "the active run on this plan".  The plan-scoped lookup let any
+    session in the project write into a run it did not open, and let a second
+    ``/execution-sessions/start`` silently redirect the first session's
+    results into the newcomer's run.  ``resolve_execution_phase`` raises 409
+    when this session has no active run on the plan.
+    """
+    return resolve_execution_phase(
+        db, getattr(request.state, "agent_session_id", None), plan_id=plan.id,
+    )
+
+
 def _require_executable_plan(plan) -> None:
     if plan.status not in _EXECUTABLE_PLAN_STATUSES:
         raise HTTPException(
@@ -392,6 +408,7 @@ def _execution_context_payload(db, plan, session, agent_name, *, include_read_ba
 )
 def record_sanity_check(
     body: SanityCheckRequest,
+    request: Request,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -429,16 +446,7 @@ def record_sanity_check(
             ),
         )
 
-    session = (
-        db.query(ExecutionSession)
-        .filter(
-            ExecutionSession.test_plan_id == plan.id,
-            ExecutionSession.status == ExecutionSessionStatus.ACTIVE.value,
-        )
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=400, detail="No active execution session")
+    session = _own_active_run(db, request, plan)
 
     check = HostSanityCheck(
         execution_session_id=session.id,
@@ -496,6 +504,7 @@ def record_sanity_check(
 )
 def record_test_result(
     body: TestResultRequest,
+    request: Request,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -516,16 +525,7 @@ def record_test_result(
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
 
-    session = (
-        db.query(ExecutionSession)
-        .filter(
-            ExecutionSession.test_plan_id == plan.id,
-            ExecutionSession.status == ExecutionSessionStatus.ACTIVE.value,
-        )
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=400, detail="No active execution session")
+    session = _own_active_run(db, request, plan)
 
     _require_executable_plan(plan)
 
@@ -694,6 +694,7 @@ def record_test_result(
 )
 def complete_entry_execution(
     body: CompleteEntryRequest,
+    request: Request,
     plan_id: int = Path(..., gt=0),
     entry_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -714,16 +715,7 @@ def complete_entry_execution(
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
 
-    session = (
-        db.query(ExecutionSession)
-        .filter(
-            ExecutionSession.test_plan_id == plan.id,
-            ExecutionSession.status == ExecutionSessionStatus.ACTIVE.value,
-        )
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=400, detail="No active execution session")
+    session = _own_active_run(db, request, plan)
 
     _require_executable_plan(plan)
 

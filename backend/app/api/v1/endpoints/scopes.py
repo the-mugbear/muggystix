@@ -38,7 +38,7 @@ from app.schemas.schemas import (
     ScopeCoverageHost,
 )
 from app.parsers.subnet_parser import SubnetParser
-from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
+from app.services.agent_key_ttl import resolve_ttl_hours
 from app.services.agent_prompt_service import resolve_base_url
 from app.services.mcp_client_setup_service import build_mcp_clients
 from app.services.subnet_correlation import SubnetCorrelationService
@@ -1160,42 +1160,9 @@ class StartReconResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Recon-session lifecycle helpers — shared by recon start + resume so the
-# agent-resolution, integration-loading and key-minting plumbing lives in
-# one place.
+# Recon-session lifecycle helpers.  Agent resolution and key minting live in
+# ``agent_session_service`` (v2.337.0); the per-recon copies are gone (v2.338.0).
 # ---------------------------------------------------------------------------
-
-def _resolve_recon_agent(db, *, project, user, prefer_agent_id=None):
-    """Resolve the agent for a recon session.
-
-    Prefers ``prefer_agent_id`` (the session's original agent, on
-    resume), then the user's project agent, auto-provisioning one if
-    neither exists.  Reactivates a deactivated agent.
-    """
-    from app.db.models_agent import Agent
-    agent = None
-    if prefer_agent_id is not None:
-        agent = db.query(Agent).filter(Agent.id == prefer_agent_id).first()
-    if agent is None:
-        agent = (
-            db.query(Agent)
-            .filter(Agent.project_id == project.id, Agent.owner_id == user.id)
-            .first()
-        )
-    if agent is not None:
-        if not agent.is_active:
-            agent.is_active = True
-        return agent
-    agent = Agent(
-        name=f"{user.username}-agent",
-        project_id=project.id,
-        owner_id=user.id,
-        description="Auto-provisioned for agentic reconnaissance",
-    )
-    db.add(agent)
-    db.flush()
-    return agent
-
 
 def _load_active_integrations(db, *, user, project):
     """Return the user's decrypted active scanner-integration credentials
@@ -1209,54 +1176,6 @@ def _load_active_integrations(db, *, user, project):
         for r in int_svc.list_for_user(user.id, project_id=project.id)
         if r.is_active
     ]
-
-
-def _mint_recon_session_key(
-    db,
-    *,
-    agent,
-    scope,
-    recon_session,
-    name_suffix="",
-    ttl_hours: Optional[int] = None,
-    agent_session_id: Optional[int] = None,
-):
-    """Mint a fresh recon-scoped, session-pinned API key; return the
-    plaintext key.
-
-    Revokes any prior active key bound to *this* recon session first, so
-    a resumed session never has two live keys — without that, the
-    crashed agent's key would stay usable and a second agent could write
-    into the same recon session.  Keys for *other* recon sessions on the
-    same scope are untouched, keeping concurrent recon isolated.
-    """
-    from app.db.models_auth import APIKey
-    from app.core.config import settings as _settings
-    import hashlib
-    import secrets
-    from datetime import datetime, timezone, timedelta
-
-    # Revoke prior active keys for THIS session's agent_session (one live key
-    # per session). recon_session ↔ agent_session is 1:1, so this is the
-    # post-contract equivalent of the old ``APIKey.recon_session_id ==`` revoke;
-    # on a fresh start agent_session_id is brand new, so it's a no-op there.
-    db.query(APIKey).filter(
-        APIKey.agent_session_id == agent_session_id,
-        APIKey.is_active.is_(True),
-    ).update({"is_active": False}, synchronize_session=False)
-
-    raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
-    db.add(
-        APIKey(
-            agent_id=agent.id,
-            agent_session_id=agent_session_id,
-            name=f"recon-session-{recon_session.id}{name_suffix}",
-            key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
-            key_prefix=raw_key[:14],
-            expires_at=resolve_expires_at(ttl_hours),
-        )
-    )
-    return raw_key
 
 
 @router.post(
@@ -1419,11 +1338,14 @@ def resume_recon_session(
         row[0] for row in db.query(Subnet.cidr).filter(Subnet.scope_id == scope.id).all()
     ]
 
-    # v2.337.0 — resume mints a fresh session and re-opens the run under it,
-    # so a crashed agent's orphaned key is revoked and a single live key
-    # continues the same recon run (its uploads are intact and deduped).
+    # v2.337.0 — resume mints a fresh session and re-opens the run under it so
+    # a single live key continues the same recon run (its uploads are intact
+    # and deduped).  v2.338.0 — the session it replaces is then ENDED, which is
+    # what revokes the crashed agent's key; minting on the new session never
+    # touched it, so resume used to leave two live credentials.
     from app.services.agent_session_service import (
         create_agent_session, resolve_project_agent, mint_session_key,
+        supersede_agent_session,
     )
     from app.services.agent_prompt_service import build_session_instructions
 
@@ -1434,9 +1356,15 @@ def resume_recon_session(
         db, project_id=project.id, agent_id=agent.id, started_by_id=current_user.id,
         purpose=f"Resume recon on scope {scope.id}",
     )
+    previous_session_id = recon_session.agent_session_id
     recon_session.agent_id = agent.id
     recon_session.agent_session_id = session.id
     db.flush()
+    # After the re-point: the old session's remaining open work is closed,
+    # this run is no longer part of it.
+    supersede_agent_session(
+        db, previous_session_id, successor=session, ended_by=current_user,
+    )
     raw_key = mint_session_key(db, agent=agent, session=session)
     integrations_decrypted = _load_active_integrations(db, user=current_user, project=project)
     instructions = build_session_instructions(

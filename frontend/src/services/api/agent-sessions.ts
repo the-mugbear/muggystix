@@ -34,6 +34,8 @@ export interface AgentSessionRow {
    *  already being scanned, which is the reason a session declares a target. */
   target_label?: string | null;
   test_plan_id?: number | null;
+  /** v5.211.0 — the operator's stated purpose (project sessions only). */
+  purpose?: string | null;
 }
 
 export interface AgentSessionListResponse {
@@ -66,9 +68,17 @@ export const listAgentSessions = async (
   return response.data;
 };
 
+/** v5.212.0 — the operator's kill switch for a unified project session:
+ *  revokes its key and closes what it left open. Owner or project admin only;
+ *  the backend enforces that and answers 403 otherwise. */
+export const endAgentSession = async (sessionId: number): Promise<void> => {
+  await api.post(`${p()}/agent-sessions/${sessionId}/end`);
+};
+
 export interface ModelToolSummaryRow {
   generated_by_model: string | null;
   generated_by_tool: string | null;
+  project: number;
   recon: number;
   plan_generation: number;
   assist: number;

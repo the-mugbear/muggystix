@@ -243,15 +243,12 @@ def get_agent_identity(
 
     return AgentIdentity(
         workflow=(session.workflow if session is not None else None),
-        workflow_family=(session.workflow if session is not None else None),
         session_id=session_id,
-        # A single active phase resolves cleanly; ambiguity (several open)
-        # returns None here and the agent names the one it means per call.
-        workflow_session_id=(
-            phases.get("recon_session_id") or phases.get("execution_session_id")
-        ),
+        # Each id in its own space; a single active run resolves cleanly,
+        # several open return None and the agent names the one it means.
         plan_id=phases.get("plan_id"),
-        scope_id=None,
+        recon_session_id=phases.get("recon_session_id"),
+        execution_session_id=phases.get("execution_session_id"),
         open_phases=phases,
         project_id=agent.project_id,
         project_name=(

@@ -14,17 +14,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_project
+from app.api.deps import get_current_project, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
-from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_agent import AgentSession
+from app.db.models_auth import User, UserRole
+from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
 from app.services.agent_session_service import (
+    SESSION_ACTIVE,
     count_agent_sessions,
+    end_agent_session,
     list_agent_sessions,
     summarise_by_model_tool,
 )
@@ -174,6 +177,71 @@ def get_agent_sessions(
         sessions=[AgentSessionRowResponse(**r.to_dict()) for r in page],
         total=total,
     )
+
+
+def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
+    if user.role == UserRole.ADMIN:
+        return True
+    membership = (
+        db.query(ProjectMembership)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.user_id == user.id,
+        )
+        .first()
+    )
+    return membership is not None and membership.role == ProjectRole.ADMIN.value
+
+
+@router.post(
+    "/agent-sessions/{session_id}/end",
+    status_code=204,
+    summary="End an agent session: revoke its key and close what it left open",
+)
+def end_project_agent_session(
+    project_id: int = Path(..., gt=0),
+    session_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
+):
+    """The operator's kill switch for a project session (v2.338.0).
+
+    Until now only a session started from the assist dialog could be ended
+    (through ``/assist/sessions/{id}/end``, keyed by that dialog's detail
+    row); a session minted from Scopes, Test Plans or Execute had no way to
+    be stopped short of its key's TTL.  This ends any ``project`` session:
+    keys revoked, open recon runs abandoned, open execution runs paused,
+    draft plans left as they are.  Idempotent-safe: an already-ended session
+    returns 409 so the caller knows nothing changed.
+
+    Owner or project admin only, for the reason the assist route gives:
+    peers gain nothing from ending each other's agents and lose a running
+    conversation.
+    """
+    session = (
+        db.query(AgentSession)
+        .filter(AgentSession.id == session_id, AgentSession.project_id == project.id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agent session not found in this project")
+    if session.started_by_id != current_user.id and not _is_project_admin(
+        db, user=current_user, project_id=project.id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This session belongs to another operator. Only its owner or a "
+                "project admin can end it."
+            ),
+        )
+    if session.status != SESSION_ACTIVE:
+        raise HTTPException(
+            status_code=409, detail=f"Session already in state '{session.status}'.",
+        )
+    end_agent_session(db, session, ended_by=current_user)
+    db.commit()
 
 
 @router.get(

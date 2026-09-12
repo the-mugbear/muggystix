@@ -213,9 +213,7 @@ def test_reference_page_recipes_come_from_the_session_builder(client):
     served = body["sample_clients"]
     assert body["sample_key_placeholder"] == SAMPLE_KEY_PLACEHOLDER
 
-    expected = build_mcp_clients(
-        body["endpoint"], SAMPLE_KEY_PLACEHOLDER, workflow="assist"
-    )
+    expected = build_mcp_clients(body["endpoint"], SAMPLE_KEY_PLACEHOLDER)
     assert served == expected
 
     # No live key ever reaches a page anyone with app access can read.

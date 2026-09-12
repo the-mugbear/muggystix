@@ -419,7 +419,7 @@ def mcp_tools(request: Request):
     # hand.  Rendering what the server would actually emit removes the second
     # copy rather than re-syncing it.
     catalog["sample_clients"] = build_mcp_clients(
-        catalog["endpoint"], SAMPLE_KEY_PLACEHOLDER, workflow="assist"
+        catalog["endpoint"], SAMPLE_KEY_PLACEHOLDER
     )
     catalog["sample_key_placeholder"] = SAMPLE_KEY_PLACEHOLDER
     catalog["trust_script_url"] = f"{base_url}/references/trust-cert-script"

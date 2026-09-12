@@ -21,8 +21,6 @@ keeps the user-facing surface small.
 
 from __future__ import annotations
 
-import hashlib
-import secrets
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -37,15 +35,13 @@ from app.db.models_agent import (
     Agent,
     AgentApiCall,
     AgentFeedback,
-    AgentSessionWorkflow,
     AssistSession,
     AssistSessionStatus,
 )
 from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
-from app.services.agent_key_ttl import resolve_expires_at, resolve_ttl_hours
-from app.services.agent_session_service import create_agent_session
+from app.services.agent_key_ttl import resolve_ttl_hours
 from app.services.assist_session_service import (
     effective_status,
     has_live_key,
@@ -61,15 +57,10 @@ router = APIRouter()
 # operator who hasn't pinged the API in 4h has either finished or
 # moved on, and a hanging key from yesterday is just an orphan.
 #
-# NOTE — three-place lockstep:
-#   1. This constant (the authoritative value the API enforces).
-#   2. ``StartAssistDialog.tsx`` mentions "4 h TTL" in its description
-#      and acknowledgement copy.  A future change here must bump that
-#      too — search the dialog for "TTL" before merging.
-#   3. ``build_assist_instructions`` in agent_prompt_service surfaces
-#      the TTL in the agent prompt indirectly via response.expires_at;
-#      no literal there to bump.
-ASSIST_KEY_DEFAULT_TTL_HOURS = 4
+# Key TTL: the deployment default (``AGENT_KEY_TTL_HOURS``) like every other
+# session start — v2.338.0 retired the 4h assist-only default, which dated
+# from read-only assist keys.  The dialog reads the resolved value from the
+# response (``key_ttl_hours``), so there is no literal to keep in step.
 
 
 # ---------------------------------------------------------------------------
@@ -179,17 +170,19 @@ class McpClientSetup(BaseModel):
 
 
 def _build_mcp_clients(
-    mcp_url: str, raw_key: str, *, project_name: str, assist_session_id: int
+    mcp_url: str, raw_key: str, *, project_name: str, agent_session_id: int
 ) -> List["McpClientSetup"]:
+    # The label the operator checks the agent's answer against must be the id
+    # the agent will actually report — ``session_id`` on /agent/identity is the
+    # unified AgentSession id, not this dialog's AssistSession row (v2.338.0).
     return [
         McpClientSetup(**client)
         for client in build_mcp_clients(
             mcp_url,
             raw_key,
-            workflow="assist",
             expected={
                 "project_name": project_name,
-                "session_label": f"assist session #{assist_session_id}",
+                "session_label": f"agent session #{agent_session_id}",
             },
         )
     ]
@@ -211,9 +204,8 @@ class StartAssistResponse(BaseModel):
     # rather than echoing a grant back at them.
     # v2.65.0 — surface the resolved TTL so the dialog can render
     # the actual expiry without hardcoding a value that drifts when
-    # AGENT_KEY_TTL_HOURS / ASSIST_KEY_DEFAULT_TTL_HOURS change.
-    # `resolve_ttl_hours()` already applies the global cap so this
-    # value reflects what the key was actually minted with.
+    # AGENT_KEY_TTL_HOURS changes.  `resolve_ttl_hours()` already applies
+    # the global cap so this value reflects what the key was minted with.
     key_ttl_hours: int
 
 
@@ -307,72 +299,6 @@ def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
     return membership is not None and membership.role == ProjectRole.ADMIN.value
 
 
-def _resolve_assist_agent(db: Session, *, project: Project, user: User) -> Agent:
-    """Return the per-user, per-project Agent row for assist sessions.
-
-    Shares the existing Agent row used by recon (one ``{user}-agent``
-    per (user, project)).  Auto-provisions if missing.  This keeps
-    ``Agent.last_activity_at`` honest across workflows — the SAME
-    agent identity drives all four surfaces, just with different
-    scoped keys.
-    """
-    agent = (
-        db.query(Agent)
-        .filter(Agent.project_id == project.id, Agent.owner_id == user.id)
-        .first()
-    )
-    if agent is not None:
-        if not agent.is_active:
-            agent.is_active = True
-        return agent
-    agent = Agent(
-        name=f"{user.username}-agent",
-        project_id=project.id,
-        owner_id=user.id,
-        description="Auto-provisioned for agentic workflows",
-    )
-    db.add(agent)
-    db.flush()
-    return agent
-
-
-def _mint_assist_session_key(
-    db: Session,
-    *,
-    agent: Agent,
-    assist_session: AssistSession,
-    ttl_hours: Optional[int],
-    agent_session_id: Optional[int] = None,
-) -> str:
-    """Mint a fresh assist-session-pinned API key; return the plaintext.
-
-    Revokes any prior active key bound to *this* session first.  Same
-    invariant as the recon variant: one live key per session, ever.
-    Keys for OTHER assist sessions are untouched, so concurrent
-    assists (e.g. two operators on the same project) stay isolated.
-    """
-    # Revoke prior active keys for this session's agent_session (one live key per
-    # session). assist_session ↔ agent_session is 1:1; assist has no resume, so a
-    # fresh start's agent_session_id is brand new and this is a no-op there.
-    db.query(APIKey).filter(
-        APIKey.agent_session_id == agent_session_id,
-        APIKey.is_active.is_(True),
-    ).update({"is_active": False}, synchronize_session=False)
-
-    raw_key = f"nm_agent_{secrets.token_urlsafe(32)}"
-    db.add(
-        APIKey(
-            agent_id=agent.id,
-            agent_session_id=agent_session_id,
-            name=f"assist-session-{assist_session.id}",
-            key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
-            key_prefix=raw_key[:14],
-            expires_at=resolve_expires_at(ttl_hours or ASSIST_KEY_DEFAULT_TTL_HOURS),
-        )
-    )
-    return raw_key
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -415,7 +341,7 @@ def start_assist_session(
     # v2.337.0 — "AI Assist" mints the same unified PROJECT session as every
     # other entry point; there is no separate assist key any more. The session
     # can query, and (role permitting) go on to recon / plan / execute with the
-    # same key. No AssistSession detail row is created.
+    # same key.
     from app.services.agent_session_service import (
         create_agent_session, resolve_project_agent, mint_session_key,
     )
@@ -426,10 +352,13 @@ def start_assist_session(
         db, project_id=project.id, agent_id=agent.id,
         started_by_id=current_user.id, purpose=body.purpose,
     )
-    # v2.337.0 — the session is a unified PROJECT session (one key does
-    # everything). An AssistSession detail row is still created, linked to it,
-    # so the /assist-sessions review page keeps a home for assist-initiated
-    # sessions — the same way recon/execution keep their phase rows.
+    # An AssistSession detail row is still created, linked to the base
+    # session, because the /assist-sessions review page and its end/detail
+    # routes are keyed by this table's ids.  It is a pointer, not the record:
+    # ``purpose``, ``last_activity_at`` and the probe live on the base row and
+    # the page reads them through it (``_session_row``).  Collapsing the page
+    # onto ``agent_sessions`` outright would change every id it links on, so
+    # that is a separate change.
     assist_session = AssistSession(
         project_id=project.id,
         agent_id=agent.id,
@@ -440,9 +369,11 @@ def start_assist_session(
     )
     db.add(assist_session)
     db.flush()
+    # v2.338.0 — the deployment default TTL, like every other session start.
+    # The 4h assist-only default dated from read-only assist keys; the session
+    # this mints is the same kind the other three buttons mint.
     raw_key = mint_session_key(
-        db, agent=agent, session=base_session,
-        ttl_hours=body.ttl_hours or ASSIST_KEY_DEFAULT_TTL_HOURS,
+        db, agent=agent, session=base_session, ttl_hours=body.ttl_hours,
     )
     instructions = build_session_instructions(
         request=request,
@@ -461,7 +392,7 @@ def start_assist_session(
     mcp_clients = _build_mcp_clients(
         mcp_url, raw_key,
         project_name=project.name,
-        assist_session_id=assist_session.id,
+        agent_session_id=base_session.id,
     )
     return StartAssistResponse(
         assist_session_id=assist_session.id,
@@ -472,9 +403,7 @@ def start_assist_session(
         instructions=instructions,
         mcp_clients=mcp_clients,
         mcp_url=mcp_url,
-        key_ttl_hours=resolve_ttl_hours(
-            body.ttl_hours or ASSIST_KEY_DEFAULT_TTL_HOURS
-        ),
+        key_ttl_hours=resolve_ttl_hours(body.ttl_hours),
     )
 
 
@@ -624,6 +553,27 @@ def list_assist_sessions(
     ]
 
 
+def _latest(a: Optional[datetime], b: Optional[datetime]) -> Optional[datetime]:
+    """The later of two optional timestamps (tz-naive values read as UTC)."""
+    def _aware(t):
+        return t if t is None or t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+    a, b = _aware(a), _aware(b)
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)
+
+
+def _probe_source(session: AssistSession):
+    """The row whose environment probe to show: the unified session when it
+    has one, else this legacy detail row."""
+    base = session.agent_session
+    if base is not None and base.environment_probed_at is not None:
+        return base
+    return session
+
+
 def _session_row(
     session: AssistSession,
     username: Optional[str],
@@ -639,19 +589,39 @@ def _session_row(
     two built the same 18 fields independently, so adding one meant remembering
     both — and the one you forget is the one that silently reads as its default.
     """
-    agent_session = session.agent_session
+    # v2.338.0 — read the live columns through the unified AgentSession.  The
+    # audit middleware refreshes ``agent_sessions.last_activity_at`` and the
+    # probe writes ``agent_sessions.environment*``; nothing writes those
+    # columns on this detail row any more, so reading them here reported
+    # every post-consolidation session as idle-forever and never-probed.
+    # Sessions from before the consolidation carry the values on this row
+    # and have no live base row worth preferring.
+    base = session.agent_session
     activity = activity or _SessionActivity()
+    stored_status = session.status
+    ended_at = session.ended_at
+    if base is not None and base.status != "active":
+        # The base row is what the key checks and what a supersede/lapse
+        # ends; mirror it so the page never shows a dead session as active.
+        stored_status = AssistSessionStatus.ENDED.value
+        ended_at = ended_at or base.completed_at
     return AssistSessionRow(
         id=session.id,
         project_id=session.project_id,
-        purpose=session.purpose,
-        status=effective_status(session.status, key_expires_at, now),
+        purpose=(base.purpose if base is not None and base.purpose else session.purpose),
+        status=effective_status(stored_status, key_expires_at, now),
         started_by_id=session.started_by_id,
         started_by_username=username,
         started_at=session.started_at,
-        ended_at=session.ended_at,
-        last_activity_at=session.last_activity_at,
-        environment_probed=session.environment_probed_at is not None,
+        ended_at=ended_at,
+        last_activity_at=_latest(
+            session.last_activity_at,
+            base.last_activity_at if base is not None else None,
+        ),
+        environment_probed=(
+            session.environment_probed_at is not None
+            or (base is not None and base.environment_probed_at is not None)
+        ),
         key_expires_at=key_expires_at,
         call_count=activity.call_count,
         note_count=note_count,
@@ -818,14 +788,20 @@ def get_assist_session(
         ]
 
     activity = _session_activity(db, [session.id]).get(session.id)
+    # v2.338.0 — feedback is stamped with the unified session id (from the
+    # key), and only optionally with this detail row's id; count by either.
+    feedback_filter = AgentFeedback.assist_session_id == session.id
+    if session.agent_session_id is not None:
+        feedback_filter = feedback_filter | (
+            AgentFeedback.agent_session_id == session.agent_session_id
+        )
     feedback_count = (
-        db.query(func.count(AgentFeedback.id))
-        .filter(AgentFeedback.assist_session_id == session.id)
-        .scalar()
+        db.query(func.count(AgentFeedback.id)).filter(feedback_filter).scalar()
     ) or 0
 
     # Detail EXTENDS the list row, so the shared fields are mapped once. The two
     # used to build the same 18 fields independently.
+    probe = _probe_source(session)
     return AssistSessionDetail(
         **_session_row(
             session,
@@ -835,11 +811,11 @@ def get_assist_session(
             note_count=note_total,
             activity=activity,
         ).model_dump(),
-        environment=session.environment,
-        environment_probed_at=session.environment_probed_at,
-        agent_model=session.generated_by_model,
-        agent_tool=session.generated_by_tool,
-        prompt_version=session.prompt_version,
+        environment=probe.environment,
+        environment_probed_at=probe.environment_probed_at,
+        agent_model=probe.generated_by_model,
+        agent_tool=probe.generated_by_tool,
+        prompt_version=probe.prompt_version,
         notes=notes,
         feedback_count=feedback_count,
     )

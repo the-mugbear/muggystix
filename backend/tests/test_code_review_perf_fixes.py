@@ -62,7 +62,6 @@ def execution_key(db_session, test_agent, test_plan):
         project_id=test_plan.project_id,
         agent_id=test_agent.id,
         started_by_id=None,
-        plan_id=test_plan.id,
     )
     raw = "nm_agent_perfE_" + "z" * 32
     db_session.add(APIKey(

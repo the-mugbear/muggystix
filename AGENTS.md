@@ -74,7 +74,7 @@ The API uses HTTPS with a self-signed certificate. All `curl` commands require `
 
 ## Environment probe (MANDATORY first step)
 
-> **Applies to recon, execution, and assist — NOT plan generation.** POST the probe once to your session — `POST /agent/session/environment` (v2.337.0; it replaced the three per-phase probe endpoints). It rides along into every reconnaissance or execution run you open, so a plan you draft is executed with the executor's own probe, not yours.
+> **One probe per session, whatever work follows.** POST it once to your session — `POST /agent/session/environment` (v2.337.0; it replaced the three per-phase probe endpoints). It rides along into every reconnaissance or execution run you open. A plan you only *draft* does not need it for its own sake — a plan describes intent, and whoever executes it probes then — but the session you draft it in may go on to scan or execute, so probe first regardless.
 
 Before you propose, scan, or run anything else, **probe the operator's environment and report it back to BlueStick.** Two operators on the same project can have very different environments (Windows + RemoteSigned vs Kali Linux), and the right command for one is wrong for the other — the probe is what lets you translate test intent into the correct command (see "Plans describe intent" below).
 

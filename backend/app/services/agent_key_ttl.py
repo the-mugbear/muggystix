@@ -56,3 +56,24 @@ def resolve_expires_at(requested_ttl_hours: Optional[int]) -> datetime:
     return datetime.now(timezone.utc) + timedelta(
         hours=resolve_ttl_hours(requested_ttl_hours)
     )
+
+
+def session_renewal_deadline(agent_session) -> Optional[datetime]:
+    """When a session stops being renewable — ``started_at`` + the cap
+    (``AGENT_SESSION_MAX_LIFETIME_HOURS``).
+
+    Returns None when there is no session to measure from, which makes the
+    key non-renewable rather than immortal.  v2.338.0 — lives here (the
+    service layer) rather than in ``app.api.deps`` so the hourly sweep in
+    ``agent_session_service`` can share it without importing the router
+    layer; the auth dependency imports it from here.
+    """
+    if agent_session is None:
+        return None
+    started = getattr(agent_session, "started_at", None)
+    if started is None:
+        return None
+    if started.tzinfo is None:
+        # Some drivers hand back naive datetimes even for DateTime(timezone=True).
+        started = started.replace(tzinfo=timezone.utc)
+    return started + timedelta(hours=_settings.AGENT_SESSION_MAX_LIFETIME_HOURS)

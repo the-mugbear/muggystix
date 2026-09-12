@@ -896,14 +896,14 @@ def rotate_test_plan_key(
     project: Project = Depends(get_current_project),
     current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
-    """Issue a new plaintext API key for ``plan_id`` and revoke prior keys.
+    """Issue a new plaintext API key for ``plan_id``; the session it replaces
+    is ended and its key revoked.
 
     Use when the original /generate key has expired (default 24h TTL) but
     the user wants to continue agent work on the same plan rather than
-    starting a fresh plan from scratch.  Existing entries are untouched —
-    only the auth token changes.  The key is bound to the plan's agent
-    and the plan itself (``api_keys.test_plan_id``), same scoping as the
-    original /generate flow.
+    starting a fresh plan from scratch.  Existing entries are untouched.
+    v2.337.0 — the key belongs to a fresh project session that becomes the
+    plan's session; the previous session (if any) is superseded.
 
     Returns the plaintext key exactly once; the server stores only the
     sha256 hash.
@@ -974,9 +974,9 @@ def resume_plan_generation(
     Existing entries are preserved; the resumed agent continues via
     ``GET /agent/test-plans/{plan_id}/context`` with the
     ``not_in_plan_id`` cursor (see AGENTS.md § Resuming plan
-    creation).  Minting through ``_mint_plan_agent_key`` revokes any
-    prior active key for the plan — load-bearing so the dead agent's
-    key can't be used to interleave writes.
+    creation).  ``_mint_continuation_session_key`` ends the plan's
+    previous session, which revokes the dead agent's key — load-bearing
+    so it can't be used to interleave writes.
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, project.id)
@@ -1770,19 +1770,24 @@ def _mint_continuation_session_key(
     """Mint a fresh PROJECT session + key for continued work on ``plan`` (v2.337.0).
 
     Used by rotate-key / resume-generation: the operator wants a usable key to
-    keep working the plan after the last one expired. A new session is the unit
-    now, so create one, attach the plan's draft provenance if it had none, and
-    return the plaintext key.
+    keep working the plan after the last one expired.  A new session is the
+    unit now, so create one, make it the plan's session (so the continuing
+    agent's identity / MCP auto-fill resolve this plan), and end the session
+    it replaces — v2.338.0: that ending is what revokes the previous key.
+    Minting on the new session never touched the old one, so "rotate" used to
+    leave two live credentials.  The old session row stays as provenance.
     """
     from app.services.agent_session_service import (
-        create_agent_session, mint_session_key,
+        create_agent_session, mint_session_key, supersede_agent_session,
     )
     session = create_agent_session(
         db, project_id=plan.project_id, agent_id=agent.id,
         started_by_id=getattr(user, "id", None), purpose=purpose,
     )
-    if plan.agent_session_id is None:
-        plan.agent_session_id = session.id
+    previous_session_id = plan.agent_session_id
+    plan.agent_session_id = session.id
+    db.flush()
+    supersede_agent_session(db, previous_session_id, successor=session, ended_by=user)
     return mint_session_key(db, agent=agent, session=session)
 
 
@@ -1979,10 +1984,12 @@ def resume_execution_session(
 
     # v2.337.0 — resume mints a fresh PROJECT session and re-opens THIS run
     # under it (open_execution_phase reuses a session's own paused run on the
-    # plan; here the run belonged to an old session, so re-point it). A crashed
-    # agent's orphaned key is revoked; prior results/sanity-checks are intact.
+    # plan; here the run belonged to an old session, so re-point it).
+    # v2.338.0 — then the OLD session is ended, which is what actually revokes
+    # the crashed agent's key; minting on the new session never touched it.
     from app.services.agent_session_service import (
         create_agent_session, resolve_project_agent, mint_session_key,
+        supersede_agent_session,
     )
     from app.services.agent_prompt_service import build_session_instructions
 
@@ -1993,8 +2000,13 @@ def resume_execution_session(
         db, project_id=project.id, agent_id=agent.id, started_by_id=current_user.id,
         purpose=f"Resume execution of plan “{plan.title}”",
     )
+    previous_session_id = session.agent_session_id
     session.agent_id = agent.id
     session.agent_session_id = new_session.id
+    db.flush()
+    supersede_agent_session(
+        db, previous_session_id, successor=new_session, ended_by=current_user,
+    )
 
     # One-active-run-per-plan: pause any OTHER active run, then flip this ACTIVE.
     db.query(ExecutionSession).filter(

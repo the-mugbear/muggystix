@@ -58,7 +58,9 @@ def test_a_recon_session_names_the_ranges_it_is_working(
     # The CIDRs are the part a colleague needs to avoid duplicating the work.
     assert "10.20.0.0/24" in row["target_label"]
     assert "10.20.1.0/24" in row["target_label"]
-    assert "External perimeter" in row["target_label"]
+    # v2.338.0 — the scope's name is a relic the UI no longer surfaces; the
+    # label is the ranges alone.
+    assert "External perimeter" not in row["target_label"]
 
 
 def test_a_large_scope_truncates_rather_than_filling_the_row(

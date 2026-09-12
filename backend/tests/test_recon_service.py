@@ -60,7 +60,7 @@ def recon_session_and_key(db_session, test_project, test_agent, scope_with_subne
     base = create_agent_session(
         db_session, workflow=AgentSessionWorkflow.RECON.value,
         project_id=test_project.id, agent_id=test_agent.id,
-        started_by_id=None, scope_id=scope_with_subnets.id,
+        started_by_id=None,
     )
     session = ReconSession(
         project_id=test_project.id,
@@ -567,7 +567,7 @@ class TestConcurrentReconSessionIsolation:
         base = create_agent_session(
             db_session, workflow=AgentSessionWorkflow.RECON.value,
             project_id=test_project.id, agent_id=test_agent.id,
-            started_by_id=None, scope_id=scope.id,
+            started_by_id=None,
         )
         session = ReconSession(
             project_id=test_project.id,
@@ -657,7 +657,7 @@ class TestConcurrentReconSessionIsolation:
         base = create_agent_session(
             db_session, workflow=AgentSessionWorkflow.RECON.value,
             project_id=test_project.id, agent_id=test_agent.id,
-            started_by_id=None, scope_id=scope_with_subnets.id,
+            started_by_id=None,
         )
         other_session = ReconSession(
             project_id=test_project.id,
@@ -720,7 +720,7 @@ class TestConcurrentReconSessionIsolation:
         base = create_agent_session(
             db_session, workflow=AgentSessionWorkflow.RECON.value,
             project_id=test_project.id, agent_id=test_agent.id,
-            started_by_id=None, scope_id=scope_with_subnets.id,
+            started_by_id=None,
         )
         raw_key = "nm_agent_nofallback_" + "x" * 26
         db_session.add(APIKey(

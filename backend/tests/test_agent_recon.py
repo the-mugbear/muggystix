@@ -64,7 +64,7 @@ def recon_session_row(db_session, test_project, test_agent, recon_scope):
     base = create_agent_session(
         db_session, workflow=AgentSessionWorkflow.RECON.value,
         project_id=test_project.id, agent_id=test_agent.id,
-        started_by_id=None, scope_id=recon_scope.id,
+        started_by_id=None,
     )
     session = ReconSession(
         project_id=test_project.id,

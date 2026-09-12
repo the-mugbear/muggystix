@@ -112,6 +112,12 @@ def is_agent_audited_path(path: str) -> bool:
 # Methods whose body we capture (mutations) vs skip (reads).
 _BODY_CAPTURE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+# How fresh ``agent_sessions.last_activity_at`` has to be before a call skips
+# rewriting it.  Same window as ``deps._AGENT_ACTIVITY_DEBOUNCE_SECONDS``: the
+# value answers "is this agent still alive", which does not need per-call
+# resolution, and the per-call record is the audit row itself.
+_ACTIVITY_DEBOUNCE_SECONDS = 60
+
 
 # IPv4 + simple IPv6 — used to pull "target_ip" out of free-form
 # request bodies (sanity checks, test results) and query params.
@@ -703,17 +709,25 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 via_mcp=bool(getattr(request.state, "_agent_audit_via_mcp", False)),
             )
             db.add(row)
-            # v2.337.0 — refresh the session's last_activity_at on every
-            # authenticated call so the sessions page can show "idle 47m"
-            # without scanning agent_api_calls. (Was per-assist-session; the
-            # marker now lives on the unified AgentSession.)
+            # v2.337.0 — refresh the session's last_activity_at so the sessions
+            # page can show "idle 47m" without scanning agent_api_calls.
+            # v2.338.0 — debounced in the UPDATE's own predicate (same 60s window
+            # deps.py uses for api_keys.last_used / agents.last_activity_at):
+            # an MCP-driven agent bursting calls across four workers was
+            # serialising every one on this single hot row for a value that
+            # only needs minute resolution.  No shared state — the persisted
+            # column is the clock.
             if agent_session_id is not None:
-                from datetime import datetime as _dt, timezone as _tz
+                from datetime import datetime as _dt, timedelta as _td, timezone as _tz
                 from app.db.models_agent import AgentSession as _AgentSession
+                _now = _dt.now(_tz.utc)
                 db.query(_AgentSession).filter(
-                    _AgentSession.id == agent_session_id
+                    _AgentSession.id == agent_session_id,
+                    (_AgentSession.last_activity_at.is_(None))
+                    | (_AgentSession.last_activity_at
+                       < _now - _td(seconds=_ACTIVITY_DEBOUNCE_SECONDS)),
                 ).update(
-                    {"last_activity_at": _dt.now(_tz.utc)},
+                    {"last_activity_at": _now},
                     synchronize_session=False,
                 )
             db.commit()
