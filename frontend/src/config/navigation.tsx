@@ -177,30 +177,33 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Gauge, keywords: ['evidence', 'coverage', 'assessed', 'eligible', 'trust', 'assurance', 'gap', 'parser', 'quality'], order: 6.7 },
   },
 
-  // Workflows hub
+  // Workflows hub — v2.337.0: agents run one project session that does every
+  // kind of work, so the hub's primary views are Agent Runs (the unified
+  // session timeline, one row per session) and Test Plans (the approval
+  // surface a human owns). Recon Runs and Executions are now per-artifact
+  // detail views subsumed by the session timeline — kept as routes and
+  // reachable from the command palette and by drilling into a run on Agent
+  // Runs, but off the hub strip so it stops presenting the old four-workflow
+  // split. (Remove the `hub` field = palette-only, like the MCP reference.)
   {
-    id: 'recon-runs', path: '/recon/runs', label: 'Recon Runs', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: Compass, keywords: ['discovery'], order: 7 },
+    id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
+    palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm', 'recon', 'execution'], order: 5 },
   },
   {
     id: 'test-plans', path: '/test-plans', label: 'Test Plans', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: ShieldCheck, order: 8 },
   },
   {
-    id: 'executions', path: '/executions', label: 'Executions', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: TerminalSquare, keywords: ['runs'], order: 9 },
-  },
-  {
-    id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm'], order: 5 },
-  },
-  {
-    // The review page for sessions started with "Start Agent Session" on
-    // Operations. Agent Runs is the cross-workflow timeline (recon / plan /
-    // execution / assist); this page shows the interactive-started sessions
-    // and the notes they wrote.
     id: 'assist-sessions', path: '/assist-sessions', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: MessageCircleQuestion, keywords: ['assist', 'ask', 'agent', 'session', 'chat', 'review'], order: 9.5 },
+    palette: { Icon: MessageCircleQuestion, keywords: ['assist', 'ask', 'agent', 'session', 'chat', 'review'], order: 9 },
+  },
+  {
+    id: 'recon-runs', path: '/recon/runs', label: 'Recon Runs', requiredRole: 'viewer',
+    palette: { Icon: Compass, keywords: ['discovery', 'recon', 'runs'], order: 7 },
+  },
+  {
+    id: 'executions', path: '/executions', label: 'Executions', requiredRole: 'viewer',
+    palette: { Icon: TerminalSquare, keywords: ['runs', 'execution'], order: 9 },
   },
 
   // Collaboration hub

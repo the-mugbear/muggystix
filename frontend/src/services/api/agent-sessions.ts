@@ -11,7 +11,7 @@ import { api, p } from './client';
 // v5.185.0 — assist joined the timeline. The backend model always described
 // four workflows; the service and this type both enumerated three, so assist
 // sessions were invisible on Agent Runs.
-export type AgentSessionKind = 'recon' | 'plan_generation' | 'execution' | 'assist';
+export type AgentSessionKind = 'project' | 'recon' | 'plan_generation' | 'execution' | 'assist';
 
 export interface AgentSessionRow {
   kind: AgentSessionKind;

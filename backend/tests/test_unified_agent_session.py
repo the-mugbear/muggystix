@@ -115,3 +115,30 @@ def test_execution_requires_an_approved_plan(client, test_project, db_session):
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["read_back"] and "10.0.0.5" in body["read_back"]
+
+
+def test_timeline_shows_one_row_per_session_not_per_phase(client, test_project, db_session):
+    """v2.337.0 — a project session that opens a recon run must appear ONCE on
+    the unified timeline (as its own row, phases named in target_label), not
+    twice (once as 'project' and again as its 'recon' phase)."""
+    key, assist_session_id = _start_session(client, test_project)
+    scope = _scope_with_subnet(db_session, test_project)
+    r = client.post("/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id})
+    assert r.status_code == 201, r.text
+
+    from app.db.models_agent import AssistSession
+    base_id = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == assist_session_id).scalar()
+    )
+
+    listing = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
+    rows = listing["sessions"]
+    # Exactly one row for this session, and it is the unified 'project' row.
+    mine = [s for s in rows if s["kind"] == "project" and s["id"] == base_id]
+    assert len(mine) == 1, rows
+    # The recon run it opened is NOT separately listed (it is subsumed).
+    recon_rows = [s for s in rows if s["kind"] == "recon"]
+    assert recon_rows == [], f"recon phase double-listed: {recon_rows}"
+    # And its label names the recon work.
+    assert "recon" in (mine[0]["target_label"] or "").lower()

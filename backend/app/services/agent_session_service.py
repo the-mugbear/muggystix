@@ -733,6 +733,19 @@ class AgentSessionRow:
         }
 
 
+def _not_a_project_child(detail_agent_session_col):
+    """True for a legacy detail row: it has no parent project AgentSession, so
+    it earns its own timeline row. New (project-session) phase rows are
+    represented by their session's row and are excluded here (v2.337.0)."""
+    from sqlalchemy import exists, and_
+    return ~exists().where(
+        and_(
+            AgentSession.id == detail_agent_session_col,
+            AgentSession.workflow == AgentSessionWorkflow.PROJECT.value,
+        )
+    )
+
+
 def _apply_recon_filters(q, *, agent_id, model, tool, user_id, status):
     if agent_id is not None:
         q = q.filter(ReconSession.agent_id == agent_id)
@@ -744,7 +757,7 @@ def _apply_recon_filters(q, *, agent_id, model, tool, user_id, status):
         q = q.filter(ReconSession.started_by_id == user_id)
     if status is not None:
         q = q.filter(ReconSession.status == status)
-    return q
+    return q.filter(_not_a_project_child(ReconSession.agent_session_id))
 
 
 def _apply_plan_filters(q, *, agent_id, model, tool, user_id, status):
@@ -758,7 +771,7 @@ def _apply_plan_filters(q, *, agent_id, model, tool, user_id, status):
         q = q.filter(TestPlan.created_by_user_id == user_id)
     if status is not None:
         q = q.filter(TestPlan.status == status)
-    return q
+    return q.filter(_not_a_project_child(TestPlan.agent_session_id))
 
 
 def _plan_generation_status(plan_status: str) -> str:
@@ -818,7 +831,7 @@ def _apply_assist_filters(q, *, agent_id, model, tool, user_id, status):
         q = q.filter(AssistSession.started_by_id == user_id)
     if status is not None:
         q = q.filter(AssistSession.status == status)
-    return q
+    return q.filter(_not_a_project_child(AssistSession.agent_session_id))
 
 
 def _apply_execution_filters(q, *, agent_id, model, tool, user_id, status):
@@ -832,7 +845,7 @@ def _apply_execution_filters(q, *, agent_id, model, tool, user_id, status):
         q = q.filter(ExecutionSession.started_by_id == user_id)
     if status is not None:
         q = q.filter(ExecutionSession.status == status)
-    return q
+    return q.filter(_not_a_project_child(ExecutionSession.agent_session_id))
 
 
 def _apply_project_filters(q, *, agent_id, model, tool, user_id, status):

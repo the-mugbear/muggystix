@@ -48,7 +48,10 @@ import { cn } from '../utils/cn';
 import { formatRelativeTime } from '../utils/relativeTime';
 
 const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
-  { value: '', label: 'All workflows' },
+  { value: '', label: 'All sessions' },
+  // v2.337.0 — one project session does every kind of work; the four below are
+  // legacy per-workflow rows from before the consolidation.
+  { value: 'project', label: 'Session' },
   { value: 'recon', label: 'Recon' },
   { value: 'plan_generation', label: 'Plan generation' },
   { value: 'execution', label: 'Execution' },
@@ -61,6 +64,8 @@ type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warni
 
 function kindBadgeVariant(kind: AgentSessionKind): BadgeVariant {
   switch (kind) {
+    case 'project':
+      return 'default';
     case 'recon':
       return 'secondary';
     case 'plan_generation':
@@ -527,7 +532,7 @@ const ProjectActivity: React.FC = () => {
                   <TableRow key={`${r.kind}-${r.id}`}>
                     <TableCell>
                       <Badge variant={kindBadgeVariant(r.kind)}>
-                        {r.kind === 'plan_generation' ? 'plan-gen' : r.kind}
+                        {r.kind === 'plan_generation' ? 'plan-gen' : r.kind === 'project' ? 'session' : r.kind}
                       </Badge>
                     </TableCell>
                     <TableCell className="overflow-hidden">
@@ -578,9 +583,9 @@ const ProjectActivity: React.FC = () => {
                           {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
                           {(r.kind === 'plan_generation' || r.kind === 'execution') &&
                             r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
-                          {r.kind === 'assist' && (
+                          {(r.kind === 'assist' || r.kind === 'project') && (
                             <span className="text-caption text-muted-foreground">
-                              Project-wide
+                              Project session
                             </span>
                           )}
                         </>
@@ -599,7 +604,9 @@ const ProjectActivity: React.FC = () => {
                               // id — keyed off the session id alone. Without
                               // this branch the row's Open button was disabled
                               // because test_plan_id is (correctly) null.
-                              r.kind === 'assist'
+                              r.kind === 'project'
+                                ? true
+                                : r.kind === 'assist'
                                 ? false
                                 : r.kind === 'recon'
                                 ? r.scope_id == null
