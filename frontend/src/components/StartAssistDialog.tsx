@@ -1,15 +1,16 @@
 /**
- * StartAssistDialog — v4.29.0
+ * StartAssistDialog — v4.29.0; unified session v2.337.0
  *
- * Project-level dialog for starting an interactive assist agent
- * session.  Mints a read-only, project-scoped agent API key and
- * shows the agent prompt + key for the operator to paste into
- * Claude Code / Codex / etc.
+ * Project-level dialog for starting an agent session.  Mints one
+ * project-scoped agent API key and shows the prompt + key to paste
+ * into Claude Code / Codex / etc.  Since v2.337.0 the key is NOT
+ * read-only or assist-only: the same session queries the inventory
+ * and can open a reconnaissance, plan-generation, or execution phase,
+ * all within the operator's own permissions.  (The component keeps
+ * its name for now; the endpoint it calls is still /assist/start.)
  *
- * Mirrors StartReconDialog's structure but is smaller — assist
- * sessions don't have a resume affordance (the key is short-lived
- * and an operator just starts another session if needed), and they
- * bind to the project rather than to a scope, so no scope picker.
+ * No resume affordance and no scope picker — a session binds to the
+ * project and picks its scope/plan when it opens a phase.
  *
  * Audit C1 (from recon dialog): the key is shown exactly once and
  * the operator must check the "I copied the key" box before the
@@ -149,18 +150,18 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <MessageCircleQuestion className="size-5 text-primary" aria-hidden />
-            Start AI Assist Session
+            Start Agent Session
           </DialogTitle>
           <DialogDescription>
-            {/* v2.65.0 — TTL read from the response so it stays in
-                lockstep with backend ASSIST_KEY_DEFAULT_TTL_HOURS
-                and respects any AGENT_KEY_TTL_HOURS env override.
-                Falls back to "4" before the response lands. */}
-            Mints a project-scoped agent API key ({result?.key_ttl_hours ?? 4} h TTL) and shows
-            the prompt to paste into Claude Code / Codex / Cursor. The agent
-            can read host inventory, scope CIDRs, and scan summaries — it can
-            never scan, create plans, or execute tests. The key is shown once;
-            copy it before closing.
+            {/* v2.337.0 — one project session does every kind of work; the
+                key is no longer read-only or assist-only. TTL read from the
+                response so it stays in lockstep with the backend. */}
+            Mints one project-scoped agent API key ({result?.key_ttl_hours ?? 4} h TTL) and shows
+            the prompt to paste into Claude Code / Codex / Cursor. The same key
+            answers questions about the inventory and can open a reconnaissance,
+            plan-generation, or execution phase — always within your own
+            permissions, and a plan still needs human approval before it runs.
+            The key is shown once; copy it before closing.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-md">
@@ -172,12 +173,12 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               />
               <Alert variant="info">
                 <AlertDescription>
-                  Use AI assist when you want to ask interactive questions
-                  about the project ("which hosts expose FTP?", "summarize
-                  critical findings") without committing to a full recon or
-                  test-plan workflow. The agent answers from BlueStick's
-                  already-ingested data and hands off to you whenever an
-                  action is needed.
+                  Start a session to work the project with an agent: ask
+                  interactive questions ("which hosts expose FTP?", "summarize
+                  critical findings"), or have it open a reconnaissance run on a
+                  scope, draft a test plan, and execute an approved one — all
+                  with this one key. It answers from BlueStick's data and asks
+                  before anything that runs against a host or changes the plan.
                 </AlertDescription>
               </Alert>
               <div className="flex flex-col gap-xxs">
@@ -214,17 +215,18 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
             <div className="flex flex-col gap-sm">
               <Alert variant="success">
                 <AlertDescription>
-                  Assist session <strong>#{result.assist_session_id}</strong>{' '}
+                  Agent session <strong>#{result.assist_session_id}</strong>{' '}
                   started for project <strong>{result.project_name}</strong>.
                 </AlertDescription>
               </Alert>
               <Alert variant="info">
                 <AlertDescription>
                   This session acts with <strong>your permissions</strong> on
-                  this project. It can query project data and make the changes
-                  you can make — notes it writes appear under your name with an
-                  &ldquo;Agent&rdquo; badge. It cannot create plans or execute
-                  tests from here, and it cannot reach other projects.
+                  this project, re-checked on every call. The one key can query,
+                  open a reconnaissance run, draft a plan, and execute an
+                  approved one — notes it writes appear under your name with an
+                  &ldquo;Agent&rdquo; badge. A plan still needs human approval
+                  before it runs, and the session cannot reach other projects.
                 </AlertDescription>
               </Alert>
               <div>

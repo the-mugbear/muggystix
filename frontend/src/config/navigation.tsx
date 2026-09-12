@@ -195,10 +195,11 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm'], order: 5 },
   },
   {
-    // Separate from Agent Runs on purpose: that timeline covers recon, plan
-    // generation and execution, and assist is not in it. Until it is, assist
-    // needs its own entry or the workflow has no home in the nav at all.
-    id: 'assist-sessions', path: '/assist-sessions', label: 'AI Assist', requiredRole: 'viewer', hub: 'workflows',
+    // The review page for sessions started with "Start Agent Session" on
+    // Operations. Agent Runs is the cross-workflow timeline (recon / plan /
+    // execution / assist); this page shows the interactive-started sessions
+    // and the notes they wrote.
+    id: 'assist-sessions', path: '/assist-sessions', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: MessageCircleQuestion, keywords: ['assist', 'ask', 'agent', 'session', 'chat', 'review'], order: 9.5 },
   },
 

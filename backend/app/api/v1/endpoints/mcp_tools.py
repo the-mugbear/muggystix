@@ -1551,6 +1551,35 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# v2.337.0 — ``workflows`` is now a PRESENTATION tag: which kind of work a tool
+# belongs to, so the MCP reference page can group the catalogue. It no longer
+# gates ``tools/list`` (a single project session sees every tool — see
+# ``tool_list_payload``). Rather than hand-maintain the tag on every entry, the
+# structural edits above set every tool to ``ALL_WORKFLOWS``; here we narrow
+# each back to the kind its name implies, so the page groups meaningfully while
+# the filter stays off. Universal tools (agent_identity, suggest_tool, the
+# guide/approved-set readers, the session probe, and the phase-openers that any
+# session calls) keep the full set and read as "every workflow".
+_KIND_BY_PREFIX = (
+    ("assist_", _ASSIST),
+    ("recon_", _RECON),
+    ("plan_", _PLAN),
+    ("execution_", _EXEC),
+)
+_UNIVERSAL_TOOLS = {
+    "agent_identity", "suggest_tool", "read_agent_guide", "list_approved_tools",
+    "session_renew", "record_environment",
+    "start_recon", "start_execution", "create_test_plan",
+}
+for _name, _spec in TOOLS.items():
+    if _name in _UNIVERSAL_TOOLS:
+        continue
+    for _prefix, _wf in _KIND_BY_PREFIX:
+        if _name.startswith(_prefix):
+            _spec["workflows"] = _wf
+            break
+
+
 def advertised_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
     """The tool's input schema with the MCP-side defaults folded in.
 

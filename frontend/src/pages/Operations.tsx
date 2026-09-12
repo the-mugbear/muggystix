@@ -1022,12 +1022,12 @@ const Operations: React.FC = () => {
               onClick={() => setAssistDialogOpen(true)}
               aria-label={
                 myAssistSessions.length > 0
-                  ? `AI Assist — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
-                  : 'AI Assist'
+                  ? `Start Agent Session — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
+                  : 'Start Agent Session'
               }
             >
               <MessageCircleQuestion className="size-4" aria-hidden />
-              AI Assist
+              Start Agent Session
               {myAssistSessions.length > 0 && (
                 <Badge variant="warning" className="ml-xxs">
                   {myAssistSessions.length}

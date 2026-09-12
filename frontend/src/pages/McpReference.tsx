@@ -33,8 +33,9 @@ import {
   TableRow,
 } from '../components/ui/table';
 
-/** The workflow a key belongs to decides which tools it is offered. Order
- *  follows the engagement: recon feeds planning, planning feeds execution. */
+/** Tools grouped by the kind of work they do (v2.337.0 — one session sees them
+ *  all; this is presentation, not a per-key filter). Order follows the
+ *  engagement: recon feeds planning, planning feeds execution. */
 const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
   {
     key: 'recon',
@@ -46,7 +47,7 @@ const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
     key: 'plan_generation',
     label: 'Plan generation',
     blurb:
-      'Proposes tests against what recon found, then hands the draft to a human. Nothing here runs anything.',
+      'Proposes tests against what recon found, then hands the draft to a human for approval. Nothing here runs anything.',
   },
   {
     key: 'execution',
@@ -64,7 +65,7 @@ const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
     key: 'shared',
     label: 'Every workflow',
     blurb:
-      'Offered to every session: what am I, and how do I ask for a tool you don’t approve.',
+      'The universal tools: what am I, probe my environment, open a phase (recon / plan / execution), read the guide and the approved-tool set, and ask for a tool you don’t approve.',
   },
 ];
 
@@ -224,12 +225,13 @@ const McpReference: React.FC = () => {
         </AlertDescription>
       </Alert>
 
-      {/* --- The lifecycle picture: which workflow (and so which key) --- */}
-      <h2 className="text-section-title">The four workflows</h2>
+      {/* --- The lifecycle picture: the kinds of work one session does --- */}
+      <h2 className="text-section-title">One session, four kinds of work</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
-        A key belongs to one workflow and sees only that workflow&rsquo;s tools — there is no key
-        that spans them — so the first question is which one you want. Recon feeds planning, planning
-        feeds execution, and assist reads across all of it at any time.
+        One project session and key do everything: it reads the inventory, and opens a
+        reconnaissance run, a plan draft, or an execution run as it goes. Recon feeds planning,
+        planning feeds execution, and the read tools work across all of it at any time — the same
+        key throughout.
       </p>
       <Card className="mb-lg">
         <CardContent className="p-md">
@@ -402,16 +404,18 @@ const McpReference: React.FC = () => {
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
         Read live from this deployment&rsquo;s server registry, so it always matches what your
         agent will see from <span className="font-mono">tools/list</span>.{' '}
-        <strong className="text-foreground">A session is offered only its own workflow&rsquo;s
-        tools</strong> — the key you connect with decides the group, and there is no key that spans
-        them. Required parameters are
+        <strong className="text-foreground">Every session is offered the whole catalogue</strong>
+        — the groups below are by the kind of work a tool does, not by a key that can only reach
+        one of them. Whether a given call succeeds is decided at the endpoint by your role and the
+        phase you have opened. Required parameters are
         marked <span className="font-mono">*</span>. Every tool carries MCP annotations
         (<span className="font-mono">readOnlyHint</span> and friends) so a client can offer
         &ldquo;always allow&rdquo; on the reads without you classifying them by hand, and results
         come back as <span className="font-mono">structuredContent</span> as well as text —
         except where the endpoint answers 204 with no body (setting review status), which reports a
         plain <span className="font-mono">OK</span>.
-        Connecting <em>with</em> a key narrows the list to what your session may actually do.
+        Connecting <em>with</em> a key lists the same tools; the key decides what each call is
+        allowed to do, not which tools appear.
       </p>
 
       {loading ? (
