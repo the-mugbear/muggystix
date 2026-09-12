@@ -36,17 +36,23 @@ decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
 
 ---
 
-## 2. One endpoint, four workflows
+## 2. One endpoint, one session, four kinds of work (v2.337.0)
 
-`tools/list` returns **only the tools belonging to the caller's own workflow**,
-resolved from their key via `GET /api/v1/agent/identity`:
+`tools/list` returns the **whole** tool catalogue: a key binds to one
+project-scoped `AgentSession` that does every kind of work, so there is no
+per-workflow filtering any more (it was always presentation — the endpoint
+behind each tool is the decider). The kinds of work, and the tool that opens
+each phase:
 
-| Workflow | Key minted by | Sees |
+| Work | Opened by | Tools |
 |---|---|---|
-| `recon` | Scopes → Start Agentic Recon | scope context, subnets, upload-job polling, summary, completion |
-| `plan_generation` | Test Plans → Generate with AI | planning context, entry drafting, validation, submit-for-approval |
-| `execution` | Execute with AI on an approved plan | execution context, sanity checks, test results, entry/session completion |
-| `assist` | Operations → AI Assist | interactive reads over the inventory, plus notes / review status / hostname-OS corrections when the operator's role permits them |
+| Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
+| Reconnaissance | `start_recon {scope_id}` | scope context, subnets, upload-job polling, summary, completion |
+| Plan generation | `create_test_plan {title}` | entry drafting, validation, submit-for-approval |
+| Execution | `start_execution {plan_id}` (plan must be approved) | execution context, sanity checks, test results, completion |
+
+Every session starts by probing its environment once (`record_environment` →
+`POST /agent/session/environment`); the probe rides into every run it opens.
 
 ### Assist: answering questions, and filling in a report
 
@@ -116,11 +122,13 @@ may I write, when does my key expire) and **`suggest_tool`** (record a request
 for a tool the approved set doesn't cover). `read_agent_guide` and
 `list_approved_tools` are likewise universal.
 
-**Workflow filtering is presentation, not authorisation.** Hiding a tool stops a
-model from making a call whose 403 it would read as its own bug. It decides
-nothing: a `tools/call` for an unlisted tool still reaches the real endpoint and
-gets that endpoint's answer. Three separate entry points exist because the
-operator starts each session deliberately — there is no key that spans them.
+**The MCP layer makes no authorisation decision.** A `tools/call` loops back
+into the real `/agent/*` route forwarding the caller's key; that endpoint
+decides, checked against the operator's project role and the phase state.
+v2.337.0 removed the per-workflow `tools/list` filter entirely — one project
+session does everything, so the whole catalogue is listed and whether a given
+call succeeds is settled at the endpoint (a plan you have not opened for
+execution, a write your role does not allow).
 
 **Bulk data is deliberately not a tool.** `report-context.ndjson`,
 `recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt`,
