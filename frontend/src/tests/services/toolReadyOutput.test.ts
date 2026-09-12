@@ -74,3 +74,37 @@ describe('getToolReadyOutput serialization', () => {
     expect(url).not.toContain('namesScope');
   });
 });
+
+// The server says how many hosts matched and whether a port-loading format
+// was capped — in headers, so the body stays pipeable. The client used to
+// return only the body, so a truncated export reached the user silently.
+describe('getToolReadyOutput counts', () => {
+  it('reads total, returned and the cap from the response headers', async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: '10.0.0.1:22',
+      headers: {
+        'x-tool-ready-total': '96542',
+        'x-tool-ready-returned': '50000',
+        'x-tool-ready-truncated': 'true',
+        'x-tool-ready-limit': '50000',
+      },
+    });
+    const r = await getToolReadyOutput('host-port', {});
+    expect(r).toEqual({ output: '10.0.0.1:22', total: 96542, returned: 50000, limit: 50000 });
+  });
+
+  it('reports no limit when the export is complete', async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: '10.0.0.1\n10.0.0.2',
+      headers: { 'x-tool-ready-total': '2', 'x-tool-ready-returned': '2', 'x-tool-ready-limit': '50000' },
+    });
+    const r = await getToolReadyOutput('ip-list', {});
+    expect(r).toEqual({ output: '10.0.0.1\n10.0.0.2', total: 2, returned: 2, limit: null });
+  });
+
+  it('tolerates missing headers', async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ data: 'x' });
+    const r = await getToolReadyOutput('ip-list', {});
+    expect(r).toEqual({ output: 'x', total: null, returned: null, limit: null });
+  });
+});

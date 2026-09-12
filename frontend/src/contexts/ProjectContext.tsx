@@ -23,6 +23,8 @@ const PROJECT_SCOPED_RESOURCE_ROUTES: RegExp[] = [
   /^\/scopes\/[^/]+/,
   /^\/recon\/runs\/[^/]+/,
   /^\/executions\/[^/]+/,
+  /^\/findings\/[^/]+/,
+  /^\/assist-sessions\/[^/]+/,
 ];
 
 function isProjectScopedResourceRoute(pathname: string): boolean {
@@ -36,6 +38,26 @@ function isProjectScopedResourceRoute(pathname: string): boolean {
     return true;
   }
   return PROJECT_SCOPED_RESOURCE_ROUTES.some((re) => re.test(pathname));
+}
+
+// Pages whose query string isn't tied to one project — /portfolio and
+// /tool-activity span every project (the analyst arrives at tool activity with
+// a timestamp, not knowing which project owns it), so their view state
+// survives a switch.
+const CROSS_PROJECT_ROUTES: RegExp[] = [/^\/portfolio(\/|$)/, /^\/tool-activity(\/|$)/];
+
+/** Where to send the operator after switching projects, or null to stay put.
+ *  Resource pages go to /operations (their id belongs to the old project).
+ *  Project-wide pages keep their path but drop the query string: Hosts,
+ *  Findings, Scans, Names and others mirror their filters there, and those
+ *  values — tag / scan / label ids, owners, CIDRs — describe the previous
+ *  project. Left in place, the remounted page treated them as a shared link
+ *  and applied them to the new project; without them it restores the new
+ *  project's own saved filters (per-project session storage). */
+export function locationAfterProjectSwitch(pathname: string, search: string): string | null {
+  if (isProjectScopedResourceRoute(pathname)) return '/operations';
+  if (search && !CROSS_PROJECT_ROUTES.some((re) => re.test(pathname))) return pathname;
+  return null;
 }
 
 function announceProjectChange(name: string): void {
@@ -165,19 +187,15 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
       pushRecentProjectId(project.id);
       announceProjectChange(project.name);
 
-      // CRIT-1: when switching projects from a URL that targets a
-      // resource id belonging to the *previous* project, redirect to
-      // /operations rather than re-fetch a foreign-project id.
-      // No-ops when the user picked the same project again, or when
-      // we're already on a project-wide page.
-      if (
-        previousId !== project.id &&
-        isProjectScopedResourceRoute(location.pathname)
-      ) {
-        navigate('/operations', { replace: true });
+      // CRIT-1: never carry the previous project's URL state across a
+      // switch — see locationAfterProjectSwitch. No-op when the user
+      // picked the same project again.
+      if (previousId !== project.id) {
+        const next = locationAfterProjectSwitch(location.pathname, location.search);
+        if (next) navigate(next, { replace: true });
       }
     },
-    [currentProject?.id, location.pathname, navigate],
+    [currentProject?.id, location.pathname, location.search, navigate],
   );
 
   useEffect(() => {

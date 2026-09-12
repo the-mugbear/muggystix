@@ -207,3 +207,89 @@ def test_json_format_carries_bound_names_next_to_legacy_hostname(client, db_sess
 def test_names_scope_rejects_unknown_values(client, db_session, test_project):
     r = client.get(f"/api/v1/projects/{test_project.id}/hosts/tool-ready/names?names_scope=everything")
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# IP-only formats stream every matching host — a field project needed all
+# 96,542 addresses and got 50,000. Only the port-loading formats are capped,
+# and they say so in headers.
+# ---------------------------------------------------------------------------
+from app.api.v1.endpoints import hosts as hosts_endpoint  # noqa: E402
+
+
+def test_ip_formats_stream_every_host_across_chunks_uncapped(client, db_session, test_project, monkeypatch):
+    monkeypatch.setattr(hosts_endpoint, "TOOL_READY_STREAM_CHUNK", 2)
+    monkeypatch.setattr(hosts_endpoint, "TOOL_READY_ENTITY_CAP", 1)
+    ips = [f"10.9.0.{i}" for i in range(1, 6)]
+    for ip in ips:
+        _seed_host(db_session, test_project, ip=ip)
+    down = _seed_host(db_session, test_project, ip="10.9.0.99")
+    down.state = "down"
+    db_session.flush()
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/tool-ready/ip-list?state=up")
+    assert r.status_code == 200, r.text
+    # Id order across three chunks; the filter still applies; no blank or
+    # trailing line for `nmap -iL`.
+    assert r.text.split("\n") == ips
+    assert r.headers["X-Tool-Ready-Total"] == "5"
+    assert r.headers["X-Tool-Ready-Returned"] == "5"
+    assert "X-Tool-Ready-Truncated" not in r.headers
+
+    # The separator lands between chunks, never leading or doubled.
+    for fmt, sep in (("nmap", " "), ("metasploit", " "), ("masscan", ",")):
+        body = client.get(f"/api/v1/projects/{test_project.id}/hosts/tool-ready/{fmt}?state=up").text
+        assert body == sep.join(ips), fmt
+
+
+def test_port_loading_formats_are_capped_and_say_so(client, db_session, test_project, monkeypatch):
+    monkeypatch.setattr(hosts_endpoint, "TOOL_READY_ENTITY_CAP", 2)
+    for i in range(1, 4):
+        _port(db_session, _seed_host(db_session, test_project, ip=f"10.9.1.{i}"), 22)
+    db_session.flush()
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/tool-ready/host-port")
+    assert r.status_code == 200, r.text
+    assert len(r.text.splitlines()) == 2
+    assert r.headers["X-Tool-Ready-Total"] == "3"
+    assert r.headers["X-Tool-Ready-Returned"] == "2"
+    assert r.headers["X-Tool-Ready-Truncated"] == "true"
+    assert r.headers["X-Tool-Ready-Limit"] == "2"
+
+
+def test_names_export_streams_sorted_and_deduped_across_chunks(
+    client, db_session, test_project, monkeypatch
+):
+    """Names are deduped and sorted by the database and streamed, so the
+    export no longer holds every bound name in memory three times. The cap
+    doesn't apply (nothing here loads a Host entity)."""
+    from datetime import datetime, timezone
+    monkeypatch.setattr(hosts_endpoint, "TOOL_READY_STREAM_CHUNK", 1)
+    monkeypatch.setattr(hosts_endpoint, "TOOL_READY_ENTITY_CAP", 1)
+
+    _scope_with_domains(db_session, test_project, [("acme.com", True)])
+    _seed_host(db_session, test_project, ip="10.5.0.1")
+    _seed_host(db_session, test_project, ip="10.5.0.2")
+    _bind(db_session, test_project, "b.acme.com", "10.5.0.1")
+    _bind(db_session, test_project, "a.acme.com", "10.5.0.1")
+    _bind(db_session, test_project, "*.acme.com", "10.5.0.1")
+    _bind(db_session, test_project, "out.other.net", "10.5.0.2")
+    # One name currently on BOTH addresses (same observation batch) — it must
+    # appear once, which is the dedupe that used to happen in a Python set.
+    same_batch = datetime.now(timezone.utc)
+    for ip in ("10.5.0.1", "10.5.0.2"):
+        svc.record_observation(
+            db_session, project_id=test_project.id, name="shared.acme.com",
+            record_type="A", value=ip, observed_at=same_batch,
+        )
+    db_session.flush()
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/tool-ready/names")
+    assert r.status_code == 200, r.text
+    assert r.text.split("\n") == ["a.acme.com", "b.acme.com", "shared.acme.com"]
+    assert r.headers["X-Tool-Ready-Total"] == "2"
+    assert r.headers["X-Tool-Ready-Returned"] == "2"
+    assert "X-Tool-Ready-Truncated" not in r.headers
+
+    every = client.get(f"/api/v1/projects/{test_project.id}/hosts/tool-ready/names?names_scope=all")
+    assert every.text.split("\n") == ["a.acme.com", "b.acme.com", "out.other.net", "shared.acme.com"]

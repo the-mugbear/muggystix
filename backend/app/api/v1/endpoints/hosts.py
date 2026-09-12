@@ -16,6 +16,7 @@ import json
 
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload, noload, aliased
 from sqlalchemy import or_, and_, distinct, func, select, true
 from sqlalchemy.sql import exists
@@ -1047,56 +1048,56 @@ def get_host_filter_data_v2(
         for r in subnet_label_rows
     ]
 
-    # Subnets — scoped host counts when filters are active
-    #
-    # v2.298.0 (cross-project leak).  The project restriction has to live HERE,
-    # on the base relation, not only on the host side.  The host predicate
-    # below is `or_(host_scope, HostSubnetMapping.host_id.is_(None))` — that
-    # second arm exists so a scoped-but-empty subnet still shows in the facet,
-    # and it matched empty subnets belonging to OTHER projects too, exposing
-    # their CIDR and scope name to anyone who could load this endpoint.  A
-    # populated foreign subnet was excluded (its hosts fail host_scope), which
-    # is why this survived: the leak was invisible in any project whose
-    # neighbours had no empty subnets.  The site query immediately below always
-    # had the filter; this one never did.
-    subnet_query = db.query(
-        models.Subnet.cidr,
-        models.Scope.name.label('scope_name'),
-        func.count(models.HostSubnetMapping.id).label('host_count')
-    ).join(
-        models.Scope, models.Subnet.scope_id == models.Scope.id
-    ).outerjoin(
-        models.HostSubnetMapping, models.Subnet.id == models.HostSubnetMapping.subnet_id
-    ).filter(
-        models.Scope.project_id == project.id
-    )
-    if host_scope is not None:
-        subnet_query = subnet_query.outerjoin(
-            models.Host, models.HostSubnetMapping.host_id == models.Host.id
-        ).filter(or_(host_scope, models.HostSubnetMapping.host_id.is_(None)))
-    subnets_result = subnet_query.group_by(
-        models.Subnet.id, models.Subnet.cidr, models.Scope.name
-    ).order_by(func.count(models.HostSubnetMapping.id).desc()).limit(200).all()
+    # Subnets and sites come from the operator's scope, not from what the
+    # filter matched, so every one is listed and the active filter only scopes
+    # its count. They used to filter rows instead, which dropped any subnet or
+    # site with no matching hosts: picking one subnet hid all the others, and a
+    # filter nothing in scope matched (e.g. out-of-scope-only) emptied the
+    # picker. Each facet's own dimension is left out of that filter so a
+    # selection doesn't hide the values not yet picked. The project restriction
+    # sits on the base relation (Scope.project_id — Subnet has no project_id);
+    # v2.298.0 fixed a cross-project leak from it missing there.
+    def _facet_mapping_join(own_dimension: str):
+        join_cond = models.Subnet.id == models.HostSubnetMapping.subnet_id
+        kwargs = filters.as_builder_kwargs()
+        kwargs[own_dimension] = None
+        if all(v is None for v in kwargs.values()):
+            return join_cond
+        matching_ids = _build_filtered_host_query(
+            db, current_user, **kwargs, project_id=project.id,
+        ).with_entities(models.Host.id).scalar_subquery()
+        return and_(join_cond, models.HostSubnetMapping.host_id.in_(matching_ids))
 
-    # Sites — distinct site names with scoped host counts.  COUNT DISTINCT
-    # host_id so a host in two subnets of the same site isn't double-counted.
-    site_query = db.query(
-        models.Subnet.site,
-        func.count(func.distinct(models.HostSubnetMapping.host_id)).label('host_count'),
-    ).join(
-        models.Scope, models.Subnet.scope_id == models.Scope.id
-    ).outerjoin(
-        models.HostSubnetMapping, models.Subnet.id == models.HostSubnetMapping.subnet_id
-    ).filter(
-        models.Scope.project_id == project.id,
-        models.Subnet.site.isnot(None),
-        models.Subnet.site != '',
+    subnet_count = func.count(models.HostSubnetMapping.id)
+    subnets_result = (
+        db.query(models.Subnet.cidr, subnet_count.label('host_count'))
+        .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
+        .outerjoin(models.HostSubnetMapping, _facet_mapping_join('subnets'))
+        .filter(models.Scope.project_id == project.id)
+        .group_by(models.Subnet.id, models.Subnet.cidr)
+        .order_by(subnet_count.desc(), models.Subnet.cidr)
+        .limit(200)
+        .all()
     )
-    if host_scope is not None:
-        site_query = site_query.outerjoin(
-            models.Host, models.HostSubnetMapping.host_id == models.Host.id
-        ).filter(or_(host_scope, models.HostSubnetMapping.host_id.is_(None)))
-    sites_result = site_query.group_by(models.Subnet.site).order_by(models.Subnet.site).all()
+
+    # COUNT DISTINCT host_id so a host in two subnets of the same site isn't
+    # double-counted.
+    sites_result = (
+        db.query(
+            models.Subnet.site,
+            func.count(func.distinct(models.HostSubnetMapping.host_id)).label('host_count'),
+        )
+        .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
+        .outerjoin(models.HostSubnetMapping, _facet_mapping_join('sites'))
+        .filter(
+            models.Scope.project_id == project.id,
+            models.Subnet.site.isnot(None),
+            models.Subnet.site != '',
+        )
+        .group_by(models.Subnet.site)
+        .order_by(models.Subnet.site)
+        .all()
+    )
 
     # RDAP attribution facets — distinct owner / ASN / country across in-scope
     # hosts, each with a DISTINCT host count (a host maps to one block, but a
@@ -1158,7 +1159,7 @@ def get_host_filter_data_v2(
             for o in operating_systems
         ],
         'subnets': [
-            {'cidr': s.cidr, 'scope_name': s.scope_name, 'host_count': s.host_count or 0}
+            {'cidr': s.cidr, 'host_count': s.host_count or 0}
             for s in subnets_result
         ],
         'scans': [
@@ -1623,6 +1624,14 @@ def get_host_dns_records(
     )
 
 
+# Tool-ready caps (module-level so tests can shrink them). IP-only formats
+# stream in chunks of TOOL_READY_STREAM_CHUNK and are never capped; formats
+# that load the Host entity with its port/script graph stop at
+# TOOL_READY_ENTITY_CAP (v2.90.1: a 42k-host eager load OOM-killed a worker).
+TOOL_READY_STREAM_CHUNK = 5_000
+TOOL_READY_ENTITY_CAP = 50_000
+
+
 @router.get(
     "/tool-ready/{format}",
     # Data egress (scanner-target lists) — same policy as /export and /reports:
@@ -1737,50 +1746,104 @@ def get_tool_ready_hosts(
         ).scalar_subquery()
         query = query.filter(models.Host.id.in_(host_ids_in_scan))
 
-    # Cap the result set so a project with hundreds of thousands of
-    # deduplicated hosts can't OOM a worker materializing the full set
-    # with eager-loaded ports + scripts.  The reports endpoint caps at
-    # 10k; tool-ready is meant to be piped into scanners that happily
-    # consume bigger lists, so we go higher — but still bounded.
+    # Formats that never load a Host entity are not capped: a field project
+    # needed all 96,542 addresses and got the first 50,000, and the dialog
+    # never said so. The IP formats read one column and stream the matching
+    # set in id-keyset chunks, so memory stays at one chunk however many hosts
+    # match; they also drop the list's default sort, a correlated vuln-count
+    # ORDER BY over every host that buys nothing in a target list. ``names``
+    # reads only ids before one bound-names query per 1000 hosts.
     #
-    # Truncation is signalled via response headers so callers (and the
-    # frontend download dialog) can show a warning rather than silently
-    # truncating.  The output body must stay clean for piping; injecting
-    # warnings into the body would break consumers like
-    # ``nmap -iL tool-ready.txt``.
-    MAX_TOOL_READY_HOSTS = 50_000
-    total_count = query.with_entities(func.count(models.Host.id)).scalar() or 0
-    truncated = total_count > MAX_TOOL_READY_HOSTS
+    # The entity-loading formats keep TOOL_READY_ENTITY_CAP. Truncation is
+    # signalled in response headers, never the body — that must stay clean
+    # for ``nmap -iL tool-ready.txt``.
+    total_count = query.order_by(None).with_entities(func.count(models.Host.id)).scalar() or 0
+    content_type, filename = _get_content_type_and_filename(format)
+    response_headers = {
+        "Content-Disposition": f"attachment; filename={filename}",
+        "X-Tool-Ready-Total": str(total_count),
+    }
 
-    # IP-only formats reference nothing but ``host.ip_address``.  Loading
-    # the full Host entity (every column) for a 42k-host project just to
-    # read one string materialised hundreds of MB of ORM objects and
-    # 502'd the worker — v2.90.1 dropped the port/script eager-load but
-    # left the entity load in place.  Select the single column instead
-    # (the same pattern the matching-ids endpoint at get_hosts_matching_ids
-    # already uses) and join directly, keeping the working set at ~MB.
     _IP_ONLY_JOINERS = {"ip-list": "\n", "nmap": " ", "metasploit": " ", "masscan": ","}
     in_scope_names_only = names_scope != "all"
     if format in _IP_ONLY_JOINERS:
-        ip_rows = (
-            query.with_entities(models.Host.ip_address)
-            .limit(MAX_TOOL_READY_HOSTS)
-            .all()
+        joiner = _IP_ONLY_JOINERS[format]
+        id_ip = query.order_by(None).with_entities(models.Host.id, models.Host.ip_address)
+
+        def _stream_ips():
+            last_id, started = 0, False
+            while True:
+                rows = (
+                    id_ip.filter(models.Host.id > last_id)
+                    .order_by(models.Host.id)
+                    .limit(TOOL_READY_STREAM_CHUNK)
+                    .all()
+                )
+                if not rows:
+                    return
+                ips = [ip for _, ip in rows if ip]
+                if ips:
+                    yield (joiner if started else "") + joiner.join(ips)
+                    started = True
+                last_id = rows[-1][0]
+                if len(rows) < TOOL_READY_STREAM_CHUNK:
+                    return
+
+        response_headers["X-Tool-Ready-Returned"] = str(total_count)
+        return StreamingResponse(_stream_ips(), media_type=content_type, headers=response_headers)
+
+    if format == "names":
+        # One ordered DISTINCT query, streamed. Names outnumber hosts (several
+        # bind to one address), so the per-host shape this replaced — a host-id
+        # list, a host→names dict, a dedupe set, then one joined string — was
+        # the last unbounded path here once the cap came off. The database does
+        # the dedupe and the sort; a server-side cursor keeps the response at
+        # one chunk in memory.
+        from app.services import dns_name_service as _dns
+        r = aliased(models.DNSRecord)
+        n = models.DNSName
+        matching_hosts = query.order_by(None).with_entities(models.Host.id).scalar_subquery()
+        # Codepoint order, matching the Python sort this replaced — a locale
+        # collation orders punctuation (dots, hyphens) differently. SELECT
+        # DISTINCT requires the ORDER BY expression to be the selected one, so
+        # the collation rides on the column itself.
+        _bind_dialect = db.get_bind().dialect.name if db.get_bind() is not None else "postgresql"
+        fqdn_col = n.fqdn.collate("C") if _bind_dialect == "postgresql" else n.fqdn
+        names_q = (
+            db.query(fqdn_col.label("fqdn"))
+            .select_from(models.Host)
+            .join(r, and_(r.project_id == project.id, r.value == models.Host.ip_address))
+            .join(n, n.id == r.name_id)
+            .filter(
+                models.Host.id.in_(matching_hosts),
+                n.project_id == project.id,
+                n.kind == "fqdn",  # a wildcard is a pattern, never a target
+                _dns.current_binding_condition(r),
+            )
         )
-        hosts_returned = len(ip_rows)
-        output = _IP_ONLY_JOINERS[format].join(row[0] for row in ip_rows if row[0])
-    elif format == "names":
-        # Names need no port data and no Host entity: project the ids, then
-        # one bound-names query for the whole set.
-        id_rows = query.with_entities(models.Host.id).limit(MAX_TOOL_READY_HOSTS).all()
-        hosts_returned = len(id_rows)
-        names_by_host = _current_names_for_hosts(
-            db, project.id, [row[0] for row in id_rows], in_scope_only=in_scope_names_only,
-        )
-        output = "\n".join(sorted({fq for fqs in names_by_host.values() for fq in fqs}))
+        if in_scope_names_only:
+            names_q = names_q.filter(_dns.name_in_scope_condition(project.id))
+        names_q = names_q.distinct().order_by(fqdn_col)
+
+        def _stream_names():
+            batch: List[str] = []
+            started = False
+            for (fqdn,) in names_q.yield_per(TOOL_READY_STREAM_CHUNK):
+                batch.append(fqdn)
+                if len(batch) >= TOOL_READY_STREAM_CHUNK:
+                    yield ("\n" if started else "") + "\n".join(batch)
+                    started, batch = True, []
+            if batch:
+                yield ("\n" if started else "") + "\n".join(batch)
+
+        response_headers["X-Tool-Ready-Returned"] = str(total_count)
+        return StreamingResponse(_stream_names(), media_type=content_type, headers=response_headers)
     else:
-        hosts = query.limit(MAX_TOOL_READY_HOSTS).all()
+        hosts = query.limit(TOOL_READY_ENTITY_CAP).all()
         hosts_returned = len(hosts)
+        if total_count > TOOL_READY_ENTITY_CAP:
+            response_headers["X-Tool-Ready-Truncated"] = "true"
+            response_headers["X-Tool-Ready-Limit"] = str(TOOL_READY_ENTITY_CAP)
         # The per-host port narrowing in _generate_tool_output reuses the
         # same port-dimension filters the query applied, sourced from the
         # shared bundle.
@@ -1800,18 +1863,7 @@ def get_tool_ready_hosts(
         )
         output = _generate_tool_output(hosts, format, include_ports, output_filters, names_by_host)
 
-    # Set appropriate content type and filename
-    content_type, filename = _get_content_type_and_filename(format)
-
-    response_headers = {
-        "Content-Disposition": f"attachment; filename={filename}",
-        "X-Tool-Ready-Total": str(total_count),
-        "X-Tool-Ready-Returned": str(hosts_returned),
-    }
-    if truncated:
-        response_headers["X-Tool-Ready-Truncated"] = "true"
-        response_headers["X-Tool-Ready-Limit"] = str(MAX_TOOL_READY_HOSTS)
-
+    response_headers["X-Tool-Ready-Returned"] = str(hosts_returned)
     return Response(
         content=output,
         media_type=content_type,

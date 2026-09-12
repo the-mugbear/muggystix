@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { Code, Copy, Download, Loader2 } from 'lucide-react';
-import { getToolReadyOutput } from '../services/api';
+import { getToolReadyOutput, ToolReadyResult } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import {
@@ -44,20 +44,26 @@ const TOOL_FORMATS = [
 // the in-scope / all toggle applies.  Mirrors _NAME_AWARE_FORMATS server-side.
 const NAME_AWARE_FORMATS = new Set(['nuclei', 'json', 'names', 'web-targets']);
 
+// An IP export of a large project is megabytes; rendering all of it in a
+// <pre> stalls the dialog. Copy and Download always use the full output.
+const PREVIEW_CHARS = 100_000;
+
 export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOutputProps) {
   const [selectedFormat, setSelectedFormat] = useState('ip-list');
   const [includePorts, setIncludePorts] = useState(false);
   // Default in-scope: a declared domain must cover a name before it becomes
   // a target — the same rule the recon agent guardrail applies.
   const [inScopeNamesOnly, setInScopeNamesOnly] = useState(true);
-  const [output, setOutput] = useState('');
+  const [result, setResult] = useState<ToolReadyResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const output = result?.output ?? '';
+  const preview = output.length > PREVIEW_CHARS ? output.slice(0, PREVIEW_CHARS) : output;
 
   React.useEffect(() => {
     if (open) {
-      setOutput('');
+      setResult(null);
       setError(null);
       setCopied(false);
     }
@@ -66,7 +72,7 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
   const generateOutput = async () => {
     setLoading(true);
     setError(null);
-    setOutput('');
+    setResult(null);
     try {
       const apiFilters = {
         ...filters,
@@ -75,8 +81,7 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
           ? { namesScope: (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all' }
           : {}),
       };
-      const result = await getToolReadyOutput(selectedFormat, apiFilters);
-      setOutput(result);
+      setResult(await getToolReadyOutput(selectedFormat, apiFilters));
     } catch (err) {
       console.error('Error generating tool output:', err);
       setError(err instanceof Error ? err.message : 'Failed to generate output');
@@ -184,6 +189,17 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
           </Alert>
         )}
 
+        {result?.limit != null && (
+          <Alert variant="warning">
+            <AlertDescription>
+              Built from the first {(result.returned ?? result.limit).toLocaleString()} of{' '}
+              {result.total != null ? result.total.toLocaleString() : 'more'} matching hosts. This
+              format loads port detail per host and stops at {result.limit.toLocaleString()} — narrow
+              the filter, or use IP List, Nmap, Metasploit or Masscan, which export every host.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {output && (
           <div className="space-y-xs">
             <div className="flex items-center justify-between">
@@ -221,11 +237,15 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
             </div>
 
             <pre className="max-h-[24rem] overflow-auto rounded-control border border-border bg-muted/30 p-sm font-mono text-caption text-foreground">
-              {output}
+              {preview}
             </pre>
 
             <p className="text-caption text-muted-foreground">
-              {output.split('\n').filter((line) => line.trim()).length} entries generated
+              {result?.returned != null
+                ? `Built from ${result.returned.toLocaleString()} host${result.returned === 1 ? '' : 's'}`
+                : `${output.split('\n').filter((line) => line.trim()).length} entries generated`}
+              {preview.length < output.length &&
+                ' · the preview shows the start; Copy and Download include everything'}
             </p>
           </div>
         )}

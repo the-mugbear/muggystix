@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowDownToLine,
   Building2,
@@ -887,6 +887,7 @@ const Scopes: React.FC = () => {
                       />
                     </TableHead>
                     <TableHead className="w-1/5">Subnet / IP</TableHead>
+                    <TableHead className="w-24 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
                     <TableHead className="w-40">Site</TableHead>
                     <TableHead className="min-w-[180px]">Labels</TableHead>
@@ -897,7 +898,7 @@ const Scopes: React.FC = () => {
                 <TableBody>
                   {scope.subnets.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
+                      <TableCell colSpan={8} className="py-xl text-center text-muted-foreground">
                         {debouncedSubnetSearch.trim()
                           ? `No subnets match "${debouncedSubnetSearch.trim()}". Try a different search or clear it.`
                           : "No entries in this project's scope yet. Add one above or upload a file."}
@@ -924,8 +925,17 @@ const Scopes: React.FC = () => {
                                 autoFocus
                               />
                             ) : (
-                              <span className="font-mono font-semibold">{subnet.cidr}</span>
+                              <Link
+                                to={`/hosts?subnets=${encodeURIComponent(subnet.cidr)}`}
+                                title={`Show hosts in ${subnet.cidr}`}
+                                className="break-all font-mono font-semibold text-primary hover:underline focus:outline-none focus-visible:underline"
+                              >
+                                {subnet.cidr}
+                              </Link>
                             )}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums text-metadata">
+                            {subnet.host_count != null ? subnet.host_count.toLocaleString() : '—'}
                           </TableCell>
                           <TableCell>
                             {isEditing ? (

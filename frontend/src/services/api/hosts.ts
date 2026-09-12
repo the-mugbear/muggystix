@@ -1020,7 +1020,7 @@ export interface HostFilterData {
   common_ports: Array<{ port: number; service: string; state: string; count: number }>;
   services: Array<{ name: string; count: number }>;
   operating_systems: Array<{ name: string; count: number }>;
-  subnets: Array<{ cidr: string; scope_name: string; host_count: number }>;
+  subnets: Array<{ cidr: string; host_count: number }>;
   scans?: Array<{ id: number; filename: string; tool_name?: string | null; created_at?: string | null }>;
   technologies?: Array<{ name: string; host_count: number }>;
   tags?: Array<{ id: number; name: string; color?: string | null; host_count: number }>;

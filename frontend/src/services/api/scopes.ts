@@ -43,6 +43,8 @@ export interface Subnet {
   // field; the backend always sends an empty array once the field
   // is wired so callers can treat it as never-null at runtime.
   labels?: SubnetLabelInfo[];
+  // Hosts mapped to this subnet — sent by the scope-detail endpoints only.
+  host_count?: number | null;
 }
 
 export interface SubnetFileUploadResponse {

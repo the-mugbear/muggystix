@@ -367,13 +367,17 @@ app.add_middleware(
     # Explicit allowlist instead of "*": with allow_credentials=True a
     # wildcard expose is over-broad, and only these response headers are
     # actually read by the frontend (download filename + bundle export
-    # correlation ids + partial-report flag — see services/api/test-plans.ts
-    # and services/api.ts).
+    # correlation ids + partial-report flag + tool-ready counts — see
+    # services/api/test-plans.ts and services/api.ts).
     expose_headers=[
         "Content-Disposition",
         "X-Bundle-Id",
         "X-Execution-Session-Id",
         "X-Report-Truncated",
+        "X-Tool-Ready-Total",
+        "X-Tool-Ready-Returned",
+        "X-Tool-Ready-Truncated",
+        "X-Tool-Ready-Limit",
     ],
 )
 

@@ -691,6 +691,16 @@ export const draftReportWithAI = async (
 };
 
 // Tool Ready Output API
+export interface ToolReadyResult {
+  output: string;
+  /** Hosts the filter matched (X-Tool-Ready-Total); null if unreadable. */
+  total: number | null;
+  /** Hosts the output was built from (X-Tool-Ready-Returned). */
+  returned: number | null;
+  /** The server cap, set only when a port-loading format was truncated. */
+  limit: number | null;
+}
+
 export const getToolReadyOutput = async (
   format: string,
   // Accepts the full Hosts query context (same shape buildHostQueryContext
@@ -734,7 +744,7 @@ export const getToolReadyOutput = async (
      *  declared domain covers (default) or every bound name. */
     namesScope?: 'in_scope' | 'all';
   }
-): Promise<string> => {
+): Promise<ToolReadyResult> => {
   const params = new URLSearchParams();
 
   Object.entries(filters).forEach(([key, value]) => {
@@ -764,7 +774,15 @@ export const getToolReadyOutput = async (
     responseType: 'text'
   });
 
-  return response.data;
+  // The counts ride in headers so the body stays clean for piping.
+  const headers = (response.headers ?? {}) as Record<string, string | undefined>;
+  const num = (v?: string) => (v ? (Number.isFinite(Number(v)) ? Number(v) : null) : null);
+  return {
+    output: response.data,
+    total: num(headers['x-tool-ready-total']),
+    returned: num(headers['x-tool-ready-returned']),
+    limit: headers['x-tool-ready-truncated'] === 'true' ? num(headers['x-tool-ready-limit']) : null,
+  };
 };
 
 export default api;

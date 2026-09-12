@@ -443,13 +443,28 @@ def _serialize_scope_with_subnets(
         subnet_q = subnet_q.limit(subnets_limit)
     subnet_rows = subnet_q.all()
 
+    # Hosts mapped to each subnet on this page: the same HostSubnetMapping
+    # count the /hosts subnet facet shows, so the two pages agree. One grouped
+    # query per page, never one per row.
+    page_ids = [s.id for s in subnet_rows]
+    host_counts = dict(
+        db.query(HostSubnetMapping.subnet_id, func.count(HostSubnetMapping.id))
+        .filter(HostSubnetMapping.subnet_id.in_(page_ids))
+        .group_by(HostSubnetMapping.subnet_id)
+        .all()
+    ) if page_ids else {}
+    subnets = [
+        SubnetSchema.model_validate(s).model_copy(update={"host_count": host_counts.get(s.id, 0)})
+        for s in subnet_rows
+    ]
+
     return {
         "id": scope.id,
         "name": scope.name,
         "description": scope.description,
         "created_at": scope.created_at,
         "updated_at": scope.updated_at,
-        "subnets": subnet_rows,
+        "subnets": subnets,
         "subnets_total": subnets_total_count,
         "subnets_skip": subnets_skip if subnets_limit is not None else None,
         "subnets_limit": subnets_limit,

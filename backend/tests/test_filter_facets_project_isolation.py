@@ -54,16 +54,17 @@ def test_empty_subnets_from_another_project_are_not_disclosed(
         populated_cidr="10.77.0.0/24",
     )
 
-    body = client.get(f"/api/v1/projects/{test_project.id}/hosts/filters/data").json()
-    cidrs = {s["cidr"] for s in body["subnets"]}
-    scope_names = {s.get("scope_name") for s in body["subnets"]}
+    for qs in ("", "?state=up"):
+        body = client.get(f"/api/v1/projects/{test_project.id}/hosts/filters/data{qs}").json()
+        cidrs = {s["cidr"] for s in body["subnets"]}
 
-    assert "192.168.44.0/24" not in cidrs, (
-        "an empty subnet from another project leaked through the "
-        "`host_id IS NULL` arm of the facet filter"
-    )
-    assert "10.77.0.0/24" not in cidrs
-    assert "confidential-client-scope" not in scope_names
+        assert "192.168.44.0/24" not in cidrs, (
+            f"an empty subnet from another project leaked into the facet ({qs or 'no filter'})"
+        )
+        assert "10.77.0.0/24" not in cidrs
+        # Scope names are a retired concept and were how this leak exposed a
+        # client's name; the facet no longer carries them at all.
+        assert all("scope_name" not in s for s in body["subnets"])
 
 
 def test_this_projects_empty_subnets_are_still_listed(client, db_session, test_project):

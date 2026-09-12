@@ -836,6 +836,9 @@ class Subnet(SubnetBase):
     # Subnet.label_assignments → SubnetLabelAssignment.label.  Empty list
     # if no labels (the default once the feature ships; never null).
     labels: List[SubnetLabelInfo] = []
+    # Hosts mapped to this subnet. Filled by the scope-detail endpoints only;
+    # None elsewhere (create/update responses) means "not computed", not 0.
+    host_count: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

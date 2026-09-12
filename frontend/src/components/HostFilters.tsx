@@ -596,9 +596,7 @@ const HostFilters: React.FC<HostFiltersProps> = ({
       availableData?.subnets?.map((subnet) => ({
         value: subnet.cidr,
         label: subnet.cidr,
-        description: subnet.scope_name,
         trailing: `${subnet.host_count}`,
-        keywords: [subnet.scope_name],
       })) || []
     );
   }, [availableData?.subnets]);
