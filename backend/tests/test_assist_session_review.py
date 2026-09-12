@@ -231,6 +231,33 @@ def test_activity_feed_is_scoped_to_the_one_session(client, db_session, test_pro
     assert body["items"][0]["path"].endswith("/hosts")
 
 
+def test_activity_feed_lists_calls_stamped_with_the_unified_session_id(
+    client, db_session, test_project,
+):
+    """v2.338.2 — the middleware stamps ``agent_session_id`` (the key's session)
+    and no longer fills ``assist_session_id``; the feed filtered on the legacy
+    column, so the page said "141 API calls" over an empty activity list.  A
+    real call through the key must show up, and a second session's must not."""
+    started = _start(client, test_project.id)
+    other = _start(client, test_project.id)
+    sid = started["assist_session_id"]
+    for body, n in ((started, 2), (other, 1)):
+        for _ in range(n):
+            r = client.get("/api/v1/agent/identity", headers={"X-API-Key": body["api_key"]})
+            assert r.status_code == 200, r.text
+
+    feed = client.get(
+        f"/api/v1/projects/{test_project.id}/assist-sessions/{sid}/api-activity"
+    ).json()
+    assert feed["total"] == 2, feed
+    assert all(i["path"] == "/api/v1/agent/identity" for i in feed["items"])
+    detail = _detail(client, test_project.id, sid)
+    assert detail["call_count"] == feed["total"], "count and feed must agree"
+    assert client.get(
+        f"/api/v1/projects/{test_project.id}/assist-sessions/999999/api-activity"
+    ).status_code == 404
+
+
 def test_a_session_from_another_project_is_not_readable(
     client, db_session, test_project
 ):

@@ -15,14 +15,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, get_current_user
 from app.db.session import get_db
-from app.db.models_agent import AgentApiCall, Agent
+from app.db.models_agent import AgentApiCall, Agent, AssistSession
 from app.db.models_auth import User
 from app.db.models_project import Project
 
@@ -243,13 +243,16 @@ class AgentActivitySummary(BaseModel):
 
 # Priority-ordered workflow label.  A row can carry several session FKs
 # (an execution call also references its test_plan_id); pick the most
-# specific so each call counts once.
+# specific so each call counts once.  v2.338.2 — a unified project session's
+# plain reads (inventory queries, identity, the probe) carry only
+# ``agent_session_id``; they are "session" work, not "other".
 def _workflow_case():
     return case(
         (AgentApiCall.recon_session_id.isnot(None), "recon"),
         (AgentApiCall.execution_session_id.isnot(None), "execution"),
         (AgentApiCall.assist_session_id.isnot(None), "assist"),
         (AgentApiCall.test_plan_id.isnot(None), "plan"),
+        (AgentApiCall.agent_session_id.isnot(None), "session"),
         else_="other",
     )
 
@@ -355,9 +358,12 @@ def get_agent_activity_summary(
     ]
 
     # Busiest sessions across workflows — one small GROUP BY per FK,
-    # merged and capped.
+    # merged and capped.  v2.338.2 — the unified session is the unit an
+    # operator actually started, so it is ranked too (its phase rows stay:
+    # they say which run within the session was busiest).
     busiest: List[AgentActivitySessionRow] = []
     for col, label in (
+        (AgentApiCall.agent_session_id, "session"),
         (AgentApiCall.recon_session_id, "recon"),
         (AgentApiCall.execution_session_id, "execution"),
         (AgentApiCall.assist_session_id, "assist"),
@@ -422,12 +428,29 @@ def list_assist_session_activity(
     """
     # get_current_project enforces ProjectMembership for the path project_id
     # (see list_plan_activity) — guards the same cross-tenant read.
+    assist = (
+        db.query(AssistSession)
+        .filter(
+            AssistSession.id == assist_session_id,
+            AssistSession.project_id == project.id,
+        )
+        .first()
+    )
+    if assist is None:
+        raise HTTPException(status_code=404, detail="Assist session not found in this project")
+    # v2.338.2 — calls are stamped with the UNIFIED session id (from the key);
+    # ``assist_session_id`` is only set on rows written before v2.337.0.  The
+    # page's "API calls" count already joined through the unified id, so it
+    # said 141 while this list — still filtering the legacy column — was empty.
+    owner = AgentApiCall.assist_session_id == assist_session_id
+    if assist.agent_session_id is not None:
+        owner = owner | (AgentApiCall.agent_session_id == assist.agent_session_id)
     q = _base_query(
         db, project_id=project.id, test_plan_id=None, recon_session_id=None,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
         mine_owner_id=current_user.id if mine else None,
-    ).filter(AgentApiCall.assist_session_id == assist_session_id)
+    ).filter(owner)
     total = q.count()
     rows = (
         q.order_by(AgentApiCall.created_at.desc())
