@@ -414,6 +414,16 @@ def get_scans(
             "Drives the date-range chips on the /scans page (v2.83.0)."
         ),
     ),
+    batch_id: Optional[int] = Query(
+        None, description="Only the files of this upload batch (v2.335.0).",
+    ),
+    unbatched: bool = Query(
+        False,
+        description=(
+            "Leave out files that belong to an upload batch — /scans shows "
+            "those as one row per batch (GET /scans/batches) (v2.335.0)."
+        ),
+    ),
     sort_by: Optional[str] = Query(
         None,
         pattern="^(created_at|start_time|filename|tool_name|total_hosts|new_hosts)$",
@@ -448,6 +458,7 @@ def get_scans(
             models.Scan.version,
             models.Scan.uploaded_by_id,
             models.Scan.time_source,
+            models.Scan.batch_id,
             func.count(models.HostScanHistory.id).label('total_hosts'),
             func.sum(case((models.HostScanHistory.state_at_scan == 'up', 1), else_=0)).label('up_hosts'),
             # Hosts this scan first discovered (created the row) — the rest of
@@ -466,6 +477,10 @@ def get_scans(
     scans_query = _apply_scan_inventory_filters(
         scans_query, search=search, tool=tool, created_after=created_after
     )
+    if batch_id is not None:
+        scans_query = scans_query.filter(models.Scan.batch_id == batch_id)
+    elif unbatched:
+        scans_query = scans_query.filter(models.Scan.batch_id.is_(None))
     scans_query = (
         scans_query
         .group_by(
@@ -480,6 +495,7 @@ def get_scans(
             models.Scan.version,
             models.Scan.uploaded_by_id,
             models.Scan.time_source,
+            models.Scan.batch_id,
         )
     )
     # v2.83.0 — sortable column headers on the /scans desktop table.
@@ -638,6 +654,16 @@ def get_scans(
             for uid, uname in db.query(User.id, User.username).filter(User.id.in_(uploader_ids)).all()
         }
 
+    batch_ids = {r.batch_id for r in results if r.batch_id is not None}
+    batch_labels: Dict[int, str] = (
+        dict(
+            db.query(models.ScanBatch.id, models.ScanBatch.label)
+            .filter(models.ScanBatch.id.in_(batch_ids))
+            .all()
+        )
+        if batch_ids else {}
+    )
+
     scan_summaries = []
     for result in results:
         port_stats = port_stats_map.get(result.id)
@@ -691,6 +717,8 @@ def get_scans(
             web=web_stats_map.get(result.id),
             dns=dns_stats_map.get(result.id),
             auth=auth_stats_map.get(result.id),
+            batch_id=result.batch_id,
+            batch_label=batch_labels.get(result.batch_id),
         ))
 
     return scan_summaries
@@ -754,6 +782,225 @@ def get_scans_summary(
         up_hosts=host_row.up_hosts or 0,
         open_services=open_services,
     )
+
+
+# ---------------------------------------------------------------------------
+# Upload batches (v2.335.0) — see models.ScanBatch. Declared before the
+# /{scan_id} routes so "batches" / "inventory-marker" never parse as an id.
+# ---------------------------------------------------------------------------
+
+class ScanBatchCreate(BaseModel):
+    label: str = Field(..., min_length=1, max_length=200)
+
+
+class ScanBatchRef(BaseModel):
+    id: int
+    label: str
+    created_at: Optional[datetime] = None
+
+
+class ScanBatchSummary(BaseModel):
+    """One upload batch on /scans: the files it holds that match the page's
+    filters, and what those files added together."""
+    id: int
+    label: str
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    recon_session_id: Optional[int] = None
+    files: int
+    tools: List[str] = []
+    hosts: int = Field(0, description="Distinct hosts the files observed")
+    new_hosts: int = Field(0, description="Hosts these files first discovered")
+    open_ports: int = Field(0, description="Open-port observations across the files")
+    first_uploaded: Optional[datetime] = None
+    last_uploaded: Optional[datetime] = None
+    pending_files: int = Field(0, description="Files of this batch still queued or parsing")
+    failed_files: int = Field(0, description="Files of this batch that failed to parse (not dismissed)")
+
+
+class ScanInventoryMarker(BaseModel):
+    count: int
+    latest_id: Optional[int] = None
+
+
+@router.post(
+    "/batches",
+    response_model=ScanBatchRef,
+    status_code=201,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    summary="Start an upload batch (analyst)",
+)
+def create_scan_batch(
+    body: ScanBatchCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Group the files of one multi-file upload. The Scans page calls this
+    once per upload and sends the id with each file (``batch_id`` on
+    ``POST /upload/``). Agents don't: they name a batch with the ``batch``
+    field of each recon upload."""
+    batch = models.ScanBatch(
+        project_id=project.id,
+        label=body.label.strip() or "Upload",
+        created_by_id=current_user.id,
+    )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return ScanBatchRef(id=batch.id, label=batch.label, created_at=batch.created_at)
+
+
+@router.get(
+    "/batches",
+    response_model=List[ScanBatchSummary],
+    summary="Upload batches, with what their files added",
+)
+def list_scan_batches(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(None, max_length=200),
+    tool: Optional[str] = Query(None, max_length=64),
+    created_after: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Batches holding at least one scan that matches the /scans filters,
+    most recently uploaded first. Counts cover only the matching files, so a
+    tool filter shows what that tool's files in each batch added. Expand a
+    batch with ``GET /scans/?batch_id=…``."""
+    def _matching(query):
+        query = query.filter(models.Scan.project_id == project.id, models.Scan.batch_id.isnot(None))
+        return _apply_scan_inventory_filters(query, search=search, tool=tool, created_after=created_after)
+
+    last_uploaded = func.max(models.Scan.created_at)
+    rows = (
+        _matching(
+            db.query(
+                models.Scan.batch_id.label("batch_id"),
+                func.count(models.Scan.id).label("files"),
+                func.min(models.Scan.created_at).label("first_uploaded"),
+                last_uploaded.label("last_uploaded"),
+            ).select_from(models.Scan)
+        )
+        .group_by(models.Scan.batch_id)
+        .order_by(last_uploaded.desc(), models.Scan.batch_id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    ids = [r.batch_id for r in rows]
+    if not ids:
+        return []
+
+    batches = {b.id: b for b in db.query(models.ScanBatch).filter(models.ScanBatch.id.in_(ids)).all()}
+    tools: Dict[int, set] = {}
+    for bid, tool_label in (
+        _matching(
+            db.query(models.Scan.batch_id, func.coalesce(models.Scan.tool_name, models.Scan.scan_type))
+            .select_from(models.Scan)
+        )
+        .filter(models.Scan.batch_id.in_(ids))
+        .distinct()
+        .all()
+    ):
+        if tool_label:
+            tools.setdefault(bid, set()).add(tool_label)
+    host_stats = {
+        r.batch_id: r
+        for r in (
+            _matching(
+                db.query(
+                    models.Scan.batch_id.label("batch_id"),
+                    func.count(distinct(models.HostScanHistory.host_id)).label("hosts"),
+                    func.sum(case((models.HostScanHistory.host_created.is_(True), 1), else_=0)).label("new_hosts"),
+                )
+                .select_from(models.Scan)
+                .join(models.HostScanHistory, models.HostScanHistory.scan_id == models.Scan.id)
+            )
+            .filter(models.Scan.batch_id.in_(ids))
+            .group_by(models.Scan.batch_id)
+            .all()
+        )
+    }
+    open_ports = dict(
+        _matching(
+            db.query(models.Scan.batch_id, func.count(models.PortScanHistory.port_id))
+            .select_from(models.Scan)
+            .join(models.PortScanHistory, models.PortScanHistory.scan_id == models.Scan.id)
+        )
+        .filter(models.Scan.batch_id.in_(ids), models.PortScanHistory.state_at_scan == "open")
+        .group_by(models.Scan.batch_id)
+        .all()
+    )
+    # Files still in the pipeline, or failed and not yet acknowledged — the
+    # difference between "this sweep is done" and "it is still landing".
+    pending: Dict[int, int] = {}
+    failed: Dict[int, int] = {}
+    for bid, status, n in (
+        db.query(models.IngestionJob.batch_id, models.IngestionJob.status, func.count(models.IngestionJob.id))
+        .filter(
+            models.IngestionJob.batch_id.in_(ids),
+            or_(
+                models.IngestionJob.status.in_(("queued", "processing")),
+                and_(models.IngestionJob.status == "failed", models.IngestionJob.dismissed_at.is_(None)),
+            ),
+        )
+        .group_by(models.IngestionJob.batch_id, models.IngestionJob.status)
+        .all()
+    ):
+        target = failed if status == "failed" else pending
+        target[bid] = target.get(bid, 0) + n
+    creator_ids = {b.created_by_id for b in batches.values() if b.created_by_id is not None}
+    creators = (
+        dict(db.query(User.id, User.username).filter(User.id.in_(creator_ids)).all())
+        if creator_ids else {}
+    )
+
+    out = []
+    for r in rows:
+        b = batches.get(r.batch_id)
+        if b is None:
+            continue
+        stats = host_stats.get(r.batch_id)
+        out.append(ScanBatchSummary(
+            id=b.id,
+            label=b.label,
+            created_at=b.created_at,
+            created_by=creators.get(b.created_by_id),
+            recon_session_id=b.recon_session_id,
+            files=r.files,
+            tools=sorted(tools.get(r.batch_id, set()), key=str.lower),
+            hosts=(stats.hosts or 0) if stats else 0,
+            new_hosts=(stats.new_hosts or 0) if stats else 0,
+            open_ports=open_ports.get(r.batch_id, 0) or 0,
+            first_uploaded=r.first_uploaded,
+            last_uploaded=r.last_uploaded,
+            pending_files=pending.get(r.batch_id, 0),
+            failed_files=failed.get(r.batch_id, 0),
+        ))
+    return out
+
+
+@router.get(
+    "/inventory-marker",
+    response_model=ScanInventoryMarker,
+    summary="Has the scan list changed? (count + newest id)",
+)
+def get_scan_inventory_marker(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Cheap change detector for an open /scans page: the project's scan
+    count and newest id. The page polls it and reloads when either moves, so
+    scans uploaded by an agent or from another tab appear without a reload —
+    the page's own job polling only ever saw uploads it submitted."""
+    count, latest = (
+        db.query(func.count(models.Scan.id), func.max(models.Scan.id))
+        .filter(models.Scan.project_id == project.id)
+        .one()
+    )
+    return ScanInventoryMarker(count=count or 0, latest_id=latest)
 
 
 @router.get(

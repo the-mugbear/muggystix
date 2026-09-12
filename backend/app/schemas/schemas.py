@@ -639,6 +639,9 @@ class ScanSummary(_ScanRunWindow):
     web: Optional[ScanWebSummary] = None
     dns: Optional[ScanDnsSummary] = None
     auth: Optional[ScanAuthSummary] = None
+    # v2.335.0 — the upload batch this file arrived in, if any.
+    batch_id: Optional[int] = None
+    batch_label: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "1.65.0",
+        "app_version": "2.335.0",
+        "summary": (
+            "Upload batches and duplicate refusal. Recon uploads take a `batch` "
+            "label: every chunk of one split sweep carries the same label "
+            "(tool + phase, e.g. `nmap-tcp-top1000`), a different sweep a "
+            "different one, the chunk index goes in the filename — the Scans "
+            "page shows each batch as one row instead of hundreds of files. "
+            "An identical file is now refused with 409 `duplicate_scan` naming "
+            "the scan (or job) it already is; the agent treats that as done and "
+            "never retries, renames, or alters the file. Removes the old claim "
+            "that re-uploading a duplicate is harmless because ingestion dedupes "
+            "(only hosts were deduplicated; every re-upload made a new scan)."
+        ),
+    },
+    {
         "version": "1.64.0",
         "app_version": "2.328.0",
         "summary": (

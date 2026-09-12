@@ -102,6 +102,9 @@ export interface Scan {
   web?: ScanWebSummary | null;
   dns?: ScanDnsSummary | null;
   auth?: ScanAuthSummary | null;
+  /** v5.207.0 — the upload batch this file arrived in, if any. */
+  batch_id?: number | null;
+  batch_label?: string | null;
 }
 
 export const getScans = async (
@@ -113,17 +116,75 @@ export const getScans = async (
     createdAfter?: string;
     sortBy?: 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'file_size' | 'duration_seconds' | 'total_hosts' | 'new_hosts';
     sortOrder?: 'asc' | 'desc';
+    /** Only the files of this upload batch. */
+    batchId?: number;
+    /** Leave out files that belong to a batch (they're listed per batch). */
+    unbatched?: boolean;
     signal?: AbortSignal;
   },
 ): Promise<Scan[]> => {
-  const { search, tool, createdAfter, sortBy, sortOrder, signal } = options ?? {};
-  const params: Record<string, string | number> = { skip, limit };
+  const { search, tool, createdAfter, sortBy, sortOrder, batchId, unbatched, signal } = options ?? {};
+  const params: Record<string, string | number | boolean> = { skip, limit };
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
   if (sortBy) params.sort_by = sortBy;
   if (sortOrder) params.sort_order = sortOrder;
+  if (batchId != null) params.batch_id = batchId;
+  else if (unbatched) params.unbatched = true;
   const response = await api.get(`${p()}/scans/`, { params, signal });
+  return response.data;
+};
+
+/** One upload batch on /scans — files matching the page filters and what
+ *  they added together (backend ScanBatchSummary, v2.335.0). */
+export interface ScanBatchSummary {
+  id: number;
+  label: string;
+  created_at?: string | null;
+  created_by?: string | null;
+  recon_session_id?: number | null;
+  files: number;
+  tools: string[];
+  hosts: number;
+  new_hosts: number;
+  open_ports: number;
+  first_uploaded?: string | null;
+  last_uploaded?: string | null;
+  pending_files: number;
+  failed_files: number;
+}
+
+export const getScanBatches = async (
+  options?: { search?: string; tool?: string; createdAfter?: string; skip?: number; limit?: number; signal?: AbortSignal },
+): Promise<ScanBatchSummary[]> => {
+  const { search, tool, createdAfter, skip, limit, signal } = options ?? {};
+  const params: Record<string, string | number> = {};
+  if (search) params.search = search;
+  if (tool) params.tool = tool;
+  if (createdAfter) params.created_after = createdAfter;
+  if (skip) params.skip = skip;
+  if (limit) params.limit = limit;
+  const response = await api.get(`${p()}/scans/batches`, { params, signal });
+  return response.data;
+};
+
+/** Start an upload batch for a multi-file upload; send its id with each file. */
+export const createScanBatch = async (
+  label: string,
+): Promise<{ id: number; label: string; created_at?: string | null }> => {
+  const response = await api.post(`${p()}/scans/batches`, { label });
+  return response.data;
+};
+
+/** Cheap change detector for an open /scans page. */
+export interface ScanInventoryMarker {
+  count: number;
+  latest_id: number | null;
+}
+
+export const getScanInventoryMarker = async (): Promise<ScanInventoryMarker> => {
+  const response = await api.get(`${p()}/scans/inventory-marker`);
   return response.data;
 };
 

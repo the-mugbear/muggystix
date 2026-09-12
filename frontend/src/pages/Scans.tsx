@@ -33,6 +33,10 @@ import {
   cancelIngestionJob,
   retryIngestionJob,
   getScanCommandExplanation,
+  getScanBatches,
+  createScanBatch,
+  getScanInventoryMarker,
+  duplicateUploadOf,
 } from '../services/api';
 import type {
   Scan,
@@ -40,6 +44,9 @@ import type {
   IngestionJob,
   CommandExplanation,
   ScanDeletionImpact,
+  ScanBatchSummary,
+  DuplicateUpload,
+  UploadOptions,
 } from '../services/api';
 import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
@@ -51,6 +58,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import ScanContribution from '../components/scans/ScanContribution';
+import ScanBatchList, { SCAN_BATCH_LIMIT } from '../components/scans/ScanBatchList';
 import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
@@ -137,9 +145,14 @@ export default function Scans() {
       {
         filename: string;
         percent: number;
-        status: 'uploading' | 'parsing' | 'done' | 'error';
+        status: 'uploading' | 'parsing' | 'done' | 'error' | 'duplicate';
         error?: string;
         startedAt: number;
+        // v5.207.0 — a refused identical file: what it already is, plus
+        // what "Import again" needs to resend it.
+        duplicate?: DuplicateUpload;
+        file?: File;
+        batchId?: number;
       }
     >
   >({});
@@ -151,6 +164,9 @@ export default function Scans() {
   const [recentJobsLoading, setRecentJobsLoading] = useState(false);
 
   const [expandedScanIds, setExpandedScanIds] = useState<number[]>([]);
+  // v5.207.0 — upload batches, one row per sweep. Their files leave the flat
+  // inventory unless the operator asks to list them individually.
+  const [batches, setBatches] = useState<ScanBatchSummary[]>([]);
 
   // ---------------------------------------------------------------------
   // Scan Inventory filters + pagination (v4.47.0 QoL pass).
@@ -199,6 +215,7 @@ export default function Scans() {
     const raw = urlParams.get('sort_order');
     return raw === 'asc' ? 'asc' : 'desc';
   });
+  const [showBatchFiles, setShowBatchFiles] = useState(() => urlParams.get('batch_files') === 'show');
   const debouncedSearchText = useDebouncedValue(searchText, 300);
   const [hasMoreScans, setHasMoreScans] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -243,15 +260,24 @@ export default function Scans() {
       tool: toolFilter || undefined,
       createdAfter: createdAfterIso,
     };
-    try {
-      const data = await getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder });
-      setScans(data);
-      setHasMoreScans(data.length === SCAN_LIMIT);
-    } catch (err) {
-      console.error('Error fetching scans:', err);
-    } finally {
-      setLoading(false);
+    // Files outside batches + one row per batch, fetched together so the
+    // empty state never flashes while batches are still loading. Either can
+    // fail without taking the other down.
+    const [scanResult, batchResult] = await Promise.allSettled([
+      getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder, unbatched: !showBatchFiles }),
+      showBatchFiles
+        ? Promise.resolve([] as ScanBatchSummary[])
+        : getScanBatches({ ...filters, limit: SCAN_BATCH_LIMIT }),
+    ]);
+    if (scanResult.status === 'fulfilled') {
+      setScans(scanResult.value);
+      setHasMoreScans(scanResult.value.length === SCAN_LIMIT);
+    } else {
+      console.error('Error fetching scans:', scanResult.reason);
     }
+    if (batchResult.status === 'fulfilled') setBatches(batchResult.value);
+    else console.error('Error fetching scan batches:', batchResult.reason);
+    setLoading(false);
     // Headline totals are filter-aware and independent of pagination, so a
     // failure here must not block the table from rendering — fetch separately.
     try {
@@ -259,7 +285,7 @@ export default function Scans() {
     } catch (err) {
       console.error('Error fetching scan summary:', err);
     }
-  }, [toolFilter, debouncedSearchText, createdAfterIso, sortBy, sortOrder]);
+  }, [toolFilter, debouncedSearchText, createdAfterIso, sortBy, sortOrder, showBatchFiles]);
 
   const loadMoreScans = useCallback(async () => {
     if (loadingMore || !hasMoreScans) return;
@@ -271,6 +297,7 @@ export default function Scans() {
         createdAfter: createdAfterIso,
         sortBy,
         sortOrder,
+        unbatched: !showBatchFiles,
       });
       setScans((prev) => [...prev, ...data]);
       setHasMoreScans(data.length === SCAN_LIMIT);
@@ -286,6 +313,7 @@ export default function Scans() {
     createdAfterIso,
     sortBy,
     sortOrder,
+    showBatchFiles,
     loadingMore,
     hasMoreScans,
   ]);
@@ -369,9 +397,11 @@ export default function Scans() {
     else next.delete('sort_by');
     if (sortOrder !== 'desc') next.set('sort_order', sortOrder);
     else next.delete('sort_order');
+    if (showBatchFiles) next.set('batch_files', 'show');
+    else next.delete('batch_files');
     setUrlParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText, toolFilter, dateRangeDays, sortBy, sortOrder]);
+  }, [debouncedSearchText, toolFilter, dateRangeDays, sortBy, sortOrder, showBatchFiles]);
 
   useEffect(() => {
     fetchScans();
@@ -397,6 +427,80 @@ export default function Scans() {
     },
     [commandCache],
   );
+
+  // One file through upload → job tracking; shared by drops and by
+  // "Import again" on a refused duplicate.
+  const runUpload = (file: File, key: string, startedAt: number, options: UploadOptions) =>
+    uploadFile(
+      file,
+      (percent) => {
+        setUploadProgress((prev) => {
+          const existing = prev[key];
+          if (!existing) return prev; // entry already cleaned up — ignore late progress
+          return {
+            ...prev,
+            [key]: {
+              ...existing,
+              percent,
+              status: percent >= 100 ? 'parsing' : 'uploading',
+            },
+          };
+        });
+      },
+      options,
+    )
+      .then((result) => {
+        // Flip to 'done' so the banner reads "Upload complete: X%".
+        // Use prev as the source of truth — if the entry was removed
+        // (watchdog, manual dismiss), this is a no-op.
+        setUploadProgress((prev) => {
+          const existing = prev[key];
+          return {
+            ...prev,
+            [key]: {
+              ...(existing ?? { filename: file.name, startedAt }),
+              percent: 100,
+              status: 'done',
+            },
+          };
+        });
+        if (result?.job_id != null) {
+          setActiveJobIds((prev) =>
+            prev.includes(result.job_id) ? prev : [...prev, result.job_id],
+          );
+        }
+        // Auto-dismiss the success banner after a short pause.
+        setTimeout(() => {
+          setUploadProgress((prev) => {
+            const { [key]: _removed, ...rest } = prev;
+            return rest;
+          });
+        }, 1500);
+      })
+      .catch((err: unknown) => {
+        // v5.207.0 — an identical file is refused (409 duplicate_scan). Not
+        // a failure: say what it already is, and keep the file so the
+        // operator can import it again on purpose.
+        const duplicate = duplicateUploadOf(err);
+        setUploadProgress((prev) => {
+          const existing = prev[key];
+          return {
+            ...prev,
+            [key]: {
+              ...(existing ?? { filename: file.name, percent: 0, startedAt }),
+              status: duplicate ? 'duplicate' : 'error',
+              // Audit FBK·H11 — route through formatApiError so the user
+              // sees the same normalized error shape (validation list,
+              // detail, fallback) used elsewhere instead of a raw
+              // response.data.detail that may be a list or undefined.
+              error: duplicate ? undefined : formatApiError(err, 'Upload failed'),
+              duplicate: duplicate ?? undefined,
+              file: duplicate ? file : undefined,
+              batchId: options.batchId,
+            },
+          };
+        });
+      });
 
   const onDrop = (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -431,77 +535,39 @@ export default function Scans() {
     });
 
     setUploading(true);
-
-    let remaining = fileKeys.length;
-    const markDone = () => {
-      remaining -= 1;
-      if (remaining === 0) setUploading(false);
-    };
-
-    for (const { file, key } of fileKeys) {
-      uploadFile(file, (percent) => {
-        setUploadProgress((prev) => {
-          const existing = prev[key];
-          if (!existing) return prev; // entry already cleaned up — ignore late progress
-          return {
-            ...prev,
-            [key]: {
-              ...existing,
-              percent,
-              status: percent >= 100 ? 'parsing' : 'uploading',
-            },
-          };
-        });
-      })
-        .then((result) => {
-          // Flip to 'done' so the banner reads "Upload complete: X%".
-          // Use prev as the source of truth — if the entry was removed
-          // (watchdog, manual dismiss), this is a no-op.
-          setUploadProgress((prev) => {
-            const existing = prev[key];
-            return {
-              ...prev,
-              [key]: {
-                ...(existing ?? { filename: file.name, startedAt }),
-                percent: 100,
-                status: 'done',
-              },
-            };
-          });
-          if (result?.job_id != null) {
-            setActiveJobIds((prev) =>
-              prev.includes(result.job_id) ? prev : [...prev, result.job_id],
-            );
-          }
-          // Auto-dismiss the success banner after a short pause.
-          setTimeout(() => {
-            setUploadProgress((prev) => {
-              const { [key]: _removed, ...rest } = prev;
-              return rest;
-            });
-          }, 1500);
-        })
-        .catch((err: unknown) => {
-          setUploadProgress((prev) => {
-            const existing = prev[key];
-            return {
-              ...prev,
-              [key]: {
-                ...(existing ?? { filename: file.name, percent: 0, startedAt }),
-                status: 'error',
-                // Audit FBK·H11 — route through formatApiError so the user
-                // sees the same normalized error shape (validation list,
-                // detail, fallback) used elsewhere instead of a raw
-                // response.data.detail that may be a list or undefined.
-                error: formatApiError(err, 'Upload failed'),
-              },
-            };
-          });
-        })
-        .finally(markDone);
-    }
-
     setUploadDialogOpen(false);
+
+    // v5.207.0 — a multi-file upload is one batch, shown on /scans as one
+    // row. If the batch can't be created the files still upload, ungrouped.
+    const batchReady: Promise<number | undefined> =
+      fileKeys.length > 1
+        ? createScanBatch(`${fileKeys.length} files · ${new Date(startedAt).toLocaleString()}`)
+            .then((batch) => batch.id)
+            .catch((err: unknown) => {
+              console.error('Could not start an upload batch; uploading ungrouped:', err);
+              return undefined;
+            })
+        : Promise.resolve(undefined);
+
+    void batchReady
+      .then((batchId) =>
+        Promise.allSettled(fileKeys.map(({ file, key }) => runUpload(file, key, startedAt, { batchId }))),
+      )
+      .finally(() => setUploading(false));
+  };
+
+  // A refused duplicate the operator wants anyway (e.g. to re-parse after a
+  // parser fix): resend the same file, in the same batch, allowing it.
+  const importAgain = (key: string) => {
+    const entry = uploadProgress[key];
+    if (!entry?.file) return;
+    const { file, batchId } = entry;
+    const startedAt = Date.now();
+    setUploadProgress((prev) => ({
+      ...prev,
+      [key]: { filename: file.name, percent: 0, status: 'uploading', startedAt },
+    }));
+    void runUpload(file, key, startedAt, { batchId, allowDuplicate: true });
   };
 
   // v2.43.1 watchdog: clear per-file entries that never escaped 'uploading'.
@@ -610,6 +676,36 @@ export default function Scans() {
     const interval = setInterval(fetchRecentJobs, 5000);
     return () => clearInterval(interval);
   }, [hasActiveRecent, fetchRecentJobs]);
+
+  // v5.207.0 — refresh when ANY scan lands. The job polling above only
+  // follows uploads this tab submitted, so scans from an agent or another
+  // tab raised counters elsewhere while this list stayed stale. Polls a
+  // count + newest-id marker (one indexed query) while the tab is visible.
+  const inventoryMarkerRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      try {
+        const marker = await getScanInventoryMarker();
+        if (cancelled) return;
+        const key = `${marker.count}:${marker.latest_id ?? ''}`;
+        if (inventoryMarkerRef.current !== null && inventoryMarkerRef.current !== key) {
+          fetchScans();
+          fetchRecentJobs();
+        }
+        inventoryMarkerRef.current = key;
+      } catch {
+        /* transient — the next tick retries */
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [fetchScans, fetchRecentJobs]);
 
   const groupedScans = useMemo(
     () =>
@@ -872,7 +968,13 @@ export default function Scans() {
         <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
           {Object.entries(uploadProgress).map(([key, p]) => {
             const variant =
-              p.status === 'error' ? 'destructive' : p.status === 'done' ? 'success' : 'info';
+              p.status === 'error'
+                ? 'destructive'
+                : p.status === 'duplicate'
+                ? 'warning'
+                : p.status === 'done'
+                ? 'success'
+                : 'info';
             const label =
               p.status === 'uploading'
                 ? 'Uploading'
@@ -880,6 +982,8 @@ export default function Scans() {
                 ? 'Finishing upload'
                 : p.status === 'done'
                 ? 'Upload complete'
+                : p.status === 'duplicate'
+                ? 'Already imported'
                 : 'Upload failed';
             return (
               <Alert key={key} variant={variant}>
@@ -888,10 +992,10 @@ export default function Scans() {
                     <span className="truncate font-semibold">
                       {label}: {p.filename}
                     </span>
-                    {p.status !== 'error' && (
+                    {p.status !== 'error' && p.status !== 'duplicate' && (
                       <span className="shrink-0 text-caption text-muted-foreground">{p.percent}%</span>
                     )}
-                    {(p.status === 'done' || p.status === 'error') && (
+                    {(p.status === 'done' || p.status === 'error' || p.status === 'duplicate') && (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -908,7 +1012,30 @@ export default function Scans() {
                       </Button>
                     )}
                   </div>
-                  {p.status === 'error' ? (
+                  {p.status === 'duplicate' && p.duplicate ? (
+                    <div className="flex flex-wrap items-center gap-xs">
+                      <span className="min-w-0 break-words">{p.duplicate.message}</span>
+                      {p.duplicate.scanId != null && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleViewScan(p.duplicate!.scanId!)}
+                        >
+                          View scan #{p.duplicate.scanId}
+                        </Button>
+                      )}
+                      {p.duplicate.scanId != null && p.file && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => importAgain(key)}
+                          title="Import this file again anyway — e.g. to re-parse it after a parser fix"
+                        >
+                          Import again
+                        </Button>
+                      )}
+                    </div>
+                  ) : p.status === 'error' ? (
                     <span>{p.error || 'Upload failed'}</span>
                   ) : (
                     <ProgressBar value={p.percent} tone={p.status === 'done' ? 'success' : 'default'} />
@@ -1298,7 +1425,7 @@ export default function Scans() {
           sessions to the same axis.  Per-project scan inventory still
           lives here in tabular form below. */}
 
-      {!hasActiveFilters && scans.length === 0 ? (
+      {!hasActiveFilters && scans.length === 0 && batches.length === 0 ? (
         <div className="py-xl text-center">
           <Upload className="mx-auto mb-sm size-16 text-muted-foreground" aria-hidden />
           <p className="text-subheading text-muted-foreground">No scans uploaded yet</p>
@@ -1323,11 +1450,27 @@ export default function Scans() {
                   More button at the bottom of the table, which sat
                   off-screen on long lists and was field-reported as a
                   "100-row cap". */}
-              {scans.length > 0 && (
+              {(scans.length > 0 || batches.length > 0) && (
                 <p className="mt-xxs text-caption text-muted-foreground">
+                  {batches.length > 0 && (
+                    <>
+                      {batches.length} upload batch{batches.length === 1 ? '' : 'es'} ·{' '}
+                    </>
+                  )}
                   Showing {scans.length} scan{scans.length === 1 ? '' : 's'}
+                  {batches.length > 0 ? ' outside batches' : ''}
                   {hasMoreScans ? ' — more available, see Load button below' : hasActiveFilters ? ' (filtered)' : ''}
                 </p>
+              )}
+              {(showBatchFiles || batches.length > 0) && (
+                <button
+                  type="button"
+                  onClick={() => setShowBatchFiles((v) => !v)}
+                  aria-pressed={showBatchFiles}
+                  className="mt-xxs text-caption text-primary hover:underline focus:outline-none focus-visible:underline"
+                >
+                  {showBatchFiles ? 'Group files by upload batch' : 'List batch files individually'}
+                </button>
               )}
             </div>
             {/* v4.47.0 QoL pass — full filter row.  Search runs against
@@ -1407,8 +1550,20 @@ export default function Scans() {
             </div>
           </div>
 
+          {batches.length > 0 && (
+            <ScanBatchList
+              className="mb-md"
+              batches={batches}
+              filters={{
+                search: debouncedSearchText.trim() || undefined,
+                tool: toolFilter || undefined,
+                createdAfter: createdAfterIso,
+              }}
+              onViewScan={handleViewScan}
+            />
+          )}
           {scans.length > 0 && <ViewerZoneNote className="mb-xs" />}
-          {scans.length === 0 ? (
+          {scans.length === 0 && batches.length > 0 ? null : scans.length === 0 ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
             // navigating away.

@@ -8,6 +8,7 @@ processes one job at a time, keeping parsing fully isolated from the API.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import logging
 import os
@@ -35,6 +36,48 @@ from app.services.parse_error_service import log_parse_error
 from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
 logger = logging.getLogger(__name__)
+
+
+class DuplicateUploadError(Exception):
+    """This exact file (same SHA-256) is already in the project — as a scan,
+    or as a job still queued/processing. Re-ingesting it would only add a
+    second, indistinguishable scan and move every scan counter while adding
+    no data. Not a ValueError: callers map it to 409, not 400."""
+
+    def __init__(self, *, scan_id: Optional[int] = None, job_id: Optional[int] = None,
+                 filename: Optional[str] = None):
+        self.scan_id = scan_id
+        self.job_id = job_id
+        self.filename = filename
+        where = f"scan #{scan_id}" if scan_id is not None else f"ingestion job #{job_id}, still processing"
+        name = f" ({filename})" if filename else ""
+        super().__init__(
+            f"This exact file is already imported as {where}{name}; uploading it again would add nothing."
+        )
+
+    def detail(self) -> Dict[str, object]:
+        return {
+            "code": "duplicate_scan",
+            "message": str(self),
+            "scan_id": self.scan_id,
+            "job_id": self.job_id,
+        }
+
+
+def carry_upload_identity(db: Session, job: IngestionJob) -> None:
+    """Stamp a completed job's upload identity onto its scan: who sent it,
+    the batch it arrived in, and the file's SHA-256 (which the upload-time
+    duplicate check reads scans by)."""
+    if not job.scan_id:
+        return
+    from app.db.models import Scan
+    scan = db.get(Scan, job.scan_id)
+    if scan is None:
+        return
+    if job.submitted_by_id and not scan.uploaded_by_id:
+        scan.uploaded_by_id = job.submitted_by_id
+    scan.batch_id = job.batch_id
+    scan.content_sha256 = job.content_sha256
 
 # v2.328.0 — every lifecycle write (claim / heartbeat / complete / fail /
 # cancel / retry / reap) goes through the shared transition layer so the
@@ -219,8 +262,16 @@ class IngestionService:
         upload: UploadFile,
         submitted_by_id: Optional[int],
         options: Optional[Dict[str, object]] = None,
+        batch_id: Optional[int] = None,
+        allow_duplicate: bool = False,
     ) -> IngestionJob:
-        """Persist an upload to disk and register an ingestion job."""
+        """Persist an upload to disk and register an ingestion job.
+
+        Raises :class:`DuplicateUploadError` when this exact file (by SHA-256)
+        is already a scan in the project or is still queued/processing, unless
+        ``allow_duplicate`` — an operator deliberately re-importing, e.g. after
+        a parser fix. Nothing is created for a refused duplicate.
+        """
         # Allowlist the extension here — not just on the JWT /upload path —
         # so the agent recon upload (which calls create_job directly) can't
         # land an arbitrary-extension file on disk.  ValueError surfaces as a
@@ -262,7 +313,7 @@ class IngestionService:
             raw_name = Path(upload.filename or "upload").name or "upload"
             safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', raw_name)[:120] or "upload"
             destination = job_dir / safe_name
-            file_size = await self._write_upload(upload, destination)
+            file_size, content_sha256 = await self._write_upload(upload, destination)
             # CR5-C2 — owner-only on the scan file too (umask leaves it 0644 by
             # default); belt-and-suspenders with the 0700 job dir above.
             os.chmod(destination, 0o600)
@@ -276,6 +327,10 @@ class IngestionService:
             self._validate_content_matches_extension(destination, raw_name)
 
             opts = options or {}
+            if not allow_duplicate:
+                duplicate = self._find_duplicate(db, opts.get("project_id"), content_sha256)
+                if duplicate is not None:
+                    raise duplicate
             job = IngestionJob(
                 filename=destination.name,
                 original_filename=upload.filename,
@@ -292,6 +347,8 @@ class IngestionService:
                 # and process the job before it's attributed to its recon
                 # session.  Setting it here closes that window.
                 recon_session_id=opts.get("recon_session_id"),
+                batch_id=batch_id,
+                content_sha256=content_sha256,
             )
             db.add(job)
             db.commit()
@@ -306,6 +363,49 @@ class IngestionService:
             "Queued ingestion job %s for %s (%d bytes)", job.id, safe_name, file_size
         )
         return job
+
+    @staticmethod
+    def _find_duplicate(
+        db: Session, project_id: Optional[int], content_sha256: str,
+    ) -> Optional["DuplicateUploadError"]:
+        """The scan or in-flight job this exact file already is, if any.
+
+        Checked under a per-(project, digest) transaction lock so two identical
+        uploads racing each other can't both pass: the second waits until the
+        first has committed its job row, then finds it. Released at the
+        caller's commit or rollback. A failed or dismissed job does not count
+        (the operator is retrying), nor does a deleted scan.
+        """
+        if project_id is None:
+            return None
+        bind = db.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": f"upload:{project_id}:{content_sha256}"},
+            )
+        from app.db.models import Scan
+        scan = (
+            db.query(Scan.id, Scan.filename)
+            .filter(Scan.project_id == project_id, Scan.content_sha256 == content_sha256)
+            .order_by(Scan.id)
+            .first()
+        )
+        if scan is not None:
+            return DuplicateUploadError(scan_id=scan.id, filename=scan.filename)
+        job = (
+            db.query(IngestionJob.id, IngestionJob.original_filename)
+            .filter(
+                IngestionJob.project_id == project_id,
+                IngestionJob.content_sha256 == content_sha256,
+                IngestionJob.status.in_(("queued", "processing")),
+            )
+            .order_by(IngestionJob.id)
+            .first()
+        )
+        if job is not None:
+            return DuplicateUploadError(job_id=job.id, filename=job.original_filename)
+        return None
 
     def enqueue_job(self, job_id: int) -> None:
         """Mark a job as ready for processing.
@@ -533,8 +633,11 @@ class IngestionService:
         # ALLOWED_UPLOAD_EXTENSIONS before we get here, so anything reaching
         # this point is one of the known-good types.
 
-    async def _write_upload(self, upload: UploadFile, destination: Path) -> int:
-        """Stream an upload to disk in chunks, returning written size.
+    async def _write_upload(self, upload: UploadFile, destination: Path) -> Tuple[int, str]:
+        """Stream an upload to disk in chunks, returning (size, SHA-256 hex).
+
+        The digest is computed over the same chunks as they are written, so
+        the duplicate check costs no second read of a multi-GB file.
 
         v2.91.4 (third code review #6) — offload each disk write to
         a thread via ``asyncio.to_thread`` so the event loop stays
@@ -553,6 +656,7 @@ class IngestionService:
 
         chunk_size = settings.UPLOAD_CHUNK_SIZE
         total_written = 0
+        digest = hashlib.sha256()
 
         await upload.seek(0)
         # Open the file in the thread too — `open()` is also a sync
@@ -565,6 +669,7 @@ class IngestionService:
                 if not chunk:
                     break
                 await asyncio.to_thread(outfile.write, chunk)
+                digest.update(chunk)
                 total_written += len(chunk)
                 if total_written > settings.MAX_FILE_SIZE:
                     # Close before unlink so the file handle isn't
@@ -580,7 +685,7 @@ class IngestionService:
             await asyncio.to_thread(outfile.close)
 
         await upload.close()
-        return total_written
+        return total_written, digest.hexdigest()
 
     # ------------------------------------------------------------------
     # Worker-side methods (called from ``python -m app.worker``)
@@ -807,12 +912,7 @@ class IngestionService:
                 _progress_summary = result.get("progress_summary")
                 if _progress_summary:
                     job.progress = _progress_summary
-                # Set uploaded_by on the scan record
-                if job.scan_id and job.submitted_by_id:
-                    from app.db.models import Scan
-                    scan = db.get(Scan, job.scan_id)
-                    if scan and not scan.uploaded_by_id:
-                        scan.uploaded_by_id = job.submitted_by_id
+                carry_upload_identity(db, job)
                 # Observability — one structured line per completed job so an
                 # ingestion backlog is debuggable from `docker logs` without
                 # new infra: how long the job waited for a worker (queue age)

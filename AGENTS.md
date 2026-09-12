@@ -443,7 +443,7 @@ If your host crashed mid-recon, the operator clicks **Resume** on the recon sess
 When you see it:
 
 - **Call `GET /agent/recon/summary` and `GET /agent/recon/context` before scanning.** They report the rolling host/port counts and the already-known hosts.
-- Continue coverage from where the prior pass stopped rather than re-scanning subnets already characterized. Re-uploading a duplicate scan is harmless — ingestion dedupes it — but it wastes a pass.
+- Continue coverage from where the prior pass stopped rather than re-scanning subnets already characterized. Don't re-upload files the earlier pass already sent — BlueStick refuses an identical file with `409 duplicate_scan` (see § Upload batches & duplicates). Keep using the earlier pass's `batch` labels so new chunks join the same batches.
 - The environment probe (step 1) is still required for the new key.
 
 ### Recon flow
@@ -470,7 +470,10 @@ POST /agent/recon/upload  (multipart/form-data)
   file=<output file>
   tool_name=<e.g. "nmap">          # optional, for audit trail
   command_run=<the exact command>  # optional, for audit trail
-# → { job_id, filename, status: "queued", message, recon_session_id }
+  batch=<sweep label>              # send on EVERY chunk of a split sweep — see "Upload batches & duplicates"
+# → { job_id, filename, status: "queued", message, recon_session_id, batch_id, batch }
+# → 409 { "detail": { "code": "duplicate_scan", "scan_id" | "job_id", "message" } }
+#     this exact file is already ingested (or still parsing): it is DONE — never retry it
 
 # 4. Poll the parse job
 GET /agent/recon/jobs/{job_id}
@@ -508,6 +511,18 @@ Content-Type: application/json
 #   feedback -> POST /recon/complete LAST; confirm the 200 before stopping.
 #   (See "Exit criteria" below for the full rule.)
 ```
+
+### Upload batches & duplicates
+
+A large scope becomes many files — one per chunk (see § Very large scopes). Without grouping, 312 nmap chunks are 312 rows on the operator's Scans page and the sweep is impossible to navigate. **Send a `batch` label with every upload that is one chunk of a sweep:**
+
+- **One label per sweep, identical on every chunk of it.** Name the tool, the phase and whatever distinguishes this sweep from others: `nmap-tcp-top1000`, `nmap-svc-live-hosts`, `masscan-full-tcp`, `httpx-web`. Every upload carrying that label in your recon session joins one batch, which the Scans page shows as a single row (files, hosts, new hosts, open ports, files still parsing or failed) that expands to its files.
+- **A different sweep gets a different label.** A second nmap pass with different options is a new batch, not more chunks of the first. Never reuse a label for another tool or phase.
+- **The chunk index belongs in the filename, not the label.** Keep each file's name distinct per the Scan-naming convention above — those are the rows inside the batch: `nmap_tcp-top1000_chunk-017_10.4.0.0-22_20260911T2210Z.xml` with `batch=nmap-tcp-top1000`.
+- **A one-off file** (one dnsx run, a single targeted re-scan) needs no label.
+- Labels are scoped to your recon session. After a resume (same session, new key) keep the same labels so later chunks join the earlier batches.
+
+**Never upload the same file twice.** BlueStick hashes every upload. A file identical to one already in the project — as a scan, or still parsing — is refused with `409` and `detail.code: "duplicate_scan"`, naming the `scan_id` (or `job_id`) it already is, and nothing is created or counted. That response means the file **is** ingested: mark it done and move on. Do not retry it, rename it, or alter its contents to get past the check — re-importing is the operator's call, made from the Scans page. If a lapsed key left you unsure whether an upload landed, renew and send it once more: `409 duplicate_scan` answers the question.
 
 ### Summary response shape
 
@@ -629,7 +644,7 @@ A scope can declare **domains** alongside subnets. Each entry is exact (`portal.
 - **Name scope is independent of subnet scope.** An in-scope name resolving to `203.0.113.7` does not put `203.0.113.7` — or its neighbours — in subnet scope. Probe the name; do not scan the address range around it. A host reached only through an in-scope name is reported by BlueStick as *"reachable via in-scope name"*, a third state that is neither in nor out of subnet scope. If the operator wants the address itself in scope, they declare the subnet.
 - **A name you discovered is not a name you may probe.** Subdomain enumeration will surface names outside every declared domain. Upload them (they become named assets and stay out of scope), but do not resolve-and-probe them further without asking.
 
-**Plan for it — work in batches.** On a large multi-thousand-subnet scope you cannot hold every CIDR in context, run one scan, and be done — and you must **not** point one nmap/masscan run at the whole scope and upload one giant file. Instead: page a chunk of CIDRs → scan that chunk → upload (with a distinct metadata-bearing filename, see the Scan-naming convention above) → poll → next chunk. Report progress between batches; don't queue ten scans and upload them all at the end.
+**Plan for it — work in batches.** On a large multi-thousand-subnet scope you cannot hold every CIDR in context, run one scan, and be done — and you must **not** point one nmap/masscan run at the whole scope and upload one giant file. Instead: page a chunk of CIDRs → scan that chunk → upload (with a distinct metadata-bearing filename **and the sweep's `batch` label** — see the Scan-naming convention and § Upload batches & duplicates above) → poll → next chunk. Report progress between batches; don't queue ten scans and upload them all at the end.
 
 - **Chunk size** — roughly **256–1024 addresses (~/22–/24), or ~25–50 CIDRs from the paginated subnet list, per scan+upload**. Smaller for slow `-sV -sC` service scans, larger for fast masscan sweeps; when unsure, smaller is safer.
 - **Why chunk, not monolith:** a `/16` nmap XML can be hundreds of MB and exceed the upload proxy's 500 MB body cap (fails outright); if a giant upload fails to parse you lose *everything*, whereas one failed chunk of ten leaves the other nine safe; each chunk bumps the counts in `/agent/recon/summary` so the operator sees real progress; and the ingestion worker parses one job at a time, so a huge file monopolizes it while smaller chunks keep the queue moving.
@@ -1129,6 +1144,7 @@ Use the `status` field meaningfully:
 | 403 — "scoped to a different test plan" | Your per-plan key was used against another plan's endpoint | Check the `plan_id` in your URL matches the one in your instructions block. If you need a different plan, ask the user for a new key. |
 | 403 — other | The operation isn't available to agent keys (e.g. creating new plans from a scoped key) | Use the endpoints documented in this guide. Scoped keys cannot spawn new plans. |
 | 404 | Resource not found | Verify the `plan_id`, `entry_id`, or `host_id`. The resource may have been deleted. |
+| 409 — `detail.code: "duplicate_scan"` (recon upload) | This exact file is already a scan in the project, or still parsing (`detail.scan_id` / `detail.job_id`) | Not a failure — the data is in. Mark the file done and continue. Never retry, rename, or alter the file to force a re-import. |
 | 422 | Validation error | Invalid field values — usually a wrong enum (`priority`, `test_phase`, `status`). Check the values against the lists in this file. |
 | 429 | Rate limited | Default 240 req/min. Window is 60 s sliding; wait for the oldest in-window call to age out and retry. Admins can raise individual keys up to 1200 rpm. |
 

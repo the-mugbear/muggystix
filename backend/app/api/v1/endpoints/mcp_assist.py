@@ -161,7 +161,8 @@ def _server_instructions(base_url: str) -> str:
         f"  recon target list:      GET {base_url}/agent/recon/live-hosts.txt\n"
         f"  recon web targets:      GET {base_url}/agent/recon/web-targets.txt\n"
         f"  recon full host dump:   GET {base_url}/agent/recon/hosts.ndjson\n"
-        f"  upload scanner output:  POST {base_url}/agent/recon/upload (multipart file)\n"
+        f"  upload scanner output:  POST {base_url}/agent/recon/upload (multipart file; the same "
+        f"batch=<sweep label> on every chunk of a split sweep; 409 duplicate_scan = already ingested)\n"
         "The tools are for targeted lookups and for recording what you did."
     )
 

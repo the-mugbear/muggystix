@@ -156,6 +156,7 @@ EXPECTED_ONDELETE = {
     ('imported_result_files', 'execution_session_id'): 'CASCADE',
     ('imported_result_files', 'imported_by_id'): 'SET NULL',
     ('imported_result_files', 'test_plan_id'): 'CASCADE',
+    ('ingestion_jobs', 'batch_id'): 'SET NULL',
     ('ingestion_jobs', 'parse_error_id'): 'SET NULL',
     ('ingestion_jobs', 'project_id'): 'CASCADE',
     ('ingestion_jobs', 'recon_session_id'): 'SET NULL',
@@ -197,7 +198,13 @@ EXPECTED_ONDELETE = {
     ('recon_sessions', 'started_by_id'): 'SET NULL',
     ('report_jobs', 'project_id'): 'CASCADE',
     ('report_jobs', 'requested_by_id'): 'SET NULL',
+    # v2.335.0 — an upload batch dies with its project; its scans outlive
+    # it (their pointer goes NULL) and so does it outlive its creator/session.
+    ('scan_batches', 'created_by_id'): 'SET NULL',
+    ('scan_batches', 'project_id'): 'CASCADE',
+    ('scan_batches', 'recon_session_id'): 'SET NULL',
     ('scan_info', 'scan_id'): 'CASCADE',
+    ('scans', 'batch_id'): 'SET NULL',
     ('scans', 'project_id'): 'CASCADE',
     ('scans', 'uploaded_by_id'): 'SET NULL',
     ('scopes', 'project_id'): 'CASCADE',

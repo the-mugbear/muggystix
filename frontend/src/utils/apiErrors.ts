@@ -57,6 +57,12 @@ export function formatApiError(err: unknown, fallback: string): string {
   if (typeof detail === 'string' && detail.trim()) {
     return detail;
   }
+  // A structured detail ({ code, message, … }) lets the caller act on the
+  // code; its message is still curated copy (e.g. 409 duplicate_scan).
+  const structured = (detail as { message?: unknown } | null | undefined)?.message;
+  if (typeof structured === 'string' && structured.trim()) {
+    return structured;
+  }
 
   const status: number | undefined = e?.response?.status;
 

@@ -58,12 +58,44 @@ export interface IngestionJob {
 }
 
 
+export interface UploadOptions {
+  /** Upload batch (createScanBatch) this file belongs to. */
+  batchId?: number;
+  /** Import even though this exact file is already a scan — a deliberate
+   *  re-import, e.g. to re-parse after a parser fix. */
+  allowDuplicate?: boolean;
+}
+
+/** A refused identical upload (409 duplicate_scan): what it already is. */
+export interface DuplicateUpload {
+  scanId: number | null;
+  jobId: number | null;
+  message: string;
+}
+
+/** The duplicate the server refused this upload as, or null for any other error. */
+export function duplicateUploadOf(err: unknown): DuplicateUpload | null {
+  const e = err as { response?: { status?: number; data?: { detail?: unknown } } } | null;
+  const detail = e?.response?.data?.detail as
+    | { code?: unknown; scan_id?: unknown; job_id?: unknown; message?: unknown }
+    | undefined;
+  if (e?.response?.status !== 409 || !detail || detail.code !== 'duplicate_scan') return null;
+  return {
+    scanId: typeof detail.scan_id === 'number' ? detail.scan_id : null,
+    jobId: typeof detail.job_id === 'number' ? detail.job_id : null,
+    message: typeof detail.message === 'string' ? detail.message : 'This exact file is already imported.',
+  };
+}
+
 export const uploadFile = async (
   file: File,
   onProgress?: (percent: number) => void,
+  options: UploadOptions = {},
 ): Promise<FileUploadResponse> => {
   const formData = new FormData();
   formData.append('file', file);
+  if (options.batchId != null) formData.append('batch_id', String(options.batchId));
+  if (options.allowDuplicate) formData.append('allow_duplicate', 'true');
 
   // Bypass axios for the upload and use a raw XMLHttpRequest.  We
   // tried the axios path twice (with explicit Content-Type and with
@@ -128,8 +160,11 @@ export const uploadFile = async (
       } else {
         // Mirror the AxiosError shape so callers' `formatApiError`
         // helpers keep working (they look at `err.response.data`).
+        // detail is a string for most errors and { code, message, … } for
+        // structured ones (409 duplicate_scan).
+        const detailText = typeof body?.detail === 'string' ? body.detail : body?.detail?.message;
         const err: any = new Error(
-          body?.detail || body?.message || `Upload failed (HTTP ${xhr.status})`,
+          detailText || body?.message || `Upload failed (HTTP ${xhr.status})`,
         );
         err.response = { status: xhr.status, data: body };
         reject(err);

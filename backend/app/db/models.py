@@ -296,6 +296,11 @@ class Scan(Base):
     version = Column(String)
     xml_output_version = Column(String)
     uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # v2.335.0 — the upload batch this file arrived in (see ScanBatch), and the
+    # SHA-256 of the uploaded file: an identical file is refused at upload
+    # rather than ingested as a second, indistinguishable scan.
+    batch_id = Column(Integer, ForeignKey("scan_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    content_sha256 = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -322,6 +327,40 @@ class Scan(Base):
         # legacy DB name (a plain `index=True` would auto-name it ix_scans_*).
         Index("idx_scans_start_time", "start_time"),
     )
+
+
+class ScanBatch(Base):
+    """Files uploaded together as one sweep (v2.335.0).
+
+    An agent splitting a 90k-host scope into hundreds of nmap runs, or an
+    operator dropping twenty files at once, produces one batch, and /scans
+    shows it as a single row that expands to its files. Each file stays its
+    own Scan — its provenance, run time and contribution are unchanged.
+
+    Agent batches are keyed by the label the agent sends with each upload,
+    within its recon session (``nmap-tcp-top1000``); operator batches are
+    created by the Scans page, one per multi-file upload.
+    """
+    __tablename__ = "scan_batches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    label = Column(String(200), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    recon_session_id = Column(Integer, ForeignKey("recon_sessions.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # One batch per label per recon session — every chunk of a sweep an
+        # agent labels the same lands in the same batch.
+        Index(
+            "uq_scan_batches_session_label", "recon_session_id", "label",
+            unique=True,
+            postgresql_where=text("recon_session_id IS NOT NULL"),
+            sqlite_where=text("recon_session_id IS NOT NULL"),
+        ),
+    )
+
 
 class Scope(Base):
     __tablename__ = "scopes"
@@ -825,6 +864,11 @@ class IngestionJob(Base):
         nullable=True,
         index=True,
     )
+    # v2.335.0 — copied onto the Scan when the job completes. The upload's
+    # duplicate check also reads queued/processing jobs by content_sha256, so
+    # an identical file can't slip in while the first copy is still parsing.
+    batch_id = Column(Integer, ForeignKey("scan_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    content_sha256 = Column(String(64), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True))

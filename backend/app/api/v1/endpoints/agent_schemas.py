@@ -1059,6 +1059,9 @@ class ReconUploadResponse(BaseModel):
     status: str
     message: str
     recon_session_id: int
+    # v2.335.0 — the batch this file joined (the upload's `batch` label).
+    batch_id: Optional[int] = None
+    batch: Optional[str] = None
 
 
 class ReconJobStatus(BaseModel):

@@ -1,19 +1,23 @@
 import logging
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.api.deps import get_current_project, require_project_role
-from app.db.models import IngestionJob
+from app.db.models import IngestionJob, ScanBatch
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
-from app.services.ingestion_service import ingestion_service, ALLOWED_UPLOAD_EXTENSIONS
+from app.services.ingestion_service import (
+    ALLOWED_UPLOAD_EXTENSIONS,
+    DuplicateUploadError,
+    ingestion_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +50,23 @@ def _require_job_access(job: IngestionJob, current_user: User) -> None:
     responses={
         401: {"description": "Not authenticated"},
         403: {"description": "Insufficient permissions — analyst role required"},
+        404: {"description": "batch_id is not a batch in this project"},
+        409: {"description": "duplicate_scan — this exact file is already a scan (or queued) in this project"},
     },
     summary="Upload scan file (analyst)",
 )
 async def upload_scan_file(
     file: UploadFile = File(...),
+    batch_id: Optional[int] = Form(
+        None, description="Upload batch (POST /scans/batches) this file belongs to (v2.335.0).",
+    ),
+    allow_duplicate: bool = Form(
+        False,
+        description=(
+            "Import even when this exact file is already a scan in the project — "
+            "a deliberate re-import, e.g. to re-parse after a parser fix."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -78,13 +94,26 @@ async def upload_scan_file(
 
     options = {"project_id": project.id}
 
+    if batch_id is not None:
+        in_project = (
+            db.query(ScanBatch.id)
+            .filter(ScanBatch.id == batch_id, ScanBatch.project_id == project.id)
+            .first()
+        )
+        if in_project is None:
+            raise HTTPException(status_code=404, detail="Scan batch not found in this project")
+
     try:
         job = await ingestion_service.create_job(
             db=db,
             upload=file,
             submitted_by_id=current_user.id if current_user else None,
             options=options,
+            batch_id=batch_id,
+            allow_duplicate=allow_duplicate,
         )
+    except DuplicateUploadError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except ValueError as exc:
         logger.warning("Upload rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc

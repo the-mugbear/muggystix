@@ -664,6 +664,15 @@ async def upload_recon_output(
     file: UploadFile = File(...),
     tool_name: Optional[str] = Form(None),
     command_run: Optional[str] = Form(None),
+    batch: Optional[str] = Form(
+        None,
+        max_length=200,
+        description=(
+            "Name of the sweep this file is one chunk of (e.g. `nmap-tcp-top1000`). "
+            "Every upload with the same label in this recon session joins one "
+            "batch, shown on /scans as a single row (v2.335.0)."
+        ),
+    ),
     agent: Agent = Depends(require_recon_scope),
     db: Session = Depends(get_db),
 ):
@@ -677,8 +686,14 @@ async def upload_recon_output(
 
     Returns the queued job; the agent then polls
     ``GET /agent/recon/jobs/{job_id}`` until the parse completes.
+
+    An identical file already in the project (as a scan, or still parsing) is
+    refused with 409 ``duplicate_scan`` naming it — nothing is created and no
+    session counter moves. Agents cannot force a re-import; that is an
+    operator decision made from the Scans page.
     """
-    from app.services.ingestion_service import ingestion_service
+    from app.services.ingestion_service import DuplicateUploadError, ingestion_service
+    from app.services.scan_batch_service import get_or_create_session_batch
 
     session = _load_recon_session(db, request)
 
@@ -720,13 +735,24 @@ async def upload_recon_output(
     if command_run:
         opts["command_run"] = command_run
 
+    # Joins (or starts) the session's batch for this label in the same
+    # transaction as the job; a rejected upload rolls it back with the job.
+    scan_batch = None
+    if batch and batch.strip():
+        scan_batch = get_or_create_session_batch(
+            db, project_id=agent.project_id, recon_session_id=session.id, label=batch,
+        )
+
     try:
         job = await ingestion_service.create_job(
             db=db,
             upload=file,
             submitted_by_id=None,  # agent-submitted; no JWT user
             options=opts,
+            batch_id=scan_batch.id if scan_batch is not None else None,
         )
+    except DuplicateUploadError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -747,6 +773,8 @@ async def upload_recon_output(
         status=job.status,
         message="Upload queued for parsing",
         recon_session_id=session.id,
+        batch_id=job.batch_id,
+        batch=scan_batch.label if scan_batch is not None else None,
     )
 
 

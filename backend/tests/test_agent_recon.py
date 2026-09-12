@@ -396,3 +396,53 @@ def test_recon_domains_rejects_a_key_that_is_not_recon_scoped(
     )
     resp = client.get("/api/v1/agent/recon/domains", headers={"X-API-Key": raw})
     assert resp.status_code == 403, resp.text
+
+
+# ---------------------------------------------------------------------------
+# v2.335.0 — upload batches + duplicate refusal on the recon upload
+# ---------------------------------------------------------------------------
+
+_NMAP = b'<?xml version="1.0"?>\n<nmaprun scanner="nmap"><!-- %d --></nmaprun>\n'
+
+
+def _recon_upload(client, key, data, name, **form):
+    return client.post(
+        "/api/v1/agent/recon/upload",
+        headers={"X-API-Key": key},
+        files={"file": (name, data, "text/xml")},
+        data=form,
+    )
+
+
+def test_recon_chunks_with_one_label_share_one_batch(client, db_session, recon_key, recon_session_row):
+    """Every chunk of a sweep sent with the same `batch` label lands in one
+    batch (one /scans row); another label is another batch; no label, none."""
+    from app.db import models
+    a = _recon_upload(client, recon_key, _NMAP % 1, "chunk-001.xml", batch="nmap-tcp-top1000", tool_name="nmap")
+    b = _recon_upload(client, recon_key, _NMAP % 2, "chunk-002.xml", batch="nmap-tcp-top1000")
+    other = _recon_upload(client, recon_key, _NMAP % 3, "svc.xml", batch="nmap-svc-live")
+    loose = _recon_upload(client, recon_key, _NMAP % 4, "one-off.xml")
+    for r in (a, b, other, loose):
+        assert r.status_code == 201, r.text
+
+    assert a.json()["batch_id"] == b.json()["batch_id"] is not None
+    assert a.json()["batch"] == "nmap-tcp-top1000"
+    assert other.json()["batch_id"] not in (None, a.json()["batch_id"])
+    assert loose.json()["batch_id"] is None
+    batch = db_session.get(models.ScanBatch, a.json()["batch_id"])
+    assert batch.recon_session_id == recon_session_row.id
+
+
+def test_recon_duplicate_is_refused_and_not_counted(client, db_session, recon_key, recon_session_row):
+    """An identical re-upload is a 409 naming the job it already is — and the
+    session's upload counter does not move (it used to count every copy)."""
+    first = _recon_upload(client, recon_key, _NMAP % 9, "chunk-009.xml", batch="nmap-tcp")
+    assert first.status_code == 201, first.text
+
+    again = _recon_upload(client, recon_key, _NMAP % 9, "chunk-009-retry.xml", batch="nmap-tcp")
+    assert again.status_code == 409, again.text
+    detail = again.json()["detail"]
+    assert detail["code"] == "duplicate_scan"
+    assert detail["job_id"] == first.json()["job_id"]
+    db_session.refresh(recon_session_row)
+    assert recon_session_row.uploads_submitted == 1
