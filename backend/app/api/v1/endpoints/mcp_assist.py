@@ -60,7 +60,6 @@ implement would send capable clients into a dead end.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -212,27 +211,20 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
     }
 
 
-# Identity lookups are server-initiated plumbing, not agent activity, but they
-# ride the same audited endpoint — so a client that re-lists tools each turn fills
-# the operator's activity view with rows nobody asked for (3 of 7 rows in the
-# v2.273.0 end-to-end run).  A short in-process cache collapses those to one per
-# key.  Keyed by a hash so raw key material never sits in the cache.
+# Identity lookups are server-initiated plumbing, not agent activity.  They
+# exist to fill a tool's auto-parameters (plan_id, the execution run's
+# session_id) from what the key's session currently has open.
 #
-# v2.338.1 — the cache serves ``tools/list`` ONLY.  Filling a tool's
-# auto-parameters (plan_id, the execution run's session_id) from it was a
-# correctness bug: the answer changes the moment the agent opens or closes a
-# phase, the backend runs several uvicorn workers each with its own copy, and
-# a call landing on a worker whose copy predates ``start_execution`` completed
-# the PREVIOUS run (seen live, 35 s after the new run opened).  No in-process
-# invalidation can fix a per-worker cache, so auto-fill reads a fresh identity
-# every time — as plumbing (``agent_audit_plumbing``), so it adds no audit row
-# and does not count as agent activity.
-_IDENTITY_TTL_SECONDS = 60
-_identity_cache: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
-
-
-def _cache_key(api_key: str) -> str:
-    return hashlib.sha256(api_key.encode()).hexdigest()
+# v2.338.1 — never cached.  A 60 s per-key cache used to collapse them, but
+# the answer changes the moment the agent opens or closes a phase, and the
+# backend runs several uvicorn workers each with its own copy: a call landing
+# on a worker whose copy predated ``start_execution`` completed the PREVIOUS
+# run (seen live, 35 s after the new run opened).  No in-process invalidation
+# can fix a per-worker cache.  v2.338.3 — the cache (and the ``tools/list``
+# lookup that was its last reader) is gone: every lookup reads the live
+# answer as plumbing (``agent_audit_plumbing``), so it adds no audit row and
+# does not count as agent activity — which is also what keeps the operator's
+# activity view to the calls the agent actually made.
 
 
 async def _key_identity(
@@ -241,26 +233,13 @@ async def _key_identity(
     *,
     caller: Optional[Tuple[str, int]] = None,
     user_agent: Optional[str] = None,
-    fresh: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """What this key is — workflow, operator, the phases it has open.
-
-    ``fresh=False`` (``tools/list``): a cached answer within the TTL is fine —
-    the listing is the same either way and the audited lookup is what first
-    marks the client as connected.  ``fresh=True`` (auto-parameters): always
-    read the live answer, as unaudited plumbing — see the cache note above.
-
-    Returns None when there is no usable key or the lookup fails, which keeps an
-    unauthenticated ``tools/list`` returning the full catalog: discovery degrades
-    to the documentation view rather than to an empty tool list.
-    """
+    """What this key is — workflow, operator, the phases it has open.  Live,
+    unaudited (see above).  None when there is no usable key or the lookup
+    fails, so a caller falls back to asking the agent for the id."""
     if not api_key:
         return None
-    if not fresh:
-        cached = _identity_cache.get(_cache_key(api_key))
-        if cached is not None and (time.monotonic() - cached[0]) < _IDENTITY_TTL_SECONDS:
-            return cached[1]
-    token = agent_audit_plumbing.set(True) if fresh else None
+    token = agent_audit_plumbing.set(True)
     try:
         resp = await _loopback(
             app,
@@ -277,9 +256,7 @@ async def _key_identity(
         logger.exception("MCP could not read the caller's identity")
         return None
     finally:
-        if token is not None:
-            agent_audit_plumbing.reset(token)
-    _identity_cache[_cache_key(api_key)] = (time.monotonic(), identity)
+        agent_audit_plumbing.reset(token)
     return identity
 
 
@@ -387,10 +364,8 @@ async def _dispatch_tool(
     # still say which one it means.
     auto = spec.get("auto_params") or {}
     if auto and any(arguments.get(a) is None for a in auto):
-        # Fresh, never cached: the ids change whenever a phase opens or
-        # closes, and a stale one names the wrong run (see the cache note).
         identity = await _key_identity(
-            app, api_key, caller=caller, user_agent=user_agent, fresh=True,
+            app, api_key, caller=caller, user_agent=user_agent,
         ) or {}
         for arg, field in auto.items():
             if arguments.get(arg) is None and identity.get(field) is not None:
@@ -450,10 +425,6 @@ async def _dispatch_tool(
         )
 
     text = resp.text
-    if spec["method"] != "GET" and api_key:
-        # A write may have opened or closed a phase; drop this worker's cached
-        # listing-time identity so at least local readers move on too.
-        _identity_cache.pop(_cache_key(api_key), None)
     if resp.status_code >= 400:
         # Surface the real endpoint's error (401/403/404/400) as a tool error so
         # the agent sees exactly why — read-only operator, wrong scope, etc.
@@ -593,14 +564,11 @@ async def _handle_message(
         # session does every kind of work, so there is nothing to filter by;
         # v2.309.0 dropped the capability filter before that).  Whether a
         # given write succeeds is the operator's project role, decided at the
-        # endpoint.
-        #
-        # The identity lookup is kept even though nothing here reads it: it is
-        # the earliest audited ``via_mcp`` call a freshly configured client
-        # makes, which is what flips the session's connection state to "mcp"
-        # before the operator has typed anything.  Cached, so re-listing each
-        # turn does not spam the activity view.
-        await _key_identity(app, api_key, caller=caller, user_agent=user_agent)
+        # endpoint.  v2.338.3 — no identity lookup here any more: it selected
+        # the workflow's tools once, and its audit row was the only thing it
+        # still produced.  A session reads as connected on the agent's first
+        # real call (the verify prompt's agent_identity), which is what the
+        # start dialog tells the operator to expect.
         return _rpc_result(msg_id, {"tools": tool_list_payload()})
 
     if method == "tools/call":

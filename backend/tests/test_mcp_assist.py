@@ -925,14 +925,12 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
 
 def test_auto_params_read_a_fresh_identity_not_the_listing_cache(client, test_project, db_session):
     """v2.338.1 — found live: a tool's auto-filled plan_id / session_id came
-    from the 60 s identity cache, which predated the phase the agent had just
-    opened (and, across four uvicorn workers, cannot be invalidated), so
+    from a 60 s identity cache, which predated the phase the agent had just
+    opened (and, across four uvicorn workers, could not be invalidated), so
     execution_complete_session completed the PREVIOUS run.  Auto-fill must read
     the live identity every time — and, being plumbing, add no audit row."""
-    from app.api.v1.endpoints.mcp_assist import _identity_cache
     from app.db.models_agent import AgentApiCall
 
-    _identity_cache.clear()
     body = _start_session(client, test_project.id)
     headers = {"X-API-Key": body["api_key"]}
 
@@ -943,7 +941,7 @@ def test_auto_params_read_a_fresh_identity_not_the_listing_cache(client, test_pr
             .count()
         )
 
-    # Warm the listing cache while no plan exists (plan_id: None).
+    # List tools first, as a client does, while no plan exists yet.
     _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
     warmed = identity_rows()
 
@@ -968,14 +966,13 @@ def test_auto_params_read_a_fresh_identity_not_the_listing_cache(client, test_pr
 
 
 def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):
-    """Workflow + capability filtering is server-initiated plumbing on an audited
-    endpoint, so a client that re-lists tools each turn used to add a row to the
-    operator's activity view every time (3 of 7 rows in the 2.273.0 end-to-end
-    run were these). Cached for the session's benefit, not ours."""
-    from app.api.v1.endpoints.mcp_assist import _identity_cache
+    """A client that re-lists tools each turn used to add an identity row to
+    the operator's activity view every time (3 of 7 rows in the 2.273.0
+    end-to-end run), then one per key per minute from a cache.  v2.338.3 —
+    tools/list makes no identity lookup at all: the listing is the whole
+    catalogue whoever asks, so there is nothing to look up."""
     from app.db.models_agent import AgentApiCall
 
-    _identity_cache.clear()
     body = _start_session(client, test_project.id)
     headers = {"X-API-Key": body["api_key"]}
 
@@ -991,7 +988,7 @@ def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project
         resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
         assert "assist_list_hosts" in {t["name"] for t in resp.json()["result"]["tools"]}
 
-    assert session_rows() - before == 1, "each tools/list logged its own lookup"
+    assert session_rows() - before == 0, "tools/list must not produce identity rows"
 
 
 def test_the_analysis_tools_round_trip_through_the_loopback(client, test_project):

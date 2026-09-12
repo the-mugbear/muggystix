@@ -16,17 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.v1.endpoints.mcp_assist import _identity_cache
-
-
-@pytest.fixture(autouse=True)
-def _clear_identity_cache():
-    # The 60s identity cache is keyed by API key; tests mint fresh keys, but
-    # clear anyway so an assertion never depends on a neighbouring test's timing.
-    _identity_cache.clear()
-    yield
-    _identity_cache.clear()
-
 
 @pytest.fixture
 def scope_with_subnets(db_session, test_project):
