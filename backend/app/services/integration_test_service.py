@@ -15,9 +15,10 @@ Each test:
       metadata) is the SAME as on save — no chance the test passes
       and save then rejects, or vice versa.
     * Dispatches to a per-type probe (Nessus → ``/server/properties``,
-      Ollama → ``/api/version``).  Types without a concrete probe
-      return ``ok=None`` (not_implemented) so the UI button is
-      universal and honest about what's actually verified.
+      Ollama → ``/api/version``, OpenVAS/Greenbone → GMP
+      ``<authenticate>`` on the gvmd TLS socket).  Types without a
+      concrete probe return ``ok=None`` (not_implemented) so the UI
+      button is universal and honest about what's actually verified.
     * Returns a sanitized result — never includes the plaintext
       credential, only the integration type, host, status, and
       human-readable message.
@@ -31,21 +32,38 @@ Each test:
 from __future__ import annotations
 
 import logging
+import re
+import socket
+import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 
 from app.services.url_validator import (
     is_integration_private_allowed,
     require_public_http_url,
+    resolve_host_guarded,
     safe_request,
     ResponseTooLarge,
 )
 
 logger = logging.getLogger(__name__)
+
+# Classic GVM (Greenbone): gvmd speaks GMP — XML over a TLS socket, default
+# 9390. The Base URL operators configure is GSA, the web UI on 9392, which
+# cannot verify a username and password (its login endpoint is deprecated), so
+# a credential check has to talk GMP. This is the one place in the backend that
+# egresses outside the guarded HTTP client, and it is bounded accordingly:
+# admin-only endpoint, the address vetted by resolve_host_guarded and connected
+# to by vetted IP (no second resolution), one operator-supplied port, a read
+# cap, and a timeout. Credentials are never logged.
+_GMP_DEFAULT_PORT = 9390
+_GMP_TIMEOUT = 10.0
+_GMP_READ_LIMIT = 64 * 1024
 
 
 @dataclass
@@ -115,6 +133,9 @@ def test_integration_config(
         if itype == "ollama":
             return _finish(started, itype, host_for_log, user_id,
                            **_test_ollama(base_url))
+        if itype == "openvas":
+            return _finish(started, itype, host_for_log, user_id,
+                           **_test_openvas(base_url, secret, secret2, extra_config))
         # Graceful default — the URL passed validation, but no
         # type-specific probe exists yet.  Operator can save and
         # verify manually.
@@ -242,6 +263,199 @@ def _test_ollama(base_url: str) -> dict:
         "ok": True, "http_status": resp.status_code,
         "message": f"Connected to Ollama {version}.",
         "details": {"version": version},
+    }
+
+
+def _test_openvas(
+    base_url: str,
+    username: Optional[str],
+    password: Optional[str],
+    extra_config: Optional[Dict[str, Any]],
+) -> dict:
+    """Authenticate to gvmd over GMP; without credentials, report reachability.
+
+    The honest split: a username and password can only be checked by GMP, so
+    that is what runs when both are present. With either missing we probe the
+    configured URL over HTTP and say outright that the credentials were not
+    verified, rather than implying a passing test.
+    """
+    host = urlparse(base_url).hostname
+    if not host:
+        return {"ok": False, "message": "Could not read a host from the base URL."}
+    if not username or not password:
+        return _gsa_reachability(base_url)
+
+    port = _gmp_port(extra_config)
+    try:
+        addresses = resolve_host_guarded(host, allow_private=True)
+    except ValueError as exc:
+        return {"ok": False, "message": f"URL validation failed: {exc}"}
+
+    try:
+        reply = _gmp_authenticate(addresses[0], port, host, username, password)
+    except ConnectionRefusedError:
+        return {
+            "ok": False,
+            "message": (
+                f"Nothing accepted a GMP connection on {host}:{port}. gvmd often listens only "
+                f"on a unix socket — enable its TLS listener, or set the GMP port this "
+                f"deployment uses."
+            ),
+        }
+    except (socket.timeout, TimeoutError):
+        return {
+            "ok": False,
+            "message": f"GMP connection to {host}:{port} timed out after {int(_GMP_TIMEOUT)}s.",
+        }
+    except ssl.SSLError as exc:
+        return {
+            "ok": False,
+            "message": (
+                f"TLS handshake with {host}:{port} failed "
+                f"({getattr(exc, 'reason', None) or type(exc).__name__}) — is that the GMP port?"
+            ),
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "message": (
+                f"Could not reach GMP at {host}:{port}: "
+                f"{getattr(exc, 'strerror', None) or type(exc).__name__}"
+            ),
+        }
+    return _parse_gmp_authenticate(reply, host=host, port=port)
+
+
+def _gmp_port(extra_config: Optional[Dict[str, Any]]) -> int:
+    """``extra_config.gmp_port`` when it is a usable port, else 9390."""
+    raw = (extra_config or {}).get("gmp_port")
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        return _GMP_DEFAULT_PORT
+    return port if 1 <= port <= 65535 else _GMP_DEFAULT_PORT
+
+
+def _gmp_authenticate(
+    ip: str, port: int, sni_host: str, username: str, password: str,
+) -> str:
+    """One GMP ``<authenticate>`` exchange; returns the raw reply.
+
+    Connects to ``ip`` (already vetted) while presenting ``sni_host``. GVM
+    ships a self-signed certificate and the operator authorized this exact
+    address by typing it in, so verification is off — the same stance as the
+    Nessus probe's ``verify=False``. Values are XML-escaped: a password
+    containing ``&`` or ``<`` would otherwise corrupt the request.
+    """
+    payload = (
+        "<authenticate><credentials>"
+        f"<username>{xml_escape(username)}</username>"
+        f"<password>{xml_escape(password)}</password>"
+        "</credentials></authenticate>"
+    ).encode()
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    chunks: list = []
+    total = 0
+    with socket.create_connection((ip, port), timeout=_GMP_TIMEOUT) as raw_sock:
+        with context.wrap_socket(raw_sock, server_hostname=sni_host) as tls:
+            tls.settimeout(_GMP_TIMEOUT)
+            tls.sendall(payload)
+            while True:
+                chunk = tls.recv(8192)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if b"</authenticate_response>" in chunk or total >= _GMP_READ_LIMIT:
+                    break
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+def _parse_gmp_authenticate(reply: str, *, host: str, port: int) -> dict:
+    """Read a GMP authenticate reply. Status 200 is success; 400 / 401 is a
+    credential rejection; anything unparseable means the port is not GMP."""
+    if not reply.strip():
+        return {
+            "ok": False,
+            "message": (
+                f"{host}:{port} closed the connection without replying — "
+                f"probably not a GMP listener."
+            ),
+        }
+    status_match = re.search(r'status="(\d+)"', reply)
+    if "<authenticate_response" not in reply or status_match is None:
+        return {
+            "ok": False,
+            "message": (
+                f"{host}:{port} answered, but not with GMP "
+                f"(no authenticate_response) — check the port."
+            ),
+        }
+    status = int(status_match.group(1))
+    text_match = re.search(r'status_text="([^"]*)"', reply)
+    status_text = text_match.group(1) if text_match else ""
+    if status == 200:
+        role_match = re.search(r"<role>([^<]*)</role>", reply)
+        role = role_match.group(1) if role_match else None
+        return {
+            "ok": True,
+            "message": (
+                f"Authenticated to GVM over GMP at {host}:{port}"
+                + (f" as role {role}." if role else ". Credentials accepted.")
+            ),
+            "details": {"gmp_port": port, **({"role": role} if role else {})},
+        }
+    if status in (400, 401):
+        return {
+            "ok": False,
+            "message": (
+                f"GVM rejected the credentials (GMP status {status}"
+                f"{': ' + status_text if status_text else ''})."
+            ),
+        }
+    return {
+        "ok": False,
+        "message": (
+            f"GMP at {host}:{port} returned status {status}"
+            f"{': ' + status_text if status_text else ''}."
+        ),
+    }
+
+
+def _gsa_reachability(base_url: str) -> dict:
+    """No credentials to check: confirm something answers, and say so plainly
+    rather than letting a reachability pass read as a verified login."""
+    try:
+        resp = safe_request("GET", base_url, allow_private=True, timeout=10.0, verify=False)
+    except ResponseTooLarge:
+        return {
+            "ok": None,
+            "message": "The server answered with an oversized response; credentials not verified.",
+        }
+    except httpx.ConnectError as exc:
+        return {"ok": False, "message": f"Could not connect: {exc}"}
+    except httpx.TimeoutException:
+        return {"ok": False, "message": "Connection timed out after 10 seconds."}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "message": f"HTTP error talking to the server: {type(exc).__name__}"}
+
+    body = ""
+    try:
+        body = (resp.text or "")[:4096].lower()
+    except Exception:  # pragma: no cover — non-text body
+        body = ""
+    who = "Greenbone Security Assistant" if "greenbone" in body else "A server"
+    return {
+        "ok": None,
+        "http_status": resp.status_code,
+        "message": (
+            f"{who} answered at this URL, but the credentials were not verified — "
+            f"enter the GVM username and password to authenticate over GMP."
+        ),
     }
 
 

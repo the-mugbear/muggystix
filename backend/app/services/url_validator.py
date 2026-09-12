@@ -190,6 +190,18 @@ _PRIVATE_ALLOWED = frozenset({
 })
 
 
+def resolve_host_guarded(host: str, *, allow_private: bool = False) -> list:
+    """Public wrapper over the resolve-and-vet guard: the host's addresses, or
+    ValueError if any of them is forbidden.
+
+    For non-HTTP egress that cannot go through ``safe_request`` — the GMP
+    socket probe in ``integration_test_service`` — so it applies the same
+    address policy and connects to an address that was actually vetted
+    (no second resolution, which is the DNS-rebinding window).
+    """
+    return _host_resolves_safely(host, allow_private=allow_private)
+
+
 def is_integration_private_allowed(integration_type: str) -> bool:
     """Return True if the integration type is permitted to use private IPs.
 

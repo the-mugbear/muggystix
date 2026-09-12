@@ -57,7 +57,7 @@ import {
 
 const BASE_URL_HINTS: Record<string, string> = {
   nessus: 'https://nessus.local:8834',
-  openvas: 'https://gvm.local:9392',
+  openvas: 'https://gvm.local:9392 (GSA web UI)',
   nuclei: '(usually blank — local binary)',
   burp: 'http://127.0.0.1:1337',
   generic_api: 'https://your-tool/api',
@@ -119,6 +119,10 @@ const IntegrationSettings: React.FC = () => {
   // so the recon prompt's Nessus block can steer the agent to chunk
   // large scopes into multiple license-sized scans.
   const [maxHostsPerScan, setMaxHostsPerScan] = useState<string>('');
+  // OpenVAS/Greenbone-only: where gvmd listens for GMP. The Base URL is GSA
+  // (the web UI), which can't verify a login, so Test connection
+  // authenticates over GMP instead. Stored in `extra_config.gmp_port`.
+  const [gmpPort, setGmpPort] = useState<string>('');
   // Test-connection state: result of the most recent `POST /integrations/test`.
   // Cleared whenever the form changes so a stale "ok" doesn't outlast
   // the input it referred to.
@@ -156,12 +160,27 @@ const IntegrationSettings: React.FC = () => {
     form.secret,
     form.secret2,
     maxHostsPerScan,
+    gmpPort,
   ]);
+
+  /** Per-type extras the backend stores in `extra_config`: the Nessus license
+   *  cap (drives the recon prompt's chunking guidance) and the GVM GMP port
+   *  (the port the connection test authenticates against). */
+  const buildExtraConfig = (): Record<string, unknown> | undefined => {
+    if (form.integration_type === 'nessus' && maxHostsPerScan.trim()) {
+      return { max_hosts_per_scan: Number(maxHostsPerScan) };
+    }
+    if (form.integration_type === 'openvas' && gmpPort.trim()) {
+      return { gmp_port: Number(gmpPort) };
+    }
+    return undefined;
+  };
 
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
     setMaxHostsPerScan('');
+    setGmpPort('');
     setTestResult(null);
     setDialogOpen(true);
   };
@@ -177,6 +196,8 @@ const IntegrationSettings: React.FC = () => {
     });
     const existingMax = (r.extra_config || {})['max_hosts_per_scan'];
     setMaxHostsPerScan(existingMax != null ? String(existingMax) : '');
+    const existingGmpPort = (r.extra_config || {})['gmp_port'];
+    setGmpPort(existingGmpPort != null ? String(existingGmpPort) : '');
     setTestResult(null);
     setDialogOpen(true);
   };
@@ -194,10 +215,7 @@ const IntegrationSettings: React.FC = () => {
         base_url: form.base_url || undefined,
         secret: form.secret || undefined,
         secret2: form.secret2 || undefined,
-        extra_config:
-          form.integration_type === 'nessus' && maxHostsPerScan.trim()
-            ? { max_hosts_per_scan: Number(maxHostsPerScan) }
-            : undefined,
+        extra_config: buildExtraConfig(),
       };
       const result = await testIntegrationConfig(payload);
       setTestResult(result);
@@ -218,12 +236,7 @@ const IntegrationSettings: React.FC = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Build extra_config from the Nessus-only license-cap field so
-      // the recon prompt's chunking guidance can pick it up.
-      const extraConfig =
-        form.integration_type === 'nessus' && maxHostsPerScan.trim()
-          ? { max_hosts_per_scan: Number(maxHostsPerScan) }
-          : undefined;
+      const extraConfig = buildExtraConfig();
       if (editing) {
         const payload: any = {
           name: form.name,
@@ -509,6 +522,32 @@ const IntegrationSettings: React.FC = () => {
                 </p>
               </div>
             )}
+            {/* OpenVAS/Greenbone (v5.208.0).  Classic GVM verifies a login
+                only over GMP — the Base URL above is GSA, the web UI — so the
+                connection test dials gvmd on this port. */}
+            {form.integration_type === 'openvas' && (
+              <div className="flex flex-col gap-xs">
+                <Label htmlFor="int-gmp-port">
+                  GMP port <span className="text-muted-foreground">(optional)</span>
+                </Label>
+                <Input
+                  id="int-gmp-port"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  inputMode="numeric"
+                  value={gmpPort}
+                  onChange={(e) => setGmpPort(e.target.value)}
+                  placeholder="9390"
+                />
+                <p className="text-caption text-muted-foreground">
+                  Where gvmd listens for GMP (default 9390). Test connection authenticates the
+                  username and password there, because the GSA web UI in Base URL can't verify
+                  them. If gvmd listens only on a unix socket, the test says so and you can
+                  still save.
+                </p>
+              </div>
+            )}
             <div className="flex items-center gap-xs">
               <Switch
                 id="int-active"
@@ -519,10 +558,10 @@ const IntegrationSettings: React.FC = () => {
             </div>
 
             {/* Pre-save connection test (v2.49.4).  Probe-by-type:
-                Nessus + Ollama are implemented; other types return
-                an honest "not yet implemented" so the button is
-                universal.  Result clears the moment any form field
-                changes (see the useEffect above). */}
+                Nessus, Ollama and OpenVAS/Greenbone are implemented;
+                other types return an honest "not yet implemented" so
+                the button is universal.  Result clears the moment any
+                form field changes (see the useEffect above). */}
             <div className="flex flex-col gap-xs">
               <div className="flex items-center gap-xs">
                 <Button
