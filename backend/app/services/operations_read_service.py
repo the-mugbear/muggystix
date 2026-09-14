@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, desc, distinct, false, func, or_
@@ -722,13 +722,54 @@ class MyActivityResponse(BaseModel):
 
 ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed", "session"}
 
-# Agent-run workflows surfaced in the activity feed, with their summary verb and
-# the in-app detail route. assist is omitted (no detail page).
+# Agent-run workflows surfaced in the activity feed, with their summary verb.
+# assist is omitted (no detail page).  v2.340.1 — the deep link is resolved
+# from the phase tables in ``_session_links`` rather than off the session row:
+# the previous lambdas read ``s.plan_id`` (a column ``agent_sessions`` never
+# had — every legacy plan-generation session 500'd the whole feed) and used the
+# session id where the recon-run / execution-run detail pages take the run id.
+# ``project`` sessions (every session since v2.337.0) were not listed at all.
 _SESSION_WORKFLOWS = {
-    "recon": ("Ran a recon session", lambda s: f"/recon/runs/{s.id}"),
-    "execution": ("Ran an execution", lambda s: f"/executions/{s.id}"),
-    "plan_generation": ("Generated a test plan", lambda s: f"/test-plans/{s.plan_id}" if s.plan_id else None),
+    "recon": "Ran a recon session",
+    "execution": "Ran an execution",
+    "plan_generation": "Generated a test plan",
+    "project": "Ran an agent session",
 }
+
+
+def _session_links(db: Session, sessions: list) -> Dict[int, Optional[str]]:
+    """``{agent_session_id: in-app path}`` for the sessions given.
+
+    A session's run / plan lives in its phase table, linked back through
+    ``agent_session_id``.  A legacy per-workflow session has exactly one; a
+    project session may have several, so it links to the Agent Runs timeline
+    where all of them are listed.  Three grouped queries, no per-row lookups.
+    """
+    from app.db.models_agent import ExecutionSession, ReconSession
+    ids_by_kind: Dict[str, List[int]] = {}
+    for s in sessions:
+        ids_by_kind.setdefault(s.workflow, []).append(s.id)
+    links: Dict[int, Optional[str]] = {s.id: None for s in sessions}
+    for sid in ids_by_kind.get("project", []):
+        links[sid] = "/agent-activity"
+    lookups = (
+        ("recon", ReconSession, "/recon/runs/{}"),
+        ("execution", ExecutionSession, "/executions/{}"),
+        ("plan_generation", TestPlan, "/test-plans/{}"),
+    )
+    for kind, model, pattern in lookups:
+        ids = ids_by_kind.get(kind)
+        if not ids:
+            continue
+        rows = (
+            db.query(model.agent_session_id, func.min(model.id))
+            .filter(model.agent_session_id.in_(ids))
+            .group_by(model.agent_session_id)
+            .all()
+        )
+        for sid, detail_id in rows:
+            links[sid] = pattern.format(detail_id)
+    return links
 
 
 def compute_my_activity(
@@ -850,11 +891,13 @@ def compute_my_activity(
         )
         if cutoff is not None:
             q = q.filter(session_ts >= cutoff)
-        for s in q.order_by(desc(session_ts)).limit(limit).all():
-            verb, link_fn = _SESSION_WORKFLOWS[s.workflow]
+        sessions = q.order_by(desc(session_ts)).limit(limit).all()
+        links = _session_links(db, sessions)
+        for s in sessions:
             events.append(ActivityEvent(
                 kind="session", at=(s.started_at or s.created_at),
-                summary=f"{verb} ({s.status})", link=link_fn(s),
+                summary=f"{_SESSION_WORKFLOWS[s.workflow]} ({s.status})",
+                link=links.get(s.id),
             ))
 
     events = [e for e in events if e.at is not None]

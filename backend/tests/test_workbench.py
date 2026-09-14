@@ -236,6 +236,8 @@ def test_my_activity_includes_agent_runs(client, db_session, test_project, test_
     from app.db import models
     from app.db.models_agent import AgentSession
 
+    from app.db.models_agent import ReconSession, TestPlan
+
     scope = models.Scope(project_id=test_project.id, name="ext")
     db_session.add(scope)
     db_session.flush()
@@ -244,13 +246,60 @@ def test_my_activity_includes_agent_runs(client, db_session, test_project, test_
         started_by_id=test_user.id, status="completed",
     )
     db_session.add(s)
+    db_session.flush()
+    # v2.340.1 — the deep link must carry the RUN id (what /recon/runs/{id}
+    # takes), not the session id; the two only coincide by accident.
+    run = ReconSession(
+        project_id=test_project.id, scope_id=scope.id, agent_session_id=s.id,
+        started_by_id=test_user.id, status="completed",
+    )
+    db_session.add(run)
     db_session.commit()
 
     base = _url(test_project.id, "/my-activity")
     sessions = [e for e in client.get(base).json()["items"] if e["kind"] == "session"]
     assert len(sessions) == 1
-    assert sessions[0]["link"] == f"/recon/runs/{s.id}"
+    assert sessions[0]["link"] == f"/recon/runs/{run.id}"
 
     # kinds filter isolates them; a text search excludes them (no title).
     assert all(e["kind"] == "session" for e in client.get(f"{base}?kinds=session").json()["items"])
     assert client.get(f"{base}?search=anything").json()["items"] == []
+
+
+def test_my_activity_survives_legacy_plan_sessions_and_lists_project_sessions(
+    client, db_session, test_project, test_user,
+):
+    """v2.340.1 — a legacy plan-generation session 500'd the whole feed (the
+    link builder read a ``plan_id`` attribute the session row never had), and
+    project sessions — every session since the consolidation — were omitted."""
+    from app.db.models_agent import AgentSession, TestPlan
+
+    legacy_plan = AgentSession(
+        workflow="plan_generation", project_id=test_project.id,
+        started_by_id=test_user.id, status="completed",
+    )
+    orphan_plan = AgentSession(
+        workflow="plan_generation", project_id=test_project.id,
+        started_by_id=test_user.id, status="completed",
+    )
+    project = AgentSession(
+        workflow="project", project_id=test_project.id,
+        started_by_id=test_user.id, status="active",
+    )
+    db_session.add_all([legacy_plan, orphan_plan, project])
+    db_session.flush()
+    plan = TestPlan(
+        project_id=test_project.id, title="legacy", status="draft",
+        agent_session_id=legacy_plan.id, created_by_user_id=test_user.id,
+    )
+    db_session.add(plan)
+    db_session.commit()
+
+    r = client.get(_url(test_project.id, "/my-activity?kinds=session"))
+    assert r.status_code == 200, r.text
+    by_summary = {e["summary"]: e["link"] for e in r.json()["items"]}
+    links = {e["link"] for e in r.json()["items"]}
+    assert len(r.json()["items"]) == 3
+    assert f"/test-plans/{plan.id}" in links          # legacy plan session → its plan
+    assert None in links                               # a plan session with no plan links nowhere, and does not 500
+    assert by_summary.get("Ran an agent session (active)") == "/agent-activity"
