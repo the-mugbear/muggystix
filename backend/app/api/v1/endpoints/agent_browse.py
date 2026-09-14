@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -48,7 +48,9 @@ from app.core.security import check_permissions
 from app.db.models_tools import TOOL_APPROVED
 from app.services.host_follow_service import HostFollowService
 from app.services.tool_registry_service import record_suggestion
-from app.services.agent_session_service import session_phase_summary, propagate_probe
+from app.services.agent_session_service import (
+    close_agent_session_from_agent, session_phase_summary, propagate_probe,
+)
 from app.services.agent_environment_probe_service import apply_environment_probe
 
 from app.api.v1.endpoints.agent_schemas import (
@@ -132,6 +134,60 @@ class SessionRenewResponse(BaseModel):
     message: str = (
         "Key extended. Retry the request you were making — do not re-run work "
         "whose output you already hold."
+    )
+
+
+class SessionEndRequest(BaseModel):
+    notes: Optional[str] = Field(
+        None, max_length=2000,
+        description="One or two lines on what the session did; lands on the session record.",
+    )
+
+
+class SessionEndResponse(BaseModel):
+    session_id: int
+    status: str
+    ended_at: datetime
+    message: str = (
+        "Session ended and your key is revoked. Nothing further will authenticate; "
+        "tell the operator you are done."
+    )
+
+
+@router.post(
+    "/session/end",
+    response_model=SessionEndResponse,
+    summary="End this session — the LAST call you make (revokes your key)",
+)
+def end_own_session(
+    # A default instance rather than ``Optional[...] = None``: the MCP contract
+    # test reads the body's properties off OpenAPI, and an Optional body
+    # renders as ``anyOf [ref, null]`` where it finds none.
+    body: SessionEndRequest = SessionEndRequest(),
+    request: Request = None,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The agent's own exit (v2.340.0).
+
+    The session an agent holds the key for stayed ``active`` after the agent
+    finished, because nothing on the agent surface could end it: recon and
+    execution phases have a ``/complete``, the session itself had none, and
+    the operator's timeline showed every finished session as still running
+    until the hourly sweep lapsed it — after the key had expired *and* the
+    session had passed its lifetime cap, a week by default.
+
+    Refuses with 409 while a recon or execution phase is still open, naming
+    the ids: complete those first, then end the session.  Feedback goes
+    before this call, not after — the key is revoked on the way out.
+    """
+    session = load_agent_session(db, request)
+    close_agent_session_from_agent(db, session, notes=body.notes)
+    db.commit()
+    db.refresh(session)
+    logger.info("agent session %s ended by its agent (%s)", session.id, agent.name)
+    return SessionEndResponse(
+        session_id=session.id, status=session.status, ended_at=session.completed_at,
     )
 
 

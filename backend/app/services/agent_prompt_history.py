@@ -21,6 +21,40 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.4.0",
+        "app_version": "2.340.0",
+        "summary": (
+            "The session has an exit. A new mandatory last step tells the agent "
+            "to close every open phase, submit feedback, then POST "
+            "/agent/session/end (MCP end_session) — the session had no "
+            "agent-side end before, so even a clean finish left an active row "
+            "until the hourly sweep lapsed it a week later. A new rule says "
+            "never to block a single tool call on a long-running command: run "
+            "it in the background, poll the PID, upload each output as it "
+            "finishes — the client's tool timeout killing the agent mid-scan is "
+            "why sessions were left open. The resumed-session notice now says "
+            "the previous key is revoked and tells the agent to look for output "
+            "the dead process left in the working directory before re-running."
+        ),
+    },
+    {
+        "version": "2.3.0",
+        "app_version": "2.339.2",
+        "summary": (
+            "The guide's assist section describes the unified session: it is the "
+            "inventory-assist phase of one project session, not a separate "
+            "assist-only session. The hard contract no longer says scanning, "
+            "planning and execution are refused; the hand-off list tells the "
+            "agent to open the recon / plan phase with the same key when the "
+            "operator asks (naming POST /agent/recon/start and POST "
+            "/agent/test-plans, MCP start_recon / create_test_plan) and to "
+            "follow that phase's protocol. The MCP server instructions and the "
+            "agent_identity / read_agent_guide descriptions say the same. An "
+            "agent reading the old text handed the operator off to the UI for "
+            "work its key could already do."
+        ),
+    },
+    {
         "version": "2.2.0",
         "app_version": "2.339.0",
         "summary": (

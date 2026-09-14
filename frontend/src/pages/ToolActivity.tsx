@@ -161,7 +161,10 @@ function deepLinkFor(item: ActivityItem): string {
     case 'sanity_check':
       // Per-command rows belong to an execution run; that is the page
       // with the command, its output and the sanity checks around it.
-      return `/executions/${item.parent_id ?? item.ref_id}`;
+      // `parent_id` is always set for these kinds (the run FK is NOT
+      // NULL) — there is no sensible fallback: `ref_id` is the row's own
+      // id, which is not an execution id.
+      return `/executions/${String(item.parent_id)}`;
   }
 }
 

@@ -24,11 +24,10 @@ decide.
 
 What it exposes
 ---------------
-A tool per interactive endpoint across all four agent workflows — assist,
-reconnaissance, plan generation, execution (v2.278.0; it was assist-only
-before).  ``tools/list`` shows the caller's own workflow, resolved from their
-key: three separate entry points the operator starts deliberately, not one
-merged surface.  The bulk, file-shaped endpoints (``report-context.ndjson``,
+A tool per interactive endpoint across inventory assistance, reconnaissance,
+plan generation, and execution. A unified project-session key sees the whole
+catalogue and opens phases as needed; the endpoint remains the authority for
+phase state and human-approval gates. The bulk, file-shaped endpoints (``report-context.ndjson``,
 the recon target lists, ``recon/upload``) are deliberately *not* tools — they
 are meant to move between disk and the server, not through a model's context —
 so the server ``instructions`` point at them with curl instead.
@@ -129,14 +128,10 @@ def _server_instructions(base_url: str) -> str:
     every client was handed an unusable URL.
     """
     return (
-        "BlueStick. Your API key belongs to exactly one workflow, and the tools you "
-        "can see are that workflow's — call agent_identity if you are unsure which. "
-        "Reconnaissance populates host data from scanners run on this machine; plan "
-        "generation proposes tests a human then approves; execution works an approved "
-        "plan; assist is interactive read (plus writes, when granted) over what is "
-        "already there. Each is a separate session the operator starts deliberately: "
-        "there is no key that does all four, and no tool here escalates to another "
-        "workflow. All calls are audited.\n\n"
+        "BlueStick. Your API key belongs to one unified project session. It can query "
+        "the inventory, open reconnaissance against a selected scope, draft a test "
+        "plan, and execute a human-approved plan. Call agent_identity first to see "
+        "the project and any open phases. All calls are audited.\n\n"
         "Run tools on hosts that are in the project's inventory, using tools "
         "BlueStick has approved (list_approved_tools), and write output into the "
         "directory the session is working in. Anything that reads or writes outside "

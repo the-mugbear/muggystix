@@ -8,6 +8,9 @@ import ProjectActivity from '../../pages/ProjectActivity';
 vi.mock('../../services/api', () => ({
   listAgentSessions: vi.fn(),
   getAgentSessionSummary: vi.fn(),
+  // v5.214.0 — Resume on an owned active project row.
+  resumeAgentSession: vi.fn(),
+  endAgentSession: vi.fn(),
   // v4.59.0 (NEW I) — page also calls getAgentActivitySummary for
   // the ApiCallSummaryCard.  Pre-fix the mock omitted it; the
   // page accessed summary.daily.map(...) which threw and broke
@@ -134,6 +137,79 @@ describe('ProjectActivity', () => {
       daily: [],
       busiest_sessions: [],
     });
+  });
+
+  // v5.214.0 — a project session the signed-in user owns, whose key has
+  // lapsed but is still renewable: the row says so, offers Resume, and the
+  // dialog rotates the key on the same session.
+  it('offers Resume on an owned active project session and rotates its key', async () => {
+    const user = userEvent.setup();
+    const projectRow = {
+      kind: 'project' as const,
+      id: 77,
+      project_id: 1,
+      agent_id: 7,
+      agent_name: "alice's-agent",
+      user_id: 3,
+      user_username: 'alice',
+      status: 'active',
+      started_at: new Date(Date.now() - 1000 * 60 * 60 * 30).toISOString(),
+      completed_at: null,
+      generated_by_model: null,
+      generated_by_tool: null,
+      prompt_version: '2.4.0',
+      scope_id: null,
+      test_plan_id: null,
+      purpose: 'recon the DMZ',
+      key_expires_at: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString(),
+      renewable_until: new Date(Date.now() + 1000 * 60 * 60 * 24 * 5).toISOString(),
+    };
+    mockedApi.listAgentSessions.mockResolvedValue({
+      project_id: 1,
+      sessions: [projectRow, ...sampleSessions],
+      total: 3,
+    });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+    mockedApi.resumeAgentSession.mockResolvedValue({
+      session_id: 77,
+      project_id: 1,
+      project_name: 'demo',
+      agent_id: 7,
+      api_key: 'nm_agent_replacement',
+      instructions: '> RESUMED SESSION. continue',
+      mcp_clients: [],
+      mcp_url: 'https://h/api/v1/mcp',
+      key_ttl_hours: 24,
+      key_expires_at: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(),
+      renewable_until: projectRow.renewable_until,
+      active_recon_session_ids: [5],
+      active_execution_session_ids: [],
+    });
+
+    renderPage();
+
+    await screen.findByText(/recon the DMZ/);
+    // The status cell says the key lapsed but the session is still renewable.
+    expect(screen.getByText(/key expired · renewable until/)).toBeInTheDocument();
+    // Resume is offered only on the owned project row; the execution row
+    // (also active, also alice's) keeps its Open button.
+    expect(screen.getByLabelText('Resume agent session 77')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Resume agent session 42')).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText('Resume agent session 77'));
+    // Path 1 — reopen the client, hand the agent the resume line.
+    await screen.findByText(/If the client that ran this session still has the key/);
+    expect(screen.getByText(/Resume BlueStick agent session #77/)).toBeInTheDocument();
+    // Path 2 — rotate.
+    await user.click(screen.getByRole('button', { name: /Rotate key and get the prompt/ }));
+    await waitFor(() => expect(mockedApi.resumeAgentSession).toHaveBeenCalledWith(77));
+    await screen.findByText('nm_agent_replacement');
+    expect(screen.getByText(/Still open:/)).toBeInTheDocument();
+    // The key on screen must be acknowledged before the dialog can close.
+    const close = screen.getByRole('button', { name: 'Close' });
+    expect(close).toBeDisabled();
+    await user.click(screen.getByLabelText('I copied the replacement agent API key'));
+    expect(close).toBeEnabled();
   });
 
   it('renders both workflows side by side with model + user attribution', async () => {

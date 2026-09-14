@@ -157,13 +157,10 @@ def submit_agent_feedback(
     # against the project below. The source↔ID coherence guard stays: it keeps
     # a single feedback row internally consistent.
     agent_session_id = getattr(request.state, "agent_session_id", None)
-    scoped_plan_id = None
-    scoped_scope_id = None
 
-    # Source ↔ ID coherence guard (v2.85.2).  Runs for EVERY agent,
-    # scoped or legacy/unscoped: the body's source string and the
-    # populated session IDs must agree on which workflow this feedback
-    # belongs to.  Without this, an unscoped key could write a row with
+    # Source ↔ ID coherence guard (v2.85.2): the body's source string and
+    # the populated session IDs must agree on which workflow this feedback
+    # belongs to.  Without this, a key could write a row with
     # source="plan_generation" *and* a recon_session_id + an
     # assist_session_id (each individually passes its project-level FK
     # check) — an incoherent attribution that the triage queue can't
@@ -214,11 +211,6 @@ def submit_agent_feedback(
         )
         if not plan:
             raise HTTPException(status_code=404, detail="test_plan_id not found in this project")
-        if scoped_plan_id is not None and scoped_plan_id != body.test_plan_id:
-            raise HTTPException(
-                status_code=403,
-                detail="This API key is scoped to a different test plan",
-            )
     if body.recon_session_id is not None:
         recon = (
             db.query(ReconSession)
@@ -232,11 +224,6 @@ def submit_agent_feedback(
             raise HTTPException(
                 status_code=404,
                 detail="recon_session_id not found in this project",
-            )
-        if scoped_scope_id is not None and recon.scope_id != scoped_scope_id:
-            raise HTTPException(
-                status_code=403,
-                detail="This API key is scoped to a different recon scope",
             )
     if body.assist_session_id is not None:
         assist = (
@@ -254,11 +241,10 @@ def submit_agent_feedback(
             )
     if body.execution_session_id is not None:
         # Code review critical #4: previously we fetched the session by
-        # ID alone and only checked scoped_plan_id for per-plan keys.
-        # Global/unscoped agent keys could attach feedback to an
-        # execution session belonging to a different project.  Join
-        # through TestPlan so the session is resolved only if its
-        # plan belongs to the agent's project.
+        # ID alone, so a key could attach feedback to an execution
+        # session belonging to a different project.  Join through
+        # TestPlan so the session is resolved only if its plan belongs
+        # to the agent's project.
         sess = (
             db.query(ExecutionSession)
             .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
@@ -270,11 +256,6 @@ def submit_agent_feedback(
         )
         if not sess:
             raise HTTPException(status_code=404, detail="execution_session_id not found")
-        if sess.test_plan_id and scoped_plan_id is not None and scoped_plan_id != sess.test_plan_id:
-            raise HTTPException(
-                status_code=403,
-                detail="This API key is scoped to a different test plan",
-            )
 
     row = AgentFeedback(
         project_id=agent.project_id,

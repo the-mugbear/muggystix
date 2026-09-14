@@ -7,10 +7,11 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { RefreshCw, Search, ExternalLink, Loader2, Square } from 'lucide-react';
+import { RefreshCw, Search, ExternalLink, Loader2, RotateCcw, Square } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import ResumeAgentSessionDialog from '../components/ResumeAgentSessionDialog';
 import {
   AgentSessionKind,
   AgentSessionRow,
@@ -353,6 +354,8 @@ const ProjectActivity: React.FC = () => {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const [endingId, setEndingId] = useState<number | null>(null);
+  // v5.214.0 — the row a Resume click is about; null keeps the dialog closed.
+  const [resumeRow, setResumeRow] = useState<AgentSessionRow | null>(null);
   const [kindFilter, setKindFilter] = useState<'' | AgentSessionKind>('');
   const [modelFilter, setModelFilter] = useState('');
   const [toolFilter, setToolFilter] = useState('');
@@ -413,6 +416,37 @@ const ProjectActivity: React.FC = () => {
     && row.status === 'active'
     && (row.user_id === user?.id || user?.role === 'admin');
 
+  // v5.214.0 — the other button. An active project session whose agent died
+  // mid-tool is resumable by the operator who started it (the key acts under
+  // their name, so no admin override — the backend answers 403 otherwise).
+  const canResume = (row: AgentSessionRow) =>
+    row.kind === 'project'
+    && row.status === 'active'
+    && row.user_id === user?.id;
+
+  /** One line under the status badge on a project row: whether the key is
+   *  live, lapsed-but-renewable, or gone. Reads the two dates the row carries;
+   *  says nothing when it has neither (a legacy row). */
+  const keyState = (row: AgentSessionRow): { text: string; tone: 'ok' | 'warn' | 'muted' } | null => {
+    if (row.kind !== 'project' || row.status !== 'active') return null;
+    const now = Date.now();
+    const exp = row.key_expires_at ? new Date(row.key_expires_at).getTime() : null;
+    const cap = row.renewable_until ? new Date(row.renewable_until).getTime() : null;
+    if (exp != null && exp > now) {
+      return { text: `key valid until ${fmtTime(row.key_expires_at)}`, tone: 'ok' };
+    }
+    if (cap != null && cap > now) {
+      return {
+        text: exp == null
+          ? `key revoked · resumable until ${fmtTime(row.renewable_until)}`
+          : `key expired · renewable until ${fmtTime(row.renewable_until)}`,
+        tone: 'warn',
+      };
+    }
+    if (exp != null || cap != null) return { text: 'key expired · past lifetime', tone: 'muted' };
+    return null;
+  };
+
   const handleEnd = async (row: AgentSessionRow) => {
     const ok = await confirm({
       title: `End agent session #${row.id}?`,
@@ -452,6 +486,11 @@ const ProjectActivity: React.FC = () => {
   return (
     <div className="p-md md:p-lg">
       {confirmEl}
+      <ResumeAgentSessionDialog
+        session={resumeRow}
+        onOpenChange={(next) => { if (!next) setResumeRow(null); }}
+        onResumed={() => setRefreshNonce((n) => n + 1)}
+      />
       <div className="mb-md flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Runs</h1>
@@ -570,7 +609,8 @@ const ProjectActivity: React.FC = () => {
                   <TableHead className="w-52">Model · Tool</TableHead>
                   <TableHead className="w-36">User · Agent</TableHead>
                   <TableHead>Subject</TableHead>
-                  <TableHead className="w-16" />
+                  {/* v5.214.0 — two icon buttons (Resume + End) on a project row. */}
+                  <TableHead className="w-24" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -587,6 +627,22 @@ const ProjectActivity: React.FC = () => {
                       <Badge variant={statusBadgeVariant(r.status)} className="whitespace-nowrap">
                         {r.status}
                       </Badge>
+                      {/* v5.214.0 — "active" alone cannot tell a live agent
+                          from one that died a day ago; the key's state can. */}
+                      {(() => {
+                        const ks = keyState(r);
+                        return ks ? (
+                          <p
+                            className={cn(
+                              'mt-xxs max-w-full truncate text-caption',
+                              ks.tone === 'warn' ? 'text-warning' : 'text-muted-foreground',
+                            )}
+                            title={ks.text}
+                          >
+                            {ks.text}
+                          </p>
+                        ) : null;
+                      })()}
                     </TableCell>
                     <TableCell>
                       <Tooltip>
@@ -647,26 +703,43 @@ const ProjectActivity: React.FC = () => {
                     </TableCell>
                     <TableCell>
                       {r.kind === 'project' ? (
-                        canEnd(r) && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => handleEnd(r)}
-                                disabled={endingId === r.id}
-                                aria-label={`End agent session ${r.id}`}
-                              >
-                                {endingId === r.id ? (
-                                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                                ) : (
-                                  <Square className="size-4 text-warning" aria-hidden />
-                                )}
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>End session (revokes its key)</TooltipContent>
-                          </Tooltip>
-                        )
+                        <div className="flex items-center gap-xxs">
+                          {canResume(r) && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => setResumeRow(r)}
+                                  aria-label={`Resume agent session ${r.id}`}
+                                >
+                                  <RotateCcw className="size-4 text-primary" aria-hidden />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Resume (reconnect an agent to this session)</TooltipContent>
+                            </Tooltip>
+                          )}
+                          {canEnd(r) && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => handleEnd(r)}
+                                  disabled={endingId === r.id}
+                                  aria-label={`End agent session ${r.id}`}
+                                >
+                                  {endingId === r.id ? (
+                                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                                  ) : (
+                                    <Square className="size-4 text-warning" aria-hidden />
+                                  )}
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>End session (revokes its key)</TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
                       ) : (
                         <Tooltip>
                           <TooltipTrigger asChild>

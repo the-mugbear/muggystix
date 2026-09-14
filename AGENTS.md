@@ -12,7 +12,7 @@ One exception, and it matters: you **can** extend your own key's deadline via `P
 
 Your key carries the permissions of the operator who started your session, re-checked on every call. If you get a 403 saying the key is read-only or the operator has left the project, that is not a bug and retrying will not help — tell the user.
 
-> **Context optimization:** this file supports `?workflow=plan_generation|execution|reconnaissance|assist` on the `/api/v1/agents-guide` endpoint to return only the sections relevant to your workflow. The prompt you were given already includes the right URL. A workflow slice is roughly a third of the full file (the assist slice is smaller because the assist surface is intentionally small).
+> **Context optimization:** a unified project session receives this full guide. You may request `?workflow=plan_generation|execution|reconnaissance|assist` for a focused phase reference, but the key is not restricted to that phase.
 
 ---
 
@@ -52,6 +52,22 @@ If your key stops working, read the 401 body before doing anything else. It tell
 * `recoverable: false` — the session ended or passed its maximum lifetime. Save anything you are holding to a file in your working directory, then ask the user to start a new session.
 
 A 403 is different: it means your key is valid but not allowed to do that. Do not retry it.
+
+### Ending the session (MANDATORY last step)
+
+Your session does not end on its own. Recon and execution runs have their own `/complete`; the **session** ends only when you call `POST /api/v1/agent/session/end` (MCP `end_session`), the operator ends it from Agent Activity, or it lapses days later. Until one of those happens the operator's Agent Activity page shows it as running.
+
+When the operator says you are done, or you have nothing left to do:
+
+1. Close every open phase — `POST /agent/recon/complete` for a reconnaissance run, `POST /agent/execution-sessions/{id}/complete` for an execution run. `/session/end` refuses with `409` while any is open and names the ids.
+2. Submit feedback (`POST /agent/feedback` / `submit_feedback`).
+3. `POST /agent/session/end` with a line of `notes`. It revokes your key; nothing you call afterwards authenticates, so it is the last call.
+
+### Long-running commands — never block a single tool call on one
+
+Your client has its own tool timeout. A scan that outlives it ends *your process* while the scan keeps running: the output is orphaned, the phase never gets its `/complete`, and the operator is left with a session that looks alive but has no agent behind it. Run anything that may take more than a minute or two in the background from the working directory, capture its PID at launch (`nmap … & echo $!`), and poll **that PID** — see *Working directory & concurrent agents*. Upload each output file as it finishes rather than holding everything for one upload at the end; an upload that already landed is answered `409 duplicate_scan`, which is safe.
+
+If the operator resumes a session a previous agent process died in, your prompt carries a `⟳ RESUMED SESSION` notice: the previous key is revoked, and the working directory may hold output that never got uploaded. Look there first.
 
 ### MCP (optional — same endpoints, native tools)
 
@@ -885,6 +901,8 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | POST | `/agent/test-plans/{id}/submit` | Submit draft for approval (requires description) |
 | GET | `/agent/test-plans/{id}/execution-context` | Execution context — hosts + tests + known services with `{ip}` resolved |
 | POST | `/agent/session/environment` | Record the operator-environment probe on your session (once; rides into every run) |
+| POST | `/agent/session/renew` | Extend your key's deadline (same key; accepts an already-expired key while the session is under its lifetime cap) |
+| POST | `/agent/session/end` | **End the session — the last call you make.** Revokes your key; `409` while a recon / execution phase is still open (complete those first). Over MCP: `end_session`. Optional `notes` |
 | POST | `/agent/test-plans/{id}/entries/{eid}/sanity-check` | Record per-host target verification |
 | POST | `/agent/test-plans/{id}/entries/{eid}/test-results` | Record one test's execution result |
 | POST | `/agent/test-plans/{id}/entries/{eid}/complete` | Mark entry completed (aggregates results) |
@@ -1174,15 +1192,15 @@ Use the `status` field meaningfully:
 
 <!-- agents:section tags="assist" -->
 
-## Assist workflow (interactive query; optional narrow write)
+## Inventory-assist phase (interactive query; optional narrow write)
 
-You are in an **assist session**.  Distinct from the three other workflows: no scanning, no plan creation, no execution.  The operator wants you to help them *query their project* — answer ad-hoc questions, summarize state, surface findings — by hitting `/agent/assist/*` endpoints and synthesizing the results.
+Use this phase to *query the project* — answer ad-hoc questions, summarize state, and surface findings — via `/agent/assist/*` endpoints. It generates no target traffic by itself. This is a mode within the same unified project session that can also open reconnaissance, planning, and execution phases when the operator asks.
 
 **You act as the operator who started the session.**  Their project role decides what you may write, checked on every call — there is no separate per-session grant to look up. If a write returns 403, their role does not permit it, and retrying will not change that.
 
 ### Runs on any OS
 
-Assist is the one workflow with **no host-tool requirements** — your "commands" are HTTPS API calls to `/agent/assist/*`, so Windows, macOS, and Linux operators are all first-class (recon/execution, by contrast, need a Linux/Windows scanner toolchain). Only the HTTP-client invocation differs:
+Inventory assistance has **no host-tool requirements** — its "commands" are HTTPS API calls to `/agent/assist/*`, so Windows, macOS, and Linux operators are all first-class (recon/execution, by contrast, need a Linux/Windows scanner toolchain). Only the HTTP-client invocation differs:
 
 - **bash / zsh** (Linux, macOS): `curl -sk -H 'X-API-Key: …' '<url>'`
 - **Windows PowerShell:** use **`curl.exe`** — bare `curl` is an alias for `Invoke-WebRequest` and won't accept these flags — e.g. `curl.exe -sk -H "X-API-Key: …" "<url>"`; or native `Invoke-RestMethod -SkipCertificateCheck -Headers @{'X-API-Key'='…'} '<url>'`. For POST bodies, pass `-d (ConvertTo-Json $obj)` to `curl.exe` or `-Body ($obj | ConvertTo-Json)` to `Invoke-RestMethod` rather than bash single-quoted JSON.
@@ -1191,14 +1209,14 @@ The environment probe (below) only needs `os_family` (`windows`/`darwin`/`linux`
 
 ### Hard contract
 
-- **You have the operator's permissions, not more.** Your key carries `assist_session_id` and is rejected by every write endpoint on the agent surface *except* the three host-write routes below — and those only if the operator's project role permits writing.  Everything else 403s — don't try; the operator sees every failed call in the audit log.
-- **Scanning, plan creation, and execution are refused for every assist session**, whatever the operator's role. No exceptions.
+- **You have the operator's permissions, not more.** The key is bound to one project session; project writes require the operator's role to permit them. A 403 is a guardrail, not a route-around opportunity.
+- **Inventory assistance itself creates no target traffic.** To scan, draft, or execute, open the appropriate phase using the same key and follow that phase's protocol.
 - **Project-scoped.** The session binds to one project (the one the operator picked at start-up).  You see all hosts in that project; you do not see other projects.  No cross-project access.
 - **No target traffic.** You never scan, probe, or otherwise generate traffic to in-scope hosts.  All your data comes from BlueStick's already-ingested state.  If the operator asks you to scan, see "When to hand off" below.
 
 ### Endpoint surface
 
-> **MCP transport (lower friction).** These same reads and writes are also exposed as **MCP tools** over a Streamable-HTTP endpoint at `/api/v1/mcp`, so an MCP-capable host (VS Code Copilot, Claude Code, Codex) can call them as native tools instead of shelling `curl` — which means the read tools can be marked "always allow" and stop prompting. The **Start Assist Session** dialog emits ready-to-paste setup for your client — a `.vscode/mcp.json` file, a `claude mcp add` command, or a `codex mcp add` command (the clients disagree on config shape, so pick your tab rather than reusing another's). Tool names mirror the endpoints below (`assist_get_context`, `assist_list_hosts`, `assist_get_host`, `assist_get_host_vulnerabilities`, `assist_list_scopes`, `assist_list_names`, `assist_list_scans`, `assist_session_info`, the writes `assist_add_note` / `assist_set_follow` / `assist_patch_host`, and `assist_record_environment` for the mandatory first-step probe — it resolves your session from your key, so you don't pass `session_id`). Connecting with a key narrows `tools/list` to your session's **workflow**, so a tool you can't see belongs to another workflow, not to a permission you lack. Whether a listed write succeeds is your operator's project role, decided at the endpoint. Results carry `structuredContent` alongside the text block. The key goes in `X-API-Key` or `Authorization: Bearer` — both work. Auth, scope, the operator-role gate, and the audit log are identical — MCP just forwards your `X-API-Key`. The bulk `report-context.ndjson` stream is deliberately **not** a tool (it's a download-to-file, not a context-load); fetch it with `curl` as described below even when connected via MCP. Everything in this section applies verbatim to the MCP tools.
+> **MCP transport (lower friction).** These reads and writes, plus recon, planning, and execution tools, are exposed over `/api/v1/mcp`. An MCP-capable host (VS Code Copilot, Claude Code, Codex) can call them natively instead of shelling `curl`; a unified-session key sees the complete catalogue. The endpoint enforces project scope, phase state, the operator role, and human approval. The bulk `report-context.ndjson` stream remains a download-to-file rather than a tool.
 
 All under `/agent/assist/*`.  X-API-Key header on every call:
 
@@ -1256,17 +1274,16 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
 
 ### When to hand off
 
-You cannot execute action; the operator does.  When your synthesis points to a follow-up that requires action, say so explicitly and stop:
+When your synthesis points to a follow-up that requires action, say so, and open the phase only when the operator asks for it — with this same key, following that phase's own protocol (its read-back, approval rules and exit criteria are in its section of this guide):
 
-- **"You should scan these hosts more thoroughly."** → "Open a recon session against scope #X from the Scopes page; I can't initiate scans."
-- **"These hosts need a test plan."** → "Use Generate from the Test Plans page; I can't create plans here."
-- **"Mark these as in review for me."** → With write access, do it for the hosts assigned to them (announce first). Without it, or for hosts assigned to someone else: "I can't change follow status in this session. Use the `/hosts` page checkboxes, or I can hand you a filter URL to apply."
+- **"You should scan these hosts more thoroughly."** → Open a recon run on the scope (`POST /agent/recon/start {"scope_id": X}`, MCP `start_recon`), state the read-back it returns, and scan only within those boundaries under the reconnaissance protocol.
+- **"These hosts need a test plan."** → Open a draft (`POST /agent/test-plans {"title": …}`, MCP `create_test_plan`), fill its entries from the candidates, and submit it for human approval. Execution needs that approval first — there is no path from a draft to running commands.
+- **"Mark these as in review for me."** → With write access, do it for the hosts assigned to them (announce first). Without it, or for hosts assigned to someone else: "I can't change follow status for that target in this session. Use the `/hosts` page checkboxes, or I can hand you a filter URL to apply."
 
 The operator drives every action; you assist their query.
 
 ### What you can NOT do
 
-- Upload scans, or create/modify/execute test plans — use a recon session / the Test Plans UI.
 - Create notes or change follow status when `can_write_project_data` is false. Cannot assign hosts to anyone, ever.
 - Access other projects, or list other operators' assist sessions / environment probes.
 

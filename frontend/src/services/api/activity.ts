@@ -67,10 +67,6 @@ export interface ActivityItem {
   parent_id: number | null;
 }
 
-/** Legacy alias kept temporarily for callers that still use v1's
- *  scan-only name.  Same shape. */
-export type ActivityScanItem = ActivityItem;
-
 export interface ActivityResponse {
   items: ActivityItem[];
   total: number;

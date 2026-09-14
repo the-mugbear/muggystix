@@ -37,7 +37,7 @@ WORKFLOW_ANCHORS = {
     "plan_generation": "Build a Test Plan (from",
     "execution": "Execute an Approved Plan (from",
     "reconnaissance": "Populate Host Data via Reconnaissance",
-    "assist": "Assist workflow (interactive query",
+    "assist": "Inventory-assist phase (interactive query",
 }
 # A shared-section heading that must survive into EVERY slice.
 SHARED_ANCHOR = "Instance Identity (verify once"

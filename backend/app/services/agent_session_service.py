@@ -607,17 +607,110 @@ def key_expiry_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
     }
 
 
-def effective_session_status(
-    stored_status: str, key_expires_at: Optional[datetime], now: Optional[datetime] = None,
+# v2.340.0 — ``effective_session_status`` deleted.  It flipped a displayed
+# status to ``ended`` the moment the key expired, which renewal (v2.304.0) made
+# wrong: an expired key on a session under its lifetime cap is still usable
+# after one ``/session/renew`` call, so that session is *resumable*, not over.
+# Nothing called it.  The timeline now carries ``key_expires_at`` +
+# ``renewable_until`` instead, and the UI says "key expired, renewable until …"
+# on an otherwise-active row — which is the truthful state.
+
+
+def resume_agent_session(
+    db: Session,
+    session: AgentSession,
+    *,
+    agent: Agent,
+    resumed_by: User,
+    ttl_hours: Optional[int] = None,
 ) -> str:
-    """``active`` only while a key can still be used; the stored column is
-    converged hourly by :func:`lapse_expired_agent_sessions`."""
-    if stored_status != SESSION_ACTIVE:
-        return stored_status
-    now = now or datetime.now(timezone.utc)
-    if key_expires_at is None or key_expires_at <= now:
-        return SESSION_ENDED
-    return stored_status
+    """Rotate the key on an active session so the operator can reconnect.
+
+    v2.340.0.  The usual reason a session shows ``active`` with nothing
+    happening is that the client that drove it died mid-tool (an editor agent
+    session timed out while a scan ran) — the session, its open phases and its
+    key are all still good, only the process holding the key is gone.  The
+    operator either still has the key configured (then nothing needs minting;
+    they reopen the client) or has lost it, in which case this mints a
+    replacement on the **same** session: ``mint_session_key`` revokes the
+    previous key first, so the dead client cannot keep writing beside the new
+    one, and the open recon / execution phases stay attached because their
+    ``agent_session_id`` never changes.  Contrast the per-phase resume routes,
+    which mint a *new* session and supersede the old one — those exist for
+    legacy phase rows that have no project session to reconnect to.
+
+    Refuses (409) a session that is not active or is past its renewal deadline:
+    past the cap nothing can be renewed, so the honest answer is "start a new
+    session".
+    """
+    now = datetime.now(timezone.utc)
+    if session.status != SESSION_ACTIVE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session is '{session.status}', not active — start a new session instead.",
+        )
+    deadline = session_renewal_deadline(session)
+    if deadline is not None and deadline <= now:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Session is past its maximum lifetime and can no longer be resumed — "
+                "start a new session instead."
+            ),
+        )
+    raw_key = mint_session_key(db, agent=agent, session=session, ttl_hours=ttl_hours)
+    if session.agent_id != agent.id:
+        session.agent_id = agent.id
+    who = resumed_by.full_name or resumed_by.username
+    line = f"[{now.isoformat()}] Session resumed by {who}: key rotated, previous key revoked"
+    session.notes = (f"{session.notes}\n{line}" if session.notes else line)[-8192:]
+    return raw_key
+
+
+def close_agent_session_from_agent(
+    db: Session, session: AgentSession, *, notes: Optional[str] = None,
+) -> None:
+    """The agent's own exit: end the session it is holding the key for.
+
+    v2.340.0.  Until now only the operator (End on Agent Activity) or the
+    hourly sweep — after the key had expired *and* the session had passed its
+    lifetime cap, a week by default — could end a project session.  Recon and
+    execution phases had a ``/complete``; the session itself had nothing, so
+    even an agent that finished cleanly left an active row behind.
+
+    Refuses (409) while a recon or execution phase is still open, naming the
+    phase ids: the phase's own ``/complete`` is what records a truthful
+    outcome, and ending underneath it would mark the recon abandoned and the
+    execution paused — the crashed-agent semantics, which this is not.
+    """
+    open_recon = [r.id for r in active_recon_phases(db, session.id)]
+    open_exec = [e.id for e in active_execution_phases(db, session.id)]
+    if open_recon or open_exec:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "Close your open phases first — POST /agent/recon/complete for each "
+                    "reconnaissance run and POST /agent/execution-sessions/{id}/complete "
+                    "for each execution run — then end the session."
+                ),
+                "active_recon_session_ids": open_recon,
+                "active_execution_session_ids": open_exec,
+            },
+        )
+    if session.status != SESSION_ACTIVE:
+        raise HTTPException(
+            status_code=409, detail=f"Session already in state '{session.status}'.",
+        )
+    reason = "closed by the agent" + (f": {notes.strip()}" if notes and notes.strip() else "")
+    end_agent_session(db, session, ended_by=None, reason=reason)
+    db.query(AssistSession).filter(
+        AssistSession.agent_session_id == session.id,
+        AssistSession.status == "active",
+    ).update(
+        {"status": "ended", "ended_at": session.completed_at},
+        synchronize_session=False,
+    )
 
 
 def lapse_expired_agent_sessions(db: Session) -> int:
@@ -715,6 +808,12 @@ class AgentSessionRow:
     target_label: Optional[str] = None
     # v2.337.0 — the operator's stated purpose (consolidated sessions only).
     purpose: Optional[str] = None
+    # v2.340.0 — when the session's live key stops working and until when the
+    # session can still be renewed / resumed (project sessions only).  An
+    # ``active`` row whose key has expired but is still renewable is a session
+    # the operator can reconnect to, and the page needs both dates to say so.
+    key_expires_at: Optional[datetime] = None
+    renewable_until: Optional[datetime] = None
 
     def to_dict(self) -> dict:
         return {
@@ -735,6 +834,8 @@ class AgentSessionRow:
             "user_username": self.user_username,
             "target_label": self.target_label,
             "purpose": self.purpose,
+            "key_expires_at": self.key_expires_at,
+            "renewable_until": self.renewable_until,
         }
 
 
@@ -1099,7 +1200,18 @@ def list_agent_sessions(
                 agent_name=s.agent.name if s.agent else None,
                 user_username=s.started_by.username if s.started_by else None,
                 purpose=s.purpose,
+                renewable_until=session_renewal_deadline(s),
             ))
+        # v2.340.0 — one grouped query for the live key's expiry on every
+        # project row on the page, so the UI can tell "active, agent alive"
+        # from "active, key lapsed, resumable until <deadline>".
+        expiry = key_expiry_for_agent_sessions(db, [r.id for r in rows if r.kind == "project"])
+        for r in rows:
+            if r.kind == "project":
+                exp = expiry.get(r.id)
+                if exp is not None and exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                r.key_expires_at = exp
 
     if "recon" in want:
         q = db.query(ReconSession).filter(ReconSession.project_id == project_id)

@@ -576,14 +576,14 @@ async def agents_guide(
 ):
     """Serve AGENTS.md with the base URL replaced to match the current deployment.
 
-    Accepts an optional ``workflow`` query parameter (``plan_generation``,
-    ``execution``, ``reconnaissance``, or the short forms
+    Accepts an optional phase query parameter (``plan_generation``,
+    ``execution``, ``reconnaissance``, ``assist``, or the short forms
     ``plan``/``exec``/``recon``).  When present, the response is filtered
     to only the sections tagged for that workflow plus any ``shared``
     sections.  The execution slice is roughly a third of the full file;
     the plan_generation / reconnaissance slices are similarly trimmed.
     See ``services.agents_guide_service.slice_agents_md`` for filter
-    semantics.
+    semantics. Unified project sessions receive the full guide.
     """
     candidates = [
         Path("/app/AGENTS.md"),

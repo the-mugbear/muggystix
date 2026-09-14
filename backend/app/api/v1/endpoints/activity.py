@@ -139,12 +139,6 @@ class ActivityItem(BaseModel):
     parent_id: Optional[int] = None
 
 
-# Backward-compat alias kept for any old caller still using the v1
-# response model name.  Same shape; the FastAPI client generator and
-# our frontend now consume ActivityItem.
-ActivityScanItem = ActivityItem
-
-
 class ActivityResponse(BaseModel):
     items: List[ActivityItem]
     total: int  # number returned (≤ MAX_RESULTS)
@@ -248,8 +242,23 @@ def _parse_target(raw: Optional[str]) -> Optional[str]:
         )
 
 
-def _ilike(value: str):
-    return f"%{value.strip()}%"
+def _parse_tool(raw: Optional[str]) -> Optional[str]:
+    """``tool=`` normalised once: stripped, and blank means "no filter"
+    (a whitespace-only value used to read as a filter that matched every
+    row while still hiding the run kinds)."""
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
+
+
+def _contains(column, needle: str):
+    """Case-insensitive substring match with the LIKE metacharacters in
+    ``needle`` escaped, so ``nmap_`` means a literal underscore."""
+    escaped = (
+        needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    return column.ilike(f"%{escaped}%", escape="\\")
 
 
 def _parse_kinds(raw: Optional[str]) -> Set[str]:
@@ -385,9 +394,9 @@ def _query_scans(
     )
     if tool:
         q = q.filter(or_(
-            models.Scan.tool_name.ilike(_ilike(tool)),
-            models.Scan.scan_type.ilike(_ilike(tool)),
-            models.Scan.command_line.ilike(_ilike(tool)),
+            _contains(models.Scan.tool_name, tool),
+            _contains(models.Scan.scan_type, tool),
+            _contains(models.Scan.command_line, tool),
         ))
     if target:
         # The scan observed this host: host_scan_history is the per-scan
@@ -424,7 +433,6 @@ def _query_scans(
             start_time_is_fallback=row[5] is None,
             has_end_time=row[6] is not None,
             host_count=int(row[9] or 0),
-            target=target,
         )
         for row in rows
     ]
@@ -495,6 +503,10 @@ def _query_recon_sessions(
         .all()
     )
     if target:
+        # Applied after the LIMIT, unlike the other kinds: >MAX_RESULTS
+        # recon runs overlapping one window is not a real load, and the
+        # Python containment check keeps this portable to the SQLite test
+        # backend.  If it ever is, move to an ``inet >>=`` predicate.
         in_scope = _scope_contains(db, {row[9] for row in rows}, target)
         rows = [row for row in rows if row[9] in in_scope]
     return [
@@ -575,19 +587,24 @@ def _query_execution_sessions(
     ]
 
 
+#: Leading command tokens that wrap the real tool rather than being it.
+_COMMAND_WRAPPERS = {"sudo", "doas", "proxychains", "proxychains4"}
+
+
 def _tool_of(proposed_tests, test_index: int, command_run: Optional[str]) -> str:
     """The tool a recorded result used: the proposed test's ``tool``, else
-    the first token of the command actually run, else ``unknown``."""
+    the first non-wrapper token of the command actually run (``sudo nmap``
+    is nmap), else ``unknown``."""
     try:
         t = (proposed_tests or [])[test_index]
         if isinstance(t, dict) and t.get("tool"):
             return str(t["tool"])
     except (IndexError, TypeError):
         pass
-    if command_run:
-        head = command_run.strip().split()
-        if head:
-            return head[0].rsplit("/", 1)[-1]
+    for token in (command_run or "").split():
+        name = token.rsplit("/", 1)[-1]
+        if name not in _COMMAND_WRAPPERS:
+            return name
     return "unknown"
 
 
@@ -602,8 +619,27 @@ def _query_test_results(
 ) -> List[ActivityItem]:
     """One row per command an executing agent reported (v2.339.0) — the
     per-target, per-tool record.  A result is a point event at
-    ``executed_at`` (the agent's own timestamp) or ``created_at``."""
+    ``executed_at`` (the agent's own timestamp) or ``created_at``.
+
+    The row's ``target`` is the address the command actually hit
+    (``observed_ip`` when the agent reported one, else the entry's host),
+    and ``target=`` matches either — a command that reached a different
+    binding of a named endpoint is still attributable by the address it hit.
+
+    Both filters are settled entirely in SQL so the LIMIT and the filter
+    agree: a Python post-filter after the LIMIT would spend the row budget
+    on rows it then drops and report ``truncated=False`` over the ones it
+    never fetched.
+
+    Note on cost: the window predicate is on a COALESCE, which no index
+    serves, so this is a sequential scan of ``test_execution_results``
+    per call.  Fine at the 10^4–10^5 rows a deployment accumulates; if
+    this endpoint ever shows in latency, the first thing to change is the
+    whole-table ``host_scan_history`` aggregate in ``_query_scans``, not
+    this.
+    """
     when = func.coalesce(TestExecutionResult.executed_at, TestExecutionResult.created_at)
+    hit = func.coalesce(TestExecutionResult.observed_ip, models.Host.ip_address)
     q = (
         db.query(
             TestExecutionResult.id,
@@ -613,7 +649,7 @@ def _query_test_results(
             TestExecutionResult.command_run,
             TestExecutionResult.status,
             when.label("when"),
-            models.Host.ip_address,
+            hit.label("hit"),
             TestExecutionResult.execution_session_id,
             TestPlanEntry.proposed_tests,
         )
@@ -628,28 +664,29 @@ def _query_test_results(
         )
     )
     if target:
-        q = q.filter(models.Host.ip_address == target)
-    if tool:
-        # SQL prefilter on the command and the JSON text; the exact tool
-        # name is settled per row below.
         q = q.filter(or_(
-            TestExecutionResult.command_run.ilike(_ilike(tool)),
-            cast(TestPlanEntry.proposed_tests, String).ilike(_ilike(tool)),
+            models.Host.ip_address == target,
+            TestExecutionResult.observed_ip == target,
+        ))
+    if tool:
+        # The command line is the record of what ran; the plan's proposed
+        # tests are the fallback only when no command was reported (the
+        # JSON text covers every test on the entry, not just this index).
+        q = q.filter(or_(
+            _contains(TestExecutionResult.command_run, tool),
+            and_(
+                TestExecutionResult.command_run.is_(None),
+                _contains(cast(TestPlanEntry.proposed_tests, String), tool),
+            ),
         ))
     rows = q.order_by(when.desc()).limit(MAX_RESULTS + 1).all()
-    items: List[ActivityItem] = []
-    for row in rows:
-        name = _tool_of(row[9], row[3], row[4])
-        if tool and tool.strip().lower() not in name.lower() and (
-            not row[4] or tool.strip().lower() not in row[4].lower()
-        ):
-            continue
-        items.append(ActivityItem(
+    return [
+        ActivityItem(
             kind=KIND_TEST_RESULT,
             ref_id=row[0],
             project_id=row[1],
             project_name=row[2],
-            label=name,
+            label=_tool_of(row[9], row[3], row[4]),
             secondary_label=(row[4][:200] + "…") if (row[4] and len(row[4]) > 200) else row[4],
             start_time=_to_utc(row[6], allow_none=True),
             end_time=None,
@@ -658,8 +695,9 @@ def _query_test_results(
             status=row[5],
             target=row[7],
             parent_id=row[8],
-        ))
-    return items
+        )
+        for row in rows
+    ]
 
 
 def _query_sanity_checks(
@@ -698,7 +736,7 @@ def _query_sanity_checks(
     if target:
         q = q.filter(HostSanityCheck.target_ip == target)
     if tool:
-        q = q.filter(HostSanityCheck.method.ilike(_ilike(tool)))
+        q = q.filter(_contains(HostSanityCheck.method, tool))
     rows = q.order_by(HostSanityCheck.checked_at.desc()).limit(MAX_RESULTS + 1).all()
     return [
         ActivityItem(
@@ -764,7 +802,8 @@ _TOOL_PARAM = Query(
     None, max_length=100,
     description="Attribution filter: keep rows whose tool name or command line "
     "contains this text (case-insensitive). Drops the recon/execution run "
-    "kinds, which are containers rather than tools.",
+    "kinds, which are containers rather than tools; asking for only those "
+    "kinds together with a tool is a 400.",
 )
 _TARGET_PARAM = Query(
     None, max_length=45,
@@ -772,6 +811,62 @@ _TARGET_PARAM = Query(
     "(a scan that observed the host, a command or probe against it, a recon "
     "run whose scope contains it, an execution run whose plan lists it).",
 )
+
+
+def _respond(
+    db: Session,
+    current_user: User,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    project_ids_csv: Optional[str],
+    kinds_csv: Optional[str],
+    tool_raw: Optional[str],
+    target_raw: Optional[str],
+) -> ActivityResponse:
+    """The shared body of both routes once the window is settled: parse the
+    filters, resolve which of the requested projects the caller can see,
+    run the per-kind queries, clip to the cap."""
+    kinds_set = _parse_kinds(kinds_csv)
+    tool = _parse_tool(tool_raw)
+    target = _parse_target(target_raw)
+    if tool and kinds_csv and not (kinds_set - CONTAINER_KINDS):
+        # Same philosophy as _parse_kinds: a request that can only ever be
+        # empty is a 400, not a silent "nothing ran".
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "tool= applies to scan / test_result / sanity_check rows; the "
+                f"requested kinds {sorted(kinds_set)!r} are runs, which are "
+                "containers rather than tools."
+            ),
+        )
+
+    accessible = _accessible_project_ids(db, current_user)
+    requested = _parse_project_ids_csv(project_ids_csv)
+    if requested is not None:
+        accessible_set = set(accessible)
+        effective = [pid for pid in requested if pid in accessible_set]
+    else:
+        effective = accessible
+
+    items: List[ActivityItem] = []
+    if effective:
+        items = _query_in_window(
+            db, effective, window_start, window_end, kinds_set, tool=tool, target=target,
+        )
+    truncated = len(items) > MAX_RESULTS
+    if truncated:
+        items = items[:MAX_RESULTS]
+    return ActivityResponse(
+        items=items,
+        total=len(items),
+        truncated=truncated,
+        accessible_project_ids=accessible,
+        requested_project_ids=requested,
+        window_start=window_start,
+        window_end=window_end,
+    )
 
 
 @router.get("/scans-at", response_model=ActivityResponse)
@@ -805,56 +900,11 @@ def scans_at(
 ):
     """Point query: list activity whose window covered `ts` (± tolerance)."""
     ts_utc = _to_utc(ts)
-    window_start = ts_utc - timedelta(seconds=tolerance_seconds)
-    window_end = ts_utc + timedelta(seconds=tolerance_seconds)
-    kinds_set = _parse_kinds(kinds)
-    target_ip = _parse_target(target)
-
-    accessible = _accessible_project_ids(db, current_user)
-    if not accessible:
-        return ActivityResponse(
-            items=[],
-            total=0,
-            truncated=False,
-            accessible_project_ids=[],
-            requested_project_ids=_parse_project_ids_csv(project_ids),
-            window_start=window_start,
-            window_end=window_end,
-        )
-
-    requested = _parse_project_ids_csv(project_ids)
-    if requested is not None:
-        accessible_set = set(accessible)
-        effective = [pid for pid in requested if pid in accessible_set]
-    else:
-        effective = accessible
-
-    if not effective:
-        return ActivityResponse(
-            items=[],
-            total=0,
-            truncated=False,
-            accessible_project_ids=accessible,
-            requested_project_ids=requested,
-            window_start=window_start,
-            window_end=window_end,
-        )
-
-    items = _query_in_window(
-        db, effective, window_start, window_end, kinds_set, tool=tool, target=target_ip,
-    )
-    truncated = len(items) > MAX_RESULTS
-    if truncated:
-        items = items[:MAX_RESULTS]
-
-    return ActivityResponse(
-        items=items,
-        total=len(items),
-        truncated=truncated,
-        accessible_project_ids=accessible,
-        requested_project_ids=requested,
-        window_start=window_start,
-        window_end=window_end,
+    return _respond(
+        db, current_user,
+        window_start=ts_utc - timedelta(seconds=tolerance_seconds),
+        window_end=ts_utc + timedelta(seconds=tolerance_seconds),
+        project_ids_csv=project_ids, kinds_csv=kinds, tool_raw=tool, target_raw=target,
     )
 
 
@@ -888,8 +938,6 @@ def scans_between(
     """
     from_utc = _to_utc(from_)
     to_utc = _to_utc(to)
-    kinds_set = _parse_kinds(kinds)
-    target_ip = _parse_target(target)
     if to_utc < from_utc:
         raise HTTPException(
             status_code=400, detail="`to` must be on or after `from`"
@@ -902,50 +950,7 @@ def scans_between(
                 "ranges use the per-project scan list."
             ),
         )
-
-    accessible = _accessible_project_ids(db, current_user)
-    if not accessible:
-        return ActivityResponse(
-            items=[],
-            total=0,
-            truncated=False,
-            accessible_project_ids=[],
-            requested_project_ids=_parse_project_ids_csv(project_ids),
-            window_start=from_utc,
-            window_end=to_utc,
-        )
-
-    requested = _parse_project_ids_csv(project_ids)
-    if requested is not None:
-        accessible_set = set(accessible)
-        effective = [pid for pid in requested if pid in accessible_set]
-    else:
-        effective = accessible
-
-    if not effective:
-        return ActivityResponse(
-            items=[],
-            total=0,
-            truncated=False,
-            accessible_project_ids=accessible,
-            requested_project_ids=requested,
-            window_start=from_utc,
-            window_end=to_utc,
-        )
-
-    items = _query_in_window(
-        db, effective, from_utc, to_utc, kinds_set, tool=tool, target=target_ip,
-    )
-    truncated = len(items) > MAX_RESULTS
-    if truncated:
-        items = items[:MAX_RESULTS]
-
-    return ActivityResponse(
-        items=items,
-        total=len(items),
-        truncated=truncated,
-        accessible_project_ids=accessible,
-        requested_project_ids=requested,
-        window_start=from_utc,
-        window_end=to_utc,
+    return _respond(
+        db, current_user, window_start=from_utc, window_end=to_utc,
+        project_ids_csv=project_ids, kinds_csv=kinds, tool_raw=tool, target_raw=target,
     )

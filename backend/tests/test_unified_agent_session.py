@@ -89,6 +89,28 @@ def test_one_key_reaches_identity_recon_and_plan(client, test_project, db_sessio
     assert plan.agent_session_id == session_id
 
 
+def test_mcp_guidance_describes_the_unified_session():
+    """The MCP welcome text must not revive the retired assist-only model."""
+    from app.api.v1.endpoints.mcp_assist import _server_instructions
+
+    guidance = _server_instructions("https://127.0.0.1/api/v1")
+    assert "unified project session" in guidance
+    assert "no key that does all four" not in guidance
+
+
+def test_agent_guide_does_not_describe_inventory_assistance_as_a_separate_session():
+    """The guide is part of the MCP contract, not optional supporting copy."""
+    # The suite runs inside the backend container, where AGENTS.md is
+    # bind-mounted at /app/AGENTS.md — not at the repo-root path a local
+    # checkout would give.  Reuse the docs-contract loader, which knows both.
+    from tests.test_docs_contract import _load_agents_md
+
+    guide = _load_agents_md()
+    assert "Inventory-assist phase" in guide
+    assert "You are in an **assist session**" not in guide
+    assert "Scanning, plan creation, and execution are refused for every assist session" not in guide
+
+
 def test_execution_requires_an_approved_plan(client, test_project, db_session):
     """The human approval gate is the one control the consolidation keeps."""
     key, _ = _start_session(client, test_project)

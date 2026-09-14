@@ -89,15 +89,12 @@ Endpoints under `/api/v1/agent/*` use a project-scoped, time-limited
 X-API-Key: nm_agent_abc123...
 ```
 
-Keys are minted by an operator UI action — **Generate with AI** (plan
-generation), **Execute with AI** (plan execution), **Start Agentic Recon**
-(reconnaissance), or **Start AI Assist** (read-only query) — and each is
-bound to exactly one workflow: one plan (plan-gen / execution), one scope
-(recon), or one assist session. Default TTL is 24h
-(`AGENT_KEY_TTL_HOURS`); assist keys are shorter-lived (4h). The surface
-is intentionally narrow — it cannot manage users, projects, or other
-plans, and cross-workflow calls return 403. See AGENTS.md for the full
-integration guide.
+Keys are minted by an operator UI action and bind to one **unified project
+session**. The same key can query inventory, open reconnaissance for a selected
+scope, draft a test plan, and execute a human-approved plan. Default TTL is
+24h (`AGENT_KEY_TTL_HOURS`). The surface is intentionally narrow — it cannot
+manage users or other projects; scope, phase state, and approval gates are
+enforced by the relevant endpoint. See AGENTS.md for the full integration guide.
 
 ## Role hierarchy
 
@@ -184,27 +181,28 @@ scope-bound key and its own tag below:
 4. **Agent polls and reads progress** — `GET .../jobs/{id}`, `GET .../summary`.
 5. **Agent closes the session** — `POST .../complete`.
 
-#### Interactive assist — tag `agent-assist`
+#### Inventory assist — tag `agent-assist`
 
-1. **Operator starts an assist session** from the UI — backend mints a
-   project-scoped key (4h TTL). The session acts with the **operator's own
-   project permissions**, re-checked on every call.
-2. **Agent queries project state** to answer ad-hoc questions —
+The default, no-phase-open surface of every session. The session acts with
+the **operator's own project permissions**, re-checked on every call.
+
+1. **Agent queries project state** to answer ad-hoc questions —
    `GET /agent/assist/context` for a headline summary, then
    `GET /agent/assist/hosts` (Hosts-page filter vocabulary),
    `GET .../scopes`, `GET .../scans`.
-3. **Agent may also record findings** when the operator's role permits
+2. **Agent may also record findings** when the operator's role permits
    (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status
    (`POST .../follow`), and hostname/OS corrections (`PATCH /agent/hosts/{id}`).
    A write by an operator whose role can't write returns 403; `GET
    /agent/identity` reports `can_write_project_data` so the agent can check
-   first. No scanning, no plan creation, no execution from this surface.
+   first. These reads generate no target traffic; scanning, drafting and
+   execution are the phases above, opened with the same key.
 
-Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`;
-assist keys 4h), and bound to **one** plan (plan-gen/execution), **one** scope
-(recon), or **one** assist session. Cross-workflow calls return 403. The
+Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`)
+and bound to **one** session; the phases a session opens link back to it, and
+every phase write resolves its run or plan through the caller's session. The
 `agent-browse` tag below documents the host/scope/dashboard surface shared by
-the plan, execution, and recon workflows (reads, plus the three assist writes).
+every phase (reads, plus the three assist writes).
 
 ## Error conventions
 

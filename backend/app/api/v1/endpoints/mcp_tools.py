@@ -56,9 +56,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-# The four workflows a key can belong to (AgentSessionWorkflow values).  Kept as
-# plain strings rather than importing the enum: this module is pure data with no
-# DB dependency, and the values are already a wire contract via /agent/identity.
+# The four kinds of work, used only as catalogue tags on the tool reference page
+# (`tool_workflows`) — since v2.337.0 a key belongs to one project session and
+# `tools/list` is not filtered by them.  Kept as plain strings rather than
+# importing the enum: this module is pure data with no DB dependency.
 WORKFLOW_ASSIST = "assist"
 WORKFLOW_PLAN_GENERATION = "plan_generation"
 WORKFLOW_EXECUTION = "execution"
@@ -211,10 +212,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     "agent_identity": {
         "description": (
-            "What your API key is: workflow (assist / plan_generation / execution / "
-            "recon), bound project, session ids, write capabilities, the operator you "
-            "act for, and when the key expires. Call this first if you are unsure "
-            "which workflow you are in — the available tools differ per workflow."
+            "What your API key is: its unified project session, open phases, bound "
+            "project, write capabilities, the operator you act for, and when the key "
+            "expires. Call this first to see whether recon, planning, or execution "
+            "is already open; one key can open and use every phase."
         ),
         "method": "GET",
         "path": "/api/v1/agent/identity",
@@ -235,21 +236,46 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/session/renew",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    "end_session": {
+        "description": (
+            "End your session — the LAST call you make, after submit_feedback. It "
+            "revokes your key and marks the session ended so the operator's Agent "
+            "Activity page stops showing it as running. Refused (409, naming the ids) "
+            "while a reconnaissance or execution phase is still open: complete those "
+            "first (recon_complete / execution_complete_session). Optional `notes`: one or two "
+            "lines on what the session did (v2.340.0)."
+        ),
+        "method": "POST",
+        "metadata_write": True,
+        "path": "/api/v1/agent/session/end",
+        "body_params": ["notes"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "notes": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "What the session did, in a line or two.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
     "read_agent_guide": {
         "description": (
             "AGENTS.md — the authoritative guide for how to work with BlueStick: the "
             "approval and sanity-check protocol, the working-directory rules, endpoint "
-            "body shapes, upload formats, exit criteria. Sliced to your own workflow, "
-            "resolved from your key. READ THIS FIRST, once, before your first "
+            "body shapes, upload formats, exit criteria. A unified project session "
+            "gets the full guide; optionally request a phase slice. READ THIS FIRST, "
+            "once, before your first "
             "substantive call. The tool descriptions here are a skeleton; the guide is "
             "the part that tells you how, and it is binding."
         ),
         "method": "GET",
         "path": "/api/v1/agents-guide",
         "query_params": ["workflow"],
-        # Filled from the caller's identity: the slice you want is the workflow
-        # your key belongs to, and asking a model to name it invites the one
-        # answer that returns another workflow's instructions.
+        # A project session's identity supplies "project", which deliberately
+        # returns the full guide. A phase slice remains available on direct HTTP.
         "auto_params": {"workflow": "workflow"},
         "input_schema": {
             "type": "object",
@@ -330,9 +356,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # -----------------------------------------------------------------------
-    # Assist — interactive read/write over an existing inventory
-    # -----------------------------------------------------------------------
     "submit_feedback": {
         "description": (
             "Leave structured feedback about this session — REQUIRED before you "
@@ -392,9 +415,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    # -----------------------------------------------------------------------
+    # Assist — interactive read/write over an existing inventory
+    # -----------------------------------------------------------------------
     "assist_get_context": {
         "description": (
-            "Project orientation for this assist session: host/port/scope/scan "
+            "Project-inventory orientation: host/port/scope/scan "
             "totals, the scope list (capped at 50), and recent scans. It carries "
             "NO findings — use assist_list_hosts to locate hosts and "
             "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first."
@@ -818,7 +844,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_session_info": {
         "description": (
-            "This assist session's identity: bound project, purpose, status, and the "
+            "This unified session's inventory context: bound project, purpose, status, and the "
             "operator you act on behalf of — who `assigned:me` refers to. For whether "
             "you may write, call agent_identity and read `can_write_project_data`; "
             "this response does not carry it."
@@ -1080,9 +1106,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # No `plan_create` tool: POST /agent/test-plans is behind `deny_scoped_keys`,
-    # so a plan-bound key — which is the only kind of key this workflow issues —
-    # can never use it. The operator creates the plan; the agent fills it in.
+    # Opening a draft is `create_test_plan` (above, with the other phase
+    # openers); the tools from here on fill in and submit an open plan.
     "plan_update": {
         "description": (
             "Set the plan's title/description and record which model and harness "

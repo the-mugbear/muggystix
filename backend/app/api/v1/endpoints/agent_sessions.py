@@ -14,21 +14,25 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
-from app.db.models_agent import AgentSession
+from app.db.models_agent import AgentSession, AgentSessionWorkflow
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
+from app.services.agent_key_ttl import resolve_ttl_hours, session_renewal_deadline
 from app.services.agent_session_service import (
     SESSION_ACTIVE,
     count_agent_sessions,
     end_agent_session,
+    key_expiry_for_agent_sessions,
     list_agent_sessions,
+    resolve_project_agent,
+    resume_agent_session,
     summarise_by_model_tool,
 )
 
@@ -68,6 +72,38 @@ class AgentSessionRowResponse(BaseModel):
     # already being worked, which is the reason a session declares one.
     target_label: Optional[str] = None
     purpose: Optional[str] = None
+    # v2.340.0 — project sessions only.  ``key_expires_at`` is when the live
+    # key stops working (None once revoked); ``renewable_until`` is the
+    # session's lifetime cap, past which it can neither be renewed by the agent
+    # nor resumed by the operator.  Together they tell an ``active`` row apart
+    # from an active row whose agent is dead and whose key has lapsed.
+    key_expires_at: Optional[datetime] = None
+    renewable_until: Optional[datetime] = None
+
+
+class ResumeAgentSessionRequest(BaseModel):
+    ttl_hours: Optional[int] = Field(
+        None, ge=1,
+        description="TTL for the replacement key; omitted = deployment default, capped.",
+    )
+
+
+class ResumeAgentSessionResponse(BaseModel):
+    """Same shape the start dialog renders: the replacement key, the prompt
+    (with the resumed notice) and the per-client MCP setup."""
+    session_id: int
+    project_id: int
+    project_name: str
+    agent_id: int
+    api_key: str
+    instructions: str
+    mcp_clients: list = []
+    mcp_url: str
+    key_ttl_hours: int
+    key_expires_at: datetime
+    renewable_until: Optional[datetime] = None
+    active_recon_session_ids: List[int] = []
+    active_execution_session_ids: List[int] = []
 
 
 class AgentSessionListResponse(BaseModel):
@@ -242,6 +278,111 @@ def end_project_agent_session(
         )
     end_agent_session(db, session, ended_by=current_user)
     db.commit()
+
+
+@router.post(
+    "/agent-sessions/{session_id}/resume",
+    response_model=ResumeAgentSessionResponse,
+    summary="Resume an agent session: rotate its key and re-issue the prompt + MCP setup",
+)
+def resume_project_agent_session(
+    body: ResumeAgentSessionRequest = ResumeAgentSessionRequest(),
+    project_id: int = Path(..., gt=0),
+    session_id: int = Path(..., gt=0),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
+):
+    """Reconnect an operator to a session whose agent process died (v2.340.0).
+
+    The common case: an editor's agent session timed out while a scan ran, so
+    the agent never called the phase's ``/complete`` and the session sits
+    ``active`` with a perfectly good key that the operator may or may not still
+    have configured.  Agent Activity showed such a row with only an End
+    button.  This is the other button.
+
+    Same session, same open phases, same audit trail: the key is rotated on
+    the existing ``AgentSession`` (the prior key is revoked in the same
+    statement), and the response carries what the start dialog carried — the
+    replacement key, the prompt with the resumed notice, and the MCP client
+    setup — so the operator can hand the session back to an agent.  The
+    per-phase resume routes on Scopes / Test Plans mint a *new* session and
+    supersede the old one; they remain for legacy phase rows that have no
+    project session.
+
+    Owner only — no admin override, unlike End.  The key acts as the operator
+    who started the session, so handing it to anyone else would let them act
+    under that operator's name.  An admin who needs to take over ends this
+    session and starts their own.
+    """
+    from app.api.v1.endpoints.assist import _build_mcp_clients
+    from app.services.agent_prompt_service import build_session_instructions, resolve_base_url
+    from app.services.agent_session_service import session_phase_summary
+
+    session = (
+        db.query(AgentSession)
+        .filter(AgentSession.id == session_id, AgentSession.project_id == project.id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agent session not found in this project")
+    if session.workflow != AgentSessionWorkflow.PROJECT.value:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This is a legacy '{session.workflow}' session; resume it from its own "
+                "page (the scope's recon run or the plan's execution run)."
+            ),
+        )
+    if session.started_by_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the operator who started this session can resume it — its key "
+                "acts under their name. End it and start your own session instead."
+            ),
+        )
+    ttl_hours = body.ttl_hours
+    agent = resolve_project_agent(
+        db, project_id=project.id, user=current_user, prefer_agent_id=session.agent_id,
+    )
+    raw_key = resume_agent_session(
+        db, session, agent=agent, resumed_by=current_user, ttl_hours=ttl_hours,
+    )
+    instructions = build_session_instructions(
+        request=request,
+        session_id=session.id,
+        project_id=project.id,
+        project_name=project.name,
+        purpose=session.purpose,
+        raw_api_key=raw_key,
+        user_label=current_user.full_name or current_user.username,
+        user_id=current_user.id,
+        resumed=True,
+    )
+    db.commit()
+
+    phases = session_phase_summary(db, session)
+    expires_at = key_expiry_for_agent_sessions(db, [session.id]).get(session.id)
+    mcp_url = f"{resolve_base_url(request)}/mcp"
+    return ResumeAgentSessionResponse(
+        session_id=session.id,
+        project_id=project.id,
+        project_name=project.name,
+        agent_id=agent.id,
+        api_key=raw_key,
+        instructions=instructions,
+        mcp_clients=[c.model_dump() for c in _build_mcp_clients(
+            mcp_url, raw_key, project_name=project.name, agent_session_id=session.id,
+        )],
+        mcp_url=mcp_url,
+        key_ttl_hours=resolve_ttl_hours(ttl_hours),
+        key_expires_at=expires_at,
+        renewable_until=session_renewal_deadline(session),
+        active_recon_session_ids=phases["active_recon_session_ids"],
+        active_execution_session_ids=phases["active_execution_session_ids"],
+    )
 
 
 @router.get(
