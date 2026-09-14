@@ -136,6 +136,11 @@ export interface Host {
   ports: Port[];
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];
+  /** v5.215.0 — the detail endpoint omits severity-'info' rows from
+   *  `vulnerabilities` unless asked (getHost includeInfo); these say how many
+   *  exist and whether this payload carries them. */
+  informational_count?: number;
+  informational_included?: boolean;
   follow?: HostFollowInfo | null;
   notes?: Annotation[];
   note_count?: number;
@@ -625,8 +630,13 @@ export const serializeHostParams = (
   return queryParams.toString();
 };
 
-export const getHost = async (hostId: number): Promise<Host> => {
-  const response = await api.get(`${p()}/hosts/${hostId}`);
+export const getHost = async (
+  hostId: number,
+  options: { includeInfo?: boolean } = {},
+): Promise<Host> => {
+  const response = await api.get(`${p()}/hosts/${hostId}`, {
+    params: options.includeInfo ? { include_info: true } : undefined,
+  });
   return response.data;
 };
 

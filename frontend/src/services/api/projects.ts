@@ -23,10 +23,26 @@ export interface Project {
   created_at: string;
   updated_at: string | null;
   member_count: number | null;
+  /** v5.215.0 — the project's own choice about severity-0 Nessus findings
+   *  (null = none made) and the value an upload actually uses, which folds in
+   *  the deployment default. Ports are still derived from skipped items. */
+  skip_informational_findings?: boolean | null;
+  skip_informational_effective?: boolean;
 }
 
 export const getProjects = async (): Promise<Project[]> => {
   const response = await api.get('/projects/');
+  return response.data;
+};
+
+/** Set the project's ingest preferences. Analyst or above on the project
+ *  (the PUT route is admin-only because it governs name/dates/archival).
+ *  `null` clears the choice so the deployment default applies again. */
+export const updateProjectIngestSettings = async (
+  projectId: number,
+  data: { skip_informational_findings: boolean | null },
+): Promise<Project> => {
+  const response = await api.patch(`/projects/${projectId}/ingest-settings`, data);
   return response.data;
 };
 

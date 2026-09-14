@@ -408,6 +408,11 @@ class Host(HostBase):
     host_scripts: List[HostScript] = []
     vulnerability_summary: Optional[HostVulnerabilitySummary] = None
     vulnerabilities: List[HostVulnerability] = []
+    # v2.341.0 — the detail endpoint omits severity-'info' rows from
+    # `vulnerabilities` unless asked (`?include_info=true`); these say how
+    # many exist and whether this response carries them.
+    informational_count: int = 0
+    informational_included: bool = True
     follow: Optional[HostFollowInfo] = None
     notes: List[Annotation] = []
     note_count: int = 0

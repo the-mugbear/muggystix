@@ -7,7 +7,7 @@
  * real-render test catches this.
  */
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('react-router-dom', async () => {
@@ -53,10 +53,63 @@ vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () 
 
 import HostInspector from '../../components/HostInspector';
 
+import * as api from '../../services/api';
+
 describe('HostInspector smoke', () => {
   it('renders through loading→loaded without a hooks-order crash', async () => {
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
     // If a hook sat below the early return, this transition throws React #310.
     await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+  });
+
+  // v5.215.0 — informational rows are left out of the detail payload; the
+  // card says how many are hidden and refetches with them on request.
+  it('offers to load hidden informational findings and refetches with include_info', async () => {
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const base = await getHost.getMockImplementation()!();
+    getHost.mockResolvedValueOnce({
+      ...base, informational_count: 3, informational_included: false,
+      vulnerability_summary: { total_vulnerabilities: 3, critical: 0, high: 0, medium: 0, low: 0, info: 3 },
+    });
+    getHost.mockResolvedValueOnce({
+      ...base, informational_count: 3, informational_included: true,
+      vulnerability_summary: { total_vulnerabilities: 3, critical: 0, high: 0, medium: 0, low: 0, info: 3 },
+    });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    const btn = await screen.findByRole('button', { name: 'Show 3 informational findings' });
+    expect(btn).toHaveTextContent('3 informational hidden · show');
+    fireEvent.click(btn);
+    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, { includeInfo: true }));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Show 3 informational findings' })).not.toBeInTheDocument(),
+    );
+  });
+
+  // Review follow-up: a late "show informational" response for host A must not
+  // be merged into host B after the operator has navigated on.
+  it('drops a late informational response after navigating to another host', async () => {
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const base = await getHost.getMockImplementation()!();
+    let resolveA!: (v: unknown) => void;
+    const deferredA = new Promise((res) => { resolveA = res; });
+    getHost
+      // host 1 primary fetch: 3 hidden
+      .mockResolvedValueOnce({ ...base, id: 1, ip_address: '10.0.0.1', informational_count: 3, informational_included: false })
+      // host 1 "show informational": deferred
+      .mockReturnValueOnce(deferredA)
+      // host 2 primary fetch: 2 hidden
+      .mockResolvedValueOnce({ ...base, id: 2, ip_address: '10.0.0.2', informational_count: 2, informational_included: false });
+
+    const { rerender } = render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
+    rerender(<MemoryRouter><HostInspector hostId={2} /></MemoryRouter>);
+    await screen.findByRole('button', { name: 'Show 2 informational findings' });
+
+    resolveA({ ...base, id: 1, ip_address: '10.0.0.1', informational_count: 3, informational_included: true });
+    await new Promise((r) => setTimeout(r, 0));
+    // Had A's response been merged, informational_included would be true and
+    // host 2's "show" button would have vanished.
+    expect(screen.getByRole('button', { name: 'Show 2 informational findings' })).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.2')).toBeInTheDocument();
   });
 });

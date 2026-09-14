@@ -67,6 +67,15 @@ async def upload_scan_file(
             "a deliberate re-import, e.g. to re-parse after a parser fix."
         ),
     ),
+    skip_informational: Optional[bool] = Form(
+        None,
+        description=(
+            "Nessus only (v2.341.0): drop severity-0 (informational) report items "
+            "instead of storing a vulnerability row each; ports are still derived "
+            "from them. Omit to use the project's setting (which falls back to the "
+            "deployment default)."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -92,7 +101,16 @@ async def upload_scan_file(
             ),
         )
 
-    options = {"project_id": project.id}
+    from app.db.models_project import resolve_skip_informational
+
+    options = {
+        "project_id": project.id,
+        # Resolved here, not in the worker: the worker sees a job row, and the
+        # project's setting may change between upload and parse — the value
+        # the operator saw on the switch when they dropped the file is the
+        # one that should apply.
+        "skip_informational": resolve_skip_informational(project, skip_informational),
+    }
 
     if batch_id is not None:
         in_project = (

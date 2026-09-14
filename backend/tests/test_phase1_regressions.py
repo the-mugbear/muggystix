@@ -2493,7 +2493,8 @@ def test_execute_parser_nessus_path_initialises_parse_stats(db_session, test_pro
     db_session.add(job)
     db_session.commit()
 
-    def _fake_process_nessus_file(self, storage_path, filename, project_id=None):
+    def _fake_process_nessus_file(self, storage_path, filename, project_id=None, **kwargs):
+        # **kwargs: the dispatcher also passes skip_informational (v2.341.0).
         return {
             "success": True,
             "scan_id": 42,

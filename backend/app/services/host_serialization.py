@@ -251,16 +251,23 @@ def serialize_host_detail(
     attributions: Optional[list] = None,
     vuln_coverage: Optional[dict] = None,
     cert_web_interfaces: Optional[list] = None,
+    vulnerabilities: Optional[list] = None,
 ) -> dict:
     """Detail-endpoint payload — base + follow state + notes +
-    ordered vulnerabilities."""
+    ordered vulnerabilities.
+
+    ``vulnerabilities`` (v2.341.0): the rows to render, when the caller has
+    loaded them itself (the detail endpoint filters out informational rows
+    unless asked).  None keeps the old behaviour of reading the relationship.
+    """
     serialized = serialize_host_base(host, vuln_data)
     serialized["follow"] = _serialize_follow(follow) if follow else None
     serialized["notes"] = [_serialize_note(note) for note in notes]
     serialized["note_count"] = len(notes)
 
     vulnerabilities = sorted(
-        getattr(host, "vulnerabilities", []) or [],
+        (vulnerabilities if vulnerabilities is not None
+         else getattr(host, "vulnerabilities", []) or []),
         key=vulnerability_sort_key,
     )
     serialized["vulnerabilities"] = [

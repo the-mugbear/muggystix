@@ -921,7 +921,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/recon/subnets` | Paginated subnet list for very large scopes (default 500, max 2000 per page — see Recon workflow prose) |
 | GET | `/agent/recon/domains` | Paginated in-scope domain list (`{domain, include_subdomains}`), same paging shape — the names you may resolve/probe without asking |
 | POST | `/agent/recon/start` | Open a reconnaissance run on a scope (body `{scope_id}`); returns its context + read-back |
-| POST | `/agent/recon/upload` | **Submit scanner output here** — multipart upload, any supported tool format |
+| POST | `/agent/recon/upload` | **Submit scanner output here** — multipart upload, any supported tool format. Optional form field `skip_informational=true|false` (Nessus only, v2.341.0): drop severity-0 report items instead of storing a vulnerability row each — ports are still derived from them. Omit it to follow the project's setting; do not set it on your own initiative, it is the operator's choice |
 | GET | `/agent/recon/jobs/{id}` | Poll an upload's parse status |
 | GET | `/agent/recon/summary` | **Authoritative progress view** — rolling counts + a 50-host sample. Use `hosts_total` for the real count; when `hosts_truncated` is set, fetch the downloads below |
 | GET | `/agent/recon/hosts.ndjson` | **Complete** per-host dataset, newline-delimited JSON. Streamed — redirect to a file (`-o session-hosts.jsonl`) and query it with `jq`, never read it into context |

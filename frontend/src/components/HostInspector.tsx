@@ -517,6 +517,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [resolvePrompt, setResolvePrompt] = useState<number | null>(null);
   const [resolveText, setResolveText] = useState('');
   const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
+  // v5.215.0 — informational rows are left out of the detail payload until
+  // asked; the loader lives below, next to the fetch-generation guard it uses.
+  const [loadingInformational, setLoadingInformational] = useState(false);
   // Per-vuln expand state for the (often long) description writeup.
   const [expandedVulnIds, setExpandedVulnIds] = useState<Set<number>>(new Set());
   const toggleVulnDescription = (id: number) =>
@@ -539,6 +542,28 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   // Monotonic counter to guard against stale responses during rapid navigation.
   const fetchIdRef = React.useRef(0);
+  // v5.215.0 — "N informational · show" refetches the host with the hidden
+  // rows included. Guarded by the same generation counter as the primary
+  // fetch: a late response for host A must not merge A's findings into the
+  // host B the operator has since navigated to.
+  const loadInformational = async () => {
+    const fetchId = fetchIdRef.current;
+    setLoadingInformational(true);
+    try {
+      const withInfo = await getHost(hostId, { includeInfo: true });
+      if (fetchId !== fetchIdRef.current) return;
+      setHost((prev) => (
+        prev
+          ? { ...prev, vulnerabilities: withInfo.vulnerabilities, informational_included: true }
+          : withInfo
+      ));
+    } catch (err: unknown) {
+      if (fetchId !== fetchIdRef.current) return;
+      console.error('Error loading informational findings:', err);
+    } finally {
+      if (fetchId === fetchIdRef.current) setLoadingInformational(false);
+    }
+  };
   // The host this panel currently shows.  Async note/attachment completions
   // compare against it so a late response never writes into another host's
   // panel after the queue moved on (UX review C1).
@@ -599,6 +624,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setTestPlanError(false);
     setFollowersError(false);
     setShowAllVulnerabilities(false);
+    setLoadingInformational(false);
     setShowConflicts(false);
     setNoteBody('');
     setNoteStatus('open');
@@ -1113,7 +1139,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const displayedVulnerabilities = showAllVulnerabilities
     ? vulnGroups
     : vulnGroups.slice(0, VULNERABILITY_PREVIEW_LIMIT);
-  const hasVulnerabilities = vulnGroups.length > 0;
+  // v5.215.0 — a host whose only findings are informational still gets the
+  // card, so the "N informational hidden · show" affordance has somewhere to
+  // live; otherwise the hidden rows would be invisible exactly when they are
+  // all there is.
+  const hiddenInformational =
+    host.informational_included === false ? (host.informational_count ?? 0) : 0;
+  const hasVulnerabilities = vulnGroups.length > 0 || hiddenInformational > 0;
 
   const TESTER_STATUSES = [
     { value: 'in_progress', label: 'In Progress' },
@@ -2082,6 +2114,22 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <span className="text-caption text-muted-foreground">
                   from {totalVulnerabilities} scanner findings
                 </span>
+              )}
+              {/* v5.215.0 — informational rows are hidden until asked; say
+                  how many there are so nothing looks lost. */}
+              {(host.informational_count ?? 0) > 0 && host.informational_included === false && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="ml-auto text-caption text-muted-foreground"
+                  onClick={() => void loadInformational()}
+                  disabled={loadingInformational}
+                  aria-label={`Show ${host.informational_count} informational findings`}
+                >
+                  {loadingInformational
+                    ? 'Loading…'
+                    : `${host.informational_count} informational hidden · show`}
+                </Button>
               )}
             </div>
           </CardHeader>

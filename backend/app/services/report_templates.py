@@ -1,5 +1,6 @@
 import base64
 import json
+import uuid
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -961,6 +962,14 @@ class ReportTemplates:
         generated_at = data.get('generated_at', datetime.utcnow().isoformat())
         backend_version = data.get('app_version', settings.APP_VERSION)
         frontend_version = data.get('frontend_version', settings.FRONTEND_VERSION)
+        # v2.341.0 (review) — was ``abs(hash(str(data))) % 10000``: Python's
+        # hash() is salted per process and 10,000 daily values collide, so the
+        # id was neither stable nor unique.  A caller that has a persisted id
+        # (a report job) passes it as ``report_id``; otherwise a UUID-derived
+        # suffix, which is at least unique per generation.
+        report_id = data.get('report_id') or (
+            f"NM-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
+        )
 
         # Header with logo and metadata
         header_section = f"""
@@ -973,7 +982,7 @@ class ReportTemplates:
                 </div>
                 <div>
                     <strong>Generated:</strong> {datetime.fromisoformat(generated_at.replace('Z', '')).strftime('%B %d, %Y at %I:%M %p')}<br>
-                    <strong>Report ID:</strong> NM-{datetime.utcnow().strftime('%Y%m%d')}-{abs(hash(str(data)))%10000:04d}
+                    <strong>Report ID:</strong> {report_id}
                 </div>
             </div>
         </div>

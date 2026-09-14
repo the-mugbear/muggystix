@@ -236,6 +236,13 @@ class Settings:
     NESSUS_PLUGIN_OUTPUT_MAX_CHARS: int = int(
         os.getenv("NESSUS_PLUGIN_OUTPUT_MAX_CHARS", str(32 * 1024))
     )
+    # v2.341.0 — deployment default for projects that have not chosen whether
+    # Nessus uploads keep severity-0 (informational) report items as
+    # vulnerability rows.  Ports are still derived from them either way.
+    NESSUS_SKIP_INFORMATIONAL_DEFAULT: bool = (
+        os.getenv("NESSUS_SKIP_INFORMATIONAL_DEFAULT", "false").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
 
     # NOTE: the upload allowlist lives on the ingestion service
     # (ALLOWED_UPLOAD_EXTENSIONS), enforced in create_job for every caller.

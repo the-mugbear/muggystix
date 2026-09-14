@@ -51,8 +51,11 @@ import type {
 import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
+import { useProject } from '../contexts/ProjectContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
+import { updateProjectIngestSettings } from '../services/api/projects';
+import { Switch } from '../components/ui/switch';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -216,6 +219,33 @@ export default function Scans() {
     return raw === 'asc' ? 'asc' : 'desc';
   });
   const [showBatchFiles, setShowBatchFiles] = useState(() => urlParams.get('batch_files') === 'show');
+  // v5.215.0 — "Skip informational Nessus findings", the switch beside the
+  // drop zone. Seeded from the project's effective setting (its own choice,
+  // else the deployment default), written back to the project when flipped
+  // so every later batch honours it, and sent with each upload regardless.
+  const { currentProject, refreshProjects } = useProject();
+  const [skipInformational, setSkipInformational] = useState<boolean>(
+    () => currentProject?.skip_informational_effective ?? false,
+  );
+  const [savingSkipInformational, setSavingSkipInformational] = useState(false);
+  useEffect(() => {
+    if (currentProject) setSkipInformational(currentProject.skip_informational_effective ?? false);
+  }, [currentProject]);
+  const handleSkipInformationalChange = async (next: boolean) => {
+    setSkipInformational(next);
+    if (!currentProject) return;
+    setSavingSkipInformational(true);
+    try {
+      await updateProjectIngestSettings(currentProject.id, { skip_informational_findings: next });
+      await refreshProjects();
+    } catch (err) {
+      // The upload still carries the switch's value; only the persistence
+      // failed, so say so rather than silently reverting the switch.
+      toast.error(formatApiError(err, 'Could not save the project ingest setting.'));
+    } finally {
+      setSavingSkipInformational(false);
+    }
+  };
   const debouncedSearchText = useDebouncedValue(searchText, 300);
   const [hasMoreScans, setHasMoreScans] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -447,7 +477,10 @@ export default function Scans() {
           };
         });
       },
-      options,
+      // v5.215.0 — the switch beside the drop zone rides along with every
+      // upload from this page, so what the operator saw is what applies even
+      // if the project setting changes before the worker gets to the file.
+      { skipInformational, ...options },
     )
       .then((result) => {
         // Flip to 'done' so the banner reads "Upload complete: X%".
@@ -1788,6 +1821,29 @@ export default function Scans() {
               <p className="text-metadata text-muted-foreground">
                 Click to select one or more scan files.
               </p>
+            </div>
+
+            {/* v5.215.0 — visible at the moment of the drop, remembered per
+                project. Nessus only; other formats ignore it. */}
+            <div className="flex items-start justify-between gap-sm rounded-panel border border-border p-sm">
+              <div className="min-w-0">
+                <Label htmlFor="skip-informational" className="text-metadata font-semibold">
+                  Skip informational Nessus findings
+                </Label>
+                <p className="text-caption text-muted-foreground">
+                  Severity-0 plugins (service detection, cipher lists, scan info) are not
+                  stored as findings. Open ports are still recorded from them, and the
+                  import result says how many were skipped. Applies to every upload into{' '}
+                  <strong>{currentProject?.name ?? 'this project'}</strong> until changed.
+                </p>
+              </div>
+              <Switch
+                id="skip-informational"
+                checked={skipInformational}
+                onCheckedChange={(v) => void handleSkipInformationalChange(v === true)}
+                disabled={savingSkipInformational}
+                aria-label="Skip informational Nessus findings"
+              />
             </div>
 
             {fileRejections.length > 0 && (

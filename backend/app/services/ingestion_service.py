@@ -1144,7 +1144,12 @@ class IngestionService:
 
         if parser_class is NessusIntegrationService:
             parser_instance = NessusIntegrationService(db)
-            result = parser_instance.process_nessus_file(storage_path, filename, project_id=project_id)
+            result = parser_instance.process_nessus_file(
+                storage_path, filename, project_id=project_id,
+                # v2.341.0 — resolved at upload time (form field, else the
+                # project's setting); the worker only carries it through.
+                skip_informational=bool(options.get("skip_informational", False)),
+            )
             if not result.get("success"):
                 nessus_error_msg = result.get("error") or result.get("message") or "Nessus processing failed"
                 parse_error = log_parse_error(

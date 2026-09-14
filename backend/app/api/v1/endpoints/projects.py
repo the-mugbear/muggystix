@@ -10,6 +10,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import get_db
@@ -38,6 +39,20 @@ class ProjectUpdate(BaseModel):
     end_date: Optional[datetime] = None
 
 
+class ProjectIngestSettingsUpdate(BaseModel):
+    """v2.341.0 — ingest preferences an analyst may set (they change what an
+    upload keeps, not who is on the project).  ``null`` clears the project's
+    choice so the deployment default applies again."""
+    skip_informational_findings: Optional[bool] = Field(
+        None,
+        description=(
+            "Drop severity-0 (informational) Nessus report items instead of storing "
+            "a vulnerability row each; ports are still derived from them. null = "
+            "follow the deployment default."
+        ),
+    )
+
+
 _VALID_STATUSES = {"active", "in_progress", "completed", "archived"}
 
 
@@ -55,6 +70,10 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     member_count: Optional[int] = None
+    # v2.341.0 — the project's own choice (null = none made) and the value an
+    # upload actually uses, which folds in the deployment default.
+    skip_informational_findings: Optional[bool] = None
+    skip_informational_effective: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -102,6 +121,28 @@ def _slugify(name: str) -> str:
     slug = re.sub(r'[^\w\s-]', '', slug)
     slug = re.sub(r'[-\s]+', '-', slug)
     return slug[:100]
+
+
+def _allocate_project_slug(db: Session, name: str, excluding_project_id: Optional[int] = None) -> str:
+    """The one slug policy, for create and rename alike (v2.341.0, review).
+
+    Names and slugs are separately unique.  Creation always suffixed a taken
+    slug (``foo-bar-1``); rename just assigned ``_slugify(name)``, so renaming
+    a project to a name whose slug another project already owned passed the
+    name check and died on the slug constraint with a 500.  ``excluding``
+    lets a project keep (or reclaim) its own slug on rename.
+    """
+    base = _slugify(name)
+    slug = base
+    counter = 1
+    while True:
+        q = db.query(Project.id).filter(Project.slug == slug)
+        if excluding_project_id is not None:
+            q = q.filter(Project.id != excluding_project_id)
+        if q.first() is None:
+            return slug
+        slug = f"{base}-{counter}"
+        counter += 1
 
 
 def _can_manage_project(
@@ -190,13 +231,7 @@ def create_project(
     if existing:
         raise HTTPException(status_code=400, detail="A project with this name already exists")
 
-    slug = _slugify(data.name)
-    # Ensure slug uniqueness
-    slug_base = slug
-    counter = 1
-    while db.query(Project).filter(Project.slug == slug).first():
-        slug = f"{slug_base}-{counter}"
-        counter += 1
+    slug = _allocate_project_slug(db, data.name)
 
     if data.status and data.status not in _VALID_STATUSES:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(_VALID_STATUSES)}")
@@ -289,7 +324,7 @@ def update_project(
             if existing:
                 raise HTTPException(status_code=400, detail="A project with this name already exists")
             project.name = data.name
-            project.slug = _slugify(data.name)
+            project.slug = _allocate_project_slug(db, data.name, excluding_project_id=project.id)
 
     if data.description is not None:
         project.description = data.description
@@ -320,6 +355,62 @@ def update_project(
     if data.end_date is not None:
         project.end_date = data.end_date
 
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent create/rename took the name or slug between our check
+        # and the commit.  A client error, not a 500 — retry with another name.
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Another project took that name or slug concurrently; try again.",
+        )
+    return ProjectResponse.model_validate(project)
+
+
+def _can_ingest_into_project(project: Project, current_user: User, db: Session) -> bool:
+    """Analyst or above on the project (or a global admin) — the people who
+    upload scans are the people who may decide what an upload keeps."""
+    if current_user.role == UserRole.ADMIN:
+        return True
+    membership = db.query(ProjectMembership).filter(
+        ProjectMembership.project_id == project.id,
+        ProjectMembership.user_id == current_user.id,
+        ProjectMembership.role.in_(["admin", "analyst"]),
+    ).first()
+    return membership is not None
+
+
+@router.patch(
+    "/{project_id}/ingest-settings",
+    response_model=ProjectResponse,
+    responses=_ADMIN_RESPONSES,
+    summary="Set the project's ingest preferences (analyst or above)",
+)
+def update_project_ingest_settings(
+    project_id: int,
+    data: ProjectIngestSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """v2.341.0 — the switch beside the upload drop zone writes here.
+
+    Separate from ``PUT /projects/{id}`` on purpose: that route is project-admin
+    only because it governs name, dates and archival.  Whether a Nessus upload
+    keeps informational findings is an ingest decision, and the analyst
+    feeding eighty batches must be able to make it without an admin.  Sending
+    ``null`` clears the project's choice so the deployment default applies.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not _can_ingest_into_project(project, current_user, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Only project analysts or admins can change ingest settings",
+        )
+    if "skip_informational_findings" in data.model_fields_set:
+        project.skip_informational_findings = data.skip_informational_findings
     db.commit()
     return ProjectResponse.model_validate(project)
 

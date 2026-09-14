@@ -75,3 +75,26 @@ def test_list_projects_member_counts_batched(client, db_session, test_project):
     listing = client.get("/api/v1/projects/").json()
     card = next(p for p in listing if p["id"] == test_project.id)
     assert card["member_count"] == 2
+
+
+def test_rename_onto_a_taken_slug_allocates_a_suffix(client, db_session):
+    """v2.341.0 (review) — names and slugs are separately unique, but rename
+    only checked the name: renaming "Other" to "foo-bar" passed the name check
+    and died on the slug constraint held by "Foo Bar" (a 500).  Rename now
+    goes through the same allocator creation uses."""
+    r = client.post("/api/v1/projects/", json={"name": "Foo Bar"})
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["slug"] == "foo-bar"
+    r = client.post("/api/v1/projects/", json={"name": "Other"})
+    assert r.status_code in (200, 201), r.text
+    other_id = r.json()["id"]
+
+    r = client.put(f"/api/v1/projects/{other_id}", json={"name": "foo-bar"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "foo-bar"
+    assert r.json()["slug"] == "foo-bar-1"
+
+    # Renaming back to its own current name keeps its own slug (no suffix creep).
+    r = client.put(f"/api/v1/projects/{other_id}", json={"name": "foo-bar"})
+    assert r.status_code == 200, r.text
+    assert r.json()["slug"] == "foo-bar-1"

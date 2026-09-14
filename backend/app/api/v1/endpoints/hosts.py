@@ -1272,13 +1272,22 @@ def get_hosts_by_scan_v2(
             )
         )
 
-    # v2.86.9 — port filter.  Subquery returns host_ids that have at
-    # least one Port row matching ``port`` (no state filter — operators
-    # often want to see closed/filtered too while debugging coverage).
+    # v2.86.9 — port filter.  No state filter — operators often want to see
+    # closed/filtered too while debugging coverage.
+    #
+    # v2.341.0 (review) — scoped to THIS scan through PortScanHistory.  The
+    # filter used to read ``ports_v2`` alone, which is current state: a port
+    # first seen by a later scan made this scan's view claim it observed the
+    # port too.  ``PortScanHistory`` is the per-scan observation, so a port
+    # counts here only if this scan recorded it.
     if port is not None:
         port_host_ids = (
             db.query(models.Port.host_id)
-            .filter(models.Port.port_number == port)
+            .join(models.PortScanHistory, models.PortScanHistory.port_id == models.Port.id)
+            .filter(
+                models.Port.port_number == port,
+                models.PortScanHistory.scan_id == scan_id,
+            )
             .distinct()
         )
         query = query.filter(models.Host.id.in_(port_host_ids))
@@ -1318,6 +1327,15 @@ def _host_assignees(db: Session, host_id: int) -> list:
 @router.get("/{host_id:int}", response_model=HostSchema)
 def get_host_v2(
     host_id: int,
+    include_info: bool = Query(
+        False,
+        description=(
+            "Include severity-'info' vulnerability rows in `vulnerabilities` "
+            "(v2.341.0). Off by default: on a Nessus host they are most of the "
+            "rows and most of the payload, and the analytics ignore them. "
+            "`informational_count` is always returned."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -1335,14 +1353,36 @@ def get_host_v2(
     host = db.query(models.Host).options(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
-        selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
-        # serialize_vulnerability reads vuln.promoted_findings for the "Promoted" badge.
-        selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.promoted_findings),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan)
     ).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
 
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
+
+    # v2.341.0 — the vulnerability list is loaded here, filtered, rather than
+    # through the relationship: a Nessus host carries hundreds of informational
+    # rows, each with its own copy of the plugin text, and the inspector shows
+    # them only on request.  The count is cheap and always present.
+    vuln_q = (
+        db.query(Vulnerability)
+        .options(
+            selectinload(Vulnerability.port),
+            # serialize_vulnerability reads vuln.promoted_findings for the "Promoted" badge.
+            selectinload(Vulnerability.promoted_findings),
+        )
+        .filter(Vulnerability.host_id == host.id)
+    )
+    if not include_info:
+        vuln_q = vuln_q.filter(Vulnerability.severity != VulnerabilitySeverity.INFO)
+    host_vulnerabilities = vuln_q.all()
+    informational_count = (
+        db.query(func.count(Vulnerability.id))
+        .filter(
+            Vulnerability.host_id == host.id,
+            Vulnerability.severity == VulnerabilitySeverity.INFO,
+        )
+        .scalar()
+    ) or 0
 
     follow_service = HostFollowService(db)
 
@@ -1378,9 +1418,8 @@ def get_host_v2(
     serialized = _serialize_host_detail(
         host, vuln_summary, follow_record, notes,
         attributions=attributions_for_host(db, host.id),
-        vuln_coverage=issue_coverage_map(
-            db, project.id, getattr(host, "vulnerabilities", []) or []
-        ),
+        vuln_coverage=issue_coverage_map(db, project.id, host_vulnerabilities),
+        vulnerabilities=host_vulnerabilities,
         # Queried by host_id rather than through a relationship — Host has no
         # `web_interfaces` relationship (it lives on Scan), which is why the
         # certificate-org half of the ProvenanceCard was always empty.
@@ -1422,6 +1461,10 @@ def get_host_v2(
         .filter(NetexecResult.host_id == host_id)
         .scalar()
     ) or 0
+    # v2.341.0 — how many informational rows exist and whether this response
+    # carries them, so the inspector can offer "N informational · show".
+    serialized["informational_count"] = informational_count
+    serialized["informational_included"] = include_info
     # Owner/assignee enrichment — the base detail serializer leaves this []
     # (it needs a user join), so mirror the list endpoint here.  Without this
     # the inspector can't show or manage the host's owner. (1.2b)

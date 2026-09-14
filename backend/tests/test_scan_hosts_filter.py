@@ -35,9 +35,16 @@ def _seed_scan_with_hosts(db_session, project_id):
         )
         db_session.add(h)
         db_session.flush()
-        db_session.add(models.Port(
+        p = models.Port(
             host_id=h.id, port_number=port_num,
             protocol="tcp", state="open",
+        )
+        db_session.add(p)
+        db_session.flush()
+        # The per-scan observation the parsers write alongside the Port row;
+        # the scan-host port filter reads THIS, not current port state.
+        db_session.add(models.PortScanHistory(
+            port_id=p.id, scan_id=scan.id, state_at_scan="open",
         ))
         db_session.add(models.HostScanHistory(
             host_id=h.id, scan_id=scan.id, state_at_scan="up",
@@ -111,3 +118,30 @@ def test_scan_host_rejects_invalid_port(client, db_session, test_project):
         params={"port": 99999},
     )
     assert r.status_code == 422, r.text
+
+
+def test_scan_host_port_filter_is_scoped_to_that_scan(client, db_session, test_project):
+    """v2.341.0 (review) — the filter read current port state, so a port first
+    seen by a LATER scan made an earlier scan's view claim it observed it."""
+    scan_a = _seed_scan_with_hosts(db_session, test_project.id)
+    host = (
+        db_session.query(models.Host)
+        .filter(models.Host.project_id == test_project.id, models.Host.ip_address == "10.0.0.2")
+        .first()
+    )
+    # Scan B observes the same host and, for the first time, port 443.
+    scan_b = models.Scan(project_id=test_project.id, filename="later.xml", scan_type="nmap")
+    db_session.add(scan_b)
+    db_session.flush()
+    p443 = models.Port(host_id=host.id, port_number=443, protocol="tcp", state="open")
+    db_session.add(p443)
+    db_session.flush()
+    db_session.add(models.PortScanHistory(port_id=p443.id, scan_id=scan_b.id, state_at_scan="open"))
+    db_session.add(models.HostScanHistory(host_id=host.id, scan_id=scan_b.id, state_at_scan="up"))
+    db_session.commit()
+
+    base = f"/api/v1/projects/{test_project.id}/hosts/scan"
+    assert {h["ip_address"] for h in client.get(f"{base}/{scan_a.id}", params={"port": 443}).json()} == set()
+    assert {h["ip_address"] for h in client.get(f"{base}/{scan_b.id}", params={"port": 443}).json()} == {"10.0.0.2"}
+    # Scan A's own observation of port 22 is still found on scan A.
+    assert {h["ip_address"] for h in client.get(f"{base}/{scan_a.id}", params={"port": 22}).json()} == {"10.0.0.2"}

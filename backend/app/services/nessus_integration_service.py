@@ -68,6 +68,10 @@ class NessusIntegrationService:
             Dictionary with processing results
         """
         project_id = kwargs.get("project_id")
+        # v2.341.0 — drop severity-0 report items (ports still derived from
+        # them).  Resolved by the upload route from the form field / project
+        # setting / deployment default; this layer only honours it.
+        skip_informational = bool(kwargs.get("skip_informational", False))
         try:
             scan_info, hosts_iter = self.parser.iter_file(file_path)
 
@@ -81,17 +85,22 @@ class NessusIntegrationService:
             host_processing_failures = 0
             vulnerabilities_found = 0
             vuln_write_failures = 0
+            informational_skipped = 0
             severity_counts = {"info": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
             clock = ScanClock()
 
             for nessus_host in hosts_iter:
                 _observe_nessus_host_times(clock, nessus_host.host_properties or {})
-                result = self._process_nessus_host(nessus_host, scan, project_id=project_id)
+                result = self._process_nessus_host(
+                    nessus_host, scan, project_id=project_id,
+                    skip_informational=skip_informational,
+                )
                 if result:
                     host, vuln_stats = result
                     hosts_processed += 1
                     vulnerabilities_found += vuln_stats.get("total", 0)
                     vuln_write_failures += vuln_stats.get("write_failures", 0)
+                    informational_skipped += vuln_stats.get("info_skipped", 0)
                     for severity_name, count in vuln_stats.items():
                         if severity_name in severity_counts:
                             severity_counts[severity_name] += count
@@ -206,14 +215,20 @@ class NessusIntegrationService:
                     'scan_id': scan_id,
                     'hosts_processed': hosts_processed,
                     'vulnerabilities_found': vulnerabilities_found,
+                    'informational_skipped': informational_skipped,
                     'severity_counts': severity_counts,
                     'scan_name': scan_label,
                     'warnings': warnings,
                     'error': 'Nessus XML was truncated mid-parse',
+                    # The hosts that did land were committed with the switch
+                    # applied, so their skipped count is reported the same way
+                    # a clean import reports it.
                     'message': (
                         f'Nessus scan was truncated: only {hosts_processed} hosts '
-                        f'were ingested before the parser hit the end of the file. '
-                        f'Re-export from the scanner and re-upload to capture all hosts.'
+                        f'were ingested before the parser hit the end of the file'
+                        + (f' ({informational_skipped} informational skipped)'
+                           if skip_informational else '')
+                        + '. Re-export from the scanner and re-upload to capture all hosts.'
                     ),
                 }
 
@@ -232,12 +247,18 @@ class NessusIntegrationService:
                 'host_processing_failures': host_processing_failures,
                 'vulnerabilities_found': vulnerabilities_found,
                 'vuln_write_failures': vuln_write_failures,
+                'informational_skipped': informational_skipped,
                 'severity_counts': severity_counts,
                 'scan_name': scan_label,
                 'warnings': warnings,
+                # The skipped count is part of the message on purpose: an
+                # analyst comparing against the Nessus UI must see that two
+                # thirds of the items were dropped by choice, not lost.
                 'message': (
                     f'Successfully processed Nessus scan with '
                     f'{hosts_processed} hosts and {vulnerabilities_found} vulnerabilities'
+                    + (f', {informational_skipped} informational skipped'
+                       if skip_informational else '')
                     + (f' ({vuln_write_failures} vuln write failures, '
                        f'{host_processing_failures} host failures)' if partial else '')
                 )
@@ -281,6 +302,7 @@ class NessusIntegrationService:
         nessus_host: NessusHost,
         scan: Scan,
         project_id: Optional[int] = None,
+        skip_informational: bool = False,
     ) -> Optional[Tuple[Host, Dict[str, int]]]:
         """Process a single Nessus host using the dedup/history layer.
 
@@ -306,7 +328,9 @@ class NessusIntegrationService:
             )
 
             # Process vulnerabilities using vulnerability service
-            vuln_stats = self.vulnerability_service.process_nessus_vulnerabilities(host, nessus_host, scan)
+            vuln_stats = self.vulnerability_service.process_nessus_vulnerabilities(
+                host, nessus_host, scan, skip_informational=skip_informational,
+            )
             logger.debug("Processed %s vulnerabilities for host %s", vuln_stats['total'], host.ip_address)
 
             savepoint.commit()

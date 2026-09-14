@@ -64,6 +64,10 @@ export interface UploadOptions {
   /** Import even though this exact file is already a scan — a deliberate
    *  re-import, e.g. to re-parse after a parser fix. */
   allowDuplicate?: boolean;
+  /** v5.215.0 — Nessus only: drop severity-0 (informational) report items
+   *  instead of storing a vulnerability row each (ports still derived from
+   *  them). Omit to use the project's setting. */
+  skipInformational?: boolean;
 }
 
 /** A refused identical upload (409 duplicate_scan): what it already is. */
@@ -96,6 +100,9 @@ export const uploadFile = async (
   formData.append('file', file);
   if (options.batchId != null) formData.append('batch_id', String(options.batchId));
   if (options.allowDuplicate) formData.append('allow_duplicate', 'true');
+  if (options.skipInformational != null) {
+    formData.append('skip_informational', options.skipInformational ? 'true' : 'false');
+  }
 
   // Bypass axios for the upload and use a raw XMLHttpRequest.  We
   // tried the axios path twice (with explicit Content-Type and with

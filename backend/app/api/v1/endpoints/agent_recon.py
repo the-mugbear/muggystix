@@ -642,6 +642,14 @@ async def upload_recon_output(
             "batch, shown on /scans as a single row (v2.335.0)."
         ),
     ),
+    skip_informational: Optional[bool] = Form(
+        None,
+        description=(
+            "Nessus only (v2.341.0): drop severity-0 (informational) report items "
+            "instead of storing a vulnerability row each; ports are still derived "
+            "from them. Omit to follow the project's setting."
+        ),
+    ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -699,6 +707,13 @@ async def upload_recon_output(
         "recon_session_id": session.id,
         "source": "agent-recon",
     }
+    # v2.341.0 — the same precedence rule as the operator upload (form field >
+    # project choice > deployment default), from the one helper that owns it.
+    from app.db.models_project import Project as _Project, resolve_skip_informational
+    opts["skip_informational"] = resolve_skip_informational(
+        db.query(_Project).filter(_Project.id == agent.project_id).first(),
+        skip_informational,
+    )
     if tool_name:
         opts["tool_name_hint"] = tool_name
     if command_run:

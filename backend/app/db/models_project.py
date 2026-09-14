@@ -48,12 +48,45 @@ class Project(Base):
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # v2.341.0 — whether Nessus uploads into this project drop severity-0
+    # (informational) report items instead of storing a vulnerability row for
+    # each.  Ports are still derived from them.  NULL = no project choice; the
+    # deployment default (``NESSUS_SKIP_INFORMATIONAL_DEFAULT``) applies.  A
+    # per-upload form field overrides either.  Nullable on purpose: an
+    # operator flips the deployment default and every project that never
+    # chose follows it, including the one created on first boot.
+    skip_informational_findings = Column(Boolean, nullable=True)
 
     # Relationships
     created_by = relationship("User", foreign_keys=[created_by_id])
     memberships = relationship(
         "ProjectMembership", back_populates="project", cascade="all, delete-orphan"
     )
+
+    @property
+    def skip_informational_effective(self) -> bool:
+        """The value an upload into this project uses when it says nothing."""
+        if self.skip_informational_findings is not None:
+            return bool(self.skip_informational_findings)
+        from app.core.config import settings  # local: models load before settings users
+        return bool(settings.NESSUS_SKIP_INFORMATIONAL_DEFAULT)
+
+
+def resolve_skip_informational(project: "Project | None", override: "bool | None") -> bool:
+    """The one precedence rule for the Nessus informational switch:
+    per-upload form value > project choice > deployment default.
+
+    Both upload routes (operator and agent) call this, so the rule cannot
+    drift between them.  ``project`` is None only for a caller with no
+    project row, which no upload route has; the fallback there is the
+    deployment default, not a bare False.
+    """
+    if override is not None:
+        return bool(override)
+    if project is not None:
+        return project.skip_informational_effective
+    from app.core.config import settings
+    return bool(settings.NESSUS_SKIP_INFORMATIONAL_DEFAULT)
 
 
 class ProjectMembership(Base):
