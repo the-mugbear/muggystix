@@ -103,6 +103,7 @@ import HostLineagePanel from './HostLineagePanel';
 import { NoteThread } from './host-inspector/NoteThread';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
+import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
 import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
 import { groupVulnerabilities } from '../utils/vulnGrouping';
@@ -2082,6 +2083,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Which scope entries cover this host — every subnet the address falls
+          in, every in-scope name resolving here, or a plain "out of scope".
+          The Hosts list shows only the most-specific subnet. */}
+      <ScopeMembershipCard membership={host.scope_membership} />
 
       {/* Where this host is registered and hosted — the outside world's answer
           to "is this the client's?", vs the scope's own CIDR list. A single

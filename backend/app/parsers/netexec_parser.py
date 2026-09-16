@@ -17,6 +17,7 @@ from app.services.confidence_service import (
     ConfidenceService, ScanType, DataSource, ConfidenceScore
 )
 from app.services.host_deduplication_service import HostDeduplicationService
+from app.parsers.parser_utils import correlate_scan
 import logging
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,22 @@ class NetexecParser:
                 self._parse_console_output(content, scan.id)
 
             logger.info(f"Successfully parsed netexec output: {filename}")
+
+            # v2.342.0 — this was the one host-creating parser that never ran
+            # scope correlation, so a host first seen by NetExec stayed "out
+            # of scope" until some other upload or a scope edit re-correlated
+            # the project.  Same best-effort shape as the other parsers: the
+            # host data is committed first so a correlation failure cannot
+            # lose it.
+            self.db.commit()
+            try:
+                correlate_scan(self.db, scan.id)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("NetExec scan %s correlation failed: %s", scan.id, exc)
+                try:
+                    self.db.rollback()
+                except Exception:  # pragma: no cover
+                    pass
             return scan
 
         except Exception as e:

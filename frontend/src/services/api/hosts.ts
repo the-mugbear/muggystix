@@ -181,6 +181,8 @@ export interface Host {
   exploitable_count?: number;
   primary_subnet?: string | null;
   primary_site?: string | null;
+  // v2.342.0 — every scope entry covering this host (detail endpoint only).
+  scope_membership?: HostScopeMembership | null;
   // v2.71.0 — project tags on this host, and users it's assigned to.
   tags?: HostTagInfo[];
   assignees?: HostAssignee[];
@@ -191,6 +193,34 @@ export interface Host {
   // Host-level NSE script output (smb-os-discovery, smb-security-mode,
   // etc.). Port-level scripts live on each Port.scripts.
   host_scripts?: NseScript[];
+}
+
+/** One scope subnet that contains the host's address (v2.342.0). */
+export interface HostScopeSubnetEntry {
+  id: number;
+  scope_id: number;
+  cidr: string;
+  description?: string | null;
+  site?: string | null;
+  labels: { id: number; name: string; color?: string | null }[];
+}
+
+/** An in-scope name that currently resolves to the host, with the scope
+ *  domain entry that admits it (v2.342.0). */
+export interface HostScopeNameEntry {
+  fqdn: string;
+  domain: string;
+  include_subdomains: boolean;
+}
+
+/** Which scope entries cover a host — the three coverage states: a subnet
+ *  mapping, an in-scope name only (reachable, not subnet-scoped), or nothing.
+ *  `project_has_scope` false means there is no scope to check against. */
+export interface HostScopeMembership {
+  coverage: 'subnet' | 'name' | 'none';
+  project_has_scope: boolean;
+  subnets: HostScopeSubnetEntry[];
+  names: HostScopeNameEntry[];
 }
 
 export interface HostTagInfo {

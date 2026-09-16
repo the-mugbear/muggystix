@@ -517,6 +517,20 @@ def _escaped_like_suffix(domain_col: ColumnElement) -> ColumnElement:
     return literal("%.").concat(func.replace(domain_col, "_", "\\_"))
 
 
+def scope_domain_covers_condition(sd, fqdn_col: ColumnElement) -> ColumnElement:
+    """SQL predicate: the ScopeDomain row ``sd`` covers ``fqdn_col`` — exactly,
+    or as a descendant when include_subdomains is set.  The one place the
+    exact-vs-descendant rule is spelled out in SQL; ``domain_matches`` is its
+    Python twin."""
+    return or_(
+        sd.domain == fqdn_col,
+        and_(
+            sd.include_subdomains.is_(True),
+            fqdn_col.like(_escaped_like_suffix(sd.domain), escape="\\"),
+        ),
+    )
+
+
 def scope_domain_match_condition(project_id: int, fqdn_col: ColumnElement) -> ColumnElement:
     """SQL predicate: ``fqdn_col`` is covered by some ScopeDomain on the
     project — exactly, or as a descendant when include_subdomains is set."""
@@ -526,13 +540,7 @@ def scope_domain_match_condition(project_id: int, fqdn_col: ColumnElement) -> Co
         .join(models.Scope, models.Scope.id == sd.scope_id)
         .where(
             models.Scope.project_id == project_id,
-            or_(
-                sd.domain == fqdn_col,
-                and_(
-                    sd.include_subdomains.is_(True),
-                    fqdn_col.like(_escaped_like_suffix(sd.domain), escape="\\"),
-                ),
-            ),
+            scope_domain_covers_condition(sd, fqdn_col),
         )
         .exists()
     )

@@ -18,10 +18,11 @@ Both callers now share the query below, so the two can't drift apart again.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+import ipaddress
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.db import models
 
@@ -92,3 +93,154 @@ def out_of_scope_hosts(
         q = q.limit(limit)
 
     return q.all(), total
+
+
+# --------------------------------------------------------------------------
+# One host: which scope entries cover it (v2.342.0)
+# --------------------------------------------------------------------------
+COVERAGE_SUBNET = "subnet"
+COVERAGE_NAME = "name"
+COVERAGE_NONE = "none"
+
+
+def _prefixlen(cidr: str) -> int:
+    try:
+        return ipaddress.ip_network(cidr, strict=False).prefixlen
+    except ValueError:
+        return -1
+
+
+def host_scope_membership(db: Session, host: models.Host) -> Dict[str, Any]:
+    """Every scope entry on the host's project that covers this host.
+
+    The inverse of the list above: instead of "which hosts does no entry
+    cover", "which entries cover this host".  Returns::
+
+        {
+          "coverage": "subnet" | "name" | "none",
+          "project_has_scope": bool,   # any subnet or domain declared at all
+          "subnets": [ {id, cidr, description, site, labels: [{id, name, color}]} … ],
+          "names":   [ {fqdn, domain, include_subdomains} … ],
+        }
+
+    ``subnets`` are the ``host_subnet_mappings`` rows — the same fact scope
+    coverage, the /hosts subnet facet and the scope pages read — ordered
+    most-specific first, so the first entry is the one the Hosts list shows
+    as ``primary_subnet``.  ``names`` are in-scope names that CURRENTLY
+    resolve to the address (``current_binding_condition``), each with the
+    scope-domain row that admits it.  ``coverage`` follows the three states
+    documented on ``_base_query``: a subnet mapping wins; a name alone is
+    "reachable via in-scope name", not subnet scope; neither is out of scope.
+
+    ``project_has_scope`` lets the UI distinguish "no entry covers this
+    host" (worth acting on) from "this project has declared no scope yet"
+    (nothing to check against).
+    """
+    from app.services.dns_name_service import (
+        current_binding_condition,
+        scope_domain_covers_condition,
+    )
+
+    project_id = host.project_id
+
+    subnet_rows = (
+        db.query(models.Subnet)
+        .join(models.HostSubnetMapping, models.HostSubnetMapping.subnet_id == models.Subnet.id)
+        .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
+        .filter(
+            models.HostSubnetMapping.host_id == host.id,
+            # Belt and braces: mappings written before the project boundary
+            # landed in the correlation service may point at another
+            # project's subnet until the cleanup migration has run.
+            models.Scope.project_id == project_id,
+        )
+        .all()
+    )
+    subnet_rows.sort(key=lambda s: (-_prefixlen(s.cidr), s.cidr))
+
+    labels_by_subnet: Dict[int, List[dict]] = {}
+    if subnet_rows:
+        for subnet_id, label_id, name, color in (
+            db.query(
+                models.SubnetLabelAssignment.subnet_id,
+                models.SubnetLabel.id,
+                models.SubnetLabel.name,
+                models.SubnetLabel.color,
+            )
+            .join(models.SubnetLabel, models.SubnetLabel.id == models.SubnetLabelAssignment.label_id)
+            .filter(models.SubnetLabelAssignment.subnet_id.in_([s.id for s in subnet_rows]))
+            .order_by(models.SubnetLabel.name)
+            .all()
+        ):
+            labels_by_subnet.setdefault(subnet_id, []).append(
+                {"id": label_id, "name": name, "color": color}
+            )
+
+    subnets = [
+        {
+            "id": s.id,
+            "scope_id": s.scope_id,
+            "cidr": s.cidr,
+            "description": s.description,
+            "site": s.site,
+            "labels": labels_by_subnet.get(s.id, []),
+        }
+        for s in subnet_rows
+    ]
+
+    names: List[dict] = []
+    if project_id is not None and host.ip_address:
+        r = aliased(models.DNSRecord)
+        n = models.DNSName
+        sd = models.ScopeDomain
+        name_rows = (
+            db.query(n.fqdn, sd.domain, sd.include_subdomains)
+            .select_from(r)
+            .join(n, n.id == r.name_id)
+            .join(models.Scope, models.Scope.project_id == project_id)
+            .join(
+                sd,
+                and_(sd.scope_id == models.Scope.id, scope_domain_covers_condition(sd, n.fqdn)),
+            )
+            .filter(
+                r.project_id == project_id,
+                r.value == host.ip_address,
+                current_binding_condition(r),
+                n.project_id == project_id,
+                n.kind == "fqdn",
+            )
+            .distinct()
+            .order_by(n.fqdn, sd.domain)
+            .all()
+        )
+        names = [
+            {"fqdn": fqdn, "domain": domain, "include_subdomains": bool(inc)}
+            for fqdn, domain, inc in name_rows
+        ]
+
+    if subnets:
+        coverage = COVERAGE_SUBNET
+    elif names:
+        coverage = COVERAGE_NAME
+    else:
+        coverage = COVERAGE_NONE
+
+    project_has_scope = bool(subnets or names)
+    if not project_has_scope and project_id is not None:
+        project_has_scope = db.query(
+            select(models.Subnet.id)
+            .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
+            .where(models.Scope.project_id == project_id)
+            .exists()
+            | select(models.ScopeDomain.id)
+            .join(models.Scope, models.Scope.id == models.ScopeDomain.scope_id)
+            .where(models.Scope.project_id == project_id)
+            .exists()
+        ).scalar()
+
+    return {
+        "coverage": coverage,
+        "project_has_scope": bool(project_has_scope),
+        "subnets": subnets,
+        "names": names,
+    }

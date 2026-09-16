@@ -4,7 +4,7 @@ from typing import List, Set, Tuple
 
 from sqlalchemy.orm import Session, joinedload
 
-from app.db.models import Host, Scope, Subnet, HostSubnetMapping, HostScanHistory
+from app.db.models import Host, Scan, Scope, Subnet, HostSubnetMapping, HostScanHistory
 from app.services.ip_trie import IPTrie
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,26 @@ class SubnetCorrelationService:
     # Fast batch correlation
     # ------------------------------------------------------------------
 
+    def _scan_project_id(self, scan_id: int) -> int | None:
+        """The project a scan's hosts belong to.
+
+        ``Scan.project_id`` is authoritative; a legacy scan row without one
+        falls back to the project of the hosts the scan observed (a scan never
+        spans projects, so the first is the only one).
+        """
+        scan_project = (
+            self.db.query(Scan.project_id).filter(Scan.id == scan_id).scalar()
+        )
+        if scan_project is not None:
+            return scan_project
+        return (
+            self.db.query(Host.project_id)
+            .join(HostScanHistory, Host.id == HostScanHistory.host_id)
+            .filter(HostScanHistory.scan_id == scan_id, Host.project_id.isnot(None))
+            .limit(1)
+            .scalar()
+        )
+
     def _batch_correlate_hosts(self, scan_id: int | None, project_id: int | None = None) -> int:
         """
         Core batch-correlation implementation.
@@ -136,15 +156,29 @@ class SubnetCorrelationService:
         can no longer spuriously match an IPv6 ``::/0`` (the old raw-integer
         comparison did — it compared a 32-bit int against 128-bit ranges).  For
         same-family data the result set is identical.
+
+        Project boundary (v2.342.0): a scan's hosts are matched ONLY against
+        the subnets of the scan's own project.  The scan-time path used to
+        build the trie from every subnet in the database, so a host in
+        project B was mapped to project A's ``10.0.0.0/8`` — which made it
+        "in scope" in B (scope coverage is derived from the mapping rows) and
+        listed it among A's subnet hosts.  A scan whose project cannot be
+        determined correlates nothing rather than against the world.
         """
+        if scan_id is not None and project_id is None:
+            project_id = self._scan_project_id(scan_id)
+            if project_id is None:
+                logger.warning(
+                    "Scan %s has no resolvable project; skipping subnet correlation",
+                    scan_id,
+                )
+                return 0
 
         # 1. Load in-scope subnets and build the trie -------------------
         subnet_query = self.db.query(Subnet)
         if project_id is not None:
             subnet_query = subnet_query.join(Scope, Subnet.scope_id == Scope.id).filter(Scope.project_id == project_id)
         subnets = subnet_query.all()
-        if not subnets:
-            return 0
 
         trie = IPTrie()
         for s in subnets:
@@ -167,6 +201,10 @@ class SubnetCorrelationService:
             return 0
 
         # 3. Match each host via the trie (all containing subnets) ------
+        # With no subnets on the project the set stays empty and step 4 only
+        # clears whatever these hosts still carry — mappings can only be
+        # stale (a subnet's own deletion cascades) or, before the project
+        # boundary above, cross-project.
         mapping_set: Set[Tuple[int, int]] = set()
         for host_id, ip_str in rows:
             for subnet in trie.find_matching_subnets(ip_str):

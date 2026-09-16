@@ -1465,6 +1465,12 @@ def get_host_v2(
     # carries them, so the inspector can offer "N informational · show".
     serialized["informational_count"] = informational_count
     serialized["informational_included"] = include_info
+    # v2.342.0 — which scope entries cover this host (subnets by mapping,
+    # names by current resolution), so the inspector can list them instead
+    # of leaving "is this in scope, and why" to the Hosts-list column.
+    from app.services.scope_coverage import host_scope_membership
+
+    serialized["scope_membership"] = host_scope_membership(db, host)
     # Owner/assignee enrichment — the base detail serializer leaves this []
     # (it needs a user join), so mirror the list endpoint here.  Without this
     # the inspector can't show or manage the host's owner. (1.2b)

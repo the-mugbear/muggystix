@@ -401,6 +401,47 @@ class HostCertOrgOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HostScopeSubnetLabel(BaseModel):
+    id: int
+    name: str
+    color: Optional[str] = None
+
+
+class HostScopeSubnetEntry(BaseModel):
+    """One scope subnet that contains the host's address (v2.342.0)."""
+    id: int
+    scope_id: int
+    cidr: str
+    description: Optional[str] = None
+    site: Optional[str] = None
+    labels: List[HostScopeSubnetLabel] = []
+
+
+class HostScopeNameEntry(BaseModel):
+    """An in-scope name that currently resolves to the host, with the scope
+    domain entry that admits it (v2.342.0)."""
+    fqdn: str
+    domain: str
+    include_subdomains: bool = False
+
+
+class HostScopeMembership(BaseModel):
+    """Which scope entries cover a host — the per-host inverse of
+    ``GET /scans/out-of-scope`` (v2.342.0).
+
+    ``coverage`` is one of the three coverage states: ``subnet`` (the address
+    falls inside at least one scope subnet), ``name`` (no subnet, but an
+    in-scope name currently resolves here — reachable, not subnet-scoped),
+    ``none`` (nothing covers it).  ``project_has_scope`` is False when the
+    project has declared no subnet or domain at all, so a consumer can say
+    "no scope to check against" rather than "out of scope".
+    """
+    coverage: str
+    project_has_scope: bool = False
+    subnets: List[HostScopeSubnetEntry] = []
+    names: List[HostScopeNameEntry] = []
+
+
 class Host(HostBase):
     id: int
     last_updated_scan_id: Optional[int] = None
@@ -456,6 +497,9 @@ class Host(HostBase):
     # operator sees where the host lives without opening it.
     primary_subnet: Optional[str] = None
     primary_site: Optional[str] = None
+    # v2.342.0 — every scope entry covering this host (the detail endpoint
+    # only; the list shows just the most-specific subnet above).
+    scope_membership: Optional["HostScopeMembership"] = None
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to
     # show/hide the "Web Interfaces" card and by the Hosts list (phase
