@@ -339,6 +339,8 @@ def test_every_metadata_write_path_template_actually_matches_a_route():
         "/api/v1/agent/assist/sessions/{session_id}/environment",
         "/api/v1/agent/feedback",
         "/api/v1/agent/tool-suggestions",
+        # v2.343.2 — ending one's own session (external review, finding 6).
+        "/api/v1/agent/session/end",
     ],
 )
 def test_a_read_only_operator_reaches_the_gated_metadata_writes(
@@ -372,6 +374,8 @@ def test_a_read_only_operator_reaches_the_gated_metadata_writes(
         body = {"os_family": "linux", "shell": "bash"}
     elif probe_path.endswith("/feedback"):
         body = {"category": "prompt", "message": "feedback from a restricted operator"}
+    elif probe_path.endswith("/session/end"):
+        body = {"notes": "auditor closing their own session"}
     else:
         body = {"name": "nuclei", "rationale": "not in the approved set"}
 

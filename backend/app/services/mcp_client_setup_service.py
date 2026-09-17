@@ -79,19 +79,36 @@ def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
         f"Remote host? Fetch the cert first: curl -sk {cert_url} -o bluestick.pem"
     )
     if client_id == "codex":
+        # v2.342.1 — the pin is verified on Linux/macOS only; a Windows
+        # operator gets a route that works (WSL) rather than silence.
         return (
             "Self-signed cert? Codex refuses it until pinned. Codex is a Rust "
             "binary: NODE_EXTRA_CA_CERTS does nothing for it, and SSL_CERT_FILE "
             "does not take effect either (tested on 0.147.0) — it reads "
             "SSL_CERT_DIR, a directory of hash-named symlinks."
             + common
+            + " Windows: this pin (and the read -rs line above) is bash and has "
+            "only been verified on Linux/macOS — run Codex inside WSL and do "
+            "these steps there."
         )
+    # v2.342.1 — Windows without WSL has no bash for the script, and the
+    # profile exports it prints never reach a client launched from the Start
+    # menu. setx stores the variable per user, which is what such a client
+    # reads. curl.exe, because bare curl in PowerShell is Invoke-WebRequest.
     return (
         "Self-signed cert? Node-based clients refuse it — Node ignores the OS "
         "trust store, so trusting it system-wide won't help. Export "
         "NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem, which trusts this one "
         "deployment and leaves verification on everywhere else."
         + common
+        + " Windows without WSL (PowerShell 7): the script is bash, so fetch the "
+        f"PEM with curl.exe -sk {cert_url} -o bluestick.pem (bare curl is an "
+        "Invoke-WebRequest alias), check its SHA-256 against the reference "
+        "page, then setx NODE_EXTRA_CA_CERTS <full path> (a per-user variable "
+        "for every process started from now on; a shell profile would not reach "
+        "a Start-menu launch) AND $env:NODE_EXTRA_CA_CERTS = <full path> for the "
+        "current window, which setx does not update — then launch the client "
+        "from a new terminal or the Start menu."
     )
 
 

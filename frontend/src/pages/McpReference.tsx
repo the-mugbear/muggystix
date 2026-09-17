@@ -123,7 +123,12 @@ const McpReference: React.FC = () => {
   // even exists — they did once). `selfSigned` is null when we couldn't read
   // the cert, which is not "it is self-signed", so the pinning block stays for
   // null and only softens on an explicit `false`.
-  const { fingerprint, selfSigned, commands: trustScriptCommands } = buildCertTrust(catalog);
+  const {
+    fingerprint,
+    selfSigned,
+    commands: trustScriptCommands,
+    windowsCommands: trustWindowsCommands,
+  } = buildCertTrust(catalog);
   const keyPlaceholder = catalog?.sample_key_placeholder ?? '<your-session-key>';
 
   // The endpoint is server-resolved; fall back to a relative path so the
@@ -332,6 +337,29 @@ const McpReference: React.FC = () => {
             trust, so it keeps validating public hosts normally. That is the difference from{' '}
             <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span>, which switches
             verification off for everything the process talks to.
+          </p>
+          {/* v5.217.0 — Windows without WSL. The script is bash and its
+              profile exports would not reach a client launched from the Start
+              menu; setx stores the variable per user, which is what does. */}
+          <p className="text-caption text-muted-foreground">
+            <strong className="text-foreground">Windows without WSL</strong> (PowerShell 7): the
+            script is bash, so do the same by hand — fetch the PEM with{' '}
+            <span className="font-mono">curl.exe</span> (bare <span className="font-mono">curl</span>{' '}
+            is an <span className="font-mono">Invoke-WebRequest</span> alias), check the SHA-256,
+            and store <span className="font-mono">NODE_EXTRA_CA_CERTS</span> twice: with{' '}
+            <span className="font-mono">setx</span>, a per-user variable for every process started
+            from now on, and with <span className="font-mono">$env:</span> for the shell you are in,
+            because <span className="font-mono">setx</span> does not update the current window.
+            Then launch the client from a new terminal or the Start menu.
+          </p>
+          <CodeBlock
+            text={trustWindowsCommands}
+            label="certificate trust setup (PowerShell)"
+          />
+          <p className="text-caption text-muted-foreground">
+            Codex&rsquo;s pin (<span className="font-mono">SSL_CERT_DIR</span>) has only been
+            verified on Linux and macOS. On Windows, run Codex inside WSL and use the bash script
+            there; its key-entry line (<span className="font-mono">read -rs</span>) is bash as well.
           </p>
         </CardContent>
       </Card>

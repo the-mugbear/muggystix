@@ -566,6 +566,13 @@ AGENT_SESSION_METADATA_WRITES = frozenset({
     # v2.337.0 — one probe per session, on the session (the three per-phase
     # probe routes are gone with the per-workflow keys).
     ("POST", "/session/environment"),
+    # v2.343.2 (external review, finding 6) — ending one's own session is
+    # lifecycle bookkeeping, not a project write: an auditor could start a
+    # session (AUDITOR floor on /assist/start) and then not end it, because
+    # this route is mounted under the gate and was missing here.  Ownership
+    # (the key identifies its own session) and the open-phase refusal live in
+    # close_agent_session_from_agent and are unchanged.
+    ("POST", "/session/end"),
     ("POST", "/feedback"),
     ("POST", "/tool-suggestions"),
 })

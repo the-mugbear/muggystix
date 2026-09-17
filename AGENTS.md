@@ -42,7 +42,7 @@ Every request to `/api/v1/agent/*` carries your API key in a header:
 X-API-Key: nm_agent_abc123...
 ```
 
-No login, no password, no `project_id` in the URL — the key is pre-scoped to exactly one project *and* one test plan. All reads and writes auto-scope to that project. Attempting to use the key against a different plan's endpoints returns 403.
+No login, no password, no `project_id` in the URL — the key is bound to exactly one project session, and every read and write auto-scopes to that project. Which reconnaissance run or execution run a call is about is resolved from the session (pass `recon_session_id` / the run id when the session has more than one open). A 403 means your operator's project role does not permit that action.
 
 > Both `X-API-Key: nm_agent_...` and `Authorization: Bearer nm_agent_...` are accepted. Prefer `X-API-Key`.
 
@@ -60,8 +60,14 @@ Your session does not end on its own. Recon and execution runs have their own `/
 When the operator says you are done, or you have nothing left to do:
 
 1. Close every open phase — `POST /agent/recon/complete` for a reconnaissance run, `POST /agent/execution-sessions/{id}/complete` for an execution run. `/session/end` refuses with `409` while any is open and names the ids.
-2. Submit feedback (`POST /agent/feedback` / `submit_feedback`).
+2. If you have filed no feedback in this session yet, file it now (`POST /agent/feedback` / `submit_feedback`). Feedback belongs at the moment of friction (see below), so by this point there is usually nothing left to add.
 3. `POST /agent/session/end` with a line of `notes`. It revokes your key; nothing you call afterwards authenticates, so it is the last call.
+
+### Feedback — file it when the friction happens
+
+**The trigger is an event, not the end of the session.** The moment you retry a call, guess at a field, work around a tool, or go back to this guide to make something work, file a short critique right then — `POST /agent/feedback` (MCP `submit_feedback`), one line per item, naming the endpoint or tool, what you expected, what happened, and the exact error or missing field. Several small submissions during a session are the norm. Most sessions never reach a tidy ending — the terminal closes, the operator moves on — so feedback saved for the end is feedback that is never filed.
+
+The checkpoints, if you filed nothing along the way: `/recon/complete` and `/execution-sessions/{id}/complete` answer with `feedback_recorded`; when it is `false`, file before you go on. The session end is the last resort, not the plan. Payload shape: `## Feedback Requested` block at the end of your session prompt.
 
 ### Long-running commands — never block a single tool call on one
 
@@ -522,10 +528,10 @@ Content-Type: application/json
 
 {"notes": "Short summary of what you ran and what you found."}
 # → ReconSummary with final frozen counts.
-#   This is the ONLY thing that moves the session out of `active` —
-#   uploads and feedback do not. Order: finish uploads -> submit
-#   feedback -> POST /recon/complete LAST; confirm the 200 before stopping.
-#   (See "Exit criteria" below for the full rule.)
+#   This is the ONLY thing that moves the run out of `active` —
+#   uploads and feedback do not. Order: finish uploads -> POST
+#   /recon/complete; confirm the 200. If its `feedback_recorded` is
+#   false, file feedback now. (See "Exit criteria" below for the full rule.)
 ```
 
 ### Upload batches & duplicates
@@ -580,12 +586,14 @@ A large scope becomes many files — one per chunk (see § Very large scopes). W
   "web_targets_truncated": true,
   "live_hosts_file_truncated": true,             // then live_hosts_file_content is ""
   "downloads": {                                 // the complete data lives here
-    "hosts_ndjson": {"url": "/api/v1/agent/recon/hosts.ndjson", "curl": "curl -sS ... -o session-hosts.jsonl"},
-    "live_hosts":   {"url": "/api/v1/agent/recon/live-hosts.txt", "curl": "curl -sS ... -o session-hosts.txt"},
-    "web_targets":  {"url": "/api/v1/agent/recon/web-targets.txt", "curl": "curl -sS ... -o web-targets.txt"}
+    "hosts_ndjson": {"url": "/api/v1/agent/recon/hosts.ndjson?recon_session_id=12", "curl": "curl -sS ... -o session-hosts.jsonl"},
+    "live_hosts":   {"url": "/api/v1/agent/recon/live-hosts.txt?recon_session_id=12", "curl": "curl -sS ... -o session-hosts.txt"},
+    "web_targets":  {"url": "/api/v1/agent/recon/web-targets.txt?recon_session_id=12", "curl": "curl -sS ... -o web-targets.txt"}
   }
 }
 ```
+
+The download URLs name the run (`?recon_session_id=`). Use them as given: without it, a session with two open runs is refused (`ambiguous_recon_run`), and once this run is completed while another is still active, the bare URL would quietly serve the *other* run's data.
 
 Per-host fields use `open_ports` (full objects) and `services` (deduped names) — *not* `ports`. `web_targets` is pre-filtered to ports detected as HTTP/HTTPS so an agent can drive httpx/eyewitness/nikto from a single array without re-scanning the open_ports list.
 
@@ -594,16 +602,17 @@ Per-host fields use `open_ports` (full objects) and `services` (deduped names) �
 **`hosts[]` is capped at 50 — it is a sample, not the dataset.** The complete data lives in three streaming endpoints. **Write them to a file and process them with shell tools; never `cat` them into your context** — a large session's full dataset is tens of MB and will not fit your context window.
 
 ```bash
-# The full per-host dataset — one JSON object per line
-curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/hosts.ndjson" -o session-hosts.jsonl
+# The full per-host dataset — one JSON object per line ($RUN = your recon_session_id;
+# the summary's downloads{} block already has it filled in)
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/hosts.ndjson?recon_session_id=$RUN" -o session-hosts.jsonl
 
 wc -l session-hosts.jsonl                                  # how many hosts
 jq -c 'select(.open_ports[]?.port == 445)' session-hosts.jsonl | head   # SMB hosts
 jq -r '.services[]' session-hosts.jsonl | sort | uniq -c | sort -rn     # service spread
 
 # Ready-made target files for the next tool — no jq needed
-curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/live-hosts.txt"  -o session-hosts.txt
-curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/web-targets.txt" -o web-targets.txt
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/live-hosts.txt?recon_session_id=$RUN"  -o session-hosts.txt
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/recon/web-targets.txt?recon_session_id=$RUN" -o web-targets.txt
 nmap -sV -iL session-hosts.txt -oX services.xml
 httpx -l web-targets.txt -json -o httpx.jsonl
 ```
@@ -853,7 +862,7 @@ You're done when:
 - Any configured credentialed scanner (Nessus / OpenVAS / Nuclei) has been used if the user authorized it.
 - (Optional) DNS records have been collected terminal-side (dnsx / dig — the server never resolves anything itself) and the output uploaded for hosts needing name / PTR data.
 
-**Closing the session is mandatory — and it is the *last* thing you do.** Call `POST /agent/recon/complete` with a short `notes` summary; the session transitions to `completed`, counters freeze, and your key's usefulness ends. This is the **only** call that moves the session out of `active` (uploads and feedback do not), so a run that scanned and uploaded everything but never called it shows as perpetually-running in the operator's Recon Runs list. Do all uploads, submit feedback, then call `/recon/complete` last and confirm the `200`. (If the agent process dies first, the operator can force-close with **Abandon** — a recovery path, not the normal exit.)
+**Closing the run is mandatory.** Call `POST /agent/recon/complete` with a short `notes` summary; the run transitions to `completed` and counters freeze. This is the **only** call that moves the run out of `active` (uploads and feedback do not), so a run that scanned and uploaded everything but never called it shows as perpetually-running in the operator's Recon Runs list. Do all uploads, then call `/recon/complete` and confirm the `200`. Its response carries `feedback_recorded`: if it is `false` you filed nothing during the run — file it now (`POST /agent/feedback`) before moving on or ending the session. (If the agent process dies first, the operator can force-close with **Abandon** — a recovery path, not the normal exit.)
 
 The user reviews the populated data in the Hosts / Scans pages and — as a separate workflow — can generate a test plan from it via **Test Plans → Generate with AI**.
 
@@ -881,7 +890,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
 | POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) — a project write |
 | PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation — a project write. Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
-| POST | `/agent/feedback` | **Submit structured feedback before you finish — required.** Over MCP the tool is `submit_feedback`. Your session is attributed from your key; `source` names the kind of work (`assist` / `reconnaissance` / `plan_generation` / `in_session_execution`) and the matching `recon_session_id` / `test_plan_id` / `execution_session_id` is optional context. See the `## Feedback Requested` block at the end of the session prompt for the payload shape. |
+| POST | `/agent/feedback` | **File structured feedback at the moment you hit friction** (a retry, a guess, a workaround, a re-read of this guide) — several short submissions per session; `feedback_recorded: false` on a phase completion means you have filed none yet. Over MCP the tool is `submit_feedback`. Your session is attributed from your key; `source` names the kind of work (`assist` / `reconnaissance` / `plan_generation` / `in_session_execution`) and the matching `recon_session_id` / `test_plan_id` / `execution_session_id` is optional context. See the `## Feedback Requested` block at the end of the session prompt for the payload shape. |
 
 <!-- agents:end -->
 
@@ -927,7 +936,9 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/recon/hosts.ndjson` | **Complete** per-host dataset, newline-delimited JSON. Streamed — redirect to a file (`-o session-hosts.jsonl`) and query it with `jq`, never read it into context |
 | GET | `/agent/recon/live-hosts.txt` | **Complete** IP list, one per line — `nmap -iL` / `masscan -iL` target file |
 | GET | `/agent/recon/web-targets.txt` | **Complete** http/https URL list, one per line — `httpx -l` / `eyewitness -f` target file |
-| POST | `/agent/recon/complete` | Close the session, freeze counts |
+| POST | `/agent/recon/complete` | Close the run, freeze counts |
+
+> **More than one open run?** Every recon endpoint above resolves "which run" from your session. With exactly one open run nothing is needed; with several, pass `?recon_session_id=<id>` (the id `/recon/start` returned) — the same query parameter on the POSTs — or the call answers `400 ambiguous_recon_run` listing the candidates. Over MCP every recon tool takes the same optional `recon_session_id` argument.
 
 > **Scope isolation for recon keys.** The common endpoints above (`/agent/hosts`, `/agent/dashboard`, `/agent/scans`) are automatically filtered to your scope's hosts/scans — they're a different lens on the same data `/agent/recon/summary` reports. Plan endpoints (`/agent/test-plans/*`) are rejected with 403. The full list of hosts across other scopes in the project is deliberately not visible to a recon key.
 

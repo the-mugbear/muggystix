@@ -21,6 +21,41 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.6.0",
+        "app_version": "2.343.2",
+        "summary": (
+            "External MCP review remediation. The recon tools and endpoints "
+            "take an optional recon_session_id, and the guide says to pass it "
+            "when the session has more than one run open — before this a "
+            "session with two runs could neither select nor complete either, "
+            "and so could never end. Quick Start no longer describes a key as "
+            "scoped to one plan (it binds to one project session). Tool "
+            "descriptions: assist_get_host_notes is paged (read has_more), "
+            "assist_list_findings names the real statuses and accepts 'all', "
+            "assist_get_finding returns the evidence note's full thread and "
+            "named endpoints (name_id/fqdn) with host_count distinct from "
+            "endpoint_count. Retry annotations are honest: creators and appends "
+            "are no longer advertised as idempotent."
+        ),
+    },
+    {
+        "version": "2.5.0",
+        "app_version": "2.343.0",
+        "summary": (
+            "Feedback is asked for when friction happens, not at the exit. "
+            "Sessions mostly end by lapsing or by the operator (dev data: 7 of "
+            "36 sessions filed feedback; 1 agent-side end), and the feedback "
+            "block was the last thing before an end call that rarely came. The "
+            "rule is now: file a critique at the moment you retry, guess, work "
+            "around, or re-read the guide — several short submissions, not one "
+            "essay. Phase completion (recon complete, execution complete) is the "
+            "fallback checkpoint and its response says whether the session has "
+            "filed anything yet; the session end is the last resort. The ending "
+            "step reads 'if you have not filed any feedback yet, do it now' "
+            "rather than treating feedback as part of the exit ceremony."
+        ),
+    },
+    {
         "version": "2.4.0",
         "app_version": "2.340.0",
         "summary": (

@@ -186,7 +186,11 @@ def test_oversize_target_file_is_emptied_not_shortened(
         "a partial -iL target file is worse than none: it under-scans the "
         "scope while the run reports success"
     )
-    assert body["downloads"]["live_hosts"]["url"].endswith("/recon/live-hosts.txt")
+    # v2.343.3 — the link names its run, so it stays correct when the session
+    # has a second run open or this one has since been completed.
+    assert body["downloads"]["live_hosts"]["url"].endswith(
+        f"/recon/live-hosts.txt?recon_session_id={body['recon_session_id']}"
+    )
 
 
 def test_summary_points_at_the_downloads(

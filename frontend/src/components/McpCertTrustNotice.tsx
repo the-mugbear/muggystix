@@ -45,7 +45,7 @@ const McpCertTrustNotice: React.FC = () => {
   // connect config below is the primary content and stands on its own.
   if (!catalog || failed) return null;
 
-  const { fingerprint, selfSigned, commands } = buildCertTrust(catalog);
+  const { fingerprint, selfSigned, commands, windowsCommands } = buildCertTrust(catalog);
   const caIssued = selfSigned === false;
 
   return (
@@ -87,6 +87,16 @@ const McpCertTrustNotice: React.FC = () => {
               </li>
             </ol>
             <CodeBlock text={commands} label="certificate trust setup" />
+            {/* v5.217.0 — the script is bash, and the Windows operator without
+                WSL had nothing here: no bash to run it in, and the profile
+                exports it prints would not reach a client launched from the
+                Start menu anyway. Same outcome, in PowerShell. */}
+            <p className="mt-xs mb-xxs text-caption text-muted-foreground">
+              <strong className="text-foreground">Windows without WSL</strong> (PowerShell 7) — the
+              script is bash, so do the same by hand. This covers VS Code and Claude Code; for
+              Codex on Windows, run it inside WSL and use the script there.
+            </p>
+            <CodeBlock text={windowsCommands} label="certificate trust setup (PowerShell)" />
             <ol
               className="mt-xs list-decimal space-y-xxs pl-md text-caption text-muted-foreground"
               start={2}
@@ -107,11 +117,16 @@ const McpCertTrustNotice: React.FC = () => {
                 <strong>Add the two exports it prints to your shell profile</strong> (
                 <span className="font-mono">NODE_EXTRA_CA_CERTS</span> for VS Code and Claude Code,{' '}
                 <span className="font-mono">SSL_CERT_DIR</span> for Codex). The script cannot set
-                them for you.
+                them for you. On Windows the <span className="font-mono">setx</span> line above
+                stored the variable per user for every process started from now on, and the{' '}
+                <span className="font-mono">$env:</span> line set it for the shell you ran it in —{' '}
+                <span className="font-mono">setx</span> alone does not update the current window.
               </li>
               <li>
-                Open a <strong>new shell</strong> and launch the client from it. Both variables are
-                read at client start; a client restarted from a shell without them is unchanged.
+                Open a <strong>new shell</strong> and launch the client from it (on Windows, a new
+                terminal or the Start menu — not a window opened before the{' '}
+                <span className="font-mono">setx</span>). Both variables are read at client start; a
+                client restarted from a shell without them is unchanged.
               </li>
               <li>
                 Check the client’s own status (

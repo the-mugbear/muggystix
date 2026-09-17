@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models_agent import (
     Agent,
+    AgentFeedback,
     AgentSession,
     AgentSessionWorkflow,
     AssistSession,
@@ -520,12 +521,20 @@ def session_phase_summary(db: Session, session: AgentSession) -> dict:
     }
 
 
+#: v2.343.0 — the three ways a session ends, stored on ``AgentSession.end_reason``
+#: so clean exits can be counted against abandoned ones.
+END_REASON_AGENT = "agent"        # POST /agent/session/end — the clean exit
+END_REASON_OPERATOR = "operator"  # End on Agent Runs / the sessions panel
+END_REASON_LAPSED = "lapsed"      # the hourly sweep, past the renewal window
+
+
 def end_agent_session(
     db: Session,
     session: AgentSession,
     *,
     ended_by: Optional[User] = None,
     reason: Optional[str] = None,
+    end_reason: Optional[str] = None,
 ) -> None:
     """End a session: revoke its keys and close what it left open.
 
@@ -533,6 +542,10 @@ def end_agent_session(
     again) and active execution runs are paused (a later session may open
     a fresh run on the same plan and continue from the recorded results).
     Draft plans stay drafts — they are project data, not session state.
+
+    ``end_reason`` is the typed classification (``END_REASON_*``); when it is
+    not given, a caller that names a person is an operator end and anything
+    else is the sweep, which keeps the two pre-existing callers correct.
     """
     now = datetime.now(timezone.utc)
     who = (ended_by.full_name or ended_by.username) if ended_by is not None else "system"
@@ -548,7 +561,47 @@ def end_agent_session(
         run.notes = (f"{run.notes}\n{line}" if run.notes else line)[-8192:]
     session.status = SESSION_ENDED
     session.completed_at = now
+    session.end_reason = end_reason or (
+        END_REASON_OPERATOR if ended_by is not None else END_REASON_LAPSED
+    )
     session.notes = (f"{session.notes}\n{line}" if session.notes else line)[-8192:]
+
+
+def feedback_counts_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
+    """``{agent_session_id: feedback rows}`` for the given sessions, one query."""
+    if not session_ids:
+        return {}
+    rows = (
+        db.query(AgentFeedback.agent_session_id, func.count(AgentFeedback.id))
+        .filter(AgentFeedback.agent_session_id.in_(session_ids))
+        .group_by(AgentFeedback.agent_session_id)
+        .all()
+    )
+    return {sid: int(n) for sid, n in rows}
+
+
+def feedback_checkpoint(db: Session, agent_session_id: Optional[int]) -> Tuple[Optional[bool], Optional[str]]:
+    """The nudge a phase-completion response carries (v2.343.0).
+
+    Returns ``(feedback_recorded, hint)``.  Phase completion is reached far
+    more reliably than the session end the feedback ask used to hang off, so
+    it is the checkpoint: when the session has filed nothing yet, the hint says
+    so and says what to do.  Advisory only — a completion is never refused
+    over it, because refusing would make the exit rarer, not the feedback more
+    common.  ``(None, None)`` when the call has no session to attribute to.
+    """
+    if agent_session_id is None:
+        return None, None
+    recorded = bool(feedback_counts_for_agent_sessions(db, [agent_session_id]).get(agent_session_id))
+    if recorded:
+        return True, None
+    return False, (
+        "This session has not filed any feedback yet. Before you end the "
+        "session, POST /agent/feedback (MCP submit_feedback) with the friction "
+        "you hit in this phase — each endpoint or tool where you retried, "
+        "guessed, or worked around something, with the exact error or missing "
+        "field. One line each is enough; 'the API was fine' is not."
+    )
 
 
 def supersede_agent_session(
@@ -703,7 +756,7 @@ def close_agent_session_from_agent(
             status_code=409, detail=f"Session already in state '{session.status}'.",
         )
     reason = "closed by the agent" + (f": {notes.strip()}" if notes and notes.strip() else "")
-    end_agent_session(db, session, ended_by=None, reason=reason)
+    end_agent_session(db, session, ended_by=None, reason=reason, end_reason=END_REASON_AGENT)
     db.query(AssistSession).filter(
         AssistSession.agent_session_id == session.id,
         AssistSession.status == "active",
@@ -746,7 +799,11 @@ def lapse_expired_agent_sessions(db: Session) -> int:
         deadline = session_renewal_deadline(session)
         if deadline is not None and deadline > now:
             continue  # expired, but still renewable with the same key
-        end_agent_session(db, session, reason="keys expired past the renewal window")
+        end_agent_session(
+            db, session,
+            reason="keys expired past the renewal window",
+            end_reason=END_REASON_LAPSED,
+        )
         # The truthful timestamp is when access actually stopped.
         session.completed_at = expires_at or session.completed_at
         lapsed.append(session)
@@ -814,6 +871,10 @@ class AgentSessionRow:
     # the operator can reconnect to, and the page needs both dates to say so.
     key_expires_at: Optional[datetime] = None
     renewable_until: Optional[datetime] = None
+    # v2.343.0 — how the session ended (END_REASON_*; None while active) and
+    # how many feedback submissions it made.  Project sessions only.
+    end_reason: Optional[str] = None
+    feedback_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -836,6 +897,8 @@ class AgentSessionRow:
             "purpose": self.purpose,
             "key_expires_at": self.key_expires_at,
             "renewable_until": self.renewable_until,
+            "end_reason": self.end_reason,
+            "feedback_count": self.feedback_count,
         }
 
 
@@ -1201,17 +1264,23 @@ def list_agent_sessions(
                 user_username=s.started_by.username if s.started_by else None,
                 purpose=s.purpose,
                 renewable_until=session_renewal_deadline(s),
+                end_reason=s.end_reason,
             ))
         # v2.340.0 — one grouped query for the live key's expiry on every
         # project row on the page, so the UI can tell "active, agent alive"
         # from "active, key lapsed, resumable until <deadline>".
-        expiry = key_expiry_for_agent_sessions(db, [r.id for r in rows if r.kind == "project"])
+        project_ids = [r.id for r in rows if r.kind == "project"]
+        expiry = key_expiry_for_agent_sessions(db, project_ids)
+        # v2.343.0 — and one for feedback submissions, so the page can show
+        # which sessions said anything on the way out.
+        feedback = feedback_counts_for_agent_sessions(db, project_ids)
         for r in rows:
             if r.kind == "project":
                 exp = expiry.get(r.id)
                 if exp is not None and exp.tzinfo is None:
                     exp = exp.replace(tzinfo=timezone.utc)
                 r.key_expires_at = exp
+                r.feedback_count = feedback.get(r.id, 0)
 
     if "recon" in want:
         q = db.query(ReconSession).filter(ReconSession.project_id == project_id)

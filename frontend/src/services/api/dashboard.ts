@@ -304,6 +304,18 @@ export interface AgentActivitySessionRow {
   last_activity?: string | null;
 }
 
+/** v5.219.0 — whether sessions in the window exit cleanly and say anything on
+ *  the way out. The feedback loop depends on both, and neither was measured. */
+export interface AgentSessionHygiene {
+  sessions_started: number;
+  sessions_active: number;
+  sessions_ended: number;
+  ended_by_agent: number;
+  ended_by_operator: number;
+  lapsed: number;
+  sessions_with_feedback: number;
+}
+
 export interface AgentActivitySummary {
   window_days: number;
   total_calls: number;
@@ -314,6 +326,8 @@ export interface AgentActivitySummary {
   by_workflow: AgentActivityWorkflowCount[];
   daily: AgentActivityDayBucket[];
   busiest_sessions: AgentActivitySessionRow[];
+  /** Absent on backends before 2.343.0. */
+  session_hygiene?: AgentSessionHygiene | null;
 }
 
 export const getAgentActivitySummary = async (

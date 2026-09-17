@@ -28,6 +28,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
+import { CodeBlock } from '../components/ui/code-block';
 import { Label } from '../components/ui/label';
 import {
   Select,
@@ -180,6 +181,77 @@ const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ row
   );
 };
 
+/** v5.219.0 — what the operator pastes to a still-connected agent before
+ *  ending from the UI. Mirrors the contract's ending steps so the agent does
+ *  the clean exit itself: feedback (if none filed), phases closed, session end. */
+const WRAP_UP_PROMPT =
+  'We are done with this BlueStick session. Wrap up now: (1) if you have filed no '
+  + 'feedback in this session yet, call submit_feedback (POST /agent/feedback) with the '
+  + 'friction you hit — one line per endpoint or tool where you retried, guessed, or worked '
+  + 'around something; (2) close any open phase — recon_complete / '
+  + 'execution_complete_session; (3) call end_session (POST /agent/session/end) with a '
+  + 'one-line note of what this session did. Confirm each step’s response to me.';
+
+/** v5.219.0 — one line under the status badge on an ended project row: how
+ *  it ended and whether it said anything on the way out. 'agent' is the clean
+ *  exit; the other two mean the agent never called end. */
+const endedState = (row: AgentSessionRow): { text: string; tone: 'ok' | 'warn' | 'muted' } | null => {
+  if (row.kind !== 'project' || row.status === 'active') return null;
+  const fb = row.feedback_count ?? 0;
+  const fbText = fb > 0 ? `${fb} feedback` : 'no feedback';
+  switch (row.end_reason) {
+    case 'agent':
+      return { text: `ended by agent · ${fbText}`, tone: fb > 0 ? 'ok' : 'warn' };
+    case 'operator':
+      return { text: `ended by operator · ${fbText}`, tone: 'warn' };
+    case 'lapsed':
+      return { text: `lapsed (never ended) · ${fbText}`, tone: 'warn' };
+    default:
+      return fb > 0 ? { text: fbText, tone: 'muted' } : null;
+  }
+};
+
+/** v5.219.0 — session hygiene: are sessions exiting cleanly, and are they
+ *  telling us anything on the way out? The feedback loop depends on both, and
+ *  until now neither was measured. Counted over sessions STARTED in the
+ *  window, independent of call volume — a session whose agent never connected
+ *  made no calls and is exactly what this shows. Renders nothing on a backend
+ *  without the field or a window with no sessions. */
+const HygieneStrip: React.FC<{ hygiene: AgentActivitySummary['session_hygiene'] }> = ({ hygiene }) => {
+  if (!hygiene || hygiene.sessions_started === 0) return null;
+  const h = hygiene;
+  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
+  return (
+    <div className="mb-sm">
+      <p className="mb-xxs text-metadata font-semibold">Session hygiene</p>
+      <div className="grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-5">
+        <ApiTile label="Sessions started" value={h.sessions_started.toLocaleString()} />
+        <ApiTile
+          label="Ended by the agent"
+          value={`${h.ended_by_agent.toLocaleString()} · ${pct(h.ended_by_agent, h.sessions_ended)}`}
+          cls={h.sessions_ended > 0 && h.ended_by_agent < h.sessions_ended ? 'text-warning' : undefined}
+        />
+        <ApiTile label="Ended by operator" value={h.ended_by_operator.toLocaleString()} />
+        <ApiTile
+          label="Lapsed (never ended)"
+          value={h.lapsed.toLocaleString()}
+          cls={h.lapsed > 0 ? 'text-warning' : undefined}
+        />
+        <ApiTile
+          label="Filed feedback"
+          value={`${h.sessions_with_feedback.toLocaleString()} · ${pct(h.sessions_with_feedback, h.sessions_started)}`}
+          cls={h.sessions_with_feedback < h.sessions_started ? 'text-warning' : undefined}
+        />
+      </div>
+      <p className="mt-xxs text-caption text-muted-foreground">
+        Percentages are of sessions ended (agent exits) and of sessions started (feedback).
+        An agent that ends its own session filed feedback on the way; one that lapsed or was
+        ended from here usually did not.
+      </p>
+    </div>
+  );
+};
+
 const ApiTile: React.FC<{ label: string; value: number | string; cls?: string }> = ({
   label,
   value,
@@ -227,10 +299,14 @@ const ApiCallSummaryCard: React.FC<{
     );
   }
   if (summary.total_calls === 0) {
+    // Session hygiene is counted over sessions STARTED, not calls made, so it
+    // renders here too: a session whose agent never connected is exactly the
+    // abandonment this strip exists to show, and it makes no calls.
     return (
       <Card className="mb-md">
         <CardHeader><CardTitle>API-call analytics</CardTitle></CardHeader>
         <CardContent>
+          <HygieneStrip hygiene={summary.session_hygiene} />
           <p className="text-metadata text-muted-foreground">
             No agent API calls recorded in the last {summary.window_days} days.
           </p>
@@ -255,6 +331,10 @@ const ApiCallSummaryCard: React.FC<{
           Every agent → BlueStick request over the last {summary.window_days} days, from the
           per-call audit log.
         </p>
+
+        {/* v5.219.0 — rendered before the call volume because it is the
+            actionable number here; also rendered in the zero-calls branch above. */}
+        <HygieneStrip hygiene={summary.session_hygiene} />
 
         <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-5">
           <ApiTile label="Total calls" value={summary.total_calls.toLocaleString()} />
@@ -448,15 +528,43 @@ const ProjectActivity: React.FC = () => {
   };
 
   const handleEnd = async (row: AgentSessionRow) => {
+    // v5.219.0 — the wrap-up handoff. Sessions end because the human stops
+    // typing, and nobody tells the agent it is done, so the feedback and the
+    // clean exit never happen. If the agent is still reachable, the operator
+    // can paste this first; End underneath remains the fallback.
+    const agentAlive = keyState(row)?.tone === 'ok';
     const ok = await confirm({
       title: `End agent session #${row.id}?`,
       severity: 'warning',
       confirmLabel: 'End session',
-      body:
-        'The agent’s API key is revoked immediately; any agent still '
-        + 'running against it gets 401s from its next call. Open reconnaissance '
-        + 'runs are marked abandoned, open execution runs are paused (resumable), '
-        + 'and draft plans are kept. The session record stays for the audit trail.',
+      body: (
+        <div className="flex flex-col gap-sm">
+          <p>
+            The agent’s API key is revoked immediately; any agent still running against it
+            gets 401s from its next call. Open reconnaissance runs are marked abandoned, open
+            execution runs are paused (resumable), and draft plans are kept. The session
+            record stays for the audit trail.
+          </p>
+          {agentAlive && (
+            <div>
+              <p className="mb-xxs text-metadata font-semibold">
+                Agent still connected? Paste this to it first
+              </p>
+              <p className="mb-xxs text-caption text-muted-foreground">
+                It files the feedback we ask every session for and ends the session cleanly
+                (
+                <span className="font-mono">end_reason: agent</span>
+                ). Ending from here is the fallback for an agent that is gone.
+              </p>
+              <CodeBlock
+                text={WRAP_UP_PROMPT}
+                label="wrap-up prompt"
+                className="max-h-40 whitespace-pre-wrap break-words"
+              />
+            </div>
+          )}
+        </div>
+      ),
     });
     if (!ok) return;
     setEndingId(row.id);
@@ -630,7 +738,7 @@ const ProjectActivity: React.FC = () => {
                       {/* v5.214.0 — "active" alone cannot tell a live agent
                           from one that died a day ago; the key's state can. */}
                       {(() => {
-                        const ks = keyState(r);
+                        const ks = keyState(r) ?? endedState(r);
                         return ks ? (
                           <p
                             className={cn(

@@ -381,7 +381,7 @@ async def _dispatch_tool(
             return _tool_text_result(
                 f"Missing required argument: {pname}", is_error=True
             )
-        path = path.replace("{" + pname + "}", str(value))
+        path = path.replace("{" + pname + "}", _path_segment(spec, pname, value))
 
     # Query params (skip omitted).
     params = {
@@ -467,16 +467,70 @@ def _require_params(message: Dict[str, Any]) -> Dict[str, Any]:
     return params
 
 
+_JSON_TYPES = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "array": (list,),
+    "object": (dict,),
+}
+
+
+def _check_value(name: str, arg: str, prop: Dict[str, Any], value: Any) -> None:
+    """One declared property against one supplied value (v2.343.2).
+
+    Types are the JSON Schema ones the registry actually uses; ``bool`` is a
+    subclass of ``int`` in Python, so it is excluded from integer/number
+    explicitly.  ``enum``, ``minimum`` / ``maximum`` and ``minLength`` are
+    checked because the registry declares them; nothing else is inferred.
+    """
+    declared = prop.get("type")
+    if declared in _JSON_TYPES:
+        ok = isinstance(value, _JSON_TYPES[declared])
+        if declared in ("integer", "number") and isinstance(value, bool):
+            ok = False
+        if not ok:
+            raise _InvalidParams(
+                f"Invalid params for {name}: argument {arg!r} must be "
+                f"{'an' if declared[0] in 'aeiou' else 'a'} {declared}, "
+                f"got {type(value).__name__}"
+            )
+    if "enum" in prop and value not in prop["enum"]:
+        raise _InvalidParams(
+            f"Invalid params for {name}: argument {arg!r} must be one of "
+            f"{', '.join(map(str, prop['enum']))}"
+        )
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in prop and value < prop["minimum"]:
+            raise _InvalidParams(
+                f"Invalid params for {name}: argument {arg!r} must be >= {prop['minimum']}"
+            )
+        if "maximum" in prop and value > prop["maximum"]:
+            raise _InvalidParams(
+                f"Invalid params for {name}: argument {arg!r} must be <= {prop['maximum']}"
+            )
+    if isinstance(value, str) and "minLength" in prop and len(value) < prop["minLength"]:
+        raise _InvalidParams(
+            f"Invalid params for {name}: argument {arg!r} must not be empty"
+        )
+
+
 def _validate_arguments(name: str, spec: Dict[str, Any], arguments: Dict[str, Any]) -> None:
     """Check arguments against the schema we advertised for this tool.
 
-    Deliberately shallow — required-present and no-unknown-properties, the two
-    the schemas actually promise (`additionalProperties: false`).  Type coercion
-    stays the underlying endpoint's job: it already validates with pydantic and
-    returns a far better message than a hand-rolled checker would.
+    Required-present, no-unknown-properties, and — since v2.343.2 — the
+    declared type / enum / bounds of every supplied value.  Type checking used
+    to be left to the endpoint's pydantic model, which is fine for body and
+    query values but not for PATH values: those were interpolated into the URL
+    before any endpoint saw them, so ``host_id="../session/end#"`` on
+    ``assist_add_note`` reached ``/agent/session/end`` and ended the session
+    (external review, finding 1).  A value that does not fit the advertised
+    schema is a protocol error (-32602), and never reaches URL construction.
     """
     schema = spec["input_schema"]
-    allowed = set(schema.get("properties", {}))
+    props = schema.get("properties", {})
+    allowed = set(props)
     unknown = sorted(set(arguments) - allowed)
     if unknown:
         raise _InvalidParams(
@@ -488,6 +542,27 @@ def _validate_arguments(name: str, spec: Dict[str, Any], arguments: Dict[str, An
         raise _InvalidParams(
             f"Invalid params for {name}: missing required argument(s) {', '.join(missing)}"
         )
+    for arg, value in arguments.items():
+        if value is None:
+            continue
+        _check_value(name, arg, props.get(arg, {}), value)
+
+
+def _path_segment(spec: Dict[str, Any], pname: str, value: Any) -> str:
+    """A path parameter as ONE URL segment, whatever the client sent.
+
+    Integer-typed params are rendered from ``int()``; anything else is
+    percent-encoded with no safe characters, so a segment can never carry
+    ``/``, ``?`` or ``#`` and re-route the call.  Validation above already
+    rejects a mistyped value; this is the second lock on the same door — it
+    also covers auto-filled and defaulted values, which skip validation.
+    """
+    from urllib.parse import quote
+
+    prop = (spec.get("input_schema") or {}).get("properties", {}).get(pname, {})
+    if prop.get("type") == "integer" or isinstance(value, int) and not isinstance(value, bool):
+        return str(int(value))
+    return quote(str(value), safe="")
 
 
 # ---------------------------------------------------------------------------

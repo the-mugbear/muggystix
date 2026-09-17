@@ -1258,6 +1258,12 @@ def complete_execution_session(
             db.rollback()
             logger.warning("Failed to notify plan-ready-to-close for plan %s", plan.id, exc_info=True)
 
+    # v2.343.0 — the completion is the checkpoint the feedback ask now hangs
+    # off (it is reached far more reliably than the session end).  Advisory.
+    from app.services.agent_session_service import feedback_checkpoint
+    feedback_recorded, feedback_hint = feedback_checkpoint(
+        db, getattr(request.state, "agent_session_id", None),
+    )
     return ExecutionSessionCompleteResponse(
         session_id=session.id,
         test_plan_id=plan.id,
@@ -1268,4 +1274,6 @@ def complete_execution_session(
         entries_remaining=entries_remaining,
         tests_recorded=tests_recorded,
         findings_count=findings_count,
+        feedback_recorded=feedback_recorded,
+        feedback_hint=feedback_hint,
     )

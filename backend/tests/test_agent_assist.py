@@ -78,7 +78,7 @@ def test_start_assist_populates_unified_agent_session(client, test_project, db_s
     assert key.agent_session_id == base.id
 
 
-def test_assist_key_can_read_context_and_hosts(client, test_project):
+def test_assist_key_can_read_context_and_hosts(client, test_project, db_session):
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])
 
@@ -87,7 +87,17 @@ def test_assist_key_can_read_context_and_hosts(client, test_project):
     assert ctx.status_code == 200, ctx.text
     data = ctx.json()
     assert data["project"]["id"] == test_project.id
-    assert data["session"]["id"] == body["assist_session_id"]
+    # v2.338.0 — the context reports the UNIFIED session id, not the assist
+    # dialog row's id. The two only coincide on a fresh database (the id
+    # sequences drift apart as soon as any other route mints a session), which
+    # is why comparing them passed in one test order and failed in another.
+    from app.db.models_agent import AssistSession
+    unified_id = (
+        db_session.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == body["assist_session_id"])
+        .scalar()
+    )
+    assert data["session"]["id"] == unified_id
 
     # Hosts endpoint — empty for a project with no hosts, but must not 401/403.
     hosts = client.get("/api/v1/agent/assist/hosts", headers=headers)
@@ -729,9 +739,12 @@ def test_the_agent_can_read_notes_it_could_already_write(
     db_session.commit()
 
     headers = _assist(client, test_project.id)
-    notes = client.get(
+    page = client.get(
         f"/api/v1/agent/assist/hosts/{host.id}/notes", headers=headers
     ).json()
+    # v2.343.2 — a page that says whether it is the whole record.
+    notes = page["items"]
+    assert page["total"] == 1 and page["has_more"] is False
     assert len(notes) == 1
     assert "honeypot" in notes[0]["body"]
     # Who said it, and whether a human or an agent did — a reader needs both.

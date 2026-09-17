@@ -796,6 +796,12 @@ class ExecutionSessionCompleteResponse(BaseModel):
     entries_remaining: int
     tests_recorded: int
     findings_count: int
+    # v2.343.0 — the checkpoint nudge.  Phase completion is reached far more
+    # reliably than the session end the feedback ask used to hang off, so the
+    # completion says whether this session has filed any feedback yet and,
+    # when it has not, what to do about it.  Advisory: nothing is refused.
+    feedback_recorded: Optional[bool] = None
+    feedback_hint: Optional[str] = None
 
 
 class ExecutionProgressResponse(BaseModel):
@@ -1201,6 +1207,11 @@ class ReconSummaryResponse(BaseModel):
     ports_discovered: int
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # v2.343.0 — set by /recon/complete only (the polled /summary stays
+    # quiet): whether this session has filed any feedback yet, and what to do
+    # if not.  Advisory; see ExecutionSessionCompleteResponse.
+    feedback_recorded: Optional[bool] = None
+    feedback_hint: Optional[str] = None
     # Per-host breakdown of what's been found in this recon session.
     # v2.11.1 — the prompt had always promised this but the response
     # was only returning totals.  Populated from the same scan-history

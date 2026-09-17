@@ -50,6 +50,11 @@ OPERATOR_METADATA_WRITES = {
     ("POST", "/api/v1/agent/session/environment"),
     ("POST", "/api/v1/agent/feedback"),
     ("POST", "/api/v1/agent/tool-suggestions"),
+    # v2.343.2 (MCP review finding 6) — closing one's own session is lifecycle
+    # bookkeeping: it revokes the caller's key and writes no project data.
+    # An auditor could start a session but not end it; ownership and the
+    # open-phase refusal still apply inside the route.
+    ("POST", "/api/v1/agent/session/end"),
 }
 
 #: Not under /agent, but mutation-capable: tools/call loops back into the

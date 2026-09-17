@@ -43,6 +43,11 @@ export interface AgentSessionRow {
    *  a session the operator can reconnect to, not a dead one. */
   key_expires_at?: string | null;
   renewable_until?: string | null;
+  /** v5.219.0 — project sessions only. How the session ended ('agent' is the
+   *  clean exit; 'operator' and 'lapsed' mean the agent never called end) and
+   *  how many feedback submissions it made. Both null/0 on older backends. */
+  end_reason?: 'agent' | 'operator' | 'lapsed' | string | null;
+  feedback_count?: number;
 }
 
 /** v5.214.0 — what a resume hands back: the same shape the start dialog

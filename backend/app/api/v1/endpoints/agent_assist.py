@@ -608,6 +608,8 @@ class AssistWebInterface(BaseModel):
     title: Optional[str] = None
     server_header: Optional[str] = None
     technologies: List[str] = []
+    # v2.343.2 — the list above is capped at _TECH_CAP; say so when it is.
+    technologies_truncated: bool = False
     #: Present only when EyeWitness captured a PNG.  Same contract as note
     #: attachments: a path to curl to disk, never bytes in a tool result.
     screenshot_download_path: Optional[str] = None
@@ -621,6 +623,10 @@ class AssistHostDetail(HostDetail):
     screenshot download paths.
     """
     web_interfaces: List[AssistWebInterface] = []
+    # v2.343.2 (review) — ``web_interfaces`` is capped at _WEB_INTERFACE_CAP;
+    # without these an analyst read the sample as the complete record.
+    web_interfaces_total: int = 0
+    web_interfaces_truncated: bool = False
 
 
 #: Per host. Enough to characterise what a host serves without turning a host
@@ -628,6 +634,89 @@ class AssistHostDetail(HostDetail):
 _WEB_INTERFACE_CAP = 10
 #: Technology lists come from Wappalyzer and can run long on a CMS.
 _TECH_CAP = 12
+
+
+def _serialize_web_interface(w) -> AssistWebInterface:
+    """One web interface as assist reports it — shared by the capped list on
+    host detail and the paged list below, so the two never disagree."""
+    return AssistWebInterface(
+        id=w.id,
+        url=w.url,
+        fqdn=w.name.fqdn if w.name else None,
+        port=w.port,
+        status_code=w.status_code,
+        title=w.title,
+        server_header=w.server_header,
+        technologies=[str(t) for t in (w.technologies or [])][:_TECH_CAP],
+        technologies_truncated=len(w.technologies or []) > _TECH_CAP,
+        screenshot_download_path=(
+            f"/api/v1/agent/assist/web-interfaces/{w.id}/screenshot"
+            if w.screenshot_path else None
+        ),
+    )
+
+
+class AssistWebInterfacesPage(BaseModel):
+    """v2.343.3 (review) — the continuation for host detail's capped
+    ``web_interfaces``.  Disclosing the cap (``web_interfaces_truncated``) was
+    half the fix; without a way to page past it, the omitted interfaces and
+    their screenshot references were still unreachable over MCP."""
+    items: List[AssistWebInterface] = []
+    total: int = 0
+    has_more: bool = False
+    limit: int = 50
+    offset: int = 0
+
+
+@router.get(
+    "/assist/hosts/{host_id}/web-interfaces",
+    response_model=AssistWebInterfacesPage,
+    summary="Every web interface observed on one host, as a page",
+)
+def list_assist_host_web_interfaces(
+    request: Request,
+    host_id: int = Path(..., gt=0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The complete web-interface record for a host, paged.
+
+    Same ordering as the capped list on host detail (screenshotted first, then
+    by port), with ``id`` as the tiebreaker so pages are stable.  ``total`` and
+    ``has_more`` say whether this page is the whole record.
+    """
+    session = _load_assist_session(db, request)
+    host = (
+        db.query(models.Host)
+        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .first()
+    )
+    if host is None:
+        raise HTTPException(status_code=404, detail="Host not found in this project")
+    scoped = db.query(models.WebInterface).filter(
+        models.WebInterface.host_id == host.id,
+        models.WebInterface.project_id == session.project_id,
+    )
+    total = scoped.with_entities(func.count(models.WebInterface.id)).scalar() or 0
+    rows = (
+        scoped.order_by(
+            models.WebInterface.screenshot_path.is_(None),
+            models.WebInterface.port.asc(),
+            models.WebInterface.id.asc(),
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return AssistWebInterfacesPage(
+        items=[_serialize_web_interface(w) for w in rows],
+        total=int(total),
+        has_more=offset + len(rows) < total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get(
@@ -674,23 +763,15 @@ def get_assist_host(
         .limit(_WEB_INTERFACE_CAP)
         .all()
     )
-    web_interfaces = [
-        AssistWebInterface(
-            id=w.id,
-            url=w.url,
-            fqdn=w.name.fqdn if w.name else None,
-            port=w.port,
-            status_code=w.status_code,
-            title=w.title,
-            server_header=w.server_header,
-            technologies=[str(t) for t in (w.technologies or [])][:_TECH_CAP],
-            screenshot_download_path=(
-                f"/api/v1/agent/assist/web-interfaces/{w.id}/screenshot"
-                if w.screenshot_path else None
-            ),
+    web_total = (
+        db.query(func.count(models.WebInterface.id))
+        .filter(
+            models.WebInterface.host_id == host.id,
+            models.WebInterface.project_id == session.project_id,
         )
-        for w in web_rows
-    ]
+        .scalar()
+    ) or 0
+    web_interfaces = [_serialize_web_interface(w) for w in web_rows]
 
     return AssistHostDetail(
         id=host.id,
@@ -713,6 +794,8 @@ def get_assist_host(
         follow=follow_map.get(host.id),
         ports=port_briefs,
         web_interfaces=web_interfaces,
+        web_interfaces_total=int(web_total),
+        web_interfaces_truncated=int(web_total) > len(web_interfaces),
     )
 
 
@@ -909,8 +992,12 @@ class AssistProjectFinding(BaseModel):
     owner_username: Optional[str] = None
     # A finding can span hosts; the count is what "how big is this" turns on,
     # and the sample lets the agent name a host without a second call.
+    # ``host_count`` is distinct addresses; ``endpoint_count`` is affected
+    # rows, which can exceed it when named endpoints share an IP (v2.343.2).
     host_count: int = 0
+    endpoint_count: int = 0
     hosts: List[str] = []
+    hosts_truncated: bool = False
 
 
 class AssistFindingsPage(BaseModel):
@@ -926,9 +1013,9 @@ class AssistFindingsPage(BaseModel):
 )
 def list_assist_findings(
     request: Request,
-    status: Optional[str] = Query(None, description="open / triaged / confirmed / remediated / closed / false_positive; 'all' for every status."),
-    severity: Optional[str] = Query(None, description="critical / high / medium / low / info."),
-    source: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="open / confirmed / false_positive / accepted_risk / remediated / retest; 'all' (or omit) for every status."),
+    severity: Optional[str] = Query(None, description="critical / high / medium / low / info; 'all' (or omit) for every severity."),
+    source: Optional[str] = Query(None, description="note / scanner / execution / manual; 'all' (or omit) for every source."),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
     unowned: bool = Query(False, description="Only findings with no owner — the work-allocation question."),
     owner: Optional[str] = Query(None, description="Username of the owner (or 'me')."),
@@ -954,6 +1041,13 @@ def list_assist_findings(
     session = _load_assist_session(db, request)
     from app.services.finding_service import FindingService
 
+    # v2.343.2 (review) — the parameter description advertised 'all', but the
+    # value went to FindingService as a literal status, so "all findings"
+    # returned none with empty severity counts: a confident wrong answer.
+    status = _unfiltered(status)
+    severity = _unfiltered(severity)
+    source = _unfiltered(source)
+
     owner_id = None
     if owner:
         if owner.lower() == "me":
@@ -974,7 +1068,10 @@ def list_assist_findings(
 
     findings = []
     for f in rows:
-        host_ips = [fh.host.ip_address for fh in (f.hosts or []) if fh.host]
+        endpoint_rows = [fh for fh in (f.hosts or []) if fh.host]
+        # v2.343.2 — a finding row per named endpoint (two vhosts on one IP)
+        # is two endpoints on ONE host; count hosts as distinct addresses.
+        host_ips = sorted({fh.host.ip_address for fh in endpoint_rows})
         findings.append(
             AssistProjectFinding(
                 id=f.id,
@@ -984,13 +1081,25 @@ def list_assist_findings(
                 source=f.source,
                 owner_username=f.owner.username if f.owner else None,
                 host_count=len(host_ips),
+                endpoint_count=len(endpoint_rows),
                 # Capped: a finding on 400 hosts should not spend the agent's
                 # context proving it. The count above is the answer; the sample
                 # is for naming one.
-                hosts=sorted(host_ips)[:10],
+                hosts=host_ips[:10],
+                hosts_truncated=len(host_ips) > 10,
             )
         )
     return AssistFindingsPage(total=total, severity_counts=counts, findings=findings)
+
+
+def _unfiltered(value: Optional[str]) -> Optional[str]:
+    """``None`` for the spellings that mean "no filter" — omitted, empty,
+    ``all``, ``any`` — so they never reach a query as a literal value."""
+    if value is None:
+        return None
+    if value.strip().lower() in ("", "all", "any", "*"):
+        return None
+    return value
 
 
 class AssistNote(BaseModel):
@@ -1004,15 +1113,28 @@ class AssistNote(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class AssistNotesPage(BaseModel):
+    """v2.343.2 (review) — the notes on a host, as a page that says whether it
+    is the whole record.  The bare list this replaced was capped at ``limit``
+    with no total and no way to continue, so a host with 51 notes read as a
+    host with 50 — and an analyst had no way to know."""
+    items: List[AssistNote] = []
+    total: int = 0
+    has_more: bool = False
+    limit: int = 50
+    offset: int = 0
+
+
 @router.get(
     "/assist/hosts/{host_id}/notes",
-    response_model=List[AssistNote],
-    summary="The team's notes on one host",
+    response_model=AssistNotesPage,
+    summary="The team's notes on one host (paged, newest first)",
 )
 def list_assist_host_notes(
     request: Request,
     host_id: int = Path(..., gt=0),
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -1032,25 +1154,37 @@ def list_assist_host_notes(
     if host is None:
         raise HTTPException(status_code=404, detail="Host not found in this project")
 
+    total = (
+        db.query(func.count(models.Annotation.id))
+        .filter(models.Annotation.host_id == host_id)
+        .scalar()
+    ) or 0
     rows = (
         db.query(models.Annotation, User.username)
         .outerjoin(User, models.Annotation.user_id == User.id)
         .filter(models.Annotation.host_id == host_id)
-        .order_by(models.Annotation.created_at.desc())
+        .order_by(models.Annotation.created_at.desc(), models.Annotation.id.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )
-    return [
-        AssistNote(
-            id=a.id,
-            body=a.body,
-            status=a.status.value if hasattr(a.status, "value") else a.status,
-            author=username,
-            actor_type=a.actor_type,
-            created_at=a.created_at,
-        )
-        for a, username in rows
-    ]
+    return AssistNotesPage(
+        items=[
+            AssistNote(
+                id=a.id,
+                body=a.body,
+                status=a.status.value if hasattr(a.status, "value") else a.status,
+                author=username,
+                actor_type=a.actor_type,
+                created_at=a.created_at,
+            )
+            for a, username in rows
+        ],
+        total=int(total),
+        has_more=offset + len(rows) < int(total),
+        limit=limit,
+        offset=offset,
+    )
 
 
 class AssistVocabulary(BaseModel):
@@ -1113,10 +1247,15 @@ def assist_vocabulary(
     )
     usernames = sorted({u for (u,) in member_names.all() if u}
                        | {u for (u,) in assignee_names.all() if u})
+    # v2.343.2 (review) — derived from the canonical enums.  The hand-written
+    # list advertised `triaged` / `closed`, which no finding has ever carried,
+    # and omitted `accepted_risk` / `retest`, which do exist: a filter on the
+    # former silently returned nothing, and the latter were undiscoverable.
+    from app.db.models_findings import FindingSeverity, FindingStatus
     return AssistVocabulary(
         tags=tags, labels=labels, sites=sites, scopes=scopes, usernames=usernames,
-        finding_statuses=["open", "triaged", "confirmed", "remediated", "closed", "false_positive"],
-        severities=["critical", "high", "medium", "low", "info"],
+        finding_statuses=[s.value for s in FindingStatus],
+        severities=[s.value for s in FindingSeverity],
     )
 
 
@@ -2171,6 +2310,9 @@ class AssistFindingNote(BaseModel):
     status: Optional[str] = None
     note_type: Optional[str] = None
     author: Optional[str] = None
+    # v2.343.2 — 'user' or 'agent': whether a person asserted this or an
+    # earlier agent did, which a write-up citing it has to say.
+    actor_type: Optional[str] = None
     created_at: Optional[datetime] = None
     attachments: List[AssistAttachment] = []
 
@@ -2179,6 +2321,11 @@ class AssistFindingHost(BaseModel):
     host_id: int
     ip_address: Optional[str] = None
     hostname: Optional[str] = None
+    # v2.343.2 — the named endpoint this row is about, when the finding was
+    # recorded against a name rather than the bare address.  Two vhosts on
+    # one IP are two rows with the same host_id and different name_id/fqdn.
+    name_id: Optional[int] = None
+    fqdn: Optional[str] = None
     host_status: str
 
 
@@ -2191,11 +2338,19 @@ class AssistFindingDetail(BaseModel):
     owner_username: Optional[str] = None
     created_by_username: Optional[str] = None
     created_at: Optional[datetime] = None
+    # Distinct affected addresses.  ``endpoint_count`` is affected rows, which
+    # exceeds it when named endpoints share an IP (v2.343.2).
     host_count: int = 0
+    endpoint_count: int = 0
     hosts: List[AssistFindingHost] = []
     hosts_truncated: bool = False
     # The note that justified promotion (note-sourced findings only).
     evidence_note: Optional[AssistFindingNote] = None
+    # v2.343.2 — the replies on that note's thread, oldest first.  A
+    # qualification ("only on the staging vhost") or a screenshot posted as a
+    # reply is part of the evidence; before this the detail carried the root
+    # alone and those replies — and their attachments — were silently absent.
+    evidence_thread: List[AssistFindingNote] = []
     # The finding's own discussion thread.
     comments: List[AssistFindingNote] = []
     # Provenance for scanner- and execution-sourced findings.
@@ -2213,6 +2368,7 @@ def _serialize_finding_note(note, attachments_by_note) -> "AssistFindingNote":
         status=note.status.value if hasattr(note.status, "value") else note.status,
         note_type=note.note_type,
         author=note.author.username if note.author else None,
+        actor_type=note.actor_type,
         created_at=note.created_at,
         attachments=[
             AssistAttachment(
@@ -2274,10 +2430,11 @@ def get_assist_finding(
 
     # --- affected hosts ---------------------------------------------------
     host_rows = (
-        db.query(FindingHost, models.Host)
+        db.query(FindingHost, models.Host, models.DNSName)
         .join(models.Host, FindingHost.host_id == models.Host.id)
+        .outerjoin(models.DNSName, FindingHost.name_id == models.DNSName.id)
         .filter(FindingHost.finding_id == finding.id)
-        .order_by(models.Host.ip_address)
+        .order_by(models.Host.ip_address, models.DNSName.fqdn)
         .all()
     )
     hosts = [
@@ -2285,10 +2442,13 @@ def get_assist_finding(
             host_id=h.id,
             ip_address=h.ip_address,
             hostname=h.hostname,
+            name_id=fh.name_id,
+            fqdn=n.fqdn if n is not None else None,
             host_status=fh.host_status,
         )
-        for fh, h in host_rows[:_FINDING_HOST_CAP]
+        for fh, h, n in host_rows[:_FINDING_HOST_CAP]
     ]
+    distinct_host_count = len({h.id for _fh, h, _n in host_rows})
 
     # --- notes: the evidence note (thread root + its replies) and the
     #     finding's own comment thread, fetched together so attachments are
@@ -2300,6 +2460,7 @@ def get_assist_finding(
         .all()
     )
     evidence_note = None
+    evidence_replies: list = []
     if finding.evidence_annotation_id:
         evidence_note = (
             db.query(models.Annotation)
@@ -2307,8 +2468,23 @@ def get_assist_finding(
             .filter(models.Annotation.id == finding.evidence_annotation_id)
             .first()
         )
+        if evidence_note is not None:
+            # The rest of the source thread.  ``thread_root_id`` is the
+            # canonical link; ``parent_id`` covers a reply written before the
+            # root was stamped (roots point at themselves, so exclude it).
+            evidence_replies = (
+                note_q.filter(
+                    or_(
+                        models.Annotation.thread_root_id == evidence_note.id,
+                        models.Annotation.parent_id == evidence_note.id,
+                    ),
+                    models.Annotation.id != evidence_note.id,
+                )
+                .order_by(models.Annotation.created_at.asc(), models.Annotation.id.asc())
+                .all()
+            )
 
-    note_ids = [n.id for n in comment_notes]
+    note_ids = [n.id for n in comment_notes] + [n.id for n in evidence_replies]
     if evidence_note is not None:
         note_ids.append(evidence_note.id)
     attachments_by_note: dict = {}
@@ -2377,13 +2553,15 @@ def get_assist_finding(
         owner_username=finding.owner.username if finding.owner else None,
         created_by_username=finding.created_by.username if finding.created_by else None,
         created_at=finding.created_at,
-        host_count=len(host_rows),
+        host_count=distinct_host_count,
+        endpoint_count=len(host_rows),
         hosts=hosts,
         hosts_truncated=len(host_rows) > _FINDING_HOST_CAP,
         evidence_note=(
             _serialize_finding_note(evidence_note, attachments_by_note)
             if evidence_note is not None else None
         ),
+        evidence_thread=[_serialize_finding_note(n, attachments_by_note) for n in evidence_replies],
         comments=[_serialize_finding_note(n, attachments_by_note) for n in comment_notes],
         scanner_evidence=scanner_evidence,
         execution_evidence=execution_evidence,

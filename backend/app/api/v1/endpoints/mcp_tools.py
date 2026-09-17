@@ -82,6 +82,23 @@ HOST_ID_PROP = {
     }
 }
 
+# v2.343.2 — the recon-run selector.  A session may hold several open
+# reconnaissance runs; every recon tool resolves "which run" from the session
+# and needs this when there is more than one (the endpoint answers
+# ambiguous_recon_run with the candidate ids otherwise).  Optional: a session
+# with exactly one open run needs nothing.
+RECON_RUN_PROP = {
+    "recon_session_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": (
+            "Which reconnaissance run this call is about (the recon_session_id "
+            "start_recon returned). Required only when the session has more than "
+            "one open run."
+        ),
+    }
+}
+
 # Shared environment-probe fields.  All three probes accept the same body (the
 # endpoints share `apply_environment_probe`), so the schema is written once —
 # a field added for recon must not silently go missing for execution.
@@ -238,7 +255,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "end_session": {
         "description": (
-            "End your session — the LAST call you make, after submit_feedback. It "
+            "End your session — the LAST call you make (file any feedback you have "
+            "not filed yet first; the key dies with this call). It "
             "revokes your key and marks the session ended so the operator's Agent "
             "Activity page stops showing it as running. Refused (409, naming the ids) "
             "while a reconnaissance or execution phase is still open: complete those "
@@ -358,21 +376,28 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "submit_feedback": {
         "description": (
-            "Leave structured feedback about this session — REQUIRED before you "
-            "finish, even a one-line friction note; several submissions as you go "
-            "are fine. It is read by a coding agent working on BlueStick itself, so "
-            "write for that reader: name the tool or endpoint, expected vs actual, "
-            "the exact error text or missing field, and what would have let you "
-            "finish faster. `source` names the kind of work: assist (queries/notes "
-            "only), reconnaissance, plan_generation, or in_session_execution; add "
-            "the matching recon_session_id / test_plan_id / execution_session_id "
-            "when you have one — the session itself is attributed from your key. "
-            "tool_suggestions here are context; suggest_tool files the registry entry."
+            "File feedback about BlueStick AT THE MOMENT you hit friction — when "
+            "you retry a call, guess a field, work around a tool, or re-read the "
+            "guide to make something work — not from memory at the end. Several "
+            "one-line submissions during a session are the norm; a session that "
+            "reaches recon_complete / execution_complete_session / end_session "
+            "with none filed is told so in the response. It is read by a coding "
+            "agent working on BlueStick itself, so write for that reader: name the "
+            "tool or endpoint, expected vs actual, the exact error text or missing "
+            "field, and what would have let you finish faster. `source` names the "
+            "kind of work: assist (queries/notes only), reconnaissance, "
+            "plan_generation, or in_session_execution; add the matching "
+            "recon_session_id / test_plan_id / execution_session_id when you have "
+            "one — the session itself is attributed from your key. tool_suggestions "
+            "here are context; suggest_tool files the registry entry."
         ),
         "method": "POST",
         "metadata_write": True,
         "additive": True,
         "path": "/api/v1/agent/feedback",
+        # Session bookkeeping, but an APPEND: a retry files a second row
+        # (v2.343.2).
+        "idempotent": False,
         "body_params": [
             "source", "prompt_version", "recon_session_id", "test_plan_id",
             "execution_session_id", "overall_rating", "api_critiques",
@@ -549,10 +574,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "host_id, or a title substring. Returns `total` and a "
             "`severity_counts` breakdown for the filter you asked about, so "
             "\"how many criticals are open?\" is one call. A finding can span "
-            "many hosts — `host_count` is how big it is; counting rows is not. "
-            "These are triaged project Findings, a different set from the raw "
-            "scanner rows assist_get_host_vulnerabilities returns; the ids do not "
-            "cross between the two."
+            "many hosts — `host_count` is distinct addresses and `endpoint_count` "
+            "affected rows (named endpoints on one IP count once as a host); "
+            "counting result rows is neither. Omit `status` (or pass 'all') for "
+            "every status — the valid values are what assist_get_vocabulary "
+            "returns. These are triaged project Findings, a different set from "
+            "the raw scanner rows assist_get_host_vulnerabilities returns; the "
+            "ids do not cross between the two."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings",
@@ -566,7 +594,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "open / triaged / confirmed / remediated / closed / false_positive, or 'all'.",
+                    "description": (
+                        "open / confirmed / false_positive / accepted_risk / remediated / "
+                        "retest (assist_get_vocabulary lists them), or 'all' / omitted "
+                        "for every status."
+                    ),
                 },
                 "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
                 "source": {"type": "string"},
@@ -580,23 +612,50 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "assist_list_host_web_interfaces": {
+        "description": (
+            "Every web interface observed on one host, as a page — the "
+            "continuation for assist_get_host, whose web_interfaces list is capped "
+            "at 10 (its web_interfaces_truncated says when). Each item carries the "
+            "URL, FQDN, title, server header, technologies and a "
+            "screenshot_download_path when EyeWitness captured one. Read has_more "
+            "and page with offset; total is the whole record (v2.343.3)."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/hosts/{host_id}/web-interfaces",
+        "path_params": ["host_id"],
+        "query_params": ["limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **HOST_ID_PROP,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "required": ["host_id"],
+            "additionalProperties": False,
+        },
+    },
     "assist_get_host_notes": {
         "description": (
             "What the team has already written about this host. Read this "
             "BEFORE adding a note — a colleague may have recorded the same "
             "observation an hour ago — and before answering \"what do we know "
             "about X\", where the answer often lives in a note rather than in "
-            "scan data. Notes carry who wrote them and whether an agent did."
+            "scan data. Notes carry who wrote them and whether an agent did. "
+            "Paged, newest first: read `total` and `has_more`, and pass `offset` "
+            "to continue — a page is not the whole record."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
         "path_params": ["host_id"],
-        "query_params": ["limit"],
+        "query_params": ["limit", "offset"],
         "input_schema": {
             "type": "object",
             "properties": {
                 **HOST_ID_PROP,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
             "required": ["host_id"],
             "additionalProperties": False,
@@ -739,8 +798,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_get_finding": {
         "description": (
             "One finding with the evidence behind it — the note a human wrote "
-            "to justify promoting it, the comment thread, the affected hosts, "
-            "and references to any attached screenshots. Use this when writing "
+            "to justify promoting it, the replies on that note's thread "
+            "(`evidence_thread`), the finding's own comment thread, the affected "
+            "hosts (with `name_id`/`fqdn` when a row is a named endpoint; "
+            "`host_count` is distinct addresses, `endpoint_count` rows), and "
+            "references to any attached screenshots. Every note says whether a "
+            "person or an agent wrote it (`actor_type`). Use this when writing "
             "a finding up: assist_list_findings gives you titles and "
             "severities, this gives you what to cite. Screenshots come back as "
             "references (filename, size, download_path), not bytes — fetch "
@@ -862,6 +925,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/recon/start",
+        # A retry opens a second run on the scope (v2.343.2).
+        "idempotent": False,
         "body_params": ["scope_id", "notes"],
         "input_schema": {
             "type": "object",
@@ -881,6 +946,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/execution-sessions/start",
+        # A retry is refused (one active run per plan) or opens a second run
+        # on a later call — either way not a converging write (v2.343.2).
+        "idempotent": False,
         "body_params": ["plan_id"],
         "input_schema": {
             "type": "object",
@@ -898,6 +966,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/test-plans",
+        # A retry creates a second draft plan (v2.343.2).
+        "idempotent": False,
         "body_params": ["title", "description"],
         "input_schema": {
             "type": "object",
@@ -1457,7 +1527,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Close the execution session with a summary. Use overall_status 'failed' "
             "when you are stopping because the engagement broke rather than because "
-            "the work finished — that distinction is what a reviewer needs."
+            "the work finished — that distinction is what a reviewer needs. The "
+            "response carries feedback_recorded: when false, submit_feedback with "
+            "this run's friction before you go on (v2.343.0)."
         ),
         "method": "POST",
         "path": "/api/v1/agent/execution-sessions/{session_id}/complete",
@@ -1495,26 +1567,35 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "The scope to work: its CIDRs, what is already known about it, the tool "
             "catalogue you may use, and a recommended scan sequence. Call this first. "
             "For big scopes the CIDR list is capped — recon_list_subnets is "
-            "authoritative, and the target files are downloads, not tools."
+            "authoritative, and the target files are downloads, not tools. "
+            "When the session has more than one open reconnaissance run, pass "
+            "recon_session_id (from start_recon) to say which."
         ),
         "method": "GET",
         "path": "/api/v1/agent/recon/context",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "query_params": ["recon_session_id"],
+        "input_schema": {
+            "type": "object",
+            "properties": {**RECON_RUN_PROP},
+            "additionalProperties": False,
+        },
     },
     "recon_list_subnets": {
         "description": (
             "The authoritative, paginated subnet list for this recon scope — use it "
-            "when recon_get_context reports the CIDRs were truncated."
+            "when recon_get_context reports the CIDRs were truncated. Pass "
+            "recon_session_id when the session has more than one open run."
         ),
         "method": "GET",
         "path": "/api/v1/agent/recon/subnets",
-        "query_params": ["limit", "offset"],
+        "query_params": ["limit", "offset", "recon_session_id"],
         "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+                **RECON_RUN_PROP,
             },
             "additionalProperties": False,
         },
@@ -1529,13 +1610,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/recon/domains",
-        "query_params": ["limit", "offset"],
+        "query_params": ["limit", "offset", "recon_session_id"],
         "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+                **RECON_RUN_PROP,
             },
             "additionalProperties": False,
         },
@@ -1544,11 +1626,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Poll an upload's parse status. Upload itself is a file POST you run with "
             "curl (see the server instructions); this is how you find out whether it "
-            "parsed, and what it produced."
+            "parsed, and what it produced. Pass recon_session_id when the session "
+            "has more than one open run."
         ),
         "method": "GET",
         "path": "/api/v1/agent/recon/jobs/{job_id}",
         "path_params": ["job_id"],
+        "query_params": ["recon_session_id"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1557,6 +1641,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "minimum": 1,
                     "description": "Job id returned by the upload.",
                 },
+                **RECON_RUN_PROP,
             },
             "required": ["job_id"],
             "additionalProperties": False,
@@ -1567,24 +1652,37 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "What this recon session has discovered so far: hosts, ports, per-host "
             "detail (capped) and derived web targets. Use it to decide the next scan "
             "and to report progress. For the complete lists, use the downloads it "
-            "points at rather than paging through here."
+            "points at rather than paging through here. Pass recon_session_id when "
+            "the session has more than one open run."
         ),
         "method": "GET",
         "path": "/api/v1/agent/recon/summary",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "query_params": ["recon_session_id"],
+        "input_schema": {
+            "type": "object",
+            "properties": {**RECON_RUN_PROP},
+            "additionalProperties": False,
+        },
     },
     "recon_complete": {
         "description": (
             "Close the recon session with a closing note — coverage achieved, ranges "
             "you could not reach, anything the planning stage should know. This is the "
-            "handoff to stage 2, so write it for the next reader."
+            "handoff to stage 2, so write it for the next reader. The response carries "
+            "feedback_recorded: when false, submit_feedback with this run's friction "
+            "before you go on (v2.343.0)."
         ),
         "method": "POST",
         "path": "/api/v1/agent/recon/complete",
         "body_params": ["notes"],
+        # The selector rides as a query parameter on the POST, which is how
+        # _load_recon_session reads it (v2.343.2 — external review, finding 5:
+        # two open runs left every recon tool answering ambiguous_recon_run
+        # and asking for an argument the tools did not accept).
+        "query_params": ["recon_session_id"],
         "input_schema": {
             "type": "object",
-            "properties": {"notes": {"type": "string"}},
+            "properties": {"notes": {"type": "string"}, **RECON_RUN_PROP},
             "additionalProperties": False,
         },
     },
@@ -1665,10 +1763,22 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     # first.  readOnlyHint stays false — it does write — but that is the honest
     # limit; destructiveHint is the flag that gates auto-approval.
     metadata_write = bool(spec.get("metadata_write"))
+    # idempotentHint answers one question: is a RETRY safe?  The inference
+    # below ("a non-additive write converges") is right for updates and for
+    # completions, and wrong for anything that CREATES — create_test_plan,
+    # start_recon, start_execution each mint a new row per call, and feedback
+    # is an append even though it is session bookkeeping.  v2.343.2 (external
+    # review, finding 8): a spec says so explicitly with ``"idempotent": False``
+    # and the builder honours it; destructiveHint is untouched, because that is
+    # the flag clients gate auto-approval on and the creators should keep
+    # asking.
+    idempotent = spec.get("idempotent")
+    if idempotent is None:
+        idempotent = (not additive) or metadata_write
     ann: Dict[str, Any] = {
         "readOnlyHint": not is_write,
         "destructiveHint": is_write and not additive and not metadata_write,
-        "idempotentHint": (not additive) or metadata_write,
+        "idempotentHint": bool(idempotent),
         "openWorldHint": False,
     }
     return ann

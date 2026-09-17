@@ -240,6 +240,29 @@ describe('McpReference', () => {
     expect(block.textContent).not.toMatch(/curl -sk \/api/);
   });
 
+  it('gives a Windows operator without WSL a PowerShell path to the same trust anchor', async () => {
+    // The script is bash. Before v5.217.0 the Windows operator had nothing:
+    // no bash to run it in, and the "add the exports to your profile" step
+    // would not reach a client launched from the Start menu anyway.
+    renderPage();
+    await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
+
+    const block = screen.getByText(/curl\.exe -sk .*tls-certificate -o/);
+    // curl.exe, because bare curl in PowerShell is an Invoke-WebRequest alias.
+    expect(block.textContent).toContain(
+      'curl.exe -sk https://bluestick.example/api/v1/references/tls-certificate',
+    );
+    // A per-user variable, not a profile export — that is the Windows-specific part.
+    expect(block.textContent).toContain('setx NODE_EXTRA_CA_CERTS');
+    // setx affects future windows only, so the current shell is set as well —
+    // a client launched from this same window would otherwise still refuse.
+    expect(block.textContent).toContain('$env:NODE_EXTRA_CA_CERTS =');
+    // Never the switch-verification-off escape hatch.
+    expect(block.textContent).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
+    // Codex is routed to WSL rather than given an unverified native recipe.
+    expect(screen.getByText(/run Codex inside WSL/)).toBeInTheDocument();
+  });
+
   it('degrades to the static guidance when the catalog cannot be loaded', async () => {
     getMcpTools.mockRejectedValue(new Error('boom'));
     renderPage();

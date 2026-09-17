@@ -212,6 +212,135 @@ describe('ProjectActivity', () => {
     expect(close).toBeEnabled();
   });
 
+  // v5.219.0 — the End flow hands the operator a wrap-up prompt while the
+  // agent is still reachable (feedback + clean exit come from the agent, not
+  // from the UI), and ended rows say how they ended and whether they filed
+  // feedback.
+  it('offers a wrap-up prompt before ending a live session and labels ended rows', async () => {
+    const user = userEvent.setup();
+    const liveRow = {
+      kind: 'project' as const,
+      id: 78,
+      project_id: 1,
+      agent_id: 7,
+      agent_name: "alice's-agent",
+      user_id: 3,
+      user_username: 'alice',
+      status: 'active',
+      started_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+      completed_at: null,
+      generated_by_model: null,
+      generated_by_tool: null,
+      prompt_version: '2.5.0',
+      scope_id: null,
+      test_plan_id: null,
+      purpose: 'live one',
+      key_expires_at: new Date(Date.now() + 1000 * 60 * 60 * 20).toISOString(),
+      renewable_until: new Date(Date.now() + 1000 * 60 * 60 * 24 * 6).toISOString(),
+      end_reason: null,
+      feedback_count: 0,
+    };
+    const lapsedRow = {
+      ...liveRow,
+      id: 79,
+      status: 'ended',
+      purpose: 'lapsed one',
+      completed_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+      key_expires_at: null,
+      end_reason: 'lapsed',
+      feedback_count: 0,
+    };
+    const cleanRow = {
+      ...liveRow,
+      id: 80,
+      status: 'ended',
+      purpose: 'clean one',
+      completed_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+      key_expires_at: null,
+      end_reason: 'agent',
+      feedback_count: 2,
+    };
+    mockedApi.listAgentSessions.mockResolvedValue({
+      project_id: 1,
+      sessions: [liveRow, lapsedRow, cleanRow],
+      total: 3,
+    });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+    mockedApi.getAgentActivitySummary.mockResolvedValue({
+      window_days: 14,
+      total_calls: 12,
+      distinct_agents: 1,
+      first_call_at: null,
+      last_call_at: null,
+      status_breakdown: { success: 12, client_error: 0, server_error: 0, other: 0 },
+      by_workflow: [],
+      daily: [],
+      busiest_sessions: [],
+      session_hygiene: {
+        sessions_started: 3,
+        sessions_active: 1,
+        sessions_ended: 2,
+        ended_by_agent: 1,
+        ended_by_operator: 0,
+        lapsed: 1,
+        sessions_with_feedback: 1,
+      },
+    });
+
+    renderPage();
+    await screen.findByText(/live one/);
+
+    // Ended rows say how they ended and whether they said anything.
+    expect(screen.getByText('lapsed (never ended) · no feedback')).toBeInTheDocument();
+    expect(screen.getByText('ended by agent · 2 feedback')).toBeInTheDocument();
+
+    // The hygiene strip reads off the summary, not the page of rows.
+    expect(screen.getByText('Session hygiene')).toBeInTheDocument();
+    expect(screen.getByText('1 · 50%')).toBeInTheDocument(); // ended by the agent, of 2 ended
+    expect(screen.getByText('1 · 33%')).toBeInTheDocument(); // filed feedback, of 3 started
+
+    // End on the live row shows the wrap-up prompt first.
+    await user.click(screen.getByLabelText('End agent session 78'));
+    await screen.findByText(/Agent still connected\? Paste this to it first/);
+    expect(screen.getByText(/We are done with this BlueStick session/)).toBeInTheDocument();
+    expect(screen.getByText(/submit_feedback/)).toBeInTheDocument();
+    expect(mockedApi.endAgentSession).not.toHaveBeenCalled();
+  });
+
+  // Review (v5.219.1): the card returned early on zero calls, before the
+  // hygiene strip — hiding exactly the sessions whose agent never connected.
+  it('shows session hygiene even when no API calls were recorded', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+    mockedApi.getAgentActivitySummary.mockResolvedValue({
+      window_days: 14,
+      total_calls: 0,
+      distinct_agents: 0,
+      first_call_at: null,
+      last_call_at: null,
+      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
+      by_workflow: [],
+      daily: [],
+      busiest_sessions: [],
+      session_hygiene: {
+        sessions_started: 2,
+        sessions_active: 0,
+        sessions_ended: 2,
+        ended_by_agent: 0,
+        ended_by_operator: 0,
+        lapsed: 2,
+        sessions_with_feedback: 0,
+      },
+    });
+
+    renderPage();
+    await screen.findByText(/No agent API calls recorded/);
+    expect(screen.getByText('Session hygiene')).toBeInTheDocument();
+    expect(screen.getByText('Lapsed (never ended)')).toBeInTheDocument();
+    // "0 · 0%" twice: agent exits of 2 ended, and feedback of 2 started.
+    expect(screen.getAllByText('0 · 0%')).toHaveLength(2);
+  });
+
   it('renders both workflows side by side with model + user attribution', async () => {
     mockedApi.listAgentSessions.mockResolvedValueOnce({
       project_id: 1,

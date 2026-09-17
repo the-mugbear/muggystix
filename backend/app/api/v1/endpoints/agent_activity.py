@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, get_current_user
 from app.db.session import get_db
-from app.db.models_agent import AgentApiCall, Agent, AssistSession
+from app.db.models_agent import AgentApiCall, Agent, AgentFeedback, AgentSession, AssistSession
 from app.db.models_auth import User
 from app.db.models_project import Project
 
@@ -229,6 +229,20 @@ class AgentActivitySessionRow(BaseModel):
     last_activity: Optional[datetime] = None
 
 
+class AgentSessionHygiene(BaseModel):
+    """v2.343.0 — do sessions exit cleanly, and do they say anything on the
+    way out?  The feedback loop depends on both; until now neither was
+    measured, so a prompt change aimed at either could not be evaluated.
+    Counted over sessions STARTED in the window, independent of call volume."""
+    sessions_started: int = 0
+    sessions_active: int = 0
+    sessions_ended: int = 0
+    ended_by_agent: int = 0      # POST /agent/session/end — the clean exit
+    ended_by_operator: int = 0   # End on Agent Runs / the sessions panel
+    lapsed: int = 0              # the sweep, past the renewal window
+    sessions_with_feedback: int = 0
+
+
 class AgentActivitySummary(BaseModel):
     window_days: int
     total_calls: int
@@ -239,6 +253,39 @@ class AgentActivitySummary(BaseModel):
     by_workflow: List[AgentActivityWorkflowCount]
     daily: List[AgentActivityDayBucket]
     busiest_sessions: List[AgentActivitySessionRow]
+    session_hygiene: AgentSessionHygiene = Field(default_factory=AgentSessionHygiene)
+
+
+def _session_hygiene(db: Session, project_id: int, window_start: datetime) -> AgentSessionHygiene:
+    """Three small aggregates over ``agent_sessions`` for the window."""
+    in_window = [AgentSession.project_id == project_id, AgentSession.started_at >= window_start]
+    started = db.query(func.count(AgentSession.id)).filter(*in_window).scalar() or 0
+    active = (
+        db.query(func.count(AgentSession.id))
+        .filter(*in_window, AgentSession.status == "active")
+        .scalar() or 0
+    )
+    by_reason = dict(
+        db.query(AgentSession.end_reason, func.count(AgentSession.id))
+        .filter(*in_window, AgentSession.status != "active")
+        .group_by(AgentSession.end_reason)
+        .all()
+    )
+    with_feedback = (
+        db.query(func.count(func.distinct(AgentFeedback.agent_session_id)))
+        .join(AgentSession, AgentSession.id == AgentFeedback.agent_session_id)
+        .filter(*in_window)
+        .scalar() or 0
+    )
+    return AgentSessionHygiene(
+        sessions_started=int(started),
+        sessions_active=int(active),
+        sessions_ended=int(sum(by_reason.values())),
+        ended_by_agent=int(by_reason.get("agent", 0)),
+        ended_by_operator=int(by_reason.get("operator", 0)),
+        lapsed=int(by_reason.get("lapsed", 0)),
+        sessions_with_feedback=int(with_feedback),
+    )
 
 
 # Priority-ordered workflow label.  A row can carry several session FKs
@@ -282,6 +329,7 @@ def get_agent_activity_summary(
     )
 
     total_calls = base.count()
+    hygiene = _session_hygiene(db, project.id, window_start)
     if total_calls == 0:
         return AgentActivitySummary(
             window_days=window_days,
@@ -291,6 +339,7 @@ def get_agent_activity_summary(
             by_workflow=[],
             daily=[],
             busiest_sessions=[],
+            session_hygiene=hygiene,
         )
 
     distinct_agents = (
@@ -393,6 +442,7 @@ def get_agent_activity_summary(
         by_workflow=by_workflow,
         daily=daily,
         busiest_sessions=busiest,
+        session_hygiene=hygiene,
     )
 
 

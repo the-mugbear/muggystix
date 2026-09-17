@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Bot, Radar, ClipboardCheck, TerminalSquare, MessagesSquare } from 'lucide-react';
+import { Bot, KeyRound, Radar, ClipboardCheck, MessagesSquare } from 'lucide-react';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import {
   UserGuideShell,
@@ -13,6 +13,16 @@ import {
   Mono,
 } from './UserGuideShell';
 
+/**
+ * Agents guide — rewritten for the unified session (v2.337.0+, v5.218.0).
+ *
+ * The previous text described four workflow-locked keys, a 4-hour assist TTL
+ * and an Assist that could never scan or plan. None of that is true any more:
+ * one project-scoped session does every kind of work within the operator's
+ * own role, the key TTL is the deployment's setting (24 h unless changed),
+ * renewal keeps the same key, and sessions have an explicit end and a resume.
+ * Every claim below was checked against the endpoint or component it names.
+ */
 const sections: GuideSection[] = [
   {
     id: 'how-agents-work',
@@ -22,69 +32,130 @@ const sections: GuideSection[] = [
     content: (
       <div>
         <Para>
-          BlueStick lets you connect an AI assistant of your choice (Claude Code, Codex, ChatGPT, …)
-          to work alongside you. The agent is a <strong>coordinator, not an executor</strong>: it
-          reads project data and proposes commands, but every target-touching command runs in{' '}
-          <em>your</em> terminal under your approval, and every API call it makes is recorded.
+          BlueStick lets you connect an AI assistant of your choice (Claude Code, Codex, VS Code
+          Copilot, or anything that can call an HTTPS API) to work alongside you. The agent is a{' '}
+          <strong>coordinator, not an executor</strong>: it reads project data and proposes
+          commands, but every target-touching command runs in <em>your</em> terminal under your
+          approval, and every API call it makes is recorded.
         </Para>
-        <Subhead>Four workflows, four keys</Subhead>
+        <Subhead>One session, one key, four kinds of work</Subhead>
         <Para>
-          Each workflow is started from the UI, which mints a <strong>scope-bound, time-limited API
-          key</strong> and a copy-pasteable instructions block. The key is locked to exactly one
-          workflow — cross-workflow calls are rejected — and to one project:
+          A session is bound to <strong>one project</strong> and mints <strong>one API key</strong>{' '}
+          (<Mono>X-API-Key: nm_agent_…</Mono>). That single session answers questions about the
+          inventory by default and can <strong>open a phase</strong> to do more — a
+          reconnaissance run on a scope, a draft test plan, or an execution run on an approved
+          plan. A session may open several phases over its life, and each is linked back to it.
         </Para>
+        <Para>Four buttons start a session; they differ only in which phase is already open:</Para>
         <UnorderedList>
-          <li><strong>Reconnaissance</strong> — populate host data for a scope from scanner output (Scopes → <em>Start Agentic Recon</em>).</li>
-          <li><strong>Test plan generation</strong> — draft a structured test plan from already-scanned hosts (Test Plans → <em>Generate with AI</em>).</li>
-          <li><strong>Execution</strong> — work through an approved plan with per-test approval (<em>Execute with AI</em> on an approved plan).</li>
-          <li><strong>AI Assist</strong> — ask-anything queries over your project, acting with your own permissions (Operations → <em>AI Assist</em>).</li>
+          <li><strong>Operations → <em>Start Agent Session</em></strong> — a plain session; the agent queries the project and opens phases as you ask.</li>
+          <li><strong>Scopes → <em>Start Agentic Recon</em></strong> (also on Recon Runs, and the Operations setup card) — a session with a reconnaissance run on that scope already open.</li>
+          <li><strong>Test Plans → <em>Generate with AI</em></strong> — a session with a draft plan already created.</li>
+          <li><strong><em>Execute with AI</em></strong> on an approved plan — a session with an execution run already open.</li>
         </UnorderedList>
         <Para>
-          The agent reads its full contract from <strong>AGENTS.md</strong> (downloadable from the
-          Reference page; the deployment-specific URL is baked into each instructions block). You
-          authenticate with <Mono>X-API-Key: nm_agent_…</Mono>.
+          Whichever you use, the dialog shows the key <strong>once</strong>, plus two ways to hand it
+          over: <em>Connect via MCP</em> (the tools appear natively in your client) or{' '}
+          <em>Paste the prompt</em> (the agent drives the same session with curl). The agent reads
+          its full contract from <strong>AGENTS.md</strong>, downloadable from the Reference page and
+          served per-workflow at the URL baked into every prompt.
         </Para>
         <Subhead>What a key is allowed to do</Subhead>
         <Para>
-          A key carries <strong>your</strong> permissions on the project, re-checked on every single
-          call — not frozen at the moment it was minted. If your project role changes, or you are
-          removed from the project, or your account is disabled, the key follows immediately rather
-          than staying powerful until it expires. An auditor's agent is read-only for the same
-          reason yours is not: because that is what <em>they</em> can do.
+          A key carries <strong>your</strong> permissions on the project, <strong>re-checked on
+          every call</strong> — not frozen when it was minted. If your project role changes, you
+          leave the project, or your account is disabled, the key follows immediately.
         </Para>
+        <UnorderedList>
+          <li><strong>Reads</strong> need current project membership — a viewer's agent sees what a viewer sees.</li>
+          <li><strong>Bulk exports</strong> (the whole-project dossier, host dumps, target lists, evidence files) need <strong>auditor</strong>, the same floor the Reports and Export pages have.</li>
+          <li><strong>Writes</strong> to project data — uploads, plan entries, test results, notes, corrections — need <strong>analyst</strong>. A 403 on a write is the guardrail working, not a fault.</li>
+          <li>Reporting its environment, renewing its key, and filing feedback are about the session, not the project, so any member's agent can do them.</li>
+          <li>Starting a plain session needs <strong>auditor</strong>; the three buttons that open a phase need <strong>analyst</strong>, because the phase changes project state.</li>
+        </UnorderedList>
+        <Para>Treat the key like a password with an expiry date. It is exactly as capable as you are.</Para>
+        <Subhead>What runs without asking, and what stops</Subhead>
         <Para>
-          Bulk exports are held to the same bar a person is. Pulling the whole-project dossier, a
-          host dump, or evidence files needs <strong>auditor</strong> — the role the equivalent
-          Reports and Export pages already require. An agent cannot be used to get data its
-          operator would be refused in the UI.
+          Before the agent acts, it must <strong>say the bounds back</strong> in its own words —
+          which project, which scope or plan, which directory, what it will run unprompted and what
+          it will stop for. It gets a second, concrete read-back when it opens a phase (the scope's
+          CIDRs, the plan's hosts). A command may run <strong>without waiting for your approval</strong>{' '}
+          only when all three hold:
         </Para>
+        <OrderedList>
+          <li>The tool is in BlueStick's <Link to="/tool-reference" className="underline">approved set</Link>. Anything else it must ask for — <Mono>suggest_tool</Mono> records the gap for an admin to vet.</li>
+          <li>The target is a host already in the inventory (or a name a declared in-scope domain covers). An address a name resolves to is not thereby in scope.</li>
+          <li>The output lands in the session's working directory.</li>
+        </OrderedList>
         <Para>
-          Treat the key itself like a password with an expiry date. It is as capable as you are.
+          Everything else — writing elsewhere, installing software, an unapproved tool, a host it
+          inferred — stops and asks. <strong>BlueStick cannot enforce this.</strong> Commands run on
+          your machine and the server sees only what the agent reports; the real boundary is your
+          client's sandbox, and the session dialog hands you the flags that set it. What the server
+          adds is the record.
         </Para>
-        <Subhead>When a key expires mid-run</Subhead>
+        <Subhead>The environment probe</Subhead>
         <Para>
-          Recon in particular can outlive its key: the agent starts nmap, masscan, or Nessus, waits
-          hours for it to finish, and only discovers the key has lapsed when it tries to upload the
-          results — with all the scanning already done.
-        </Para>
-        <Para>
-          That case is handled and <strong>no work is lost</strong>. While the session is still open,
-          the agent renews the key itself — same key, later deadline — and retries the upload. You do
-          not have to do anything, and the agent should never re-run a scan because of it. Renewal
-          keeps working until the session reaches its maximum lifetime (7 days by default); after
-          that, or once you end the session, the key is finished and you start a new one.
-        </Para>
-        <Para>
-          <strong>Ending the session is what revokes a key</strong> — it takes effect immediately.
-          Waiting for expiry is not a revocation, because an open session can renew past it.
+          A session's first call reports the operator's environment once — OS family, shell,
+          PowerShell policy, WSL, tools on PATH. That probe rides into every run the session opens,
+          so the same test intent becomes the right command for Kali and for Windows + RemoteSigned.
         </Para>
         <Alert variant="info" className="mt-sm">
           <AlertDescription>
-            Every <Mono>/agent/*</Mono> call is logged and surfaced back to you (filterable by host,
-            target IP, and status code), so you can verify exactly what the agent did. Agents can
-            never approve their own plans or reach user/admin surfaces.
+            Every <Mono>/agent/*</Mono> call is logged. <strong>Workflows → Agent Runs</strong> shows
+            each session and the runs it opened; <strong>Workflows → Agent Sessions</strong> shows
+            what a session read and wrote; <strong>Collaboration → Tool Activity</strong> answers
+            "which agent touched this host"; a plan's <em>API activity</em> tab filters by host,
+            target IP and status code. Agents can never approve their own plans or reach user or
+            admin surfaces.
           </AlertDescription>
         </Alert>
+      </div>
+    ),
+  },
+  {
+    id: 'session-lifecycle',
+    title: 'Keys, renewal, ending and resuming',
+    Icon: KeyRound,
+    summary: 'Expiry is not the control — ending is. A dead agent process has a way back.',
+    content: (
+      <div>
+        <Subhead>Expiry and renewal</Subhead>
+        <Para>
+          The key's lifetime is the deployment's setting (<Mono>AGENT_KEY_TTL_HOURS</Mono>, 24 hours
+          unless changed); the start dialog shows the value in effect. Recon in particular can
+          outlive it: the agent starts nmap, masscan or Nessus, waits hours, and only discovers the
+          key has lapsed when it tries to upload — with all the scanning already done.
+        </Para>
+        <Para>
+          That case is handled and <strong>no work is lost</strong>. While the session is open the
+          agent renews the key itself — <strong>the same key, a later deadline</strong>, and
+          renewal is accepted even after expiry, so it never has to be re-bootstrapped mid-job.
+          Renewal keeps working until the session reaches its maximum lifetime (7 days by default).
+          You do not have to do anything, and the agent should never re-run a scan because of it.
+        </Para>
+        <Subhead>Ending</Subhead>
+        <Para>
+          <strong>Ending the session is what revokes the key</strong>, and it takes effect
+          immediately. Waiting for expiry is not a revocation, because an open session can renew
+          past it. A session does not end on its own until the lifetime cap:
+        </Para>
+        <UnorderedList>
+          <li><strong>The agent ends it</strong> — its contract makes <Mono>POST /agent/session/end</Mono> (MCP <Mono>end_session</Mono>) the mandatory last step, after closing any recon or execution run it has open.</li>
+          <li><strong>You end it</strong> — <em>End</em> on the session's row under Workflows → Agent Runs, or from the sessions panel in the start dialog. The session's owner or a project admin can end it; peers cannot cut off each other's agents.</li>
+        </UnorderedList>
+        <Subhead>Resuming after the agent process dies</Subhead>
+        <Para>
+          If the terminal closes or the agent hangs, the session is still open. <em>Resume</em> on
+          its row under Agent Runs <strong>rotates the key</strong> — the previous one is revoked,
+          the same session and its open runs are kept — and hands you the prompt and MCP setup
+          again, with a notice telling the new agent to check the working directory for output the
+          old one never uploaded and to read each open run's progress before continuing.
+        </Para>
+        <Para>
+          A run that is genuinely dead can be marked <em>Abandoned</em> from its Recon Runs or
+          Executions row (analyst); results already submitted stay.
+        </Para>
       </div>
     ),
   },
@@ -96,20 +167,22 @@ const sections: GuideSection[] = [
     content: (
       <div>
         <Para>
-          Start from <strong>Scopes → Start Agentic Recon</strong>. The agent's job is to{' '}
-          <strong>populate BlueStick's host database</strong> for a scope: it reads the scope's CIDRs
-          and a suggested tool sequence, runs scanners locally (nmap, masscan, rustscan, httpx, …),
-          uploads the raw output for parsing, and iterates until the scope is characterised.
+          <strong>Scopes → Start Agentic Recon</strong> opens a session with a reconnaissance run on
+          that scope; a session that is already running can open one itself when you ask. The
+          agent's job is to <strong>populate BlueStick's host database</strong> for the scope: it
+          reads the CIDRs and in-scope domains, runs scanners locally (nmap, masscan, rustscan,
+          httpx, …) from its working directory, uploads the raw output for parsing, and iterates
+          until the scope is characterised.
         </Para>
         <OrderedList>
-          <li>The agent fetches scope context — CIDRs, size analysis, and a recommended tool sequence tuned to scope size.</li>
-          <li>It proposes each scanner command for your approval, runs it locally, and uploads the machine-readable output.</li>
-          <li>BlueStick parses each upload through the same ingestion pipeline as a manual upload, deduping into your hosts.</li>
-          <li>It polls progress and repeats across the scope, then closes the session.</li>
+          <li>The run's start response carries the scope's CIDRs, a size analysis, a recommended tool sequence, and the read-back the agent must state before scanning.</li>
+          <li>Approval is <strong>plan-level</strong>: non-intrusive approved tools against in-scope hosts run without a prompt each; intrusive tools (nikto, nuclei, full-port or credentialed scans) and anything outside the bounds ask per command.</li>
+          <li>Each upload goes through the same ingestion pipeline as a manual upload and dedupes into your hosts; the agent polls the job and fixes parse failures it caused.</li>
+          <li>It reads the run summary, repeats across the scope, and calls <Mono>/agent/recon/complete</Mono>.</li>
         </OrderedList>
         <Para>
-          Results land on your <strong>Hosts</strong> and <strong>Scans</strong> pages like any other
-          ingest; the run itself is visible under <strong>Workflows → Recon Runs</strong>.
+          Results land on <strong>Hosts</strong> and <strong>Scans</strong> like any other ingest; the
+          run itself is under <strong>Recon Runs</strong>, and its session under Agent Runs.
         </Para>
       </div>
     ),
@@ -122,31 +195,35 @@ const sections: GuideSection[] = [
     content: (
       <div>
         <Para>
-          A <strong>test plan</strong> is a prioritised, per-host list of validation/exploitation
-          tests against already-known services. Generation and execution are two separate, human-gated
-          steps.
+          A <strong>test plan</strong> is a prioritised, per-host list of validation and
+          exploitation tests against already-known services. Generation and execution are two
+          separate, human-gated steps.
         </Para>
         <Subhead>Generation</Subhead>
         <Para>
-          From <strong>Test Plans → Generate with AI</strong>, the agent reviews candidate hosts and
-          drafts entries — each with a host, priority, test phase, and structured proposed tests (tool,
-          command, expected result, references) — then submits the plan for human review.
+          <strong>Test Plans → Generate with AI</strong> creates a draft plan and a session bound to
+          it (a running session can also create one). The agent reviews candidate hosts and drafts
+          entries — each with a host, priority, test phase, and structured proposed tests (tool,
+          command, expected result, references) — validates coverage, and submits the plan for
+          human review. It may only propose tools from the approved set.
         </Para>
         <Subhead>Approval &amp; execution</Subhead>
         <Para>
-          You review and <strong>approve or reject</strong> (agents can never self-approve). On an
-          approved plan, <strong>Execute with AI</strong> drives execution with three safety layers:
+          An analyst <strong>approves or rejects</strong>; an agent that tries to approve gets a 403.
+          On an approved plan, <strong>Execute with AI</strong> opens an execution run — the one gate
+          the unified session kept is that the plan must be human-approved — with three safety
+          layers:
         </Para>
         <UnorderedList>
-          <li><strong>Per-test approval</strong> — every command is presented for yes / modify / skip / abort before it runs.</li>
-          <li><strong>Per-host sanity check</strong> — the target is verified (reverse DNS + a banner grab on a known port) before any test, so you never test the wrong host.</li>
-          <li><strong>Audit trail</strong> — every attempt, sanity check, and result is recorded; progress is visible live under <strong>Workflows → Executions</strong>.</li>
+          <li><strong>Per-test approval</strong> — every command is presented as yes / modify / skip / abort before it runs.</li>
+          <li><strong>Per-host sanity check</strong> — before any test on a host the agent verifies the target (a reverse-DNS lookup plus a banner grab on one known-open port, never a re-scan) and records the result; a failed check needs an explicit override reason to proceed.</li>
+          <li><strong>Audit trail</strong> — every attempt, sanity check and result is recorded against the session that made it; progress is live under <strong>Executions</strong> and on the plan's Runs tab.</li>
         </UnorderedList>
         <Para>
           Once a plan is approved (or execution has started), its proposed-test list is{' '}
           <strong>locked</strong> — results reference tests by position, so changing the list would
-          mis-attribute evidence. Revise while still in Draft/Proposed, or clone the plan for a fresh
-          revision. You can also build plans manually for offline workflows.
+          mis-attribute evidence. Revise while still Draft or Proposed, or clone the plan for a fresh
+          revision. Plans can also be built by hand for offline workflows.
         </Para>
       </div>
     ),
@@ -155,14 +232,15 @@ const sections: GuideSection[] = [
     id: 'assist',
     title: 'AI Assist — ask anything about your project',
     Icon: MessagesSquare,
-    summary: 'An agent that answers ad-hoc questions over all your project data, acting with your own permissions.',
+    summary: 'The default mode of every session: questions over all your project data, acting with your own permissions.',
     content: (
       <div>
         <Para>
-          <strong>AI Assist</strong> (Operations → <em>AI Assist</em>) connects an AI of your choice
-          as a <strong>research partner</strong> over your whole project. No scanning, no
-          plan creation, no execution — it answers questions by querying BlueStick's already-ingested
-          data and citing what it read, and it can annotate what it finds if you can.
+          Every session starts in <strong>Assist</strong> mode: no phase open, the agent answers
+          questions by querying BlueStick's already-ingested data and citing what it read. Start
+          one from <strong>Operations → Start Agent Session</strong>. If you ask it to scan, draft a
+          plan or execute, it opens the matching phase (within your role) rather than telling you
+          to use another screen.
         </Para>
         <Subhead>What you can ask</Subhead>
         <Para>
@@ -176,30 +254,64 @@ const sections: GuideSection[] = [
           <li>"Show me the hosts I have in review" → <Mono>follow:in_review</Mono>.</li>
           <li>"What's assigned to me?" → <Mono>assigned:me</Mono>.</li>
           <li>"Which hosts are exposed to Log4Shell?" → <Mono>cve:CVE-2021-44228 OR vuln:"log4j"</Mono>.</li>
+          <li>Project-wide questions have their own tools — finding counts by severity, unowned findings, coverage, the worst segment, posture and patterns — so totals are computed once rather than rebuilt from per-host pages.</li>
         </UnorderedList>
-        <Subhead>How it's bounded</Subhead>
+        <Subhead>What it can write</Subhead>
         <UnorderedList>
-          <li><strong>It can do what you can do</strong> — the session acts with your own permissions on the project, re-checked on every call. It can add notes, set review status, and correct hostname/OS; if your role is read-only, so is it. Scanning, plan creation, and execution are never available from Assist, whatever your role.</li>
-          <li><strong>Project-scoped</strong> — it sees all hosts in the one project you started it from, and nothing in other projects.</li>
-          <li><strong>Short-lived, but recoverable</strong> — assist keys expire quickly (4h by default) and can be ended at any time. If a key lapses while the session is still open, the agent renews it itself and carries on — see <em>When a key expires mid-run</em> below.</li>
-          <li><strong>Who can start one</strong> — auditor role or above. Recon, plan generation and execution still require analyst, because they exist to change project state.</li>
-          <li><strong>It can only do what you can do</strong> — the key acts with <em>your</em> permissions on the project, re-checked on every call. If your role changes or you leave the project, the key follows immediately.</li>
+          <li><strong>Notes</strong> on a host — attributed to you and marked with an <em>Agent</em> badge, so "did a person assert this?" stays answerable when notes feed findings and reports.</li>
+          <li><strong>Review status</strong> — it may move a host you are following, but never marks a host <em>reviewed</em> on its own initiative.</li>
+          <li><strong>Hostname / OS corrections</strong> — only when its investigation established the real value, with a note citing the evidence.</li>
         </UnorderedList>
+        <Para>
+          All of that needs analyst; an auditor's or viewer's session is read-only because they are.
+          It sees every host in the one project it was started from and nothing in other projects.
+        </Para>
         <Subhead>Connecting without the prompts</Subhead>
         <Para>
-          Driving Assist over <Mono>curl</Mono> means your assistant asks permission for every
-          single command, including pure reads. Connect it over <strong>MCP</strong> instead and the
-          read tools can be marked "always allow" once — see{' '}
-          <Link to="/reference/mcp" className="underline">MCP for AI Assist</Link> for the setup and
-          the full tool list.
+          Driving a session over <Mono>curl</Mono> means your assistant asks permission for every
+          command, including pure reads. Connect it over <strong>MCP</strong> instead — one{' '}
+          <Mono>bluestick</Mono> server entry serves every tool — and the read tools can be marked
+          "always allow" once. See{' '}
+          <Link to="/reference/mcp" className="underline">MCP for AI Assist</Link> for the per-client
+          setup, the certificate step, and the full tool list.
         </Para>
-        <Alert variant="info" className="mt-sm">
-          <AlertDescription>
-            Assist runs on any OS — its "commands" are HTTPS API calls, so Windows, macOS, and Linux
-            operators are all first-class. When you ask it to do something it can't (scan, create a
-            plan, change status), it tells you which UI surface to use instead.
-          </AlertDescription>
-        </Alert>
+        <Subhead>On Windows</Subhead>
+        <Para>
+          Assist needs no scanner toolchain — its "commands" are HTTPS API calls — so a Windows
+          operator without WSL is fully served. Four things differ from the Linux/macOS path the
+          rest of this page assumes:
+        </Para>
+        <UnorderedList>
+          <li>
+            <strong>The HTTP client.</strong> In PowerShell, bare <Mono>curl</Mono> is an alias for{' '}
+            <Mono>Invoke-WebRequest</Mono> and rejects curl's flags. The pasted prompt says so; the
+            agent should use <Mono>curl.exe -sk</Mono> or{' '}
+            <Mono>Invoke-RestMethod -SkipCertificateCheck</Mono>, and build JSON bodies with{' '}
+            <Mono>ConvertTo-Json</Mono> rather than bash single quotes.
+          </li>
+          <li>
+            <strong>The certificate.</strong> The trust installer is a bash script. Without WSL,
+            download the PEM with <Mono>curl.exe</Mono>, compare its SHA-256 with the fingerprint
+            shown on the MCP reference page, and store <Mono>NODE_EXTRA_CA_CERTS</Mono> with{' '}
+            <Mono>setx</Mono> so it is a per-user variable — VS Code or Claude Code launched from
+            the Start menu never reads a shell profile, which is why the "add the exports to your
+            profile" step does nothing on Windows. The exact PowerShell lines are in the start
+            dialog's certificate step and on{' '}
+            <Link to="/reference/mcp" className="underline">MCP for AI Assist</Link>.
+          </li>
+          <li>
+            <strong>Codex.</strong> Its certificate pin (<Mono>SSL_CERT_DIR</Mono>) has only been
+            verified on Linux and macOS, and its key-entry line (<Mono>read -rs</Mono>) is bash. On
+            Windows, run Codex inside WSL and follow the Linux steps there.
+          </li>
+          <li>
+            <strong>The environment probe</strong> still comes first, but for Assist it only needs{' '}
+            <Mono>os_family: windows</Mono> and the shell — there is no tool inventory or preflight
+            to report. Recon and execution on Windows do need one, and the agent's contract tells it
+            how to build the tool list with <Mono>Get-Command</Mono> when there is no bash to run
+            the preflight script.
+          </li>
+        </UnorderedList>
       </div>
     ),
   },
@@ -211,8 +323,9 @@ const AgentsGuide: React.FC = () => (
       intro={
         <span>
           BlueStick provides templates, guardrails, and an audit trail; your AI of choice does the
-          coordinating, and you approve the actions. Four workflows, from populating data to asking
-          questions about it.
+          coordinating, and you approve the actions. One project session covers everything — from
+          asking questions about the data to populating it, planning against it, and executing an
+          approved plan.
         </span>
       }
       sections={sections}

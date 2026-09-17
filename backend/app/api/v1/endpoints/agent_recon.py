@@ -91,37 +91,45 @@ def _download_manifest(session_id: int) -> ReconDownloads:
     The ``curl`` strings are ready to run: they carry the API key header
     and redirect to a file, because the entire point is that these bodies
     land on disk rather than in the agent's context.
+
+    v2.343.3 (review) — every URL names the run (``?recon_session_id=N``).
+    The manifest used to take ``session_id`` and ignore it, so with two runs
+    open the links answered 400 ``ambiguous_recon_run``, and once the selected
+    run was completed while another stayed active, the same link silently
+    downloaded the OTHER run's data.  Naming the run costs nothing on a
+    single-run session and is the only correct answer on a multi-run one.
     """
     base = "/api/v1/agent/recon"
+    sel = f"?recon_session_id={session_id}"
     auth = '-H "X-API-Key: $BLUESTICK_API_KEY"'
     return ReconDownloads(
         hosts_ndjson=ReconDownload(
-            url=f"{base}/hosts.ndjson",
+            url=f"{base}/hosts.ndjson{sel}",
             media_type="application/x-ndjson",
             description=(
                 "Every in-scope host this session discovered, one JSON object "
                 "per line (host_id, ip_address, hostname, open_port_count, "
                 "services, open_ports). Filter locally with jq."
             ),
-            curl=f"curl -sS {auth} $BLUESTICK_URL{base}/hosts.ndjson -o session-hosts.jsonl",
+            curl=f'curl -sS {auth} "$BLUESTICK_URL{base}/hosts.ndjson{sel}" -o session-hosts.jsonl',
         ),
         live_hosts=ReconDownload(
-            url=f"{base}/live-hosts.txt",
+            url=f"{base}/live-hosts.txt{sel}",
             media_type="text/plain",
             description=(
                 "One IP per line, IP-sorted — the target file for "
                 "`nmap -iL` / `masscan -iL`."
             ),
-            curl=f"curl -sS {auth} $BLUESTICK_URL{base}/live-hosts.txt -o session-hosts.txt",
+            curl=f'curl -sS {auth} "$BLUESTICK_URL{base}/live-hosts.txt{sel}" -o session-hosts.txt',
         ),
         web_targets=ReconDownload(
-            url=f"{base}/web-targets.txt",
+            url=f"{base}/web-targets.txt{sel}",
             media_type="text/plain",
             description=(
                 "One http/https URL per line for every web port discovered — "
                 "the target file for `httpx -l` / `eyewitness -f`."
             ),
-            curl=f"curl -sS {auth} $BLUESTICK_URL{base}/web-targets.txt -o web-targets.txt",
+            curl=f'curl -sS {auth} "$BLUESTICK_URL{base}/web-targets.txt{sel}" -o web-targets.txt',
         ),
     )
 
@@ -189,6 +197,25 @@ def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Opti
         return None
 
 
+def _recon_run_selector() -> Optional[int]:
+    """The declared ``recon_session_id`` query parameter (v2.343.2).
+
+    ``_load_recon_session`` reads it straight off ``request.query_params``, so
+    the handlers never declared it — and the MCP contract test rightly refused
+    to let the tools advertise an argument OpenAPI said the endpoints did not
+    take.  Declaring it here is documentation plus ``ge=1`` validation; the
+    resolution still happens in ``_load_recon_session``.
+    """
+    return Query(
+        None, ge=1,
+        description=(
+            "Which reconnaissance run this call is about. Needed only when the "
+            "session has more than one open run (the call answers 400 "
+            "ambiguous_recon_run with the candidates otherwise)."
+        ),
+    )
+
+
 def _load_recon_session(db: Session, request: Request) -> ReconSession:
     """The reconnaissance run this call is about.
 
@@ -211,6 +238,7 @@ def _load_recon_session(db: Session, request: Request) -> ReconSession:
 )
 def get_recon_context(
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -380,6 +408,7 @@ def get_recon_subnets(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -431,6 +460,7 @@ def get_recon_domains(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -504,6 +534,7 @@ def _stream(generator, media_type: str, filename: str) -> StreamingResponse:
 )
 def download_recon_hosts_ndjson(
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -534,6 +565,7 @@ def download_recon_hosts_ndjson(
 )
 def download_recon_live_hosts(
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -558,6 +590,7 @@ def download_recon_live_hosts(
 )
 def download_recon_web_targets(
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -770,6 +803,7 @@ async def upload_recon_output(
 def get_recon_job(
     job_id: int,
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -821,6 +855,7 @@ def get_recon_job(
 )
 def get_recon_summary(
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -909,6 +944,7 @@ def get_recon_summary(
 def complete_recon_session(
     body: ReconCompleteRequest,
     request: Request,
+    recon_session_id: Optional[int] = _recon_run_selector(),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -996,9 +1032,18 @@ def complete_recon_session(
     db.commit()
     db.refresh(session)
 
-    return _build_summary_response(
+    # v2.343.0 — the completion is the checkpoint the feedback ask now hangs
+    # off (it is reached far more reliably than the session end).  Advisory.
+    from app.services.agent_session_service import feedback_checkpoint
+    feedback_recorded, feedback_hint = feedback_checkpoint(
+        db, getattr(request.state, "agent_session_id", None),
+    )
+    response = _build_summary_response(
         db, session,
         scans_ingested=session.scans_ingested,
         hosts_discovered=session.hosts_discovered,
         ports_discovered=session.ports_discovered,
     )
+    response.feedback_recorded = feedback_recorded
+    response.feedback_hint = feedback_hint
+    return response

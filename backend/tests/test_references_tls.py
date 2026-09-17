@@ -229,3 +229,32 @@ def test_reference_page_recipes_come_from_the_session_builder(client):
     # client where the credential never touches a config file.
     assert SAMPLE_KEY_PLACEHOLDER not in by_id["codex"]["payload"]
     assert "--bearer-token-env-var" in by_id["codex"]["payload"]
+
+
+def test_client_hints_give_windows_operators_a_route(client):
+    """v2.342.1 — every hint said "run ./scripts/trust-cert.sh and add the
+    exports to your shell profile", which a Windows operator without WSL can
+    do neither half of: there is no bash for the script, and a profile export
+    never reaches a client launched from the Start menu. The Node clients get
+    the PowerShell equivalent (curl.exe + a per-user setx); Codex, whose pin is
+    verified on Linux/macOS only, is routed to WSL rather than handed an
+    unverified native recipe.
+    """
+    from app.api.v1.endpoints.references import SAMPLE_KEY_PLACEHOLDER
+    from app.services.mcp_client_setup_service import build_mcp_clients
+
+    by_id = {
+        e["id"]: e
+        for e in build_mcp_clients("https://bluestick.example/api/v1/mcp", SAMPLE_KEY_PLACEHOLDER)
+    }
+    for node_client in ("vscode", "claude_code"):
+        hint = by_id[node_client]["hint"]
+        assert "curl.exe -sk https://bluestick.example/api/v1/references/tls-certificate" in hint
+        assert "setx NODE_EXTRA_CA_CERTS" in hint
+        # setx reaches future windows only; the current shell needs $env: too.
+        assert "$env:NODE_EXTRA_CA_CERTS" in hint
+        # The route adds trust; it never switches verification off.
+        assert "NODE_TLS_REJECT_UNAUTHORIZED=0" not in hint
+    codex = by_id["codex"]["hint"]
+    assert "WSL" in codex
+    assert "setx" not in codex

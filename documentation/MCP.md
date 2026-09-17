@@ -47,7 +47,7 @@ each phase:
 | Work | Opened by | Tools |
 |---|---|---|
 | Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
-| Reconnaissance | `start_recon {scope_id}` | scope context, subnets, upload-job polling, summary, completion |
+| Reconnaissance | `start_recon {scope_id}` | scope context, subnets, upload-job polling, summary, completion — each takes an optional `recon_session_id` for a session with more than one open run (v2.343.2) |
 | Plan generation | `create_test_plan {title}` | entry drafting, validation, submit-for-approval |
 | Execution | `start_execution {plan_id}` (plan must be approved) | execution context, sanity checks, test results, completion |
 
@@ -64,7 +64,8 @@ What that takes, beyond "which hosts match X":
 | "How many hosts …?" | `assist_count_hosts` — a total, not a page |
 | "What are our critical findings?" | `assist_list_findings` — project-wide, with `severity_counts` |
 | "What has nobody picked up?" | `assist_list_findings?unowned=true`, `assist_count_hosts` with `assigned:none` |
-| "What do we already know about this host?" | `assist_get_host_notes` |
+| "What do we already know about this host?" | `assist_get_host_notes` (paged — read `has_more`) |
+| "Every web interface on this host, not just the ten on host detail?" | `assist_list_host_web_interfaces` — the continuation when `web_interfaces_truncated` is set (v2.343.3) |
 | "Which tags/sites/people exist here?" | `assist_get_vocabulary` |
 | "How much of this did we actually assess?" | `assist_get_coverage` |
 | "Has anyone tested this host, and what happened?" | `assist_get_host_testing` |
@@ -189,6 +190,31 @@ fingerprint on `/reference/mcp` before relying on a downloaded copy.
 client; setting them inside a running client changes nothing, which is the usual
 reason a pin looks like it "didn't work".
 
+**Windows without WSL (PowerShell 7).** The script is bash, and the profile
+exports it prints would not reach a client launched from the Start menu anyway.
+Do the same by hand — this covers VS Code and Claude Code:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.bluestick" | Out-Null
+curl.exe -sk https://<host>/api/v1/references/tls-certificate -o "$HOME\.bluestick\bluestick.pem"
+$c = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new("$HOME\.bluestick\bluestick.pem")
+$c.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256) -replace '(..)(?!$)', '$1:'   # compare with the fingerprint
+setx NODE_EXTRA_CA_CERTS "$HOME\.bluestick\bluestick.pem"   # per-user, for every process started from now on
+$env:NODE_EXTRA_CA_CERTS = "$HOME\.bluestick\bluestick.pem"   # this shell too — setx does not update it
+```
+
+`curl.exe`, not `curl`: in PowerShell the bare name is an `Invoke-WebRequest`
+alias that rejects these flags. `setx` stores a per-user variable that every
+process started from now on reads — a client launched from the Start menu or a
+new terminal — but it does not change the window you ran it in, so the `$env:`
+line covers a client launched from that same shell. A `$PROFILE` export only
+reaches clients started from that shell. Launch the client from a new terminal
+or the Start menu afterwards. Codex's pin
+(`SSL_CERT_DIR`) has only been verified on Linux and macOS, and its `read -rs`
+key-entry line is bash too — on Windows, run Codex inside WSL and follow the
+bash steps there. The same guidance is in the start dialog's certificate step,
+on `/reference/mcp`, and in the Assist entry of the User Guide.
+
 Deployments running an internal-CA or DNS-validated certificate need none of
 this, and the reference page detects that and says so.
 
@@ -234,7 +260,19 @@ Entries carry MCP **annotations** (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`) so a client can offer "always allow" on reads without the
 operator classifying them by hand. `destructiveHint` follows the spec's meaning:
 false only for genuinely additive writes (a note, a test result), true for ones
-that replace stored values.
+that replace stored values. `idempotentHint` answers "is a retry safe?": true
+for writes that converge (set follow, patch a host, complete a run, re-probe the
+environment), false for anything that creates a row per call — every additive
+tool, and the creators `create_test_plan`, `start_recon`, `start_execution` and
+`submit_feedback`, which say so explicitly with `"idempotent": False`
+(v2.343.2; the inferred value had advertised them as safe to retry).
+
+The transport validates `tools/call` arguments against the advertised schema
+(type, enum, bounds, no unknown properties) **before** building the endpoint
+URL, and renders every path parameter as a single encoded segment. A mistyped
+argument is a JSON-RPC `-32602`, never a call to a different route (v2.343.2 —
+a string `host_id` on `assist_add_note` used to be interpolated into the path
+as-is).
 
 ### The approved-tool set
 

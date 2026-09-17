@@ -416,7 +416,11 @@ def end_assist_session(
     session_id: int,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    # v2.343.2 — AUDITOR, matching the start route: an auditor could start a
+    # session (since v2.308.0) but this gate was still ANALYST, so they could
+    # not end their own.  The owner-or-project-admin check below is the real
+    # authorization; the role floor only needs to admit whoever can start one.
+    current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
 ):
     session = (
         db.query(AssistSession)
@@ -461,13 +465,37 @@ def end_assist_session(
             detail=f"Session already in state '{session.status}'.",
         )
 
-    db.query(APIKey).filter(
-        APIKey.agent_session_id == session.agent_session_id,
-        APIKey.is_active.is_(True),
-    ).update({"is_active": False}, synchronize_session=False)
+    # v2.343.1 (review) — this exit revoked the key and closed the assist row
+    # but left the unified AgentSession active with no end_reason, so a
+    # session ended from the sessions panel counted as "active" in the new
+    # exit metrics and never as an operator end.  Route it through the shared
+    # service, the same path the Agent Runs End button takes: keys revoked,
+    # open recon runs abandoned, open execution runs paused, end_reason set.
+    from app.db.models_agent import AgentSession
+    from app.services.agent_session_service import SESSION_ACTIVE, end_agent_session
+
+    agent_session = (
+        db.query(AgentSession).filter(AgentSession.id == session.agent_session_id).first()
+        if session.agent_session_id is not None else None
+    )
+    if agent_session is not None and agent_session.status == SESSION_ACTIVE:
+        end_agent_session(
+            db, agent_session, ended_by=current_user, reason="ended from the sessions panel",
+        )
+    else:
+        # A legacy assist row with no project session behind it: revoke what
+        # is keyed to it, as before.
+        db.query(APIKey).filter(
+            APIKey.agent_session_id == session.agent_session_id,
+            APIKey.is_active.is_(True),
+        ).update({"is_active": False}, synchronize_session=False)
 
     session.status = AssistSessionStatus.ENDED.value
-    session.ended_at = datetime.now(timezone.utc)
+    session.ended_at = (
+        agent_session.completed_at
+        if agent_session is not None and agent_session.completed_at is not None
+        else datetime.now(timezone.utc)
+    )
     db.commit()
 
 

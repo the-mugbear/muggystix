@@ -79,6 +79,13 @@ class AgentSessionRowResponse(BaseModel):
     # from an active row whose agent is dead and whose key has lapsed.
     key_expires_at: Optional[datetime] = None
     renewable_until: Optional[datetime] = None
+    # v2.343.0 — project sessions only.  ``end_reason`` is how the session
+    # ended ('agent' / 'operator' / 'lapsed'; None while active), and
+    # ``feedback_count`` is how many feedback submissions it made.  Together
+    # they show whether sessions are exiting cleanly and telling us anything on
+    # the way out — the two things the feedback loop depends on.
+    end_reason: Optional[str] = None
+    feedback_count: int = 0
 
 
 class ResumeAgentSessionRequest(BaseModel):
@@ -239,7 +246,10 @@ def end_project_agent_session(
     session_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    # v2.343.2 — AUDITOR, matching start and resume: an auditor could start a
+    # session but not end it from Agent Runs.  The owner-or-project-admin
+    # check below is the real authorization.
+    current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
 ):
     """The operator's kill switch for a project session (v2.338.0).
 

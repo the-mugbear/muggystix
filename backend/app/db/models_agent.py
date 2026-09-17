@@ -543,6 +543,13 @@ class AgentSession(Base):
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     # Unified completion timestamp (Assist's "ended_at" maps here).
     completed_at = Column(DateTime(timezone=True))
+    # v2.343.0 — HOW the session ended: 'agent' (POST /agent/session/end),
+    # 'operator' (End on Agent Runs / the sessions panel), or 'lapsed' (the
+    # hourly sweep, after the key expired past the renewal window).  A typed
+    # column rather than a parse of ``notes``: the whole point is to count
+    # clean exits against abandoned ones, and a count belongs on a column
+    # (CLAUDE.md column-vs-blob policy).  NULL on an active row.
+    end_reason = Column(String(16), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # v2.337.0 — what the operator said they were opening the session for
