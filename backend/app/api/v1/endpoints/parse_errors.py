@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.db.session import get_db
 from app.db import models
 from app.services.format_registry import format_label
+from app.services.staged_import_service import file_retained, retained_until
 from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
@@ -92,6 +93,10 @@ class IngestionResultItem(BaseModel):
     final_file_type: Optional[str] = None
     final_format_label: Optional[str] = None
     source_tool: Optional[str] = None
+    # v2.354.0 — whether the uploaded bytes are still on disk (so "review
+    # the format and retry" / re-process need no re-upload) and until when.
+    file_retained: bool = False
+    retained_until: Optional[datetime] = None
     # Stats (populated for completed jobs)
     stats: Optional[IngestionResultStats] = None
     # Error info (populated for failed jobs)
@@ -330,6 +335,8 @@ def get_ingestion_results(
             final_file_type=job.final_file_type,
             final_format_label=format_label(job.final_file_type),
             source_tool=job.source_tool,
+            file_retained=file_retained(job),
+            retained_until=retained_until(job),
         )
 
         # Attach stats for completed jobs

@@ -14,7 +14,7 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
-from app.services.staged_import_service import detect_for_job, start_staged_job
+from app.services.staged_import_service import detect_for_job, reprocess_job, start_staged_job
 from app.services.ingestion_service import (
     ALLOWED_UPLOAD_EXTENSIONS,
     DuplicateUploadError,
@@ -282,6 +282,47 @@ def start_ingestion_job(
         raise HTTPException(status_code=422, detail=str(exc))
     ingestion_service.enqueue_job(job.id)
     return job
+
+
+@router.post(
+    "/jobs/{job_id}/reprocess",
+    response_model=IngestionJobSchema,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    responses={
+        403: {"description": "Not authorized for this job"},
+        404: {"description": "Job not found"},
+        409: {"description": "Job is not finished, or its retained file is gone"},
+        422: {"description": "Unknown format"},
+    },
+    summary="Re-process a finished job's retained file as a new import (explicit)",
+)
+def reprocess_ingestion_job(
+    job_id: int,
+    body: StartJobRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """v2.354.0 — a new job over the same bytes.  A new scan record is
+    created when it parses; the prior scan and its contributions stay until
+    that scan is deleted; the duplicate guard is bypassed on purpose."""
+    job = _load_job(db, job_id, project, current_user)
+    if job.status not in ("completed", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only a finished job can be re-processed (current status: {job.status!r})",
+        )
+    try:
+        new = reprocess_job(
+            db, job, submitted_by_id=current_user.id,
+            format_override=body.format_override, source_tool=body.source_tool,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=409, detail="The uploaded file is no longer retained — re-upload it.")
+    ingestion_service.enqueue_job(new.id)
+    return new
 
 
 @router.post(

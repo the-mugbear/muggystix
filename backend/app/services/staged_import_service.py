@@ -202,6 +202,101 @@ def start_staged_job(
     return job
 
 
+def retention_window() -> timedelta:
+    from app.core.config import settings
+    return timedelta(days=max(int(getattr(settings, "INGESTION_RETAIN_FILES_DAYS", 7)), 0))
+
+
+def file_retained(job: IngestionJob) -> bool:
+    return bool(job.storage_path) and Path(job.storage_path).exists()
+
+
+def retained_until(job: IngestionJob) -> Optional[datetime]:
+    """When a finished job's file will be removed, or None while the job is
+    still open (or the file is already gone)."""
+    if job.status not in ("completed", "failed") or not file_retained(job):
+        return None
+    base = job.completed_at or job.created_at
+    if base is None:
+        return None
+    base = base if base.tzinfo else base.replace(tzinfo=timezone.utc)
+    return base + retention_window()
+
+
+def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int:
+    """Remove the files of finished jobs past the retention window (phase E).
+    The job rows stay — they are the record; only the bytes go."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - retention_window()
+    removed = 0
+    finished = (
+        db.query(IngestionJob)
+        .filter(IngestionJob.status.in_(("completed", "failed")))
+        .filter(
+            (IngestionJob.completed_at < cutoff)
+            | ((IngestionJob.completed_at.is_(None)) & (IngestionJob.created_at < cutoff))
+        )
+        .all()
+    )
+    for job in finished:
+        if not file_retained(job):
+            continue
+        shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
+        if not Path(job.storage_path).exists():
+            removed += 1
+    return removed
+
+
+def reprocess_job(
+    db: Session, job: IngestionJob, *, submitted_by_id: Optional[int],
+    format_override: Optional[str], source_tool: Optional[str],
+) -> IngestionJob:
+    """An explicit re-import of a finished job's retained file as a NEW job
+    (phase E).  A new scan record is created when it parses; the prior scan
+    and everything it contributed stay until that scan is deleted; the
+    duplicate guard is bypassed on purpose — the operator asked for this.
+    The file is copied into the new job's own directory so each job's
+    retention is independent."""
+    from uuid import uuid4
+    from app.services.ingestion_service import ingestion_service
+
+    if format_override is not None and format_override not in FORMATS:
+        raise ValueError(f"Unknown format '{format_override}'")
+    if not file_retained(job):
+        raise FileNotFoundError(job.storage_path)
+    src = Path(job.storage_path)
+    job_dir = ingestion_service._storage_root / uuid4().hex
+    job_dir.mkdir(parents=True, exist_ok=True)
+    dst = job_dir / src.name
+    shutil.copy2(src, dst)
+    options = dict(job.options or {})
+    options["reprocess_of_job_id"] = job.id
+    options.pop("format_override", None)
+    new = IngestionJob(
+        filename=dst.name,
+        original_filename=job.original_filename,
+        storage_path=str(dst),
+        status="queued",
+        file_size=job.file_size,
+        options=options,
+        submitted_by_id=submitted_by_id,
+        project_id=job.project_id,
+        recon_session_id=job.recon_session_id,
+        batch_id=job.batch_id,
+        content_sha256=job.content_sha256,
+        format_override=format_override,
+        source_tool=(source_tool or "").strip()[:64] or None,
+        message=(
+            f"Re-process of job #{job.id}"
+            + (f" as {format_label(format_override)}" if format_override else "")
+        ),
+    )
+    db.add(new)
+    db.commit()
+    db.refresh(new)
+    return new
+
+
 def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now: Optional[datetime] = None) -> int:
     """Fail staged jobs nobody started within ``max_age`` and remove their
     files.  Returns how many were expired.  Called from the worker sweep."""

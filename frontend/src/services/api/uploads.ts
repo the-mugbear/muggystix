@@ -105,6 +105,20 @@ export const getJobDetection = async (jobId: number): Promise<DetectionResponse>
   return response.data;
 };
 
+/** v5.231.0 — re-process a finished job's retained file as a NEW job. A new
+ *  scan record is created; the prior scan stays; the duplicate guard is
+ *  bypassed on purpose. */
+export const reprocessIngestionJob = async (
+  jobId: number,
+  options: { formatOverride?: string | null; sourceTool?: string | null } = {},
+): Promise<IngestionJob> => {
+  const response = await api.post(`${p()}/upload/jobs/${jobId}/reprocess`, {
+    format_override: options.formatOverride ?? null,
+    source_tool: options.sourceTool ?? null,
+  });
+  return response.data;
+};
+
 /** Start a staged job, or retry a failed one on its retained file, optionally
  *  as a chosen format (the worker then runs exactly that parser). */
 export const startIngestionJob = async (
@@ -291,6 +305,9 @@ export interface IngestionResultItem {
   final_file_type?: string | null;
   final_format_label?: string | null;
   source_tool?: string | null;
+  /** v2.354.0 — the uploaded bytes are still on disk, until when. */
+  file_retained?: boolean;
+  retained_until?: string | null;
   stats: {
     hosts_parsed: number;
     hosts_up: number;

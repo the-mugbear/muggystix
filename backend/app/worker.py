@@ -116,10 +116,15 @@ def main() -> None:
         try:
             from app.db.session import SessionLocal
             from app.services.staged_import_service import expire_staged_jobs
+            from app.services.staged_import_service import expire_retained_files
             with SessionLocal() as db:
                 expired = expire_staged_jobs(db)
+                # v2.354.0 — finished jobs' files past the retention window.
+                removed = expire_retained_files(db)
             if expired:
                 logger.info("Expired %d staged upload(s) never started", expired)
+            if removed:
+                logger.info("Removed %d retained upload file(s) past the retention window", removed)
         except Exception:
             logger.debug("staged-upload expiry failed", exc_info=True)
 

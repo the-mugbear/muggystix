@@ -30,6 +30,7 @@ import {
   type Scan,
 } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';
+import FormatRetryDialog from '../components/scans/FormatRetryDialog';
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/select';
@@ -461,7 +462,7 @@ const ParseErrors: React.FC = () => {
                         {isExpanded && (
                           <TableRow>
                             <TableCell colSpan={10} className="bg-accent/30 p-md">
-                              <RowDetail item={item} onViewParseError={handleViewParseError} navigate={navigate} />
+                              <RowDetail item={item} onViewParseError={handleViewParseError} navigate={navigate} onChanged={() => void loadData()} />
                             </TableCell>
                           </TableRow>
                         )}
@@ -611,7 +612,16 @@ const RowDetail: React.FC<{
   item: IngestionResultItem;
   onViewParseError: (item: IngestionResultItem) => void;
   navigate: ReturnType<typeof useNavigate>;
-}> = ({ item, onViewParseError, navigate }) => {
+  onChanged: () => void;
+}> = ({ item, onViewParseError, navigate, onChanged }) => {
+  // v5.231.0 — retry with a reviewed format / explicit re-process, on the
+  // retained file (phase E).
+  const [retryOpen, setRetryOpen] = useState(false);
+  const [reprocessOpen, setReprocessOpen] = useState(false);
+  const retainedNote = item.file_retained
+    ? `File retained${item.retained_until ? ` until ${new Date(item.retained_until).toLocaleDateString()}` : ''}`
+    : 'File no longer retained — re-upload to import again';
+
   if (item.status === 'failed' || item.error) {
     return (
       <div className="flex flex-col gap-sm">
@@ -628,11 +638,25 @@ const RowDetail: React.FC<{
             )}
           </AlertDescription>
         </Alert>
-        <div>
+        <div className="flex flex-wrap items-center gap-xs">
           <Button size="sm" variant="outline" onClick={() => onViewParseError(item)}>
             View Details
           </Button>
+          {item.file_retained && (
+            <Button size="sm" onClick={() => setRetryOpen(true)}>
+              Review format and retry
+            </Button>
+          )}
+          <span className="text-caption text-muted-foreground">{retainedNote}</span>
         </div>
+        <FormatRetryDialog
+          open={retryOpen}
+          onOpenChange={setRetryOpen}
+          jobId={item.id}
+          filename={item.original_filename}
+          mode="retry"
+          onDone={onChanged}
+        />
       </div>
     );
   }
@@ -673,13 +697,31 @@ const RowDetail: React.FC<{
           </>
         )}
       </div>
-      {item.scan_id != null && (
-        <div>
+      <div className="flex flex-wrap items-center gap-xs">
+        {item.scan_id != null && (
           <Button size="sm" onClick={() => navigate(`/scans/${item.scan_id}`)}>
             <ExternalLink className="size-4" aria-hidden /> View Scan
           </Button>
-        </div>
-      )}
+        )}
+        {item.status === 'completed' && item.file_retained && (
+          <Button size="sm" variant="outline" onClick={() => setReprocessOpen(true)}
+            title="Run the retained file through the pipeline again as a new import">
+            Re-process…
+          </Button>
+        )}
+        {item.status === 'completed' && (
+          <span className="text-caption text-muted-foreground">{retainedNote}</span>
+        )}
+      </div>
+      <FormatRetryDialog
+        open={reprocessOpen}
+        onOpenChange={setReprocessOpen}
+        jobId={item.id}
+        filename={item.original_filename}
+        mode="reprocess"
+        priorScanId={item.scan_id}
+        onDone={onChanged}
+      />
     </div>
   );
 };

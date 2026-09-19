@@ -201,6 +201,11 @@ class Settings:
     # recur past the cap need a human. 0 disables auto-requeue (fail on first
     # orphan, the pre-v2.179 behavior).
     INGESTION_MAX_RETRIES: int = int(os.getenv("INGESTION_MAX_RETRIES", "2"))
+    # v2.354.0 — how long an uploaded file stays on disk after its job
+    # finished (completed or failed), so "review the format and retry" and an
+    # explicit re-process need no re-upload.  Before this, nothing removed
+    # finished jobs' files at all.  0 disables retention (remove at once).
+    INGESTION_RETAIN_FILES_DAYS: int = int(os.getenv("INGESTION_RETAIN_FILES_DAYS", "7"))
     # Orphan detection window = this multiple of INGESTION_JOB_TIMEOUT of
     # heartbeat silence before a 'processing' job is treated as a dead worker's
     # leftover. A live parser heartbeats every few seconds, so even 1x is safe;
