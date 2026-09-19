@@ -64,18 +64,32 @@ def test_detection_structural_nmap_is_ready_with_a_sample(client, db_session, te
     assert any(f["file_type"] == "naabu_output" for f in d["formats"])
 
 
+def test_detection_structural_text_is_ready_under_any_name(client, db_session, test_project):
+    """Phase D: host:port text is recognised by its lines, so even a neutral
+    filename is ready and the basis is the structure."""
+    job_id = _upload(client, test_project, HOST_PORT_TEXT, "results.txt", "text/plain", stage=True).json()["job_id"]
+    d = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/detection").json()
+    assert d["primary"] == "naabu_output"
+    assert d["candidates"][0]["basis"] == "structure"
+    assert d["needs_choice"] is False
+    assert d["preview"]["sample"][:2] == ["10.0.0.5:443", "10.0.0.5:22"]
+
+
+ODD_TEXT = b"10.0.0.5 443\n10.0.0.5 22\n10.0.0.6 80\n"  # no format's shape
+
+
 def test_detection_filename_only_and_unknown_need_a_choice(client, db_session, test_project):
-    # Plain host:port text: recognised only because the name says naabu.
-    named = _upload(client, test_project, HOST_PORT_TEXT, "naabu-results.txt", "text/plain", stage=True).json()["job_id"]
+    # Text no detector recognises, under a name that says naabu: filename only.
+    named = _upload(client, test_project, ODD_TEXT, "naabu-results.txt", "text/plain", stage=True).json()["job_id"]
     d = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{named}/detection").json()
     assert d["primary"] == "naabu_output"
     assert d["candidates"][0]["basis"] == "filename"
     assert d["needs_choice"] is True
     assert "filename" in d["reason"]
-    assert d["preview"]["sample"][:2] == ["10.0.0.5:443", "10.0.0.5:22"]
+    assert d["preview"]["sample"][:2] == ["10.0.0.5 443", "10.0.0.5 22"]
 
     # The same bytes under a neutral name: nothing recognised.
-    anon = _upload(client, test_project, HOST_PORT_TEXT, "results.txt", "text/plain", stage=True, allow_duplicate=True).json()["job_id"]
+    anon = _upload(client, test_project, ODD_TEXT, "results.txt", "text/plain", stage=True, allow_duplicate=True).json()["job_id"]
     d2 = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{anon}/detection").json()
     assert d2["candidates"] == [] and d2["primary"] is None
     assert d2["needs_choice"] is True

@@ -60,7 +60,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
     tool: 'Naabu',
     formats: '.json / .txt',
     desc: 'JSON records or host:port text output.',
-    hint: 'Put "naabu" in the filename; JSON is otherwise recognised by its flat {ip, port} records.',
+    hint: 'Text is recognised by its host:port lines and JSON by its flat {ip, port} records; a filename containing "naabu" is only a hint.',
   },
   {
     tool: 'RustScan',
@@ -104,7 +104,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
     tool: 'EyeWitness',
     formats: '.json / .csv / .zip',
     desc: 'Screenshot metadata from the JSON or CSV report, or the whole ZIP bundle (limits: 50 MB per file, 500 MB per bundle, 5000 entries).',
-    hint: '"eyewitness" or "report" in the filename; JSON is also recognised by screenshot_path records.',
+    hint: 'CSV is recognised by its header (Screenshot Path, or URL + Protocol + Port) and JSON by screenshot_path records; "eyewitness" or "report" in the filename is only a hint.',
   },
   {
     tool: 'Nikto',
@@ -122,8 +122,8 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'Amass / Subfinder',
     formats: '.json / .txt',
-    desc: 'Subdomain discovery. Rows with a resolved IP create hosts; name-only rows become unresolved names in the Names inventory.',
-    hint: '"amass" or "subfinder" in the filename, or records carrying name + addresses.',
+    desc: 'Subdomain discovery. Rows with a resolved IP create hosts; name-only rows become unresolved names in the Names inventory. The tool is what you name at import or what the JSON shape says; a plain list without either is recorded as a hostname list, not guessed.',
+    hint: 'Text is recognised by hostname-per-line or "hostname ip" lines, JSON by name + addresses (Amass) or input + source (Subfinder); the filename is only a hint.',
   },
   {
     tool: 'dnsx (ProjectDiscovery)',

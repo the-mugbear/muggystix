@@ -1896,6 +1896,7 @@ def test_v2_27_0_content_detection_module_surface():
         "looks_like_dirbuster",
         "looks_like_dns_csv",
         "looks_like_dnsx",  # added v2.88.0 — dnsx JSON/JSONL (closes #44)
+        "looks_like_eyewitness_csv",  # added v2.353.0 — CSV by header, not filename
         "looks_like_eyewitness_json",
         "looks_like_gnmap",
         "looks_like_masscan_json",

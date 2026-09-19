@@ -1231,7 +1231,14 @@ class IngestionService:
 
             parser = parser_ctor(db)
             try:
-                scan = parser.parse_file(storage_path, filename, project_id=project_id)
+                # v2.353.0 — the tool the operator named at import (phase A's
+                # column) reaches the parser, so attribution never has to be
+                # read off the filename.
+                _source_tool = getattr(job, "source_tool", None)
+                scan = parser.parse_file(
+                    storage_path, filename, project_id=project_id,
+                    source_tool=_source_tool if isinstance(_source_tool, str) else None,
+                )
             except Exception:
                 # Streaming parsers (nmap/gnmap/masscan) commit the Scan row and
                 # some hosts incrementally, so a mid-parse failure leaves a
@@ -1495,7 +1502,9 @@ class IngestionService:
             # The parser does its own zip extraction; we just route here.
             attempts.append(("eyewitness_zip", EyewitnessParser, "EyeWitness bundle (zip with report + screenshots)"))
         elif filename.endswith(".csv"):
-            if "eyewitness" in filename or "report" in filename:
+            # v2.353.0 — the header recognises an EyeWitness CSV; the
+            # filename is now only a hint.
+            if "eyewitness" in filename or "report" in filename or _cd.looks_like_eyewitness_csv(sample):
                 attempts.append(("eyewitness_csv", EyewitnessParser, "Eyewitness report"))
             if _cd.looks_like_nikto(sample, filename):
                 attempts.append(("nikto_csv", NiktoParser, "Nikto CSV report"))

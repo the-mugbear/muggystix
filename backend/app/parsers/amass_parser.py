@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Optional
+
+from app.parsers.content_detection import _peek_json_shape
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +16,44 @@ from app.services.dns_name_service import ObservationCache, record_observation
 from app.services.host_deduplication_service import HostDeduplicationService
 
 
+def attribute_tool(filename: str, source_tool: Optional[str], file_path: str) -> str:
+    """Which tool wrote a subdomain inventory (v2.353.0; staged-import phase D).
+
+    In order: the tool the operator named at import; the JSON record shape
+    (``name`` + ``addresses`` is amass, ``input`` + ``source`` is subfinder);
+    a filename hint — the operator named the file, so it is a hint rather
+    than an invention; and, for a plain list with none of these, the honest
+    ``hostname-list``.  The scan's ``tool_name`` and the DISCOVERED
+    observation value both carry the result.
+    """
+    if source_tool and source_tool.strip():
+        s = source_tool.strip().lower()
+        if "subfinder" in s:
+            return "subfinder"
+        if "amass" in s:
+            return "amass"
+        token = re.sub(r"[^a-z0-9_.-]+", "-", s.split()[0]).strip("-")
+        return token[:64] or "hostname-list"
+    suffix = Path(filename).suffix.lower()
+    if suffix in (".json", ".jsonl"):
+        try:
+            with open(file_path, "rb") as fh:
+                _kind, rec = _peek_json_shape(fh.read(64 * 1024))
+        except OSError:
+            rec = None
+        if isinstance(rec, dict):
+            if "input" in rec and "source" in rec:
+                return "subfinder"
+            if "addresses" in rec or "tag" in rec:
+                return "amass"
+    name = filename.lower()
+    if "subfinder" in name:
+        return "subfinder"
+    if "amass" in name:
+        return "amass"
+    return "amass" if suffix in (".json", ".jsonl") else "hostname-list"
+
+
 class AmassParser:
     def __init__(self, db: Session):
         self.db = db
@@ -19,9 +61,13 @@ class AmassParser:
         self._name_cache = ObservationCache()
         self._tool_name = "amass"
 
+    @staticmethod
+    def attribute(filename: str, source_tool: Optional[str], file_path: str) -> str:
+        return attribute_tool(filename, source_tool, file_path)
+
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
-        tool_name = "subfinder" if "subfinder" in filename.lower() else "amass"
+        tool_name = attribute_tool(filename, kwargs.get("source_tool"), file_path)
         self._tool_name = tool_name
         scan = ensure_scan(
             self.db,

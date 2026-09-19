@@ -35,6 +35,8 @@ const FAMILY_BY_TOOL: Record<string, ToolFamily> = {
   dnsx: 'dns',
   amass: 'dns',
   subfinder: 'dns',
+  // v2.353.0 — a plain hostname list whose tool nobody named.
+  'hostname-list': 'dns',
   rdap: 'dns',
   netexec: 'auth',
   smbmap: 'auth',

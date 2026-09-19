@@ -293,6 +293,11 @@ def looks_like_naabu(sample: bytes, filename: str) -> bool:
     """
     if "naabu" in filename.lower():
         return True
+    # v2.353.0 — plain ``host:port`` text is recognised by its own shape
+    # (staged-import phase D).  Before, the text form routed only when the
+    # filename said "naabu"; the content fallback below expects JSON.
+    if _looks_like_host_port_lines(sample):
+        return True
     # v2.57.0 — early-out when the filename screams nikto.  Pre-fix,
     # the JSON-shape check below would happily accept nikto's
     # ``{ip, port, id, msg, severity}`` records because none of the
@@ -354,6 +359,11 @@ def looks_like_amass(sample: bytes, filename: str) -> bool:
     """
     name = filename.lower()
     if any(token in name for token in ["amass", "subfinder"]):
+        return True
+    # v2.353.0 — a hostname list (one name per line, optionally followed by
+    # an address) is recognised by its own shape; the name of the file no
+    # longer has to say which tool wrote it (staged-import phase D).
+    if _looks_like_hostname_lines(sample):
         return True
     _, rec = _peek_json_shape(sample)
     if rec is None:
@@ -501,6 +511,76 @@ def looks_like_dns_csv(sample: bytes) -> bool:
         if cols & type_aliases and cols & name_aliases and cols & addr_aliases:
             return True
     return False
+
+
+_HOST_PORT_LINE = re.compile(
+    r"^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*):\d{1,5}$"
+)
+_HOSTNAME_TOKEN = re.compile(
+    r"^(?=.*[A-Za-z])[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+\.?$"
+)
+_IPV4_TOKEN = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_SHAPE_LINES = 10
+
+
+def _content_lines(sample: bytes, limit: int = _SHAPE_LINES) -> list:
+    """The first non-empty, non-comment lines of a text sample (the last
+    line of a 64 KB sample may be cut mid-way, so it is dropped when the
+    sample is full)."""
+    text = sample.decode("utf-8", errors="ignore").lstrip("﻿")
+    lines = text.splitlines()
+    if len(sample) >= 64 * 1024 and lines:
+        lines = lines[:-1]
+    out = []
+    for raw in lines:
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _looks_like_host_port_lines(sample: bytes) -> bool:
+    """naabu's plain text: every line is ``host:port`` — an IPv4, a bracketed
+    IPv6 or a hostname, a colon, a port.  Two lines minimum so a lone token
+    is not mistaken for a scan."""
+    lines = _content_lines(sample)
+    return len(lines) >= 2 and all(_HOST_PORT_LINE.match(ln) for ln in lines)
+
+
+def _looks_like_hostname_lines(sample: bytes) -> bool:
+    """A subdomain inventory in text: every line is a hostname (at least one
+    dot, at least one letter — so a bare IP list is not one), optionally
+    followed by an IPv4 the tool resolved it to.  ``host:port`` lines are
+    naabu's and never match here."""
+    lines = _content_lines(sample)
+    if len(lines) < 2:
+        return False
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) > 2 or ":" in parts[0] or "/" in parts[0]:
+            return False
+        if not _HOSTNAME_TOKEN.match(parts[0]):
+            return False
+        if len(parts) == 2 and not _IPV4_TOKEN.match(parts[1]):
+            return False
+    return True
+
+
+def looks_like_eyewitness_csv(sample: bytes) -> bool:
+    """EyeWitness's CSV report by its header: the ``Screenshot Path`` column
+    is distinctive; failing that, ``URL`` + ``Protocol`` + ``Port`` together.
+    v2.353.0 — the dispatcher used to need "eyewitness" or "report" in the
+    filename to route a CSV here at all."""
+    lines = _content_lines(sample, limit=1)
+    if not lines:
+        return False
+    cols = {c.strip().strip('"').lower() for c in lines[0].split(",")}
+    if "screenshot path" in cols:
+        return True
+    return {"url", "protocol", "port"} <= cols
 
 
 def looks_like_gnmap(sample: bytes) -> bool:
