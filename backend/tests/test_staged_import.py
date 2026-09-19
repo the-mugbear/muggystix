@@ -157,6 +157,39 @@ def test_detection_does_not_construct_a_service_per_request(client, db_session, 
     assert r.json()["primary"] == "nmap_xml"
 
 
+def test_discard_clears_a_staged_job_and_its_file(client, db_session, test_project):
+    """v2.355.0 — a staged job the operator will not start can be cleared:
+    the file goes, the row stays as a dismissed failure (out of the queue,
+    still in Ingestion Results)."""
+    job_id = _upload(client, test_project, NMAP_XML, "scan.xml", stage=True).json()["job_id"]
+    job = _job(db_session, job_id)
+    path = Path(job.storage_path)
+    r = client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/discard")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "failed"
+    db_session.refresh(job)
+    assert job.dismissed_at is not None and "Discarded" in job.error_message
+    assert not path.exists()
+    # Discard is for staged jobs only.
+    assert client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/discard").status_code == 409
+
+
+def test_discard_all_staged_leaves_other_statuses_alone(client, db_session, test_project):
+    a = _upload(client, test_project, NMAP_XML, "a.xml", stage=True).json()["job_id"]
+    b = _upload(client, test_project, HOST_PORT_TEXT, "b.txt", "text/plain", stage=True).json()["job_id"]
+    q = _upload(client, test_project, HOST_PORT_TEXT, "q.txt", "text/plain", stage=True, allow_duplicate=True).json()["job_id"]
+    queued = _job(db_session, q)
+    queued.status = "queued"
+    db_session.commit()
+
+    r = client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/discard-staged")
+    assert r.status_code == 200, r.text
+    assert r.json()["discarded"] == 2 and sorted(r.json()["job_ids"]) == sorted([a, b])
+    assert _job(db_session, a).status == "failed" and _job(db_session, b).status == "failed"
+    db_session.refresh(queued)
+    assert queued.status == "queued"
+
+
 def test_staged_jobs_expire_and_their_files_go(client, db_session, test_project):
     fresh = _upload(client, test_project, NMAP_XML, "fresh.xml", stage=True).json()["job_id"]
     old = _upload(client, test_project, HOST_PORT_TEXT, "old.txt", "text/plain", stage=True).json()["job_id"]

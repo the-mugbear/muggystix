@@ -20,6 +20,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Input } from '../components/ui/input';
 import {
+  discardIngestionJob,
   getIngestionResults,
   getParseError,
   getScans,
@@ -94,6 +95,7 @@ const STATUS_VARIANT: Record<string, 'success' | 'destructive' | 'info' | 'muted
   completed: 'success',
   failed: 'destructive',
   processing: 'info',
+  staged: 'muted',
   queued: 'muted',
 };
 
@@ -655,6 +657,43 @@ const RowDetail: React.FC<{
           jobId={item.id}
           filename={item.original_filename}
           mode="retry"
+          onDone={onChanged}
+        />
+      </div>
+    );
+  }
+
+  if (item.status === 'staged') {
+    return (
+      <div className="flex flex-col gap-sm">
+        <p className="text-metadata text-muted-foreground">
+          Stored but not imported. Nothing runs until you start it; a staged file expires 24 hours after upload.
+        </p>
+        <div className="flex flex-wrap items-center gap-xs">
+          <Button size="sm" onClick={() => setRetryOpen(true)} disabled={!item.file_retained}>
+            Review format and import
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              try {
+                await discardIngestionJob(item.id);
+                onChanged();
+              } catch (err) {
+                console.error('Could not discard the staged job:', err);
+              }
+            }}
+          >
+            Discard
+          </Button>
+        </div>
+        <FormatRetryDialog
+          open={retryOpen}
+          onOpenChange={setRetryOpen}
+          jobId={item.id}
+          filename={item.original_filename}
+          mode="start"
           onDone={onChanged}
         />
       </div>

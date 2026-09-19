@@ -36,7 +36,9 @@ export interface FormatRetryDialogProps {
   onOpenChange: (open: boolean) => void;
   jobId: number;
   filename: string;
-  mode: 'retry' | 'reprocess';
+  /** retry = a failed job restarted in place; start = a staged job imported
+   *  (v5.232.0); reprocess = a finished job re-imported as a new job. */
+  mode: 'retry' | 'start' | 'reprocess';
   /** For re-process: the scan the prior run produced, if any. */
   priorScanId?: number | null;
   onDone: () => void;
@@ -83,9 +85,12 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
     setError(null);
     try {
       const options = { formatOverride: chosen || null, sourceTool: sourceTool.trim() || null };
-      if (mode === 'retry') {
+      if (mode === 'retry' || mode === 'start') {
         await startIngestionJob(jobId, options);
-        toast.success(`${filename} queued again${chosen ? ` as ${labelFor(detection, chosen)}` : ''}`, { autoHideMs: 3000 });
+        toast.success(
+          `${filename} ${mode === 'start' ? 'queued' : 'queued again'}${chosen ? ` as ${labelFor(detection, chosen)}` : ''}`,
+          { autoHideMs: 3000 },
+        );
       } else {
         const job = await reprocessIngestionJob(jobId, options);
         toast.success(`Re-processing ${filename} as job #${job.id}${chosen ? ` (${labelFor(detection, chosen)})` : ''}`, { autoHideMs: 4000 });
@@ -93,7 +98,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
       onOpenChange(false);
       onDone();
     } catch (err) {
-      setError(formatApiError(err, mode === 'retry' ? 'Could not retry the import.' : 'Could not start the re-process.'));
+      setError(formatApiError(err, mode === 'reprocess' ? 'Could not start the re-process.' : 'Could not start the import.'));
     } finally {
       setSubmitting(false);
     }
@@ -105,7 +110,9 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
     <Dialog open={open} onOpenChange={(v) => !submitting && onOpenChange(v)}>
       <DialogContent size="lg">
         <DialogHeader>
-          <DialogTitle>{mode === 'retry' ? 'Review format and retry' : 'Re-process this file'}</DialogTitle>
+          <DialogTitle>
+            {mode === 'retry' ? 'Review format and retry' : mode === 'start' ? 'Review format and import' : 'Re-process this file'}
+          </DialogTitle>
           <DialogDescription className="break-words">{filename}</DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-sm">
@@ -194,7 +201,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>Cancel</Button>
           <Button onClick={() => void submit()} disabled={submitting || loading || !detection}>
             {submitting && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
-            {mode === 'retry' ? 'Retry import' : 'Re-process'}
+            {mode === 'retry' ? 'Retry import' : mode === 'start' ? 'Import' : 'Re-process'}
           </Button>
         </DialogFooter>
       </DialogContent>

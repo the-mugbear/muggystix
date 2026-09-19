@@ -14,7 +14,9 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
-from app.services.staged_import_service import detect_for_job, reprocess_job, start_staged_job
+from app.services.staged_import_service import (
+    detect_for_job, discard_staged_job, reprocess_job, start_staged_job,
+)
 from app.services.ingestion_service import (
     ALLOWED_UPLOAD_EXTENSIONS,
     DuplicateUploadError,
@@ -282,6 +284,61 @@ def start_ingestion_job(
         raise HTTPException(status_code=422, detail=str(exc))
     ingestion_service.enqueue_job(job.id)
     return job
+
+
+class DiscardStagedResponse(BaseModel):
+    discarded: int
+    job_ids: List[int] = []
+
+
+@router.post(
+    "/jobs/discard-staged",
+    response_model=DiscardStagedResponse,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    summary="Discard every staged job the caller can see (files removed, rows kept as dismissed)",
+)
+def discard_all_staged_jobs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """v2.355.0 — clears staged uploads nobody will start.  Admins clear the
+    project's; everyone else their own.  Declared before ``/jobs/{job_id}``
+    routes so "discard-staged" is never parsed as an id."""
+    query = db.query(IngestionJob).filter(
+        IngestionJob.project_id == project.id, IngestionJob.status == "staged",
+    )
+    if current_user.role != UserRole.ADMIN:
+        query = query.filter(IngestionJob.submitted_by_id == current_user.id)
+    ids = []
+    for job in query.all():
+        discard_staged_job(db, job)
+        ids.append(job.id)
+    return DiscardStagedResponse(discarded=len(ids), job_ids=ids)
+
+
+@router.post(
+    "/jobs/{job_id}/discard",
+    response_model=IngestionJobSchema,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    responses={
+        403: {"description": "Not authorized for this job"},
+        404: {"description": "Job not found"},
+        409: {"description": "Only a staged job can be discarded"},
+    },
+    summary="Discard a staged job: remove its file, keep the row as a dismissed failure",
+)
+def discard_ingestion_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    job = _load_job(db, job_id, project, current_user)
+    try:
+        return discard_staged_job(db, job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post(

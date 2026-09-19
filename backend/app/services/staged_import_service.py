@@ -300,6 +300,26 @@ def reprocess_job(
     return new
 
 
+def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime] = None) -> IngestionJob:
+    """v2.355.0 — the operator's way out of a staged job they will not
+    start: the file goes, the row becomes a dismissed failure ("Discarded
+    before import") so it leaves the queue but stays in Ingestion Results as
+    history.  Only a ``staged`` job can be discarded; anything queued or
+    later has its own cancel / dismiss."""
+    if job.status != STAGED_STATUS:
+        raise ValueError(f"Only a staged job can be discarded (current status: {job.status!r})")
+    now = now or datetime.now(timezone.utc)
+    shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
+    job.status = "failed"
+    job.error_message = "Discarded before import"
+    job.message = "Discarded before import"
+    job.completed_at = now
+    job.dismissed_at = now
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now: Optional[datetime] = None) -> int:
     """Fail staged jobs nobody started within ``max_age`` and remove their
     files.  Returns how many were expired.  Called from the worker sweep."""

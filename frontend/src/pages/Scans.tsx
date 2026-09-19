@@ -19,6 +19,7 @@ import {
   Info,
   Trash2,
   Upload,
+  PauseCircle,
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
@@ -31,6 +32,8 @@ import {
   getRecentIngestionJobs,
   dismissIngestionJob,
   cancelIngestionJob,
+  discardIngestionJob,
+  discardStagedJobs,
   retryIngestionJob,
   getScanCommandExplanation,
   getScanBatches,
@@ -63,6 +66,7 @@ import { Card, CardContent } from '../components/ui/card';
 import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
+import FormatRetryDialog from '../components/scans/FormatRetryDialog';
 import ScanBatchList, { SCAN_BATCH_LIMIT } from '../components/scans/ScanBatchList';
 import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
@@ -189,6 +193,8 @@ export default function Scans() {
   >({});
 
   const [activeJobIds, setActiveJobIds] = useState<number[]>([]);
+  // v5.232.0 — a staged job picked from the queue for "Review and import".
+  const [stagedReviewJob, setStagedReviewJob] = useState<IngestionJob | null>(null);
   const [activeJobs, setActiveJobs] = useState<Record<number, IngestionJob>>({});
   const [recentJobs, setRecentJobs] = useState<IngestionJob[]>([]);
   const [recentJobsFetched, setRecentJobsFetched] = useState<Date | null>(null);
@@ -1238,17 +1244,49 @@ export default function Scans() {
               <div>
                 <h2 className="text-section-title font-semibold">Ingestion Queue</h2>
                 <p className="text-metadata text-muted-foreground">
-                  In-flight uploads + recent failures.  Successful uploads
-                  appear in Your Scans below.
+                  In-flight uploads, staged files waiting for a format review, and recent
+                  failures. Successful uploads appear in Import history below.
                 </p>
               </div>
-              <LastUpdated
-                lastFetched={recentJobsFetched}
-                onRefresh={fetchRecentJobs}
-                isLoading={recentJobsLoading}
-                label="ingestion jobs"
-                intervalMs={15000}
-              />
+              <div className="flex flex-wrap items-center gap-xs">
+                {/* v5.232.0 — staged files nobody will start (a closed review
+                    dialog, a failed inspection) can be cleared in one go. */}
+                {recentJobs.some((j) => j.status === 'staged') && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={async () => {
+                      const n = recentJobs.filter((j) => j.status === 'staged').length;
+                      const ok = await confirm({
+                        title: 'Discard staged uploads',
+                        body:
+                          'Remove every staged file that has not been imported? Nothing was imported from them. '
+                          + 'They stay listed in Ingestion Results as discarded.',
+                        resourceName: `${n} staged upload${n === 1 ? '' : 's'}`,
+                        severity: 'warning',
+                        confirmLabel: 'Discard all',
+                      });
+                      if (!ok) return;
+                      try {
+                        const res = await discardStagedJobs();
+                        toast.info(`Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`);
+                        await fetchRecentJobs();
+                      } catch (err) {
+                        toast.error(formatApiError(err, 'Could not discard the staged uploads'));
+                      }
+                    }}
+                  >
+                    Discard {recentJobs.filter((j) => j.status === 'staged').length} staged
+                  </Button>
+                )}
+                <LastUpdated
+                  lastFetched={recentJobsFetched}
+                  onRefresh={fetchRecentJobs}
+                  isLoading={recentJobsLoading}
+                  label="ingestion jobs"
+                  intervalMs={15000}
+                />
+              </div>
             </div>
             <div className="overflow-x-auto">
               <Table>
@@ -1370,6 +1408,11 @@ export default function Scans() {
                               {job.status === 'queued' && (
                                 <Hourglass className="size-4 text-muted-foreground" aria-hidden />
                               )}
+                              {/* v5.232.0 — stored, not imported: nothing runs
+                                  until the operator starts it. */}
+                              {job.status === 'staged' && (
+                                <PauseCircle className="size-4 text-muted-foreground" aria-hidden />
+                              )}
                               <span className="sr-only">{job.status}</span>
                             </span>
                             {isStalled && (
@@ -1471,6 +1514,39 @@ export default function Scans() {
                                 Preserves the failure for the audit
                                 trail (admins can re-surface dismissed
                                 rows via ?include_dismissed=true). */}
+                            {/* v5.232.0 — a staged job (left behind by a closed
+                                review dialog, or by a failed inspection) had no
+                                action at all here: import it after a format
+                                review, or discard it. */}
+                            {job.status === 'staged' && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setStagedReviewJob(job)}
+                                  aria-label={`Review format and import ${job.original_filename}`}
+                                >
+                                  Review and import
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-destructive"
+                                  onClick={async () => {
+                                    try {
+                                      await discardIngestionJob(job.id);
+                                      toast.info('Staged upload discarded');
+                                      await fetchRecentJobs();
+                                    } catch (err) {
+                                      toast.error(formatApiError(err, 'Could not discard the staged upload'));
+                                    }
+                                  }}
+                                  aria-label={`Discard staged upload ${job.original_filename}`}
+                                >
+                                  Discard
+                                </Button>
+                              </>
+                            )}
                             {(job.status === 'queued' || job.status === 'processing') && (
                               <Button
                                 size="sm"
@@ -1938,6 +2014,31 @@ export default function Scans() {
       {/* Upload dialog — v5.229.0: choose → review formats → import → results
           (staged-import plan, phase C). The dialog stages and inspects each
           file; a started file is handed to the banner above by job id. */}
+      {stagedReviewJob && (
+        <FormatRetryDialog
+          open
+          onOpenChange={(v) => { if (!v) setStagedReviewJob(null); }}
+          jobId={stagedReviewJob.id}
+          filename={stagedReviewJob.original_filename}
+          mode="start"
+          onDone={() => {
+            // Hand the started job to the results banner, like the dialog does.
+            const started = stagedReviewJob;
+            setUploadProgress((prev) => ({
+              ...prev,
+              [`queue-${started.id}`]: {
+                filename: started.original_filename,
+                percent: 100,
+                status: 'received',
+                startedAt: Date.now(),
+                jobId: started.id,
+              },
+            }));
+            setActiveJobIds((prev) => (prev.includes(started.id) ? prev : [...prev, started.id]));
+            void fetchRecentJobs();
+          }}
+        />
+      )}
       <UploadReviewDialog
         open={uploadDialogOpen}
         onOpenChange={setUploadDialogOpen}

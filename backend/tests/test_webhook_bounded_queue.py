@@ -120,6 +120,21 @@ def _drop(cfg, event, title):
     )
 
 
+def test_first_drop_notifies_even_right_after_a_host_boot(db_session, webhook_cfg, webhook_creator, monkeypatch):
+    """v2.355.0 — time.monotonic() counts from host boot.  "Never notified"
+    used to be 0.0, so in the first five minutes after a boot the first
+    drop computed ``now - 0.0 <= window`` and was suppressed.  Found when
+    this whole file failed four minutes after a reboot."""
+    monkeypatch.setattr(webhook_dispatcher.time, "monotonic", lambda: 10.0)
+    _drop(webhook_cfg, "note_mention", "first drop after boot")
+    notifs = (
+        db_session.query(Notification)
+        .filter(Notification.user_id == webhook_creator.id)
+        .all()
+    )
+    assert len(notifs) == 1
+
+
 def test_drop_records_notification_for_creator(db_session, webhook_cfg, webhook_creator):
     """A single drop creates one Notification addressed to the webhook
     creator with the expected shape."""

@@ -192,8 +192,13 @@ def _record_dropped_delivery(
     drop_count = 0
     with _DROP_TRACKER_LOCK:
         _prune_drop_tracker_locked(now)
+        # "Never notified" is -inf, not 0.0.  time.monotonic() counts from
+        # host boot, so with 0.0 the first drop in the first five minutes
+        # after a boot computed `now - 0.0 <= window` and was silently
+        # suppressed (v2.355.0 — found when the suite ran 4 minutes after a
+        # reboot and three tests that had passed all day failed).
         entry = _DROP_TRACKER.setdefault(
-            cfg_id, {"last_notified": 0.0, "drops": 0.0},
+            cfg_id, {"last_notified": float("-inf"), "drops": 0.0},
         )
         entry["drops"] += 1
         if now - entry["last_notified"] > _DROP_COALESCE_WINDOW_SECONDS:

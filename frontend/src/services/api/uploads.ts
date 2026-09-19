@@ -119,6 +119,19 @@ export const reprocessIngestionJob = async (
   return response.data;
 };
 
+/** v5.232.0 — discard a staged job: its file goes, the row stays as a
+ *  dismissed failure (out of the queue, still in Ingestion Results). */
+export const discardIngestionJob = async (jobId: number): Promise<IngestionJob> => {
+  const response = await api.post(`${p()}/upload/jobs/${jobId}/discard`);
+  return response.data;
+};
+
+/** Discard every staged job the caller can see. */
+export const discardStagedJobs = async (): Promise<{ discarded: number; job_ids: number[] }> => {
+  const response = await api.post(`${p()}/upload/jobs/discard-staged`);
+  return response.data;
+};
+
 /** Start a staged job, or retry a failed one on its retained file, optionally
  *  as a chosen format (the worker then runs exactly that parser). */
 export const startIngestionJob = async (
