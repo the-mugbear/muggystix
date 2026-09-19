@@ -1467,12 +1467,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   <strong className="text-foreground">{host.web_interface_count}</strong> web
                 </button>
               )}
-              {notes.length > 0 && (
-                <button type="button" onClick={() => scrollToSection('host-detail-notes')}
-                  className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <strong className="text-foreground">{notes.length}</strong> note{notes.length === 1 ? '' : 's'}
-                </button>
-              )}
+              {/* Always present (v5.236.0): the composer now sits below the
+                  port table, so quick capture is one jump from the top. */}
+              <button type="button" onClick={() => scrollToSection('host-detail-notes')}
+                className="inline-flex items-center gap-xxs rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <NotebookPen className="size-3.5" aria-hidden />
+                {notes.length > 0
+                  ? <><strong className="text-foreground">{notes.length}</strong> note{notes.length === 1 ? '' : 's'} · add</>
+                  : 'Add note'}
+              </button>
               {(testPlanCounts.in_progress + testPlanCounts.pending + testPlanCounts.completed) > 0 && (
                 <button type="button" onClick={() => scrollToSection('host-detail-proposed-tests')}
                   className="inline-flex items-center gap-xxs rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -1667,14 +1670,39 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
           New order answers the operator's questions in priority:
             1. What is this host? (Overview, unchanged)
-            2. Where do I record my next observation? (Add Note + Team
-               Notes promoted right under Overview)
-            3. How risky is it? (Vulnerabilities lifted ahead of the
+            2. Is it in scope, and what is listening? (Scope + Port
+               Details — v5.236.0, see below)
+            3. Where do I record my next observation? (Add Note + Team
+               Notes)
+            4. How risky is it? (Vulnerabilities lifted ahead of the
                agent + tool evidence stacks)
-            4. What's being done about it? (Proposed Tests)
-            5. What evidence supports it? (Web, NSE, NetExec, Ports)
-            6. History / audit (Conflicts, Lineage tail)
+            5. What's being done about it? (Proposed Tests)
+            6. What evidence supports it? (Web, NSE, NetExec)
+            7. History / audit (Conflicts, Lineage tail)
+
+          v5.236.0 (design review 2026-09-19) — Scope and Port Details moved
+          from below the whole discussion to directly under the overview: an
+          analyst should not scroll through a conversation to find out what is
+          listening, and a note is written ABOUT a service. The composer stays
+          one jump away: the overview's "Add note" link scrolls to it.
         */}
+
+      {/* Which scope entries cover this host — every subnet the address falls
+          in, every in-scope name resolving here, or a plain "out of scope".
+          The Hosts list shows only the most-specific subnet. */}
+      <ScopeMembershipCard membership={host.scope_membership} />
+
+      {/* Port Details — services, per-endpoint TLS evidence, connection helpers. */}
+      <PortDetailsCard
+        hostId={host.id}
+        hostIp={host.ip_address}
+        hostname={host.hostname}
+        hostLastSeen={host.last_seen ?? null}
+        openPorts={openPorts}
+        closedPorts={closedPorts}
+        filteredPorts={filteredPorts}
+        connectionHelpersByPort={connectionHelpersByPort}
+      />
 
       {/* Add Note */}
       <Card id="host-detail-notes">
@@ -2160,11 +2188,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </DialogContent>
       </Dialog>
 
-      {/* Which scope entries cover this host — every subnet the address falls
-          in, every in-scope name resolving here, or a plain "out of scope".
-          The Hosts list shows only the most-specific subnet. */}
-      <ScopeMembershipCard membership={host.scope_membership} />
-
       {/* Where this host is registered and hosted — the outside world's answer
           to "is this the client's?", vs the scope's own CIDR list. A single
           fresh attribution is already shown as the "Registered" line in the
@@ -2478,16 +2501,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           host was never probed with NetExec. */}
       <NetExecCard hostId={host.id} count={host.netexec_result_count ?? 0} />
 
-      {/* Port Details */}
-      <PortDetailsCard
-        hostId={host.id}
-        hostIp={host.ip_address}
-        hostLastSeen={host.last_seen ?? null}
-        openPorts={openPorts}
-        closedPorts={closedPorts}
-        filteredPorts={filteredPorts}
-        connectionHelpersByPort={connectionHelpersByPort}
-      />
+      {/* Port Details moved up, directly under the overview (v5.236.0). */}
 
       {/* Data conflicts */}
       {showConflicts && hasConflicts && (

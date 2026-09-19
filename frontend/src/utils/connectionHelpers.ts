@@ -14,10 +14,24 @@ export interface ConnectionHelper {
  * Commands are pre-populated with the target IP/hostname so the user can
  * copy-paste them directly.
  */
+export interface ConnectionHelperOptions {
+  /** The named endpoint (virtual host) to address on a web port.  An address
+   *  alone reaches the server's DEFAULT site: on shared hosting that is a
+   *  different website, with a different certificate, from the one the
+   *  evidence describes. */
+  vhost?: string | null;
+}
+
+/** Scanner-reported names end up inside a command the operator pastes into a
+ *  shell.  Anything that is not plainly a hostname is refused, not escaped. */
+export const isSafeHostname = (name: string | null | undefined): name is string =>
+  !!name && name.length <= 253 && /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(name);
+
 export const getConnectionHelpers = (
   ip: string,
   port: Port,
   hostname?: string | null,
+  options: ConnectionHelperOptions = {},
 ): ConnectionHelper[] => {
   const target = ip;
   const pn = port.port_number;
@@ -29,13 +43,45 @@ export const getConnectionHelpers = (
   if (isHttp(pn, svc)) {
     const scheme = isHttps(pn, svc) ? 'https' : 'http';
     const portSuffix = (scheme === 'https' && pn === 443) || (scheme === 'http' && pn === 80) ? '' : `:${pn}`;
-    const base = `${scheme}://${target}${portSuffix}`;
+    const vhost = isSafeHostname(options.vhost) ? options.vhost : null;
+    // A bare IPv6 address needs brackets in a URL and in curl's --resolve.
+    const bracketed = ip.includes(':') ? `[${ip}]` : ip;
+    const base = `${scheme}://${vhost ?? bracketed}${portSuffix}`;
 
-    helpers.push({
-      tool: 'curl',
-      command: `curl -ik ${base}/`,
-      description: 'Fetch headers and body (ignore cert errors)',
-    });
+    if (vhost) {
+      // --resolve pins the name to THIS address for one request: the right
+      // Host header and SNI, with no dependence on the operator's resolver.
+      helpers.push({
+        tool: 'curl',
+        command: `curl -ik --resolve ${vhost}:${pn}:${bracketed} ${base}/`,
+        description: `Fetch ${vhost} from this address (Host + SNI set, DNS bypassed)`,
+      });
+      if (scheme === 'https') {
+        helpers.push({
+          tool: 'openssl',
+          command: `openssl s_client -connect ${bracketed}:${pn} -servername ${vhost} </dev/null | openssl x509 -noout -subject -issuer -dates`,
+          description: `The certificate served for ${vhost} (SNI), not the default site's`,
+        });
+      }
+      helpers.push({
+        tool: 'hosts entry',
+        command: `echo '${ip} ${vhost}' | sudo tee -a /etc/hosts`,
+        description: `The tools below use the name and cannot pin an address: make ${vhost} resolve here first if it does not`,
+      });
+    } else {
+      helpers.push({
+        tool: 'curl',
+        command: `curl -ik ${base}/`,
+        description: 'Fetch headers and body (ignore cert errors)',
+      });
+      if (scheme === 'https') {
+        helpers.push({
+          tool: 'openssl',
+          command: `openssl s_client -connect ${bracketed}:${pn} </dev/null | openssl x509 -noout -subject -issuer -dates`,
+          description: 'The certificate of the default site at this address (no SNI)',
+        });
+      }
+    }
     helpers.push({
       tool: 'whatweb',
       command: `whatweb --color=never ${base}`,

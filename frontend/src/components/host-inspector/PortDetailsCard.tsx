@@ -14,10 +14,13 @@ import {
   ArrowDown, ArrowUp, ArrowUpDown, Copy, HelpCircle, Lock, Network, ShieldAlert, ShieldCheck, Terminal,
 } from 'lucide-react';
 
+import { getHostWebInterfaces, type Port } from '../../services/api';
+import { getConnectionHelpers, isSafeHostname, type ConnectionHelper } from '../../utils/connectionHelpers';
 import {
-  getHostWebInterfaces, type Port, type WebInterface,
-} from '../../services/api';
-import type { ConnectionHelper } from '../../utils/connectionHelpers';
+  EXPIRY_WARN_DAYS, daysUntil, endpointsByPort, summariseEndpointTls,
+  type EndpointTls, type PortEndpoint,
+} from '../../utils/portEndpoints';
+import { formatRelativeTime } from '../../utils/relativeTime';
 import { NOT_REVALIDATED_LABEL, NOT_REVALIDATED_TITLE, portFreshness } from '../../utils/evidenceFreshness';
 import { useToast } from '../../contexts/ToastContext';
 import {
@@ -49,32 +52,114 @@ const stateBadgeVariant = (
   }
 };
 
-const EXPIRY_WARN_DAYS = 30;
-const daysUntil = (iso: string | null | undefined): number | null => {
-  if (!iso) return null;
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return null;
-  return Math.round((t - Date.now()) / 86_400_000);
-};
-
-/** The cert / TLS facts we surface per port — latest observation wins. */
-interface PortTls {
-  cert_not_after?: string | null;
-  cert_self_signed?: boolean | null;
-  cert_subject_org?: string | null;
-  tls_weak_protocol?: boolean | null;
-}
-
-const hasTlsSignal = (w: WebInterface): boolean =>
-  w.cert_not_after != null || w.cert_self_signed != null
-  || !!w.cert_subject_org || w.tls_weak_protocol === true;
-
 /** nmap's tunnel attribute is "ssl" when the service runs inside TLS. */
 const isTlsTunnel = (tunnel?: string | null): boolean => !!tunnel && /ssl|tls/i.test(tunnel);
 
-const TlsCell: React.FC<{ tls?: PortTls; tunnel?: string | null; webError?: boolean }> = ({
-  tls, tunnel, webError,
-}) => {
+/** One endpoint's cert / TLS facts. */
+const TlsFacts: React.FC<{ tls: EndpointTls }> = ({ tls }) => {
+  const days = daysUntil(tls.cert_not_after);
+  const expired = days !== null && days < 0;
+  const expiringSoon = days !== null && days >= 0 && days <= EXPIRY_WARN_DAYS;
+  return (
+    <div className="flex min-w-0 flex-col gap-xxs">
+      <div className="flex flex-wrap items-center gap-xxs">
+        {tls.tls_weak_protocol === true && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="destructive" tabIndex={0}>weak TLS</Badge>
+            </TooltipTrigger>
+            <TooltipContent>Offers a deprecated protocol (SSLv2/SSLv3/TLS 1.0/1.1) — downgrade / interception risk.</TooltipContent>
+          </Tooltip>
+        )}
+        {tls.cert_self_signed === true && (
+          <Badge variant="outline" className="border-warning/40 text-warning">self-signed</Badge>
+        )}
+      </div>
+      {days !== null && (
+        <span className={expired || expiringSoon ? 'text-caption text-destructive' : 'text-caption text-muted-foreground'}>
+          {expired
+            ? `cert expired ${Math.abs(days)}d ago`
+            : `cert expires ${days}d`}
+        </span>
+      )}
+      {tls.cert_subject_org && (
+        <span className="flex min-w-0 items-center gap-xxs text-caption text-muted-foreground"
+          title={`Certificate subject organisation (CA-validated): ${tls.cert_subject_org}`}>
+          <ShieldCheck className="size-3 shrink-0 text-success" aria-hidden />
+          <span className="truncate">{tls.cert_subject_org}</span>
+        </span>
+      )}
+    </div>
+  );
+};
+
+/**
+ * The TLS column.  A port with ONE endpoint shows its facts (and the name
+ * they belong to).  A port serving SEVERAL named endpoints shows a count-only
+ * roll-up and opens the per-endpoint evidence: one website's certificate is
+ * never presented as the port's, and the row keeps its height.
+ */
+const TlsCell: React.FC<{
+  endpoints: PortEndpoint[];
+  portNumber: number | null;
+  tunnel?: string | null;
+  webError?: boolean;
+}> = ({ endpoints, portNumber, tunnel, webError }) => {
+  const withTls = endpoints.filter((e) => e.tls);
+  if (withTls.length > 1) {
+    const s = summariseEndpointTls(endpoints);
+    const flags = [
+      s.weak > 0 ? `${s.weak} weak TLS` : null,
+      s.expired > 0 ? `${s.expired} expired` : null,
+      s.expiringSoon > 0 ? `${s.expiringSoon} expiring` : null,
+      s.selfSigned > 0 ? `${s.selfSigned} self-signed` : null,
+    ].filter(Boolean) as string[];
+    return (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full min-w-0 flex-col items-start rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`TLS evidence for ${withTls.length} endpoints on port ${portNumber ?? ''}`}
+          >
+            <span className="truncate text-caption text-primary underline-offset-2 hover:underline">
+              {withTls.length} endpoints
+            </span>
+            <span className={`truncate text-caption ${s.weak + s.expired > 0 ? 'text-destructive' : flags.length ? 'text-warning' : 'text-muted-foreground'}`}>
+              {flags.length ? flags.join(' · ') : 'no TLS issues recorded'}
+            </span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[34rem] max-w-[90vw]" align="start">
+          <div className="max-h-[24rem] overflow-y-auto p-xs">
+            <h4 className="text-subheading">TLS evidence by endpoint · port {portNumber}</h4>
+            <p className="mb-xs text-caption text-muted-foreground">
+              Each website on this port has its own certificate. Nothing here is merged across names.
+            </p>
+            <ul className="divide-y divide-border">
+              {withTls.map((e) => (
+                <li key={e.key} className="flex items-start gap-sm py-xs">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-mono text-caption text-foreground" title={e.name ?? e.url}>
+                      {e.name ?? 'address only (default site)'}
+                    </p>
+                    <p className="truncate text-caption text-muted-foreground" title={e.url}>
+                      {e.source} · {formatRelativeTime(e.last_seen, { fallback: 'time unknown' })} · {e.url}
+                    </p>
+                  </div>
+                  <div className="w-[11rem] shrink-0">
+                    <TlsFacts tls={e.tls!} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </PopoverContent>
+      </Popover>
+    );
+  }
+  const only = withTls[0];
+  const tls = only?.tls ?? undefined;
   if (!tls) {
     // No web-interface / cert evidence for this port. Fall back to nmap's
     // tunnel attribute so a TLS-wrapped service on a non-standard port is still
@@ -106,38 +191,17 @@ const TlsCell: React.FC<{ tls?: PortTls; tunnel?: string | null; webError?: bool
     }
     return <span className="text-caption text-muted-foreground">—</span>;
   }
-  const days = daysUntil(tls.cert_not_after);
-  const expired = days !== null && days < 0;
-  const expiringSoon = days !== null && days >= 0 && days <= EXPIRY_WARN_DAYS;
   return (
-    <div className="flex flex-col gap-xxs">
-      <div className="flex flex-wrap items-center gap-xxs">
-        {tls.tls_weak_protocol === true && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="destructive" tabIndex={0}>weak TLS</Badge>
-            </TooltipTrigger>
-            <TooltipContent>Offers a deprecated protocol (SSLv2/SSLv3/TLS 1.0/1.1) — downgrade / interception risk.</TooltipContent>
-          </Tooltip>
-        )}
-        {tls.cert_self_signed === true && (
-          <Badge variant="outline" className="border-warning/40 text-warning">self-signed</Badge>
-        )}
-      </div>
-      {days !== null && (
-        <span className={expired || expiringSoon ? 'text-caption text-destructive' : 'text-caption text-muted-foreground'}>
-          {expired
-            ? `cert expired ${Math.abs(days)}d ago`
-            : `cert expires ${days}d`}
-        </span>
-      )}
-      {tls.cert_subject_org && (
-        <span className="flex items-center gap-xxs truncate text-caption text-muted-foreground"
-          title={`Certificate subject organisation (CA-validated): ${tls.cert_subject_org}`}>
-          <ShieldCheck className="size-3 shrink-0 text-success" aria-hidden />
-          {tls.cert_subject_org}
-        </span>
-      )}
+    <div className="flex min-w-0 flex-col gap-xxs">
+      <TlsFacts tls={tls} />
+      {/* Whose certificate this is: the name it was served for, the source
+          that saw it and when — kept with the fact, not implied. */}
+      <span
+        className="truncate text-caption text-muted-foreground"
+        title={`${only.name ?? 'address only (default site)'} · ${only.source} · ${only.url}`}
+      >
+        {only.name ?? 'default site'} · {formatRelativeTime(only.last_seen, { fallback: 'time unknown' })}
+      </span>
     </div>
   );
 };
@@ -145,6 +209,7 @@ const TlsCell: React.FC<{ tls?: PortTls; tunnel?: string | null; webError?: bool
 interface PortDetailsCardProps {
   hostId: number;
   hostIp: string | null;
+  hostname?: string | null;
   /** The host's newest observation, so a port can say whether the latest
    *  sweep saw it (v5.224.0). */
   hostLastSeen?: string | null;
@@ -155,42 +220,30 @@ interface PortDetailsCardProps {
 }
 
 const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
-  hostId, hostIp, hostLastSeen = null, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
+  hostId, hostIp, hostname = null, hostLastSeen = null, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
 }) => {
   const toast = useToast();
   const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
-  const [tlsByPort, setTlsByPort] = useState<Map<number, PortTls>>(new Map());
+  const [endpoints, setEndpoints] = useState<Map<number, PortEndpoint[]>>(new Map());
   const [webError, setWebError] = useState(false);
+  // Which endpoint a port's commands address; absent = the default below.
+  const [helperTarget, setHelperTarget] = useState<Record<number, string>>({});
 
-  // Join cert/TLS evidence from the host's web interfaces onto ports by
-  // ``port_id``, latest observation winning. Non-fatal: on failure the column
-  // falls back to nmap's tunnel attribute and marks the load as failed (so a
-  // fetch error reads differently from "no TLS evidence") rather than breaking
-  // the port table. State is reset per host — the inspector stays mounted across
+  // Join the host's web interfaces onto ports by ``port_id`` as NAMED
+  // ENDPOINTS (utils/portEndpoints): newest observation per (port, name),
+  // nothing merged across names. Non-fatal: on failure the column falls back
+  // to nmap's tunnel attribute and marks the load as failed (so a fetch error
+  // reads differently from "no TLS evidence") rather than breaking the port
+  // table. State is reset per host — the inspector stays mounted across
   // prev/next, so a stale map would otherwise bleed onto the next host.
   useEffect(() => {
     let cancelled = false;
-    setTlsByPort(new Map());
+    setEndpoints(new Map());
+    setHelperTarget({});
     setWebError(false);
     getHostWebInterfaces(hostId)
       .then((interfaces) => {
-        if (cancelled) return;
-        const map = new Map<number, PortTls & { _ts: number }>();
-        for (const w of interfaces) {
-          if (w.port_id == null || !hasTlsSignal(w)) continue;
-          const ts = w.last_seen ? new Date(w.last_seen).getTime() : 0;
-          const prev = map.get(w.port_id);
-          if (!prev || ts >= prev._ts) {
-            map.set(w.port_id, {
-              _ts: ts,
-              cert_not_after: w.cert_not_after,
-              cert_self_signed: w.cert_self_signed,
-              cert_subject_org: w.cert_subject_org,
-              tls_weak_protocol: w.tls_weak_protocol,
-            });
-          }
-        }
-        setTlsByPort(map);
+        if (!cancelled) setEndpoints(endpointsByPort(interfaces));
       })
       .catch(() => { if (!cancelled) setWebError(true); });
     return () => { cancelled = true; };
@@ -249,7 +302,18 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                     </TableHeader>
                     <TableBody>
                       {sortPorts(openPorts).map((port) => {
-                        const helpers = connectionHelpersByPort.get(port.id) ?? [];
+                        const portEndpoints = endpoints.get(port.id) ?? [];
+                        // Only names that are plainly hostnames: they go into
+                        // commands the operator pastes into a shell.
+                        const names = portEndpoints.map((e) => e.name).filter(isSafeHostname);
+                        // With named endpoints on the port, an address alone
+                        // reaches the DEFAULT site — usually not the website
+                        // the evidence is about. Default to the first name;
+                        // the operator can switch, including back to the address.
+                        const target = helperTarget[port.id] ?? names[0] ?? '';
+                        const helpers = target && hostIp
+                          ? getConnectionHelpers(hostIp, port, hostname, { vhost: target })
+                          : connectionHelpersByPort.get(port.id) ?? [];
                         const fresh = portFreshness(port, hostLastSeen);
                         return (
                           <TableRow key={port.id}>
@@ -301,7 +365,8 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                             </TableCell>
                             <TableCell>
                               <TlsCell
-                                tls={tlsByPort.get(port.id)}
+                                endpoints={portEndpoints}
+                                portNumber={port.port_number}
                                 tunnel={port.service_tunnel}
                                 webError={webError}
                               />
@@ -316,9 +381,26 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                                 </PopoverTrigger>
                                 <PopoverContent className="w-[34rem] max-w-[90vw]" align="start">
                                   <div className="max-h-[24rem] overflow-y-auto p-xs">
-                                    <h4 className="mb-xs text-subheading">
-                                      Commands for {hostIp}:{port.port_number}
+                                    <h4 className="mb-xs break-words text-subheading">
+                                      Commands for {target || hostIp}:{port.port_number}
                                     </h4>
+                                    {names.length > 0 && (
+                                      <div className="mb-xs">
+                                        <label className="text-caption text-muted-foreground" htmlFor={`helper-target-${port.id}`}>
+                                          Endpoint — this port answers as {names.length === 1 ? 'a named site' : `${names.length} named sites`};
+                                          the address alone reaches the default one.
+                                        </label>
+                                        <select
+                                          id={`helper-target-${port.id}`}
+                                          className="mt-xxs flex h-8 w-full rounded-control border border-input bg-background px-xs font-mono text-caption"
+                                          value={target}
+                                          onChange={(e) => setHelperTarget((prev) => ({ ...prev, [port.id]: e.target.value }))}
+                                        >
+                                          {names.map((n) => <option key={n} value={n}>{n}</option>)}
+                                          <option value="">{hostIp} (address only — default site)</option>
+                                        </select>
+                                      </div>
+                                    )}
                                     <div className="space-y-xs">
                                       {helpers.map((helper, idx) => (
                                         <div key={idx} className="flex items-start gap-xs rounded-control bg-muted/30 p-xs">
