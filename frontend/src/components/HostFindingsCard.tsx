@@ -13,9 +13,11 @@ import { AlertHexIcon } from './AppIcons';
 
 import {
   Finding,
+  FindingHostStatus,
   FindingSeverity,
   FindingStatus,
   listFindings,
+  setFindingEndpointStatus,
   setFindingStatus,
 } from '../services/api';
 import { ENDPOINT_STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
@@ -88,6 +90,26 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
     }
   };
 
+  // v5.238.1 — a finding that spans several hosts is not this host's to
+  // re-judge: the control here sets THIS host's endpoint state, on every
+  // endpoint row the host has on the finding (one per named endpoint).  The
+  // selector used to set the ISSUE's status for every host from inside one
+  // host's inspector — the same reach the false-positive dismissal had.
+  const handleEndpointStatus = async (f: Finding, hostStatus: FindingHostStatus) => {
+    const rows = (f.hosts ?? []).filter((h) => h.host_id === hostId && h.host_status !== hostStatus);
+    if (rows.length === 0) return;
+    try {
+      let updated: Finding = f;
+      for (const row of rows) {
+        updated = await setFindingEndpointStatus(f.id, row.id, hostStatus);
+      }
+      setFindings((prev) => prev.map((x) => (x.id === f.id ? updated : x)));
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
+      void fetchFindings(); // a partial multi-row update must not be left looking whole
+    }
+  };
+
   // Gate on presence (mirrors WebInterfaces/NetExec cards) — no findings,
   // no card noise.  Appears once a note here is promoted.
   if (!loaded || findings.length === 0) return null;
@@ -117,37 +139,70 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
             ) : (
               <span className="min-w-0 flex-1 truncate" title={f.title}>{f.title}</span>
             )}
-            {/* The selector beside this is the ISSUE's status. How the finding
-                stands on THIS host is its endpoint state — shown when it
-                differs from plain "open", so a finding confirmed elsewhere
-                does not read as confirmed here after a host-only dismissal. */}
             {(() => {
               const here = (f.hosts ?? []).filter((h) => h.host_id === hostId).map((h) => h.host_status);
-              if (here.length === 0) return null;
-              const state = here.every((s) => s === 'false_positive')
-                ? 'false_positive'
-                : here.find((s) => s !== 'open' && s !== 'false_positive') ?? 'open';
-              if (state === 'open') return null;
+              // Several named endpoints of this host on one finding: "false
+              // positive here" only when all are; otherwise the live state.
+              const state: FindingHostStatus = here.length === 0
+                ? 'open'
+                : here.every((s) => s === 'false_positive')
+                  ? 'false_positive'
+                  : here.find((s) => s !== 'open' && s !== 'false_positive') ?? 'open';
+              const shared = (f.host_count ?? f.hosts?.length ?? 1) > 1;
+
+              if (!shared) {
+                // This host is the finding's only one: the issue's status IS
+                // this host's, so it is set here as before.
+                return canManage ? (
+                  <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
+                    <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                        <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Badge variant="muted">{STATUS_LABEL[f.status]}</Badge>
+                );
+              }
+
               return (
-                <Badge variant={state === 'remediated' ? 'success' : state === 'false_positive' ? 'outline' : 'info'}>
-                  {ENDPOINT_STATUS_LABEL[state]}
-                </Badge>
+                <>
+                  {/* The ISSUE's status, across all its hosts: read here,
+                      changed on the finding's own page. */}
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/findings/${f.id}`)}
+                    className="shrink-0 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title={`The issue's status across its ${f.host_count} hosts. Open the finding to change it.`}
+                    aria-label={`${f.title}: ${STATUS_LABEL[f.status]} across ${f.host_count} hosts — open the finding`}
+                  >
+                    <Badge variant="muted" className="hover:underline">
+                      {STATUS_LABEL[f.status]} · {f.host_count} hosts
+                    </Badge>
+                  </button>
+                  {canManage && here.length > 0 ? (
+                    <Select value={state} onValueChange={(v) => void handleEndpointStatus(f, v as FindingHostStatus)}>
+                      <SelectTrigger className="h-7 w-[11rem] text-caption" aria-label={`State of ${f.title} on this host`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(Object.keys(ENDPOINT_STATUS_LABEL) as FindingHostStatus[]).map((s) => (
+                          <SelectItem key={s} value={s}>{ENDPOINT_STATUS_LABEL[s]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Badge variant={state === 'open' ? 'warning' : state === 'remediated' ? 'success' : state === 'false_positive' ? 'outline' : 'info'}>
+                      {ENDPOINT_STATUS_LABEL[state]}
+                    </Badge>
+                  )}
+                </>
               );
             })()}
-            {canManage ? (
-              <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
-                <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
-                    <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Badge variant="muted">{STATUS_LABEL[f.status]}</Badge>
-            )}
             <FindingHistoryButton findingId={f.id} />
           </div>
         ))}
