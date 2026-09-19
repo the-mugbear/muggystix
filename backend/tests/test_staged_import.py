@@ -140,6 +140,23 @@ def test_failed_job_with_its_file_can_be_started_again(client, db_session, test_
     assert job.status == "queued" and job.error_message is None and job.format_override == "naabu_output"
 
 
+def test_detection_does_not_construct_a_service_per_request(client, db_session, test_project, monkeypatch):
+    """v2.354.1 — a fresh IngestionService per detection ran the storage
+    writability probe, and concurrent detections from a multi-file upload
+    raced on its process-id-named test file: some requests 500'd with
+    "storage is not writable".  Detection must use the module singleton."""
+    from app.services import ingestion_service as module
+
+    def _boom(self, *a, **kw):
+        raise AssertionError("detect_for_job must not construct a new IngestionService")
+
+    monkeypatch.setattr(module.IngestionService, "__init__", _boom)
+    job_id = _upload(client, test_project, NMAP_XML, "scan.xml", stage=True).json()["job_id"]
+    r = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/detection")
+    assert r.status_code == 200, r.text
+    assert r.json()["primary"] == "nmap_xml"
+
+
 def test_staged_jobs_expire_and_their_files_go(client, db_session, test_project):
     fresh = _upload(client, test_project, NMAP_XML, "fresh.xml", stage=True).json()["job_id"]
     old = _upload(client, test_project, HOST_PORT_TEXT, "old.txt", "text/plain", stage=True).json()["job_id"]

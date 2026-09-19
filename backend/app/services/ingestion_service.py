@@ -214,9 +214,12 @@ class IngestionService:
         try:
             self._storage_root.mkdir(parents=True, exist_ok=True)
             # Verify we can actually write (directory may exist but be unwritable
-            # due to host volume mount ownership).  Use a PID-specific file to
-            # avoid races when multiple uvicorn workers start concurrently.
-            test_file = self._storage_root / f".write_test_{os.getpid()}"
+            # due to host volume mount ownership).  The name is unique per
+            # construction, not just per process: two instances built in one
+            # process at the same time (v2.354.1 — concurrent detection
+            # requests) raced on a PID-only name, and the loser's unlink hit
+            # ENOENT and read as "storage is not writable".
+            test_file = self._storage_root / f".write_test_{os.getpid()}_{uuid4().hex}"
             test_file.touch()
             test_file.unlink()
         except (PermissionError, OSError) as exc:

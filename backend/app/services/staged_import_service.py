@@ -65,13 +65,16 @@ def _attempt_types(service, filename: str, sample: bytes) -> List[str]:
 
 def detect_for_job(job: IngestionJob) -> Dict[str, Any]:
     """Candidates with their basis, a raw preview and an interpreted sample."""
-    from app.services.ingestion_service import IngestionService
+    # v2.354.1 — use the module singleton.  Constructing a new IngestionService
+    # per request ran its storage-writability probe, whose test file is named
+    # by process id; concurrent detections from a multi-file upload raced on
+    # that one name and the loser failed with "storage is not writable".
+    from app.services.ingestion_service import ingestion_service as service
 
     path = Path(job.storage_path)
     if not path.exists():
         raise FileNotFoundError(job.storage_path)
     sample = _read_sample(path)
-    service = IngestionService()
     name = job.original_filename or "upload"
     ext = Path(name).suffix.lower()
 
