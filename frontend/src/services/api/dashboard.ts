@@ -275,6 +275,31 @@ export interface WorkbenchResponse {
   /** The queue could not be computed: `investigate` is an empty placeholder
    *  and must read as "unavailable", never as "no work". */
   investigate_unavailable?: boolean;
+  /** Reviewed hosts that are not done (v2.359.0). */
+  followups?: ReviewFollowupsResponse;
+  followups_unavailable?: boolean;
+}
+
+// v2.359.0 — a reviewed host left every queue for good. Two kinds are not
+// done: a review concluded "needs more evidence", and a host that changed
+// AFTER it was reviewed. Re-opening the review is the one action.
+export interface ReviewFollowupRow {
+  host_id: number;
+  ip_address: string;
+  hostname: string | null;
+  reviewer_id: number;
+  reviewer: string | null;
+  mine: boolean;
+  reviewed_at: string | null;
+  review_conclusion: string | null;
+  review_summary: string | null;
+  reasons: Array<{ kind: string; text: string }>;
+}
+
+export interface ReviewFollowupsResponse {
+  items: ReviewFollowupRow[];
+  total: number;
+  mine_total: number;
 }
 
 export const getWorkbench = async (): Promise<WorkbenchResponse> => {

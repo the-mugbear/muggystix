@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy import func, or_
@@ -71,9 +72,12 @@ class HostFollowService:
         if status_value == "reviewed":
             follow.review_conclusion = review_conclusion
             follow.review_summary = review_summary
+            # The baseline "changed since review" is measured against.
+            follow.reviewed_at = datetime.now(timezone.utc)
         else:
             follow.review_conclusion = None
             follow.review_summary = None
+            follow.reviewed_at = None
         self.db.commit()
         self.db.refresh(follow)
         return follow

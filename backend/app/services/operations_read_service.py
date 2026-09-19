@@ -201,6 +201,163 @@ class InvestigationQueueResponse(BaseModel):
     tiers: List[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Review follow-ups (v2.359.0) — reviewed hosts that are not actually done.
+#
+# "Worth a look" lists hosts nobody has touched, so the first note or review
+# removes a host from it for good.  Two kinds of unresolved work fell out of
+# every queue that way: a review concluded "needs more evidence" (an open
+# question recorded as a closed state), and a host that CHANGED after it was
+# reviewed (the conclusion predates the evidence).  Both resurface here, to
+# the reviewer first.  Re-opening the review (In Review) is the one action:
+# it returns the host to the personal queue and clears the stale conclusion.
+# ---------------------------------------------------------------------------
+
+class ReviewFollowupRow(BaseModel):
+    host_id: int
+    ip_address: str
+    hostname: Optional[str] = None
+    reviewer_id: int
+    reviewer: Optional[str] = None
+    mine: bool = False
+    reviewed_at: Optional[datetime] = None
+    review_conclusion: Optional[str] = None
+    review_summary: Optional[str] = None
+    # needs_evidence | new_ports | new_vulns — each with its own sentence.
+    reasons: List[InvestigateReason] = Field(default_factory=list)
+
+
+class ReviewFollowupsResponse(BaseModel):
+    items: List[ReviewFollowupRow] = Field(default_factory=list)
+    total: int = 0
+    mine_total: int = 0
+
+
+_FOLLOWUP_PORT_SAMPLE = 6
+
+
+def compute_review_followups(
+    db: Session, current_user: User, project: Project, limit: int = 15,
+) -> ReviewFollowupsResponse:
+    """Reviewed hosts whose review is not the end of the matter.
+
+    Measured against ``HostFollow.reviewed_at`` — never ``updated_at``, which
+    every view of the host bumps.  A row reviewed before that column existed
+    and never backfilled (NULL) is reported for ``needs_evidence`` only: with
+    no baseline there is nothing to call "since".  Three statements whatever
+    the number of hosts (follows, new open ports, new critical/high vulns).
+    """
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+
+    # Columns, not the Host entity: Host eager-loads its ports, vulnerabilities,
+    # attributes, annotations and tags — five more statements and most of the
+    # inventory's weight, for an address and a name.
+    follows = (
+        db.query(
+            HostFollow, models.Host.id, models.Host.ip_address, models.Host.hostname, User.username,
+        )
+        .join(models.Host, models.Host.id == HostFollow.host_id)
+        .outerjoin(User, User.id == HostFollow.user_id)
+        .filter(
+            models.Host.project_id == project.id,
+            HostFollow.status == FollowStatus.REVIEWED,
+        )
+        .all()
+    )
+    if not follows:
+        return ReviewFollowupsResponse()
+    follow_ids = [row[0].id for row in follows]
+
+    new_ports: Dict[int, List[int]] = {}
+    for fid, port_number in (
+        db.query(HostFollow.id, models.Port.port_number)
+        .join(models.Port, models.Port.host_id == HostFollow.host_id)
+        .filter(
+            HostFollow.id.in_(follow_ids),
+            HostFollow.reviewed_at.isnot(None),
+            models.Port.state == "open",
+            models.Port.first_seen > HostFollow.reviewed_at,
+        )
+        .order_by(models.Port.port_number)
+        .all()
+    ):
+        new_ports.setdefault(fid, []).append(port_number)
+
+    new_vulns: Dict[int, Dict[str, int]] = {}
+    for fid, sev, n in (
+        db.query(HostFollow.id, Vulnerability.severity, func.count(Vulnerability.id))
+        .join(Vulnerability, Vulnerability.host_id == HostFollow.host_id)
+        .filter(
+            HostFollow.id.in_(follow_ids),
+            HostFollow.reviewed_at.isnot(None),
+            Vulnerability.severity.in_((VulnerabilitySeverity.CRITICAL, VulnerabilitySeverity.HIGH)),
+            Vulnerability.created_at > HostFollow.reviewed_at,
+        )
+        .group_by(HostFollow.id, Vulnerability.severity)
+        .all()
+    ):
+        key = "critical" if sev == VulnerabilitySeverity.CRITICAL else "high"
+        new_vulns.setdefault(fid, {})[key] = int(n)
+
+    def _plural(n: int, one: str, many: Optional[str] = None) -> str:
+        return f"{n} {one if n == 1 else (many or one + 's')}"
+
+    rows: List[ReviewFollowupRow] = []
+    for follow, host_id, ip_address, hostname, username in follows:
+        reasons: List[InvestigateReason] = []
+        if follow.review_conclusion == "needs_evidence":
+            reasons.append(InvestigateReason(
+                kind="needs_evidence",
+                text="Concluded “needs more evidence” — the question is still open",
+            ))
+        ports = new_ports.get(follow.id)
+        if ports:
+            shown = ", ".join(str(p) for p in ports[:_FOLLOWUP_PORT_SAMPLE])
+            more = f", +{len(ports) - _FOLLOWUP_PORT_SAMPLE} more" if len(ports) > _FOLLOWUP_PORT_SAMPLE else ""
+            reasons.append(InvestigateReason(
+                kind="new_ports",
+                text=f"{_plural(len(ports), 'open port')} first seen after the review ({shown}{more})",
+            ))
+        vulns = new_vulns.get(follow.id)
+        if vulns:
+            parts = [f"{vulns[k]} {k}" for k in ("critical", "high") if vulns.get(k)]
+            reasons.append(InvestigateReason(
+                kind="new_vulns",
+                text=f"{' and '.join(parts)} scanner observation{'s' if sum(vulns.values()) != 1 else ''} recorded after the review",
+            ))
+        if not reasons:
+            continue
+        rows.append(ReviewFollowupRow(
+            host_id=host_id,
+            ip_address=str(ip_address),
+            hostname=hostname,
+            reviewer_id=follow.user_id,
+            reviewer=username,
+            mine=follow.user_id == current_user.id,
+            reviewed_at=follow.reviewed_at,
+            review_conclusion=follow.review_conclusion,
+            review_summary=follow.review_summary,
+            reasons=reasons,
+        ))
+
+    # The reviewer's own first; then the oldest conclusion first (it has been
+    # unresolved longest); an unknown review date sorts last.
+    far_future = datetime.max.replace(tzinfo=timezone.utc)
+
+    def _when(row: ReviewFollowupRow) -> datetime:
+        dt = row.reviewed_at
+        if dt is None:
+            return far_future
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    rows.sort(key=lambda r: (not r.mine, _when(r), r.host_id))
+    return ReviewFollowupsResponse(
+        items=rows[:limit],
+        total=len(rows),
+        mine_total=sum(1 for r in rows if r.mine),
+    )
+
+
 # The ordering is a stated tier, not a weighted score (the risk-scoring
 # post-mortem: every number visible, nothing opaque).  A host takes the
 # first tier it qualifies for; within a tier, most recently seen first.

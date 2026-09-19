@@ -2379,6 +2379,7 @@ export default function Hosts() {
                 onDirtyChange={(dirty) => {
                   inspectorDirtyRef.current = dirty;
                 }}
+                onNextUnreviewed={() => void stepToNextUnreviewed()}
                 onQueryHosts={async (q) => {
                   if (!(await confirmDiscardDraft())) return;
                   // Close the sheet, then REPLACE the filter state with just

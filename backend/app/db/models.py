@@ -987,6 +987,12 @@ class HostFollow(Base):
     # needs_evidence | out_of_scope | duplicate.
     review_conclusion = Column(String(32), nullable=True)
     review_summary = Column(Text, nullable=True)
+    # v2.359.0 — WHEN the conclusion was recorded.  ``updated_at`` cannot say:
+    # it is bumped by every write to the row, including ``last_viewed_at`` each
+    # time the reviewer opens the host, so "changed since review" measured
+    # against it would reset whenever somebody looked.  Set with the status
+    # becoming ``reviewed``, cleared when it leaves.
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Ownership / assignment (v2.71.0).  A non-null ``assigned_at`` on the
     # (host, user) row means "this host is assigned to ``user_id`` by

@@ -43,7 +43,9 @@ from app.services.operations_read_service import (
     compute_my_activity,
     compute_team_review,
     compute_investigation_queue,
+    compute_review_followups,
     InvestigationQueueResponse,
+    ReviewFollowupsResponse,
     MyAttentionResponse,
     MyTasksResponse,
     MyNotesResponse,
@@ -107,6 +109,11 @@ class WorkbenchResponse(BaseModel):
     # True when the queue could not be computed: ``investigate`` is then an
     # empty placeholder and must read as "unavailable", never as "no work".
     investigate_unavailable: bool = False
+    # v2.359.0 — reviewed hosts that are not done: concluded "needs more
+    # evidence", or changed after the review.  Same failure contract as the
+    # queue above: unavailable is said, never rendered as "nothing owed".
+    followups: ReviewFollowupsResponse = Field(default_factory=ReviewFollowupsResponse)
+    followups_unavailable: bool = False
 
 
 class MarkSeenRequest(BaseModel):
@@ -232,6 +239,14 @@ def get_workbench(
         db.rollback()
         investigate = InvestigationQueueResponse()
         investigate_unavailable = True
+    followups_unavailable = False
+    try:
+        followups = compute_review_followups(db, current_user, project, limit=15)
+    except Exception:
+        logger.exception("review follow-ups failed for project %s", project.id)
+        db.rollback()
+        followups = ReviewFollowupsResponse()
+        followups_unavailable = True
 
     return WorkbenchResponse(
         my_queue=my_queue,
@@ -243,6 +258,8 @@ def get_workbench(
         since_last_visit=since,
         investigate=investigate,
         investigate_unavailable=investigate_unavailable,
+        followups=followups,
+        followups_unavailable=followups_unavailable,
     )
 
 

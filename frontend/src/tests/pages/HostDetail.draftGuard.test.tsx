@@ -23,9 +23,9 @@ vi.mock('../../components/HostInspector', () => ({
 
 import HostDetail from '../../pages/HostDetail';
 
-const renderPage = () =>
+const renderPage = (state?: Record<string, unknown>) =>
   render(
-    <MemoryRouter initialEntries={['/hosts/5']}>
+    <MemoryRouter initialEntries={[{ pathname: '/hosts/5', state }]}>
       <Routes><Route path="/hosts/:hostId" element={<HostDetail />} /></Routes>
     </MemoryRouter>,
   );
@@ -40,6 +40,12 @@ describe('HostDetail — unsaved-work guard', () => {
     renderPage();
     fireEvent.click(screen.getByRole('button', { name: /Back to Hosts/ }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/hosts'));
+  });
+
+  it('a host opened from Operations goes back to the work list, not to Hosts', async () => {
+    renderPage({ fromOperations: true });
+    fireEvent.click(screen.getByRole('button', { name: /Back to my work/ }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/operations'));
   });
 
   it('asks before Back discards a draft, and stays when the operator cancels', async () => {

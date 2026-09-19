@@ -220,7 +220,9 @@ export const MyActivityCard: React.FC<{
                         {href ? (
                           <button
                             type="button"
-                            onClick={() => navigate(href)}
+                            // Same contract as MyWorkCard.FROM_OPERATIONS: the host
+                            // page then offers "Back to my work".
+                            onClick={() => navigate(href, href.startsWith('/hosts/') ? { state: { fromOperations: true } } : undefined)}
                             className="flex w-full items-center gap-xs rounded-control px-xs py-xxs text-left hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             {inner}

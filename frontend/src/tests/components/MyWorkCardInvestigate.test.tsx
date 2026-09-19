@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -50,7 +50,11 @@ const queue: InvestigationQueueResponse = {
 };
 
 const onRetry = vi.fn();
-const renderCard = (investigate: InvestigationQueueResponse | null, investigateUnavailable = false) =>
+const renderCard = (
+  investigate: InvestigationQueueResponse | null,
+  investigateUnavailable = false,
+  extra: Partial<React.ComponentProps<typeof MyWorkCard>> = {},
+) =>
   render(
     <MemoryRouter>
       <MyWorkCard
@@ -63,6 +67,7 @@ const renderCard = (investigate: InvestigationQueueResponse | null, investigateU
         loading={false}
         error={null}
         onRetry={onRetry}
+        {...extra}
       />
     </MemoryRouter>,
   );
@@ -135,6 +140,102 @@ describe('MyWorkCard — Worth a look', () => {
     expect(screen.queryByText(/Every host has been touched/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  describe('categories', () => {
+    const hosts = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        host_id: 100 + i, ip_address: `10.1.0.${i + 1}`, hostname: null, follow_status: 'in_review',
+        follow_updated_at: null, last_viewed_at: null, critical_vulns: 0, high_vulns: 0, open_port_count: 1,
+      }));
+    const findings = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        finding_id: 500 + i, title: `Finding ${i}`, severity: 'high', status: 'open', host_id: null,
+        host_count: 1, evidence_annotation_id: null, updated_at: null,
+      }));
+
+    it('each category expands by itself and states its full count, not what is on screen', () => {
+      renderCard(null, false, {
+        findings: { items: findings(5), total_open: 40 } as never,
+        queue: { items: hosts(5), in_review_count: 5, watching_count: 0 } as never,
+      });
+      const owned = screen.getByRole('region', { name: 'Findings I own' });
+      const inReview = screen.getByRole('region', { name: 'In review' });
+      // The server's total, where the card loaded only a slice of it.
+      expect(within(owned).getByText('40')).toBeInTheDocument();
+      expect(within(owned).getByText(/35 more not loaded here — use View all/)).toBeInTheDocument();
+      expect(within(inReview).getByText('5')).toBeInTheDocument();
+      expect(within(inReview).getAllByRole('listitem')).toHaveLength(3);
+
+      // Reaching "In review" no longer means paging through what ranks above it.
+      fireEvent.click(within(inReview).getByRole('button', { name: 'Show 2 more' }));
+      expect(within(inReview).getAllByRole('listitem')).toHaveLength(5);
+      expect(within(owned).getAllByRole('listitem')).toHaveLength(3);
+    });
+
+    it('View all opens the list that holds the whole category, filtered to the caller', () => {
+      renderCard(null, false, {
+        findings: { items: findings(1), total_open: 1 } as never,
+        queue: { items: hosts(1), in_review_count: 1, watching_count: 0 } as never,
+      });
+      fireEvent.click(within(screen.getByRole('region', { name: 'Findings I own' })).getByRole('button', { name: 'View all' }));
+      expect(navigate).toHaveBeenLastCalledWith('/findings?owner=me');
+      fireEvent.click(within(screen.getByRole('region', { name: 'In review' })).getByRole('button', { name: 'View all' }));
+      expect(navigate.mock.calls[navigate.mock.calls.length - 1][0]).toContain('follow%3Ain_review');
+    });
+  });
+
+  describe('Needs another look', () => {
+    const followups = {
+      total: 2,
+      mine_total: 1,
+      items: [
+        {
+          host_id: 21, ip_address: '10.8.0.2', hostname: 'app01.corp.local', reviewer_id: 1, reviewer: 'me',
+          mine: true, reviewed_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+          review_conclusion: 'needs_evidence', review_summary: 'waiting on the creds test',
+          reasons: [{ kind: 'needs_evidence', text: 'Concluded “needs more evidence” — the question is still open' }],
+        },
+        {
+          host_id: 22, ip_address: '10.8.0.3', hostname: null, reviewer_id: 9, reviewer: 'sam',
+          mine: false, reviewed_at: null, review_conclusion: 'no_issue', review_summary: null,
+          reasons: [{ kind: 'new_ports', text: '1 open port first seen after the review (8443)' }],
+        },
+      ],
+    };
+
+    it('resurfaces reviewed hosts that are not done, the reviewer\'s own first, with why', () => {
+      renderCard(null, false, { followups });
+      expect(screen.getByText('Needs another look')).toBeInTheDocument();
+      expect(screen.getByText(/— 1 yours/)).toBeInTheDocument();
+      expect(screen.getByText(/Concluded “needs more evidence”/)).toBeInTheDocument();
+      expect(screen.getByText('“waiting on the creds test”')).toBeInTheDocument();
+      expect(screen.getByText(/reviewed by you/)).toBeInTheDocument();
+      expect(screen.getByText(/reviewed by sam/)).toBeInTheDocument();
+      expect(screen.getByText('1 open port first seen after the review (8443)')).toBeInTheDocument();
+    });
+
+    it('re-opening the review puts the host back In Review and refreshes', async () => {
+      renderCard(null, false, { followups });
+      fireEvent.click(screen.getByRole('button', { name: 'Re-open review' }));
+      await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(21, 'in_review'));
+      await waitFor(() => expect(onRetry).toHaveBeenCalled());
+    });
+
+    it('opens the host with the way back to the work list', () => {
+      renderCard(null, false, { followups });
+      fireEvent.click(screen.getByRole('button', { name: '10.8.0.2' }));
+      expect(navigate).toHaveBeenCalledWith('/hosts/21', { state: { fromOperations: true } });
+    });
+
+    it('is absent when nothing is owed, and says so when it could not be computed', () => {
+      const { unmount } = renderCard(null, false, { followups: { items: [], total: 0, mine_total: 0 } });
+      expect(screen.queryByText('Needs another look')).not.toBeInTheDocument();
+      unmount();
+      renderCard(null, false, { followups: null, followupsUnavailable: true });
+      expect(screen.getByText('Needs another look')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent(/could not be checked/);
+    });
   });
 
   it('renders nothing for the section on an older backend without the block', () => {

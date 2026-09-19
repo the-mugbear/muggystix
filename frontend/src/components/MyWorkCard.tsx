@@ -38,6 +38,8 @@ import type {
   MyNotesResponse,
   MyTaskReason,
   MyTasksResponse,
+  ReviewFollowupRow,
+  ReviewFollowupsResponse,
 } from '../services/api';
 import { followHost, updateTestPlanEntry } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -49,6 +51,7 @@ import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { cn } from '../utils/cn';
 import { formatRelativeTime } from '../utils/relativeTime';
+import { buildHostsUrl } from '../utils/drilldownLinks';
 
 type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
 
@@ -229,12 +232,135 @@ export interface MyWorkCardProps {
   /** The server could not compute that queue: `investigate` is then an empty
    *  placeholder, which must not render as "every host has been touched". */
   investigateUnavailable?: boolean;
+  /** v5.237.0 — reviewed hosts that are not done: "needs more evidence", or
+   *  changed after the review. */
+  followups?: ReviewFollowupsResponse | null;
+  followupsUnavailable?: boolean;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
 }
 
 const INVESTIGATE_PREVIEW = 5;
+
+/** Carried to the host page so it offers "Back to my work" (v5.237.0): a host
+ *  opened from Operations used to offer only "Back to Hosts". */
+export const FROM_OPERATIONS = { state: { fromOperations: true } } as const;
+
+const FOLLOWUPS_PREVIEW = 5;
+
+/**
+ * "Needs another look" (v5.237.0) — reviewed hosts that are not done.  A
+ * review concluded "needs more evidence" is an open question stored as a
+ * closed state, and a host that changed after its review has a conclusion
+ * older than its evidence; both had left every queue.  The reviewer's own
+ * come first.  Re-opening the review returns the host to the personal queue
+ * and clears the stale conclusion.  Same stacked-row shape as "Worth a look":
+ * the card is half the page wide.
+ */
+const FollowupsSection: React.FC<{
+  data: ReviewFollowupsResponse;
+  navigate: ReturnType<typeof useNavigate>;
+  onReopened: () => void;
+}> = ({ data, navigate, onReopened }) => {
+  const toast = useToast();
+  const [expanded, setExpanded] = React.useState(false);
+  const [busyId, setBusyId] = React.useState<number | null>(null);
+  const rows = expanded ? data.items : data.items.slice(0, FOLLOWUPS_PREVIEW);
+
+  const reopen = async (row: ReviewFollowupRow) => {
+    setBusyId(row.host_id);
+    try {
+      await followHost(row.host_id, 'in_review');
+      toast.success(`${row.ip_address} is back in your review queue`, { autoHideMs: 2500 });
+      onReopened();
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not re-open the review.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="mt-md border-t border-border pt-sm">
+      <div className="mb-xs flex flex-wrap items-center gap-xs">
+        <p className="text-metadata font-semibold text-foreground">Needs another look</p>
+        <Badge variant="warning">{data.total}</Badge>
+        <span className="min-w-0 text-caption text-muted-foreground">
+          reviewed hosts with an open question, or that changed after the review
+          {data.total > data.mine_total ? ` — ${data.mine_total} yours` : ''}
+        </span>
+      </div>
+      <ul className="divide-y divide-border">
+        {rows.map((row) => (
+          <li key={`${row.host_id}-${row.reviewer_id}`} className="flex items-start gap-sm py-xs">
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-baseline gap-xs">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/hosts/${row.host_id}`, FROM_OPERATIONS)}
+                  className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
+                >
+                  {row.ip_address}
+                </button>
+                {row.hostname && (
+                  <span className="min-w-0 truncate text-caption text-muted-foreground" title={row.hostname}>
+                    {row.hostname}
+                  </span>
+                )}
+              </div>
+              <p className="truncate text-caption text-muted-foreground">
+                reviewed by {row.mine ? 'you' : row.reviewer || 'someone else'}
+                {row.reviewed_at ? ` ${fmtAgo(tsOf(row.reviewed_at))}` : ''}
+              </p>
+              <ul className="mt-xxs flex flex-col gap-xxs">
+                {row.reasons.map((r) => (
+                  <li key={r.kind} className="line-clamp-2 break-words text-caption text-foreground" title={r.text}>
+                    {r.text}
+                  </li>
+                ))}
+              </ul>
+              {row.review_summary && (
+                <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.review_summary}>
+                  “{row.review_summary}”
+                </p>
+              )}
+            </div>
+            <div className="flex shrink-0 flex-col items-stretch gap-xxs">
+              <Button
+                size="sm"
+                variant={row.mine ? 'default' : 'outline'}
+                className="h-7"
+                disabled={busyId === row.host_id}
+                onClick={() => void reopen(row)}
+                title={row.mine
+                  ? 'Put this host back In Review under you. It returns to your queue and the old conclusion is cleared.'
+                  : `Take this host into review yourself. ${row.reviewer ?? 'The reviewer'}'s conclusion stays on record.`}
+              >
+                {busyId === row.host_id ? 'Re-opening…' : row.mine ? 'Re-open review' : 'Review'}
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {data.items.length > FOLLOWUPS_PREVIEW && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-xs rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {expanded ? 'Show fewer' : `Show ${data.items.length - FOLLOWUPS_PREVIEW} more`}
+        </button>
+      )}
+      {data.total > data.items.length && (
+        <p className="mt-xxs text-caption text-muted-foreground">
+          Showing {data.items.length} of {data.total.toLocaleString()}.
+        </p>
+      )}
+    </div>
+  );
+};
 
 /**
  * "Worth a look" — the engagement-wide queue beneath the personal one
@@ -299,7 +425,7 @@ const InvestigateSection: React.FC<{
                   <div className="flex min-w-0 items-baseline gap-xs">
                     <button
                       type="button"
-                      onClick={() => navigate(`/hosts/${row.host_id}`)}
+                      onClick={() => navigate(`/hosts/${row.host_id}`, FROM_OPERATIONS)}
                       className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
                     >
@@ -381,24 +507,33 @@ const InvestigateSection: React.FC<{
 
 // Lowered from 14: the card is now the focused action queue (recent-notes
 // activity moved to its own card) and shares a row with it, so a tighter
-// default preview keeps it scannable; "Show more" reveals the rest.
-const PREVIEW = 8;
+// Rows shown per category before its own "Show more" (six categories).
+const GROUP_PREVIEW = 3;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   queue, tasks, notes, findings, investigate = null, investigateUnavailable = false,
+  followups = null, followupsUnavailable = false,
   loading, error, onRetry,
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const toast = useToast();
-  const [expanded, setExpanded] = React.useState(false);
+  // v5.237.0 — each category expands by itself.  One global "show more" over
+  // a merged list meant reaching "In review" required paging through every
+  // category ranked above it.
+  const [expandedGroups, setExpandedGroups] = React.useState<Set<GroupKey>>(new Set());
   const [claimingId, setClaimingId] = React.useState<number | null>(null);
 
   const items = React.useMemo(
     () => buildItems(queue, tasks, notes, findings),
     [queue, tasks, notes, findings],
   );
-  const shown = expanded ? items : items.slice(0, PREVIEW);
+  const groups = React.useMemo(
+    () => GROUP_ORDER
+      .map((key) => ({ key, rows: items.filter((it) => it.group === key) }))
+      .filter((g) => g.rows.length > 0),
+    [items],
+  );
 
   const handleClaim = async (c: { planId: number; entryId: number; updatedAt: string | null }) => {
     if (user?.id == null) return;
@@ -429,12 +564,20 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
     (findings?.total_open ?? 0);
   const overdue = notes?.overdue_count ?? 0;
 
-  // Group-count headers, computed over the SHOWN rows (the visible grouping).
-  const shownGroupCounts = React.useMemo(() => {
-    const m = new Map<GroupKey, number>();
-    for (const it of shown) m.set(it.group, (m.get(it.group) ?? 0) + 1);
-    return m;
-  }, [shown]);
+  // The server's count for a category, where one source owns it outright.
+  // "Handoffs" and "Assigned" mix notes and plan steps whose totals the API
+  // reports under other groupings, so they state what is loaded and no more.
+  const serverTotal: Partial<Record<GroupKey, number>> = {
+    overdue: notes?.overdue_count,
+    findings: findings?.total_open,
+    in_review: queue?.in_review_count,
+    triage: tasks?.reason_counts?.triage,
+  };
+  // Where the whole of a category can be listed, filtered to the caller.
+  const viewAll: Partial<Record<GroupKey, { to: string; label: string }>> = {
+    in_review: { to: buildHostsUrl({ q: 'follow:in_review' }), label: 'All hosts I have in review' },
+    findings: { to: '/findings?owner=me', label: 'All findings I own' },
+  };
 
   return (
     <Card className="h-full">
@@ -469,23 +612,40 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
             </AlertDescription>
           </Alert>
         ) : (
-          <ul className="flex flex-col">
-            {shown.map((it, idx) => {
-              const newGroup = idx === 0 || shown[idx - 1].group !== it.group;
+          <div className="flex flex-col gap-sm">
+            {groups.map((g) => {
+              const open = expandedGroups.has(g.key);
+              const rows = open ? g.rows : g.rows.slice(0, GROUP_PREVIEW);
+              const total = serverTotal[g.key];
+              const beyond = total != null && total > g.rows.length ? total - g.rows.length : 0;
+              const all = viewAll[g.key];
               return (
+                <section key={g.key} aria-label={GROUP_META[g.key].label}>
+                  <div className="mb-xxs flex flex-wrap items-center gap-xs">
+                    <Badge variant={GROUP_META[g.key].tone}>{GROUP_META[g.key].label}</Badge>
+                    {/* The full count where the server has one; never the
+                        number of rows that happen to be on screen. */}
+                    <span className="text-caption text-muted-foreground">
+                      {(total ?? g.rows.length).toLocaleString()}
+                    </span>
+                    {all && (
+                      <button
+                        type="button"
+                        onClick={() => navigate(all.to)}
+                        className="ml-auto rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        title={all.label}
+                      >
+                        View all
+                      </button>
+                    )}
+                  </div>
+                  <ul className="flex flex-col">
+                    {rows.map((it) => (
                 <li key={it.key}>
-                  {newGroup && (
-                    <div className="mb-xxs mt-sm flex items-center gap-xs first:mt-0">
-                      <Badge variant={GROUP_META[it.group].tone}>{GROUP_META[it.group].label}</Badge>
-                      <span className="text-caption text-muted-foreground">
-                        {shownGroupCounts.get(it.group)}
-                      </span>
-                    </div>
-                  )}
                   <div className="flex items-center gap-xxs">
                     <button
                       type="button"
-                      onClick={() => navigate(it.to)}
+                      onClick={() => navigate(it.to, it.to.startsWith('/hosts/') ? FROM_OPERATIONS : undefined)}
                       className={cn(
                         'flex min-w-0 flex-1 items-center gap-xs px-xs py-xxs text-left',
                         'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -523,33 +683,55 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                     )}
                   </div>
                 </li>
+                    ))}
+                  </ul>
+                  {(g.rows.length > GROUP_PREVIEW || beyond > 0) && (
+                    <div className="mt-xxs flex flex-wrap items-center gap-x-md gap-y-xxs pl-xs">
+                      {g.rows.length > GROUP_PREVIEW && (
+                        <button
+                          type="button"
+                          aria-expanded={open}
+                          onClick={() => setExpandedGroups((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
+                            return next;
+                          })}
+                          className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {open ? 'Show fewer' : `Show ${g.rows.length - GROUP_PREVIEW} more`}
+                        </button>
+                      )}
+                      {/* This card loads a capped slice per source. What lies
+                          beyond it is named, with the view that lists it —
+                          not left "in their source views" for the operator
+                          to go and find. */}
+                      {beyond > 0 && (
+                        <span className="text-caption text-muted-foreground">
+                          {beyond.toLocaleString()} more not loaded here
+                          {all ? ' — use View all' : ''}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </section>
               );
             })}
-          </ul>
+          </div>
         )}
 
-        {!loading && !error && items.length > 0 && (
-          <div className="mt-sm flex flex-wrap items-center gap-x-md gap-y-xxs">
-            {items.length > PREVIEW && (
-              <button
-                type="button"
-                onClick={() => setExpanded((v) => !v)}
-                className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {expanded ? 'Show fewer' : `Show ${items.length - PREVIEW} more`}
-              </button>
-            )}
-            {/* The Show-more toggle only reaches the LOADED items (the merged
-                list is capped at per-source fetch limits), so the footer must
-                not imply totalCount is reachable here.  When the server total
-                exceeds what's loaded, point to the source surfaces that own
-                the remainder rather than advertising an unreachable count. */}
-            <span className="text-caption text-muted-foreground">
-              Showing {shown.length} of {items.length}
-              {totalCount > items.length &&
-                ` · ${totalCount - items.length} more open in their source views`}
-            </span>
+        {!loading && !error && followupsUnavailable && (
+          <div className="mt-md border-t border-border pt-sm">
+            <p className="text-metadata font-semibold text-foreground">Needs another look</p>
+            <div role="alert" className="mt-xxs flex flex-wrap items-center gap-xs text-caption text-warning">
+              <span className="min-w-0 flex-1">
+                Unavailable — reviewed hosts could not be checked for open questions or later changes.
+              </span>
+              <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>
+            </div>
           </div>
+        )}
+        {!loading && !error && !followupsUnavailable && followups && followups.items.length > 0 && (
+          <FollowupsSection data={followups} navigate={navigate} onReopened={onRetry} />
         )}
 
         {!loading && !error && investigateUnavailable && (

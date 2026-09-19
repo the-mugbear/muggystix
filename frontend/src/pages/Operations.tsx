@@ -1229,6 +1229,8 @@ const Operations: React.FC = () => {
               findings={workbench?.my_findings ?? null}
               investigate={workbench?.investigate ?? null}
               investigateUnavailable={workbench?.investigate_unavailable ?? false}
+              followups={workbench?.followups ?? null}
+              followupsUnavailable={workbench?.followups_unavailable ?? false}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}

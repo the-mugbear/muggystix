@@ -26,6 +26,8 @@ export default function HostDetail() {
   const toast = useToast();
 
   const rawNavState = location.state as {
+    /** Opened from the Operations cards: Back returns to the work list. */
+    fromOperations?: boolean;
     fromHosts?: string;
     fromScan?: { id: number; filename: string };
     hostIds?: number[];
@@ -102,7 +104,8 @@ export default function HostDetail() {
 
   const handleBackToHosts = async () => {
     if (!(await confirmDiscardDraft())) return;
-    if (navState?.fromHosts) navigate(navState.fromHosts);
+    if (navState?.fromOperations) navigate('/operations');
+    else if (navState?.fromHosts) navigate(navState.fromHosts);
     else navigate('/hosts');
   };
 
@@ -187,7 +190,7 @@ export default function HostDetail() {
       <div className="flex flex-wrap items-center gap-sm">
         <Button variant="ghost" size="sm" onClick={handleBackToHosts}>
           <ArrowLeft className="size-4" aria-hidden />
-          {navState?.fromScan ? 'Back to Scan' : 'Back to Hosts'}
+          {navState?.fromOperations ? 'Back to my work' : navState?.fromScan ? 'Back to Scan' : 'Back to Hosts'}
         </Button>
         {navState?.fromHosts && totalHostsCount > 1 && (
           <div className="flex items-center gap-xxs">

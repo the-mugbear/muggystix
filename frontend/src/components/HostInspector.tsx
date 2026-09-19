@@ -265,6 +265,12 @@ export interface HostInspectorProps {
    * before navigation discards a draft (UX review C1).
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * When the inspector sits in a queue: step to the next host nobody has
+   * started.  Its presence adds "Save and next unreviewed" to the review
+   * conclusion dialog (v5.237.0).
+   */
+  onNextUnreviewed?: () => void;
 }
 
 export const HostInspector: React.FC<HostInspectorProps> = ({
@@ -274,6 +280,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   onFollowChange,
   onQueryHosts,
   onDirtyChange,
+  onNextUnreviewed,
 }) => {
   const navigate = useNavigate();
   const toast = useToast();
@@ -729,7 +736,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const updateFollow = async (
     status: FollowStatus | 'none',
     review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
-  ) => {
+  ): Promise<boolean> => {
     setFollowLoading(true);
     try {
       if (status === 'none') {
@@ -745,9 +752,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         onFollowChange?.(hostId, response);
         toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
       }
+      return true;
     } catch (err) {
       console.error('Failed to update follow status:', err);
       toast.error('Failed to update follow status. Please try again.');
+      return false;
     } finally {
       setFollowLoading(false);
     }
@@ -758,12 +767,17 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setReviewSummaryText('');
     setReviewCompletionOpen(true);
   };
-  const submitReviewCompletion = () => {
+  // `advance`: save, then move to the next host nobody has started — the
+  // conclusion and the next task were two separate trips through the queue
+  // chrome.  Only after the save succeeded: a failed save must not carry the
+  // operator away from the host whose conclusion was lost.
+  const submitReviewCompletion = async (advance = false) => {
     setReviewCompletionOpen(false);
-    void updateFollow('reviewed', {
+    const saved = await updateFollow('reviewed', {
       review_conclusion: reviewConclusion,
       review_summary: reviewSummaryText.trim() || undefined,
     });
+    if (saved && advance) onNextUnreviewed?.();
   };
 
   const handleEntryStatusChange = async (entry: HostTestPlanEntry, newStatus: string) => {
@@ -1924,9 +1938,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReviewCompletionOpen(false)}>Cancel</Button>
-            <Button disabled={followLoading} onClick={submitReviewCompletion}>
+            <Button
+              variant={onNextUnreviewed ? 'outline' : 'default'}
+              disabled={followLoading}
+              onClick={() => void submitReviewCompletion(false)}
+            >
               <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
             </Button>
+            {/* Only inside a queue (the Hosts side sheet passes the step). */}
+            {onNextUnreviewed && (
+              <Button disabled={followLoading} onClick={() => void submitReviewCompletion(true)}>
+                <CheckCircle2 className="size-3.5" aria-hidden /> Save and next unreviewed
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
