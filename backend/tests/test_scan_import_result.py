@@ -71,6 +71,27 @@ def test_scan_row_carries_conflicts_and_import_quality(client, db_session, test_
     assert row2["import_skipped"] == 0
     assert row2["import_partial"] is False
     assert row2["import_job_id"] is None
+    assert row2["import_final_format"] is None
+
+
+def test_scan_row_carries_the_format_chain_as_labels(client, db_session, test_project):
+    """v2.358.0 — how the file was read sits beside what it added: an import
+    the operator forced to another parser reads differently from a confident
+    detection, and that used to be visible only on Ingestion Results."""
+    scan = _scan(db_session, test_project.id, "forced.xml")
+    db_session.add(models.IngestionJob(
+        project_id=test_project.id, filename="forced.xml", original_filename="forced.xml",
+        storage_path="/tmp/forced.xml", status="completed", scan_id=scan.id,
+        detected_file_type="nmap_xml", format_override="masscan_xml",
+        final_file_type="masscan_xml", source_tool="masscan 1.3",
+    ))
+    db_session.commit()
+
+    (row,) = client.get(f"/api/v1/projects/{test_project.id}/scans/", params={"ids": str(scan.id)}).json()
+    assert row["import_detected_format"] == "Nmap XML"
+    assert row["import_format_override"] == row["import_final_format"]
+    assert row["import_final_format"] not in (None, "masscan_xml")  # a label, not the registry key
+    assert row["import_source_tool"] == "masscan 1.3"
 
 
 def test_ids_filter_rejects_garbage_and_scopes_to_the_project(client, db_session, test_project):

@@ -62,4 +62,23 @@ describe('ImportResult', () => {
     expect(screen.getByRole('link', { name: '1 conflict' })).toBeInTheDocument();
     expect(screen.getByText('2 hosts had no address')).toBeInTheDocument();
   });
+
+  it('shows how the file was read beside what it added', () => {
+    const read = scan({
+      import_detected_format: 'Nmap XML',
+      import_format_override: 'Masscan XML',
+      import_final_format: 'Masscan XML',
+      import_source_tool: 'masscan 1.3',
+    });
+    const { rerender } = render(<MemoryRouter><ImportResult scan={read} showContribution={false} /></MemoryRouter>);
+    expect(screen.getByLabelText('How this file was read')).toHaveTextContent(
+      'Detected as Nmap XML · you chose Masscan XML · parsed by Masscan XML · source tool masscan 1.3',
+    );
+    // Ingestion Results prints the chain on the row itself.
+    rerender(<MemoryRouter><ImportResult scan={read} showContribution={false} showFormatChain={false} /></MemoryRouter>);
+    expect(screen.queryByLabelText('How this file was read')).not.toBeInTheDocument();
+    // A scan imported before the chain was recorded shows no empty line.
+    rerender(<MemoryRouter><ImportResult scan={scan()} showContribution={false} /></MemoryRouter>);
+    expect(screen.queryByLabelText('How this file was read')).not.toBeInTheDocument();
+  });
 });

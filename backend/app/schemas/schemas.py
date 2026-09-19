@@ -735,6 +735,14 @@ class ScanSummary(_ScanRunWindow):
     import_skipped: int = 0
     import_partial: bool = False
     import_warnings: Optional[str] = None
+    # v2.358.0 — the format chain (labels, from the ingestion job's typed
+    # columns): what detection said, what the operator chose if anything,
+    # which parser read the file, and the tool they named.  Shown with the
+    # import result so "how was this read" sits beside "what did it add".
+    import_detected_format: Optional[str] = None
+    import_format_override: Optional[str] = None
+    import_final_format: Optional[str] = None
+    import_source_tool: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -112,6 +112,12 @@ export interface Scan {
   import_skipped?: number;
   import_partial?: boolean;
   import_warnings?: string | null;
+  // v2.358.0 — the format chain, as labels: what detection said, what the
+  // operator chose (if anything), which parser read the file, the named tool.
+  import_detected_format?: string | null;
+  import_format_override?: string | null;
+  import_final_format?: string | null;
+  import_source_tool?: string | null;
 }
 
 export const getScans = async (

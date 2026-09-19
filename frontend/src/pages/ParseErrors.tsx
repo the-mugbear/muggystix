@@ -786,7 +786,8 @@ const CompletedImportResult: React.FC<{ scanId: number }> = ({ scanId }) => {
   return (
     <div className="rounded-panel border border-border p-sm">
       <p className="mb-xxs text-caption text-muted-foreground">Import result</p>
-      <ImportResult scan={row} />
+      {/* The row prints the format chain itself (it has it for failed jobs too). */}
+      <ImportResult scan={row} showFormatChain={false} />
     </div>
   );
 };

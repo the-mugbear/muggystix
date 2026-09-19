@@ -107,12 +107,31 @@ const TONE_CLASS: Record<ImportResultPart['tone'], string> = {
   default: 'text-foreground',
 };
 
-const ImportResult: React.FC<{ scan: Scan; showContribution?: boolean; className?: string }> = ({
+/** How the file was read, in order: detected → chosen → parsed by → named
+ *  tool.  Empty for a scan imported before the chain was recorded. */
+export function formatChainParts(scan: Scan): Array<{ key: string; lead: string; value: string }> {
+  const parts: Array<{ key: string; lead: string; value: string }> = [];
+  if (scan.import_detected_format) parts.push({ key: 'detected', lead: 'Detected as', value: scan.import_detected_format });
+  if (scan.import_format_override) parts.push({ key: 'override', lead: 'you chose', value: scan.import_format_override });
+  if (scan.import_final_format) parts.push({ key: 'final', lead: 'parsed by', value: scan.import_final_format });
+  if (scan.import_source_tool) parts.push({ key: 'tool', lead: 'source tool', value: scan.import_source_tool });
+  return parts;
+}
+
+const ImportResult: React.FC<{
+  scan: Scan;
+  showContribution?: boolean;
+  /** Off where the surrounding row already prints the chain (Ingestion Results). */
+  showFormatChain?: boolean;
+  className?: string;
+}> = ({
   scan,
   showContribution = true,
+  showFormatChain = true,
   className,
 }) => {
   const parts = importResultParts(scan);
+  const chain = showFormatChain ? formatChainParts(scan) : [];
   return (
     <div className={className}>
       <p className="flex min-w-0 flex-wrap items-baseline gap-x-xs gap-y-xxs text-metadata" aria-label="Import result">
@@ -135,6 +154,18 @@ const ImportResult: React.FC<{ scan: Scan; showContribution?: boolean; className
           </React.Fragment>
         ))}
       </p>
+      {/* The format chain beside the result: an override that produced "no
+          hosts" reads very differently from a confident detection that did. */}
+      {chain.length > 0 && (
+        <p className="mt-xxs break-words text-caption text-muted-foreground" aria-label="How this file was read">
+          {chain.map((c, i) => (
+            <React.Fragment key={c.key}>
+              {i > 0 && ' · '}
+              {c.lead} <span className={c.key === 'override' ? 'text-warning' : 'text-foreground'}>{c.value}</span>
+            </React.Fragment>
+          ))}
+        </p>
+      )}
       {scan.import_warnings && (
         <p className="mt-xxs break-words text-caption text-warning" title="Parser warnings recorded on the ingestion job">
           {scan.import_warnings}

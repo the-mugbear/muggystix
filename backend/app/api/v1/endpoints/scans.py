@@ -24,6 +24,7 @@ from app.schemas.schemas import (
 )
 from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
+from app.services.format_registry import format_label
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_auth import UserRole, User
@@ -683,6 +684,11 @@ def get_scans(
                 models.IngestionJob.skipped_count,
                 models.IngestionJob.partial,
                 models.IngestionJob.parser_warnings,
+                # v2.358.0 — how the file was read, beside what it added.
+                models.IngestionJob.detected_file_type,
+                models.IngestionJob.format_override,
+                models.IngestionJob.final_file_type,
+                models.IngestionJob.source_tool,
             )
             .filter(models.IngestionJob.scan_id.in_(scan_ids))
             .order_by(models.IngestionJob.id.desc())
@@ -774,6 +780,10 @@ def get_scans(
             import_skipped=int(quality.skipped_count or 0) if quality else 0,
             import_partial=bool(quality.partial) if quality else False,
             import_warnings=(quality.parser_warnings or None) if quality else None,
+            import_detected_format=format_label(quality.detected_file_type) if quality else None,
+            import_format_override=format_label(quality.format_override) if quality else None,
+            import_final_format=format_label(quality.final_file_type) if quality else None,
+            import_source_tool=(quality.source_tool or None) if quality else None,
         ))
 
     return scan_summaries
