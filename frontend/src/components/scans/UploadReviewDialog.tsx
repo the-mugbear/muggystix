@@ -79,8 +79,6 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
     if (open && review.allStarted) onOpenChange(false);
   }, [open, review.allStarted, onOpenChange]);
 
-  const preview = previewKey ? rows.find((r) => r.key === previewKey) : null;
-
   return (
     <Dialog open={open} onOpenChange={(v) => !review.busy && onOpenChange(v)}>
       <DialogContent size="xl">
@@ -146,23 +144,6 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
                   ))}
                 </TableBody>
               </Table>
-              {preview?.detection && (
-                <div className="border-t border-border p-sm">
-                  <p className="mb-xxs text-caption font-semibold">
-                    {preview.filename} — what the reader saw
-                  </p>
-                  {preview.detection.preview.sample.length > 0 && (
-                    <ul className="mb-xs flex flex-col gap-xxs font-mono text-caption text-foreground">
-                      {preview.detection.preview.sample.map((line, i) => (
-                        <li key={i} className="break-words">{line}</li>
-                      ))}
-                    </ul>
-                  )}
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-control bg-muted/40 p-xs font-mono text-caption text-muted-foreground">
-                    {preview.detection.preview.raw || '(empty file)'}
-                  </pre>
-                </div>
-              )}
             </div>
           )}
 
@@ -242,7 +223,16 @@ const ReviewRowView: React.FC<{
 }> = ({ row, previewOpen, onTogglePreview, onChoose, onSourceTool, onImport, onImportAgain, onRemove, onViewScan }) => {
   const d = row.detection;
   const primary = d?.candidates[0];
+  // v5.232.1 — the preview opens directly beneath its row.  It used to
+  // render after the whole table, which with several files put it below the
+  // visible part of the dialog, so clicking Preview looked like nothing
+  // happened.  It scrolls into view for the same reason.
+  const previewRef = React.useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (previewOpen) previewRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [previewOpen]);
   return (
+    <>
     <TableRow className="align-top">
       <TableCell className="min-w-0">
         <p className="truncate font-medium" title={row.filename}>{row.filename}</p>
@@ -361,6 +351,31 @@ const ReviewRowView: React.FC<{
         )}
       </TableCell>
     </TableRow>
+    {previewOpen && d && (
+      <TableRow ref={previewRef} className="bg-muted/20">
+        <TableCell colSpan={3} className="p-sm">
+          <p className="mb-xxs text-caption font-semibold">What the reader saw</p>
+          {d.preview.sample.length > 0 ? (
+            <ul className="mb-xs flex flex-col gap-xxs font-mono text-caption text-foreground">
+              {d.preview.sample.map((line, i) => (
+                <li key={i} className="break-words">{line}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mb-xs text-caption text-muted-foreground">
+              No interpreted sample for this kind of file; the raw start of the file is below.
+            </p>
+          )}
+          <pre
+            aria-label={`Raw start of ${row.filename}`}
+            className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-control bg-muted/40 p-xs font-mono text-caption text-muted-foreground"
+          >
+            {d.preview.raw || '(empty file)'}
+          </pre>
+        </TableCell>
+      </TableRow>
+    )}
+    </>
   );
 };
 
