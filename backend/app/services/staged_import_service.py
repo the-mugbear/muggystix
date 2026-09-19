@@ -7,16 +7,20 @@ touching the inventory:
 
 * **candidates** — the parsers the dispatcher would try, in its order, each
   with its *basis*: ``structure`` when the file's content alone selects it,
-  ``filename`` when only the name does.  No detector was rewritten for this;
-  the dispatcher is run twice, once with a neutral filename and once with
-  the real one, and the difference is the basis.
+  ``filename`` when only the name does, ``fallback`` when the dispatcher
+  would merely TRY it without having recognised anything (the XML branch's
+  tail; marked at the source by ``ingestion_service.FallbackAttempt``).  No
+  detector was rewritten for this; the dispatcher is run twice, once with a
+  neutral filename and once with the real one, and the difference is the
+  basis.  Only ``structure`` may make a file ready without the operator.
 * **preview** — the first two kilobytes of the file as text, plus a small
   *sample* of interpreted records where an extractor exists (nmap XML, JSON
   tools, CSV, plain text).  The sample is what the reader understood, e.g.
   "10.0.0.5: 3 open ports (22, 80, 443)", not what the real parser would
   write — the real parsers commit as they go and cannot be dry-run.
 * **needs_choice** — the operator must pick a format when nothing was
-  recognised, when the only basis is the filename, or when several
+  recognised (no candidate, or only fallbacks), when the only basis is the
+  filename, or when several
   detectors fired on a JSON / CSV / text file (an XML file follows the
   dispatcher's ordered decision tree, so its trailing fallbacks are not an
   ambiguity).
@@ -58,9 +62,20 @@ def _read_sample(path: Path) -> bytes:
         return fh.read(_SAMPLE_BYTES)
 
 
-def _attempt_types(service, filename: str, sample: bytes) -> List[str]:
+def _attempts(service, filename: str, sample: bytes) -> List[tuple]:
+    """``(file_type, is_fallback)`` in dispatcher order, each type once.  A
+    type the dispatcher both recognised and re-appends as a last-ditch
+    fallback (Nessus) keeps its first, recognised, appearance."""
     shadow = SimpleNamespace(original_filename=filename, options={}, format_override=None)
-    return [ft for ft, _cls, _desc in service._build_parsing_attempts(shadow, sample)]
+    out: List[tuple] = []
+    seen = set()
+    for attempt in service._build_parsing_attempts(shadow, sample):
+        ft = attempt[0]
+        if ft in seen:
+            continue
+        seen.add(ft)
+        out.append((ft, bool(getattr(attempt, "fallback", False))))
+    return out
 
 
 def detect_for_job(job: IngestionJob) -> Dict[str, Any]:
@@ -78,21 +93,35 @@ def detect_for_job(job: IngestionJob) -> Dict[str, Any]:
     name = job.original_filename or "upload"
     ext = Path(name).suffix.lower()
 
-    real = _attempt_types(service, name, sample)
-    neutral = set(_attempt_types(service, f"upload{ext}", sample))
+    real = _attempts(service, name, sample)
+    # Recognised with a neutral filename AND not as a fallback: only that is
+    # "structure".  Surviving the neutral pass alone is not evidence — the
+    # XML branch appends its fallback parsers whatever the content is.
+    neutral = {ft for ft, is_fallback in _attempts(service, f"upload{ext}", sample) if not is_fallback}
 
     candidates = []
-    for rank, ft in enumerate(real):
+    for rank, (ft, is_fallback) in enumerate(real):
+        if is_fallback:
+            basis = "fallback"
+        elif ft in neutral:
+            basis = "structure"
+        else:
+            basis = "filename"
         candidates.append({
             "file_type": ft,
             "label": format_label(ft),
-            "basis": "structure" if ft in neutral else "filename",
+            "basis": basis,
             "rank": rank,
         })
     structural = [c for c in candidates if c["basis"] == "structure"]
     primary = candidates[0] if candidates else None
     if primary is None:
         reason = "No distinctive signature was recognised."
+    elif primary["basis"] == "fallback":
+        reason = (
+            "No distinctive signature was recognised. The formats listed are only what "
+            f"a {ext or 'file'} is tried against when nothing matches."
+        )
     elif primary["basis"] == "filename":
         reason = "Recognised from the filename only; the content did not confirm it."
     elif ext in _TEXT_EXTENSIONS and len(structural) > 1:

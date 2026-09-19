@@ -13,9 +13,11 @@ vi.mock('../../services/api', () => ({
   getJobDetection: vi.fn(),
   startIngestionJob: vi.fn(),
   createScanBatch: vi.fn(),
+  discardIngestionJob: vi.fn(),
+  getUploadFormats: vi.fn(),
 }));
 
-import { overrideFor, useUploadReview } from '../../hooks/useUploadReview';
+import { overrideFor, suggestionOf, useUploadReview } from '../../hooks/useUploadReview';
 import type { DetectionResponse, UploadOptions } from '../../services/api/uploads';
 
 const file = (name: string) => new File(['x'], name, { type: 'text/plain' });
@@ -47,10 +49,20 @@ const filenameOnly = detection({
   reason: 'Recognised from the filename only; the content did not confirm it.',
 });
 const unknown = detection({ job_id: 13 });
+// An unrelated .xml: the dispatcher would TRY these, having recognised nothing.
+const fallbackOnly = detection({
+  job_id: 14,
+  candidates: [
+    { file_type: 'nmap_xml', label: 'Nmap XML', basis: 'fallback', rank: 0 },
+    { file_type: 'nessus_xml', label: 'Nessus', basis: 'fallback', rank: 1 },
+  ],
+  primary: 'nmap_xml',
+  needs_choice: true,
+});
 
 const makeDeps = () => {
   const detections: Record<string, DetectionResponse> = {
-    'scan.xml': ready, 'naabu.txt': filenameOnly, 'results.txt': unknown,
+    'scan.xml': ready, 'naabu.txt': filenameOnly, 'results.txt': unknown, 'inventory.xml': fallbackOnly,
   };
   let nextJob = 100;
   const jobsByName: Record<number, string> = {};
@@ -63,7 +75,12 @@ const makeDeps = () => {
   const getJobDetection = vi.fn(async (jobId: number) => ({ ...detections[jobsByName[jobId]], job_id: jobId }));
   const startIngestionJob = vi.fn(async (jobId: number) => ({ id: jobId, status: 'queued' }) as never);
   const createScanBatch = vi.fn(async () => ({ id: 7, label: 'b' }));
-  return { uploadFile, getJobDetection, startIngestionJob, createScanBatch };
+  const discardIngestionJob = vi.fn(async (jobId: number) => ({ id: jobId, status: 'failed' }) as never);
+  const getUploadFormats = vi.fn(async () => [
+    { file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' },
+    { file_type: 'naabu_output', label: 'Naabu host:port text', family: 'port' },
+  ]);
+  return { uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats };
 };
 
 describe('useUploadReview', () => {
@@ -84,10 +101,100 @@ describe('useUploadReview', () => {
     await waitFor(() => expect(result.current.rows.map((r) => r.phase)).toEqual(['ready', 'choose', 'choose']));
     const [xml, naabu, unknownRow] = result.current.rows;
     expect(xml.chosen).toBe('nmap_xml');
-    expect(naabu.chosen).toBe('naabu_output'); // prefilled, still needs confirming
+    // A filename-only match is a SUGGESTION: shown, not applied.  It used to
+    // be prefilled, which counted the row as ready and labelled it "Format
+    // chosen" though nobody had chosen anything.
+    expect(naabu.chosen).toBeNull();
+    expect(naabu.suggested).toBe('naabu_output');
     expect(unknownRow.chosen).toBeNull();
-    expect(result.current.readyCount).toBe(2); // ready + the prefilled choose row
-    expect(result.current.chooseCount).toBe(1);
+    expect(unknownRow.suggested).toBeNull();
+    expect(result.current.readyCount).toBe(1);
+    expect(result.current.chooseCount).toBe(2);
+
+    // Confirming the suggestion is what makes the row importable.
+    act(() => result.current.confirmSuggestion(naabu.key));
+    expect(result.current.rows[1].chosen).toBe('naabu_output');
+    expect(result.current.readyCount).toBe(2);
+  });
+
+  it('a file nothing recognised is never ready, and its fallbacks are not suggested', async () => {
+    const deps = makeDeps();
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('inventory.xml')]);
+    });
+    const row = result.current.rows[0];
+    expect(row.phase).toBe('choose');
+    expect(row.chosen).toBeNull();
+    expect(row.suggested).toBeNull();
+    expect(result.current.readyCount).toBe(0);
+    expect(suggestionOf(fallbackOnly)).toBeNull();
+    expect(suggestionOf(filenameOnly)).toBe('naabu_output');
+    expect(suggestionOf(ready)).toBeNull();
+  });
+
+  it('a failed inspection can be retried, and a format chosen by hand meanwhile', async () => {
+    const deps = makeDeps();
+    deps.getJobDetection.mockRejectedValueOnce(new Error('inspect failed'));
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml')]);
+    });
+    expect(result.current.rows[0]).toMatchObject({ phase: 'choose', detectionFailed: true, chosen: null });
+    expect(result.current.rows[0].detection).toBeUndefined();
+    // The chooser's list arrives without a detection.
+    await waitFor(() => expect(result.current.formats.map((f) => f.file_type)).toContain('nmap_xml'));
+    expect(deps.getUploadFormats).toHaveBeenCalledTimes(1);
+
+    // By hand: importable, and the choice is sent as the override.
+    act(() => result.current.setChoice(result.current.rows[0].key, 'nmap_xml'));
+    expect(result.current.readyCount).toBe(1);
+    expect(overrideFor(result.current.rows[0])).toBe('nmap_xml');
+
+    // Or retry the inspection, which now succeeds.
+    await act(async () => {
+      result.current.retryDetection(result.current.rows[0].key);
+    });
+    await waitFor(() => expect(result.current.rows[0].phase).toBe('ready'));
+    expect(result.current.rows[0]).toMatchObject({ detectionFailed: false, error: undefined, chosen: 'nmap_xml' });
+    expect(deps.getJobDetection).toHaveBeenCalledTimes(2);
+  });
+
+  it('removing a staged row discards the staged file, and keeps the row if that fails', async () => {
+    const deps = makeDeps();
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml'), file('results.txt')]);
+    });
+    await waitFor(() => expect(result.current.rows.map((r) => r.phase)).toEqual(['ready', 'choose']));
+
+    deps.discardIngestionJob.mockRejectedValueOnce(new Error('nope'));
+    await act(async () => {
+      await result.current.remove(result.current.rows[0].key);
+    });
+    expect(result.current.rows).toHaveLength(2);
+    expect(result.current.rows[0].error).toBeTruthy();
+
+    await act(async () => {
+      await result.current.remove(result.current.rows[0].key);
+    });
+    expect(deps.discardIngestionJob).toHaveBeenLastCalledWith(100);
+    expect(result.current.rows.map((r) => r.filename)).toEqual(['results.txt']);
+  });
+
+  it('clearStarted drops what the banner owns and keeps unresolved rows', async () => {
+    const deps = makeDeps();
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml'), file('results.txt')]);
+    });
+    await act(async () => {
+      await result.current.importReady();
+    });
+    expect(result.current.rows.map((r) => r.phase)).toEqual(['started', 'choose']);
+    act(() => result.current.clearStarted());
+    expect(result.current.rows.map((r) => r.filename)).toEqual(['results.txt']);
+    expect(result.current.allStarted).toBe(false);
   });
 
   it('imports the ready rows with an override only where it means something', async () => {
@@ -99,6 +206,7 @@ describe('useUploadReview', () => {
     });
     await waitFor(() => expect(result.current.rows.map((r) => r.phase)).toEqual(['ready', 'choose', 'choose']));
 
+    act(() => result.current.confirmSuggestion(result.current.rows[1].key));
     await act(async () => {
       await result.current.importReady();
     });

@@ -3,7 +3,8 @@ import { useDropzone } from 'react-dropzone';
 import { Loader2, Trash2, Upload } from 'lucide-react';
 
 import { ACCEPTED_EXTENSIONS, ACCEPTED_EXTENSION_LIST, SUPPORTED_FORMATS } from '../../data/uploadFormats';
-import { useUploadReview, isImportable, type ReviewRow, type StartedUpload } from '../../hooks/useUploadReview';
+import { BASIS_LABEL, useUploadReview, isImportable, type ReviewRow, type StartedUpload } from '../../hooks/useUploadReview';
+import type { FormatOption } from '../../services/api';
 import { cn } from '../../utils/cn';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion';
 import { Alert, AlertDescription } from '../ui/alert';
@@ -78,6 +79,13 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
   useEffect(() => {
     if (open && review.allStarted) onOpenChange(false);
   }, [open, review.allStarted, onOpenChange]);
+  // Closed: started rows go (unresolved staged files stay for the next
+  // open).  They used to remain, so `allStarted` was still true and the
+  // dialog closed itself the instant "Upload scans" was clicked again.
+  const { clearStarted } = review;
+  useEffect(() => {
+    if (!open) clearStarted();
+  }, [open, clearStarted]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => !review.busy && onOpenChange(v)}>
@@ -134,11 +142,14 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
                       row={row}
                       previewOpen={previewKey === row.key}
                       onTogglePreview={() => setPreviewKey((k) => (k === row.key ? null : row.key))}
+                      formats={review.formats}
                       onChoose={(ft) => review.setChoice(row.key, ft)}
+                      onConfirmSuggestion={() => review.confirmSuggestion(row.key)}
+                      onRetryDetection={() => review.retryDetection(row.key)}
                       onSourceTool={(v) => review.setSourceTool(row.key, v)}
                       onImport={() => void review.importOne(row)}
                       onImportAgain={() => review.importAgain(row.key)}
-                      onRemove={() => review.remove(row.key)}
+                      onRemove={() => void review.remove(row.key)}
                       onViewScan={onViewScan}
                     />
                   ))}
@@ -214,15 +225,26 @@ const ReviewRowView: React.FC<{
   row: ReviewRow;
   previewOpen: boolean;
   onTogglePreview: () => void;
+  /** The chooser's list when this row has no detection of its own. */
+  formats: FormatOption[];
   onChoose: (fileType: string | null) => void;
+  onConfirmSuggestion: () => void;
+  onRetryDetection: () => void;
   onSourceTool: (value: string) => void;
   onImport: () => void;
   onImportAgain: () => void;
   onRemove: () => void;
   onViewScan: (scanId: number) => void;
-}> = ({ row, previewOpen, onTogglePreview, onChoose, onSourceTool, onImport, onImportAgain, onRemove, onViewScan }) => {
+}> = ({
+  row, previewOpen, onTogglePreview, formats, onChoose, onConfirmSuggestion, onRetryDetection,
+  onSourceTool, onImport, onImportAgain, onRemove, onViewScan,
+}) => {
   const d = row.detection;
   const primary = d?.candidates[0];
+  const allFormats = d?.formats ?? formats;
+  const labelOf = (ft: string) =>
+    d?.candidates.find((c) => c.file_type === ft)?.label ?? allFormats.find((f) => f.file_type === ft)?.label ?? ft;
+  const editable = row.phase === 'ready' || row.phase === 'choose';
   // v5.232.1 — the preview opens directly beneath its row.  It used to
   // render after the whole table, which with several files put it below the
   // visible part of the dialog, so clicking Preview looked like nothing
@@ -252,41 +274,64 @@ const ReviewRowView: React.FC<{
           <span className="text-caption text-muted-foreground">{row.phase === 'uploading' ? 'Uploading…' : 'Inspecting…'}</span>
         ) : row.phase === 'duplicate' || row.phase === 'error' ? (
           <span className="text-caption text-muted-foreground">—</span>
-        ) : d ? (
+        ) : d || editable ? (
           <div className="flex min-w-0 flex-col gap-xxs">
-            {!d.needs_choice && primary ? (
+            {d && !d.needs_choice && primary ? (
               <p className="text-metadata">
                 <span className="font-medium">{primary.label}</span>
                 <span className="text-caption text-muted-foreground"> · recognised by structure</span>
               </p>
-            ) : (
+            ) : d ? (
               <p className="break-words text-caption text-warning">{d.reason ?? 'Choose a format.'}</p>
+            ) : (
+              // Inspection failed: say so, offer it again, and keep manual
+              // selection available from the independent format list.
+              <div className="flex flex-wrap items-center gap-xs">
+                <p className="min-w-0 flex-1 break-words text-caption text-warning">
+                  The file could not be inspected. Retry, or choose its format yourself.
+                </p>
+                <Button size="sm" variant="outline" className="h-7" onClick={onRetryDetection}>
+                  Retry inspection
+                </Button>
+              </div>
             )}
-            {row.phase !== 'started' && row.phase !== 'starting' && (
+            {/* A suggestion is shown, never applied: the row is not ready
+                until the operator confirms it or selects a format. */}
+            {editable && row.suggested && !row.chosen && (
+              <div className="flex flex-wrap items-center gap-xs">
+                <p className="min-w-0 flex-1 break-words text-caption text-muted-foreground">
+                  Suggested: <span className="font-medium text-foreground">{labelOf(row.suggested)}</span>
+                </p>
+                <Button size="sm" variant="outline" className="h-7" onClick={onConfirmSuggestion}>
+                  Confirm suggested format
+                </Button>
+              </div>
+            )}
+            {editable && (
               <select
                 aria-label={`Format for ${row.filename}`}
                 className="flex h-8 w-full rounded-control border border-input bg-background px-xs text-caption"
                 value={row.chosen ?? ''}
                 onChange={(e) => onChoose(e.target.value || null)}
               >
-                <option value="">{d.needs_choice ? 'Select a format…' : 'As detected'}</option>
-                {d.candidates.length > 0 && (
-                  <optgroup label="Detected">
+                <option value="">{d && !d.needs_choice ? 'As detected' : 'Select a format…'}</option>
+                {d && d.candidates.length > 0 && (
+                  <optgroup label={d.candidates.some((c) => c.basis !== 'fallback') ? 'Detected' : 'Not recognised — tried for this file type'}>
                     {d.candidates.map((c) => (
                       <option key={c.file_type} value={c.file_type}>
-                        {c.label} ({c.basis === 'structure' ? 'by structure' : 'by filename'})
+                        {c.label} ({BASIS_LABEL[c.basis] ?? c.basis})
                       </option>
                     ))}
                   </optgroup>
                 )}
                 <optgroup label="All formats">
-                  {d.formats.map((f) => (
+                  {allFormats.map((f) => (
                     <option key={f.file_type} value={f.file_type}>{f.label}</option>
                   ))}
                 </optgroup>
               </select>
             )}
-            {row.phase !== 'started' && row.phase !== 'starting' && (
+            {editable && (
               <Input
                 aria-label={`Source tool for ${row.filename}`}
                 className="h-8 text-caption"
@@ -298,7 +343,7 @@ const ReviewRowView: React.FC<{
             )}
           </div>
         ) : (
-          <span className="text-caption text-muted-foreground">Choose a format.</span>
+          <span className="text-caption text-muted-foreground">{row.chosen ? labelOf(row.chosen) : '—'}</span>
         )}
       </TableCell>
       <TableCell className="min-w-0">
@@ -317,7 +362,17 @@ const ReviewRowView: React.FC<{
               <Button size="sm" variant="outline" className="h-7" disabled={!isImportable(row)} onClick={onImport}>
                 Import
               </Button>
-              <Button size="icon" variant="ghost" className="size-7" aria-label={`Remove ${row.filename} from this review`} onClick={onRemove}>
+              {/* Discards the staged job, not just this row: a hidden row's
+                  file stayed on the server, came back in the queue, and made
+                  the next try at the same file a duplicate. */}
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-7"
+                aria-label={`Discard staged file ${row.filename}`}
+                title="Discard this staged file. Nothing was imported from it."
+                onClick={onRemove}
+              >
                 <Trash2 className="size-3.5" aria-hidden />
               </Button>
             </div>

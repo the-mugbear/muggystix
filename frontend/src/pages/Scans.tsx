@@ -1256,20 +1256,30 @@ export default function Scans() {
                     size="sm"
                     variant="outline"
                     onClick={async () => {
-                      const n = recentJobs.filter((j) => j.status === 'staged').length;
+                      // The ids are captured BEFORE the confirmation and are
+                      // exactly what is sent: the endpoint used to discard
+                      // every staged job the caller could see, which is more
+                      // than this list of recent jobs shows (and, for an
+                      // admin, other people's files).
+                      const ids = recentJobs.filter((j) => j.status === 'staged').map((j) => j.id);
+                      const n = ids.length;
                       const ok = await confirm({
                         title: 'Discard staged uploads',
                         body:
-                          'Remove every staged file that has not been imported? Nothing was imported from them. '
-                          + 'They stay listed in Ingestion Results as discarded.',
+                          `Remove the ${n} staged file${n === 1 ? '' : 's'} listed in this queue? Nothing was imported from them. `
+                          + 'They stay listed in Ingestion Results as discarded. Staged files not shown here are left alone.',
                         resourceName: `${n} staged upload${n === 1 ? '' : 's'}`,
                         severity: 'warning',
-                        confirmLabel: 'Discard all',
+                        confirmLabel: `Discard ${n}`,
                       });
                       if (!ok) return;
                       try {
-                        const res = await discardStagedJobs();
-                        toast.info(`Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`);
+                        const res = await discardStagedJobs(ids);
+                        toast.info(
+                          res.discarded === n
+                            ? `Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`
+                            : `Discarded ${res.discarded} of ${n}; the rest were no longer staged`,
+                        );
                         await fetchRecentJobs();
                       } catch (err) {
                         toast.error(formatApiError(err, 'Could not discard the staged uploads'));
@@ -1677,11 +1687,17 @@ export default function Scans() {
         <div>
           <div className="mb-sm flex flex-wrap items-start justify-between gap-sm">
             <div>
-              <h3 className="text-subheading font-semibold">Upload batches and individual uploads</h3>
+              <h3 className="text-subheading font-semibold">
+                {showBatchFiles ? 'All imported files' : 'Upload batches and individual uploads'}
+              </h3>
+              {/* The two-card explanation only holds in the grouped view; in
+                  the all-files view there is one list and no "first card". */}
               <p className="text-metadata text-muted-foreground">
-                Files dropped together form an upload batch and are counted in the first card;
-                files uploaded on their own are listed in the second. Most recent first. The
-                filters and tool chips apply to both.
+                {showBatchFiles
+                  ? 'Every imported file in one list, whether it was dropped as part of a batch or on its own. Most recent first.'
+                  : 'Files dropped together form an upload batch and are counted in the first card; '
+                    + 'files uploaded on their own are listed in the second. Most recent first. The '
+                    + 'filters and tool chips apply to both.'}
               </p>
               {/* v2.86.2 — explicit "Showing N" hint so the page makes
                   it obvious whether you're looking at a partial or

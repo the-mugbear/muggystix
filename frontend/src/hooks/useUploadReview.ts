@@ -9,13 +9,21 @@
  * operator resolved; the rest stay staged (they expire in a day).  Results
  * are the page's banner, which follows each started job by id.
  *
+ * A *choose* row may carry a `suggested` format (what a filename or an
+ * ambiguous match points at).  A suggestion is never a choice: `chosen`
+ * stays null — and the row stays out of the ready count — until the
+ * operator confirms the suggestion or selects a format (v5.234.0; it used to
+ * be preselected, so "Format chosen" appeared with nobody having chosen).
+ *
  * The hook owns the state machine and takes its API as an injectable
  * dependency so the logic is testable without a dropzone or a module mock.
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { createScanBatch, getJobDetection, startIngestionJob, uploadFile } from '../services/api';
-import type { DetectionResponse, UploadOptions } from '../services/api';
+import {
+  createScanBatch, discardIngestionJob, getJobDetection, getUploadFormats, startIngestionJob, uploadFile,
+} from '../services/api';
+import type { DetectionResponse, FormatOption, UploadOptions } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { duplicateUploadOf, type DuplicateUpload } from '../utils/duplicateUpload';
 
@@ -39,8 +47,15 @@ export interface ReviewRow {
   jobId?: number;
   batchId?: number;
   detection?: DetectionResponse;
-  /** The format the row will be imported as; null = let detection decide. */
+  /** The format the row will be imported as. On a *ready* row it starts as
+   *  the detected format; on a *choose* row it is null until the operator
+   *  confirms the suggestion or selects one. */
   chosen: string | null;
+  /** What detection points at on a row that still needs the operator:
+   *  shown, never applied by itself. */
+  suggested?: string | null;
+  /** True when inspection itself failed (as opposed to finding nothing). */
+  detectionFailed?: boolean;
   sourceTool: string;
   duplicate?: DuplicateUpload;
   error?: string;
@@ -59,9 +74,29 @@ export interface UploadReviewDeps {
   getJobDetection: typeof getJobDetection;
   startIngestionJob: typeof startIngestionJob;
   createScanBatch: typeof createScanBatch;
+  discardIngestionJob: typeof discardIngestionJob;
+  getUploadFormats: typeof getUploadFormats;
 }
 
-const DEFAULT_DEPS: UploadReviewDeps = { uploadFile, getJobDetection, startIngestionJob, createScanBatch };
+const DEFAULT_DEPS: UploadReviewDeps = {
+  uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats,
+};
+
+/** How a candidate's basis reads in a chooser.  Only the first is recognition. */
+export const BASIS_LABEL: Record<string, string> = {
+  structure: 'by structure',
+  filename: 'by filename only',
+  fallback: 'not recognised',
+};
+
+/** The format to SUGGEST on a row that needs the operator.  A fallback is a
+ *  parser the dispatcher would merely try on an unrecognised file — offering
+ *  it as a suggestion would repeat the overstatement in smaller type. */
+export const suggestionOf = (detection: DetectionResponse): string | null => {
+  if (!detection.needs_choice) return null;
+  const first = detection.candidates[0];
+  return first && first.basis !== 'fallback' ? first.file_type : null;
+};
 
 export interface UseUploadReviewOptions {
   skipInformational: boolean;
@@ -91,6 +126,47 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     );
   }, []);
 
+  // The chooser's list, independent of any one file's detection: a failed
+  // inspection returns nothing, and that is when the list is needed.  Taken
+  // from the first detection that succeeds, fetched only when one fails.
+  const [formats, setFormats] = useState<FormatOption[]>([]);
+  const formatsRequestedRef = useRef(false);
+  const ensureFormats = useCallback(() => {
+    if (formatsRequestedRef.current) return;
+    formatsRequestedRef.current = true;
+    api.getUploadFormats()
+      .then((list) => setFormats((prev) => (prev.length > 0 ? prev : list)))
+      .catch(() => { formatsRequestedRef.current = false; });
+  }, [api]);
+
+  const detectOne = useCallback(
+    async (key: string, jobId: number) => {
+      patch(key, { phase: 'detecting', error: undefined, detectionFailed: false });
+      try {
+        const detection = await api.getJobDetection(jobId);
+        setFormats((prev) => (prev.length > 0 ? prev : detection.formats));
+        patch(key, {
+          detection,
+          // Ready = recognised by structure: the detected format stands.  A
+          // row that needs the operator starts with NO choice; what detection
+          // points at is a suggestion they confirm or replace.
+          chosen: detection.needs_choice ? null : detection.primary,
+          suggested: suggestionOf(detection),
+          phase: detection.needs_choice ? 'choose' : 'ready',
+        });
+      } catch (err) {
+        // Detection is advice; the operator can retry it or choose by hand.
+        ensureFormats();
+        patch(key, {
+          phase: 'choose',
+          detectionFailed: true,
+          error: formatApiError(err, 'Could not inspect the file.'),
+        });
+      }
+    },
+    [api, patch, ensureFormats],
+  );
+
   const stageOne = useCallback(
     async (row: ReviewRow, options: UploadOptions) => {
       try {
@@ -99,18 +175,8 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
           (percent) => patch(row.key, { percent }),
           { ...options, stage: true, skipInformational },
         );
-        patch(row.key, { phase: 'detecting', percent: 100, jobId: res.job_id });
-        try {
-          const detection = await api.getJobDetection(res.job_id);
-          patch(row.key, {
-            detection,
-            chosen: detection.primary,
-            phase: detection.needs_choice ? 'choose' : 'ready',
-          });
-        } catch (err) {
-          // Detection is advice; the operator can still choose a format.
-          patch(row.key, { phase: 'choose', error: formatApiError(err, 'Could not inspect the file.') });
-        }
+        patch(row.key, { percent: 100, jobId: res.job_id });
+        await detectOne(row.key, res.job_id);
       } catch (err) {
         const duplicate = duplicateUploadOf(err);
         patch(row.key, {
@@ -120,7 +186,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         });
       }
     },
-    [api, patch, skipInformational],
+    [api, patch, skipInformational, detectOne],
   );
 
   const addFiles = useCallback(
@@ -166,8 +232,49 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
   );
 
   const setChoice = useCallback((key: string, fileType: string | null) => patch(key, { chosen: fileType }), [patch]);
+  const confirmSuggestion = useCallback(
+    (key: string) => patch(key, (r) => (r.suggested ? { chosen: r.suggested } : {})),
+    [patch],
+  );
   const setSourceTool = useCallback((key: string, value: string) => patch(key, { sourceTool: value }), [patch]);
-  const remove = useCallback((key: string) => setRows((prev) => prev.filter((r) => r.key !== key)), []);
+
+  const retryDetection = useCallback(
+    (key: string) => {
+      const row = rows.find((r) => r.key === key);
+      if (!row || row.jobId == null) return;
+      void detectOne(key, row.jobId);
+    },
+    [rows, detectOne],
+  );
+
+  // A staged row has a file on the server.  Dropping only the row left that
+  // file in the queue, and made the next attempt at the same file a
+  // duplicate — so removing a staged row discards the staged job.  Rows with
+  // nothing on the server (a failed upload, a refused duplicate) just go.
+  const remove = useCallback(
+    async (key: string) => {
+      const row = rows.find((r) => r.key === key);
+      if (!row) return;
+      const staged = row.jobId != null && (row.phase === 'ready' || row.phase === 'choose');
+      if (staged) {
+        try {
+          await api.discardIngestionJob(row.jobId!);
+        } catch (err) {
+          patch(key, { error: formatApiError(err, 'Could not discard the staged file.') });
+          return;
+        }
+      }
+      setRows((prev) => prev.filter((r) => r.key !== key));
+    },
+    [rows, api, patch],
+  );
+
+  // Started rows are the banner's now.  Left in place they kept `allStarted`
+  // true, so the dialog closed itself the moment it was reopened.
+  const clearStarted = useCallback(
+    () => setRows((prev) => (prev.some((r) => r.phase === 'started') ? prev.filter((r) => r.phase !== 'started') : prev)),
+    [],
+  );
 
   const importOne = useCallback(
     async (row: ReviewRow) => {
@@ -188,7 +295,8 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         });
       } catch (err) {
         patch(row.key, {
-          phase: row.detection?.needs_choice ? 'choose' : 'ready',
+          // No detection at all (a failed inspection) is a row that needed a choice.
+          phase: row.detection && !row.detection.needs_choice ? 'ready' : 'choose',
           error: formatApiError(err, 'Could not start the import.'),
         });
       }
@@ -213,8 +321,12 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     importOne,
     importReady,
     setChoice,
+    confirmSuggestion,
     setSourceTool,
+    retryDetection,
     remove,
+    clearStarted,
+    formats,
     readyCount,
     chooseCount,
     allStarted,

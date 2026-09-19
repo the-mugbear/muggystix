@@ -174,20 +174,79 @@ def test_discard_clears_a_staged_job_and_its_file(client, db_session, test_proje
     assert client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/discard").status_code == 409
 
 
-def test_discard_all_staged_leaves_other_statuses_alone(client, db_session, test_project):
+def test_discard_staged_takes_exactly_the_confirmed_jobs(client, db_session, test_project):
+    """The page lists only its most recent jobs, so "discard every staged
+    job" removed more files than the count the operator confirmed (for an
+    admin, other people's too).  The ids shown are the ids discarded."""
     a = _upload(client, test_project, NMAP_XML, "a.xml", stage=True).json()["job_id"]
     b = _upload(client, test_project, HOST_PORT_TEXT, "b.txt", "text/plain", stage=True).json()["job_id"]
+    unseen = _upload(client, test_project, HOST_PORT_TEXT, "c.txt", "text/plain", stage=True, allow_duplicate=True).json()["job_id"]
     q = _upload(client, test_project, HOST_PORT_TEXT, "q.txt", "text/plain", stage=True, allow_duplicate=True).json()["job_id"]
     queued = _job(db_session, q)
     queued.status = "queued"
     db_session.commit()
 
-    r = client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/discard-staged")
+    url = f"/api/v1/projects/{test_project.id}/upload/jobs/discard-staged"
+    # No list is no longer "everything".
+    assert client.post(url).status_code == 422
+    assert client.post(url, json={"job_ids": []}).status_code == 422
+
+    # q is named but no longer staged: skipped, and the response says so.
+    r = client.post(url, json={"job_ids": [a, b, q]})
     assert r.status_code == 200, r.text
     assert r.json()["discarded"] == 2 and sorted(r.json()["job_ids"]) == sorted([a, b])
     assert _job(db_session, a).status == "failed" and _job(db_session, b).status == "failed"
     db_session.refresh(queued)
     assert queued.status == "queued"
+    # The staged job the operator was never shown is untouched.
+    assert _job(db_session, unseen).status == "staged"
+
+
+UNRELATED_XML = b"""<?xml version="1.0"?>
+<inventory><item sku="A-1"><name>widget</name></item></inventory>
+"""
+
+
+def test_an_unrecognised_xml_is_not_recognised_by_structure(client, db_session, test_project):
+    """The XML branch appends fallback parsers whatever the content is, and
+    they survive the neutral-filename pass — so an unrelated .xml read
+    "Nmap XML · recognised by structure" and was marked ready."""
+    job_id = _upload(client, test_project, UNRELATED_XML, "inventory.xml", stage=True).json()["job_id"]
+    d = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/detection").json()
+    assert d["candidates"], "the fallbacks are still listed as things the operator may choose"
+    assert {c["basis"] for c in d["candidates"]} == {"fallback"}
+    assert d["needs_choice"] is True
+    assert "No distinctive signature" in d["reason"]
+
+
+def test_a_recognised_xml_keeps_its_fallbacks_labelled(client, db_session, test_project):
+    job_id = _upload(client, test_project, NMAP_XML, "whatever.xml", stage=True).json()["job_id"]
+    d = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/detection").json()
+    by_type = {c["file_type"]: c["basis"] for c in d["candidates"]}
+    assert by_type["nmap_xml"] == "structure"
+    assert by_type["masscan_xml"] == "fallback" and by_type["nessus_xml"] == "fallback"
+    assert d["needs_choice"] is False
+
+
+def test_fallback_attempts_are_still_plain_descriptors():
+    """The marker must not change what the worker and the dispatch contract
+    see: a 3-tuple that unpacks as (file_type, parser_class, description)."""
+    from app.services.ingestion_service import FallbackAttempt, _fallback
+
+    attempt = _fallback("nmap_xml", object, "Nmap XML file")
+    file_type, parser_class, description = attempt
+    assert (file_type, parser_class, description) == ("nmap_xml", object, "Nmap XML file")
+    assert isinstance(attempt, tuple) and isinstance(attempt, FallbackAttempt) and attempt.fallback is True
+
+
+def test_the_format_list_does_not_need_a_detection(client, test_project):
+    """A failed inspection returns no detection — which is when the operator
+    most needs to pick a format by hand."""
+    r = client.get(f"/api/v1/projects/{test_project.id}/upload/formats")
+    assert r.status_code == 200, r.text
+    formats = {f["file_type"]: f for f in r.json()}
+    assert "nmap_xml" in formats and "naabu_output" in formats
+    assert set(formats["nmap_xml"]) == {"file_type", "label", "family"}
 
 
 def test_staged_jobs_expire_and_their_files_go(client, db_session, test_project):

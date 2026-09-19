@@ -121,6 +121,19 @@ def report_progress(progress: str) -> None:
 ParserDescriptor = Tuple[str, Type, str]
 
 
+class FallbackAttempt(tuple):
+    """A parser the dispatcher tries WITHOUT having recognised the content —
+    the XML branch's "try the others" tail.  Still a plain
+    ``(file_type, parser_class, description)`` to every consumer (and to the
+    dispatch contract tests); the staged review reads ``fallback`` so an
+    attempt nothing recognised is never shown as "recognised by structure"."""
+    fallback = True
+
+
+def _fallback(file_type: str, parser_class: Type, description: str) -> ParserDescriptor:
+    return FallbackAttempt((file_type, parser_class, description))
+
+
 def build_parser_dispatch_map() -> Dict[Type, Type]:
     """Every parser class the dispatcher can construct, keyed by itself.
 
@@ -1423,24 +1436,28 @@ class IngestionService:
                 # Nmap parser as fallback — masscan's XML format is a
                 # subset of nmap's, so nmap may still produce useful
                 # data if masscan parser hiccups on a malformed edge.
-                attempts.append(("nmap_xml", NmapXMLParser, "Nmap XML file"))
+                attempts.append(_fallback("nmap_xml", NmapXMLParser, "Nmap XML file"))
             elif is_openvas:
                 attempts.append(("openvas_xml", OpenVASParser, "OpenVAS/Greenbone XML report"))
-                attempts.append(("nmap_xml", NmapXMLParser, "Nmap XML file"))
+                attempts.append(_fallback("nmap_xml", NmapXMLParser, "Nmap XML file"))
             elif is_nmap_root:
                 attempts.append(("nmap_xml", NmapXMLParser, "Nmap XML file"))
                 # Openvas root excludes nmaprun by construction, so
                 # don't try openvas here; masscan as last fallback.
-                attempts.append(("masscan_xml", MasscanParser, "Masscan XML file"))
+                attempts.append(_fallback("masscan_xml", MasscanParser, "Masscan XML file"))
             else:
-                # No structural signal — keep the pre-v2.45.1 try-everything order.
-                attempts.append(("nmap_xml", NmapXMLParser, "Nmap XML file"))
-                attempts.append(("openvas_xml", OpenVASParser, "OpenVAS/Greenbone XML report"))
-                attempts.append(("masscan_xml", MasscanParser, "Masscan XML file"))
+                # No structural signal — keep the pre-v2.45.1 try-everything
+                # order.  Every one of these is a FALLBACK: nothing was
+                # recognised, and the staged review must not say otherwise
+                # (an unrelated .xml used to read "Nmap XML · recognised by
+                # structure" and be marked ready).
+                attempts.append(_fallback("nmap_xml", NmapXMLParser, "Nmap XML file"))
+                attempts.append(_fallback("openvas_xml", OpenVASParser, "OpenVAS/Greenbone XML report"))
+                attempts.append(_fallback("masscan_xml", MasscanParser, "Masscan XML file"))
 
             # Always include Nessus as a last-ditch attempt — covers
             # .xml files that are actually .nessus exports mislabeled.
-            attempts.append(("nessus_xml", NessusIntegrationService, "Nessus vulnerability scan"))
+            attempts.append(_fallback("nessus_xml", NessusIntegrationService, "Nessus vulnerability scan"))
         elif filename.endswith(".gnmap"):
             try:
                 from app.parsers.gnmap_parser import GnmapParser

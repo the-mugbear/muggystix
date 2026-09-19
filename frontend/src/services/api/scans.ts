@@ -168,6 +168,10 @@ export interface ScanBatchSummary {
   total_files?: number;
   imported_files?: number;
   processing_files?: number;
+  /** Uploaded and waiting for the operator's format review. */
+  staged_files?: number;
+  /** Staged files the operator discarded before import. */
+  discarded_files?: number;
 }
 
 export const getScanBatches = async (

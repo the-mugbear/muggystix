@@ -207,6 +207,36 @@ def test_batch_with_no_imported_file_yet_is_still_listed(client, db_session, tes
     assert client.get(f"/api/v1/projects/{test_project.id}/scans/batches?tool=nmap").json() == []
 
 
+def test_batch_says_where_its_staged_and_discarded_files_are(client, db_session, test_project):
+    """A staged file is neither processing nor failed, so a freshly dropped
+    batch read "0 imported" with nothing explaining where its files were; a
+    discarded one is a dismissed failure and vanished from the counts too."""
+    from datetime import datetime, timezone
+
+    batch = models.ScanBatch(project_id=test_project.id, label="awaiting-review")
+    db_session.add(batch)
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    for status, error, dismissed in (
+        ("staged", None, None),
+        ("staged", None, None),
+        ("failed", "Discarded before import", now),   # discarded
+        ("failed", "parser blew up", now),            # dismissed failure: uncounted, as before
+        ("failed", "parser blew up", None),           # live failure
+    ):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="f.xml", original_filename="f.xml",
+            storage_path="/x", status=status, batch_id=batch.id,
+            error_message=error, dismissed_at=dismissed,
+        ))
+    db_session.commit()
+
+    row = client.get(f"/api/v1/projects/{test_project.id}/scans/batches").json()[0]
+    assert row["staged_files"] == 2
+    assert row["discarded_files"] == 1
+    assert (row["processing_files"], row["failed_files"], row["imported_files"]) == (0, 1, 0)
+
+
 def test_filtered_batch_reports_matching_of_total_files(client, db_session, test_project):
     batch = models.ScanBatch(project_id=test_project.id, label="mixed")
     db_session.add(batch)

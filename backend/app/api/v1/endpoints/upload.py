@@ -179,7 +179,9 @@ async def upload_scan_file(
 class DetectionCandidate(BaseModel):
     file_type: str
     label: str
-    basis: str   # structure | filename
+    # structure | filename | fallback.  Only ``structure`` is recognition;
+    # ``fallback`` is a parser the dispatcher would merely try.
+    basis: str
     rank: int
 
 
@@ -218,6 +220,25 @@ def _load_job(db: Session, job_id: int, project: Project, current_user: User) ->
         raise HTTPException(status_code=404, detail="Ingestion job not found")
     _require_job_access(job, current_user)
     return job
+
+
+@router.get(
+    "/formats",
+    response_model=List[FormatOption],
+    summary="Every format an operator can choose — independent of any one file's detection",
+)
+def list_formats(
+    _user: User = Depends(get_current_user),
+    _project: Project = Depends(get_current_project),
+):
+    """The chooser's list.  It also rides on every detection response, but a
+    failed inspection returns nothing — and that is exactly when the operator
+    needs to pick a format by hand."""
+    from app.services.format_registry import FORMATS
+    return [
+        {"file_type": s.file_type, "label": s.label, "family": s.family}
+        for s in FORMATS.values()
+    ]
 
 
 @router.get(
@@ -286,6 +307,13 @@ def start_ingestion_job(
     return job
 
 
+class DiscardStagedRequest(BaseModel):
+    # The jobs the operator was SHOWN and confirmed.  Required: the page lists
+    # only its most recent jobs, so "every staged job" deleted more files than
+    # the count in the confirmation — for an admin, other people's too.
+    job_ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
 class DiscardStagedResponse(BaseModel):
     discarded: int
     job_ids: List[int] = []
@@ -295,18 +323,23 @@ class DiscardStagedResponse(BaseModel):
     "/jobs/discard-staged",
     response_model=DiscardStagedResponse,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="Discard every staged job the caller can see (files removed, rows kept as dismissed)",
+    summary="Discard the named staged jobs (files removed, rows kept as dismissed)",
 )
 def discard_all_staged_jobs(
+    body: DiscardStagedRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """v2.355.0 — clears staged uploads nobody will start.  Admins clear the
-    project's; everyone else their own.  Declared before ``/jobs/{job_id}``
-    routes so "discard-staged" is never parsed as an id."""
+    """Clears staged uploads nobody will start — exactly the ids given, and of
+    those only the ones still staged and visible to the caller (admins the
+    project's; everyone else their own).  An id that is no longer staged, or
+    not the caller's, is skipped, and the response says what was discarded.
+    Declared before ``/jobs/{job_id}`` routes so "discard-staged" is never
+    parsed as an id."""
     query = db.query(IngestionJob).filter(
         IngestionJob.project_id == project.id, IngestionJob.status == "staged",
+        IngestionJob.id.in_(body.job_ids),
     )
     if current_user.role != UserRole.ADMIN:
         query = query.filter(IngestionJob.submitted_by_id == current_user.id)

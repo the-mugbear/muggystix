@@ -77,8 +77,10 @@ export interface UploadOptions {
 export interface DetectionCandidate {
   file_type: string;
   label: string;
-  /** structure = the content selects it; filename = only the name does. */
-  basis: 'structure' | 'filename';
+  /** structure = the content selects it; filename = only the name does;
+   *  fallback = nothing recognised it, the dispatcher would merely try it.
+   *  Only `structure` is recognition. */
+  basis: 'structure' | 'filename' | 'fallback';
   rank: number;
 }
 
@@ -126,9 +128,20 @@ export const discardIngestionJob = async (jobId: number): Promise<IngestionJob> 
   return response.data;
 };
 
-/** Discard every staged job the caller can see. */
-export const discardStagedJobs = async (): Promise<{ discarded: number; job_ids: number[] }> => {
-  const response = await api.post(`${p()}/upload/jobs/discard-staged`);
+/** Discard exactly these staged jobs — the ones the operator was shown and
+ *  confirmed. Ids no longer staged (or not the caller's) are skipped; the
+ *  response says what was discarded. */
+export const discardStagedJobs = async (
+  jobIds: number[],
+): Promise<{ discarded: number; job_ids: number[] }> => {
+  const response = await api.post(`${p()}/upload/jobs/discard-staged`, { job_ids: jobIds });
+  return response.data;
+};
+
+/** Every format an operator can choose. Also rides on a detection response,
+ *  but a failed inspection returns none — which is when it is needed. */
+export const getUploadFormats = async (): Promise<FormatOption[]> => {
+  const response = await api.get(`${p()}/upload/formats`);
   return response.data;
 };
 

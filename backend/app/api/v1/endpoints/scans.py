@@ -895,6 +895,10 @@ class ScanBatchSummary(BaseModel):
     total_files: int = Field(0, description="Imported files in the batch, filters or not")
     imported_files: int = Field(0, description="Files that parsed into a scan record")
     processing_files: int = Field(0, description="Files queued or parsing right now")
+    # v2.357.0 — a staged file is neither processing nor failed, so a freshly
+    # dropped batch read "0 imported" with nothing saying where its files were.
+    staged_files: int = Field(0, description="Files uploaded and waiting for the operator's format review")
+    discarded_files: int = Field(0, description="Staged files the operator discarded before import")
 
 
 class ScanInventoryMarker(BaseModel):
@@ -1052,19 +1056,39 @@ def list_scan_batches(
     # difference between "this sweep is done" and "it is still landing".
     pending: Dict[int, int] = {}
     failed: Dict[int, int] = {}
-    for bid, status, n in (
-        db.query(models.IngestionJob.batch_id, models.IngestionJob.status, func.count(models.IngestionJob.id))
+    staged: Dict[int, int] = {}
+    discarded: Dict[int, int] = {}
+    # A discard is a dismissed failure with this message (staged_import_service
+    # .discard_staged_job); any other dismissed failure stays uncounted, as before.
+    is_discard = and_(
+        models.IngestionJob.status == "failed",
+        models.IngestionJob.error_message == "Discarded before import",
+    )
+    for bid, status, was_discarded, n in (
+        db.query(
+            models.IngestionJob.batch_id, models.IngestionJob.status,
+            case((is_discard, True), else_=False),
+            func.count(models.IngestionJob.id),
+        )
         .filter(
             models.IngestionJob.batch_id.in_(ids),
             or_(
-                models.IngestionJob.status.in_(("queued", "processing")),
+                models.IngestionJob.status.in_(("queued", "processing", "staged")),
                 and_(models.IngestionJob.status == "failed", models.IngestionJob.dismissed_at.is_(None)),
+                is_discard,
             ),
         )
-        .group_by(models.IngestionJob.batch_id, models.IngestionJob.status)
+        .group_by(models.IngestionJob.batch_id, models.IngestionJob.status, case((is_discard, True), else_=False))
         .all()
     ):
-        target = failed if status == "failed" else pending
+        if was_discarded:
+            target = discarded
+        elif status == "failed":
+            target = failed
+        elif status == "staged":
+            target = staged
+        else:
+            target = pending
         target[bid] = target.get(bid, 0) + n
     creator_ids = {b.created_by_id for b in batches.values() if b.created_by_id is not None}
     creators = (
@@ -1095,6 +1119,8 @@ def list_scan_batches(
             last_uploaded=(r.last_uploaded if r is not None else None) or b.created_at,
             pending_files=pending.get(b.id, 0),
             failed_files=failed.get(b.id, 0),
+            staged_files=staged.get(b.id, 0),
+            discarded_files=discarded.get(b.id, 0),
         ))
     return out
 

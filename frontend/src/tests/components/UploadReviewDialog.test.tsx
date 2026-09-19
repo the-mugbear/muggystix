@@ -7,6 +7,8 @@ const api = vi.hoisted(() => ({
   getJobDetection: vi.fn(),
   startIngestionJob: vi.fn(),
   createScanBatch: vi.fn(),
+  discardIngestionJob: vi.fn(),
+  getUploadFormats: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 
@@ -75,5 +77,97 @@ describe('UploadReviewDialog preview', () => {
     expect(screen.getByText('c.xml').closest('tr')!.nextElementSibling).toBe(
       screen.getByText('What the reader saw').closest('tr'),
     );
+  });
+});
+
+const drop = (container: HTMLElement, names: string[]) => {
+  const input = container.ownerDocument.querySelector('input[type="file"]') as HTMLInputElement;
+  fireEvent.change(input, { target: { files: names.map((n) => new File(['x'], n, { type: 'text/xml' })) } });
+};
+
+/** The page's wiring: the dialog asks to close, the page flips `open`. */
+const Harness: React.FC<{ onOpenChange?: (v: boolean) => void }> = ({ onOpenChange }) => {
+  const [open, setOpen] = React.useState(true);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>Upload scans</button>
+      <UploadReviewDialog
+        open={open}
+        onOpenChange={(v) => { onOpenChange?.(v); setOpen(v); }}
+        projectName="Demo"
+        skipInformational={false}
+        savingSkipInformational={false}
+        onSkipInformationalChange={() => {}}
+        onStarted={() => {}}
+        onViewScan={() => {}}
+      />
+    </>
+  );
+};
+
+describe('UploadReviewDialog flow', () => {
+  it('can be reopened after every file was imported', async () => {
+    // Started rows used to stay in state, so `allStarted` was still true and
+    // the dialog closed itself the instant it was opened again.
+    api.startIngestionJob.mockResolvedValue({ id: 1, status: 'queued' });
+    const onOpenChange = vi.fn();
+    const { container } = render(<Harness onOpenChange={onOpenChange} />);
+    drop(container, ['a.xml']);
+    fireEvent.click(await screen.findByRole('button', { name: 'Import 1 ready file' }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenLastCalledWith(false));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    onOpenChange.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Upload scans' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    // Still open a tick later, with the finished row gone.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(screen.queryByText('a.xml')).not.toBeInTheDocument();
+  });
+
+  it('a filename-only match is suggested, and not ready until confirmed', async () => {
+    api.getJobDetection.mockResolvedValue({
+      ...detectionFor(1, 's'),
+      candidates: [{ file_type: 'nmap_xml', label: 'Nmap XML', basis: 'filename', rank: 0 }],
+      needs_choice: true,
+      reason: 'Recognised from the filename only; the content did not confirm it.',
+    });
+    const { container } = renderDialog();
+    drop(container, ['nmap-thing.xml']);
+    expect(await screen.findByText('Needs a format')).toBeInTheDocument();
+    expect(screen.queryByText('Format chosen')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 0 ready files' })).toBeDisabled();
+    expect(screen.getByLabelText('Format for nmap-thing.xml')).toHaveValue('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm suggested format' }));
+    expect(await screen.findByText('Format chosen')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 1 ready file' })).not.toBeDisabled();
+  });
+
+  it('a failed inspection offers a retry and still lets a format be chosen', async () => {
+    api.getJobDetection.mockRejectedValueOnce(new Error('inspect failed'));
+    api.getUploadFormats.mockResolvedValue([{ file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' }]);
+    const { container } = renderDialog();
+    drop(container, ['a.xml']);
+    // The selector used to render only with a detection: a dead end.
+    const select = await screen.findByLabelText('Format for a.xml');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Nmap XML' })).toBeInTheDocument());
+    fireEvent.change(select, { target: { value: 'nmap_xml' } });
+    expect(screen.getByRole('button', { name: 'Import 1 ready file' })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry inspection' }));
+    await waitFor(() => expect(screen.getByText(/recognised by structure/)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Retry inspection' })).not.toBeInTheDocument();
+  });
+
+  it('removing a staged row discards the staged file on the server', async () => {
+    api.discardIngestionJob.mockResolvedValue({ id: 1, status: 'failed' });
+    const { container } = renderDialog();
+    drop(container, ['a.xml']);
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard staged file a.xml' }));
+    await waitFor(() => expect(api.discardIngestionJob).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(screen.queryByText('a.xml')).not.toBeInTheDocument());
   });
 });

@@ -118,6 +118,11 @@ export default function ScanBatchList({ batches, filters, onViewScan, className 
                         {(() => {
                           const total = b.total_files ?? b.files;
                           const processing = b.processing_files ?? b.pending_files;
+                          // Staged = uploaded, waiting for the format review;
+                          // neither processing nor failed, so a fresh batch
+                          // used to read "nothing imported" with no reason.
+                          const staged = b.staged_files ?? 0;
+                          const discarded = b.discarded_files ?? 0;
                           return (
                             <>
                               <p className="tabular-nums">
@@ -132,10 +137,16 @@ export default function ScanBatchList({ batches, filters, onViewScan, className 
                               {processing > 0 && (
                                 <p className="text-caption text-muted-foreground">{processing} processing</p>
                               )}
+                              {staged > 0 && (
+                                <p className="text-caption text-warning">{staged} waiting for review</p>
+                              )}
                               {b.failed_files > 0 && (
                                 <p className="text-caption text-destructive">{b.failed_files} failed</p>
                               )}
-                              {total === 0 && processing === 0 && b.failed_files === 0 && (
+                              {discarded > 0 && (
+                                <p className="text-caption text-muted-foreground">{discarded} discarded</p>
+                              )}
+                              {total === 0 && processing === 0 && b.failed_files === 0 && staged === 0 && discarded === 0 && (
                                 <p className="text-caption text-muted-foreground">nothing imported</p>
                               )}
                             </>
