@@ -68,7 +68,55 @@ export interface UploadOptions {
    *  instead of storing a vulnerability row each (ports still derived from
    *  them). Omit to use the project's setting. */
   skipInformational?: boolean;
+  /** v5.228.0 — store the file as a STAGED job instead of queuing it; review
+   *  getJobDetection, then startIngestionJob. Expires after 24h unstarted. */
+  stage?: boolean;
 }
+
+/** v5.228.0 — what the worker would make of a staged file, and why. */
+export interface DetectionCandidate {
+  file_type: string;
+  label: string;
+  /** structure = the content selects it; filename = only the name does. */
+  basis: 'structure' | 'filename';
+  rank: number;
+}
+
+export interface FormatOption {
+  file_type: string;
+  label: string;
+  family: string;
+}
+
+export interface DetectionResponse {
+  job_id: number;
+  filename: string;
+  candidates: DetectionCandidate[];
+  primary: string | null;
+  needs_choice: boolean;
+  reason: string | null;
+  preview: { raw: string; sample: string[] };
+  /** Every format the dispatcher knows, for the chooser. */
+  formats: FormatOption[];
+}
+
+export const getJobDetection = async (jobId: number): Promise<DetectionResponse> => {
+  const response = await api.get(`${p()}/upload/jobs/${jobId}/detection`);
+  return response.data;
+};
+
+/** Start a staged job, or retry a failed one on its retained file, optionally
+ *  as a chosen format (the worker then runs exactly that parser). */
+export const startIngestionJob = async (
+  jobId: number,
+  options: { formatOverride?: string | null; sourceTool?: string | null } = {},
+): Promise<IngestionJob> => {
+  const response = await api.post(`${p()}/upload/jobs/${jobId}/start`, {
+    format_override: options.formatOverride ?? null,
+    source_tool: options.sourceTool ?? null,
+  });
+  return response.data;
+};
 
 /** A refused identical upload (409 duplicate_scan): what it already is. */
 export interface DuplicateUpload {
@@ -100,6 +148,7 @@ export const uploadFile = async (
   formData.append('file', file);
   if (options.batchId != null) formData.append('batch_id', String(options.batchId));
   if (options.allowDuplicate) formData.append('allow_duplicate', 'true');
+  if (options.stage) formData.append('stage', 'true');
   if (options.skipInformational != null) {
     formData.append('skip_informational', options.skipInformational ? 'true' : 'false');
   }

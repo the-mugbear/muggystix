@@ -2,7 +2,8 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query
-from pydantic import BaseModel
+from pathlib import Path
+from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,7 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
+from app.services.staged_import_service import detect_for_job, start_staged_job
 from app.services.ingestion_service import (
     ALLOWED_UPLOAD_EXTENSIONS,
     DuplicateUploadError,
@@ -76,6 +78,15 @@ async def upload_scan_file(
             "deployment default)."
         ),
     ),
+    stage: bool = Form(
+        False,
+        description=(
+            "v2.352.0: store the file and register the job as 'staged' instead of "
+            "queuing it. Review GET /upload/jobs/{id}/detection, then "
+            "POST /upload/jobs/{id}/start (optionally with a format override). "
+            "A staged job nobody starts expires after 24 hours."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -129,6 +140,7 @@ async def upload_scan_file(
             options=options,
             batch_id=batch_id,
             allow_duplicate=allow_duplicate,
+            stage=stage,
         )
     except DuplicateUploadError as exc:
         raise HTTPException(status_code=409, detail=exc.detail()) from exc
@@ -144,13 +156,132 @@ async def upload_scan_file(
         job_id=job.id,
         filename=job.original_filename,
         status=job.status,
-        message="File queued for background processing",
+        message=(
+            "File staged — review its format, then start the import"
+            if stage else "File queued for background processing"
+        ),
         scan_id=None,
     )
 
-    ingestion_service.enqueue_job(job.id)
+    if not stage:
+        ingestion_service.enqueue_job(job.id)
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Staged import (v2.352.0): what is this file, and start it on the operator's
+# terms.  See app/services/staged_import_service.py.
+# ---------------------------------------------------------------------------
+
+class DetectionCandidate(BaseModel):
+    file_type: str
+    label: str
+    basis: str   # structure | filename
+    rank: int
+
+
+class DetectionPreview(BaseModel):
+    raw: str
+    sample: List[str] = []
+
+
+class FormatOption(BaseModel):
+    file_type: str
+    label: str
+    family: str
+
+
+class DetectionResponse(BaseModel):
+    job_id: int
+    filename: str
+    candidates: List[DetectionCandidate]
+    primary: Optional[str] = None
+    needs_choice: bool
+    reason: Optional[str] = None
+    preview: DetectionPreview
+    formats: List[FormatOption]
+
+
+class StartJobRequest(BaseModel):
+    format_override: Optional[str] = Field(None, max_length=64)
+    source_tool: Optional[str] = Field(None, max_length=64)
+
+
+def _load_job(db: Session, job_id: int, project: Project, current_user: User) -> IngestionJob:
+    job = db.query(IngestionJob).filter(
+        IngestionJob.id == job_id, IngestionJob.project_id == project.id,
+    ).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Ingestion job not found")
+    _require_job_access(job, current_user)
+    return job
+
+
+@router.get(
+    "/jobs/{job_id}/detection",
+    response_model=DetectionResponse,
+    responses={
+        403: {"description": "Not authorized for this job"},
+        404: {"description": "Job not found"},
+        409: {"description": "The uploaded file is no longer on disk"},
+    },
+    summary="What is this file? Detected formats with their basis, a preview and a sample",
+)
+def get_job_detection(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Runs the same detection the worker will run, and says whether each
+    candidate came from the file's content or only its name.  Nothing is
+    written; the real parsers are never run here."""
+    job = _load_job(db, job_id, project, current_user)
+    try:
+        return detect_for_job(job)
+    except FileNotFoundError:
+        raise HTTPException(status_code=409, detail="The uploaded file is no longer on disk — re-upload it.")
+
+
+@router.post(
+    "/jobs/{job_id}/start",
+    response_model=IngestionJobSchema,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    responses={
+        403: {"description": "Not authorized for this job"},
+        404: {"description": "Job not found"},
+        409: {"description": "Job is not staged or failed, or its file is gone"},
+        422: {"description": "Unknown format"},
+    },
+    summary="Start a staged (or retry a failed) import, optionally as a chosen format",
+)
+def start_ingestion_job(
+    job_id: int,
+    body: StartJobRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """With ``format_override`` the worker runs exactly that parser and no
+    other; a wrong choice fails visibly.  From ``failed`` this is "review the
+    format and retry" on the retained file."""
+    job = _load_job(db, job_id, project, current_user)
+    if job.status not in ("staged", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only a staged or failed job can be started (current status: {job.status!r})",
+        )
+    if not job.storage_path or not Path(job.storage_path).exists():
+        raise HTTPException(status_code=409, detail="The uploaded file is no longer on disk — re-upload it.")
+    try:
+        job = start_staged_job(
+            db, job, format_override=body.format_override, source_tool=body.source_tool,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    ingestion_service.enqueue_job(job.id)
+    return job
 
 
 @router.post(

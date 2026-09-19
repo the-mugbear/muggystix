@@ -112,6 +112,16 @@ def main() -> None:
         reaped = service.reap_orphaned_jobs()
         if reaped:
             logger.info("Orphan reaper cleaned up %d stuck job(s)", reaped)
+        # v2.352.0 — staged uploads nobody started expire after a day.
+        try:
+            from app.db.session import SessionLocal
+            from app.services.staged_import_service import expire_staged_jobs
+            with SessionLocal() as db:
+                expired = expire_staged_jobs(db)
+            if expired:
+                logger.info("Expired %d staged upload(s) never started", expired)
+        except Exception:
+            logger.debug("staged-upload expiry failed", exc_info=True)
 
     def _check_backlog() -> None:
         # B2-3 — proactive WARNING when the queue is steadily backing up

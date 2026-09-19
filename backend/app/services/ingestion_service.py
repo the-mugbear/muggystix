@@ -265,8 +265,13 @@ class IngestionService:
         options: Optional[Dict[str, object]] = None,
         batch_id: Optional[int] = None,
         allow_duplicate: bool = False,
+        stage: bool = False,
     ) -> IngestionJob:
         """Persist an upload to disk and register an ingestion job.
+
+        ``stage`` (v2.352.0): register the job as ``staged`` — on disk, not
+        queued.  No worker touches it until ``POST /upload/jobs/{id}/start``;
+        the operator reviews its detected format first.
 
         Raises :class:`DuplicateUploadError` when this exact file (by SHA-256)
         is already a scan in the project or is still queued/processing, unless
@@ -336,7 +341,7 @@ class IngestionService:
                 filename=destination.name,
                 original_filename=upload.filename,
                 storage_path=str(destination),
-                status="queued",
+                status="staged" if stage else "queued",
                 file_size=file_size,
                 options=opts,
                 submitted_by_id=submitted_by_id,
