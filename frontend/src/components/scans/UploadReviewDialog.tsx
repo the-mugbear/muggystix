@@ -67,6 +67,16 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
   const review = useUploadReview({ skipInformational, onStarted });
   const { rows } = review;
   const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const [batchName, setBatchName] = useState('');
+  const { nameBatch } = review;
+  const saveBatchName = async () => {
+    await nameBatch(batchName);
+  };
+  // A new drop forms a new batch: the field starts empty for it.
+  const batchId = review.batch?.id ?? null;
+  useEffect(() => {
+    setBatchName('');
+  }, [batchId]);
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop: (accepted) => void review.addFiles(accepted),
@@ -123,6 +133,40 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
                 ))}
               </AlertDescription>
             </Alert>
+          )}
+
+          {/* v5.239.0 — several files dropped together are ONE row of the import
+              history; this is the name it is recognised by there. Optional:
+              left alone it keeps the generated "N files · time" label. */}
+          {review.batch && (
+            <div className="flex flex-wrap items-end gap-xs">
+              <div className="min-w-0 flex-1">
+                <Label htmlFor="upload-batch-name" className="text-caption">
+                  Name this upload (optional)
+                </Label>
+                <Input
+                  id="upload-batch-name"
+                  className="h-8 text-caption"
+                  placeholder={review.batch.label}
+                  value={batchName}
+                  onChange={(e) => setBatchName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void saveBatchName(); }}
+                  maxLength={200}
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8"
+                disabled={!batchName.trim() || batchName.trim() === review.batch.label}
+                onClick={() => void saveBatchName()}
+              >
+                {review.batch.named && batchName.trim() === review.batch.label ? 'Saved' : 'Save name'}
+              </Button>
+              {review.batchError && (
+                <p role="alert" className="w-full break-words text-caption text-destructive">{review.batchError}</p>
+              )}
+            </div>
           )}
 
           {rows.length > 0 && (

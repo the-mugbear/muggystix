@@ -21,7 +21,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import {
-  createScanBatch, discardIngestionJob, getJobDetection, getUploadFormats, startIngestionJob, uploadFile,
+  createScanBatch, discardIngestionJob, getJobDetection, getUploadFormats, renameScanBatch,
+  startIngestionJob, uploadFile,
 } from '../services/api';
 import type { DetectionResponse, FormatOption, UploadOptions } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
@@ -76,11 +77,21 @@ export interface UploadReviewDeps {
   createScanBatch: typeof createScanBatch;
   discardIngestionJob: typeof discardIngestionJob;
   getUploadFormats: typeof getUploadFormats;
+  renameScanBatch: typeof renameScanBatch;
 }
 
 const DEFAULT_DEPS: UploadReviewDeps = {
   uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats,
+  renameScanBatch,
 };
+
+/** The upload batch the latest multi-file drop formed. */
+export interface ReviewBatch {
+  id: number;
+  label: string;
+  /** True once the operator's name (not the generated label) is saved. */
+  named: boolean;
+}
 
 /** How a candidate's basis reads in a chooser.  Only the first is recognition. */
 export const BASIS_LABEL: Record<string, string> = {
@@ -119,6 +130,10 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
   const api = useMemo<UploadReviewDeps>(() => ({ ...DEFAULT_DEPS, ...(deps ?? {}) }), [deps]);
   const [rows, setRows] = useState<ReviewRow[]>([]);
   const startedAtRef = useRef<number>(Date.now());
+  // The batch is created with a generated label the moment files are dropped
+  // (its id has to travel with each upload), so naming it is a rename.
+  const [batch, setBatch] = useState<ReviewBatch | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   const patch = useCallback((key: string, change: Partial<ReviewRow> | ((r: ReviewRow) => Partial<ReviewRow>)) => {
     setRows((prev) =>
@@ -210,7 +225,9 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       let batchId: number | undefined;
       if (files.length > 1) {
         try {
-          batchId = (await api.createScanBatch(`${files.length} files · ${new Date(startedAt).toLocaleString()}`)).id;
+          const created = await api.createScanBatch(`${files.length} files · ${new Date(startedAt).toLocaleString()}`);
+          batchId = created.id;
+          setBatch({ id: created.id, label: created.label, named: false });
         } catch (err) {
           console.error('Could not start an upload batch; staging ungrouped:', err);
         }
@@ -219,6 +236,23 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       await Promise.allSettled(fresh.map((row) => stageOne({ ...row, batchId }, { batchId })));
     },
     [api, stageOne],
+  );
+
+  const nameBatch = useCallback(
+    async (label: string): Promise<boolean> => {
+      const name = label.trim();
+      if (!batch || !name || name === batch.label) return false;
+      setBatchError(null);
+      try {
+        const saved = await api.renameScanBatch(batch.id, name);
+        setBatch({ id: saved.id, label: saved.label, named: true });
+        return true;
+      } catch (err) {
+        setBatchError(formatApiError(err, 'Could not name this upload.'));
+        return false;
+      }
+    },
+    [api, batch],
   );
 
   const importAgain = useCallback(
@@ -327,6 +361,9 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     remove,
     clearStarted,
     formats,
+    batch,
+    batchError,
+    nameBatch,
     readyCount,
     chooseCount,
     allStarted,

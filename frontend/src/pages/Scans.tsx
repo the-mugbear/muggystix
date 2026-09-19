@@ -37,6 +37,7 @@ import {
   retryIngestionJob,
   getScanCommandExplanation,
   getScanBatches,
+  getImportHistory,
   createScanBatch,
   getScanInventoryMarker,
   duplicateUploadOf,
@@ -48,6 +49,7 @@ import type {
   CommandExplanation,
   ScanDeletionImpact,
   ScanBatchSummary,
+  ImportHistoryEntry,
   DuplicateUpload,
   UploadOptions,
 } from '../services/api';
@@ -57,7 +59,9 @@ import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
-import { updateProjectIngestSettings } from '../services/api/projects';
+// From the barrel, like every other call here: a direct submodule import
+// bypasses a page test's mock and loads the real HTTP client.
+import { updateProjectIngestSettings } from '../services/api';
 import { Switch } from '../components/ui/switch';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -67,7 +71,8 @@ import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import FormatRetryDialog from '../components/scans/FormatRetryDialog';
-import ScanBatchList, { SCAN_BATCH_LIMIT } from '../components/scans/ScanBatchList';
+import { ScanBatchRow } from '../components/scans/ScanBatchList';
+import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
 import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
@@ -204,6 +209,10 @@ export default function Scans() {
   // v5.207.0 — upload batches, one row per sweep. Their files leave the flat
   // inventory unless the operator asks to list them individually.
   const [batches, setBatches] = useState<ScanBatchSummary[]>([]);
+  // v5.239.0 — the import history's ORDER (batches and single files together,
+  // newest first), from the server; `scans` and `batches` hold the rows.
+  const [history, setHistory] = useState<ImportHistoryEntry[]>([]);
+  const [historyPartial, setHistoryPartial] = useState(false);
 
   // ---------------------------------------------------------------------
   // Scan Inventory filters + pagination (v4.47.0 QoL pass).
@@ -224,6 +233,9 @@ export default function Scans() {
   // the fallback for the long tail.
   // ---------------------------------------------------------------------
   const SCAN_LIMIT = 250;
+  // History rows per page. Each page's rows are fetched by id, and the id
+  // list rides in the query string, so this stays well under its cap.
+  const HISTORY_PAGE = 100;
   const DATE_RANGE_PRESETS: ReadonlyArray<{ label: string; days: number | null }> = [
     { label: 'All time', days: null },
     { label: 'Last 7d', days: 7 },
@@ -318,29 +330,47 @@ export default function Scans() {
     }
   }, []);
 
+  const hydrateHistory = useCallback(
+    (items: ImportHistoryEntry[], filters: HistoryFilters) =>
+      hydrateHistoryRows(items, filters, { getScans, getScanBatches }),
+    [],
+  );
+
   const fetchScans = useCallback(async () => {
     const filters = {
       search: debouncedSearchText.trim() || undefined,
       tool: toolFilter || undefined,
       createdAfter: createdAfterIso,
     };
-    // Files outside batches + one row per batch, fetched together so the
-    // empty state never flashes while batches are still loading. Either can
-    // fail without taking the other down.
-    const [scanResult, batchResult] = await Promise.allSettled([
-      getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder, unbatched: !showBatchFiles }),
-      showBatchFiles
-        ? Promise.resolve([] as ScanBatchSummary[])
-        : getScanBatches({ ...filters, limit: SCAN_BATCH_LIMIT }),
-    ]);
-    if (scanResult.status === 'fulfilled') {
-      setScans(scanResult.value);
-      setHasMoreScans(scanResult.value.length === SCAN_LIMIT);
+    if (showBatchFiles) {
+      // All files: one flat, sortable list of every imported file.
+      try {
+        const data = await getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder, unbatched: false });
+        setScans(data);
+        setHasMoreScans(data.length === SCAN_LIMIT);
+      } catch (err) {
+        console.error('Error fetching scans:', err);
+      }
+      setBatches([]);
+      setHistory([]);
+      setHistoryPartial(false);
     } else {
-      console.error('Error fetching scans:', scanResult.reason);
+      // Grouped by upload (v5.239.0): the SERVER decides the order of batches
+      // and single files together; this page only fills the rows in.  They
+      // were two cards paginated separately, which no client-side merge can
+      // put in order past the first page.
+      try {
+        const page = await getImportHistory({ ...filters, limit: HISTORY_PAGE });
+        const rows = await hydrateHistory(page.items, filters);
+        setHistory(page.items);
+        setScans(rows.scans);
+        setBatches(rows.batches);
+        setHistoryPartial(rows.partial);
+        setHasMoreScans(page.has_more);
+      } catch (err) {
+        console.error('Error fetching import history:', err);
+      }
     }
-    if (batchResult.status === 'fulfilled') setBatches(batchResult.value);
-    else console.error('Error fetching scan batches:', batchResult.reason);
     setLoading(false);
     // Headline totals are filter-aware and independent of pagination, so a
     // failure here must not block the table from rendering — fetch separately.
@@ -349,19 +379,32 @@ export default function Scans() {
     } catch (err) {
       console.error('Error fetching scan summary:', err);
     }
-  }, [toolFilter, debouncedSearchText, createdAfterIso, sortBy, sortOrder, showBatchFiles]);
+  }, [toolFilter, debouncedSearchText, createdAfterIso, sortBy, sortOrder, showBatchFiles, hydrateHistory]);
 
   const loadMoreScans = useCallback(async () => {
     if (loadingMore || !hasMoreScans) return;
     setLoadingMore(true);
     try {
-      const data = await getScans(scans.length, SCAN_LIMIT, {
+      const filters = {
         search: debouncedSearchText.trim() || undefined,
         tool: toolFilter || undefined,
         createdAfter: createdAfterIso,
+      };
+      if (!showBatchFiles) {
+        const page = await getImportHistory({ ...filters, skip: history.length, limit: HISTORY_PAGE });
+        const rows = await hydrateHistory(page.items, filters);
+        setHistory((prev) => [...prev, ...page.items]);
+        setScans((prev) => [...prev, ...rows.scans]);
+        setBatches((prev) => [...prev, ...rows.batches]);
+        if (rows.partial) setHistoryPartial(true);
+        setHasMoreScans(page.has_more);
+        return;
+      }
+      const data = await getScans(scans.length, SCAN_LIMIT, {
+        ...filters,
         sortBy,
         sortOrder,
-        unbatched: !showBatchFiles,
+        unbatched: false,
       });
       setScans((prev) => [...prev, ...data]);
       setHasMoreScans(data.length === SCAN_LIMIT);
@@ -380,6 +423,7 @@ export default function Scans() {
     showBatchFiles,
     loadingMore,
     hasMoreScans,
+    history.length,
   ]);
 
   // Per-row tool badge rendered as a clickable filter — same behaviour
@@ -440,6 +484,21 @@ export default function Scans() {
       </TableHead>
     );
   };
+
+  // v5.239.0 — the import history's rows, in the server's order.  Grouped by
+  // upload is chronological by definition, so its headers do not sort; the
+  // all-files view keeps the sortable ones.
+  const historyRows = useMemo(() => orderHistoryRows(history, scans, batches), [history, scans, batches]);
+  const tableRows = useMemo(
+    () => (showBatchFiles
+      ? scans.map((scan) => ({ kind: 'scan' as const, key: `scan-${scan.id}`, scan }))
+      : historyRows),
+    [showBatchFiles, scans, historyRows],
+  );
+  const historyHeader = (column: SortBy, label: string, className?: string) =>
+    showBatchFiles
+      ? renderSortHeader(column, label, className)
+      : <TableHead className={className}>{label}</TableHead>;
 
   // URL sync — write the active filters/sort back to the URL whenever
   // they change so the browser back/forward + bookmark/share use cases
@@ -863,6 +922,29 @@ export default function Scans() {
     () => recentJobs.filter((j) => j.status !== 'completed'),
     [recentJobs],
   );
+  // v5.239.0 — the queue is a compact strip: its counts are always shown and
+  // the table opens on request.  Whether it is open is a per-browser
+  // convenience; the page works the same if storage is unavailable.
+  const queueCounts = useMemo(() => ({
+    processing: pendingJobs.filter((j) => j.status === 'queued' || j.status === 'processing').length,
+    staged: pendingJobs.filter((j) => j.status === 'staged').length,
+    failed: pendingJobs.filter((j) => j.status === 'failed').length,
+  }), [pendingJobs]);
+  const [queueOpen, setQueueOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('nm.scans.queueOpen') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleQueue = () => setQueueOpen((open) => {
+    try {
+      localStorage.setItem('nm.scans.queueOpen', open ? '0' : '1');
+    } catch {
+      // Private window / blocked storage: the toggle still works for this visit.
+    }
+    return !open;
+  });
 
   const scanSummary = useMemo(() => {
     const totalHosts = scans.reduce((sum, scan) => sum + (scan.total_hosts || 0), 0);
@@ -1241,12 +1323,32 @@ export default function Scans() {
         <Card className="mb-md">
           <CardContent className="p-md">
             <div className="mb-sm flex flex-wrap items-center justify-between gap-xs">
-              <div>
-                <h2 className="text-section-title font-semibold">Ingestion Queue</h2>
-                <p className="text-metadata text-muted-foreground">
-                  In-flight uploads, staged files waiting for a format review, and recent
-                  failures. Successful uploads appear in Import history below.
-                </p>
+              {/* v5.239.0 — a compact strip: what is in the queue, in counts,
+                  with the table one click away.  It was a full table above the
+                  import history whenever a single job was in flight. */}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-xs">
+                  <h2 className="text-section-title font-semibold">Ingestion Queue</h2>
+                  {queueCounts.processing > 0 && <Badge variant="info">{queueCounts.processing} processing</Badge>}
+                  {queueCounts.staged > 0 && <Badge variant="warning">{queueCounts.staged} waiting for review</Badge>}
+                  {queueCounts.failed > 0 && <Badge variant="destructive">{queueCounts.failed} failed</Badge>}
+                  <button
+                    type="button"
+                    aria-expanded={queueOpen}
+                    aria-controls="ingestion-queue-table"
+                    onClick={toggleQueue}
+                    className="inline-flex items-center gap-xxs rounded text-caption text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {queueOpen ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
+                    {queueOpen ? 'Hide jobs' : `Show ${pendingJobs.length} job${pendingJobs.length === 1 ? '' : 's'}`}
+                  </button>
+                </div>
+                {queueOpen && (
+                  <p className="text-metadata text-muted-foreground">
+                    In-flight uploads, staged files waiting for a format review, and recent
+                    failures. Successful uploads appear in Import history below.
+                  </p>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-xs">
                 {/* v5.232.0 — staged files nobody will start (a closed review
@@ -1298,7 +1400,8 @@ export default function Scans() {
                 />
               </div>
             </div>
-            <div className="overflow-x-auto">
+            {queueOpen && (
+            <div id="ingestion-queue-table" className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -1656,6 +1759,7 @@ export default function Scans() {
                 </TableBody>
               </Table>
             </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -1687,17 +1791,38 @@ export default function Scans() {
         <div>
           <div className="mb-sm flex flex-wrap items-start justify-between gap-sm">
             <div>
-              <h3 className="text-subheading font-semibold">
-                {showBatchFiles ? 'All imported files' : 'Upload batches and individual uploads'}
-              </h3>
-              {/* The two-card explanation only holds in the grouped view; in
-                  the all-files view there is one list and no "first card". */}
+              {/* v5.239.0 — one history, two ways to read it.  The choice was a
+                  text link under the description; both /scans reviews asked
+                  for a prominent selector. */}
+              <div
+                className="mb-xs inline-flex overflow-hidden rounded-control border border-border"
+                role="group"
+                aria-label="How the import history is listed"
+              >
+                {([
+                  { value: false, label: 'Grouped by upload' },
+                  { value: true, label: 'All files' },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    aria-pressed={showBatchFiles === opt.value}
+                    onClick={() => setShowBatchFiles(opt.value)}
+                    className={cn(
+                      'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      showBatchFiles === opt.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
               <p className="text-metadata text-muted-foreground">
                 {showBatchFiles
-                  ? 'Every imported file in one list, whether it was dropped as part of a batch or on its own. Most recent first.'
-                  : 'Files dropped together form an upload batch and are counted in the first card; '
-                    + 'files uploaded on their own are listed in the second. Most recent first. The '
-                    + 'filters and tool chips apply to both.'}
+                  ? 'Every imported file in one sortable list, whether it was dropped as part of a batch or on its own.'
+                  : 'One list, newest upload first. Files dropped together are one row — an upload batch, '
+                    + 'expandable to its files — among the files uploaded on their own. '
+                    + 'Switch to All files to sort by another column.'}
               </p>
               {/* v2.86.2 — explicit "Showing N" hint so the page makes
                   it obvious whether you're looking at a partial or
@@ -1707,25 +1832,19 @@ export default function Scans() {
                   "100-row cap". */}
               {(scans.length > 0 || batches.length > 0) && (
                 <p className="mt-xxs text-caption text-muted-foreground">
-                  {batches.length > 0 && (
-                    <>
-                      {batches.length} upload batch{batches.length === 1 ? '' : 'es'} ·{' '}
-                    </>
-                  )}
-                  Showing {scans.length} scan{scans.length === 1 ? '' : 's'}
-                  {batches.length > 0 ? ' outside batches' : ''}
+                  {showBatchFiles
+                    ? `Showing ${scans.length} file${scans.length === 1 ? '' : 's'}`
+                    : `Showing ${historyRows.length} upload${historyRows.length === 1 ? '' : 's'}: `
+                      + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
+                      + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
                   {hasMoreScans ? ' — more available, see Load button below' : hasActiveFilters ? ' (filtered)' : ''}
                 </p>
               )}
-              {(showBatchFiles || batches.length > 0) && (
-                <button
-                  type="button"
-                  onClick={() => setShowBatchFiles((v) => !v)}
-                  aria-pressed={showBatchFiles}
-                  className="mt-xxs text-caption text-primary hover:underline focus:outline-none focus-visible:underline"
-                >
-                  {showBatchFiles ? 'Group files by upload batch' : 'List batch files individually'}
-                </button>
+              {historyPartial && !showBatchFiles && (
+                <p role="alert" className="mt-xxs text-caption text-warning">
+                  Some rows of this history could not be loaded, so the list below is missing entries.
+                  Refresh to try again.
+                </p>
               )}
             </div>
             {/* v4.47.0 QoL pass — full filter row.  Search runs against
@@ -1805,20 +1924,8 @@ export default function Scans() {
             </div>
           </div>
 
-          {batches.length > 0 && (
-            <ScanBatchList
-              className="mb-md"
-              batches={batches}
-              filters={{
-                search: debouncedSearchText.trim() || undefined,
-                tool: toolFilter || undefined,
-                createdAfter: createdAfterIso,
-              }}
-              onViewScan={handleViewScan}
-            />
-          )}
           {scans.length > 0 && <ViewerZoneNote className="mb-xs" />}
-          {scans.length === 0 && batches.length > 0 ? null : scans.length === 0 ? (
+          {(showBatchFiles ? scans.length === 0 : historyRows.length === 0) ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
             // navigating away.
@@ -1845,27 +1952,21 @@ export default function Scans() {
             </Card>
           ) : (
           <Card>
-            {batches.length > 0 && (
-              <div className="border-b border-border px-md py-sm">
-                <p className="text-metadata font-semibold">Individual uploads</p>
-                <p className="text-caption text-muted-foreground">
-                  Files uploaded on their own. Batch files are not repeated here unless you list
-                  batch files individually.
-                </p>
-              </div>
-            )}
             <CardContent className="p-0">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    {renderSortHeader('filename', 'Scan', 'w-[22%]')}
+                    {/* Grouped by upload is chronological by definition (the
+                        server orders batches and single files together), so
+                        the headers sort only in the all-files view. */}
+                    {historyHeader('filename', 'Scan', 'w-[22%]')}
                     {/* v5.205.0 — when the scan RAN, per its own output, with
                         where that time came from; the upload time is its own
                         column. The old "Window" silently fell back to the
                         upload time and read naive UTC as local time. */}
-                    {renderSortHeader('start_time', 'Ran', 'w-[16%]')}
-                    {renderSortHeader('created_at', 'Uploaded', 'w-[13%]')}
-                    {renderSortHeader('new_hosts', 'New hosts', 'w-[9%]')}
+                    {historyHeader('start_time', 'Ran', 'w-[16%]')}
+                    {historyHeader('created_at', 'Uploaded', 'w-[13%]')}
+                    {historyHeader('new_hosts', 'New hosts', 'w-[9%]')}
                     <TableHead
                       className="w-[30%]"
                       title="What this scan added or observed, counted from the rows it wrote. Hover a line for what it counts."
@@ -1876,7 +1977,23 @@ export default function Scans() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {scans.map((scan) => {
+                  {tableRows.map((row) => {
+                    if (row.kind === 'batch') {
+                      return (
+                        <ScanBatchRow
+                          key={row.key}
+                          batch={row.batch}
+                          filters={{
+                            search: debouncedSearchText.trim() || undefined,
+                            tool: toolFilter || undefined,
+                            createdAfter: createdAfterIso,
+                          }}
+                          onViewScan={handleViewScan}
+                          colSpan={6}
+                        />
+                      );
+                    }
+                    const scan = row.scan;
                     const isExpanded = expandedScanIds.includes(scan.id);
                     const hasCommand = !!(scan.command_line && scan.command_line.trim());
                     return (
@@ -2020,7 +2137,7 @@ export default function Scans() {
                 ) : (
                   <ChevronDown className="size-4" aria-hidden />
                 )}
-                {loadingMore ? 'Loading…' : `Load ${SCAN_LIMIT} more`}
+                {loadingMore ? 'Loading…' : showBatchFiles ? `Load ${SCAN_LIMIT} more` : `Load ${HISTORY_PAGE} more uploads`}
               </Button>
             </div>
           )}

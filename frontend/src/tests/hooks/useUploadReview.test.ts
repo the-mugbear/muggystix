@@ -15,6 +15,7 @@ vi.mock('../../services/api', () => ({
   createScanBatch: vi.fn(),
   discardIngestionJob: vi.fn(),
   getUploadFormats: vi.fn(),
+  renameScanBatch: vi.fn(),
 }));
 
 import { overrideFor, suggestionOf, useUploadReview } from '../../hooks/useUploadReview';
@@ -80,7 +81,11 @@ const makeDeps = () => {
     { file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' },
     { file_type: 'naabu_output', label: 'Naabu host:port text', family: 'port' },
   ]);
-  return { uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats };
+  const renameScanBatch = vi.fn(async (id: number, label: string) => ({ id, label }));
+  return {
+    uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats,
+    renameScanBatch,
+  };
 };
 
 describe('useUploadReview', () => {
@@ -180,6 +185,39 @@ describe('useUploadReview', () => {
     });
     expect(deps.discardIngestionJob).toHaveBeenLastCalledWith(100);
     expect(result.current.rows.map((r) => r.filename)).toEqual(['results.txt']);
+  });
+
+  it('a multi-file drop forms a batch the operator can name; a single file forms none', async () => {
+    const deps = makeDeps();
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml')]);
+    });
+    expect(result.current.batch).toBeNull();
+
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml'), file('results.txt')]);
+    });
+    expect(result.current.batch).toMatchObject({ id: 7, named: false });
+
+    // Blank, or the label it already has, is not a rename.
+    await act(async () => {
+      expect(await result.current.nameBatch('   ')).toBe(false);
+    });
+    expect(deps.renameScanBatch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      expect(await result.current.nameBatch('  DMZ sweep, week 2 ')).toBe(true);
+    });
+    expect(deps.renameScanBatch).toHaveBeenCalledWith(7, 'DMZ sweep, week 2');
+    expect(result.current.batch).toMatchObject({ label: 'DMZ sweep, week 2', named: true });
+
+    deps.renameScanBatch.mockRejectedValueOnce(new Error('nope'));
+    await act(async () => {
+      expect(await result.current.nameBatch('another')).toBe(false);
+    });
+    expect(result.current.batchError).toBeTruthy();
+    expect(result.current.batch?.label).toBe('DMZ sweep, week 2');
   });
 
   it('clearStarted drops what the banner owns and keeps unresolved rows', async () => {

@@ -207,6 +207,109 @@ def test_batch_with_no_imported_file_yet_is_still_listed(client, db_session, tes
     assert client.get(f"/api/v1/projects/{test_project.id}/scans/batches?tool=nmap").json() == []
 
 
+def _history_fixture(db, project):
+    """Newest first: single s3 (t-1h) · batch B (newest file t-2h) · single s2
+    (t-3h) · batch A (t-4h) · single s1 (t-5h) · batch Q (no file yet, t-6h)."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+
+    def at(hours):
+        return now - timedelta(hours=hours)
+
+    def batch(label, hours):
+        b = models.ScanBatch(project_id=project.id, label=label, created_at=at(hours))
+        db.add(b)
+        db.flush()
+        return b
+
+    def scan(name, hours, tool="nmap", batch_id=None):
+        s = models.Scan(project_id=project.id, filename=name, tool_name=tool,
+                        scan_type="port_scan", created_at=at(hours), batch_id=batch_id)
+        db.add(s)
+        db.flush()
+        return s
+
+    a, b, q = batch("A", 4.5), batch("B", 2.5), batch("Q", 6)
+    out = {
+        "A": a, "B": b, "Q": q,
+        "s1": scan("s1.xml", 5), "s2": scan("s2.xml", 3, tool="masscan"), "s3": scan("s3.xml", 1),
+        "a1": scan("a1.xml", 4, batch_id=a.id),
+        "b1": scan("b1.xml", 2.4, batch_id=b.id), "b2": scan("b2.xml", 2, tool="masscan", batch_id=b.id),
+    }
+    db.add(models.IngestionJob(project_id=project.id, filename="q.xml", original_filename="q.xml",
+                               storage_path="/x", status="queued", batch_id=q.id))
+    db.commit()
+    return out
+
+
+def test_import_history_interleaves_batches_and_single_files_by_upload_time(client, db_session, test_project):
+    """The page showed batches and single files as two separately paginated
+    cards, so the order things were imported in could not be read off it."""
+    f = _history_fixture(db_session, test_project)
+    url = f"/api/v1/projects/{test_project.id}/scans/history"
+
+    body = client.get(url).json()
+    assert [(e["kind"], e["id"]) for e in body["items"]] == [
+        ("scan", f["s3"].id), ("batch", f["B"].id), ("scan", f["s2"].id),
+        ("batch", f["A"].id), ("scan", f["s1"].id), ("batch", f["Q"].id),
+    ]
+    assert (body["total"], body["batch_total"], body["scan_total"], body["has_more"]) == (6, 3, 3, False)
+    # A batch's files are its own rows' business, never history rows.
+    assert f["b1"].id not in [e["id"] for e in body["items"] if e["kind"] == "scan"]
+
+    # Pagination runs over the MERGED order — the thing two lists could not do.
+    first = client.get(url, params={"limit": 2}).json()
+    second = client.get(url, params={"skip": 2, "limit": 2}).json()
+    third = client.get(url, params={"skip": 4, "limit": 2}).json()
+    paged = [(e["kind"], e["id"]) for page in (first, second, third) for e in page["items"]]
+    assert paged == [(e["kind"], e["id"]) for e in body["items"]]
+    assert (first["has_more"], second["has_more"], third["has_more"]) == (True, True, False)
+
+
+def test_import_history_filters_like_the_lists_it_orders(client, db_session, test_project):
+    f = _history_fixture(db_session, test_project)
+    body = client.get(f"/api/v1/projects/{test_project.id}/scans/history", params={"tool": "masscan"}).json()
+    # Batch B holds a masscan file; A and the still-queued Q do not match.
+    assert [(e["kind"], e["id"]) for e in body["items"]] == [("batch", f["B"].id), ("scan", f["s2"].id)]
+    assert (body["batch_total"], body["scan_total"]) == (1, 1)
+
+
+def test_batches_can_be_fetched_by_id_for_a_history_page(client, db_session, test_project):
+    f = _history_fixture(db_session, test_project)
+    url = f"/api/v1/projects/{test_project.id}/scans/batches"
+    rows = client.get(url, params={"ids": f"{f['A'].id},{f['Q'].id}"}).json()
+    assert sorted(r["label"] for r in rows) == ["A", "Q"]
+    assert client.get(url, params={"ids": "x"}).status_code == 422
+    assert client.get(url, params={"ids": ""}).json() == []
+
+
+def test_an_operator_upload_can_be_named_an_agents_batch_cannot(client, db_session, test_project):
+    url = f"/api/v1/projects/{test_project.id}/scans/batches"
+    created = client.post(url, json={"label": "12 files · today"}).json()
+    r = client.patch(f"{url}/{created['id']}", json={"label": "  DMZ sweep, week 2  "})
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "DMZ sweep, week 2"
+    assert client.patch(f"{url}/{created['id']}", json={"label": "   "}).status_code == 422
+    assert client.patch(f"{url}/999999", json={"label": "x"}).status_code == 404
+
+    # An agent's batch is keyed by (recon session, label): a rename would send
+    # the sweep's next chunk into a new batch.
+    scope = models.Scope(project_id=test_project.id, name="s", description="")
+    db_session.add(scope)
+    db_session.flush()
+    from app.db.models_agent import ReconSession
+    session = ReconSession(project_id=test_project.id, scope_id=scope.id, status="active")
+    db_session.add(session)
+    db_session.flush()
+    agent_batch = models.ScanBatch(project_id=test_project.id, label="nmap-tcp-top1000", recon_session_id=session.id)
+    db_session.add(agent_batch)
+    db_session.commit()
+    assert client.patch(f"{url}/{agent_batch.id}", json={"label": "renamed"}).status_code == 409
+    db_session.refresh(agent_batch)
+    assert agent_batch.label == "nmap-tcp-top1000"
+
+
 def test_batch_says_where_its_staged_and_discarded_files_are(client, db_session, test_project):
     """A staged file is neither processing nor failed, so a freshly dropped
     batch read "0 imported" with nothing explaining where its files were; a

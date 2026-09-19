@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   uploadFile: vi.fn(),
   createScanBatch: vi.fn(),
   discardIngestionJob: vi.fn(),
+  renameScanBatch: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }));

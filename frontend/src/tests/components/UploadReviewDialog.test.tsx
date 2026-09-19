@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   createScanBatch: vi.fn(),
   discardIngestionJob: vi.fn(),
   getUploadFormats: vi.fn(),
+  renameScanBatch: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 
@@ -160,6 +161,23 @@ describe('UploadReviewDialog flow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry inspection' }));
     await waitFor(() => expect(screen.getByText(/recognised by structure/)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Retry inspection' })).not.toBeInTheDocument();
+  });
+
+  it('several files dropped together can be named as one upload', async () => {
+    api.renameScanBatch.mockResolvedValue({ id: 3, label: 'DMZ sweep' });
+    const { container } = renderDialog();
+    // One file is not a batch: nothing to name.
+    drop(container, ['a.xml']);
+    await screen.findByText('a.xml');
+    expect(screen.queryByLabelText('Name this upload (optional)')).not.toBeInTheDocument();
+
+    drop(container, ['b.xml', 'c.xml']);
+    const field = await screen.findByLabelText('Name this upload (optional)');
+    expect(screen.getByRole('button', { name: 'Save name' })).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'DMZ sweep' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    await waitFor(() => expect(api.renameScanBatch).toHaveBeenCalledWith(3, 'DMZ sweep'));
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeDisabled();
   });
 
   it('removing a staged row discards the staged file on the server', async () => {

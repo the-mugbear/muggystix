@@ -3,7 +3,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 
 vi.mock('../../services/api', () => ({ getScans: vi.fn() }));
 
-import ScanBatchList from '../../components/scans/ScanBatchList';
+import { ScanBatchRow } from '../../components/scans/ScanBatchList';
+import { Table, TableBody } from '../../components/ui/table';
 import { getScans } from '../../services/api';
 import type { ScanBatchSummary } from '../../services/api';
 
@@ -25,15 +26,24 @@ const batch: ScanBatchSummary = {
   failed_files: 1,
 };
 
-describe('ScanBatchList', () => {
+// The batch is a group row inside the import history table (v5.239.0).
+const renderRow = (filters: { tool?: string }, onViewScan = vi.fn()) =>
+  render(
+    <Table><TableBody>
+      <ScanBatchRow batch={batch} filters={filters} onViewScan={onViewScan} colSpan={6} />
+    </TableBody></Table>,
+  );
+
+describe('ScanBatchRow', () => {
   beforeEach(() => {
     (getScans as Mock).mockReset();
   });
 
   it('shows one row per batch with what its files added and what is still landing', () => {
-    render(<ScanBatchList batches={[batch]} filters={{}} onViewScan={vi.fn()} />);
+    renderRow({});
     expect(screen.getByText('nmap-tcp-top1000')).toBeInTheDocument();
-    expect(screen.getByText('Recon session #3')).toBeInTheDocument();
+    // Says what kind of row it is: it sits among single files now.
+    expect(screen.getByText('Upload batch · Recon session #3')).toBeInTheDocument();
     expect(screen.getByText('312')).toBeInTheDocument();
     expect(screen.getByText('+850 new')).toBeInTheDocument();
     expect(screen.getByText('4 processing')).toBeInTheDocument();
@@ -50,7 +60,7 @@ describe('ScanBatchList', () => {
       },
     ]);
     const onViewScan = vi.fn();
-    render(<ScanBatchList batches={[batch]} filters={{ tool: 'NMAP' }} onViewScan={onViewScan} />);
+    renderRow({ tool: 'NMAP' }, onViewScan);
 
     fireEvent.click(screen.getByRole('button', { name: /show the files of nmap-tcp-top1000/i }));
     const file = await screen.findByText('chunk-001.xml');

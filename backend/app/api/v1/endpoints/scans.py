@@ -911,6 +911,25 @@ class ScanBatchSummary(BaseModel):
     discarded_files: int = Field(0, description="Staged files the operator discarded before import")
 
 
+class ImportHistoryEntry(BaseModel):
+    kind: str = Field(..., description="'batch' (several files dropped together) or 'scan' (a file uploaded on its own)")
+    id: int
+    at: Optional[datetime] = Field(None, description="When it was uploaded — a batch's newest matching file, else its creation")
+
+
+class ImportHistoryPage(BaseModel):
+    """v2.361.0 — the ORDER of the import history: upload batches and
+    individually uploaded files in one chronological list.  Only the order
+    lives here; each row's content comes from the endpoints that already
+    compute it (``GET /scans/?ids=`` and ``GET /scans/batches?ids=``), so the
+    per-scan and per-batch summaries have one implementation."""
+    items: List[ImportHistoryEntry] = Field(default_factory=list)
+    total: int = 0
+    batch_total: int = 0
+    scan_total: int = 0
+    has_more: bool = False
+
+
 class ScanInventoryMarker(BaseModel):
     count: int
     latest_id: Optional[int] = None
@@ -944,6 +963,142 @@ def create_scan_batch(
     return ScanBatchRef(id=batch.id, label=batch.label, created_at=batch.created_at)
 
 
+@router.patch(
+    "/batches/{batch_id}",
+    response_model=ScanBatchRef,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    responses={
+        404: {"description": "Batch not found in this project"},
+        409: {"description": "An agent's batch cannot be renamed"},
+    },
+    summary="Name an upload batch (analyst; operator uploads only)",
+)
+def rename_scan_batch(
+    batch_id: int,
+    body: ScanBatchCreate,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """v2.361.0 — an operator's multi-file upload is created with a generated
+    label ("12 files · <time>") the moment the files are dropped; this gives
+    it the name the operator recognises it by in the import history.
+
+    An AGENT'S batch is refused: it is keyed by ``(recon_session_id, label)``,
+    so renaming it would send the sweep's next chunk into a new batch."""
+    batch = (
+        db.query(models.ScanBatch)
+        .filter(models.ScanBatch.id == batch_id, models.ScanBatch.project_id == project.id)
+        .first()
+    )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found in this project")
+    if batch.recon_session_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This batch belongs to an agent's recon session, which keys it by its label; it cannot be renamed.",
+        )
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(status_code=422, detail="The name cannot be blank")
+    batch.label = label
+    db.commit()
+    db.refresh(batch)
+    return ScanBatchRef(id=batch.id, label=batch.label, created_at=batch.created_at)
+
+
+@router.get(
+    "/history",
+    response_model=ImportHistoryPage,
+    summary="The import history's order: upload batches and single files, newest first",
+)
+def get_import_history(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(None, max_length=200),
+    tool: Optional[str] = Query(None, max_length=64),
+    created_after: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Batches and individually uploaded files interleaved by upload time.
+
+    The page showed them as two cards, each paginated on its own, so "what
+    was imported, in order" could not be read off it — and merging two
+    separately paginated lists in the browser is wrong at the page boundary
+    (a file older than the last loaded batch has nowhere correct to go).  The
+    order is decided here, over both kinds at once.
+
+    Same filter semantics as the two lists: with a filter, a batch appears
+    only if it holds a matching file, and is dated by its newest MATCHING
+    file; with none, every batch appears (one with only queued or failed
+    files has no scan row, and is dated by its creation).  Four statements
+    whatever the page: batches, their matching-file dates, the unbatched
+    scans down to the end of the requested page, and their count.
+    """
+    filters_active = bool(search or tool or created_after)
+
+    def _aware(dt):
+        if dt is None:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    batches = (
+        db.query(models.ScanBatch.id, models.ScanBatch.created_at)
+        .filter(models.ScanBatch.project_id == project.id)
+        .order_by(models.ScanBatch.created_at.desc(), models.ScanBatch.id.desc())
+        .limit(500)
+        .all()
+    )
+    newest_match: Dict[int, datetime] = {}
+    if batches:
+        matching = _apply_scan_inventory_filters(
+            db.query(models.Scan.batch_id, func.max(models.Scan.created_at))
+            .filter(
+                models.Scan.project_id == project.id,
+                models.Scan.batch_id.in_([b.id for b in batches]),
+            ),
+            search=search, tool=tool, created_after=created_after,
+        )
+        newest_match = {bid: when for bid, when in matching.group_by(models.Scan.batch_id).all()}
+    batch_entries = [
+        ("batch", b.id, _aware(newest_match.get(b.id) or b.created_at))
+        for b in batches
+        if (b.id in newest_match) or not filters_active
+    ]
+
+    unbatched = _apply_scan_inventory_filters(
+        db.query(models.Scan.id, models.Scan.created_at)
+        .filter(models.Scan.project_id == project.id, models.Scan.batch_id.is_(None)),
+        search=search, tool=tool, created_after=created_after,
+    )
+    scan_total = unbatched.with_entities(func.count(models.Scan.id)).scalar() or 0
+    # Only the scans that can reach this page: the newest skip+limit of them.
+    scan_entries = [
+        ("scan", sid, _aware(when))
+        for sid, when in (
+            unbatched.order_by(models.Scan.created_at.desc(), models.Scan.id.desc())
+            .limit(skip + limit)
+            .all()
+        )
+    ]
+
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    merged = sorted(
+        batch_entries + scan_entries,
+        key=lambda e: (e[2] or floor, e[0] == "batch", e[1]),
+        reverse=True,
+    )
+    total = len(batch_entries) + int(scan_total)
+    page = merged[skip: skip + limit]
+    return ImportHistoryPage(
+        items=[ImportHistoryEntry(kind=k, id=i, at=at) for k, i, at in page],
+        total=total,
+        batch_total=len(batch_entries),
+        scan_total=int(scan_total),
+        has_more=skip + len(page) < total,
+    )
+
+
 @router.get(
     "/batches",
     response_model=List[ScanBatchSummary],
@@ -955,6 +1110,14 @@ def list_scan_batches(
     search: Optional[str] = Query(None, max_length=200),
     tool: Optional[str] = Query(None, max_length=64),
     created_after: Optional[datetime] = Query(None),
+    ids: Optional[str] = Query(
+        None, max_length=2000,
+        description=(
+            "Comma-separated batch ids — only these batches (v2.361.0). The "
+            "import history lists batches and single files in one order "
+            "(GET /scans/history) and fetches each page's batches by id."
+        ),
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -966,15 +1129,26 @@ def list_scan_batches(
         query = query.filter(models.Scan.project_id == project.id, models.Scan.batch_id.isnot(None))
         return _apply_scan_inventory_filters(query, search=search, tool=tool, created_after=created_after)
 
+    wanted_ids: Optional[List[int]] = None
+    if ids is not None:
+        try:
+            wanted_ids = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="ids must be comma-separated integers")
+        if not wanted_ids:
+            return []
+
     # v2.350.0 — start from the BATCH table, not from scan rows (second
     # /scans design review, point 2).  A batch whose files are all still
     # queued, or all failed, has no scan row yet and was invisible exactly
     # when the operator needed it.  With no inventory filter every batch is
     # listed; with a filter, only batches holding a matching file.
     filters_active = bool(search or tool or created_after)
+    batch_query = db.query(models.ScanBatch).filter(models.ScanBatch.project_id == project.id)
+    if wanted_ids is not None:
+        batch_query = batch_query.filter(models.ScanBatch.id.in_(wanted_ids))
     all_batches = (
-        db.query(models.ScanBatch)
-        .filter(models.ScanBatch.project_id == project.id)
+        batch_query
         .order_by(models.ScanBatch.created_at.desc(), models.ScanBatch.id.desc())
         .limit(500)
         .all()

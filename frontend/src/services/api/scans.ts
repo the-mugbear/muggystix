@@ -180,11 +180,48 @@ export interface ScanBatchSummary {
   discarded_files?: number;
 }
 
-export const getScanBatches = async (
+/** v5.239.0 — the ORDER of the import history: upload batches and individually
+ *  uploaded files in one chronological list. Rows are hydrated by id through
+ *  getScans / getScanBatches, which already compute their summaries. */
+export interface ImportHistoryEntry {
+  kind: 'batch' | 'scan';
+  id: number;
+  at: string | null;
+}
+
+export interface ImportHistoryPage {
+  items: ImportHistoryEntry[];
+  total: number;
+  batch_total: number;
+  scan_total: number;
+  has_more: boolean;
+}
+
+export const getImportHistory = async (
   options?: { search?: string; tool?: string; createdAfter?: string; skip?: number; limit?: number; signal?: AbortSignal },
-): Promise<ScanBatchSummary[]> => {
+): Promise<ImportHistoryPage> => {
   const { search, tool, createdAfter, skip, limit, signal } = options ?? {};
   const params: Record<string, string | number> = {};
+  if (search) params.search = search;
+  if (tool) params.tool = tool;
+  if (createdAfter) params.created_after = createdAfter;
+  if (skip) params.skip = skip;
+  if (limit) params.limit = limit;
+  const response = await api.get(`${p()}/scans/history`, { params, signal });
+  return response.data;
+};
+
+export const getScanBatches = async (
+  options?: {
+    search?: string; tool?: string; createdAfter?: string; skip?: number; limit?: number;
+    /** Only these batches (a history page's). */
+    ids?: number[];
+    signal?: AbortSignal;
+  },
+): Promise<ScanBatchSummary[]> => {
+  const { search, tool, createdAfter, skip, limit, ids, signal } = options ?? {};
+  const params: Record<string, string | number> = {};
+  if (ids) params.ids = ids.join(',');
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
@@ -199,6 +236,17 @@ export const createScanBatch = async (
   label: string,
 ): Promise<{ id: number; label: string; created_at?: string | null }> => {
   const response = await api.post(`${p()}/scans/batches`, { label });
+  return response.data;
+};
+
+/** Name an operator's upload batch (it is created with a generated label the
+ *  moment files are dropped). An agent's batch is refused with 409: it is
+ *  keyed by its label within the recon session. */
+export const renameScanBatch = async (
+  batchId: number,
+  label: string,
+): Promise<{ id: number; label: string; created_at?: string | null }> => {
+  const response = await api.patch(`${p()}/scans/batches/${batchId}`, { label });
   return response.data;
 };
 
