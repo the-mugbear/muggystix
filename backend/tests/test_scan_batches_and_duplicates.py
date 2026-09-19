@@ -182,6 +182,58 @@ def test_batches_list_one_row_with_what_the_files_added(client, db_session, test
     assert client.get(f"/api/v1/projects/{test_project.id}/scans/batches?tool=masscan").json() == []
 
 
+def test_batch_with_no_imported_file_yet_is_still_listed(client, db_session, test_project):
+    """v2.350.0 — the listing starts from the batch table: a batch whose
+    files are all queued or all failed has no scan row and used to be
+    invisible exactly when the operator needed it."""
+    batch = models.ScanBatch(project_id=test_project.id, label="all-failed")
+    db_session.add(batch)
+    db_session.commit()
+    for status in ("failed", "failed", "processing"):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="f.xml", original_filename="f.xml",
+            storage_path="/x", status=status, batch_id=batch.id,
+        ))
+    db_session.commit()
+
+    rows = client.get(f"/api/v1/projects/{test_project.id}/scans/batches").json()
+    assert [r["label"] for r in rows] == ["all-failed"]
+    row = rows[0]
+    assert (row["files"], row["total_files"], row["imported_files"]) == (0, 0, 0)
+    assert (row["processing_files"], row["failed_files"]) == (1, 2)
+    assert row["last_uploaded"] is not None  # falls back to the batch's creation
+
+    # A tool filter is about imported files: nothing matches, so it drops out.
+    assert client.get(f"/api/v1/projects/{test_project.id}/scans/batches?tool=nmap").json() == []
+
+
+def test_filtered_batch_reports_matching_of_total_files(client, db_session, test_project):
+    batch = models.ScanBatch(project_id=test_project.id, label="mixed")
+    db_session.add(batch)
+    db_session.commit()
+    db_session.add_all([
+        models.Scan(project_id=test_project.id, filename="a.xml", tool_name="nmap", batch_id=batch.id),
+        models.Scan(project_id=test_project.id, filename="b.xml", tool_name="nmap", batch_id=batch.id),
+        models.Scan(project_id=test_project.id, filename="c.json", tool_name="masscan", batch_id=batch.id),
+    ])
+    db_session.commit()
+    (row,) = client.get(f"/api/v1/projects/{test_project.id}/scans/batches?tool=masscan").json()
+    assert (row["files"], row["total_files"], row["imported_files"]) == (1, 3, 3)
+    assert row["tools"] == ["masscan"]
+
+
+def test_summary_tool_counts_cover_batched_files_and_ignore_the_tool_filter(client, db_session, test_project):
+    """v2.350.0 — the chips used to count the loaded rows, which in grouped
+    mode were only the unbatched files."""
+    _seed_batch(db_session, test_project)  # 2 nmap files in a batch + 1 loose masscan
+    s = client.get(f"/api/v1/projects/{test_project.id}/scans/summary").json()
+    assert s["tool_counts"] == {"NMAP": 2, "MASSCAN": 1}
+    assert s["total_files"] == 3
+    filtered = client.get(f"/api/v1/projects/{test_project.id}/scans/summary?tool=masscan").json()
+    assert filtered["tool_counts"] == {"NMAP": 2, "MASSCAN": 1}
+    assert filtered["total_scans"] == 1
+
+
 def test_flat_list_can_leave_batch_files_out_or_show_one_batch(client, db_session, test_project):
     batch, s1, s2, loose = _seed_batch(db_session, test_project)
     base = f"/api/v1/projects/{test_project.id}/scans/"

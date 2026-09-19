@@ -163,6 +163,11 @@ export interface ScanBatchSummary {
   last_uploaded?: string | null;
   pending_files: number;
   failed_files: number;
+  // v2.350.0 — `files` is the MATCHING imported files; these are the rest of
+  // the honest breakdown.  A refused duplicate never creates a job.
+  total_files?: number;
+  imported_files?: number;
+  processing_files?: number;
 }
 
 export const getScanBatches = async (
@@ -209,6 +214,10 @@ export interface ScanInventorySummary {
   total_hosts: number;
   up_hosts: number;
   open_services: number;
+  // v2.350.0 — files per tool (keys upper-cased) over the search/date
+  // filters, batched files included, ignoring the tool filter.
+  tool_counts?: Record<string, number>;
+  total_files?: number;
 }
 
 export const getScansSummary = async (

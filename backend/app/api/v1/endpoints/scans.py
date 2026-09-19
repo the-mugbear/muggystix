@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, aliased
@@ -95,6 +95,10 @@ class ScanInventorySummary(BaseModel):
     total_hosts: int = Field(..., ge=0, description="Sum of host observations across matching scans")
     up_hosts: int = Field(..., ge=0, description="Sum of up-host observations across matching scans")
     open_services: int = Field(..., ge=0, description="Sum of open ports across matching scans")
+    # v2.350.0 — files per tool over the search/date filters (NOT the tool
+    # filter), batched files included; drives the tool chips.
+    tool_counts: Dict[str, int] = Field(default_factory=dict)
+    total_files: int = Field(0, ge=0, description="Files matching the search/date filters, any tool")
 
 
 class CommandArgument(BaseModel):
@@ -827,11 +831,28 @@ def get_scans_summary(
     )
     open_services = open_services_query.scalar() or 0
 
+    # v2.350.0 — per-tool file counts for the filter chips, over EVERY scan
+    # matching the search/date filters (batched or not), and deliberately
+    # ignoring the tool filter itself so the chips still show the other
+    # tools while one is selected.  The page used to count the loaded rows,
+    # which in grouped mode were only the unbatched files.
+    tool_expr = func.upper(func.coalesce(models.Scan.tool_name, models.Scan.scan_type, "Other"))
+    tool_counts_q = (
+        db.query(tool_expr, func.count(models.Scan.id))
+        .filter(models.Scan.project_id == project.id)
+    )
+    tool_counts_q = _apply_scan_inventory_filters(
+        tool_counts_q, search=search, tool=None, created_after=created_after
+    )
+    tool_counts = {label: int(n) for label, n in tool_counts_q.group_by(tool_expr).all() if label}
+
     return ScanInventorySummary(
         total_scans=host_row.total_scans or 0,
         total_hosts=host_row.total_hosts or 0,
         up_hosts=host_row.up_hosts or 0,
         open_services=open_services,
+        tool_counts=tool_counts,
+        total_files=sum(tool_counts.values()),
     )
 
 
@@ -867,6 +888,13 @@ class ScanBatchSummary(BaseModel):
     last_uploaded: Optional[datetime] = None
     pending_files: int = Field(0, description="Files of this batch still queued or parsing")
     failed_files: int = Field(0, description="Files of this batch that failed to parse (not dismissed)")
+    # v2.350.0 — the honest breakdown: `files` is the MATCHING imported
+    # files (the page's filters), `total_files` every imported file of the
+    # batch, then what is still landing or failed.  A refused duplicate never
+    # creates a job, so it has no count here.
+    total_files: int = Field(0, description="Imported files in the batch, filters or not")
+    imported_files: int = Field(0, description="Files that parsed into a scan record")
+    processing_files: int = Field(0, description="Files queued or parsing right now")
 
 
 class ScanInventoryMarker(BaseModel):
@@ -924,27 +952,63 @@ def list_scan_batches(
         query = query.filter(models.Scan.project_id == project.id, models.Scan.batch_id.isnot(None))
         return _apply_scan_inventory_filters(query, search=search, tool=tool, created_after=created_after)
 
-    last_uploaded = func.max(models.Scan.created_at)
-    rows = (
-        _matching(
-            db.query(
-                models.Scan.batch_id.label("batch_id"),
-                func.count(models.Scan.id).label("files"),
-                func.min(models.Scan.created_at).label("first_uploaded"),
-                last_uploaded.label("last_uploaded"),
-            ).select_from(models.Scan)
-        )
-        .group_by(models.Scan.batch_id)
-        .order_by(last_uploaded.desc(), models.Scan.batch_id.desc())
-        .offset(skip)
-        .limit(limit)
+    # v2.350.0 — start from the BATCH table, not from scan rows (second
+    # /scans design review, point 2).  A batch whose files are all still
+    # queued, or all failed, has no scan row yet and was invisible exactly
+    # when the operator needed it.  With no inventory filter every batch is
+    # listed; with a filter, only batches holding a matching file.
+    filters_active = bool(search or tool or created_after)
+    all_batches = (
+        db.query(models.ScanBatch)
+        .filter(models.ScanBatch.project_id == project.id)
+        .order_by(models.ScanBatch.created_at.desc(), models.ScanBatch.id.desc())
+        .limit(500)
         .all()
     )
-    ids = [r.batch_id for r in rows]
+    if not all_batches:
+        return []
+    candidate_ids = [b.id for b in all_batches]
+
+    last_uploaded = func.max(models.Scan.created_at)
+    match_rows = {
+        r.batch_id: r
+        for r in (
+            _matching(
+                db.query(
+                    models.Scan.batch_id.label("batch_id"),
+                    func.count(models.Scan.id).label("files"),
+                    func.min(models.Scan.created_at).label("first_uploaded"),
+                    last_uploaded.label("last_uploaded"),
+                ).select_from(models.Scan)
+            )
+            .filter(models.Scan.batch_id.in_(candidate_ids))
+            .group_by(models.Scan.batch_id)
+            .all()
+        )
+    }
+    # Every imported file of the batch, filters or not — so a filtered row
+    # can say "3 matching files of 12 in this upload".
+    total_files: Dict[int, int] = dict(
+        db.query(models.Scan.batch_id, func.count(models.Scan.id))
+        .filter(models.Scan.project_id == project.id, models.Scan.batch_id.in_(candidate_ids))
+        .group_by(models.Scan.batch_id)
+        .all()
+    )
+
+    def _sort_key(b):
+        r = match_rows.get(b.id)
+        when = (r.last_uploaded if r is not None and r.last_uploaded else None) or b.created_at
+        when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+        return (when, b.id)
+
+    kept = [b for b in all_batches if (b.id in match_rows) or not filters_active]
+    kept.sort(key=_sort_key, reverse=True)
+    kept = kept[skip: skip + limit]
+    ids = [b.id for b in kept]
     if not ids:
         return []
 
-    batches = {b.id: b for b in db.query(models.ScanBatch).filter(models.ScanBatch.id.in_(ids)).all()}
+    batches = {b.id: b for b in kept}
     tools: Dict[int, set] = {}
     for bid, tool_label in (
         _matching(
@@ -1009,26 +1073,28 @@ def list_scan_batches(
     )
 
     out = []
-    for r in rows:
-        b = batches.get(r.batch_id)
-        if b is None:
-            continue
-        stats = host_stats.get(r.batch_id)
+    for b in kept:
+        r = match_rows.get(b.id)
+        stats = host_stats.get(b.id)
+        imported = total_files.get(b.id, 0)
         out.append(ScanBatchSummary(
             id=b.id,
             label=b.label,
             created_at=b.created_at,
             created_by=creators.get(b.created_by_id),
             recon_session_id=b.recon_session_id,
-            files=r.files,
-            tools=sorted(tools.get(r.batch_id, set()), key=str.lower),
+            files=(r.files if r is not None else 0),
+            total_files=imported,
+            imported_files=imported,
+            processing_files=pending.get(b.id, 0),
+            tools=sorted(tools.get(b.id, set()), key=str.lower),
             hosts=(stats.hosts or 0) if stats else 0,
             new_hosts=(stats.new_hosts or 0) if stats else 0,
-            open_ports=open_ports.get(r.batch_id, 0) or 0,
-            first_uploaded=r.first_uploaded,
-            last_uploaded=r.last_uploaded,
-            pending_files=pending.get(r.batch_id, 0),
-            failed_files=failed.get(r.batch_id, 0),
+            open_ports=open_ports.get(b.id, 0) or 0,
+            first_uploaded=(r.first_uploaded if r is not None else None) or b.created_at,
+            last_uploaded=(r.last_uploaded if r is not None else None) or b.created_at,
+            pending_files=pending.get(b.id, 0),
+            failed_files=failed.get(b.id, 0),
         ))
     return out
 

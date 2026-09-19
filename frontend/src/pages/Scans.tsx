@@ -820,6 +820,20 @@ export default function Scans() {
     [scans],
   );
 
+  // v5.226.0 — the tool chips count EVERY file matching the search/date
+  // filters, server-side, batched files included.  The loaded `scans` array
+  // is the fallback for an older backend; in grouped mode it holds only the
+  // unbatched files, which is the defect this replaces.
+  const toolChips = useMemo<[string, number][]>(() => {
+    const server = inventorySummary?.tool_counts;
+    if (server && Object.keys(server).length > 0) {
+      return Object.entries(server).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    }
+    return Object.entries(groupedScans)
+      .map(([g, rows]) => [g, rows.length] as [string, number])
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [inventorySummary, groupedScans]);
+
   const orderedToolGroups = useMemo(
     () => Object.keys(groupedScans).sort((a, b) => a.localeCompare(b)),
     [groupedScans],
@@ -1561,7 +1575,10 @@ export default function Scans() {
 
       <Separator className="mb-md" />
 
-      <h2 className="mb-sm text-section-title font-semibold">Your Scans</h2>
+      {/* v5.226.0 — one heading for what was "Your Scans" + "Scan Inventory"
+          (second /scans design review, point 1, interim step); the two
+          cards below are labelled for what they hold. */}
+      <h2 className="mb-sm text-section-title font-semibold">Import history</h2>
 
       {/* Scan Timeline moved to /tool-activity in v2.59.0 — that page
           plots scans by their actual scan_start (SOC-correlation
@@ -1583,10 +1600,11 @@ export default function Scans() {
         <div>
           <div className="mb-sm flex flex-wrap items-start justify-between gap-sm">
             <div>
-              <h3 className="text-subheading font-semibold">Scan Inventory</h3>
+              <h3 className="text-subheading font-semibold">Upload batches and individual uploads</h3>
               <p className="text-metadata text-muted-foreground">
-                Most recent uploads first. Compare timing, host coverage, and findings without
-                scanning across two-column cards.
+                Files dropped together form an upload batch and are counted in the first card;
+                files uploaded on their own are listed in the second. Most recent first. The
+                filters and tool chips apply to both.
               </p>
               {/* v2.86.2 — explicit "Showing N" hint so the page makes
                   it obvious whether you're looking at a partial or
@@ -1649,10 +1667,10 @@ export default function Scans() {
                   className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <Badge variant={toolFilter === '' ? 'default' : 'outline'}>
-                    All: {scans.length}
+                    All: {(inventorySummary?.total_files ?? scans.length).toLocaleString()}
                   </Badge>
                 </button>
-                {orderedToolGroups.map((group) => {
+                {toolChips.map(([group, count]) => {
                   const active = toolFilter.toLowerCase() === group.toLowerCase();
                   return (
                     <button
@@ -1661,10 +1679,10 @@ export default function Scans() {
                       onClick={() => setToolFilter(active ? '' : group)}
                       aria-pressed={active}
                       className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      title={active ? `Clear ${group} filter` : `Show only ${group} scans`}
+                      title={active ? `Clear ${group} filter` : `Show only ${group} files (batched files included)`}
                     >
                       <Badge variant={active ? 'default' : 'outline'}>
-                        {group}: {groupedScans[group].length}
+                        {group}: {count.toLocaleString()}
                       </Badge>
                     </button>
                   );
@@ -1734,6 +1752,15 @@ export default function Scans() {
             </Card>
           ) : (
           <Card>
+            {batches.length > 0 && (
+              <div className="border-b border-border px-md py-sm">
+                <p className="text-metadata font-semibold">Individual uploads</p>
+                <p className="text-caption text-muted-foreground">
+                  Files uploaded on their own. Batch files are not repeated here unless you list
+                  batch files individually.
+                </p>
+              </div>
+            )}
             <CardContent className="p-0">
               <Table>
                 <TableHeader>

@@ -36,7 +36,7 @@ describe('ScanBatchList', () => {
     expect(screen.getByText('Recon session #3')).toBeInTheDocument();
     expect(screen.getByText('312')).toBeInTheDocument();
     expect(screen.getByText('+850 new')).toBeInTheDocument();
-    expect(screen.getByText('4 still parsing')).toBeInTheDocument();
+    expect(screen.getByText('4 processing')).toBeInTheDocument();
     expect(screen.getByText('1 failed')).toBeInTheDocument();
     expect(getScans).not.toHaveBeenCalled();
   });

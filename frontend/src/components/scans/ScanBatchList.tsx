@@ -56,18 +56,28 @@ export default function ScanBatchList({ batches, filters, onViewScan, className 
 
   return (
     <Card className={className}>
+      {/* v5.226.0 — labelled for what it holds (second /scans design review). */}
+      <div className="border-b border-border px-md py-sm">
+        <p className="text-metadata font-semibold">Upload batches</p>
+        <p className="text-caption text-muted-foreground">
+          Files dropped together. What their files added is counted here, not in the individual
+          uploads below; expand a batch for its files.
+        </p>
+      </div>
       <CardContent className="p-0">
         <div className="overflow-x-auto">
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[34%]">Upload batch</TableHead>
-                <TableHead className="w-[12%]">Files</TableHead>
-                <TableHead className="w-[14%]" title="Distinct hosts the files observed, and how many they first discovered">
-                  Hosts
+                <TableHead className="w-[14%]" title="Imported files matching the page filters, of every file the batch imported; then what is still landing or failed">
+                  Files
                 </TableHead>
-                <TableHead className="w-[10%]" title="Open-port observations across the files">
-                  Open ports
+                <TableHead className="w-[14%]" title="Unique hosts the matching files observed, and how many they first discovered">
+                  Unique hosts
+                </TableHead>
+                <TableHead className="w-[10%]" title="Open-port observations across the matching files. Observations, not distinct ports: a port seen by two files counts twice.">
+                  Port observations
                 </TableHead>
                 <TableHead className="w-[18%]">Uploaded</TableHead>
                 <TableHead className="w-[12%]">
@@ -105,13 +115,32 @@ export default function ScanBatchList({ batches, filters, onViewScan, className 
                         </div>
                       </TableCell>
                       <TableCell>
-                        <p className="tabular-nums">{b.files.toLocaleString()}</p>
-                        {b.pending_files > 0 && (
-                          <p className="text-caption text-muted-foreground">{b.pending_files} still parsing</p>
-                        )}
-                        {b.failed_files > 0 && (
-                          <p className="text-caption text-destructive">{b.failed_files} failed</p>
-                        )}
+                        {(() => {
+                          const total = b.total_files ?? b.files;
+                          const processing = b.processing_files ?? b.pending_files;
+                          return (
+                            <>
+                              <p className="tabular-nums">
+                                {b.files.toLocaleString()}
+                                {total > b.files && (
+                                  <span className="text-caption text-muted-foreground"> matching of {total.toLocaleString()}</span>
+                                )}
+                              </p>
+                              {total > 0 && total === b.files && (
+                                <p className="text-caption text-muted-foreground">{total.toLocaleString()} imported</p>
+                              )}
+                              {processing > 0 && (
+                                <p className="text-caption text-muted-foreground">{processing} processing</p>
+                              )}
+                              {b.failed_files > 0 && (
+                                <p className="text-caption text-destructive">{b.failed_files} failed</p>
+                              )}
+                              {total === 0 && processing === 0 && b.failed_files === 0 && (
+                                <p className="text-caption text-muted-foreground">nothing imported</p>
+                              )}
+                            </>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <p className="tabular-nums">{b.hosts.toLocaleString()}</p>
