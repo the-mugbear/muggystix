@@ -526,7 +526,7 @@ const FindingDetail: React.FC = () => {
                             </SelectContent>
                           </Select>
                         ) : (
-                          <Badge variant={h.host_status === 'open' ? 'warning' : h.host_status === 'remediated' ? 'success' : 'info'}>
+                          <Badge variant={h.host_status === 'open' ? 'warning' : h.host_status === 'remediated' ? 'success' : h.host_status === 'false_positive' ? 'outline' : 'info'}>
                             {ENDPOINT_STATUS_LABEL[h.host_status] ?? h.host_status}
                           </Badge>
                         )}

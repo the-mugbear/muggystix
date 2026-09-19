@@ -370,6 +370,103 @@ class FindingService:
         self.db.flush()
         return finding
 
+    def dismiss_vulnerability_on_host(
+        self,
+        *,
+        vuln,
+        project_id: int,
+        actor_id: Optional[int],
+        severity: Optional[str] = None,
+        owner_id: Optional[int] = None,
+        summary: Optional[str] = None,
+    ) -> Finding:
+        """v2.360.0 — "false positive HERE": the judgment is about this host's
+        observation, so it lands on this host's endpoint row and nowhere else.
+
+        ``promote_vulnerability(status='false_positive')`` dismisses the ISSUE:
+        one finding, attached to every host that carries it.  A backported
+        package on one server says nothing about the others, and an analyst in
+        one host's inspector had no way to say only that.
+
+        * No finding for the issue yet → one is created ``false_positive`` and
+          attached to THIS host only.  Nothing is asserted about other hosts;
+          a later promotion from one of them finds this finding by its issue
+          key, attaches the rest as ``open`` and re-dispositions the finding —
+          while this endpoint keeps its own ``false_positive``.
+        * A finding exists → this host is attached if it was not, its endpoint
+          rows become ``false_positive``, and the FINDING'S status is left
+          alone: it is the issue's, and the issue was not re-judged.
+        """
+        raw = severity or getattr(vuln.severity, "value", vuln.severity) or "medium"
+        sev = "info" if str(raw).lower() == "unknown" else str(raw).lower()
+        validate_severity(sev)
+        key = issue_key_for(vuln)
+
+        finding = (
+            self.db.query(Finding)
+            .filter(Finding.vuln_id == vuln.id, Finding.source == FindingSource.SCANNER.value)
+            .first()
+        )
+        if finding is None and key and not key.startswith("row:"):
+            finding = (
+                self.db.query(Finding)
+                .filter(
+                    Finding.project_id == project_id,
+                    Finding.source == FindingSource.SCANNER.value,
+                    Finding.dedup_key == key,
+                )
+                .first()
+            )
+        created = finding is None
+        if created:
+            finding = Finding(
+                project_id=project_id,
+                title=(vuln.title or "Vulnerability")[:500],
+                severity=sev,
+                status=FindingStatus.FALSE_POSITIVE.value,
+                source=FindingSource.SCANNER.value,
+                owner_id=owner_id or actor_id,
+                vuln_id=vuln.id,
+                dedup_key=key,
+                created_by_id=actor_id,
+            )
+            self.db.add(finding)
+            self.db.flush()
+        self.attach_vulnerability(finding=finding, vuln=vuln)
+        self._attach_hosts(finding, [vuln.host_id], names_by_host=self._vuln_names_by_host(vuln))
+        self.db.flush()
+
+        rows = (
+            self.db.query(FindingHost)
+            .filter(FindingHost.finding_id == finding.id, FindingHost.host_id == vuln.host_id)
+            .all()
+        )
+        host = self.db.query(Host.ip_address).filter(Host.id == vuln.host_id).first()
+        label = host[0] if host else f"host {vuln.host_id}"
+        changed = False
+        for row in rows:
+            if row.host_status != FindingHostStatus.FALSE_POSITIVE.value:
+                row.host_status = FindingHostStatus.FALSE_POSITIVE.value
+                changed = True
+        reason = f": {summary}" if summary else ""
+        if created:
+            record_status_transition(
+                self.db, history_model=FindingStatusHistory, fk_field="finding_id",
+                entity_id=finding.id, from_status=None, to_status=finding.status,
+                changed_by_id=actor_id,
+                summary=f"Dismissed as false positive on {label} only{reason}",
+            )
+        elif changed:
+            # Same shape set_endpoint_status writes: the finding's status did
+            # not move, the endpoint's did, and the trail names the endpoint.
+            self.db.add(FindingStatusHistory(
+                finding_id=finding.id, from_status=finding.status, to_status=finding.status,
+                changed_by_id=actor_id,
+                summary=f"Endpoint {label}: false positive here{reason}",
+            ))
+        self.db.flush()
+        return finding
+
     def attach_vulnerability(self, *, finding: Finding, vuln) -> None:
         """Record a scanner row as evidence for this finding. Idempotent."""
         from app.db.models_findings import FindingVulnerability
@@ -503,7 +600,26 @@ class FindingService:
                 .scalar()
             ) or 0
 
+        host_ip = self.db.query(Host.ip_address).filter(Host.id == vuln.host_id).scalar()
+        host_endpoint_status = None
+        if existing is not None:
+            states = {
+                s for (s,) in self.db.query(FindingHost.host_status)
+                .filter(FindingHost.finding_id == existing.id, FindingHost.host_id == vuln.host_id)
+                .all()
+            }
+            if states:
+                # Several named endpoints on one host: false positive only
+                # when every one of them is.
+                host_endpoint_status = (
+                    FindingHostStatus.FALSE_POSITIVE.value
+                    if states == {FindingHostStatus.FALSE_POSITIVE.value}
+                    else sorted(states - {FindingHostStatus.FALSE_POSITIVE.value})[0]
+                )
+
         return {
+            "host_ip": str(host_ip) if host_ip is not None else None,
+            "host_endpoint_status": host_endpoint_status,
             "plugin_id": vuln.plugin_id,
             "issue_key": key,
             "affected_host_count": len(host_ids),

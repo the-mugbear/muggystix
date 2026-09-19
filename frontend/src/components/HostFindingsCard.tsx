@@ -18,7 +18,7 @@ import {
   listFindings,
   setFindingStatus,
 } from '../services/api';
-import { TERMINAL_STATUSES } from '../utils/findingStatus';
+import { ENDPOINT_STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -117,6 +117,23 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
             ) : (
               <span className="min-w-0 flex-1 truncate" title={f.title}>{f.title}</span>
             )}
+            {/* The selector beside this is the ISSUE's status. How the finding
+                stands on THIS host is its endpoint state — shown when it
+                differs from plain "open", so a finding confirmed elsewhere
+                does not read as confirmed here after a host-only dismissal. */}
+            {(() => {
+              const here = (f.hosts ?? []).filter((h) => h.host_id === hostId).map((h) => h.host_status);
+              if (here.length === 0) return null;
+              const state = here.every((s) => s === 'false_positive')
+                ? 'false_positive'
+                : here.find((s) => s !== 'open' && s !== 'false_positive') ?? 'open';
+              if (state === 'open') return null;
+              return (
+                <Badge variant={state === 'remediated' ? 'success' : state === 'false_positive' ? 'outline' : 'info'}>
+                  {ENDPOINT_STATUS_LABEL[state]}
+                </Badge>
+              );
+            })()}
             {canManage ? (
               <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
                 <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>

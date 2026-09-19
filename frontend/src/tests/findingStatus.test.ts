@@ -34,5 +34,10 @@ describe('describeEndpointStates', () => {
 
   it('labels an endpoint state as the host\'s, not the issue\'s', () => {
     expect(ENDPOINT_STATUS_LABEL.remediated).toBe('Remediated here');
+    expect(ENDPOINT_STATUS_LABEL.false_positive).toBe('False positive here');
+  });
+
+  it('counts a host-only false positive as that host\'s, not the finding\'s', () => {
+    expect(describeEndpointStates({ open: 2, false_positive: 1 }, 3)).toBe('open on 2 of 3 · 1 false positive there');
   });
 });

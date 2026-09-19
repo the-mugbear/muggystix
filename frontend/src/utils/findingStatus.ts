@@ -60,6 +60,8 @@ export const ENDPOINT_STATUS_LABEL: Record<FindingHostStatus, string> = {
   open: 'Open here',
   remediated: 'Remediated here',
   retest: 'Retest here',
+  // v5.238.0 — about this endpoint only; the finding's other hosts keep theirs.
+  false_positive: 'False positive here',
 };
 
 /**
@@ -75,10 +77,12 @@ export const describeEndpointStates = (
   const open = counts.open ?? 0;
   const remediated = counts.remediated ?? 0;
   const retest = counts.retest ?? 0;
+  const falsePositive = counts.false_positive ?? 0;
   if (open === total) return null;
   const parts: string[] = [`open on ${open} of ${total}`];
   if (remediated) parts.push(`${remediated} remediated`);
   if (retest) parts.push(`${retest} retest`);
+  if (falsePositive) parts.push(`${falsePositive} false positive there`);
   return parts.join(' · ');
 };
 

@@ -67,6 +67,13 @@ export interface HostVulnerability {
    *            another host, or from another scanner's wording). Promoting
    *            again only re-attaches evidence, so the UI must not invite it. */
   finding_match?: 'vuln' | 'issue' | null;
+  /** v5.238.0 — how that finding stands ON THIS HOST. A finding can hold a
+   *  host-only judgment, so its own status does not answer for every host:
+   *  this is this host's endpoint state, and `finding_on_this_host === false`
+   *  means the finding covers the issue on other hosts only — this row is
+   *  still untriaged here. */
+  finding_endpoint_status?: string | null;
+  finding_on_this_host?: boolean | null;
   first_seen: string | null;
   last_seen: string | null;
   solution: string | null;

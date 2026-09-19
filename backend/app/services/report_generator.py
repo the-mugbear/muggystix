@@ -39,6 +39,13 @@ import html
 
 logger = logging.getLogger(__name__)
 
+# Endpoint states that are not live work on that host.  ``false_positive``
+# (v2.360.0) is a host-only judgment: the finding may be confirmed elsewhere,
+# but it is not an active finding HERE, and must not be counted as one.
+_INACTIVE_ENDPOINT_STATES = frozenset({
+    FindingHostStatus.REMEDIATED.value, FindingHostStatus.FALSE_POSITIVE.value,
+})
+
 # Systemic spread classification (Phase 1) → report label. Falls back to the
 # legacy is_blind_spot boolean when an older/cached snapshot lacks the field.
 _SYSTEMIC_SPREAD_LABEL = {
@@ -280,7 +287,7 @@ class ReportGenerator:
                 .all()
             ):
                 d = _slot(host_id)
-                if host_status != FindingHostStatus.REMEDIATED.value:
+                if host_status not in _INACTIVE_ENDPOINT_STATES:
                     d["active"] += 1
                 if severity == "critical":
                     d["critical"] += 1
@@ -1346,7 +1353,7 @@ class ReportGenerator:
         active = 0
         for cf in canonical_findings:
             findings_by_severity[cf["severity"]] = findings_by_severity.get(cf["severity"], 0) + 1
-            if cf.get("host_status") != FindingHostStatus.REMEDIATED.value:
+            if cf.get("host_status") not in _INACTIVE_ENDPOINT_STATES:
                 active += 1
         open_notes = sum(1 for n in notes if (n.get("status") or "") not in ("resolved",))
         return {

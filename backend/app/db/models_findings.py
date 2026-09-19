@@ -60,6 +60,11 @@ class FindingHostStatus(str, enum.Enum):
     OPEN = "open"
     REMEDIATED = "remediated"
     RETEST = "retest"
+    # v2.360.0 — the issue does not apply to THIS endpoint (a backported
+    # package, a scanner misfire here).  It says nothing about the finding's
+    # other hosts: dismissing one host's observation used to mark the issue a
+    # false positive on every host that carries it.
+    FALSE_POSITIVE = "false_positive"
 
 
 class Finding(Base):

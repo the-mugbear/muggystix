@@ -276,6 +276,13 @@ class HostVulnerability(BaseModel):
     finding_id: Optional[int] = None
     finding_status: Optional[str] = None
     finding_match: Optional[str] = None
+    # v2.360.0 — how that finding stands ON THIS HOST.  A finding can hold a
+    # host-only judgment ("false positive on this host"), so its own status no
+    # longer answers for every host: ``finding_endpoint_status`` is this host's
+    # endpoint state, and ``finding_on_this_host`` is False when the finding
+    # covers the issue on other hosts only — the row is still untriaged here.
+    finding_endpoint_status: Optional[str] = None
+    finding_on_this_host: Optional[bool] = None
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     solution: Optional[str] = None

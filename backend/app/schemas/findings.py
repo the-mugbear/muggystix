@@ -3,7 +3,7 @@
 In its own module rather than the already-large schemas.py.
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -90,6 +90,13 @@ class PromoteVulnerabilityRequest(BaseModel):
     # Optional triage rationale — recorded on the finding's disposition
     # history (esp. for a false-positive/accepted-risk dismissal).
     summary: Optional[str] = None
+    # v2.360.0 — how far a FALSE-POSITIVE dismissal reaches.  ``host`` (the
+    # default for ``status='false_positive'``): this host's endpoint only —
+    # the judgment was made in one host's inspector, about that host's
+    # observation.  ``issue``: the whole issue, every host that carries it
+    # (what every dismissal used to do).  Promotion and accepted-risk are
+    # about the issue and take ``issue`` only.
+    scope: Optional[Literal["host", "issue"]] = None
 
 
 class PromoteVulnerabilityPreview(BaseModel):
@@ -111,6 +118,11 @@ class PromoteVulnerabilityPreview(BaseModel):
     already_promoted: bool = False
     finding_id: Optional[int] = None
     finding_status: Optional[str] = None
+    # v2.360.0 — the inspected host, for the "this host only" choice: its
+    # address, and its endpoint state on the existing finding (null when the
+    # finding does not include this host, or there is no finding yet).
+    host_ip: Optional[str] = None
+    host_endpoint_status: Optional[str] = None
 
 
 class FindingCreateRequest(BaseModel):

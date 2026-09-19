@@ -455,6 +455,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [triagePreviewLoading, setTriagePreviewLoading] = useState(false);
   const [triageReason, setTriageReason] = useState('');
   const [triagePreviewRetry, setTriagePreviewRetry] = useState(0);
+  // v5.238.0 — how far a false-positive dismissal reaches.  It is made in ONE
+  // host's inspector about that host's observation, so it defaults to this
+  // host; marking the issue a false positive everywhere is an explicit choice.
+  const [triageScope, setTriageScope] = useState<'host' | 'issue'>('host');
+  const [dismissedHereVulns, setDismissedHereVulns] = useState<Record<number, boolean>>({});
 
   // Fetch the blast radius whenever a triage opens (or Retry is pressed).
   // The action reaches hosts other than this one, so without the preview the
@@ -477,19 +482,26 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     const reason = triageReason.trim();
     setVulnActionId(vulnId);
     try {
+      const hostOnly = intent === 'false_positive' && triageScope === 'host';
       const finding = await promoteVulnerability(vulnId, {
         status: intent,
         summary: reason || undefined,
+        // Sent explicitly for a dismissal, so what the dialog showed is what
+        // the server does whatever its default.
+        scope: intent === 'false_positive' ? triageScope : undefined,
       });
       // Scanner findings span every host with the same plugin — report it.
       const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
       toast.success(
         intent === 'confirmed'
           ? `Promoted to finding${span}: ${finding.title}`
-          : `Dismissed as false positive${span}: ${finding.title}`,
+          : hostOnly
+            ? `Dismissed as false positive on this host only: ${finding.title}`
+            : `Dismissed as false positive${span}: ${finding.title}`,
         { autoHideMs: 3000 },
       );
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
+      if (hostOnly) setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
       setFindingsRefresh((n) => n + 1);
       setTriageVuln(null);
       setTriageReason('');
@@ -501,6 +513,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   };
   const openTriage = (vulnId: number, title: string, intent: 'confirmed' | 'false_positive') => {
     setTriageReason('');
+    setTriageScope('host');
     setTriageVuln({ id: vulnId, title, intent });
   };
 
@@ -1970,11 +1983,64 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           </DialogHeader>
 
           <div className="space-y-sm">
+            {/* v5.238.0 — a dismissal is made in one host's inspector about
+                that host's observation: it defaults to THIS host.  Marking the
+                issue a false positive on every host is the explicit choice. */}
+            {triageVuln?.intent === 'false_positive' && triagePreview && (
+              <fieldset className="space-y-xxs">
+                <legend className="text-caption font-semibold text-foreground">Applies to</legend>
+                <label className="flex items-start gap-xs text-caption">
+                  <input
+                    type="radio" name="triage-scope" className="mt-[3px]"
+                    checked={triageScope === 'host'} onChange={() => setTriageScope('host')}
+                  />
+                  <span className="min-w-0 break-words">
+                    <strong>This host only</strong>
+                    {triagePreview.host_ip ? ` (${triagePreview.host_ip})` : ''} — the other hosts carrying
+                    this issue are left as they are.
+                  </span>
+                </label>
+                <label className="flex items-start gap-xs text-caption">
+                  <input
+                    type="radio" name="triage-scope" className="mt-[3px]"
+                    checked={triageScope === 'issue'} onChange={() => setTriageScope('issue')}
+                    disabled={triagePreview.affected_host_count <= 1}
+                  />
+                  <span className="min-w-0 break-words">
+                    <strong>
+                      All {triagePreview.affected_host_count} host{triagePreview.affected_host_count === 1 ? '' : 's'} carrying this issue
+                    </strong>
+                    {triagePreview.affected_host_count <= 1
+                      ? ' — no other host carries it.'
+                      : ' — the issue itself is a false positive (a scanner misfire, not something about this host).'}
+                  </span>
+                </label>
+              </fieldset>
+            )}
             {/* Blast-radius preview */}
             <div className="rounded-control border border-border bg-muted/30 p-sm text-caption">
               {triagePreviewLoading ? (
                 <span className="flex items-center gap-xs text-muted-foreground">
                   <Loader2 className="size-3.5 animate-spin" aria-hidden /> Checking affected hosts…
+                </span>
+              ) : triagePreview && triageVuln?.intent === 'false_positive' && triageScope === 'host' ? (
+                <span className="text-foreground">
+                  {triagePreview.already_promoted ? (
+                    <>
+                      Finding #{triagePreview.finding_id} already covers this issue. This marks{' '}
+                      <strong>{triagePreview.host_ip ?? 'this host'}</strong> a false positive on it; the
+                      finding stays <strong>{(triagePreview.finding_status ?? 'open').replace(/_/g, ' ')}</strong> for
+                      its other hosts.
+                    </>
+                  ) : (
+                    <>
+                      Records a false positive for <strong>{triagePreview.host_ip ?? 'this host'}</strong> only.
+                      {triagePreview.affected_host_count > 1 && (
+                        <> The other {triagePreview.affected_host_count - 1} host{triagePreview.affected_host_count - 1 === 1 ? '' : 's'} carrying
+                          this issue stay untriaged.</>
+                      )}
+                    </>
+                  )}
                 </span>
               ) : triagePreview ? (
                 triagePreview.already_promoted ? (
@@ -2276,6 +2342,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 expandedVulnIds={expandedVulnIds}
                 onToggleDescription={toggleVulnDescription}
                 promotedVulns={promotedVulns}
+                dismissedHereVulns={dismissedHereVulns}
                 vulnActionId={vulnActionId}
                 onTriage={openTriage}
                 onQueryHosts={handleQueryHosts}

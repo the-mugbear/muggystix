@@ -319,28 +319,53 @@ def serialize_host_detail(
     return serialized
 
 
+_NO_COVERAGE = {
+    "finding_id": None, "finding_status": None, "finding_match": None,
+    "finding_endpoint_status": None, "finding_on_this_host": None,
+}
+
+
 def _vuln_coverage(vuln: Vulnerability, coverage: Optional[dict]) -> dict:
+    """Which finding covers this scanner row, and how it stands ON THIS HOST.
+
+    v2.360.0 — a finding can now hold a host-only judgment ("false positive
+    on 10.0.0.5 only"), so the finding's own status no longer says how every
+    host's row stands: ``finding_endpoint_status`` is this host's endpoint
+    state, and ``finding_on_this_host`` is False when the finding covers the
+    issue on OTHER hosts but not this one — a row that is still untriaged
+    here, which used to read as already dismissed.
+    """
+    coverage = coverage or {}
+    endpoints = coverage.get("endpoints") if isinstance(coverage.get("endpoints"), dict) else None
+    by_key = coverage.get("by_key") if endpoints is not None else coverage
+
+    def _with_host(finding_id: int, status: str, match: str) -> dict:
+        if endpoints is None:
+            # No host context (a caller that only knows the issue map).
+            return {"finding_id": finding_id, "finding_status": status, "finding_match": match,
+                    "finding_endpoint_status": None, "finding_on_this_host": None}
+        return {
+            "finding_id": finding_id, "finding_status": status, "finding_match": match,
+            "finding_endpoint_status": endpoints.get(finding_id),
+            "finding_on_this_host": finding_id in endpoints,
+        }
+
     direct = vuln.promoted_findings[0] if vuln.promoted_findings else None
     if direct is not None:
-        return {
-            "finding_id": direct.id,
-            "finding_status": direct.status,
-            "finding_match": "vuln",
-        }
-    if coverage:
-        key = issue_key_for(vuln)
-        hit = coverage.get(key) if key else None
-        if hit:
-            return {
-                "finding_id": hit[0],
-                "finding_status": hit[1],
-                "finding_match": "issue",
-            }
-    return {"finding_id": None, "finding_status": None, "finding_match": None}
+        return _with_host(direct.id, direct.status, "vuln")
+    key = issue_key_for(vuln)
+    hit = by_key.get(key) if (by_key and key) else None
+    if hit:
+        return _with_host(hit[0], hit[1], "issue")
+    return dict(_NO_COVERAGE)
 
 
-def issue_coverage_map(db, project_id: int, vulns) -> dict:
+def issue_coverage_map(db, project_id: int, vulns, host_id: Optional[int] = None) -> dict:
     """``issue_key`` → ``(finding_id, status)`` for issues already promoted.
+
+    With ``host_id`` the result is ``{"by_key": …, "endpoints": {finding_id:
+    endpoint state on that host}}`` — one more grouped query — so a row can
+    say how the finding stands on THIS host (see ``_vuln_coverage``).
 
     A finding covers an ISSUE, not a scanner row: promoting a vuln attaches
     every project host carrying the same issue.  So the row an operator sees
@@ -356,18 +381,46 @@ def issue_coverage_map(db, project_id: int, vulns) -> dict:
         k for k in (issue_key_for(v) for v in vulns)
         if k and not k.startswith("row:")
     }
-    if not keys:
-        return {}
-    rows = (
-        db.query(Finding.dedup_key, Finding.id, Finding.status)
+    by_key: dict = {}
+    if keys:
+        rows = (
+            db.query(Finding.dedup_key, Finding.id, Finding.status)
+            .filter(
+                Finding.project_id == project_id,
+                Finding.source == FindingSource.SCANNER.value,
+                Finding.dedup_key.in_(keys),
+            )
+            .all()
+        )
+        by_key = {key: (fid, status) for key, fid, status in rows if key}
+    if host_id is None:
+        return by_key
+
+    from app.db.models_findings import FindingHost, FindingHostStatus
+
+    # Every scanner finding that includes this host — not only the ones found
+    # by issue key: a row promoted directly (Finding.vuln_id) needs its
+    # endpoint state too.
+    fp = FindingHostStatus.FALSE_POSITIVE.value
+    states: dict = {}
+    for fid, host_status in (
+        db.query(FindingHost.finding_id, FindingHost.host_status)
+        .join(Finding, Finding.id == FindingHost.finding_id)
         .filter(
+            FindingHost.host_id == host_id,
             Finding.project_id == project_id,
             Finding.source == FindingSource.SCANNER.value,
-            Finding.dedup_key.in_(keys),
         )
         .all()
-    )
-    return {key: (fid, status) for key, fid, status in rows if key}
+    ):
+        states.setdefault(fid, set()).add(host_status)
+    # Several named endpoints of one host on one finding: "false positive
+    # here" only when every one of them is; otherwise the live state wins.
+    endpoints = {
+        fid: (fp if s == {fp} else sorted(s - {fp})[0])
+        for fid, s in states.items()
+    }
+    return {"by_key": by_key, "endpoints": endpoints}
 
 
 def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None) -> dict:

@@ -25,12 +25,14 @@ export interface FindingHostInfo {
   // (inherited from the scanner row / plan entry); null = host-level.
   name_id?: number | null;
   fqdn?: string | null;
-  /** This endpoint's own state: open | remediated | retest.  The finding's
-   *  status is the issue's; this one is the host's (v5.225.0). */
+  /** This endpoint's own state: open | remediated | retest | false_positive.
+   *  The finding's status is the issue's; this one is the host's (v5.225.0). */
   host_status: FindingHostStatus;
 }
 
-export type FindingHostStatus = 'open' | 'remediated' | 'retest';
+/** `false_positive` (v5.238.0): the issue does not apply to THIS endpoint —
+ *  it says nothing about the finding's other hosts. */
+export type FindingHostStatus = 'open' | 'remediated' | 'retest' | 'false_positive';
 
 export interface Finding {
   id: number;
@@ -249,6 +251,10 @@ export interface PromoteVulnerabilityPreview {
   already_promoted: boolean;
   finding_id: number | null;
   finding_status: string | null;
+  /** v5.238.0 — the inspected host, for the "this host only" choice, and its
+   *  endpoint state on the existing finding (null = not on it / no finding). */
+  host_ip?: string | null;
+  host_endpoint_status?: string | null;
 }
 
 // Blast radius of promoting a vuln (read-only) — how many project hosts carry
@@ -269,7 +275,16 @@ export const previewPromoteVulnerability = async (
 // dismisses it. Idempotent per vuln.
 export const promoteVulnerability = async (
   vulnId: number,
-  payload: { severity?: string; status?: FindingStatus; owner_id?: number; summary?: string } = {},
+  payload: {
+    severity?: string;
+    status?: FindingStatus;
+    owner_id?: number;
+    summary?: string;
+    /** How far a false-positive dismissal reaches: `host` (the server's
+     *  default) = this host's endpoint only; `issue` = every host carrying
+     *  it. Promotion and accepted risk are always about the issue. */
+    scope?: 'host' | 'issue';
+  } = {},
 ): Promise<Finding> => {
   const response = await api.post<Finding>(
     `${p()}/vulnerabilities/${vulnId}/promote`,

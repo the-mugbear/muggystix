@@ -322,3 +322,103 @@ def test_vuln_promote_preview_blast_radius(client, db_session, test_project, tes
     again = client.get(f"{base}/promote-preview").json()
     assert again["already_promoted"] is True
     assert again["finding_id"] == promoted.json()["id"]
+
+
+# ---------------------------------------------------------------------------
+# v2.360.0 — "false positive HERE": a dismissal is about one host's observation
+# ---------------------------------------------------------------------------
+
+def _shared_issue(db_session, project, ips=("10.30.0.1", "10.30.0.2", "10.30.0.3")):
+    from app.db.models import Scan
+    from app.db.models_vulnerability import (
+        Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
+    )
+    scan = Scan(project_id=project.id, filename="nessus.xml", tool_name="nessus")
+    db_session.add(scan)
+    db_session.flush()
+    hosts, vulns = [], []
+    for ip in ips:
+        h = _make_host(db_session, project.id, ip)
+        v = Vulnerability(
+            host_id=h.id, scan_id=scan.id, plugin_id="77777", title="OpenSSH < 9.3 multiple issues",
+            severity=VulnerabilitySeverity.HIGH, source=VulnerabilitySource.NESSUS,
+        )
+        db_session.add(v)
+        hosts.append(h)
+        vulns.append(v)
+    db_session.commit()
+    return hosts, vulns
+
+
+def _row_on(client, project, host, vuln):
+    detail = client.get(f"/api/v1/projects/{project.id}/hosts/{host.id}").json()
+    return next(v for v in detail["vulnerabilities"] if v["id"] == vuln.id)
+
+
+def test_false_positive_dismissal_is_about_this_host_by_default(client, db_session, test_project, test_user):
+    """Dismissing one host's observation created ONE false_positive finding
+    attached to every host carrying the issue — a backported package on one
+    server marked the issue a false positive on all of them."""
+    hosts, vulns = _shared_issue(db_session, test_project)
+    base = f"/api/v1/projects/{test_project.id}/vulnerabilities"
+
+    r = client.post(f"{base}/{vulns[0].id}/promote",
+                    json={"vuln_id": vulns[0].id, "status": "false_positive", "summary": "backported on this box"})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == "false_positive"
+    assert [h["ip_address"] for h in body["hosts"]] == ["10.30.0.1"]
+    assert body["hosts"][0]["host_status"] == "false_positive"
+    assert body["endpoint_status_counts"] == {"false_positive": 1}
+
+    # Host 1's row is dismissed here; host 2's is UNTRIAGED — the finding
+    # covers the issue on another host only, so it must not read as dismissed.
+    here = _row_on(client, test_project, hosts[0], vulns[0])
+    assert (here["finding_on_this_host"], here["finding_endpoint_status"]) == (True, "false_positive")
+    there = _row_on(client, test_project, hosts[1], vulns[1])
+    assert there["finding_id"] == body["id"] and there["finding_on_this_host"] is False
+    assert there["finding_endpoint_status"] is None
+
+    # Confirming from host 2 later is about the ISSUE: every host attaches, the
+    # finding is confirmed — and host 1 keeps its own judgment.
+    r2 = client.post(f"{base}/{vulns[1].id}/promote", json={"vuln_id": vulns[1].id})
+    assert r2.status_code == 201, r2.text
+    confirmed = r2.json()
+    assert confirmed["id"] == body["id"] and confirmed["status"] == "confirmed"
+    states = {h["ip_address"]: h["host_status"] for h in confirmed["hosts"]}
+    assert states == {"10.30.0.1": "false_positive", "10.30.0.2": "open", "10.30.0.3": "open"}
+    assert _row_on(client, test_project, hosts[0], vulns[0])["finding_endpoint_status"] == "false_positive"
+    assert _row_on(client, test_project, hosts[2], vulns[2])["finding_endpoint_status"] == "open"
+
+
+def test_host_only_dismissal_leaves_a_confirmed_finding_confirmed(client, db_session, test_project, test_user):
+    hosts, vulns = _shared_issue(db_session, test_project)
+    base = f"/api/v1/projects/{test_project.id}/vulnerabilities"
+    finding_id = client.post(f"{base}/{vulns[0].id}/promote", json={"vuln_id": vulns[0].id}).json()["id"]
+
+    preview = client.get(f"{base}/{vulns[2].id}/promote-preview").json()
+    assert (preview["host_ip"], preview["host_endpoint_status"]) == ("10.30.0.3", "open")
+
+    r = client.post(f"{base}/{vulns[2].id}/promote",
+                    json={"vuln_id": vulns[2].id, "status": "false_positive", "scope": "host", "summary": "not reachable"})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["id"] == finding_id
+    assert body["status"] == "confirmed"          # the issue was not re-judged
+    assert body["endpoint_status_counts"] == {"open": 2, "false_positive": 1}
+    history = client.get(f"/api/v1/projects/{test_project.id}/findings/{finding_id}").json()
+    assert client.get(f"{base}/{vulns[2].id}/promote-preview").json()["host_endpoint_status"] == "false_positive"
+    assert history["status"] == "confirmed"
+
+
+def test_issue_wide_dismissal_is_still_available_and_explicit(client, db_session, test_project, test_user):
+    _hosts, vulns = _shared_issue(db_session, test_project)
+    base = f"/api/v1/projects/{test_project.id}/vulnerabilities"
+    r = client.post(f"{base}/{vulns[0].id}/promote",
+                    json={"vuln_id": vulns[0].id, "status": "false_positive", "scope": "issue", "summary": "scanner misfire"})
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "false_positive" and r.json()["host_count"] == 3
+
+    # Promotion is about the issue: it has no host-only form.
+    bad = client.post(f"{base}/{vulns[1].id}/promote", json={"vuln_id": vulns[1].id, "scope": "host"})
+    assert bad.status_code == 422

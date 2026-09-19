@@ -238,11 +238,29 @@ def promote_vulnerability(
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerability not found in this project")
     resolve_project_assignee(db, project.id, body.owner_id)
-    finding = FindingService(db).promote_vulnerability(
-        vuln=vuln, project_id=project.id, actor_id=current_user.id,
-        severity=body.severity, status=body.status or FindingStatus.CONFIRMED.value,
-        owner_id=body.owner_id, summary=body.summary,
-    )
+    status = body.status or FindingStatus.CONFIRMED.value
+    # v2.360.0 — a false-positive dismissal is about THIS host unless the
+    # caller says the whole issue; everything else is about the issue.
+    is_fp = status == FindingStatus.FALSE_POSITIVE.value
+    scope = body.scope or ("host" if is_fp else "issue")
+    if scope == "host" and not is_fp:
+        raise HTTPException(
+            status_code=422,
+            detail="scope='host' applies to a false_positive dismissal only; "
+                   "promotion and accepted risk are about the issue on every host.",
+        )
+    svc = FindingService(db)
+    if scope == "host":
+        finding = svc.dismiss_vulnerability_on_host(
+            vuln=vuln, project_id=project.id, actor_id=current_user.id,
+            severity=body.severity, owner_id=body.owner_id, summary=body.summary,
+        )
+    else:
+        finding = svc.promote_vulnerability(
+            vuln=vuln, project_id=project.id, actor_id=current_user.id,
+            severity=body.severity, status=status,
+            owner_id=body.owner_id, summary=body.summary,
+        )
     db.commit()
     return _serialize(_load(db, project, finding.id))
 

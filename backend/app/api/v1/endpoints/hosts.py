@@ -1397,7 +1397,7 @@ def get_host_v2(
     serialized = _serialize_host_detail(
         host, vuln_summary, follow_record, notes,
         attributions=attributions_for_host(db, host.id),
-        vuln_coverage=issue_coverage_map(db, project.id, host_vulnerabilities),
+        vuln_coverage=issue_coverage_map(db, project.id, host_vulnerabilities, host_id=host.id),
         vulnerabilities=host_vulnerabilities,
         # Queried by host_id rather than through a relationship — Host has no
         # `web_interfaces` relationship (it lives on Scan), which is why the
