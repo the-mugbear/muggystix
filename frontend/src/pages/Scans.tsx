@@ -62,6 +62,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
+import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import ScanBatchList, { SCAN_BATCH_LIMIT } from '../components/scans/ScanBatchList';
 import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
@@ -1934,126 +1935,32 @@ export default function Scans() {
         </div>
       )}
 
-      {/* Upload dialog */}
-      <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Upload scans</DialogTitle>
-          </DialogHeader>
-          {/* v5.219.2 — DialogBody scrolls inside the 85vh frame. Without it
-              the opened "Supported formats" list ran past the frame's
-              overflow-hidden edge and the tail of the list was unreadable. */}
-          <DialogBody className="flex flex-col gap-sm">
-            <div
-              {...getRootProps()}
-              aria-label="Scan file upload drop zone"
-              className={cn(
-                'flex flex-col items-center gap-xs rounded-panel border-2 border-dashed p-lg text-center transition-colors',
-                isDragActive
-                  ? 'cursor-pointer border-primary bg-accent'
-                  : 'cursor-pointer border-border hover:border-primary hover:bg-accent',
-              )}
-            >
-              <input {...getInputProps()} />
-              <Upload className="size-10 text-primary" aria-hidden />
-              <p className="text-subheading font-semibold">
-                {isDragActive ? 'Drop the files here…' : 'Drop files here'}
-              </p>
-              <p className="text-metadata text-muted-foreground">
-                Click to select one or more scan files.
-              </p>
-              <p className="text-caption text-muted-foreground break-words">
-                Accepted:{' '}
-                <span className="font-mono">{ACCEPTED_EXTENSION_LIST.join(' ')}</span>
-                {' '}· the tool is detected from the file&apos;s content and name.
-              </p>
-            </div>
-
-            {/* v5.215.0 — visible at the moment of the drop, remembered per
-                project. Nessus only; other formats ignore it. */}
-            <div className="flex items-start justify-between gap-sm rounded-panel border border-border p-sm">
-              <div className="min-w-0">
-                <Label htmlFor="skip-informational" className="text-metadata font-semibold">
-                  Skip informational Nessus findings
-                </Label>
-                <p className="text-caption text-muted-foreground">
-                  Severity-0 plugins (service detection, cipher lists, scan info) are not
-                  stored as findings. Open ports are still recorded from them, and the
-                  import result says how many were skipped. Applies to every upload into{' '}
-                  <strong>{currentProject?.name ?? 'this project'}</strong> until changed.
-                </p>
-              </div>
-              <Switch
-                id="skip-informational"
-                checked={skipInformational}
-                onCheckedChange={(v) => void handleSkipInformationalChange(v === true)}
-                disabled={savingSkipInformational}
-                aria-label="Skip informational Nessus findings"
-              />
-            </div>
-
-            {fileRejections.length > 0 && (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  {fileRejections.map(({ file, errors }) => (
-                    <div key={file.name} className="break-words">
-                      <strong>{file.name}</strong>: {errors.map((e) => e.message).join('; ')}
-                    </div>
-                  ))}
-                </AlertDescription>
-              </Alert>
-            )}
-
-            <Accordion type="single" collapsible>
-              <AccordionItem value="formats">
-                <AccordionTrigger>
-                  Supported formats ({SUPPORTED_FORMATS.length} tools)
-                </AccordionTrigger>
-                <AccordionContent>
-                  {/* One column: the two-column grid squeezed long tool names
-                      ("DirBuster / Gobuster / …") and descriptions into ~300px
-                      and clipped them. Every text node wraps. */}
-                  <ul className="flex flex-col divide-y divide-border">
-                    {SUPPORTED_FORMATS.map((item) => (
-                      <li
-                        key={`${item.tool}-${item.formats}`}
-                        className="flex min-w-0 flex-col gap-xxs py-xs"
-                      >
-                        <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs">
-                          <span className="text-metadata font-semibold break-words">{item.tool}</span>
-                          <span className="text-caption font-mono text-primary break-words">
-                            {item.formats}
-                          </span>
-                        </div>
-                        <p className="text-caption text-muted-foreground break-words">{item.desc}</p>
-                        {item.hint && (
-                          <p className="text-caption text-muted-foreground break-words">
-                            <span className="font-medium">Auto-detect:</span> {item.hint}
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-
-            {uploading && (
-              <Alert variant="info">
-                <AlertDescription>
-                  Uploads started — you can close this dialog and keep working. Progress continues
-                  in the banner below.
-                </AlertDescription>
-              </Alert>
-            )}
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUploadDialogOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Upload dialog — v5.229.0: choose → review formats → import → results
+          (staged-import plan, phase C). The dialog stages and inspects each
+          file; a started file is handed to the banner above by job id. */}
+      <UploadReviewDialog
+        open={uploadDialogOpen}
+        onOpenChange={setUploadDialogOpen}
+        projectName={currentProject?.name}
+        skipInformational={skipInformational}
+        savingSkipInformational={savingSkipInformational}
+        onSkipInformationalChange={(v) => void handleSkipInformationalChange(v)}
+        onViewScan={handleViewScan}
+        onStarted={(started) => {
+          setUploadProgress((prev) => ({
+            ...prev,
+            [started.key]: {
+              filename: started.filename,
+              percent: 100,
+              status: 'received',
+              startedAt: started.startedAt,
+              jobId: started.jobId,
+              batchId: started.batchId,
+            },
+          }));
+          setActiveJobIds((prev) => (prev.includes(started.jobId) ? prev : [...prev, started.jobId]));
+        }}
+      />
 
       {/* Delete confirmation */}
       <Dialog
