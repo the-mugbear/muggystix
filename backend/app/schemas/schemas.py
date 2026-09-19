@@ -874,6 +874,11 @@ class IngestionJobSchema(BaseModel):
     parser_warnings: Optional[str] = None
     # v2.332.0 — parser stopped early; see IngestionJob.partial.
     partial: bool = False
+    # v2.351.0 — the format chain (staged-import phase A).
+    detected_file_type: Optional[str] = None
+    format_override: Optional[str] = None
+    final_file_type: Optional[str] = None
+    source_tool: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

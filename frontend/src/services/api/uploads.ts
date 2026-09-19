@@ -248,6 +248,15 @@ export interface IngestionResultItem {
   completed_at: string | null;
   duration_seconds: number | null;
   progress: string | null;
+  /** v2.351.0 — the format chain: detected first, operator override (if
+   *  any), what actually parsed the file, and the tool they named. */
+  detected_file_type?: string | null;
+  detected_format_label?: string | null;
+  format_override?: string | null;
+  format_override_label?: string | null;
+  final_file_type?: string | null;
+  final_format_label?: string | null;
+  source_tool?: string | null;
   stats: {
     hosts_parsed: number;
     hosts_up: number;

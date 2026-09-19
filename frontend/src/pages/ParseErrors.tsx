@@ -645,6 +645,22 @@ const RowDetail: React.FC<{
       {item.scan_id != null && item.status === 'completed' && (
         <CompletedImportResult scanId={item.scan_id} />
       )}
+      {/* v5.227.0 — the format chain, so "how was this file read" is on
+          record: detected → override → parsed by. */}
+      {(item.final_format_label || item.detected_format_label || item.format_override_label) && (
+        <p className="text-caption text-muted-foreground">
+          {item.detected_format_label && (
+            <>Detected as <span className="text-foreground">{item.detected_format_label}</span></>
+          )}
+          {item.format_override_label && (
+            <>{item.detected_format_label ? ' · ' : ''}you chose <span className="text-foreground">{item.format_override_label}</span></>
+          )}
+          {item.final_format_label && (
+            <>{item.detected_format_label || item.format_override_label ? ' · ' : ''}parsed by <span className="text-foreground">{item.final_format_label}</span></>
+          )}
+          {item.source_tool && <> · source tool <span className="text-foreground">{item.source_tool}</span></>}
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-sm md:grid-cols-4">
         <Field label="Scan Type" value={safeFallback(item.scan_type)} />
         <Field label="Tool" value={safeFallback(item.tool_name)} />

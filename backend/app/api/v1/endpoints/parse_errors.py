@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.db import models
+from app.services.format_registry import format_label
 from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
@@ -80,6 +81,17 @@ class IngestionResultItem(BaseModel):
     completed_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
     progress: Optional[str] = None
+    # v2.351.0 — the format chain: what was detected first, what the
+    # operator chose instead (if anything), what actually parsed the file,
+    # and the tool they named.  Keys from app/services/format_registry.py,
+    # with their labels so the page need not know the registry.
+    detected_file_type: Optional[str] = None
+    detected_format_label: Optional[str] = None
+    format_override: Optional[str] = None
+    format_override_label: Optional[str] = None
+    final_file_type: Optional[str] = None
+    final_format_label: Optional[str] = None
+    source_tool: Optional[str] = None
     # Stats (populated for completed jobs)
     stats: Optional[IngestionResultStats] = None
     # Error info (populated for failed jobs)
@@ -311,6 +323,13 @@ def get_ingestion_results(
             completed_at=job.completed_at,
             duration_seconds=duration,
             progress=job.progress,
+            detected_file_type=job.detected_file_type,
+            detected_format_label=format_label(job.detected_file_type),
+            format_override=job.format_override,
+            format_override_label=format_label(job.format_override),
+            final_file_type=job.final_file_type,
+            final_format_label=format_label(job.final_file_type),
+            source_tool=job.source_tool,
         )
 
         # Attach stats for completed jobs

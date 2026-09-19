@@ -888,6 +888,14 @@ class IngestionJob(Base):
     # UNKNOWN number of hosts and adds one warning, so a count cannot carry
     # it.  A partial job must stay visibly partial in every list that shows it.
     partial = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # v2.351.0 — the format chain (staged-import phase A): what the
+    # dispatcher detected first, what the operator told it to use instead,
+    # what actually parsed the file, and the tool the operator named when
+    # the format does not reveal it.  Keys are app/services/format_registry.py.
+    detected_file_type = Column(String(64), nullable=True)
+    format_override = Column(String(64), nullable=True)
+    final_file_type = Column(String(64), nullable=True, index=True)
+    source_tool = Column(String(64), nullable=True)
     # v2.86.2 — operator-set "I've seen this" marker for failed jobs.
     # Pre-fix, failed jobs sat in the Ingestion Queue forever with no
     # action affordance so they read as a permanent error banner.  Now

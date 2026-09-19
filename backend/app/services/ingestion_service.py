@@ -18,6 +18,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Tuple, Type
 from uuid import uuid4
 
@@ -906,6 +907,8 @@ class IngestionService:
                 job.skipped_count = result.get("skipped_count", 0)
                 job.parser_warnings = result.get("parser_warnings")
                 job.partial = bool(result.get("partial", False))
+                # v2.351.0 — the parser that actually produced the scan.
+                job.final_file_type = result.get("final_file_type")
                 # Final import-count summary (e.g. "6 DNS records").  Only
                 # overwrite when the parser supplied one — streaming parsers
                 # (nmap) already left a meaningful "N hosts" in progress.
@@ -1036,6 +1039,16 @@ class IngestionService:
 
         sample = self._read_sample(storage_path)
         parsing_attempts = list(self._build_parsing_attempts(job, sample))
+        # v2.351.0 — record the chain.  What the dispatcher would try first
+        # is "detected"; an override replaces the attempt list with exactly
+        # the chosen parser (see _build_parsing_attempts), so a wrong choice
+        # fails visibly instead of another parser quietly taking over.
+        override = job.format_override or (job.options or {}).get("format_override")
+        job.detected_file_type = (
+            self._detect_without_override(job, sample) if override
+            else (parsing_attempts[0][0] if parsing_attempts else None)
+        )
+        db.commit()
         if not parsing_attempts:
             preview = sample[:4096]
             parse_error = log_parse_error(
@@ -1044,7 +1057,10 @@ class IngestionService:
                 file_content=preview,
                 error_type="format_error",
                 file_type="unknown",
-                custom_message="Unsupported file type or format.",
+                custom_message=(
+                    f"The chosen format '{override}' is not one this deployment can parse."
+                    if override else "Unsupported file type or format."
+                ),
                 project_id=job_project_id,
             )
             raise ParseFailure(
@@ -1071,6 +1087,7 @@ class IngestionService:
                     parser_class.__name__,
                     elapsed,
                 )
+                result["final_file_type"] = file_type
                 return result
             except ParseFailure:
                 # Cancellation / timeout is terminal for the whole job — it is
@@ -1101,6 +1118,11 @@ class IngestionService:
             error=last_error,
             error_type="parsing_error",
             file_type=parsing_attempts[0][0] if parsing_attempts else "unknown",
+            custom_message=(
+                f"The chosen format '{override}' did not parse this file. "
+                "Review the format and retry."
+                if override else None
+            ),
             project_id=job_project_id,
         )
         raise ParseFailure(
@@ -1109,6 +1131,18 @@ class IngestionService:
             error_id=parse_error.id,
             underlying_error=str(last_error) if last_error else None,
         )
+
+    def _detect_without_override(self, job: IngestionJob, sample: bytes) -> Optional[str]:
+        """What the dispatcher would have tried first had the operator not
+        chosen a format — recorded as ``detected_file_type`` beside the
+        override so the chain shows both."""
+        shadow = SimpleNamespace(
+            original_filename=job.original_filename, options=dict(job.options or {}),
+            format_override=None,
+        )
+        shadow.options.pop("format_override", None)
+        attempts = list(self._build_parsing_attempts(shadow, sample))
+        return attempts[0][0] if attempts else None
 
     def _execute_parser(
         self,
@@ -1315,6 +1349,24 @@ class IngestionService:
 
         filename = job.original_filename.lower()
         attempts: List[ParserDescriptor] = []
+
+        # v2.351.0 — an operator override is the whole attempt list: exactly
+        # the chosen parser, no fallback.  Falling through to another parser
+        # would be the silent format change the override exists to prevent.
+        # Only a real string counts: test doubles (MagicMock) answer every
+        # attribute with a truthy object, which must not read as an override.
+        override = getattr(job, "format_override", None)
+        if not isinstance(override, str) or not override:
+            opts = getattr(job, "options", None)
+            override = opts.get("format_override") if isinstance(opts, dict) else None
+        if isinstance(override, str) and override:
+            from app.services.format_registry import resolve_parser
+            resolved = resolve_parser(str(override))
+            if resolved is None:
+                logger.warning("Job %s: unknown format override %r", getattr(job, "id", "?"), override)
+                return []
+            parser_class, description = resolved
+            return [(str(override), parser_class, description)]
 
         if filename.endswith(".nessus") or (
             filename.endswith(".xml") and _cd.is_nessus_sample(sample)
