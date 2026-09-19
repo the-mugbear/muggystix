@@ -166,7 +166,7 @@ def enqueue_report_job(
         report_type=report_type,
         filters=filter_kwargs,
     )
-    service.enqueue_job(job.id)
+    service.enqueue_job(job.id, db=db)
     return job
 
 

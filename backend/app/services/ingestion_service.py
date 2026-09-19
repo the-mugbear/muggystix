@@ -429,7 +429,7 @@ class IngestionService:
             return DuplicateUploadError(job_id=job.id, filename=job.original_filename)
         return None
 
-    def enqueue_job(self, job_id: int) -> None:
+    def enqueue_job(self, job_id: int, db: Optional[Session] = None) -> None:
         """Mark a job as ready for processing.
 
         The job is already in ``queued`` status from ``create_job``.  The
@@ -438,17 +438,40 @@ class IngestionService:
         keep the upload endpoint interface unchanged and to send a
         ``pg_notify`` hint so the worker wakes up immediately instead of
         waiting for its next poll cycle.
+
+        **Pass the caller's ``db``** (v2.361.1).  Without it this opens a
+        SECOND pooled connection while the request still holds its own, so a
+        request needs two at once.  The staged-import dialog starts every
+        ready file in parallel; with more concurrent starts than the pool has
+        connections, each held one and waited for another — a pool deadlock
+        that froze the whole API (``/health`` included) for exactly
+        ``DB_POOL_TIMEOUT`` seconds, then "succeeded" because the failed
+        notify is swallowed below.  On the caller's session the notify rides
+        the connection the request already has; NOTIFY is delivered at commit.
         """
         self._cancelled.discard(job_id)
         try:
-            with _session_module.SessionLocal() as db:
+            if db is not None:
                 db.execute(text("SELECT pg_notify('ingestion_jobs', :jid)"), {"jid": str(job_id)})
                 db.commit()
+                return
+            with _session_module.SessionLocal() as own:
+                own.execute(text("SELECT pg_notify('ingestion_jobs', :jid)"), {"jid": str(job_id)})
+                own.commit()
         except Exception:
             # Notification is a performance hint, not required for correctness
-            # (the worker polls regardless) — so swallow, but log at DEBUG so a
-            # degraded DB here is visible in collect-logs.sh rather than silent.
-            logger.debug("pg_notify for ingestion job %s failed", job_id, exc_info=True)
+            # (the worker polls regardless) — so swallow.  WARNING, not DEBUG: this
+            # never fails on a healthy database, and at DEBUG a pool-exhaustion
+            # stall of DB_POOL_TIMEOUT seconds per request left nothing in the
+            # logs but slow 200s.
+            logger.warning("pg_notify for ingestion job %s failed", job_id, exc_info=True)
+            if db is not None:
+                # The caller's transaction is aborted by the failed statement;
+                # leave their session usable for the response.
+                try:
+                    db.rollback()
+                except Exception:
+                    logger.debug("rollback after failed pg_notify also failed", exc_info=True)
 
     def cancel_job(self, job_id: int) -> bool:
         """Request cancellation of a running job.
@@ -511,8 +534,9 @@ class IngestionService:
             retry_count = job.retry_count
             db.commit()
             logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, retry_count)
-        # Wake the worker immediately (same pg_notify hint as the upload path).
-        self.enqueue_job(job_id)
+            # Wake the worker immediately (same pg_notify hint as the upload
+            # path) — on THIS session, not a third connection.
+            self.enqueue_job(job_id, db=db)
         return "requeued"
 
     def update_heartbeat(

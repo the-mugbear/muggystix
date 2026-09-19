@@ -196,6 +196,12 @@ export default function Scans() {
       }
     >
   >({});
+  // The latest entries, readable outside a state updater (where the banner
+  // decides which finished files still need their import result), and the
+  // entries whose result has already been asked for.
+  const uploadProgressRef = useRef(uploadProgress);
+  uploadProgressRef.current = uploadProgress;
+  const resultRequestedRef = useRef<Set<string>>(new Set());
 
   const [activeJobIds, setActiveJobIds] = useState<number[]>([]);
   // v5.232.0 — a staged job picked from the queue for "Review and import".
@@ -749,6 +755,42 @@ export default function Scans() {
   // are keyed by upload key, so match on jobId.
   const applyJobsToUploadEntries = useCallback((jobs: IngestionJob[]) => {
     if (jobs.length === 0) return;
+
+    // v5.239.1 — the import results of the files that just finished, in ONE
+    // request.  This was a getScans() per finished file, issued from INSIDE
+    // the state updater below: a 30-file drop finishing together sent ~25
+    // identical-shaped requests in 300 ms, and an updater is not a place for
+    // side effects (React may run it more than once).  `requested` makes each
+    // file's result fetched once however many poll ticks report it complete.
+    const wanted: Array<{ key: string; scanId: number }> = [];
+    for (const [key, entry] of Object.entries(uploadProgressRef.current)) {
+      if (entry.jobId == null || entry.result || resultRequestedRef.current.has(key)) continue;
+      const job = jobs.find((j) => j.id === entry.jobId);
+      if (job?.status === 'completed' && job.scan_id != null) {
+        wanted.push({ key, scanId: job.scan_id });
+        resultRequestedRef.current.add(key);
+      }
+    }
+    if (wanted.length > 0) {
+      const ids = Array.from(new Set(wanted.map((w) => w.scanId)));
+      getScans(0, ids.length, { ids })
+        .then((rows) => {
+          const byId = new Map(rows.map((row) => [row.id, row]));
+          setUploadProgress((p) => {
+            let next = p;
+            for (const { key, scanId } of wanted) {
+              const row = byId.get(scanId);
+              if (row && next[key]) next = { ...next, [key]: { ...next[key], result: row } };
+            }
+            return next;
+          });
+        })
+        .catch(() => {
+          // Let a later poll tick try again rather than leave the rows blank.
+          wanted.forEach((w) => resultRequestedRef.current.delete(w.key));
+        });
+    }
+
     setUploadProgress((prev) => {
       let changed = false;
       const nextEntries = { ...prev };
@@ -774,16 +816,6 @@ export default function Scans() {
           const gaps = (job.skipped_count ?? 0) > 0 || !!job.partial;
           nextEntries[key] = { ...entry, status: gaps ? 'partial' : 'imported', jobMessage: job.message ?? null };
           changed = true;
-          if (job.scan_id != null) {
-            const scanId = job.scan_id;
-            getScans(0, 1, { ids: [scanId] })
-              .then((rows) => {
-                const row = rows[0];
-                if (!row) return;
-                setUploadProgress((p) => (p[key] ? { ...p, [key]: { ...p[key], result: row } } : p));
-              })
-              .catch(() => undefined);
-          }
         }
       }
       return changed ? nextEntries : prev;

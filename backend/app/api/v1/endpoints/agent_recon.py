@@ -781,8 +781,10 @@ async def upload_recon_output(
     db.commit()
     db.refresh(job)
 
-    # Kick the worker so the job starts as soon as possible.
-    ingestion_service.enqueue_job(job.id)
+    # Kick the worker so the job starts as soon as possible — on this
+    # request's session (an agent uploading a sweep's chunks in parallel hit
+    # the same two-connections-per-request pool deadlock as the review dialog).
+    ingestion_service.enqueue_job(job.id, db=db)
 
     return ReconUploadResponse(
         job_id=job.id,

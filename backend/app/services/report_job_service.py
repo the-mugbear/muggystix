@@ -78,19 +78,25 @@ class ReportJobService:
         db.refresh(job)
         return job
 
-    def enqueue_job(self, job_id: int) -> None:
+    def enqueue_job(self, job_id: int, db=None) -> None:
         """Best-effort pg_notify so the worker wakes immediately instead of
         waiting for its next poll.  The worker claims queued rows independently
-        of this hint, so a failed notify just delays pickup by one poll."""
-        db = _session_module.SessionLocal()
+        of this hint, so a failed notify just delays pickup by one poll.
+
+        Pass the caller's ``db`` (v2.361.1): opening a second pooled connection
+        while the request holds its own is what deadlocked the pool on the
+        ingestion queue (see ``IngestionService.enqueue_job``)."""
+        own = db is None
+        session = _session_module.SessionLocal() if own else db
         try:
-            db.execute(text("SELECT pg_notify('report_jobs', :jid)"), {"jid": str(job_id)})
-            db.commit()
+            session.execute(text("SELECT pg_notify('report_jobs', :jid)"), {"jid": str(job_id)})
+            session.commit()
         except Exception:
-            db.rollback()
-            logger.debug("pg_notify for report job %s failed", job_id, exc_info=True)
+            session.rollback()
+            logger.warning("pg_notify for report job %s failed", job_id, exc_info=True)
         finally:
-            db.close()
+            if own:
+                session.close()
 
     def retry_job(self, db, *, job_id: int, project_id: int) -> Optional[ReportJob]:
         """Re-queue a FAILED report job so the worker runs it again.
@@ -119,7 +125,7 @@ class ReportJobService:
             return None
         db.commit()
         db.refresh(job)
-        self.enqueue_job(job.id)
+        self.enqueue_job(job.id, db=db)
         return job
 
     def cancel_job(self, db, *, job_id: int, project_id: int) -> Optional[ReportJob]:

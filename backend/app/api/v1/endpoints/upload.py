@@ -166,7 +166,7 @@ async def upload_scan_file(
     )
 
     if not stage:
-        ingestion_service.enqueue_job(job.id)
+        ingestion_service.enqueue_job(job.id, db=db)
 
     return response
 
@@ -303,7 +303,9 @@ def start_ingestion_job(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    ingestion_service.enqueue_job(job.id)
+    # On the request's own session: a second pooled connection per request
+    # deadlocked the pool when the review dialog started every file at once.
+    ingestion_service.enqueue_job(job.id, db=db)
     return job
 
 
@@ -411,7 +413,7 @@ def reprocess_ingestion_job(
         raise HTTPException(status_code=422, detail=str(exc))
     except FileNotFoundError:
         raise HTTPException(status_code=409, detail="The uploaded file is no longer retained — re-upload it.")
-    ingestion_service.enqueue_job(new.id)
+    ingestion_service.enqueue_job(new.id, db=db)
     return new
 
 

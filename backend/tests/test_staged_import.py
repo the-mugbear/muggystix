@@ -157,6 +157,44 @@ def test_detection_does_not_construct_a_service_per_request(client, db_session, 
     assert r.json()["primary"] == "nmap_xml"
 
 
+def test_starting_a_job_uses_one_pooled_connection_not_two(client, db_session, test_project, monkeypatch):
+    """v2.361.1 — found in the logs of a 30-file drop: every ``/start`` took
+    exactly DB_POOL_TIMEOUT (30 s) and the whole API froze, ``/health``
+    included.  ``enqueue_job`` opened a SECOND pooled connection for its
+    pg_notify while the request still held its own; the review dialog starts
+    every ready file in parallel, so with more starts than the pool has
+    connections each held one and waited for another.  The notify now rides
+    the request's session: opening another one here is the regression."""
+    from app.db import session as session_module
+
+    job_id = _upload(client, test_project, NMAP_XML, "scan.xml", stage=True).json()["job_id"]
+
+    # COUNTED, not raised: enqueue_job swallows every exception (the notify is
+    # a hint), so a raising stub passes on the broken code too.
+    opened = []
+    real = session_module.SessionLocal
+
+    def _counting(*args, **kwargs):
+        opened.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(session_module, "SessionLocal", _counting)
+    r = client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/start", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "queued"
+    assert opened == [], "enqueue_job opened a second session while the request holds one"
+
+    # The same holds for a plain (unstaged) upload and for re-process.
+    direct = _upload(client, test_project, HOST_PORT_TEXT, "direct.txt", "text/plain")
+    assert direct.status_code == 200, direct.text
+    job = _job(db_session, job_id)
+    job.status = "completed"
+    db_session.commit()
+    again = client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/reprocess", json={})
+    assert again.status_code in (200, 201), again.text
+    assert opened == [], "an upload or re-process opened a second session"
+
+
 def test_discard_clears_a_staged_job_and_its_file(client, db_session, test_project):
     """v2.355.0 — a staged job the operator will not start can be cleared:
     the file goes, the row stays as a dismissed failure (out of the queue,
