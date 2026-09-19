@@ -75,6 +75,10 @@ class SinceLastVisit(BaseModel):
     new_host_count: int = 0
     new_critical_findings: int = 0
     new_high_findings: int = 0
+    # When these counts were taken.  The client hands it back to
+    # ``POST /workbench/seen`` so acknowledging covers the snapshot that was
+    # displayed, not whatever arrived between the load and the click.
+    as_of: Optional[datetime] = None
 
     @property
     def has_updates(self) -> bool:  # convenience, not serialized
@@ -100,6 +104,15 @@ class WorkbenchResponse(BaseModel):
     # v2.347.0 — engagement-wide: untouched hosts worth a look (design
     # review item 2), beneath the personal queue on My Work.
     investigate: InvestigationQueueResponse = Field(default_factory=InvestigationQueueResponse)
+    # True when the queue could not be computed: ``investigate`` is then an
+    # empty placeholder and must read as "unavailable", never as "no work".
+    investigate_unavailable: bool = False
+
+
+class MarkSeenRequest(BaseModel):
+    # ``SinceLastVisit.as_of`` of the snapshot being acknowledged.  Omitted
+    # (first-visit bootstrap, older clients) means "now".
+    as_of: Optional[datetime] = None
 
 
 class MarkSeenResponse(BaseModel):
@@ -124,6 +137,9 @@ def _get_cursor(db: Session, user_id: int, project_id: int) -> Optional[Operatio
 def _compute_since_last_visit(
     db: Session, user: User, project: Project,
 ) -> SinceLastVisit:
+    # Taken BEFORE the counts: anything landing mid-computation stays newer
+    # than the acknowledged snapshot and resurfaces on the next load.
+    as_of = datetime.now(timezone.utc)
     cursor = _get_cursor(db, user.id, project.id)
     last_viewed = cursor.last_viewed_at if cursor else None
     is_first = last_viewed is None
@@ -175,6 +191,7 @@ def _compute_since_last_visit(
         new_host_count=new_host_count,
         new_critical_findings=int(sev_counts.get("critical", 0)),
         new_high_findings=int(sev_counts.get("high", 0)),
+        as_of=as_of,
     )
 
 
@@ -205,12 +222,16 @@ def get_workbench(
     my_findings = compute_my_findings(db, current_user, project, limit=15)
     team_review = compute_team_review(db, current_user, project, limit=500)
     since = _compute_since_last_visit(db, current_user, project)
+    investigate_unavailable = False
     try:
         investigate = compute_investigation_queue(db, project, limit=25)
     except Exception:
-        # The personal queue must not go down with the engagement-wide one.
+        # The personal queue must not go down with the engagement-wide one —
+        # but say so: an empty queue reads as "every host has been touched".
         logger.exception("investigation queue failed for project %s", project.id)
+        db.rollback()
         investigate = InvestigationQueueResponse()
+        investigate_unavailable = True
 
     return WorkbenchResponse(
         my_queue=my_queue,
@@ -221,33 +242,43 @@ def get_workbench(
         team_review=team_review,
         since_last_visit=since,
         investigate=investigate,
+        investigate_unavailable=investigate_unavailable,
     )
 
 
 @router.post(
     "/seen",
     response_model=MarkSeenResponse,
-    summary="Advance the caller's Operations 'since last visit' cursor to now",
+    summary="Advance the caller's Operations 'since last visit' cursor to the acknowledged snapshot",
 )
 def mark_workbench_seen(
+    body: Optional[MarkSeenRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Upsert the caller's cursor for this project to the current time.
+    """Upsert the caller's cursor for this project.
 
-    Idempotent: one row per (user, project); subsequent calls just move
-    the timestamp forward.
+    With ``as_of`` the cursor moves to the snapshot the caller was shown, so
+    changes that arrived after the summary loaded are not acknowledged unseen;
+    without it, to the current time.  Never later than now, never backwards
+    (the upsert is monotonic).  Idempotent: one row per (user, project).
     """
     now = datetime.now(timezone.utc)
+    target = now
+    if body is not None and body.as_of is not None:
+        as_of = body.as_of
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
+        target = min(as_of, now)
     # Race-safe upsert (review #9) — concurrent first-time visits across
     # tabs/devices would otherwise collide on the unique constraint.
     upsert_user_project_cursor(
         db, OperationsCursor,
         user_id=current_user.id, project_id=project.id,
-        ts_column="last_viewed_at", ts_value=now,
+        ts_column="last_viewed_at", ts_value=target,
     )
-    return MarkSeenResponse(last_viewed_at=now)
+    return MarkSeenResponse(last_viewed_at=target)
 
 
 @router.get(

@@ -10,21 +10,21 @@ import { changesSinceReview, freshnessFacts, portFreshness } from '../utils/evid
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
 describe('portFreshness', () => {
-  it('flags a port the latest sweep did not see open', () => {
+  it('flags a port that newer host evidence did not revalidate', () => {
     const f = portFreshness({ last_seen: daysAgo(10), first_seen: daysAgo(40) }, daysAgo(1));
-    expect(f.notInLatestScan).toBe(true);
+    expect(f.notRevalidated).toBe(true);
     expect(f.seen).toBeTruthy();
   });
 
   it('a port seen in the same sweep as the host is current', () => {
     const host = daysAgo(1);
     const port = new Date(new Date(host).getTime() - 5 * 60_000).toISOString(); // 5 minutes earlier
-    expect(portFreshness({ last_seen: port, first_seen: port }, host).notInLatestScan).toBe(false);
+    expect(portFreshness({ last_seen: port, first_seen: port }, host).notRevalidated).toBe(false);
   });
 
   it('says nothing when either side is unknown', () => {
-    expect(portFreshness({ last_seen: null, first_seen: null }, daysAgo(1))).toEqual({ seen: null, notInLatestScan: false });
-    expect(portFreshness({ last_seen: daysAgo(3), first_seen: null }, null).notInLatestScan).toBe(false);
+    expect(portFreshness({ last_seen: null, first_seen: null }, daysAgo(1))).toEqual({ seen: null, notRevalidated: false });
+    expect(portFreshness({ last_seen: daysAgo(3), first_seen: null }, null).notRevalidated).toBe(false);
   });
 });
 

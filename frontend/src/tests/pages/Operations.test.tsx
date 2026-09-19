@@ -315,4 +315,63 @@ describe('Operations page', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/recon/runs');
     expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
   });
+
+  describe('since your last visit', () => {
+    const since = {
+      last_viewed_at: '2026-09-01T00:00:00Z',
+      is_first_visit: false,
+      new_scan_count: 2,
+      latest_scan_id: 9,
+      latest_scan_filename: 'sweep.xml',
+      latest_scan_created_at: '2026-09-18T00:00:00Z',
+      new_host_count: 3,
+      new_critical_findings: 0,
+      new_high_findings: 0,
+      as_of: '2026-09-19T08:00:00+00:00',
+    };
+    const workbench = (s: Record<string, unknown>) => ({
+      my_queue: { items: [], in_review_count: 0, watching_count: 0 },
+      my_tasks: { items: [], total_open: 0, reason_counts: { assigned: 0, in_review: 0, triage: 0 } },
+      team_review: { reviewers: [], total_hosts_in_review: 0 },
+      since_last_visit: s,
+    });
+    let restore: unknown;
+    beforeEach(async () => {
+      restore = await mockedApi.getWorkbench();
+      mockedApi.getWorkbench.mockClear();
+      mockedApi.getWorkbench.mockResolvedValue(workbench(since));
+    });
+    afterEach(() => {
+      mockedApi.getWorkbench.mockResolvedValue(restore);
+      mockedApi.markWorkbenchSeen.mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' });
+    });
+
+    it('acknowledges the snapshot that was displayed, not the time of the click', async () => {
+      renderPage();
+      fireEvent.click(await screen.findByRole('button', { name: /Acknowledge updates/ }));
+      await waitFor(() => expect(mockedApi.markWorkbenchSeen).toHaveBeenCalledWith(since.as_of));
+      await waitFor(() => expect(screen.queryByText('Since your last visit')).not.toBeInTheDocument());
+      // "Mark reviewed" claimed a review nobody did.
+      expect(screen.queryByRole('button', { name: /Mark reviewed/ })).not.toBeInTheDocument();
+    });
+
+    it('keeps the banner and says so when the acknowledgement cannot be saved', async () => {
+      mockedApi.markWorkbenchSeen.mockRejectedValue(new Error('offline'));
+      renderPage();
+      fireEvent.click(await screen.findByRole('button', { name: /Acknowledge updates/ }));
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(screen.getByText('Since your last visit')).toBeInTheDocument();
+    });
+  });
+
+  it('page Refresh also refetches the self-fetching Runs and Recent activity panels', async () => {
+    renderPage();
+    await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledTimes(1));
+    const refresh = await screen.findByRole('button', { name: /^Refresh$/ });
+    await waitFor(() => expect(refresh).not.toBeDisabled());
+    fireEvent.click(refresh);
+    await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledTimes(2));
+  });
 });

@@ -286,23 +286,36 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
   const { hasPermission } = useAuth();
   const canStartRecon = hasPermission('analyst');
   if (!data || data.scopes.length === 0) return null;
-  const stale = data.scopes.filter((s) => s.is_stale);
+  // A scope's date is its NEWEST host observation, so one fresh host used to
+  // make a largely stale scope read as current. List a scope when any of its
+  // hosts is past the window, and say how many the date actually speaks for.
+  const partlyStale = (s: StalenessResponse['scopes'][number]) =>
+    (s.host_count ?? 0) > 0 && (s.recent_host_count ?? 0) < (s.host_count ?? 0);
+  const stale = data.scopes.filter((s) => s.is_stale || partlyStale(s));
+  const staleHostsLabel = (s: StalenessResponse['scopes'][number]): string => {
+    if (!s.last_activity_at) return 'no hosts discovered';
+    if (s.host_count == null) return `last seen by a scan ${s.days_since}d ago`;
+    return `${(s.recent_host_count ?? 0).toLocaleString()} of ${s.host_count.toLocaleString()} hosts seen in the last ${data.stale_days}d · newest ${s.days_since}d ago`;
+  };
   return (
     <>
     <Card className="mb-md">
       <CardContent className="p-md">
         <h2 className="text-subheading font-semibold">Scan freshness</h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          How recent each scope's scan evidence is — scopes whose hosts haven't been seen by a scan
-          in over {data.stale_days} days are due for a re-scan. This tracks the age of the data, not
+          How recent each scope's scan evidence is — a scope with hosts no scan has seen
+          in over {data.stale_days} days is due for a re-scan. This tracks the age of the data, not
           the scope itself (scope definitions don't change).
         </p>
         <div className="mb-sm flex flex-wrap items-center gap-xs">
-          <Badge variant={data.project_is_stale ? 'warning' : 'success'}>
+          {/* Not green: a recent upload says nothing about how much it covered. */}
+          <Badge variant={data.project_is_stale ? 'warning' : 'outline'}>
             {data.latest_scan_at ? `Last scan ${data.days_since_last_scan}d ago` : 'No scans yet'}
           </Badge>
-          <Badge variant={data.stale_scope_count > 0 ? 'warning' : 'outline'}>
-            {data.stale_scope_count} due for re-scan
+          <Badge variant={stale.length > 0 ? 'warning' : 'success'}>
+            {stale.length > 0
+              ? `${stale.length} of ${data.scopes.length} scopes with hosts past ${data.stale_days}d`
+              : `every scoped host seen in the last ${data.stale_days}d`}
           </Badge>
         </div>
         {stale.length > 0 && (
@@ -312,7 +325,7 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
                 <p className="min-w-0 flex-1 truncate text-metadata">
                   <strong>{displayScopeName(s.scope_name)}</strong>{' '}
                   <span className="text-caption text-muted-foreground">
-                    {s.last_activity_at ? `last seen by a scan ${s.days_since}d ago` : 'no hosts discovered'}
+                    {staleHostsLabel(s)}
                   </span>
                 </p>
                 {canStartRecon && (
@@ -602,7 +615,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
   );
 };
 
-const RunsSection: React.FC = () => {
+const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
   // The All/Mine scope toggle lives here, not in the page header: it only
@@ -662,7 +675,7 @@ const RunsSection: React.FC = () => {
         setLoading(false);
       });
     return () => controller.abort();
-  }, [statusFilter, userIdFilter, reloadNonce]);
+  }, [statusFilter, userIdFilter, reloadNonce, refreshKey]);
 
   return (
     <Card className="mb-md">
@@ -774,7 +787,9 @@ const RunsSection: React.FC = () => {
 const SinceLastVisitBanner: React.FC<{
   since: SinceLastVisit;
   onDismiss: () => void;
-}> = ({ since, onDismiss }) => {
+  saving: boolean;
+  error: string | null;
+}> = ({ since, onDismiss, saving, error }) => {
   const navigate = useNavigate();
 
   // First-ever visit would report "everything is new" — noise, not signal.
@@ -816,11 +831,18 @@ const SinceLastVisitBanner: React.FC<{
             </Button>
           )}
           {/* Acknowledging is what advances the cursor — until then these
-              changes persist across visits (no silent loss on a glance). */}
-          <Button size="sm" variant="outline" onClick={onDismiss}>
-            Mark reviewed
+              changes persist across visits (no silent loss on a glance).
+              "Acknowledge", not "reviewed": dismissing a summary reviews no host. */}
+          <Button size="sm" variant="outline" onClick={onDismiss} disabled={saving}>
+            {saving && <Loader2 className="size-3 animate-spin" aria-hidden />}
+            Acknowledge updates
           </Button>
         </div>
+        {error && (
+          <p role="alert" className="w-full break-words text-caption text-destructive">
+            {error}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -877,11 +899,21 @@ const Operations: React.FC = () => {
   // the next generation; a run only writes state if it's still the latest,
   // so a slower earlier payload can't land on top of a newer one.
   const reloadGenRef = useRef(0);
+  const [sinceSaving, setSinceSaving] = useState(false);
+  const [sinceError, setSinceError] = useState<string | null>(null);
+  const sinceAsOf = workbench?.since_last_visit.as_of ?? null;
   const dismissSince = useCallback(() => {
-    setSinceDismissed(true);
-    // Acknowledging the changes is what advances the cursor to "now".
-    markWorkbenchSeen().catch(() => undefined);
-  }, []);
+    // Acknowledge the snapshot that was DISPLAYED (its `as_of`), not "now":
+    // a scan that landed after the page loaded must resurface. The banner
+    // only goes once the cursor is saved — a silent failure brought the same
+    // changes back on the next visit with no explanation.
+    setSinceSaving(true);
+    setSinceError(null);
+    markWorkbenchSeen(sinceAsOf)
+      .then(() => setSinceDismissed(true))
+      .catch((err) => setSinceError(formatApiError(err, 'Could not save the acknowledgement. Try again.')))
+      .finally(() => setSinceSaving(false));
+  }, [sinceAsOf]);
 
   const reload = useCallback(async () => {
     const gen = ++reloadGenRef.current;
@@ -900,6 +932,10 @@ const Operations: React.FC = () => {
       .then((wb) => {
         if (isStale()) return;
         setWorkbench(wb);
+        // A fresh snapshot is diffed against the saved cursor, so anything it
+        // reports arrived after the last acknowledgement — show it again.
+        setSinceDismissed(false);
+        setSinceError(null);
         // Bootstrap the cursor on the very first visit only (no prior baseline,
         // so nothing to lose) — otherwise leave it until the user acknowledges
         // the banner, so a glance doesn't discard unreviewed changes.
@@ -971,6 +1007,16 @@ const Operations: React.FC = () => {
     reload();
   }, [reload]);
 
+  // The page Refresh: Runs and Recent activity fetch for themselves, so
+  // `reload` alone left them showing what they loaded on mount. The key is
+  // bumped only here (not inside `reload`, which also runs on mount — that
+  // would fetch both panels twice).
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refreshAll = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+    reload();
+  }, [reload]);
+
   // FRX·CRIT-2: brand-new projects (no scopes AND no hosts) should
   // see the welcome card alone — the scope toggle, Refresh chrome,
   // and "Project-wide coordination view" subhead just add noise
@@ -1037,7 +1083,7 @@ const Operations: React.FC = () => {
             <Button
               size="sm"
               variant="outline"
-              onClick={reload}
+              onClick={refreshAll}
               disabled={coverageLoading || pendingLoading}
             >
               <RefreshCw
@@ -1125,6 +1171,8 @@ const Operations: React.FC = () => {
             <SinceLastVisitBanner
               since={workbench.since_last_visit}
               onDismiss={dismissSince}
+              saving={sinceSaving}
+              error={sinceError}
             />
           )}
           {statsError && (
@@ -1171,18 +1219,21 @@ const Operations: React.FC = () => {
           {/* Personal surface: the action queue (what needs doing) beside the
               recent-notes strip (what I was just doing). Two distinct questions,
               two cards — the prior single merged card tried to be both. */}
-          <div className="mb-md grid gap-md lg:grid-cols-2">
+          {/* min-w-0: a grid item's default min-width is its content, so one
+              unbreakable value in a card would widen the column past the page. */}
+          <div className="mb-md grid gap-md lg:grid-cols-2 [&>*]:min-w-0">
             <MyWorkCard
               queue={workbench?.my_queue ?? null}
               tasks={workbench?.my_tasks ?? null}
               notes={workbench?.my_notes ?? null}
               findings={workbench?.my_findings ?? null}
               investigate={workbench?.investigate ?? null}
+              investigateUnavailable={workbench?.investigate_unavailable ?? false}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}
             />
-            <MyActivityCard />
+            <MyActivityCard refreshKey={refreshKey} />
           </div>
           {/* Exposure + neglect analytics live on the Insights pages (per-subnet
               hygiene + by-site rollup + cross-sectional hotspots) — reachable
@@ -1198,7 +1249,7 @@ const Operations: React.FC = () => {
             </Alert>
           )}
           <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} canApprove={canApprovePlans} />
-          <RunsSection />
+          <RunsSection refreshKey={refreshKey} />
         </>
       )}
     </div>

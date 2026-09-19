@@ -78,11 +78,14 @@ def coverage_hosts(db_session, test_project, test_agent, test_user):
     db_session.add(
         TestExecutionResult(
             entry_id=entry_a.id, execution_session_id=session.id,
-            test_index=0, status="passed",
+            test_index=0, status="executed",
         )
     )
     db_session.commit()
-    return {"planned_and_tested": a, "planned_only": b, "neither": c}
+    return {
+        "planned_and_tested": a, "planned_only": b, "neither": c,
+        "entry_b": entry_b, "session": session,
+    }
 
 
 def _matching_ips(db, project_id, user, q):
@@ -128,3 +131,27 @@ def test_not_tested_keeps_planned_but_unexecuted_hosts(
     run — those are exactly the ones an operator needs to chase."""
     ips = _matching_ips(db_session, test_project.id, test_user, "NOT has:tested")
     assert ips == {"10.44.0.2", "10.44.0.3"}
+
+
+@pytest.mark.parametrize("status", ["pending", "pending_approval", "skipped", "failed", "not_applicable"])
+def test_a_result_row_that_was_not_executed_is_not_a_test(
+    client, db_session, test_project, test_user, coverage_hosts, status
+):
+    """A recorded result is not an executed test.  Counting any row let
+    /operations say "all hosts tested" over hosts whose only result was a
+    skip; the tile and the `has:tested` list it links to must agree."""
+    db_session.add(
+        TestExecutionResult(
+            entry_id=coverage_hosts["entry_b"].id,
+            execution_session_id=coverage_hosts["session"].id,
+            test_index=0, status=status,
+        )
+    )
+    db_session.commit()
+
+    tested = _matching_ips(db_session, test_project.id, test_user, "has:tested")
+    assert tested == {"10.44.0.1"}
+
+    body = client.get(f"/api/v1/projects/{test_project.id}/coverage/").json()
+    assert body["hosts_with_execution_result"] == 1
+    assert body["hosts_no_execution"] == 2

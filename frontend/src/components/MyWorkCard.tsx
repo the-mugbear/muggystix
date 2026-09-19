@@ -40,7 +40,6 @@ import type {
   MyTasksResponse,
 } from '../services/api';
 import { followHost, updateTestPlanEntry } from '../services/api';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -227,6 +226,9 @@ export interface MyWorkCardProps {
   findings: MyFindingsResponse | null;
   /** v5.223.0 — engagement-wide: untouched hosts worth a look (item 2). */
   investigate?: InvestigationQueueResponse | null;
+  /** The server could not compute that queue: `investigate` is then an empty
+   *  placeholder, which must not render as "every host has been touched". */
+  investigateUnavailable?: boolean;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
@@ -286,81 +288,77 @@ const InvestigateSection: React.FC<{
         </p>
       ) : (
         <>
-          <Table className="table-fixed">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[24%]">Target</TableHead>
-                <TableHead className="w-[34%]">Why investigate</TableHead>
-                <TableHead className="w-[22%]">Evidence</TableHead>
-                <TableHead className="w-[20%]">Next</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.host_id} data-tier={row.tier}>
-                  <TableCell className="min-w-0 align-top">
+          {/* Stacked rows, not a table: this card is half the page wide, so four
+              columns left ~110px for the next step — the sentence wrapped to
+              many lines and "Upload evidence" spilled out of the card.  Text
+              takes the row's width; the actions are a fixed column on the right. */}
+          <ul className="divide-y divide-border">
+            {rows.map((row) => (
+              <li key={row.host_id} data-tier={row.tier} className="flex items-start gap-sm py-xs">
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-baseline gap-xs">
                     <button
                       type="button"
                       onClick={() => navigate(`/hosts/${row.host_id}`)}
-                      className="block max-w-full truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
                     >
                       {row.ip_address}
                     </button>
                     {row.hostname && (
-                      <p className="truncate text-caption text-muted-foreground" title={row.hostname}>
+                      <span className="min-w-0 truncate text-caption text-muted-foreground" title={row.hostname}>
                         {row.hostname}
-                      </p>
+                      </span>
                     )}
-                    <p className="text-caption text-muted-foreground">{row.tier_label}</p>
-                  </TableCell>
-                  <TableCell className="min-w-0 align-top">
-                    <ul className="flex flex-col gap-xxs">
-                      {row.reasons.map((r) => (
-                        <li key={r.kind} className="break-words text-caption text-foreground">
-                          {r.text}
-                        </li>
-                      ))}
-                    </ul>
-                  </TableCell>
-                  <TableCell className="min-w-0 align-top">
-                    <p className="truncate text-caption" title={row.evidence.sources.join(', ') || 'no scan recorded'}>
-                      {row.evidence.sources.length ? row.evidence.sources.join(', ') : 'no scan recorded'}
-                    </p>
-                    <p className="text-caption text-muted-foreground">
-                      {row.evidence.last_seen ? `seen ${fmtAgo(tsOf(row.evidence.last_seen))}` : 'never seen'}
-                      {' · '}
-                      {row.evidence.confirmation === 'scanner'
-                        ? 'scanner-reported, unconfirmed'
-                        : row.evidence.confirmation === 'finding'
-                          ? 'has a finding'
-                          : 'tested'}
-                    </p>
-                  </TableCell>
-                  <TableCell className="min-w-0 align-top">
-                    <p className="break-words text-caption text-foreground">{row.next_action.text}</p>
-                    <div className="mt-xxs flex flex-wrap gap-xxs">
-                      <Button
-                        size="sm"
-                        variant={row.next_action.kind === 'review' ? 'default' : 'outline'}
-                        className="h-7"
-                        disabled={takingId === row.host_id}
-                        onClick={() => void take(row)}
-                        title="Mark this host In Review under you. It leaves this queue and joins your personal one."
-                      >
-                        {takingId === row.host_id ? 'Taking…' : 'Review'}
-                      </Button>
-                      {row.next_action.kind === 'collect' && (
-                        <Button size="sm" variant="outline" className="h-7" onClick={() => navigate('/scans')}>
-                          Upload evidence
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                  </div>
+                  <p className="truncate text-caption font-medium text-warning" title={row.tier_label}>
+                    {row.tier_label}
+                  </p>
+                  <ul className="mt-xxs flex flex-col gap-xxs">
+                    {row.reasons.map((r) => (
+                      <li key={r.kind} className="line-clamp-2 break-words text-caption text-foreground" title={r.text}>
+                        {r.text}
+                      </li>
+                    ))}
+                  </ul>
+                  <p
+                    className="mt-xxs truncate text-caption text-muted-foreground"
+                    title={row.evidence.sources.join(', ') || 'no scan recorded'}
+                  >
+                    <span>{row.evidence.sources.length ? row.evidence.sources.join(', ') : 'no scan recorded'}</span>
+                    {' · '}
+                    {row.evidence.last_seen ? `seen ${fmtAgo(tsOf(row.evidence.last_seen))}` : 'never seen'}
+                    {' · '}
+                    {row.evidence.confirmation === 'scanner'
+                      ? 'scanner-reported, unconfirmed'
+                      : row.evidence.confirmation === 'finding'
+                        ? 'has a finding'
+                        : 'tested'}
+                  </p>
+                  <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.next_action.text}>
+                    Next: {row.next_action.text}
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-col items-stretch gap-xxs">
+                  <Button
+                    size="sm"
+                    variant={row.next_action.kind === 'review' ? 'default' : 'outline'}
+                    className="h-7"
+                    disabled={takingId === row.host_id}
+                    onClick={() => void take(row)}
+                    title="Mark this host In Review under you. It leaves this queue and joins your personal one."
+                  >
+                    {takingId === row.host_id ? 'Taking…' : 'Review'}
+                  </Button>
+                  {row.next_action.kind === 'collect' && (
+                    <Button size="sm" variant="outline" className="h-7" onClick={() => navigate('/scans')}>
+                      Upload evidence
+                    </Button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
           <div className="mt-xs flex flex-wrap items-center gap-x-md gap-y-xxs">
             {data.items.length > INVESTIGATE_PREVIEW && (
               <button
@@ -387,7 +385,8 @@ const InvestigateSection: React.FC<{
 const PREVIEW = 8;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
-  queue, tasks, notes, findings, investigate = null, loading, error, onRetry,
+  queue, tasks, notes, findings, investigate = null, investigateUnavailable = false,
+  loading, error, onRetry,
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -553,7 +552,19 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           </div>
         )}
 
-        {!loading && !error && investigate && (
+        {!loading && !error && investigateUnavailable && (
+          <div className="mt-md border-t border-border pt-sm">
+            <p className="text-metadata font-semibold text-foreground">Worth a look</p>
+            <div role="alert" className="mt-xxs flex flex-wrap items-center gap-xs text-caption text-warning">
+              <span className="min-w-0 flex-1">
+                Unavailable — this queue could not be computed, so it says nothing about whether
+                hosts are waiting. Your own work above is unaffected.
+              </span>
+              <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>
+            </div>
+          </div>
+        )}
+        {!loading && !error && !investigateUnavailable && investigate && (
           <InvestigateSection data={investigate} navigate={navigate} onTaken={onRetry} />
         )}
       </CardContent>

@@ -261,7 +261,7 @@ class HostFilterParams:
         has_medium_vulns: Optional[bool] = Query(None, description="If true, only hosts with medium-severity vulnerabilities"),
         has_low_vulns: Optional[bool] = Query(None, description="If true, only hosts with low-severity vulnerabilities"),
         has_exploit_available: Optional[bool] = Query(None, description="If true, only hosts with at least one vulnerability flagged as exploitable by Nessus (exploit_available / metasploit_name / canvas_package / core_impact_name / exploit_code_maturity in {functional, high, proof-of-concept})"),
-        has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have had at least one agentic test executed against them (i.e. at least one TestExecutionResult row recorded via any TestPlanEntry for the host). Drives the 'tested' badge on the Hosts list."),
+        has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have had at least one agentic test executed against them (i.e. at least one TestExecutionResult with status 'executed' — a pending, skipped, failed or not-applicable row is not a test — recorded via any TestPlanEntry for the host). Drives the 'tested' badge on the Hosts list."),
         follow_status: Optional[str] = Query(None, description="Filter by team-shared review status: in_review, reviewed, or none (nobody reviewing)", examples=["none"]),
         out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
         scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),

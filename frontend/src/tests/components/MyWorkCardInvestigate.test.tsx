@@ -50,7 +50,7 @@ const queue: InvestigationQueueResponse = {
 };
 
 const onRetry = vi.fn();
-const renderCard = (investigate: InvestigationQueueResponse | null) =>
+const renderCard = (investigate: InvestigationQueueResponse | null, investigateUnavailable = false) =>
   render(
     <MemoryRouter>
       <MyWorkCard
@@ -59,6 +59,7 @@ const renderCard = (investigate: InvestigationQueueResponse | null) =>
         notes={null}
         findings={null}
         investigate={investigate}
+        investigateUnavailable={investigateUnavailable}
         loading={false}
         error={null}
         onRetry={onRetry}
@@ -100,6 +101,40 @@ describe('MyWorkCard — Worth a look', () => {
   it('says so when nothing untouched has a reason', () => {
     renderCard({ ...queue, items: [], queue_total: 0, untouched_total: 12 });
     expect(screen.getByText(/12 untouched hosts, none with a weakness or change on record/)).toBeInTheDocument();
+  });
+
+  it('bounds worst-case text so a row cannot stretch or push its buttons out of the card', () => {
+    // The card is half the page wide. As a four-column table the next step
+    // got ~110px: it wrapped to many lines and "Upload evidence" overflowed.
+    const long = 'x'.repeat(200);
+    renderCard({
+      ...queue,
+      items: [{
+        ...queue.items[1],
+        hostname: `${long}.corp.local`,
+        reasons: [{ kind: 'new_host', text: `reason ${long}` }],
+        next_action: { kind: 'collect', text: `step ${long}` },
+      }],
+    });
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.getByTitle(`${long}.corp.local`)).toHaveClass('truncate', 'min-w-0');
+    expect(screen.getByTitle(`reason ${long}`)).toHaveClass('line-clamp-2', 'break-words');
+    expect(screen.getByTitle(`step ${long}`)).toHaveClass('line-clamp-2', 'break-words');
+    // The actions are a fixed column beside the text, never inside a text cell.
+    const actions = screen.getByRole('button', { name: 'Upload evidence' }).parentElement!;
+    expect(actions).toHaveClass('shrink-0');
+    expect(actions.previousElementSibling).toHaveClass('min-w-0', 'flex-1');
+  });
+
+  it('a queue the server could not compute reads as unavailable, never as "no work"', () => {
+    // The failure placeholder is an empty queue, which used to render
+    // "Every host has been touched by someone."
+    renderCard({ items: [], queue_total: 0, untouched_total: 0, tiers: [] }, true);
+    expect(screen.getByText('Worth a look')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not be computed/);
+    expect(screen.queryByText(/Every host has been touched/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalled();
   });
 
   it('renders nothing for the section on an older backend without the block', () => {

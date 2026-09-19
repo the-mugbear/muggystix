@@ -211,11 +211,12 @@ const NOTE_STATUS_META: Record<
 };
 
 
-const confidenceBadgeVariant = (score: number): 'success' | 'warning' | 'destructive' => {
-  if (score >= 90) return 'success';
-  if (score >= 70) return 'warning';
-  return 'destructive';
-};
+// The confidence service's score ranks detection METHODS against each other.
+// It was rendered as "95%" on a green/amber/red badge, which reads as a
+// measured probability (and a red "60%" as a bad value) — it is neither.
+const SOURCE_WEIGHT_TITLE =
+  'Source ranking weight for this detection method. It orders sources against each other; '
+  + 'it is not a probability that the value is correct.';
 
 
 interface PendingImage {
@@ -258,9 +259,10 @@ export interface HostInspectorProps {
    */
   onQueryHosts?: (query: string) => void;
   /**
-   * Fires whenever the note composer becomes dirty or clean (unsaved text or
-   * pending/failed screenshots).  The Hosts queue uses it to confirm before
-   * Previous/Next/close discard a draft (UX review C1).
+   * Fires whenever the inspector gains or loses unsaved work: note text,
+   * pending/failed screenshots, a reply being written, or an edited test
+   * summary.  The Hosts queue and the standalone page use it to confirm
+   * before navigation discards a draft (UX review C1).
    */
   onDirtyChange?: (dirty: boolean) => void;
 }
@@ -445,8 +447,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [triagePreview, setTriagePreview] = useState<PromoteVulnerabilityPreview | null>(null);
   const [triagePreviewLoading, setTriagePreviewLoading] = useState(false);
   const [triageReason, setTriageReason] = useState('');
+  const [triagePreviewRetry, setTriagePreviewRetry] = useState(0);
 
-  // Fetch the blast radius whenever a triage opens.
+  // Fetch the blast radius whenever a triage opens (or Retry is pressed).
+  // The action reaches hosts other than this one, so without the preview the
+  // dialog does not offer it: confirm stays disabled until the set is known.
   useEffect(() => {
     if (!triageVuln) { setTriagePreview(null); return; }
     let cancelled = false;
@@ -454,10 +459,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setTriagePreview(null);
     previewPromoteVulnerability(triageVuln.id)
       .then((p) => { if (!cancelled) setTriagePreview(p); })
-      .catch(() => { /* dialog still works; just no preview */ })
+      .catch(() => { /* preview stays null: the dialog offers Retry, not proceed */ })
       .finally(() => { if (!cancelled) setTriagePreviewLoading(false); });
     return () => { cancelled = true; };
-  }, [triageVuln]);
+  }, [triageVuln, triagePreviewRetry]);
 
   const handlePromoteVuln = async () => {
     if (!triageVuln) return;
@@ -575,7 +580,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
   }, [onDirtyChange]);
-  const composerDirty = noteBody.trim().length > 0 || pendingImages.length > 0;
+  // A test-summary draft is seeded from the saved text when its editor opens,
+  // so it is unsaved work only while it differs from what the entry holds.
+  const findingsDraftDirty = testPlanEntries.some(
+    (e) => e.id in findingsDrafts
+      && (findingsDrafts[e.id] ?? '').trim() !== (e.findings ?? '').trim(),
+  );
+  const composerDirty = noteBody.trim().length > 0
+    || pendingImages.length > 0
+    || replyBody.trim().length > 0
+    || findingsDraftDirty;
   useEffect(() => {
     onDirtyChangeRef.current?.(composerDirty);
   }, [composerDirty]);
@@ -1957,7 +1971,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   </>
                 )
               ) : (
-                <span className="text-muted-foreground">Couldn't preview affected hosts — you can still proceed.</span>
+                <span role="alert" className="flex flex-wrap items-center gap-xs text-warning">
+                  <span className="min-w-0 flex-1">
+                    Couldn&rsquo;t determine which hosts this affects. It can reach hosts other
+                    than this one, so it isn&rsquo;t offered until that is known.
+                  </span>
+                  <Button size="sm" variant="outline" onClick={() => setTriagePreviewRetry((n) => n + 1)}>
+                    Retry
+                  </Button>
+                </span>
               )}
             </div>
 
@@ -1984,6 +2006,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             <Button
               variant={triageVuln?.intent === 'false_positive' ? 'destructive' : 'default'}
               disabled={vulnActionId === triageVuln?.id
+                || !triagePreview
                 || (triageVuln?.intent === 'false_positive' && !triageReason.trim())}
               onClick={() => void handlePromoteVuln()}
             >
@@ -2478,11 +2501,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           <CardContent className="space-y-md">
             <Alert variant="info">
               <AlertDescription>
-                When the same host is scanned by multiple tools, each tool reports its own findings
-                with a confidence score. BlueStick automatically selects the highest-confidence
-                value for each field. Scores are based on the tool's detection method — for example,
-                Nmap's <code>-sV</code> version probe (95%) is weighted higher than Masscan's basic
-                port check (60%).
+                When the same host is scanned by multiple tools, BlueStick keeps every value and
+                selects the one from the highest-ranked source for each field. The ranking is a
+                fixed weight per detection method — Nmap's <code>-sV</code> version probe (weight 95)
+                outranks Masscan's basic port check (weight 60). It is an ordering of sources, not a
+                measured probability that the value is correct.
               </AlertDescription>
             </Alert>
             {Object.entries(conflictsByField).map(([fieldName, fieldConflicts]) => {
@@ -2499,8 +2522,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
                   <div className="rounded-control border border-border bg-muted/30 p-sm">
                     <div className="mb-xxs flex items-center gap-xs">
-                      <Badge variant={confidenceBadgeVariant(winner.confidence_score)}>
-                        {winner.confidence_score}%
+                      <Badge variant="secondary" title={SOURCE_WEIGHT_TITLE}>
+                        weight {winner.confidence_score}
                       </Badge>
                       <span className="text-metadata font-semibold">
                         Selected value — {winner.scan_type}
@@ -2528,8 +2551,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       </p>
                       {alternatives.map((alt, idx) => (
                         <div key={idx} className="flex items-center gap-xs">
-                          <Badge variant={confidenceBadgeVariant(alt.confidence_score)}>
-                            {alt.confidence_score}%
+                          <Badge variant="outline" title={SOURCE_WEIGHT_TITLE}>
+                            weight {alt.confidence_score}
                           </Badge>
                           <span className="text-caption">
                             {alt.scan_type} — {alt.data_source || 'unknown'} via{' '}
@@ -2549,10 +2572,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                         <div key={entry.id} className="mb-xxs">
                           <p className="text-caption">
                             <strong>{entry.previous_value || '(empty)'}</strong> (
-                            {entry.previous_confidence}% via {entry.previous_method || '?'})
+                            weight {entry.previous_confidence} via {entry.previous_method || '?'})
                             {' → '}
                             <strong>{entry.new_value || '(empty)'}</strong> (
-                            {entry.new_confidence}% via {entry.new_method || '?'})
+                            weight {entry.new_confidence} via {entry.new_method || '?'})
                           </p>
                           {entry.resolved_at && (
                             <p className="text-caption text-muted-foreground">

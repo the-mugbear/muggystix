@@ -153,6 +153,55 @@ def test_changes_after_seen_are_reported(client, db_session, test_project):
     assert body["new_critical_findings"] == 1
 
 
+def test_seen_acknowledges_the_displayed_snapshot_not_the_click(client, db_session, test_project):
+    """A scan that lands between the summary loading and the operator clicking
+    Acknowledge was never shown to them — it must resurface, not be swallowed
+    by a cursor stamped at click time."""
+    client.post(_url(test_project.id, "/seen"))
+    snapshot = client.get(_url(test_project.id)).json()["since_last_visit"]
+    assert snapshot["as_of"] is not None
+    as_of = datetime.fromisoformat(snapshot["as_of"])
+
+    # Arrives after the snapshot was taken, before the acknowledgement.
+    _make_scan(db_session, test_project.id, "late.xml", created_at=as_of + timedelta(seconds=1))
+
+    seen = client.post(_url(test_project.id, "/seen"), json={"as_of": snapshot["as_of"]})
+    assert seen.status_code == 200, seen.text
+    assert datetime.fromisoformat(seen.json()["last_viewed_at"]) == as_of
+
+    body = client.get(_url(test_project.id)).json()["since_last_visit"]
+    assert body["new_scan_count"] == 1
+    assert body["latest_scan_filename"] == "late.xml"
+
+
+def test_seen_never_moves_past_now(client, test_project):
+    future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    seen = client.post(_url(test_project.id, "/seen"), json={"as_of": future})
+    assert seen.status_code == 200, seen.text
+    assert datetime.fromisoformat(seen.json()["last_viewed_at"]) <= datetime.now(timezone.utc)
+
+
+def test_failed_investigation_queue_is_reported_unavailable(client, test_project, monkeypatch):
+    """An empty queue reads as "every host has been touched by someone"; a
+    queue that could not be computed must say so instead."""
+    from app.api.v1.endpoints import workbench
+
+    ok = client.get(_url(test_project.id)).json()
+    assert ok["investigate_unavailable"] is False
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(workbench, "compute_investigation_queue", _boom)
+    r = client.get(_url(test_project.id))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["investigate_unavailable"] is True
+    assert body["investigate"]["items"] == []
+    # The personal sections still came back.
+    assert "my_queue" in body and "since_last_visit" in body
+
+
 def test_seen_is_idempotent_one_row(client, db_session, test_project):
     from app.db.models import OperationsCursor
     client.post(_url(test_project.id, "/seen"))

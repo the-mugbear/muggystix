@@ -22,10 +22,18 @@ export const ago = (iso: string | null | undefined): string | null =>
 export interface PortFreshness {
   /** "3d ago" for the port's own last observation, or null when unknown. */
   seen: string | null;
-  /** True when the host was observed more recently than this port: the latest
-   *  sweep did not see it open, so "open" is older than it looks. */
-  notInLatestScan: boolean;
+  /** True when the host was observed more recently than this port, so "open"
+   *  is older than the host's date suggests.  This is inferred from two
+   *  timestamps and proves nothing about the port: the newer observation may
+   *  be a DNS import, a web probe of another port, an SMB run — none of which
+   *  looked here.  Say "not revalidated", never "closed" or "not seen". */
+  notRevalidated: boolean;
 }
+
+export const NOT_REVALIDATED_LABEL = 'not revalidated';
+export const NOT_REVALIDATED_TITLE =
+  'Newer evidence exists for this host, but none of it re-observed this port. '
+  + 'That does not mean the port was checked and found closed — the newer scan may not have probed it.';
 
 export const portFreshness = (
   port: { last_seen?: string | null; first_seen?: string | null },
@@ -35,7 +43,7 @@ export const portFreshness = (
   const hostSeen = ts(hostLastSeen);
   return {
     seen: ago(port.last_seen ?? port.first_seen),
-    notInLatestScan: portSeen > 0 && hostSeen > 0 && portSeen < hostSeen - SAME_SWEEP_MS,
+    notRevalidated: portSeen > 0 && hostSeen > 0 && portSeen < hostSeen - SAME_SWEEP_MS,
   };
 };
 

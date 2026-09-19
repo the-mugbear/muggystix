@@ -422,6 +422,10 @@ export interface ScopeStaleness {
   last_activity_at?: string | null;
   days_since?: number | null;
   is_stale: boolean;
+  /** Distinct hosts in the scope, and how many were seen within `stale_days`.
+   *  `last_activity_at` is only the NEWEST of them. */
+  host_count?: number;
+  recent_host_count?: number;
 }
 
 export interface StalenessResponse {

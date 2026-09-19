@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -320,6 +320,12 @@ class ScopeStaleness(BaseModel):
     last_activity_at: Optional[datetime] = None
     days_since: Optional[int] = None
     is_stale: bool = False
+    # ``last_activity_at`` is the NEWEST host observation, so one fresh host
+    # makes a largely stale scope look current.  These say how much of the
+    # scope that date actually speaks for (distinct hosts; recent = seen
+    # within ``stale_days``).
+    host_count: int = 0
+    recent_host_count: int = 0
 
 
 class StalenessResponse(BaseModel):
@@ -367,8 +373,16 @@ def get_staleness(
 
     # Per-scope newest host observation.  Outer joins so scopes with no
     # hosts still appear (last_activity None → stale → "needs recon").
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
     rows = (
-        db.query(models.Scope.id, models.Scope.name, func.max(models.Host.last_seen))
+        db.query(
+            models.Scope.id, models.Scope.name, func.max(models.Host.last_seen),
+            # DISTINCT: a host mapped into two subnets of one scope is one host.
+            func.count(distinct(models.Host.id)),
+            func.count(distinct(case(
+                (models.Host.last_seen >= recent_cutoff, models.Host.id),
+            ))),
+        )
         .select_from(models.Scope)
         .outerjoin(models.Subnet, models.Subnet.scope_id == models.Scope.id)
         .outerjoin(models.HostSubnetMapping, models.HostSubnetMapping.subnet_id == models.Subnet.id)
@@ -380,7 +394,7 @@ def get_staleness(
 
     scopes: List[ScopeStaleness] = []
     stale_count = 0
-    for scope_id, scope_name, last_activity in rows:
+    for scope_id, scope_name, last_activity, host_count, recent_count in rows:
         days = _days_since(last_activity)
         is_stale = last_activity is None or (days is not None and days > stale_days)
         if is_stale:
@@ -391,6 +405,8 @@ def get_staleness(
             last_activity_at=last_activity,
             days_since=days,
             is_stale=is_stale,
+            host_count=int(host_count or 0),
+            recent_host_count=int(recent_count or 0),
         ))
 
     # Stalest first (None = never = most stale), then by name.

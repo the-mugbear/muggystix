@@ -18,7 +18,7 @@ import {
   getHostWebInterfaces, type Port, type WebInterface,
 } from '../../services/api';
 import type { ConnectionHelper } from '../../utils/connectionHelpers';
-import { portFreshness } from '../../utils/evidenceFreshness';
+import { NOT_REVALIDATED_LABEL, NOT_REVALIDATED_TITLE, portFreshness } from '../../utils/evidenceFreshness';
 import { useToast } from '../../contexts/ToastContext';
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
@@ -242,7 +242,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                         <TableHead className="w-[16%]">Service</TableHead>
                         <TableHead className="w-[22%]">Version</TableHead>
                         <TableHead className="w-[9%]">State</TableHead>
-                        <TableHead className="w-[12%]" title="When this port itself was last observed. Older than the host's last observation means the latest sweep did not see it open.">Seen</TableHead>
+                        <TableHead className="w-[12%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
                         <TableHead className="w-[16%]">TLS</TableHead>
                         <TableHead className="w-[10%] text-center">Helpers</TableHead>
                       </TableRow>
@@ -293,9 +293,9 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                               <div className="truncate text-caption" title={port.last_seen ?? port.first_seen ?? undefined}>
                                 {fresh.seen ?? '—'}
                               </div>
-                              {fresh.notInLatestScan && (
-                                <div className="truncate text-caption text-warning" title="The host was observed more recently than this port: the latest sweep did not see it open.">
-                                  not in latest scan
+                              {fresh.notRevalidated && (
+                                <div className="truncate text-caption text-warning" title={NOT_REVALIDATED_TITLE}>
+                                  {NOT_REVALIDATED_LABEL}
                                 </div>
                               )}
                             </TableCell>

@@ -217,6 +217,9 @@ export interface SinceLastVisit {
   new_host_count: number;
   new_critical_findings: number;
   new_high_findings: number;
+  /** When these counts were taken — handed back on acknowledge so it covers
+   *  the snapshot shown, not changes that arrived after it loaded. */
+  as_of?: string | null;
 }
 
 // v5.223.0 — the engagement-wide investigation queue (design review item 2):
@@ -269,6 +272,9 @@ export interface WorkbenchResponse {
   team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;
   investigate?: InvestigationQueueResponse;
+  /** The queue could not be computed: `investigate` is an empty placeholder
+   *  and must read as "unavailable", never as "no work". */
+  investigate_unavailable?: boolean;
 }
 
 export const getWorkbench = async (): Promise<WorkbenchResponse> => {
@@ -281,8 +287,10 @@ export const getWorkbench = async (): Promise<WorkbenchResponse> => {
 // rollup — moved to Security Posture, which composes site attention server-side
 // via GET /posture. The backend routes remain for that composition.)
 
-export const markWorkbenchSeen = async (): Promise<{ last_viewed_at: string }> => {
-  const response = await api.post(`${p()}/workbench/seen`);
+export const markWorkbenchSeen = async (
+  asOf?: string | null,
+): Promise<{ last_viewed_at: string }> => {
+  const response = await api.post(`${p()}/workbench/seen`, asOf ? { as_of: asOf } : undefined);
   return response.data;
 };
 

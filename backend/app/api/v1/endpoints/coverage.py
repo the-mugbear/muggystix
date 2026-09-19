@@ -8,7 +8,7 @@ stage of the pipeline?
 Three coverage dimensions:
 
     plan_covered       — host has at least one TestPlanEntry
-    execution_covered  — host has at least one TestExecutionResult
+    execution_covered  — host has at least one EXECUTED TestExecutionResult
                           (joined through its TestPlanEntry)
     scope_coverage     — for each scope, IPs in the CIDR ranges vs
                           discovered hosts in those ranges
@@ -48,6 +48,7 @@ from app.db.models import (
 )
 from app.db.models_agent import (
     TestExecutionResult,
+    TestExecutionStatus,
     TestPlanEntry,
 )
 from app.db.models_auth import User
@@ -172,14 +173,19 @@ def get_project_coverage(
     )
 
     # --- Execution-covered hosts: distinct hosts with at least one
-    # TestExecutionResult (joined through the entry).  Using the
-    # result-table avoids double-counting hosts that have entries but
-    # were never actually tested.
+    # EXECUTED TestExecutionResult (joined through the entry).  A result
+    # row alone is not a test — pending / skipped / failed / not-applicable
+    # rows counted here once let the page say "all hosts tested" over hosts
+    # nobody ran anything against.  Same definition as ``has:tested``
+    # (the tile's drill-down), posture and the host assessment.
     hosts_with_execution_result = (
         db.query(func.count(distinct(TestPlanEntry.host_id)))
         .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
         .join(Host, Host.id == TestPlanEntry.host_id)
-        .filter(Host.project_id == project.id)
+        .filter(
+            Host.project_id == project.id,
+            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
+        )
         .scalar()
         or 0
     )

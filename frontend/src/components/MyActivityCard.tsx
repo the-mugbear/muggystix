@@ -75,7 +75,10 @@ function timeOf(iso: string): string {
     : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export const MyActivityCard: React.FC = () => {
+export const MyActivityCard: React.FC<{
+  /** Bumped by the page-level Refresh; the card otherwise fetches for itself. */
+  refreshKey?: number;
+}> = ({ refreshKey = 0 }) => {
   const navigate = useNavigate();
   const [events, setEvents] = React.useState<ActivityEvent[] | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -104,7 +107,7 @@ export const MyActivityCard: React.FC = () => {
       .finally(() => setLoading(false));
   }, [typeFilter, days, search]);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => { load(); }, [load, refreshKey]);
   // Reset the preview when the filtered result set changes.
   const [expanded, setExpanded] = React.useState(false);
   React.useEffect(() => { setExpanded(false); }, [typeFilter, days, search]);

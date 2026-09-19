@@ -1128,10 +1128,10 @@ export default function Hosts() {
     if (!inspectorDirtyRef.current) return true;
     const ip = hosts.find((h) => h.id === inspectedHostId)?.ip_address ?? 'this host';
     return confirm({
-      title: 'Discard unsaved note?',
-      body: `The note you started for ${ip} (text or pasted screenshots) has not been saved. Leave anyway?`,
+      title: 'Discard unsaved work?',
+      body: `What you started for ${ip} — a note, pasted screenshots, a reply or a test summary — has not been saved. Leave anyway?`,
       severity: 'warning',
-      confirmLabel: 'Discard note',
+      confirmLabel: 'Discard',
     });
   };
 

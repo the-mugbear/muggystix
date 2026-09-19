@@ -36,7 +36,7 @@ from sqlalchemy.types import String as SAString
 from app.db import models
 from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationModel
 from app.db.models_auth import User
-from app.db.models_agent import TestExecutionResult, TestPlanEntry
+from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
 from app.db.models_vulnerability import Vulnerability
 
 # Leaf module — no import cycle (host_query imports *us*, not the reverse).
@@ -453,13 +453,21 @@ def note_predicate(db: Session, values: Sequence[str], project_id: int) -> Colum
 
 def has_test_execution_predicate(db: Session, project_id: int) -> ColumnElement:
     """Host has had at least one agentic test executed against it
-    (project-scoped)."""
+    (project-scoped).
+
+    "Executed" is the result's status, not the row's existence: a pending,
+    skipped, failed or not-applicable result is a record, not a test — the
+    same definition posture, evidence and the host assessment use.
+    """
     _H = aliased(models.Host)
     sub = (
         db.query(TestPlanEntry.host_id)
         .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
         .join(_H, _H.id == TestPlanEntry.host_id)
-        .filter(_H.project_id == project_id)
+        .filter(
+            _H.project_id == project_id,
+            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
+        )
         .distinct()
     )
     return models.Host.id.in_(sub)

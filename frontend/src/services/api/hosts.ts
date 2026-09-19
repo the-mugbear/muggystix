@@ -372,8 +372,8 @@ export interface Port {
   // web-interface/cert record exists. null/absent means "unknown", not "plaintext".
   service_tunnel?: string | null;
   // v2.348.0 — the port's OWN observation window, distinct from the host's:
-  // a port last seen before the host's newest observation was not seen by
-  // the latest sweep.
+  // a port last seen before the host's newest observation has not been
+  // revalidated by it (which is not the same as "checked and found closed").
   first_seen?: string | null;
   last_seen?: string | null;
   scripts?: NseScript[];
