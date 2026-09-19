@@ -17,7 +17,8 @@ from app.db.models_auth import User
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project
 from app.services.posture_service import compute_posture
-from app.services.evidence_service import compute_evidence_coverage
+from app.services.evidence_service import compute_evidence_coverage, evidence_gap_hosts
+from fastapi import HTTPException, Query
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -130,3 +131,32 @@ def get_evidence(
     contributing tools and data-quality signals. Answers whether the posture
     surface's conclusions rest on enough evidence."""
     return compute_evidence_coverage(db, project.id)
+
+
+class EvidenceGapsResponse(_Loose):
+    domain: str
+    label: str
+    total: int
+    items: List[Dict[str, Any]]
+    action: Dict[str, str]
+
+
+@router.get(
+    "/evidence/{domain}/gaps",
+    response_model=EvidenceGapsResponse,
+    summary="The hosts a domain applies to that carry no evidence in it",
+)
+def get_evidence_gaps(
+    domain: str,
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """v2.348.0 — a coverage gap as a list the operator can act on (design
+    review item 4): the eligible-but-unassessed hosts, the open ports that
+    made them eligible, and the collection or planning step that closes it."""
+    result = evidence_gap_hosts(db, project.id, domain, limit=limit)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Unknown evidence domain: {domain}")
+    return result

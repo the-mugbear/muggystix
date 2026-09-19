@@ -179,10 +179,20 @@ export interface Host {
   first_seen?: string | null;
   last_seen?: string | null;
   exploitable_count?: number;
+  // v2.344.0 — of those, the ones that are ALSO critical (same vulnerability
+  // row).  The Attention badge's "critical · exploit" keys on this.
+  critical_exploitable_count?: number;
   primary_subnet?: string | null;
   primary_site?: string | null;
+  // v2.344.0 — the three-state coverage on the list row (the detail card's
+  // scope_membership.coverage), plus whether the project has any scope at
+  // all, so the row can tell "out of scope" from "no scope defined".
+  scope_coverage?: 'subnet' | 'name' | 'none' | null;
+  project_has_scope?: boolean | null;
   // v2.342.0 — every scope entry covering this host (detail endpoint only).
   scope_membership?: HostScopeMembership | null;
+  // v2.348.0 — per-domain evidence freshness (detail endpoint only).
+  assessment?: HostAssessment | null;
   // v2.71.0 — project tags on this host, and users it's assigned to.
   tags?: HostTagInfo[];
   assignees?: HostAssignee[];
@@ -324,6 +334,24 @@ export interface NseScript {
   scan_id: number;
 }
 
+/** When each kind of evidence about a host was last gathered — or that it
+ *  never was, or does not apply.  A recent observation of the host does not
+ *  make its other facts current (v2.348.0). */
+export interface HostAssessment {
+  last_observed_at: string | null;
+  vuln_assessed: boolean;
+  last_vuln_assessed_at: string | null;
+  web_eligible: boolean;
+  web_assessed: boolean;
+  last_web_assessed_at: string | null;
+  auth_eligible: boolean;
+  auth_assessed: boolean;
+  tests_executed: number;
+  last_tested_at: string | null;
+  conflicts: number;
+  open_ports_not_in_latest_scan: number;
+}
+
 export interface Port {
   id: number;
   port_number: number;
@@ -343,6 +371,11 @@ export interface Port {
   // port table mark a TLS-wrapped service on a non-standard port even when no
   // web-interface/cert record exists. null/absent means "unknown", not "plaintext".
   service_tunnel?: string | null;
+  // v2.348.0 — the port's OWN observation window, distinct from the host's:
+  // a port last seen before the host's newest observation was not seen by
+  // the latest sweep.
+  first_seen?: string | null;
+  last_seen?: string | null;
   scripts?: NseScript[];
 }
 

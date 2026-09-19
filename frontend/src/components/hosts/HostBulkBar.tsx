@@ -7,8 +7,10 @@
  * server-side through GET /hosts/ids, so we never ship thousands of ids
  * up from the client).
  */
-import React, { useEffect, useState } from 'react';
-import { Loader2, Tag as TagIcon, UserPlus, Eye, X, Copy, Check } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Loader2, Tag as TagIcon, UserPlus, Eye, X, Copy, Check, ClipboardList } from 'lucide-react';
+import PlanFromSelectionDialog from './PlanFromSelectionDialog';
+import { describeSelection } from '../../utils/planSelection';
 import {
   HostTagWithCount,
   ProjectMember,
@@ -92,6 +94,8 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const [working, setWorking] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [copiedIps, setCopiedIps] = useState(false);
+  // v5.221.0 — carry the selection into a test plan (design review item 6).
+  const [planDialogOpen, setPlanDialogOpen] = useState(false);
 
   // Copy the explicitly-checked rows' IPs as a newline-delimited target
   // list — the core "feed these to an external tool" loop.  Page-scoped:
@@ -127,14 +131,14 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const effectiveCount = allMatching ? totalMatching : selectedIds.length;
   const canSelectAll = !allMatching && totalMatching > selectedIds.length && selectedIds.length > 0;
 
-  const resolveIds = async (): Promise<number[]> => {
+  const resolveIds = useCallback(async (): Promise<number[]> => {
     if (!allMatching) return selectedIds;
     const res = await getMatchingHostIds(queryContext);
     if (res.capped) {
       toast.warning(`Acting on the first ${res.ids.length} of ${res.total} matches (capped).`);
     }
     return res.ids;
-  };
+  }, [allMatching, selectedIds, queryContext, toast]);
 
   const execute = async (
     fn: (ids: number[]) => Promise<{ affected: number }>,
@@ -351,10 +355,29 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* Test plan — the selection becomes a fixed target list. */}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={working || effectiveCount === 0}
+          onClick={() => setPlanDialogOpen(true)}
+          title="Create a test plan from these hosts, add them to a draft, or generate with AI"
+        >
+          <ClipboardList className="size-3.5" aria-hidden /> Test plan
+        </Button>
+
         <Button size="sm" variant="ghost" onClick={onClear} disabled={working} aria-label="Clear selection">
           <X className="size-3.5" aria-hidden /> Clear
         </Button>
       </div>
+
+      <PlanFromSelectionDialog
+        open={planDialogOpen}
+        onOpenChange={setPlanDialogOpen}
+        resolveIds={resolveIds}
+        selectionSummary={describeSelection(effectiveCount, allMatching, queryContext)}
+        sampleIps={allMatching ? [] : selectedIps}
+      />
 
       <Dialog open={!!pending} onOpenChange={(v) => { if (!v) setPending(null); }}>
         <DialogContent>

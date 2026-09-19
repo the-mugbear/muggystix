@@ -24,7 +24,7 @@ import {
 import { cn } from '../../utils/cn';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import {
-  PORTS_OF_INTEREST_BY_PORT,
+  exposureChips,
   type PortOfInterestDefinition,
 } from '../../utils/portsOfInterest';
 
@@ -186,19 +186,50 @@ const isStaleHost = (iso?: string | null): boolean => {
   return !Number.isNaN(diff) && diff > 30 * 86_400_000;
 };
 
-/** This host's OPEN ports-of-interest, de-duplicated and risk-ranked. */
-export const exposurePortsOfInterest = (ports?: Port[]): PortOfInterestDefinition[] => {
-  const seen = new Set<number>();
-  const out: PortOfInterestDefinition[] = [];
-  for (const p of ports ?? []) {
-    if (p.state !== 'open') continue;
-    const def = PORTS_OF_INTEREST_BY_PORT.get(p.port_number);
-    if (def && !seen.has(def.port)) {
-      seen.add(def.port);
-      out.push(def);
-    }
+/**
+ * What the Host column says under a host that no subnet contains.  Mirrors
+ * the detail card's three states (v5.220.0) — before, every such host read
+ * "out of scope", including one an approved name resolves to and every host
+ * on a project that has declared no scope at all.
+ */
+export const scopeCoverageText = (
+  host: Pick<Host, 'scope_coverage' | 'project_has_scope'>,
+): { text: string; title: string; tone: 'info' | 'warning' | 'muted' } => {
+  if (host.scope_coverage === 'name') {
+    return {
+      text: 'via in-scope name',
+      title: 'No subnet entry contains this address, but an approved name currently resolves to it.',
+      tone: 'info',
+    };
   }
-  return out.sort((a, b) => b.weight - a.weight);
+  if (host.project_has_scope === false) {
+    return {
+      text: 'no scope defined',
+      title: 'This project has no subnet or domain entries yet, so there is nothing to check against.',
+      tone: 'muted',
+    };
+  }
+  return {
+    text: 'out of scope',
+    title: 'No scope entry covers this address or its names.',
+    tone: 'warning',
+  };
+};
+
+const ScopeCoverageLabel: React.FC<{ host: Host }> = ({ host }) => {
+  const { text, title, tone } = scopeCoverageText(host);
+  return (
+    <span
+      className={cn(
+        'italic',
+        tone === 'warning' && 'text-warning',
+        tone === 'info' && 'text-info',
+      )}
+      title={title}
+    >
+      {text}
+    </span>
+  );
 };
 
 interface AttentionReason {
@@ -222,22 +253,29 @@ export const computeAttention = (
   const crit = vs?.critical ?? 0;
   const high = vs?.high ?? 0;
   const exploit = host.exploitable_count ?? 0;
+  // v5.220.0 — "critical · exploit" is only claimed when the backend joined
+  // the two on the same vulnerability.  Before, a critical with no exploit
+  // plus a low with one produced the same badge.
+  const critExploit = host.critical_exploitable_count ?? 0;
   const conflicts = host.conflict_count ?? 0;
   const reasons: AttentionReason[] = [];
   if (crit > 0) {
     reasons.push({
-      label: exploit > 0 ? `${crit} critical · exploit` : `${crit} critical`,
+      label: critExploit > 0 ? `${crit} critical · exploit` : `${crit} critical`,
       tone: 'severity-critical',
       detail:
-        exploit > 0
-          ? `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}, at least one with a known public exploit.`
-          : `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}.`,
+        critExploit > 0
+          ? `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}; ${critExploit} of them ${critExploit === 1 ? 'has' : 'have'} a known public exploit.`
+          : exploit > 0
+            ? `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}. A lower-severity vulnerability on this host has a known public exploit.`
+            : `${crit} critical-severity vulnerability${crit === 1 ? '' : 'ies'}.`,
     });
-  } else if (exploit > 0) {
+  }
+  if (exploit > 0 && critExploit === 0) {
     reasons.push({
       label: 'Exploit available',
       tone: 'destructive',
-      detail: 'A vulnerability on this host has a known public exploit.',
+      detail: `${exploit} vulnerabilit${exploit === 1 ? 'y' : 'ies'} on this host ${exploit === 1 ? 'has' : 'have'} a known public exploit (none of them critical).`,
     });
   }
   if (conflicts > 0) {
@@ -505,7 +543,7 @@ export function useHostColumns({
                     {host.primary_subnet}
                   </span>
                 ) : (
-                  <span className="italic" title="Not mapped to any configured scope">out of scope</span>
+                  <ScopeCoverageLabel host={host} />
                 )}
                 {host.primary_site && (
                   <span className="truncate" title={host.primary_site}>· {host.primary_site}</span>
@@ -550,30 +588,40 @@ export function useHostColumns({
           // pivot.
           const host = row.original;
           const openCount = host.ports?.filter((port) => port.state === 'open').length ?? 0;
-          const poi = exposurePortsOfInterest(host.ports);
+          const chips = exposureChips(host.ports);
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
               <div className="text-caption text-muted-foreground">
                 <strong className="text-foreground">{openCount}</strong> open
                 {host.ports ? ` / ${host.ports.length}` : ''}
               </div>
-              {poi.length > 0 ? (
+              {chips.length > 0 ? (
                 <div className="flex flex-wrap gap-xxs">
-                  {poi.slice(0, 3).map((d) => (
+                  {chips.slice(0, 3).map((c) => (
                     <span
-                      key={d.port}
-                      title={`${d.label} — port ${d.port} (high-value service)`}
-                      className="inline-flex items-center rounded-chip border border-warning/40 bg-warning/10 px-xs py-px text-caption text-warning"
+                      key={c.key}
+                      title={
+                        c.detected
+                          ? `${c.label} — port ${c.port}, identified by service probe`
+                          : `${c.label}? — port ${c.port}, guessed from the port number (no service probe)`
+                      }
+                      className={cn(
+                        'inline-flex max-w-full items-center rounded-chip border px-xs py-px text-caption',
+                        c.weight > 0
+                          ? 'border-warning/40 bg-warning/10 text-warning'
+                          : 'border-border bg-muted/40 text-foreground',
+                        !c.detected && 'border-dashed',
+                      )}
                     >
-                      {d.label}
+                      <span className="truncate">{c.detected ? c.label : `${c.label}?`}</span>
                     </span>
                   ))}
-                  {poi.length > 3 && (
-                    <span className="text-caption text-muted-foreground">+{poi.length - 3}</span>
+                  {chips.length > 3 && (
+                    <span className="text-caption text-muted-foreground">+{chips.length - 3}</span>
                   )}
                 </div>
               ) : openCount > 0 ? (
-                <span className="text-caption text-muted-foreground">no high-value services</span>
+                <span className="text-caption text-muted-foreground">services not probed</span>
               ) : (
                 <span className="text-caption text-muted-foreground">no open ports</span>
               )}

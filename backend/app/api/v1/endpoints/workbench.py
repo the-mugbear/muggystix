@@ -42,6 +42,8 @@ from app.services.operations_read_service import (
     compute_my_findings,
     compute_my_activity,
     compute_team_review,
+    compute_investigation_queue,
+    InvestigationQueueResponse,
     MyAttentionResponse,
     MyTasksResponse,
     MyNotesResponse,
@@ -95,6 +97,9 @@ class WorkbenchResponse(BaseModel):
     my_findings: MyFindingsResponse = Field(default_factory=MyFindingsResponse)
     team_review: TeamReviewResponse = Field(default_factory=TeamReviewResponse)
     since_last_visit: SinceLastVisit = Field(default_factory=SinceLastVisit)
+    # v2.347.0 — engagement-wide: untouched hosts worth a look (design
+    # review item 2), beneath the personal queue on My Work.
+    investigate: InvestigationQueueResponse = Field(default_factory=InvestigationQueueResponse)
 
 
 class MarkSeenResponse(BaseModel):
@@ -200,6 +205,12 @@ def get_workbench(
     my_findings = compute_my_findings(db, current_user, project, limit=15)
     team_review = compute_team_review(db, current_user, project, limit=500)
     since = _compute_since_last_visit(db, current_user, project)
+    try:
+        investigate = compute_investigation_queue(db, project, limit=25)
+    except Exception:
+        # The personal queue must not go down with the engagement-wide one.
+        logger.exception("investigation queue failed for project %s", project.id)
+        investigate = InvestigationQueueResponse()
 
     return WorkbenchResponse(
         my_queue=my_queue,
@@ -209,6 +220,7 @@ def get_workbench(
         my_findings=my_findings,
         team_review=team_review,
         since_last_visit=since,
+        investigate=investigate,
     )
 
 

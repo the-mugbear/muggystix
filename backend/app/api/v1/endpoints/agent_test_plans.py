@@ -32,6 +32,20 @@ from app.api.v1.endpoints.agent_common import (
 router = APIRouter()
 
 
+def _fixed_selection_ids(plan) -> Optional[List[int]]:
+    """The fixed host list a plan was made from, or None when the plan's
+    candidates come from a query (filter_criteria) / the whole project.
+
+    v2.345.0 — ``source_kind='manual_hosts'`` plans (the Hosts bulk bar's
+    "Test plan" action, or a generate request that sent ``source_host_ids``)
+    carry the operator's exact pick; the planning context honours it.
+    """
+    if getattr(plan, "source_kind", None) != "manual_hosts":
+        return None
+    ids = [int(i) for i in (plan.source_host_ids or []) if isinstance(i, int)]
+    return ids or None
+
+
 # High-value ports that qualify medium-vuln hosts for inclusion in
 # selection policy, and that should float to the top of a host's
 # inferred-service hint list in /context.  Used by /context (selection
@@ -233,6 +247,13 @@ def get_planning_context(
 
     # Build filtered host query
     q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
+    # v2.345.0 — a plan made from a Hosts-page selection targets a FIXED host
+    # list (``source_host_ids``), not a query.  Candidates are restricted to
+    # it so the agent plans against what the operator picked; before, the
+    # ids were recorded as provenance and then ignored here.
+    fixed_host_ids = _fixed_selection_ids(plan)
+    if fixed_host_ids is not None:
+        q = q.filter(models.Host.id.in_(fixed_host_ids))
     q = _apply_agent_host_filters(
         q, db,
         project_id=agent.project_id,
@@ -449,6 +470,19 @@ def get_planning_context(
     return PlanningContext(
         plan=plan_resp.model_dump(mode="json"),
         filter_criteria=plan.filter_criteria,
+        source=(
+            {
+                "kind": "manual_hosts",
+                "host_count": len(fixed_host_ids),
+                "note": (
+                    "The operator picked these hosts on the Hosts page; "
+                    "candidate_hosts is restricted to that fixed list. Do not "
+                    "add hosts outside it. The plan description says why they "
+                    "were chosen."
+                ),
+            }
+            if fixed_host_ids is not None else None
+        ),
         agent_name=agent.name,
         prompt_version=PROMPT_VERSION,
         selection_policy=(

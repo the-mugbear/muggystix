@@ -67,7 +67,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
-import { STATUS_LABEL, TERMINAL_STATUSES, matchesStatusFilter } from '../utils/findingStatus';
+import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
@@ -412,6 +412,14 @@ const Findings: React.FC = () => {
         <p className="text-metadata text-muted-foreground">
           Promoted notes and triaged results across this project — the record everything rolls up by.
         </p>
+        {/* v5.225.0 — the three populations, named the same way everywhere
+            (design review item 7). */}
+        <p className="mt-xxs text-caption text-muted-foreground">
+          Not the raw <strong>scanner observations</strong> — those stay on each host until promoted.
+          Open and Retest are <strong>under investigation</strong>; <strong>Confirmed</strong> is validated;
+          False positive, Accepted risk and Remediated are <strong>closed</strong>. A finding&apos;s status is the
+          issue&apos;s; each affected host keeps its own state on the finding page.
+        </p>
       </div>
 
       <div className="mb-md flex flex-wrap items-end gap-sm">
@@ -685,6 +693,14 @@ const Findings: React.FC = () => {
                         </Link>
                         {f.host_count > 1 && (
                           <span className="text-muted-foreground"> +{f.host_count - 1}</span>
+                        )}
+                        {/* v5.225.0 — when the endpoints are not all open, say so
+                            beside the count rather than let the finding's status
+                            stand for every host. */}
+                        {describeEndpointStates(f.endpoint_status_counts, f.host_count) && (
+                          <span className="block truncate text-caption text-muted-foreground">
+                            {describeEndpointStates(f.endpoint_status_counts, f.host_count)}
+                          </span>
                         )}
                       </span>
                     )}

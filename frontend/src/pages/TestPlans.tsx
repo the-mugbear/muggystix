@@ -21,6 +21,7 @@ import {
 } from '../services/api';
 import { formatStatusLabel } from '../utils/statusMeta';
 import { formatApiError } from '../utils/apiErrors';
+import { PlanSelection, takePlanSelection } from '../utils/planSelection';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useNow } from '../hooks/useNow';
@@ -184,6 +185,10 @@ const TestPlans: React.FC = () => {
   // dedicated recon-source field, so the value rides along for any
   // downstream surfacing.
   const [sourceReconSessionId, setSourceReconSessionId] = useState<number | null>(null);
+  // v5.221.0 — a fixed host selection handed over from the Hosts bulk bar
+  // (`?generate=1&source=selection`, payload in sessionStorage).  The agent's
+  // candidates are restricted to it; the filter fields do not apply.
+  const [sourceSelection, setSourceSelection] = useState<PlanSelection | null>(null);
   const [generating, setGenerating] = useState(false);
   // Wall-clock counter so the user sees the long-running LLM call is
   // still alive — generation routinely takes 30-120s on Opus, and a
@@ -308,10 +313,19 @@ const TestPlans: React.FC = () => {
       const parsed = parseInt(sourceId, 10);
       if (!Number.isNaN(parsed)) setSourceReconSessionId(parsed);
     }
+    if (searchParams.get('source') === 'selection') {
+      const sel = takePlanSelection();
+      if (sel) {
+        setSourceSelection(sel);
+      } else {
+        toast.warning('The host selection was not found; pick hosts again on the Hosts page.');
+      }
+    }
     openGenerateDialog();
     const params = new URLSearchParams(searchParams);
     params.delete('generate');
     params.delete('source_recon_session_id');
+    params.delete('source');
     setSearchParams(params, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -332,6 +346,16 @@ const TestPlans: React.FC = () => {
       if (sourceReconSessionId != null) {
         req.source_kind = 'recon_session';
         req.source_recon_session_id = sourceReconSessionId;
+      }
+      // A fixed selection from the Hosts page: the agent plans against
+      // exactly these hosts, so the filter fields are not sent.
+      if (sourceSelection) {
+        req.source_kind = 'manual_hosts';
+        req.source_host_ids = sourceSelection.host_ids;
+        delete req.filter_criteria;
+        const why = sourceSelection.rationale ? `Why these hosts: ${sourceSelection.rationale}` : '';
+        const note = `Fixed selection of ${sourceSelection.host_ids.length} hosts from the Hosts page (${sourceSelection.summary}).`;
+        req.description = [req.description, note, why].filter(Boolean).join('\n\n');
       }
 
       const result = await generateTestPlan(req);
@@ -794,6 +818,21 @@ const TestPlans: React.FC = () => {
                   <AlertDescription>
                     Source: recon run <strong>#{sourceReconSessionId}</strong>. The agent will use
                     host data populated by that run.
+                  </AlertDescription>
+                </Alert>
+              )}
+              {sourceSelection && (
+                <Alert variant="info">
+                  <AlertDescription>
+                    Source: a fixed selection of{' '}
+                    <strong>{sourceSelection.host_ids.length.toLocaleString()} hosts</strong> from the
+                    Hosts page ({sourceSelection.summary}). The agent's candidate hosts are restricted
+                    to that list; the host filters below do not apply.
+                    {sourceSelection.rationale && (
+                      <span className="mt-xxs block break-words text-caption">
+                        Why: {sourceSelection.rationale}
+                      </span>
+                    )}
                   </AlertDescription>
                 </Alert>
               )}

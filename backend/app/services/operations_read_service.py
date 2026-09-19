@@ -160,6 +160,293 @@ def compute_my_attention_queue(
 # operators can see coverage and avoid two people working the same host.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Investigation queue (v2.347.0; design review item 2)
+# ---------------------------------------------------------------------------
+
+class InvestigateReason(BaseModel):
+    kind: str
+    text: str
+
+
+class InvestigateEvidence(BaseModel):
+    sources: List[str] = Field(default_factory=list)
+    last_seen: Optional[datetime] = None
+    # What backs the reasons.  Untouched hosts have no finding or test by
+    # definition today; the field exists so the row can say so honestly and
+    # so a later "touched but stalled" queue can reuse the shape.
+    confirmation: str = "scanner"
+
+
+class InvestigateAction(BaseModel):
+    kind: str  # inspect | collect | plan
+    text: str
+
+
+class InvestigateRow(BaseModel):
+    host_id: int
+    ip_address: str
+    hostname: Optional[str] = None
+    tier: int
+    tier_label: str
+    reasons: List[InvestigateReason] = Field(default_factory=list)
+    evidence: InvestigateEvidence = Field(default_factory=InvestigateEvidence)
+    next_action: InvestigateAction
+
+
+class InvestigationQueueResponse(BaseModel):
+    items: List[InvestigateRow] = Field(default_factory=list)
+    untouched_total: int = 0
+    queue_total: int = 0
+    tiers: List[str] = Field(default_factory=list)
+
+
+# The ordering is a stated tier, not a weighted score (the risk-scoring
+# post-mortem: every number visible, nothing opaque).  A host takes the
+# first tier it qualifies for; within a tier, most recently seen first.
+INVESTIGATE_TIERS: List[tuple] = [
+    (1, "Exploitable critical"),
+    (2, "Critical vulnerability"),
+    (3, "Exploit available"),
+    (4, "High-value service, new or changed"),
+    (5, "Scans disagree"),
+]
+_NEW_HOST_DAYS = 7
+
+
+def compute_investigation_queue(
+    db: Session, project: Project, limit: int = 25,
+) -> InvestigationQueueResponse:
+    """Hosts nobody has touched that carry an observed weakness or a
+    relevant change — "what should I investigate next?" before anyone has
+    created work for it.
+
+    Untouched = no HostFollow (review or assignment), no note, no test-plan
+    entry, no finding.  Reasons come from what the inventory already knows:
+    vulnerability severity and exploitability, high-value open ports, a
+    host first seen this week or changed at its latest scan, and conflicts
+    between scans.  Every row carries its reasons, its evidence (which tools
+    saw it, when) and a next action; the tier is named, never scored.
+    """
+    from app.db.models_confidence import ConflictHistory
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+    from app.services.ports_of_interest import ports_by_number
+
+    followed = db.query(HostFollow.host_id)
+    noted = db.query(Annotation.host_id).filter(Annotation.host_id.isnot(None))
+    planned = db.query(TestPlanEntry.host_id)
+    found = db.query(FindingHost.host_id)
+    untouched = (
+        db.query(
+            models.Host.id, models.Host.ip_address, models.Host.hostname,
+            models.Host.first_seen, models.Host.last_seen,
+        )
+        .filter(
+            models.Host.project_id == project.id,
+            ~models.Host.id.in_(followed),
+            ~models.Host.id.in_(noted),
+            ~models.Host.id.in_(planned),
+            ~models.Host.id.in_(found),
+        )
+        .all()
+    )
+    tiers = [label for _, label in INVESTIGATE_TIERS]
+    if not untouched:
+        return InvestigationQueueResponse(untouched_total=0, queue_total=0, tiers=tiers)
+    ids = [row.id for row in untouched]
+
+    # --- signals, one grouped query each -----------------------------------
+    crit: Dict[int, int] = {}
+    high: Dict[int, int] = {}
+    exploit: Dict[int, int] = {}
+    crit_exploit: Dict[int, int] = {}
+    any_vuln: set = set()
+    for hid, sev, expl, cnt in (
+        db.query(
+            Vulnerability.host_id, Vulnerability.severity, Vulnerability.exploitable,
+            func.count(Vulnerability.id),
+        )
+        .filter(Vulnerability.host_id.in_(ids))
+        .group_by(Vulnerability.host_id, Vulnerability.severity, Vulnerability.exploitable)
+        .all()
+    ):
+        any_vuln.add(hid)
+        if sev == VulnerabilitySeverity.CRITICAL:
+            crit[hid] = crit.get(hid, 0) + cnt
+            if expl:
+                crit_exploit[hid] = crit_exploit.get(hid, 0) + cnt
+        elif sev == VulnerabilitySeverity.HIGH:
+            high[hid] = high.get(hid, 0) + cnt
+        if expl:
+            exploit[hid] = exploit.get(hid, 0) + cnt
+
+    poi = ports_by_number()
+    high_value: Dict[int, List[str]] = {}
+    for hid, port in (
+        db.query(models.Port.host_id, models.Port.port_number)
+        .filter(
+            models.Port.host_id.in_(ids),
+            models.Port.state == "open",
+            models.Port.port_number.in_(list(poi.keys())),
+        )
+        .distinct()
+        .all()
+    ):
+        high_value.setdefault(hid, []).append(poi[port].label)
+
+    conflicts: Dict[int, int] = dict(
+        db.query(ConflictHistory.host_id, func.count(ConflictHistory.id))
+        .filter(ConflictHistory.host_id.in_(ids))
+        .group_by(ConflictHistory.host_id)
+        .all()
+    )
+
+    # "Changed at its latest scan" is the same derivation the Hosts list
+    # badge uses.  Only hosts that could land in tier 4 need it (a
+    # high-value port open, no vulnerability tier), which keeps the window
+    # query small on a large untouched set.
+    from app.services.host_change_service import hosts_changed_since_prior_scan
+    tier4_candidates = [
+        hid for hid in high_value
+        if hid not in crit and hid not in exploit
+    ]
+    changed = hosts_changed_since_prior_scan(db, tier4_candidates)
+
+    now = datetime.now(timezone.utc)
+
+    def _aware(dt):
+        if dt is None:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    def _plural(n: int, one: str, many: Optional[str] = None) -> str:
+        return f"{n} {one if n == 1 else (many or one + 's')}"
+
+    candidates: List[tuple] = []
+    for row in untouched:
+        hid = row.id
+        reasons: List[InvestigateReason] = []
+        tier: Optional[int] = None
+        ce, c, e = crit_exploit.get(hid, 0), crit.get(hid, 0), exploit.get(hid, 0)
+        if ce:
+            tier = 1
+            reasons.append(InvestigateReason(
+                kind="critical_exploitable",
+                text=f"{_plural(ce, 'critical vulnerability', 'critical vulnerabilities')} with a known public exploit",
+            ))
+            if c > ce:
+                reasons.append(InvestigateReason(kind="critical", text=f"{c - ce} more critical"))
+        elif c:
+            tier = 2
+            reasons.append(InvestigateReason(
+                kind="critical", text=_plural(c, "critical vulnerability", "critical vulnerabilities"),
+            ))
+            if e:
+                reasons.append(InvestigateReason(
+                    kind="exploitable", text=f"{_plural(e, 'lower-severity vulnerability', 'lower-severity vulnerabilities')} with a known public exploit",
+                ))
+        elif e:
+            tier = 3
+            reasons.append(InvestigateReason(
+                kind="exploitable", text=f"{_plural(e, 'vulnerability', 'vulnerabilities')} with a known public exploit",
+            ))
+        h = high.get(hid, 0)
+        if h and tier is not None:
+            reasons.append(InvestigateReason(kind="high", text=f"{h} high"))
+
+        hv = high_value.get(hid)
+        first_seen = _aware(row.first_seen)
+        is_new = first_seen is not None and (now - first_seen).days < _NEW_HOST_DAYS
+        is_changed = hid in changed
+        if hv:
+            reasons.append(InvestigateReason(kind="high_value", text=f"{', '.join(sorted(hv))} open"))
+        if is_new:
+            days = (now - first_seen).days if first_seen else 0
+            reasons.append(InvestigateReason(
+                kind="new_host", text="First seen today" if days == 0 else f"First seen {_plural(days, 'day')} ago",
+            ))
+        if is_changed:
+            reasons.append(InvestigateReason(kind="changed", text="Changed at its latest scan (state or a new port)"))
+        if tier is None and hv and (is_new or is_changed):
+            tier = 4
+        cf = conflicts.get(hid, 0)
+        if cf:
+            reasons.append(InvestigateReason(
+                kind="conflicts", text=f"{_plural(cf, 'value')} scans disagree on",
+            ))
+            if tier is None:
+                tier = 5
+        if tier is None:
+            continue
+        candidates.append((tier, -(_aware(row.last_seen) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(), row, reasons))
+
+    candidates.sort(key=lambda t: (t[0], t[1], t[2].id))
+    queue_total = len(candidates)
+    chosen = candidates[:limit]
+
+    sources: Dict[int, List[str]] = {}
+    if chosen:
+        chosen_ids = [t[2].id for t in chosen]
+        for hid, tool in (
+            db.query(models.HostScanHistory.host_id, models.Scan.tool_name)
+            .join(models.Scan, models.Scan.id == models.HostScanHistory.scan_id)
+            .filter(models.HostScanHistory.host_id.in_(chosen_ids))
+            .distinct()
+            .all()
+        ):
+            if tool:
+                sources.setdefault(hid, []).append(tool)
+
+    tier_label = dict(INVESTIGATE_TIERS)
+    items: List[InvestigateRow] = []
+    for tier, _neg_seen, row, reasons in chosen:
+        hid = row.id
+        # The primary action is to take the host: mark it In Review under
+        # the caller, which moves it out of this queue and into their
+        # personal one (nobody else can be reviewing it — the queue only
+        # lists hosts with no follow row at all).  A host with an exposed
+        # service and no vulnerability data first needs evidence collected.
+        if tier == 4 and hid not in any_vuln:
+            action = InvestigateAction(
+                kind="collect",
+                text="No vulnerability data on this host — run a vulnerability scan against it and upload the result, or take it into review.",
+            )
+        elif tier <= 3:
+            action = InvestigateAction(
+                kind="review",
+                text=f"Take it into review: {tier_label[tier].lower()} on a host nobody has looked at.",
+            )
+        elif tier == 5:
+            action = InvestigateAction(
+                kind="review", text="Take it into review and reconcile what the scans disagree on.",
+            )
+        else:
+            action = InvestigateAction(
+                kind="review", text="Take it into review: check the exposed service and decide whether it needs a test.",
+            )
+        items.append(InvestigateRow(
+            host_id=hid,
+            ip_address=row.ip_address,
+            hostname=row.hostname,
+            tier=tier,
+            tier_label=tier_label[tier],
+            reasons=reasons,
+            evidence=InvestigateEvidence(
+                sources=sorted(sources.get(hid, [])),
+                last_seen=row.last_seen,
+                confirmation="scanner",
+            ),
+            next_action=action,
+        ))
+
+    return InvestigationQueueResponse(
+        items=items,
+        untouched_total=len(untouched),
+        queue_total=queue_total,
+        tiers=tiers,
+    )
+
+
 class TeamReviewHostRow(BaseModel):
     """One in-review host under a reviewer."""
     host_id: int

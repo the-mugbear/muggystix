@@ -219,6 +219,47 @@ export interface SinceLastVisit {
   new_high_findings: number;
 }
 
+// v5.223.0 — the engagement-wide investigation queue (design review item 2):
+// hosts nobody has touched (no review, assignment, note, plan entry or
+// finding) that carry an observed weakness or a relevant change.  Ordered by
+// a stated tier, never a composite score; every row says why.
+export interface InvestigateReason {
+  kind: string;
+  text: string;
+}
+
+export interface InvestigateRow {
+  host_id: number;
+  ip_address: string;
+  hostname: string | null;
+  tier: number;
+  tier_label: string;
+  reasons: InvestigateReason[];
+  evidence: {
+    /** Tools whose scans observed this host. */
+    sources: string[];
+    last_seen: string | null;
+    /** What backs the reasons: scanner output only, a finding, or a test. */
+    confirmation: 'scanner' | 'finding' | 'tested';
+  };
+  next_action: {
+    /** review = take it into review under the caller (the row's button);
+     *  collect = evidence is missing first. */
+    kind: 'review' | 'collect';
+    text: string;
+  };
+}
+
+export interface InvestigationQueueResponse {
+  items: InvestigateRow[];
+  /** Hosts in the project nobody has touched, with or without a reason. */
+  untouched_total: number;
+  /** Untouched hosts that carry at least one reason (the queue's true size). */
+  queue_total: number;
+  /** The tier labels in order, for the legend. */
+  tiers: string[];
+}
+
 export interface WorkbenchResponse {
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
@@ -227,6 +268,7 @@ export interface WorkbenchResponse {
   my_findings: MyFindingsResponse;
   team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;
+  investigate?: InvestigationQueueResponse;
 }
 
 export const getWorkbench = async (): Promise<WorkbenchResponse> => {

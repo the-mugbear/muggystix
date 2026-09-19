@@ -49,6 +49,11 @@ class Port(PortBase):
     id: int
     host_id: int
     last_updated_scan_id: Optional[int] = None
+    # v2.348.0 — the port's OWN observation window.  A port last seen before
+    # the host's newest observation was not seen by the latest sweep; the
+    # inspector's port table says so instead of borrowing the host's date.
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
     scripts: List[Script] = []
     
     model_config = ConfigDict(from_attributes=True)
@@ -425,6 +430,25 @@ class HostScopeNameEntry(BaseModel):
     include_subdomains: bool = False
 
 
+class HostAssessment(BaseModel):
+    """Per-domain evidence freshness for one host (v2.348.0).  A recent
+    observation of the host does not make its other facts current: each
+    kind of evidence carries its own newest timestamp, or says it was never
+    gathered, or that it does not apply (no eligible port)."""
+    last_observed_at: Optional[datetime] = None
+    vuln_assessed: bool = False
+    last_vuln_assessed_at: Optional[datetime] = None
+    web_eligible: bool = False
+    web_assessed: bool = False
+    last_web_assessed_at: Optional[datetime] = None
+    auth_eligible: bool = False
+    auth_assessed: bool = False
+    tests_executed: int = 0
+    last_tested_at: Optional[datetime] = None
+    conflicts: int = 0
+    open_ports_not_in_latest_scan: int = 0
+
+
 class HostScopeMembership(BaseModel):
     """Which scope entries cover a host — the per-host inverse of
     ``GET /scans/out-of-scope`` (v2.342.0).
@@ -492,14 +516,26 @@ class Host(HostBase):
     # (Vulnerability.exploitable) — drives the Attention column's "exploit
     # available" reason.  Populated by the list endpoint's batch query.
     exploitable_count: int = 0
+    # v2.344.0 — of those, the ones that are ALSO critical severity (joined on
+    # the same vulnerability row).  The Attention badge's "critical · exploit"
+    # wording keys on this, not on the two counts above being both non-zero.
+    critical_exploitable_count: int = 0
     # Most-specific (longest-prefix) subnet CIDR + its site that this host
-    # falls in, or null when out of scope.  Surfaced in the Host column so an
-    # operator sees where the host lives without opening it.
+    # falls in, or null when no subnet contains it.  Surfaced in the Host
+    # column so an operator sees where the host lives without opening it.
     primary_subnet: Optional[str] = None
     primary_site: Optional[str] = None
+    # v2.344.0 — the three-state coverage the detail card shows, on the list
+    # row: "subnet" | "name" (reachable via an in-scope name only) | "none".
+    # With project_has_scope the row can tell "out of scope" from "this
+    # project has declared no scope yet".  Populated by the list endpoint.
+    scope_coverage: Optional[str] = None
+    project_has_scope: Optional[bool] = None
     # v2.342.0 — every scope entry covering this host (the detail endpoint
     # only; the list shows just the most-specific subnet above).
     scope_membership: Optional["HostScopeMembership"] = None
+    # v2.348.0 — per-domain evidence freshness (detail endpoint only).
+    assessment: Optional["HostAssessment"] = None
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to
     # show/hide the "Web Interfaces" card and by the Hosts list (phase
@@ -691,6 +727,14 @@ class ScanSummary(_ScanRunWindow):
     # v2.335.0 — the upload batch this file arrived in, if any.
     batch_id: Optional[int] = None
     batch_label: Optional[str] = None
+    # v2.346.0 — the import result: conflicts this scan raised (scans
+    # disagreed on a host/port value) and the ingestion job's quality, so a
+    # clean import and one with gaps read differently wherever the scan shows.
+    conflicts: int = 0
+    import_job_id: Optional[int] = None
+    import_skipped: int = 0
+    import_partial: bool = False
+    import_warnings: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

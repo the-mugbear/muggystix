@@ -6,7 +6,8 @@
  *
  *   1. backend  — ALLOWED_UPLOAD_EXTENSIONS in ingestion_service.py
  *                 (the server-side allowlist; a mismatch here 400s the upload)
- *   2. frontend — the react-dropzone `accept` map in Scans.tsx
+ *   2. frontend — ACCEPTED_EXTENSIONS in data/uploadFormats.ts, the
+ *                 react-dropzone `accept` map Scans.tsx uses
  *                 (a mismatch here rejects the file before it ever uploads)
  *   3. docs     — the "Accepted Extensions" column of UPLOAD_FORMATS.md
  *                 (a mismatch here promises users a format that doesn't work)
@@ -25,6 +26,8 @@ import { join } from 'path';
 
 import { describe, it, expect } from 'vitest';
 
+import { ACCEPTED_EXTENSIONS } from '../data/uploadFormats';
+
 const frontendRoot = join(__dirname, '..', '..');
 const repoRoot = join(frontendRoot, '..');
 
@@ -41,14 +44,12 @@ function backendAllowlist(): Set<string> {
   return new Set([...block[0].matchAll(/"(\.[a-z0-9]+)"/g)].map((m) => m[1]));
 }
 
-/** Extensions in the react-dropzone `accept` map — single-quoted `.ext`
- *  values, scoped to the accept:{...} object.  The MIME-type keys
- *  ('text/xml', …) don't start with a dot, so they're naturally excluded. */
+/** Extensions in the react-dropzone `accept` map.  v5.219.2 — the map moved
+ *  from an inline literal in Scans.tsx to ACCEPTED_EXTENSIONS in
+ *  data/uploadFormats.ts (so the dialog can print the list it enforces);
+ *  Scans.tsx passes that object straight to useDropzone. */
 function dropzoneAccept(): Set<string> {
-  const src = readFileSync(join(frontendRoot, 'src', 'pages', 'Scans.tsx'), 'utf8');
-  const block = src.match(/accept:\s*\{[\s\S]*?\}/);
-  if (!block) throw new Error('dropzone accept map not found in Scans.tsx');
-  return new Set([...block[0].matchAll(/'(\.[a-z0-9]+)'/g)].map((m) => m[1]));
+  return new Set(Object.values(ACCEPTED_EXTENSIONS).flat());
 }
 
 /** Extensions in the "Accepted Extensions" column (index 2) of the

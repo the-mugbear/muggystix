@@ -344,58 +344,13 @@ def _host_conflict_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
     )
 
 
-def _hosts_changed_since_prior_scan(db: Session, host_ids: List[int]) -> set:
-    """Host ids that CHANGED at their most-recent scan vs the prior one — a
-    host-state flip (HostScanHistory.state_at_scan) or a port first observed
-    after the prior scan.  Hosts with <2 scans are never "changed" (the first
-    scan is all-new, not a change).  Batched via a window function — no N+1.
-    Removed-port detection is intentionally omitted: the dedup keeps ports and
-    doesn't track per-scan presence, so "removed" isn't reliably derivable.
-    """
-    if not host_ids:
-        return set()
-    rn = func.row_number().over(
-        partition_by=models.HostScanHistory.host_id,
-        order_by=models.HostScanHistory.discovered_at.desc(),
-    ).label("rn")
-    sub = (
-        db.query(
-            models.HostScanHistory.host_id.label("hid"),
-            models.HostScanHistory.discovered_at.label("disc"),
-            models.HostScanHistory.state_at_scan.label("state"),
-            rn,
-        )
-        .filter(models.HostScanHistory.host_id.in_(host_ids))
-        .subquery()
-    )
-    latest: Dict[int, tuple] = {}
-    prior: Dict[int, tuple] = {}
-    for hid, disc, state, rn_ in db.query(sub.c.hid, sub.c.disc, sub.c.state, sub.c.rn).filter(sub.c.rn <= 2).all():
-        (latest if rn_ == 1 else prior)[hid] = (disc, state)
-
-    changed: set = set()
-    # State flip between the two most recent scans.
-    for hid, (_pdisc, pstate) in prior.items():
-        if hid in latest and latest[hid][1] != pstate:
-            changed.add(hid)
-    # A port first observed AFTER the prior scan = added in the latest sweep.
-    prior_time = {hid: prior[hid][0] for hid in prior}
-    if prior_time:
-        maxfs = dict(
-            db.query(models.Port.host_id, func.max(models.Port.first_seen))
-            .filter(models.Port.host_id.in_(list(prior_time)))
-            .group_by(models.Port.host_id)
-            .all()
-        )
-        for hid, ptime in prior_time.items():
-            mfs = maxfs.get(hid)
-            if mfs is None or ptime is None:
-                continue
-            mfs = mfs if mfs.tzinfo else mfs.replace(tzinfo=timezone.utc)
-            pt = ptime if ptime.tzinfo else ptime.replace(tzinfo=timezone.utc)
-            if mfs > pt:
-                changed.add(hid)
-    return changed
+# v2.347.0 — the "changed at its latest scan" derivation moved to
+# app/services/host_change_service.py so the investigation queue on My Work
+# shares it without a service importing a router.  Same name kept here for
+# the list endpoint and its tests.
+from app.services.host_change_service import (  # noqa: E402
+    hosts_changed_since_prior_scan as _hosts_changed_since_prior_scan,
+)
 
 
 @router.get("/", response_model=HostListResponse)
@@ -728,15 +683,23 @@ def get_hosts_v2(
 
     # Batch lookup: count of exploitable vulns per host — drives the Attention
     # column's "exploit available" reason.  One grouped query for the page.
+    # v2.344.0 — also the CRITICAL-and-exploitable count, joined on the same
+    # vulnerability row.  The badge used to pair the critical count with the
+    # host-wide exploit count and then say "a critical with an exploit", a
+    # claim nothing had actually checked.
     exploit_count_map: Dict[int, int] = {}
+    critical_exploit_count_map: Dict[int, int] = {}
     if host_ids:
-        for hid, cnt in (
-            db.query(Vulnerability.host_id, func.count(Vulnerability.id))
+        from app.db.models_vulnerability import VulnerabilitySeverity
+        for hid, sev, cnt in (
+            db.query(Vulnerability.host_id, Vulnerability.severity, func.count(Vulnerability.id))
             .filter(Vulnerability.host_id.in_(host_ids), Vulnerability.exploitable.is_(True))
-            .group_by(Vulnerability.host_id)
+            .group_by(Vulnerability.host_id, Vulnerability.severity)
             .all()
         ):
-            exploit_count_map[hid] = cnt
+            exploit_count_map[hid] = exploit_count_map.get(hid, 0) + cnt
+            if sev == VulnerabilitySeverity.CRITICAL:
+                critical_exploit_count_map[hid] = cnt
 
     # Batch lookup: each host's MOST-SPECIFIC (longest-prefix) subnet + site,
     # so the Host column can show where the host lives.  Bounded by the page's
@@ -758,6 +721,19 @@ def get_hosts_v2(
             if hid not in best_prefix or pfx > best_prefix[hid]:
                 best_prefix[hid] = pfx
                 host_location_map[hid] = {"subnet": cidr, "site": site}
+
+    # v2.344.0 — the same three coverage states the detail card shows
+    # (subnet / reachable via in-scope name / none), so the list can't call a
+    # host behind an approved name "out of scope".  One query for the page;
+    # hosts with a subnet mapping above are already known.
+    scope_coverage_map: Dict[int, str] = {}
+    project_has_scope = False
+    if host_ids:
+        from app.services.scope_coverage import bulk_scope_coverage, project_has_any_scope
+        scope_coverage_map = bulk_scope_coverage(
+            db, project.id, host_ids, set(host_location_map.keys()),
+        )
+        project_has_scope = project_has_any_scope(db, project.id)
 
     serialized_hosts = []
     for host in hosts:
@@ -784,9 +760,12 @@ def get_hosts_v2(
         serialized["finding_count"] = finding_count_map.get(host.id, 0)
         serialized["changed_recently"] = host.id in changed_map
         serialized["exploitable_count"] = exploit_count_map.get(host.id, 0)
+        serialized["critical_exploitable_count"] = critical_exploit_count_map.get(host.id, 0)
         _loc = host_location_map.get(host.id)
         serialized["primary_subnet"] = _loc["subnet"] if _loc else None
         serialized["primary_site"] = _loc["site"] if _loc else None
+        serialized["scope_coverage"] = scope_coverage_map.get(host.id, "none")
+        serialized["project_has_scope"] = project_has_scope
         serialized["other_reviewers"] = other_review_map.get(host.id, [])
         serialized["reviewed_by"] = reviewed_map.get(host.id, [])
         serialized["team_review_status"] = team_status_map.get(host.id)
@@ -1471,6 +1450,11 @@ def get_host_v2(
     from app.services.scope_coverage import host_scope_membership
 
     serialized["scope_membership"] = host_scope_membership(db, host)
+    # v2.348.0 — freshness per assessment domain, so the inspector can say
+    # "observed yesterday, vulnerabilities not assessed, tested 3 months ago"
+    # instead of one last-seen for everything.
+    from app.services.host_assessment_service import host_assessment
+    serialized["assessment"] = host_assessment(db, host)
     # Owner/assignee enrichment — the base detail serializer leaves this []
     # (it needs a user join), so mirror the list endpoint here.  Without this
     # the inspector can't show or manage the host's owner. (1.2b)

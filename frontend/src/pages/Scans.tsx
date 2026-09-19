@@ -61,11 +61,13 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import ScanContribution from '../components/scans/ScanContribution';
+import ImportResult from '../components/scans/ImportResult';
 import ScanBatchList, { SCAN_BATCH_LIMIT } from '../components/scans/ScanBatchList';
 import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -90,7 +92,11 @@ import {
   AccordionTrigger,
 } from '../components/ui/accordion';
 import { cn } from '../utils/cn';
-import { SUPPORTED_FORMATS } from '../data/uploadFormats';
+import {
+  ACCEPTED_EXTENSIONS,
+  ACCEPTED_EXTENSION_LIST,
+  SUPPORTED_FORMATS,
+} from '../data/uploadFormats';
 
 
 // The advertised upload formats live in data/uploadFormats.ts (v5.204.0),
@@ -148,9 +154,30 @@ export default function Scans() {
       {
         filename: string;
         percent: number;
-        status: 'uploading' | 'parsing' | 'done' | 'error' | 'duplicate';
+        // v5.222.0 — one entry follows the file from transfer to import
+        // result (design review item 5), so the operator can tell upload
+        // receipt, processing, a clean import, an import with gaps and a
+        // failure apart without leaving the page:
+        //   uploading → received → processing → imported | partial | failed
+        // 'error' is a transfer failure (the server never took the file);
+        // 'duplicate' a refused identical file.
+        status:
+          | 'uploading'
+          | 'received'
+          | 'processing'
+          | 'imported'
+          | 'partial'
+          | 'failed'
+          | 'error'
+          | 'duplicate';
         error?: string;
         startedAt: number;
+        jobId?: number;
+        /** The worker's latest progress message while processing. */
+        jobMessage?: string | null;
+        /** The scan row's summary once the job completed — the import result. */
+        result?: Scan | null;
+        parseErrorId?: number | null;
         // v5.207.0 — a refused identical file: what it already is, plus
         // what "Import again" needs to resend it.
         duplicate?: DuplicateUpload;
@@ -472,7 +499,9 @@ export default function Scans() {
             [key]: {
               ...existing,
               percent,
-              status: percent >= 100 ? 'parsing' : 'uploading',
+              // Stays 'uploading' at 100% until the server answers — that
+              // answer is what makes the file 'received'.
+              status: 'uploading',
             },
           };
         });
@@ -483,7 +512,10 @@ export default function Scans() {
       { skipInformational, ...options },
     )
       .then((result) => {
-        // Flip to 'done' so the banner reads "Upload complete: X%".
+        // The server has the file: 'received'.  The entry now waits for
+        // the ingestion job (tracked by jobId) and becomes the import
+        // result when it completes — it no longer auto-dismisses, because
+        // the result is the thing the operator needs to see.
         // Use prev as the source of truth — if the entry was removed
         // (watchdog, manual dismiss), this is a no-op.
         setUploadProgress((prev) => {
@@ -493,7 +525,8 @@ export default function Scans() {
             [key]: {
               ...(existing ?? { filename: file.name, startedAt }),
               percent: 100,
-              status: 'done',
+              status: 'received',
+              jobId: result?.job_id ?? undefined,
             },
           };
         });
@@ -502,13 +535,6 @@ export default function Scans() {
             prev.includes(result.job_id) ? prev : [...prev, result.job_id],
           );
         }
-        // Auto-dismiss the success banner after a short pause.
-        setTimeout(() => {
-          setUploadProgress((prev) => {
-            const { [key]: _removed, ...rest } = prev;
-            return rest;
-          });
-        }, 1500);
       })
       .catch((err: unknown) => {
         // v5.207.0 — an identical file is refused (409 duplicate_scan). Not
@@ -635,17 +661,10 @@ export default function Scans() {
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop,
-    // Keep in sync with the backend ALLOWED_UPLOAD_EXTENSIONS. Line-delimited
-    // JSON arrives as both .jsonl (httpx/dnsx) and .ndjson (rdap-lookup.py); ZIP
-    // is the EyeWitness bundle. These were accepted server-side but missing here,
-    // so the dropzone rejected them before upload.
-    accept: {
-      'text/xml': ['.xml', '.nessus'],
-      'application/json': ['.json', '.jsonl', '.ndjson'],
-      'text/csv': ['.csv'],
-      'text/plain': ['.txt', '.gnmap'],
-      'application/zip': ['.zip'],
-    },
+    // The allowlist lives in data/uploadFormats.ts (v5.219.2) so the dialog
+    // can print the same list it enforces; it mirrors the backend
+    // ALLOWED_UPLOAD_EXTENSIONS.
+    accept: ACCEPTED_EXTENSIONS,
     // v4.28.0 — keep in lockstep with nginx (ssl-nginx.conf
     // `client_max_body_size`) and backend (`MAX_FILE_SIZE` in .env).
     // v2.63.0 raised both to 2GB but missed this client-side gate,
@@ -656,6 +675,54 @@ export default function Scans() {
     maxSize: 2 * 1024 * 1024 * 1024,
     multiple: true,
   });
+
+  // v5.222.0 — the banner entry that submitted a job follows it: queued /
+  // processing show the worker's message; completed fetches the scan row's
+  // summary (the same numbers the inventory shows) and becomes 'imported' or
+  // 'partial'; failed shows the error and links its parse error.  Entries
+  // are keyed by upload key, so match on jobId.
+  const applyJobsToUploadEntries = useCallback((jobs: IngestionJob[]) => {
+    if (jobs.length === 0) return;
+    setUploadProgress((prev) => {
+      let changed = false;
+      const nextEntries = { ...prev };
+      for (const [key, entry] of Object.entries(prev)) {
+        if (entry.jobId == null) continue;
+        const job = jobs.find((j) => j.id === entry.jobId);
+        if (!job) continue;
+        if ((job.status === 'queued' || job.status === 'processing') && entry.status !== 'processing') {
+          nextEntries[key] = { ...entry, status: 'processing', jobMessage: job.message ?? null };
+          changed = true;
+        } else if (job.status === 'processing' && entry.jobMessage !== (job.message ?? null)) {
+          nextEntries[key] = { ...entry, jobMessage: job.message ?? null };
+          changed = true;
+        } else if (job.status === 'failed' && entry.status !== 'failed') {
+          nextEntries[key] = {
+            ...entry,
+            status: 'failed',
+            error: job.error_message || job.last_error || job.message || 'Import failed',
+            parseErrorId: job.parse_error_id ?? null,
+          };
+          changed = true;
+        } else if (job.status === 'completed' && entry.status !== 'imported' && entry.status !== 'partial') {
+          const gaps = (job.skipped_count ?? 0) > 0 || !!job.partial;
+          nextEntries[key] = { ...entry, status: gaps ? 'partial' : 'imported', jobMessage: job.message ?? null };
+          changed = true;
+          if (job.scan_id != null) {
+            const scanId = job.scan_id;
+            getScans(0, 1, { ids: [scanId] })
+              .then((rows) => {
+                const row = rows[0];
+                if (!row) return;
+                setUploadProgress((p) => (p[key] ? { ...p, [key]: { ...p[key], result: row } } : p));
+              })
+              .catch(() => undefined);
+          }
+        }
+      }
+      return changed ? nextEntries : prev;
+    });
+  }, []);
 
   useEffect(() => {
     if (activeJobIds.length === 0) return undefined;
@@ -680,6 +747,8 @@ export default function Scans() {
         }
       });
       setActiveJobs((prev) => ({ ...prev, ...next }));
+      // v5.222.0 — carry the job's state onto the file's banner entry.
+      applyJobsToUploadEntries(Object.values(next));
       if (finishedIds.length > 0) {
         setActiveJobIds((prev) => prev.filter((id) => !finishedIds.includes(id)));
         fetchRecentJobs();
@@ -693,7 +762,7 @@ export default function Scans() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [activeJobIds, fetchScans, fetchRecentJobs]);
+  }, [activeJobIds, fetchScans, fetchRecentJobs, applyJobsToUploadEntries]);
 
   // Recent-jobs polling — depend only on the boolean, not the full
   // recentJobs array.  Pre-audit (H20) this effect re-ran on every
@@ -1001,34 +1070,41 @@ export default function Scans() {
         <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
           {Object.entries(uploadProgress).map(([key, p]) => {
             const variant =
-              p.status === 'error'
+              p.status === 'error' || p.status === 'failed'
                 ? 'destructive'
-                : p.status === 'duplicate'
+                : p.status === 'duplicate' || p.status === 'partial'
                 ? 'warning'
-                : p.status === 'done'
+                : p.status === 'imported'
                 ? 'success'
                 : 'info';
-            const label =
-              p.status === 'uploading'
-                ? 'Uploading'
-                : p.status === 'parsing'
-                ? 'Finishing upload'
-                : p.status === 'done'
-                ? 'Upload complete'
-                : p.status === 'duplicate'
-                ? 'Already imported'
-                : 'Upload failed';
+            const label: Record<typeof p.status, string> = {
+              uploading: 'Uploading',
+              received: 'Upload received, waiting for the worker',
+              processing: 'Processing',
+              imported: 'Imported',
+              partial: 'Imported with gaps',
+              failed: 'Import failed',
+              duplicate: 'Already imported',
+              error: 'Upload failed',
+            };
+            const terminal =
+              p.status === 'imported' ||
+              p.status === 'partial' ||
+              p.status === 'failed' ||
+              p.status === 'error' ||
+              p.status === 'duplicate';
+            const transferring = p.status === 'uploading';
             return (
               <Alert key={key} variant={variant}>
                 <AlertDescription className="flex flex-col gap-xxs">
                   <div className="flex items-baseline justify-between gap-sm">
                     <span className="truncate font-semibold">
-                      {label}: {p.filename}
+                      {label[p.status]}: {p.filename}
                     </span>
-                    {p.status !== 'error' && p.status !== 'duplicate' && (
+                    {transferring && (
                       <span className="shrink-0 text-caption text-muted-foreground">{p.percent}%</span>
                     )}
-                    {(p.status === 'done' || p.status === 'error' || p.status === 'duplicate') && (
+                    {terminal && (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -1070,8 +1146,41 @@ export default function Scans() {
                     </div>
                   ) : p.status === 'error' ? (
                     <span>{p.error || 'Upload failed'}</span>
+                  ) : p.status === 'failed' ? (
+                    <div className="flex flex-wrap items-center gap-xs">
+                      <span className="min-w-0 break-words">{p.error || 'Import failed'}</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          navigate(
+                            p.parseErrorId != null
+                              ? `/parse-errors?error_id=${p.parseErrorId}`
+                              : p.jobId != null
+                                ? `/parse-errors?job_id=${p.jobId}`
+                                : '/parse-errors',
+                          )
+                        }
+                      >
+                        Why it failed
+                      </Button>
+                    </div>
+                  ) : p.status === 'imported' || p.status === 'partial' ? (
+                    p.result ? (
+                      <ImportResult scan={p.result} />
+                    ) : (
+                      <span className="text-caption text-muted-foreground">
+                        {p.jobMessage || 'Import complete.'}
+                      </span>
+                    )
+                  ) : p.status === 'processing' || p.status === 'received' ? (
+                    <span className="text-caption text-muted-foreground">
+                      {p.status === 'received'
+                        ? 'The file is stored; parsing starts when a worker picks it up.'
+                        : p.jobMessage || 'Parsing…'}
+                    </span>
                   ) : (
-                    <ProgressBar value={p.percent} tone={p.status === 'done' ? 'success' : 'default'} />
+                    <ProgressBar value={p.percent} tone="default" />
                   )}
                 </AlertDescription>
               </Alert>
@@ -1080,12 +1189,14 @@ export default function Scans() {
         </div>
       )}
 
-      {/* Active job progress */}
+      {/* Active job progress — jobs this tab did not upload (found queued or
+          processing on load); a job with a banner entry above is shown there. */}
       {activeJobIds.length > 0 && (
         <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
           {activeJobIds.map((jobId) => {
             const job = activeJobs[jobId];
             if (!job) return null;
+            if (Object.values(uploadProgress).some((e) => e.jobId === jobId)) return null;
             return (
               <Alert key={jobId} variant="info">
                 <AlertDescription className="break-words">
@@ -1802,7 +1913,10 @@ export default function Scans() {
           <DialogHeader>
             <DialogTitle>Upload scans</DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col gap-sm">
+          {/* v5.219.2 — DialogBody scrolls inside the 85vh frame. Without it
+              the opened "Supported formats" list ran past the frame's
+              overflow-hidden edge and the tail of the list was unreadable. */}
+          <DialogBody className="flex flex-col gap-sm">
             <div
               {...getRootProps()}
               aria-label="Scan file upload drop zone"
@@ -1820,6 +1934,11 @@ export default function Scans() {
               </p>
               <p className="text-metadata text-muted-foreground">
                 Click to select one or more scan files.
+              </p>
+              <p className="text-caption text-muted-foreground break-words">
+                Accepted:{' '}
+                <span className="font-mono">{ACCEPTED_EXTENSION_LIST.join(' ')}</span>
+                {' '}· the tool is detected from the file&apos;s content and name.
               </p>
             </div>
 
@@ -1860,22 +1979,34 @@ export default function Scans() {
 
             <Accordion type="single" collapsible>
               <AccordionItem value="formats">
-                <AccordionTrigger>Supported formats</AccordionTrigger>
+                <AccordionTrigger>
+                  Supported formats ({SUPPORTED_FORMATS.length} tools)
+                </AccordionTrigger>
                 <AccordionContent>
-                  <div className="grid grid-cols-1 gap-xs sm:grid-cols-2">
+                  {/* One column: the two-column grid squeezed long tool names
+                      ("DirBuster / Gobuster / …") and descriptions into ~300px
+                      and clipped them. Every text node wraps. */}
+                  <ul className="flex flex-col divide-y divide-border">
                     {SUPPORTED_FORMATS.map((item) => (
-                      <div
+                      <li
                         key={`${item.tool}-${item.formats}`}
-                        className="flex items-baseline gap-xs"
+                        className="flex min-w-0 flex-col gap-xxs py-xs"
                       >
-                        <p className="min-w-20 text-metadata font-semibold">{item.tool}</p>
-                        <div>
-                          <p className="text-caption font-mono text-primary">{item.formats}</p>
-                          <p className="text-caption text-muted-foreground">{item.desc}</p>
+                        <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs">
+                          <span className="text-metadata font-semibold break-words">{item.tool}</span>
+                          <span className="text-caption font-mono text-primary break-words">
+                            {item.formats}
+                          </span>
                         </div>
-                      </div>
+                        <p className="text-caption text-muted-foreground break-words">{item.desc}</p>
+                        {item.hint && (
+                          <p className="text-caption text-muted-foreground break-words">
+                            <span className="font-medium">Auto-detect:</span> {item.hint}
+                          </p>
+                        )}
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -1888,7 +2019,7 @@ export default function Scans() {
                 </AlertDescription>
               </Alert>
             )}
-          </div>
+          </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUploadDialogOpen(false)}>
               Close

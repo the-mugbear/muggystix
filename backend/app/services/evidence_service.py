@@ -164,6 +164,74 @@ def assessed_host_ids(db: Session, project_id: int) -> Dict[str, Set[int]]:
     }
 
 
+# What closes each domain's gap: a collection step (run a tool against the
+# hosts, upload the output) or a planning step (the evidence exists; the
+# finding has not been validated).  Shown beside the gap list on the
+# Evidence page (v2.348.0; design review item 4).
+GAP_ACTIONS: Dict[str, Dict[str, str]] = {
+    "port_discovery": {"kind": "collect", "text": "Port-scan these hosts (e.g. nmap -sV) and upload the result."},
+    "service_detection": {"kind": "collect", "text": "Re-scan these hosts with version detection (nmap -sV) so services are identified, not guessed from the port."},
+    "os_detection": {"kind": "collect", "text": "Re-scan these hosts with OS detection (nmap -O) so end-of-life can be judged."},
+    "vuln_assessment": {"kind": "collect", "text": "Run a vulnerability scan (Nessus / OpenVAS) against these hosts and upload the export."},
+    "web_tls": {"kind": "collect", "text": "Probe these hosts' web ports with httpx and testssl.sh and upload the JSON."},
+    "auth_smb_ad": {"kind": "collect", "text": "Enumerate these hosts with netexec (SMB signing, shares) and upload the output."},
+    "validation": {"kind": "plan", "text": "These hosts carry findings nobody has tested — put them on a test plan."},
+}
+
+
+def evidence_gap_hosts(db: Session, project_id: int, domain: str, limit: int = 200) -> Optional[Dict[str, Any]]:
+    """The hosts a domain applies to that carry no evidence in it — the
+    coverage gap as a list the operator can act on, not just a ratio.
+
+    Returns None for an unknown domain.  ``ports`` carries the open ports
+    that made the host eligible (the web or auth ports), so the list reads
+    as endpoints, not addresses.
+    """
+    if domain not in DOMAIN_LABELS:
+        return None
+    eligible = eligible_host_ids(db, project_id)[domain]
+    assessed = assessed_host_ids(db, project_id)[domain]
+    gap_ids = sorted(eligible - assessed)
+    total = len(gap_ids)
+    chosen = gap_ids[:limit]
+    hosts = (
+        db.query(models.Host.id, models.Host.ip_address, models.Host.hostname)
+        .filter(models.Host.id.in_(chosen))
+        .all()
+        if chosen else []
+    )
+    port_filter = None
+    if domain == "web_tls":
+        port_filter = or_(models.Port.port_number.in_(_WEB_PORTS), models.Port.service_name.ilike("http%"))
+    elif domain == "auth_smb_ad":
+        port_filter = models.Port.port_number.in_(_AUTH_PORTS)
+    ports_by_host: Dict[int, List[int]] = {}
+    if port_filter is not None and chosen:
+        for hid, port in (
+            db.query(models.Port.host_id, models.Port.port_number)
+            .filter(models.Port.host_id.in_(chosen), models.Port.state == "open", port_filter)
+            .distinct()
+            .all()
+        ):
+            ports_by_host.setdefault(hid, []).append(port)
+    by_ip = sorted(hosts, key=lambda h: [int(x) if x.isdigit() else 0 for x in h.ip_address.split(".")] if "." in h.ip_address else [0])
+    return {
+        "domain": domain,
+        "label": DOMAIN_LABELS[domain],
+        "total": total,
+        "items": [
+            {
+                "host_id": h.id,
+                "ip_address": h.ip_address,
+                "hostname": h.hostname,
+                "ports": sorted(ports_by_host.get(h.id, [])),
+            }
+            for h in by_ip
+        ],
+        "action": GAP_ACTIONS[domain],
+    }
+
+
 def compute_evidence_coverage(db: Session, project_id: int) -> Dict[str, Any]:
     """Per-domain evidence coverage for a project, plus contributing tools and
     data-quality signals.  Counts are the sizes of the shared per-host sets

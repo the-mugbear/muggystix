@@ -169,6 +169,34 @@ export interface EvidenceCoverageResponse {
   data_quality: { scans: number; parse_errors_unresolved: number };
 }
 
+/** v2.348.0 — a coverage gap as a list: the eligible-but-unassessed hosts,
+ *  the open ports that made them eligible, and the step that closes it. */
+export interface EvidenceGapHost {
+  host_id: number;
+  ip_address: string;
+  hostname: string | null;
+  ports: number[];
+}
+
+export interface EvidenceGapsResponse {
+  domain: string;
+  label: string;
+  total: number;
+  items: EvidenceGapHost[];
+  action: { kind: 'collect' | 'plan'; text: string };
+}
+
+export const getEvidenceGaps = async (
+  domain: string,
+  options: { limit?: number; signal?: AbortSignal } = {},
+): Promise<EvidenceGapsResponse> => {
+  const response = await api.get<EvidenceGapsResponse>(`${p()}/posture/evidence/${domain}/gaps`, {
+    params: options.limit ? { limit: options.limit } : undefined,
+    signal: options.signal,
+  });
+  return response.data;
+};
+
 export const getEvidenceCoverage = async (
   options: { signal?: AbortSignal } = {},
 ): Promise<EvidenceCoverageResponse> => {

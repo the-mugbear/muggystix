@@ -19,8 +19,10 @@ import {
   FindingStatusHistoryEntry,
   Annotation,
   ProjectMember,
+  FindingHostStatus,
   getFinding,
   getFindingHistory,
+  setFindingEndpointStatus,
   setFindingStatus,
   updateFinding,
   FindingHostInfo,
@@ -51,7 +53,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
-import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
+import { ENDPOINT_STATUS_LABEL, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates } from '../utils/findingStatus';
 import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
@@ -208,6 +210,26 @@ const FindingDetail: React.FC = () => {
       await refresh('status'); // status + history trail together, in the background
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update status.'));
+    }
+  };
+
+  // v5.225.0 — one endpoint's own state (design review item 7).  Changes the
+  // row, never the finding's status; the history trail names the endpoint.
+  const [endpointSaving, setEndpointSaving] = useState<number | null>(null);
+  const endpointSummary = useMemo(
+    () => (finding ? describeEndpointStates(finding.endpoint_status_counts, finding.host_count) : null),
+    [finding],
+  );
+  const handleEndpointStatus = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
+    if (!finding || row.host_status === hostStatus) return;
+    setEndpointSaving(row.id);
+    try {
+      await setFindingEndpointStatus(finding.id, row.id, hostStatus);
+      await refresh('status');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
+    } finally {
+      setEndpointSaving(null);
     }
   };
 
@@ -439,20 +461,30 @@ const FindingDetail: React.FC = () => {
       <FindingCommentThread findingId={finding.id} canManage={canManage} />
 
       <Card className="mb-md">
-        <CardHeader><CardTitle>Affected hosts ({finding.host_count})</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle>Affected hosts ({finding.host_count})</CardTitle>
+          {/* v5.225.0 — the finding's status is the issue's; each endpoint
+              keeps its own, so "Confirmed" here never means every host. */}
+          <p className="text-caption text-muted-foreground">
+            The status above is the issue&apos;s ({STATUS_LABEL[finding.status]}). Each endpoint
+            below has its own state
+            {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all open'}.
+          </p>
+        </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead>Host</TableHead>
+                  <TableHead className="w-44">State on this endpoint</TableHead>
                   <TableHead className="w-16" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {finding.hosts.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={2} className="py-lg text-center text-muted-foreground">
+                    <TableCell colSpan={3} className="py-lg text-center text-muted-foreground">
                       No hosts attached.
                     </TableCell>
                   </TableRow>
@@ -472,6 +504,31 @@ const FindingDetail: React.FC = () => {
                           >
                             {h.fqdn}
                           </Link>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {canManage ? (
+                          <Select
+                            value={h.host_status}
+                            onValueChange={(v) => void handleEndpointStatus(h, v as FindingHostStatus)}
+                            disabled={endpointSaving === h.id}
+                          >
+                            <SelectTrigger
+                              className="h-7 w-[10rem] text-caption"
+                              aria-label={`State of ${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id}`}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(Object.keys(ENDPOINT_STATUS_LABEL) as FindingHostStatus[]).map((s) => (
+                                <SelectItem key={s} value={s}>{ENDPOINT_STATUS_LABEL[s]}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge variant={h.host_status === 'open' ? 'warning' : h.host_status === 'remediated' ? 'success' : 'info'}>
+                            {ENDPOINT_STATUS_LABEL[h.host_status] ?? h.host_status}
+                          </Badge>
                         )}
                       </TableCell>
                       <TableCell>

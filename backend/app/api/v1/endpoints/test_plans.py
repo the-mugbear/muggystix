@@ -181,6 +181,184 @@ def create_test_plan(
 
 
 # ---------------------------------------------------------------------------
+# From a Hosts-page selection (v2.345.0) — a plan, or a draft's new entries,
+# whose targets are a FIXED host list the operator picked, not a query.
+# ---------------------------------------------------------------------------
+
+class PlanFromHostsRequest(BaseModel):
+    """The Hosts bulk bar's "Test plan" action.
+
+    ``host_ids`` is the selection resolved on the client at the moment of the
+    click — a fixed list, recorded as ``source_host_ids`` on a new plan.
+    A saved query's membership can change; this cannot, which is what makes
+    the plan's provenance reviewable later.
+    """
+    host_ids: List[int] = Field(..., min_length=1, max_length=10_000)
+    rationale: str = Field(..., min_length=1, max_length=4096, description=(
+        "Why these hosts — becomes every entry's rationale and is appended to a "
+        "new plan's description."
+    ))
+    # New plan (title required) or an existing DRAFT (plan_id).
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=4096)
+    plan_id: Optional[int] = Field(None, gt=0)
+    priority: TestEntryPriority = TestEntryPriority.MEDIUM
+    test_phase: TestPhase = TestPhase.ENUMERATION
+    # Human-readable description of the selection ("all 41 hosts matching
+    # subnet 10.1.0.0/16, has:weak_tls") kept in the plan description so a
+    # reviewer knows how the fixed list was arrived at.
+    selection_summary: Optional[str] = Field(None, max_length=1000)
+    # Report what WOULD happen without writing anything — the dialog shows
+    # these numbers before the operator submits.
+    dry_run: bool = False
+
+
+class PlanFromHostsResponse(BaseModel):
+    plan: Optional[TestPlanSummary] = None
+    created_plan: bool = False
+    requested: int
+    # Entries that were (or would be) created.
+    added: int
+    # Exclusions, so the operator is told rather than left to count.
+    already_in_plan: int
+    not_in_project: int
+    # Selected hosts that already carry an entry in another approved,
+    # in-progress or completed plan on this project — "already tested or
+    # queued elsewhere", worth a look before duplicating the work.
+    planned_elsewhere: int
+    dry_run: bool
+
+
+@router.post(
+    "/from-hosts",
+    response_model=PlanFromHostsResponse,
+    summary="Create a plan, or add to a draft, from a fixed host selection",
+)
+def create_test_plan_from_hosts(
+    body: PlanFromHostsRequest,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
+):
+    svc = TestPlanService(db)
+    requested_ids = list(dict.fromkeys(body.host_ids))
+
+    plan: Optional[TestPlan] = None
+    if body.plan_id is not None:
+        plan = svc.get_plan(body.plan_id, project.id)
+        if not plan:
+            raise HTTPException(status_code=404, detail="Test plan not found")
+        if plan.status != TestPlanStatus.DRAFT.value:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Only a draft plan accepts a host selection; this plan is {plan.status}.",
+            )
+    elif not body.title:
+        raise HTTPException(status_code=422, detail="title is required when creating a new plan")
+
+    in_project = {
+        hid for (hid,) in db.query(Host.id)
+        .filter(Host.id.in_(requested_ids), Host.project_id == project.id)
+        .all()
+    }
+    eligible = [hid for hid in requested_ids if hid in in_project]
+    not_in_project = len(requested_ids) - len(eligible)
+
+    already_in_plan = 0
+    if plan is not None and eligible:
+        already_in_plan = (
+            db.query(func.count(func.distinct(TestPlanEntry.host_id)))
+            .filter(TestPlanEntry.test_plan_id == plan.id, TestPlanEntry.host_id.in_(eligible))
+            .scalar()
+        ) or 0
+
+    planned_elsewhere = 0
+    if eligible:
+        q = (
+            db.query(func.count(func.distinct(TestPlanEntry.host_id)))
+            .join(TestPlan, TestPlan.id == TestPlanEntry.test_plan_id)
+            .filter(
+                TestPlanEntry.host_id.in_(eligible),
+                TestPlan.project_id == project.id,
+                TestPlan.status.in_([
+                    TestPlanStatus.APPROVED.value,
+                    TestPlanStatus.IN_PROGRESS.value,
+                    TestPlanStatus.COMPLETED.value,
+                ]),
+            )
+        )
+        if plan is not None:
+            q = q.filter(TestPlan.id != plan.id)
+        planned_elsewhere = q.scalar() or 0
+
+    counts = dict(
+        requested=len(requested_ids),
+        already_in_plan=already_in_plan,
+        not_in_project=not_in_project,
+        planned_elsewhere=planned_elsewhere,
+    )
+    if body.dry_run:
+        return PlanFromHostsResponse(
+            plan=_plan_to_summary(plan, svc.get_progress(plan.id)) if plan else None,
+            created_plan=False,
+            added=max(len(eligible) - already_in_plan, 0),
+            dry_run=True,
+            **counts,
+        )
+    if not eligible:
+        raise HTTPException(status_code=422, detail="None of the selected hosts belong to this project")
+
+    created_plan = False
+    if plan is None:
+        note = f"Created from a fixed selection of {len(eligible)} host{'' if len(eligible) == 1 else 's'} on the Hosts page"
+        if body.selection_summary:
+            note += f" ({body.selection_summary})"
+        description = (body.description or "").rstrip()
+        description = (
+            (description + "\n\n" if description else "")
+            + note + ".\n\nWhy these hosts: " + body.rationale.strip()
+        )
+        plan = svc.create_plan(
+            project_id=project.id,
+            agent_id=None,
+            title=body.title,
+            description=description[:4096],
+            actor_type="user",
+            actor_id=current_user.id,
+            created_by_user_id=current_user.id,
+            source_kind="manual_hosts",
+            source_host_ids=eligible,
+        )
+        created_plan = True
+
+    entries = [
+        {
+            "host_id": hid,
+            "priority": body.priority.value,
+            "test_phase": body.test_phase.value,
+            # The analyst authors the tests on the plan; an empty list is
+            # honest, a placeholder would be noise a reviewer has to delete.
+            "proposed_tests": [],
+            "rationale": body.rationale.strip(),
+            "notes": None,
+        }
+        for hid in eligible
+    ]
+    try:
+        created = svc.add_entries(plan, entries, "user", current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.refresh(plan)
+    return PlanFromHostsResponse(
+        plan=_plan_to_summary(plan, svc.get_progress(plan.id)),
+        created_plan=created_plan,
+        added=len(created),
+        dry_run=False,
+        **counts,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Generate with AI — creates plan + provisions agent key
 # ---------------------------------------------------------------------------
 

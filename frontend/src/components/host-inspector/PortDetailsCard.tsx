@@ -18,6 +18,7 @@ import {
   getHostWebInterfaces, type Port, type WebInterface,
 } from '../../services/api';
 import type { ConnectionHelper } from '../../utils/connectionHelpers';
+import { portFreshness } from '../../utils/evidenceFreshness';
 import { useToast } from '../../contexts/ToastContext';
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
@@ -144,6 +145,9 @@ const TlsCell: React.FC<{ tls?: PortTls; tunnel?: string | null; webError?: bool
 interface PortDetailsCardProps {
   hostId: number;
   hostIp: string | null;
+  /** The host's newest observation, so a port can say whether the latest
+   *  sweep saw it (v5.224.0). */
+  hostLastSeen?: string | null;
   openPorts: Port[];
   closedPorts: Port[];
   filteredPorts: Port[];
@@ -151,7 +155,7 @@ interface PortDetailsCardProps {
 }
 
 const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
-  hostId, hostIp, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
+  hostId, hostIp, hostLastSeen = null, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
 }) => {
   const toast = useToast();
   const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
@@ -233,18 +237,20 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                   <Table className="table-fixed">
                     <TableHeader>
                       <TableRow>
-                        <PortSortHead className="w-[9%]" />
-                        <TableHead className="w-[8%]">Proto</TableHead>
-                        <TableHead className="w-[17%]">Service</TableHead>
-                        <TableHead className="w-[26%]">Version</TableHead>
-                        <TableHead className="w-[10%]">State</TableHead>
-                        <TableHead className="w-[18%]">TLS</TableHead>
-                        <TableHead className="w-[12%] text-center">Helpers</TableHead>
+                        <PortSortHead className="w-[8%]" />
+                        <TableHead className="w-[7%]">Proto</TableHead>
+                        <TableHead className="w-[16%]">Service</TableHead>
+                        <TableHead className="w-[22%]">Version</TableHead>
+                        <TableHead className="w-[9%]">State</TableHead>
+                        <TableHead className="w-[12%]" title="When this port itself was last observed. Older than the host's last observation means the latest sweep did not see it open.">Seen</TableHead>
+                        <TableHead className="w-[16%]">TLS</TableHead>
+                        <TableHead className="w-[10%] text-center">Helpers</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {sortPorts(openPorts).map((port) => {
                         const helpers = connectionHelpersByPort.get(port.id) ?? [];
+                        const fresh = portFreshness(port, hostLastSeen);
                         return (
                           <TableRow key={port.id}>
                             <TableCell>{port.port_number}</TableCell>
@@ -279,6 +285,17 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                               {port.reason && (
                                 <div className="truncate text-caption text-muted-foreground" title={`Why this port is ${port.state || 'in this state'}: ${port.reason}`}>
                                   {port.reason}
+                                </div>
+                              )}
+                            </TableCell>
+                            {/* v5.224.0 — the port's own freshness, not the host's. */}
+                            <TableCell className="min-w-0">
+                              <div className="truncate text-caption" title={port.last_seen ?? port.first_seen ?? undefined}>
+                                {fresh.seen ?? '—'}
+                              </div>
+                              {fresh.notInLatestScan && (
+                                <div className="truncate text-caption text-warning" title="The host was observed more recently than this port: the latest sweep did not see it open.">
+                                  not in latest scan
                                 </div>
                               )}
                             </TableCell>

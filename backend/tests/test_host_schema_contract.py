@@ -39,8 +39,11 @@ def test_host_schema_defaults():
     assert dumped["team_review_status"] is None
     # Redesigned-table inputs default safely too.
     assert dumped["exploitable_count"] == 0
+    assert dumped["critical_exploitable_count"] == 0
     assert dumped["primary_subnet"] is None
     assert dumped["primary_site"] is None
+    assert dumped["scope_coverage"] is None
+    assert dumped["project_has_scope"] is None
     assert dumped["first_seen"] is None
     assert dumped["last_seen"] is None
 
@@ -50,10 +53,16 @@ def test_host_schema_table_redesign_fields():
         id=1,
         ip_address="10.0.0.3",
         exploitable_count=4,
+        critical_exploitable_count=1,
         primary_subnet="10.0.0.0/24",
         primary_site="DC-East",
+        scope_coverage="name",
+        project_has_scope=True,
     )
     dumped = h.model_dump()
     assert dumped["exploitable_count"] == 4
+    assert dumped["critical_exploitable_count"] == 1
     assert dumped["primary_subnet"] == "10.0.0.0/24"
     assert dumped["primary_site"] == "DC-East"
+    assert dumped["scope_coverage"] == "name"
+    assert dumped["project_has_scope"] is True

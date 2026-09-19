@@ -587,6 +587,47 @@ class FindingService:
             )
         return finding
 
+    def set_endpoint_status(
+        self, *, finding: Finding, finding_host_id: int, host_status: str,
+        actor_id: Optional[int],
+    ) -> Finding:
+        """v2.349.0 — the per-endpoint disposition (design review item 7).
+
+        A finding's status is the ISSUE's; each affected endpoint keeps its
+        own state (open / remediated / retest) so confirmation or remediation
+        on one host never implies it on the others.  The change is written to
+        the finding's history with the endpoint named, so the trail shows
+        which host moved.
+        """
+        allowed = {s.value for s in FindingHostStatus}
+        if host_status not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail=f"host_status must be one of {sorted(allowed)}",
+            )
+        row = (
+            self.db.query(FindingHost)
+            .filter(FindingHost.finding_id == finding.id, FindingHost.id == finding_host_id)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
+        if row.host_status == host_status:
+            return finding
+        old = row.host_status
+        row.host_status = host_status
+        label = row.host.ip_address if row.host else f"host {row.host_id}"
+        if row.name is not None:
+            label = f"{row.name.fqdn} on {label}"
+        # Written directly: the shared transition helper is for the finding's
+        # own status and skips a no-change move, which this is by design.
+        self.db.add(FindingStatusHistory(
+            finding_id=finding.id, from_status=finding.status, to_status=finding.status,
+            changed_by_id=actor_id, summary=f"Endpoint {label}: {old} → {host_status}",
+        ))
+        self.db.flush()
+        return finding
+
     def add_hosts(self, *, finding: Finding, host_ids: Sequence[int]) -> Finding:
         self._attach_hosts(finding, host_ids)
         self.db.flush()

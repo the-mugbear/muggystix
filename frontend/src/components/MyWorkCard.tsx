@@ -31,13 +31,16 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import type {
+  InvestigateRow,
+  InvestigationQueueResponse,
   MyAttentionResponse,
   MyFindingsResponse,
   MyNotesResponse,
   MyTaskReason,
   MyTasksResponse,
 } from '../services/api';
-import { updateTestPlanEntry } from '../services/api';
+import { followHost, updateTestPlanEntry } from '../services/api';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -222,10 +225,161 @@ export interface MyWorkCardProps {
   tasks: MyTasksResponse | null;
   notes: MyNotesResponse | null;
   findings: MyFindingsResponse | null;
+  /** v5.223.0 — engagement-wide: untouched hosts worth a look (item 2). */
+  investigate?: InvestigationQueueResponse | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
 }
+
+const INVESTIGATE_PREVIEW = 5;
+
+/**
+ * "Worth a look" — the engagement-wide queue beneath the personal one
+ * (design review item 2).  Hosts nobody has touched yet that carry an
+ * observed weakness or a relevant change, each row saying why, what the
+ * evidence is, and the next step.  Ordered by a stated tier (the legend
+ * lists them); there is deliberately no composite priority number.
+ */
+const InvestigateSection: React.FC<{
+  data: InvestigationQueueResponse;
+  navigate: ReturnType<typeof useNavigate>;
+  onTaken: () => void;
+}> = ({ data, navigate, onTaken }) => {
+  const toast = useToast();
+  const [expanded, setExpanded] = React.useState(false);
+  const [takingId, setTakingId] = React.useState<number | null>(null);
+  const rows = expanded ? data.items : data.items.slice(0, INVESTIGATE_PREVIEW);
+
+  // Take the host: mark it In Review under the caller.  The queue only lists
+  // hosts with no follow row at all, so nobody else is reviewing it; after
+  // this it leaves the queue and appears under "In review" above.  From
+  // there the assist agent can plan against it ("hosts assigned to me or in
+  // review by me").
+  const take = async (row: InvestigateRow) => {
+    setTakingId(row.host_id);
+    try {
+      await followHost(row.host_id, 'in_review');
+      toast.success(`${row.ip_address} is now in your review queue`, { autoHideMs: 2500 });
+      onTaken();
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not take the host into review.'));
+    } finally {
+      setTakingId(null);
+    }
+  };
+
+  return (
+    <div className="mt-md border-t border-border pt-sm">
+      <div className="mb-xs flex flex-wrap items-center gap-xs">
+        <p className="text-metadata font-semibold text-foreground">Worth a look</p>
+        <Badge variant="warning">{data.queue_total}</Badge>
+        <span className="text-caption text-muted-foreground">
+          hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet
+        </span>
+      </div>
+      {data.items.length === 0 ? (
+        <p className="text-caption text-muted-foreground">
+          {data.untouched_total > 0
+            ? `${data.untouched_total.toLocaleString()} untouched hosts, none with a weakness or change on record.`
+            : 'Every host has been touched by someone.'}
+        </p>
+      ) : (
+        <>
+          <Table className="table-fixed">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[24%]">Target</TableHead>
+                <TableHead className="w-[34%]">Why investigate</TableHead>
+                <TableHead className="w-[22%]">Evidence</TableHead>
+                <TableHead className="w-[20%]">Next</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.host_id} data-tier={row.tier}>
+                  <TableCell className="min-w-0 align-top">
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/hosts/${row.host_id}`)}
+                      className="block max-w-full truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
+                    >
+                      {row.ip_address}
+                    </button>
+                    {row.hostname && (
+                      <p className="truncate text-caption text-muted-foreground" title={row.hostname}>
+                        {row.hostname}
+                      </p>
+                    )}
+                    <p className="text-caption text-muted-foreground">{row.tier_label}</p>
+                  </TableCell>
+                  <TableCell className="min-w-0 align-top">
+                    <ul className="flex flex-col gap-xxs">
+                      {row.reasons.map((r) => (
+                        <li key={r.kind} className="break-words text-caption text-foreground">
+                          {r.text}
+                        </li>
+                      ))}
+                    </ul>
+                  </TableCell>
+                  <TableCell className="min-w-0 align-top">
+                    <p className="truncate text-caption" title={row.evidence.sources.join(', ') || 'no scan recorded'}>
+                      {row.evidence.sources.length ? row.evidence.sources.join(', ') : 'no scan recorded'}
+                    </p>
+                    <p className="text-caption text-muted-foreground">
+                      {row.evidence.last_seen ? `seen ${fmtAgo(tsOf(row.evidence.last_seen))}` : 'never seen'}
+                      {' · '}
+                      {row.evidence.confirmation === 'scanner'
+                        ? 'scanner-reported, unconfirmed'
+                        : row.evidence.confirmation === 'finding'
+                          ? 'has a finding'
+                          : 'tested'}
+                    </p>
+                  </TableCell>
+                  <TableCell className="min-w-0 align-top">
+                    <p className="break-words text-caption text-foreground">{row.next_action.text}</p>
+                    <div className="mt-xxs flex flex-wrap gap-xxs">
+                      <Button
+                        size="sm"
+                        variant={row.next_action.kind === 'review' ? 'default' : 'outline'}
+                        className="h-7"
+                        disabled={takingId === row.host_id}
+                        onClick={() => void take(row)}
+                        title="Mark this host In Review under you. It leaves this queue and joins your personal one."
+                      >
+                        {takingId === row.host_id ? 'Taking…' : 'Review'}
+                      </Button>
+                      {row.next_action.kind === 'collect' && (
+                        <Button size="sm" variant="outline" className="h-7" onClick={() => navigate('/scans')}>
+                          Upload evidence
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <div className="mt-xs flex flex-wrap items-center gap-x-md gap-y-xxs">
+            {data.items.length > INVESTIGATE_PREVIEW && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {expanded ? 'Show fewer' : `Show ${data.items.length - INVESTIGATE_PREVIEW} more`}
+              </button>
+            )}
+            <span className="text-caption text-muted-foreground" title={`Tiers, in order: ${data.tiers.join(' › ')}`}>
+              Showing {rows.length} of {data.queue_total.toLocaleString()} · ordered by tier: {data.tiers.join(' › ')}
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 // Lowered from 14: the card is now the focused action queue (recent-notes
 // activity moved to its own card) and shares a row with it, so a tighter
@@ -233,7 +387,7 @@ export interface MyWorkCardProps {
 const PREVIEW = 8;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
-  queue, tasks, notes, findings, loading, error, onRetry,
+  queue, tasks, notes, findings, investigate = null, loading, error, onRetry,
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -397,6 +551,10 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                 ` · ${totalCount - items.length} more open in their source views`}
             </span>
           </div>
+        )}
+
+        {!loading && !error && investigate && (
+          <InvestigateSection data={investigate} navigate={navigate} onTaken={onRetry} />
         )}
       </CardContent>
     </Card>

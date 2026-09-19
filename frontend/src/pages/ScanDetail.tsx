@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, Globe } from 'lucide-react';
-import { getScan, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
-import type { Host, DNSRecord, ScanHostSnapshot } from '../services/api';
+import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
+import type { Host, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot } from '../services/api';
+import ImportResult from '../components/scans/ImportResult';
 import CommandExplanation from '../components/CommandExplanation';
 import { Card, CardContent } from '../components/ui/card';
 import SeverityBar from '../components/ui/SeverityBar';
@@ -87,6 +88,7 @@ const ScanDetail: React.FC = () => {
   // button on the error path can re-run the same load without a full
   // route re-mount.
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [summaryRow, setSummaryRow] = useState<ScanSummaryRow | null>(null);
 
   useEffect(() => {
     if (!scanId) return;
@@ -98,14 +100,18 @@ const ScanDetail: React.FC = () => {
       getHostsByScan(parseInt(scanId)),
       getScanDnsRecords(parseInt(scanId)),
       getScanHostSnapshots(parseInt(scanId)),
+      // v5.222.0 — the inventory's per-scan summary (hosts added, conflicts,
+      // import quality) for the Import result card; not fatal if it fails.
+      getScans(0, 1, { ids: [parseInt(scanId)] }).catch(() => [] as ScanSummaryRow[]),
     ])
-      .then(([s, h, dns, snaps]) => {
+      .then(([s, h, dns, snaps, rows]) => {
         if (!cancelled) {
           setScan(s);
           setHosts(h);
           setDnsRecords(dns.items);
           setDnsTotal(dns.total);
           setSnapshots(snaps.items);
+          setSummaryRow(rows[0] ?? null);
         }
       })
       .catch((err) => {
@@ -240,6 +246,18 @@ const ScanDetail: React.FC = () => {
           </Card>
         )}
       </div>
+
+      {/* v5.222.0 — what this upload did to the inventory, durable on the
+          scan page: hosts added / already known / conflicts / new ports /
+          import quality, each opening the records it counts. */}
+      {summaryRow && (
+        <Card className="mb-md">
+          <CardContent className="p-md">
+            <p className="mb-xs text-caption text-muted-foreground">Import result</p>
+            <ImportResult scan={summaryRow} />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="p-md">

@@ -103,6 +103,67 @@ COVERAGE_NAME = "name"
 COVERAGE_NONE = "none"
 
 
+def project_has_any_scope(db: Session, project_id: int) -> bool:
+    """Has this project declared any scope at all (a subnet or a domain)?
+
+    Lets a consumer distinguish "no entry covers this host" (worth acting on)
+    from "nothing to check against" (the project has no scope yet).
+    """
+    return bool(
+        db.query(
+            select(models.Subnet.id)
+            .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
+            .where(models.Scope.project_id == project_id)
+            .exists()
+            | select(models.ScopeDomain.id)
+            .join(models.Scope, models.Scope.id == models.ScopeDomain.scope_id)
+            .where(models.Scope.project_id == project_id)
+            .exists()
+        ).scalar()
+    )
+
+
+def bulk_scope_coverage(
+    db: Session,
+    project_id: int,
+    host_ids: List[int],
+    subnet_mapped_ids: "set[int]",
+) -> Dict[int, str]:
+    """The three-state coverage for a page of hosts, in one query.
+
+    v2.344.0 — the Hosts list printed "out of scope" for every host without
+    a subnet mapping, while the detail card already knew a host reached via
+    an approved name is a third state.  The list now carries the same state
+    per row.  ``subnet_mapped_ids`` are the hosts the caller already knows
+    have a ``host_subnet_mappings`` row (the list endpoint resolves those for
+    its subnet column); only the rest are checked for name coverage, with the
+    same predicate ``out_of_scope_hosts`` uses, so the two can't disagree.
+    """
+    from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
+
+    unmapped = [hid for hid in host_ids if hid not in subnet_mapped_ids]
+    named: set[int] = set()
+    if unmapped:
+        named = {
+            hid
+            for (hid,) in db.query(models.Host.id)
+            .filter(
+                models.Host.id.in_(unmapped),
+                host_reachable_via_in_scope_name_condition(project_id),
+            )
+            .all()
+        }
+    out: Dict[int, str] = {}
+    for hid in host_ids:
+        if hid in subnet_mapped_ids:
+            out[hid] = COVERAGE_SUBNET
+        elif hid in named:
+            out[hid] = COVERAGE_NAME
+        else:
+            out[hid] = COVERAGE_NONE
+    return out
+
+
 def _prefixlen(cidr: str) -> int:
     try:
         return ipaddress.ip_network(cidr, strict=False).prefixlen
@@ -227,16 +288,7 @@ def host_scope_membership(db: Session, host: models.Host) -> Dict[str, Any]:
 
     project_has_scope = bool(subnets or names)
     if not project_has_scope and project_id is not None:
-        project_has_scope = db.query(
-            select(models.Subnet.id)
-            .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
-            .where(models.Scope.project_id == project_id)
-            .exists()
-            | select(models.ScopeDomain.id)
-            .join(models.Scope, models.Scope.id == models.ScopeDomain.scope_id)
-            .where(models.Scope.project_id == project_id)
-            .exists()
-        ).scalar()
+        project_has_scope = project_has_any_scope(db, project_id)
 
     return {
         "coverage": coverage,

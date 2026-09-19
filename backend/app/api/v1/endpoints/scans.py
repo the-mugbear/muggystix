@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import get_db
 from app.db import models
-from app.db.models_confidence import NetexecResult
+from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.schemas.pagination import Paginated
 from app.schemas.schemas import (
@@ -417,6 +417,14 @@ def get_scans(
     batch_id: Optional[int] = Query(
         None, description="Only the files of this upload batch (v2.335.0).",
     ),
+    ids: Optional[str] = Query(
+        None, max_length=2000,
+        description=(
+            "Comma-separated scan ids — only these scans, with the same "
+            "per-scan summary the inventory shows. Lets a completed ingestion "
+            "job fetch its import result (v2.346.0)."
+        ),
+    ),
     unbatched: bool = Query(
         False,
         description=(
@@ -477,6 +485,12 @@ def get_scans(
     scans_query = _apply_scan_inventory_filters(
         scans_query, search=search, tool=tool, created_after=created_after
     )
+    if ids:
+        try:
+            wanted = {int(x) for x in ids.split(",") if x.strip()}
+        except ValueError:
+            raise HTTPException(status_code=422, detail="ids must be comma-separated integers")
+        scans_query = scans_query.filter(models.Scan.id.in_(wanted))
     if batch_id is not None:
         scans_query = scans_query.filter(models.Scan.batch_id == batch_id)
     elif unbatched:
@@ -642,6 +656,37 @@ def get_scans(
     dns_stats_map = _dns_contribution(db, scan_ids)
     auth_stats_map = _auth_contribution(db, scan_ids)
 
+    # v2.346.0 — the import result (design review item 5): what this upload
+    # did to the inventory that the operator must reconcile, on the scan row
+    # so it is durable.  Conflicts = ConflictHistory rows this scan raised
+    # (scans disagreed on a host/port value); quality = the ingestion job's
+    # skipped / partial / warnings, so "imported" and "imported with gaps"
+    # are told apart wherever the scan is shown.
+    conflict_map: Dict[int, int] = {}
+    import_quality_map: Dict[int, Any] = {}
+    if scan_ids:
+        for sid, cnt in (
+            db.query(ConflictHistory.new_scan_id, func.count(ConflictHistory.id))
+            .filter(ConflictHistory.new_scan_id.in_(scan_ids))
+            .group_by(ConflictHistory.new_scan_id)
+            .all()
+        ):
+            conflict_map[sid] = cnt
+        for job in (
+            db.query(
+                models.IngestionJob.id,
+                models.IngestionJob.scan_id,
+                models.IngestionJob.skipped_count,
+                models.IngestionJob.partial,
+                models.IngestionJob.parser_warnings,
+            )
+            .filter(models.IngestionJob.scan_id.in_(scan_ids))
+            .order_by(models.IngestionJob.id.desc())
+            .all()
+        ):
+            # Newest job wins if a scan was somehow produced twice.
+            import_quality_map.setdefault(job.scan_id, job)
+
     # Batch-resolve uploader usernames (multi-analyst attribution on the
     # Scans list).  One query keyed by the distinct uploader ids in this
     # page — mirrors the port/vuln batch maps above; avoids per-row joins
@@ -693,6 +738,7 @@ def get_scans(
                 exploitable=vuln_stats.exploitable or 0,
             )
 
+        quality = import_quality_map.get(result.id)
         scan_summaries.append(ScanSummary(
             id=result.id,
             filename=result.filename,
@@ -719,6 +765,11 @@ def get_scans(
             auth=auth_stats_map.get(result.id),
             batch_id=result.batch_id,
             batch_label=batch_labels.get(result.batch_id),
+            conflicts=conflict_map.get(result.id, 0),
+            import_job_id=quality.id if quality else None,
+            import_skipped=int(quality.skipped_count or 0) if quality else 0,
+            import_partial=bool(quality.partial) if quality else False,
+            import_warnings=(quality.parser_warnings or None) if quality else None,
         ))
 
     return scan_summaries

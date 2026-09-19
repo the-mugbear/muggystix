@@ -1275,6 +1275,7 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
 3. **Answer the operator's question** using the filter vocabulary above.  Examples:
    - "Which hosts have FTP open?" → `GET /agent/assist/hosts?ports=21` (or `services=ftp`, or `q=port:21`).
    - "Which hosts do I have in review?" → `GET /agent/assist/hosts?q=follow:in_review` (resolves to the session operator). "Assigned to me?" → `q=assigned:me`.
+   - "Generate a test plan for the hosts assigned to me or in review by me" → `GET /agent/assist/hosts?q=assigned:me OR follow:in_review` (page with `offset` until a short page), then `POST /agent/test-plans` with a title that says so, then `POST /agent/test-plans/{id}/entries` for exactly those hosts. The operator takes hosts into review from the **Worth a look** queue on Operations, so this is how their review queue becomes a plan; do not add hosts outside the query result.
    - "What's exposed to Log4Shell?" → `GET /agent/assist/hosts?q=cve:CVE-2021-44228 OR vuln:"log4j"`.
    - "Which SMB hosts have a working exploit *on 445*?" → `GET /agent/assist/hosts?q=exploitport:445`. Note `exploitport:445` (exploit ON that port, same finding) is stricter than `q=port:445 AND has:exploit` (445 open AND *any* exploit anywhere).
    - "What critical findings landed this week?" → `GET /agent/assist/hosts?has_critical_vulns=true` (or `q=has:critical`) + `GET /agent/assist/scans?limit=20` to correlate.

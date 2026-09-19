@@ -22,11 +22,14 @@ import { Input } from '../components/ui/input';
 import {
   getIngestionResults,
   getParseError,
+  getScans,
   type IngestionResultItem,
   type IngestionResultsResponse,
   type IngestionResultsSortBy,
   type ParseError,
+  type Scan,
 } from '../services/api';
+import ImportResult from '../components/scans/ImportResult';
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/select';
@@ -109,6 +112,9 @@ const ParseErrors: React.FC = () => {
   // rows was the one they clicked.
   const [searchParams, setSearchParams] = useSearchParams();
   const focusErrorId = Number(searchParams.get('error_id')) || null;
+  // v5.222.0 — the upload banner and the import result link a JOB by id
+  // (`?job_id=`), which is this list's own row id.
+  const focusJobId = Number(searchParams.get('job_id')) || null;
   const toast = useToast();
   const [data, setData] = useState<IngestionResultsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -210,24 +216,32 @@ const ParseErrors: React.FC = () => {
   // param is cleared afterwards so a later manual collapse isn't undone by a
   // re-render, and so the URL doesn't keep re-focusing on refresh.
   useEffect(() => {
-    if (focusErrorId === null || loading) return;
+    if ((focusErrorId === null && focusJobId === null) || loading) return;
     // Scans links with the PARSE ERROR id, so resolve it back to the row that
     // produced it. Matching it against `i.id` (the job id) meant the link
     // almost never focused anything, and on a numeric collision focused an
-    // unrelated row.
-    const row = (data?.items ?? []).find((i) => i.parse_error_id === focusErrorId);
+    // unrelated row.  A `job_id` link IS the row id.
+    const row = (data?.items ?? []).find(
+      (i) =>
+        (focusErrorId !== null && i.parse_error_id === focusErrorId) ||
+        (focusJobId !== null && i.id === focusJobId),
+    );
+    const clearFocus = () =>
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('error_id');
+        next.delete('job_id');
+        return next;
+      }, { replace: true });
     if (!row) {
       // Not on this page. Clear the param so it doesn't re-fire on every
       // refetch, and say so rather than leaving the operator on a list that
       // silently ignored their link.
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete('error_id');
-        return next;
-      }, { replace: true });
+      clearFocus();
+      const what = focusErrorId !== null ? `error #${focusErrorId}` : `job #${focusJobId}`;
       toast.info(
-        `Ingestion result for error #${focusErrorId} isn't on this page — search or page to it.`,
-        { id: `pe-focus-${focusErrorId}` },
+        `Ingestion result for ${what} isn't on this page — search or page to it.`,
+        { id: `pe-focus-${focusErrorId ?? focusJobId}` },
       );
       return;
     }
@@ -237,12 +251,8 @@ const ParseErrors: React.FC = () => {
         .querySelector(`[data-ingestion-row="${row.id}"]`)
         ?.scrollIntoView({ block: 'center' });
     });
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete('error_id');
-      return next;
-    }, { replace: true });
-  }, [focusErrorId, loading, data, setSearchParams]);
+    clearFocus();
+  }, [focusErrorId, focusJobId, loading, data, setSearchParams]);
 
   const summary = data?.summary;
   // v2.86.2 — items come pre-filtered + pre-sorted from the server; no
@@ -630,6 +640,11 @@ const RowDetail: React.FC<{
   const stats = item.stats;
   return (
     <div className="flex flex-col gap-sm">
+      {/* v5.222.0 — the import result, the same block the upload banner
+          and the scan page show, so a completed job is reconcilable here. */}
+      {item.scan_id != null && item.status === 'completed' && (
+        <CompletedImportResult scanId={item.scan_id} />
+      )}
       <div className="grid grid-cols-2 gap-sm md:grid-cols-4">
         <Field label="Scan Type" value={safeFallback(item.scan_type)} />
         <Field label="Tool" value={safeFallback(item.tool_name)} />
@@ -649,6 +664,32 @@ const RowDetail: React.FC<{
           </Button>
         </div>
       )}
+    </div>
+  );
+};
+
+/** Fetches the scan row's summary for a completed job and renders its
+ *  import result. Quiet on failure: the fields beneath still say what parsed. */
+const CompletedImportResult: React.FC<{ scanId: number }> = ({ scanId }) => {
+  const [row, setRow] = useState<Scan | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getScans(0, 1, { ids: [scanId] })
+      .then((rows) => {
+        if (!cancelled) setRow(rows[0] ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setRow(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scanId]);
+  if (!row) return null;
+  return (
+    <div className="rounded-panel border border-border p-sm">
+      <p className="mb-xxs text-caption text-muted-foreground">Import result</p>
+      <ImportResult scan={row} />
     </div>
   );
 };

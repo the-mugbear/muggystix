@@ -105,6 +105,13 @@ export interface Scan {
   /** v5.207.0 — the upload batch this file arrived in, if any. */
   batch_id?: number | null;
   batch_label?: string | null;
+  // v2.346.0 — the import result: conflicts this scan raised (scans disagreed
+  // on a host/port value) and the ingestion job's quality trio.
+  conflicts?: number;
+  import_job_id?: number | null;
+  import_skipped?: number;
+  import_partial?: boolean;
+  import_warnings?: string | null;
 }
 
 export const getScans = async (
@@ -120,11 +127,14 @@ export const getScans = async (
     batchId?: number;
     /** Leave out files that belong to a batch (they're listed per batch). */
     unbatched?: boolean;
+    /** Only these scans — how a completed job fetches its import result. */
+    ids?: number[];
     signal?: AbortSignal;
   },
 ): Promise<Scan[]> => {
-  const { search, tool, createdAfter, sortBy, sortOrder, batchId, unbatched, signal } = options ?? {};
+  const { search, tool, createdAfter, sortBy, sortOrder, batchId, unbatched, ids, signal } = options ?? {};
   const params: Record<string, string | number | boolean> = { skip, limit };
+  if (ids && ids.length) params.ids = ids.join(',');
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;

@@ -1,0 +1,130 @@
+"""Evidence freshness beside the assertion (v2.348.0; design review item 4).
+
+* The host detail carries an ``assessment`` block: per domain, when evidence
+  was last gathered, or that it never was, or that it does not apply.
+* Open ports the latest sweep did not see are counted, so "open" is not
+  taken to be as fresh as the host's newest observation.
+* A coverage gap on the Evidence page opens into the affected hosts with the
+  ports that made them eligible and the step that closes the gap.
+"""
+from datetime import datetime, timedelta, timezone
+
+from app.db import models
+from app.db.models_agent import (
+    TestExecutionResult, TestExecutionStatus, TestPlan, TestPlanEntry, ExecutionSession,
+)
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
+from app.services.evidence_service import evidence_gap_hosts
+from app.services.host_assessment_service import host_assessment
+
+
+def _host(db, project_id, ip, last_seen, ports=()):
+    h = models.Host(project_id=project_id, ip_address=ip, state="up")
+    h.last_seen = last_seen
+    db.add(h)
+    db.flush()
+    for number, seen in ports:
+        p = models.Port(host_id=h.id, port_number=number, protocol="tcp", state="open")
+        p.last_seen = seen
+        db.add(p)
+    db.flush()
+    db.refresh(h)
+    return h
+
+
+def test_assessment_says_not_assessed_and_counts_ports_missed_by_the_latest_sweep(db_session, test_project):
+    now = datetime.now(timezone.utc)
+    h = _host(db_session, test_project.id, "10.8.0.1", now, ports=[
+        (443, now),                          # seen by the latest sweep
+        (8080, now - timedelta(days=12)),    # not seen since
+        (445, now - timedelta(minutes=10)),  # same sweep, parser stamped later
+    ])
+    db_session.commit()
+
+    a = host_assessment(db_session, h)
+    assert a["last_observed_at"] is not None
+    assert a["vuln_assessed"] is False and a["last_vuln_assessed_at"] is None
+    assert a["web_eligible"] is True and a["web_assessed"] is False
+    assert a["auth_eligible"] is True and a["auth_assessed"] is False
+    assert a["tests_executed"] == 0 and a["last_tested_at"] is None
+    assert a["conflicts"] == 0
+    assert a["open_ports_not_in_latest_scan"] == 1
+
+
+def test_assessment_dates_each_domain_from_its_own_evidence(db_session, test_project, test_user, test_agent):
+    now = datetime.now(timezone.utc)
+    h = _host(db_session, test_project.id, "10.8.0.2", now, ports=[(22, now)])
+    scan = models.Scan(project_id=test_project.id, filename="v.nessus", tool_name="nessus")
+    db_session.add(scan)
+    db_session.flush()
+    v = Vulnerability(host_id=h.id, scan_id=scan.id, title="v", severity=VulnerabilitySeverity.HIGH,
+                      source=VulnerabilitySource.NESSUS)
+    v.last_seen = now - timedelta(days=5)
+    db_session.add(v)
+    h.smb_signing = "disabled"
+    plan = TestPlan(project_id=test_project.id, title="p", agent_id=test_agent.id, created_by_user_id=test_user.id)
+    db_session.add(plan)
+    db_session.flush()
+    entry = TestPlanEntry(test_plan_id=plan.id, host_id=h.id, priority="high", test_phase="enumeration",
+                          proposed_tests=[], rationale="r")
+    db_session.add(entry)
+    db_session.flush()
+    session = ExecutionSession(test_plan_id=plan.id, agent_id=test_agent.id)
+    db_session.add(session)
+    db_session.flush()
+    res = TestExecutionResult(execution_session_id=session.id, entry_id=entry.id, test_index=0,
+                              status=TestExecutionStatus.EXECUTED.value)
+    res.executed_at = now - timedelta(days=90)
+    db_session.add(res)
+    db_session.commit()
+    db_session.refresh(h)
+
+    a = host_assessment(db_session, h)
+    assert a["vuln_assessed"] is True
+    assert abs((a["last_vuln_assessed_at"].replace(tzinfo=timezone.utc) - (now - timedelta(days=5))).total_seconds()) < 5
+    assert a["web_eligible"] is False and a["auth_eligible"] is False
+    assert a["auth_assessed"] is True  # smb_signing recorded
+    assert a["tests_executed"] == 1
+    assert abs((a["last_tested_at"].replace(tzinfo=timezone.utc) - (now - timedelta(days=90))).total_seconds()) < 5
+
+
+def test_host_detail_carries_the_assessment(client, db_session, test_project):
+    h = _host(db_session, test_project.id, "10.8.0.3", datetime.now(timezone.utc), ports=[(80, datetime.now(timezone.utc))])
+    db_session.commit()
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/{h.id}")
+    assert r.status_code == 200, r.text
+    a = r.json()["assessment"]
+    assert a["web_eligible"] is True and a["web_assessed"] is False
+    assert a["vuln_assessed"] is False
+    # The port's own observation window rides on the port row so the table
+    # can say whether the latest sweep saw it (the response model used to
+    # strip both timestamps).
+    (port,) = r.json()["ports"]
+    assert port["last_seen"] is not None and port["first_seen"] is not None
+
+
+def test_evidence_gap_lists_eligible_unassessed_hosts_with_their_ports(client, db_session, test_project):
+    now = datetime.now(timezone.utc)
+    web_gap = _host(db_session, test_project.id, "10.8.1.1", now, ports=[(443, now), (8443, now), (22, now)])
+    _host(db_session, test_project.id, "10.8.1.2", now, ports=[(22, now)])  # not eligible: no web port
+    web_done = _host(db_session, test_project.id, "10.8.1.3", now, ports=[(80, now)])
+    scan = models.Scan(project_id=test_project.id, filename="h.json", tool_name="httpx")
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(models.WebInterface(project_id=test_project.id, host_id=web_done.id, scan_id=scan.id,
+                                       url="http://10.8.1.3/", source="httpx"))
+    db_session.commit()
+
+    gap = evidence_gap_hosts(db_session, test_project.id, "web_tls")
+    assert gap["label"] == "Web / TLS"
+    assert gap["total"] == 1
+    assert gap["items"] == [{"host_id": web_gap.id, "ip_address": "10.8.1.1", "hostname": None, "ports": [443, 8443]}]
+    assert gap["action"]["kind"] == "collect"
+    assert "httpx" in gap["action"]["text"]
+
+    assert evidence_gap_hosts(db_session, test_project.id, "nope") is None
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/posture/evidence/web_tls/gaps")
+    assert r.status_code == 200, r.text
+    assert r.json()["items"][0]["ip_address"] == "10.8.1.1"
+    assert client.get(f"/api/v1/projects/{test_project.id}/posture/evidence/nope/gaps").status_code == 404

@@ -256,9 +256,12 @@ export const NAV_PAGES: NavPage[] = [
       order: 15.5,
     },
   },
+  // v5.222.0 — beside Scans, not under Settings: import problems are found
+  // during collection, when the operator is on the inventory (design review
+  // item 5).  Path unchanged so existing links keep working.
   {
-    id: 'parse-errors', path: '/parse-errors', label: 'Ingestion Results', requiredRole: 'analyst', hub: 'settings',
-    palette: { Icon: AlertHexIcon, keywords: ['errors', 'parse'], order: 10 },
+    id: 'parse-errors', path: '/parse-errors', label: 'Ingestion Results', requiredRole: 'analyst', hub: 'inventory',
+    palette: { Icon: AlertHexIcon, keywords: ['errors', 'parse', 'import', 'upload', 'ingestion'], order: 2.5 },
   },
 ];
 

@@ -5,7 +5,7 @@ All routes authorise via get_current_project (ProjectMembership); writes
 require analyst-or-better.
 """
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session, selectinload
@@ -25,6 +25,7 @@ from app.schemas.schemas import (
     Annotation as AnnotationSchema, AnnotationCreate, NoteAttachmentOut,
 )
 from app.schemas.findings import (
+    EndpointStatusUpdate,
     FindingResponse, FindingHostInfo, FindingListResponse,
     PromoteAnnotationRequest, PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest,
@@ -49,7 +50,13 @@ def _serialize(finding: Finding) -> FindingResponse:
         )
         for fh in finding.hosts
     ]
+    # v2.349.0 — per-endpoint states rolled up, so a list row can say
+    # "open on 3 of 5 · 2 remediated" without implying one state everywhere.
+    endpoint_status_counts: Dict[str, int] = {}
+    for h in hosts:
+        endpoint_status_counts[h.host_status] = endpoint_status_counts.get(h.host_status, 0) + 1
     return FindingResponse(
+        endpoint_status_counts=endpoint_status_counts,
         id=finding.id, project_id=finding.project_id, title=finding.title,
         severity=finding.severity, status=finding.status, source=finding.source,
         owner_id=finding.owner_id,
@@ -347,6 +354,33 @@ def remove_finding_host(
     ``DELETE /findings/{id}/endpoints/{finding_host_id}``."""
     finding = _load(db, project, finding_id)
     FindingService(db).remove_host(finding=finding, host_id=host_id)
+    db.commit()
+    return _serialize(_load(db, project, finding_id))
+
+
+@router.patch(
+    "/findings/{finding_id}/endpoints/{finding_host_id}",
+    response_model=FindingResponse,
+    summary="Set one affected endpoint's own state (open / remediated / retest)",
+)
+def set_finding_endpoint_status(
+    finding_id: int,
+    finding_host_id: int,
+    body: EndpointStatusUpdate,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    current_user: User = Depends(get_current_user),
+):
+    """v2.349.0 — the finding's status is the issue's; each endpoint keeps
+    its own (design review item 7).  Confirming or remediating on one host
+    never implies it on the others; the move is written to the finding's
+    history with the endpoint named."""
+    finding = _load(db, project, finding_id)
+    FindingService(db).set_endpoint_status(
+        finding=finding, finding_host_id=finding_host_id,
+        host_status=body.host_status, actor_id=current_user.id,
+    )
     db.commit()
     return _serialize(_load(db, project, finding_id))
 

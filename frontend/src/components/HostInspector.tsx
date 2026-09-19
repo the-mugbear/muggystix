@@ -105,6 +105,7 @@ import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
+import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
 import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
 import { groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
@@ -1104,10 +1105,20 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // review (last_seen = newest observation; followInfo.updated_at = when the
   // caller set Reviewed). Prompt a re-check rather than letting it silently age.
   const reviewedAtTs = followStatus === 'reviewed' ? toTimestamp(followInfo?.updated_at) : 0;
-  const newEvidenceSinceReview = reviewedAtTs > 0 && toTimestamp(host.last_seen) > reviewedAtTs;
+  // v5.224.0 — material changes (ports or vulnerabilities first observed
+  // after the review) are told apart from a mere re-observation, so the
+  // badge says which it is instead of "new evidence" for both.
+  const sinceReview = changesSinceReview(
+    followStatus === 'reviewed' ? followInfo?.updated_at : null,
+    host.last_seen,
+    host.ports,
+    host.vulnerabilities ?? [],
+  );
+  const newEvidenceSinceReview = reviewedAtTs > 0 && sinceReview != null;
   const daysSinceReview = newEvidenceSinceReview
     ? Math.max(1, Math.round((toTimestamp(host.last_seen) - reviewedAtTs) / 86400000))
     : 0;
+  const freshness = host.assessment ? freshnessFacts(host.assessment) : [];
 
   const sortedVulnerabilities = (host.vulnerabilities ?? []).slice().sort((a, b) => {
     const severityA = (a.severity ?? 'unknown').toLowerCase();
@@ -1457,6 +1468,31 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </button>
               )}
             </div>
+
+            {/* v5.224.0 — evidence freshness beside each kind of evidence
+                (design review item 4): observed / vulnerabilities / web /
+                SMB / tested, each with its own date, "not assessed" or "n/a",
+                so the newest scan does not make every fact look current. */}
+            {freshness.length > 0 && (
+              <dl className="flex flex-wrap items-center gap-x-md gap-y-xxs text-caption" aria-label="Evidence freshness">
+                {freshness.map((f) => (
+                  <div key={f.key} className="inline-flex items-baseline gap-xxs" title={f.title}>
+                    <dt className="text-muted-foreground">{f.label}</dt>
+                    <dd
+                      className={cn(
+                        'font-medium',
+                        f.tone === 'ok' && 'text-foreground',
+                        f.tone === 'gap' && 'text-warning',
+                        f.tone === 'warn' && 'text-warning',
+                        f.tone === 'na' && 'text-muted-foreground',
+                      )}
+                    >
+                      {f.value}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
           </div>
 
           {/* Right column: review workflow — status, the state-aware review
@@ -1495,11 +1531,28 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       ?? followInfo.review_conclusion}
                   </span>
                 )}
-                {newEvidenceSinceReview && (
-                  <Badge variant="warning"
-                    title={`A scan re-observed this host ${daysSinceReview}d after you marked it Reviewed — re-open to re-check.`}>
-                    New evidence since review
-                  </Badge>
+                {newEvidenceSinceReview && sinceReview && (
+                  sinceReview.reobservedOnly ? (
+                    <Badge variant="outline"
+                      title={`A scan re-observed this host ${daysSinceReview}d after you marked it Reviewed, and recorded nothing new — no new port or vulnerability.`}>
+                      Re-observed since review, nothing new
+                    </Badge>
+                  ) : (
+                    <Badge variant="warning"
+                      title={[
+                        sinceReview.newPorts.length
+                          ? `${sinceReview.newPorts.length} port${sinceReview.newPorts.length === 1 ? '' : 's'} first seen since your review: ${sinceReview.newPorts.map((p) => `${p.port_number}/${p.protocol}`).join(', ')}`
+                          : null,
+                        sinceReview.newVulns.length
+                          ? `${sinceReview.newVulns.length} vulnerabilit${sinceReview.newVulns.length === 1 ? 'y' : 'ies'} first seen since your review`
+                          : null,
+                        'Re-open to re-check.',
+                      ].filter(Boolean).join(' · ')}>
+                      Changed since review
+                      {sinceReview.newPorts.length > 0 && ` · ${sinceReview.newPorts.length} new port${sinceReview.newPorts.length === 1 ? '' : 's'}`}
+                      {sinceReview.newVulns.length > 0 && ` · ${sinceReview.newVulns.length} new vuln${sinceReview.newVulns.length === 1 ? '' : 's'}`}
+                    </Badge>
+                  )
                 )}
                 {followInfo && (
                   <span className="text-caption text-muted-foreground">
@@ -2111,14 +2164,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           <CardHeader>
             <div className="flex items-center gap-xs">
               <ShieldAlert className="size-5 text-destructive" aria-hidden />
-              <CardTitle className="text-destructive">Vulnerabilities</CardTitle>
+              {/* v5.225.0 — named for what they are: what scanners reported
+                  on this host, not yet judged. Promote one to make it a
+                  finding under investigation (design review item 7). */}
+              <CardTitle className="text-destructive" title="What scanners reported on this host, grouped by issue. Not yet judged: promote an issue to make it a finding under investigation.">
+                Scanner observations
+              </CardTitle>
               {/* Rows are issues now, so the badge counts issues. When
                   scanners overlapped, say so rather than showing a number
                   that doesn't match the rows underneath it. */}
               <Badge variant="destructive">{vulnGroups.length}</Badge>
               {totalVulnerabilities > vulnGroups.length && (
                 <span className="text-caption text-muted-foreground">
-                  from {totalVulnerabilities} scanner findings
+                  from {totalVulnerabilities} scanner observations
                 </span>
               )}
               {/* v5.215.0 — informational rows are hidden until asked; say
@@ -2401,6 +2459,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       <PortDetailsCard
         hostId={host.id}
         hostIp={host.ip_address}
+        hostLastSeen={host.last_seen ?? null}
         openPorts={openPorts}
         closedPorts={closedPorts}
         filteredPorts={filteredPorts}

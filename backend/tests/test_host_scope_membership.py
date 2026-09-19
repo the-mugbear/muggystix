@@ -163,6 +163,47 @@ def test_host_detail_carries_scope_membership(client, db_session, test_project):
     assert body["names"] == []
 
 
+def test_host_list_carries_the_three_coverage_states(client, db_session, test_project):
+    """v2.344.0 — the list row says the same thing the detail card says.
+
+    Before: every host without a subnet mapping was printed "out of scope" in
+    the Hosts table, including one an approved name resolves to, and
+    including every host on a project that has declared no scope at all.
+    """
+    scope = _scope(db_session, test_project.id)
+    s = _subnet(db_session, scope, "10.1.0.0/16")
+    db_session.add(models.ScopeDomain(scope_id=scope.id, domain="example.com", include_subdomains=True))
+    db_session.flush()
+    by_subnet = _host(db_session, test_project.id, "10.1.4.4")
+    _map(db_session, by_subnet, s)
+    by_name = _host(db_session, test_project.id, "203.0.113.5")
+    dns_name_service.record_observation(
+        db_session, project_id=test_project.id, name="www.example.com", record_type="A", value="203.0.113.5",
+    )
+    uncovered = _host(db_session, test_project.id, "198.51.100.1")
+    db_session.commit()
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/?limit=50")
+    assert r.status_code == 200, r.text
+    rows = {h["ip_address"]: h for h in r.json()["items"]}
+    assert rows["10.1.4.4"]["scope_coverage"] == "subnet"
+    assert rows["10.1.4.4"]["primary_subnet"] == "10.1.0.0/16"
+    assert rows["203.0.113.5"]["scope_coverage"] == "name"
+    assert rows["203.0.113.5"]["primary_subnet"] is None
+    assert rows["198.51.100.1"]["scope_coverage"] == "none"
+    assert all(h["project_has_scope"] is True for h in rows.values())
+
+
+def test_host_list_says_no_scope_defined_rather_than_out_of_scope(client, db_session, test_project):
+    _host(db_session, test_project.id, "198.51.100.1")
+    db_session.commit()
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/?limit=50")
+    assert r.status_code == 200, r.text
+    (row,) = r.json()["items"]
+    assert row["scope_coverage"] == "none"
+    assert row["project_has_scope"] is False
+
+
 def test_netexec_upload_correlates_its_hosts(db_session, test_project, tmp_path):
     """NetExec created hosts but never ran scope correlation, so a host first
     seen by it stayed out of scope until something else re-correlated."""

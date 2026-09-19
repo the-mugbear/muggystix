@@ -3,7 +3,7 @@
 In its own module rather than the already-large schemas.py.
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,9 +37,18 @@ class FindingResponse(BaseModel):
     exec_result_id: Optional[int] = None
     host_count: int = 0
     hosts: List[FindingHostInfo] = []
+    # v2.349.0 — {open: n, remediated: n, retest: n} over the endpoint rows.
+    # The finding's ``status`` is the issue's; this says how each endpoint
+    # stands, so confirmation on one is never read as confirmation on all.
+    endpoint_status_counts: Dict[str, int] = {}
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class EndpointStatusUpdate(BaseModel):
+    """Body for PATCH /findings/{id}/endpoints/{finding_host_id}."""
+    host_status: str
 
 
 class FindingListResponse(BaseModel):

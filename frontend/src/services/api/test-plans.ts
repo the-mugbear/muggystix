@@ -551,7 +551,43 @@ export interface GeneratePlanRequest {
   // exclusive; only recon_session is wired from the UI today.
   source_kind?: 'recon_session' | 'manual_hosts' | 'filter_set' | 'inherited' | 'unspecified';
   source_recon_session_id?: number;
+  // v5.221.0 — a fixed host list from the Hosts page (source_kind
+  // 'manual_hosts').  The agent's candidate hosts are restricted to it.
+  source_host_ids?: number[];
 }
+
+/** POST /test-plans/from-hosts (v5.221.0) — the Hosts bulk bar's "Test plan"
+ *  action.  Either a new plan (title) or an existing draft (plan_id). */
+export interface PlanFromHostsRequest {
+  host_ids: number[];
+  rationale: string;
+  title?: string;
+  description?: string;
+  plan_id?: number;
+  priority?: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  test_phase?: 'reconnaissance' | 'enumeration' | 'exploitation' | 'post_exploitation' | 'reporting';
+  selection_summary?: string;
+  /** Report the counts without writing anything. */
+  dry_run?: boolean;
+}
+
+export interface PlanFromHostsResponse {
+  plan: TestPlanSummary | null;
+  created_plan: boolean;
+  requested: number;
+  added: number;
+  already_in_plan: number;
+  not_in_project: number;
+  planned_elsewhere: number;
+  dry_run: boolean;
+}
+
+export const createPlanFromHosts = async (
+  body: PlanFromHostsRequest,
+): Promise<PlanFromHostsResponse> => {
+  const response = await api.post(`${p()}/test-plans/from-hosts`, body);
+  return response.data;
+};
 
 export interface GeneratePlanResponse {
   plan_id: number;

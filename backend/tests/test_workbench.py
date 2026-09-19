@@ -79,10 +79,13 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     finally:
         event.remove(Engine, "after_cursor_execute", _count)
 
-    # Bound is a regression guard, not a target — currently ~17 (the
-    # recent_notes section added one SELECT); flag a fan-out blow-up (e.g. an
-    # N+1 creeping into a section).
-    assert counter["n"] <= 20, f"workbench issued {counter['n']} SQL statements"
+    # Bound is a regression guard, not a target — currently ~23: ~18 for the
+    # personal sections, plus five grouped statements for the investigation
+    # queue (v2.347.0: untouched hosts, vulns, high-value ports, conflicts,
+    # sources; the changed-since-scan window runs only when a tier-4
+    # candidate exists).  Flag a fan-out blow-up (e.g. an N+1 creeping into a
+    # section), not a fixed additive cost.
+    assert counter["n"] <= 26, f"workbench issued {counter['n']} SQL statements"
 
 
 def test_workbench_returns_all_sections(client, test_project):

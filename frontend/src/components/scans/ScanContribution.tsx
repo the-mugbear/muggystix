@@ -144,9 +144,9 @@ export function contributionRows(scan: ContributionScan): ContributionRow[] {
     if (exploitable > 0) parts.push(`${num(exploitable)} exploitable`);
     rows.findings = {
       key: 'findings',
-      label: 'Findings',
+      label: 'Scanner observations',
       parts,
-      hint: 'Findings this scan recorded first (re-observations of known findings are not counted), at their current severity.',
+      hint: 'Scanner observations this scan recorded first (re-observations of known ones are not counted), at their current severity. Not yet judged; a promoted one becomes a finding.',
     };
   }
 

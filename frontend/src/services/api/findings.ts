@@ -25,8 +25,12 @@ export interface FindingHostInfo {
   // (inherited from the scanner row / plan entry); null = host-level.
   name_id?: number | null;
   fqdn?: string | null;
-  host_status: string;
+  /** This endpoint's own state: open | remediated | retest.  The finding's
+   *  status is the issue's; this one is the host's (v5.225.0). */
+  host_status: FindingHostStatus;
 }
+
+export type FindingHostStatus = 'open' | 'remediated' | 'retest';
 
 export interface Finding {
   id: number;
@@ -42,6 +46,8 @@ export interface Finding {
   exec_result_id: number | null;
   host_count: number;
   hosts: FindingHostInfo[];
+  /** v5.225.0 — {open, remediated, retest} over the endpoint rows. */
+  endpoint_status_counts?: Partial<Record<FindingHostStatus, number>>;
   created_at: string;
   updated_at: string | null;
 }
@@ -131,6 +137,20 @@ export const setFindingStatus = async (
   summary?: string,
 ): Promise<Finding> => {
   const response = await api.post<Finding>(`${p()}/findings/${findingId}/status`, { status, summary });
+  return response.data;
+};
+
+/** v5.225.0 — set ONE endpoint row's state (open / remediated / retest)
+ *  without touching the finding's own status. */
+export const setFindingEndpointStatus = async (
+  findingId: number,
+  findingHostId: number,
+  hostStatus: FindingHostStatus,
+): Promise<Finding> => {
+  const response = await api.patch<Finding>(
+    `${p()}/findings/${findingId}/endpoints/${findingHostId}`,
+    { host_status: hostStatus },
+  );
   return response.data;
 };
 

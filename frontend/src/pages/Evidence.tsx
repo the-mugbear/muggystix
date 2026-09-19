@@ -17,9 +17,15 @@ import { Loader2, RefreshCw, ShieldAlert, Wrench, AlertTriangle } from 'lucide-r
 
 import {
   getEvidenceCoverage,
+  getEvidenceGaps,
   type EvidenceCoverageResponse,
   type EvidenceDomain,
+  type EvidenceGapsResponse,
 } from '../services/api';
+import { useToast } from '../contexts/ToastContext';
+import { copyToClipboard } from '../utils/clipboard';
+import { stashPlanSelection } from '../utils/planSelection';
+import { useNavigate } from 'react-router-dom';
 import { formatApiError } from '../utils/apiErrors';
 import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -33,6 +39,112 @@ import { InfoTip } from '../components/ui/info-tip';
 // Coverage → bar colour: red under a third, amber under two thirds, green above.
 const coverageColor = (pct: number): string =>
   pct < 34 ? 'hsl(var(--destructive))' : pct < 67 ? 'hsl(var(--warning))' : 'hsl(var(--success))';
+
+const GAP_PREVIEW = 12;
+
+/**
+ * v5.224.0 — a coverage gap the operator can act on (design review item 4):
+ * "Show the N unassessed hosts" reveals the affected endpoints (with the
+ * open ports that made them eligible) and offers the step that closes the
+ * gap: copy the IPs for a scoped collection run, or hand the hosts to the
+ * generate dialog as a fixed selection.
+ */
+const GapList: React.FC<{ domain: string; gapCount: number }> = ({ domain, gapCount }) => {
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [gaps, setGaps] = useState<EvidenceGapsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+
+  useEffect(() => {
+    if (!open || gaps) return;
+    const controller = new AbortController();
+    setLoading(true);
+    getEvidenceGaps(domain, { signal: controller.signal })
+      .then((g) => setGaps(g))
+      .catch((e) => { if (!controller.signal.aborted) setError(formatApiError(e, 'Could not load the gap.')); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [open, gaps, domain]);
+
+  const copyIps = async () => {
+    if (!gaps) return;
+    const ok = await copyToClipboard(gaps.items.map((h) => h.ip_address).join('\n'));
+    if (ok) toast.success(`Copied ${gaps.items.length} IP${gaps.items.length === 1 ? '' : 's'}${gaps.total > gaps.items.length ? ` (first ${gaps.items.length} of ${gaps.total})` : ''}`, { autoHideMs: 2500 });
+    else toast.error('Could not copy to clipboard.');
+  };
+
+  const planThese = () => {
+    if (!gaps) return;
+    stashPlanSelection({
+      host_ids: gaps.items.map((h) => h.host_id),
+      rationale: `${gaps.label}: ${gaps.action.text}`,
+      summary: `${gaps.items.length} hosts with no ${gaps.label.toLowerCase()} evidence (Evidence page)`,
+      taken_at: new Date().toISOString(),
+    });
+    navigate('/test-plans?generate=1&source=selection');
+  };
+
+  if (gapCount === 0) return null;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {open ? 'Hide' : 'Show'} the {gapCount.toLocaleString()} unassessed host{gapCount === 1 ? '' : 's'}
+      </button>
+      {open && (
+        <div className="mt-xs rounded-panel border border-border p-sm">
+          {loading && (
+            <p className="inline-flex items-center gap-xs text-caption text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" aria-hidden /> Loading…
+            </p>
+          )}
+          {error && <p className="text-caption text-destructive break-words">{error}</p>}
+          {gaps && (
+            <>
+              <p className="mb-xs break-words text-caption text-foreground">{gaps.action.text}</p>
+              <ul className="flex flex-col gap-xxs" aria-label={`Hosts without ${gaps.label} evidence`}>
+                {(showAll ? gaps.items : gaps.items.slice(0, GAP_PREVIEW)).map((h) => (
+                  <li key={h.host_id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-caption">
+                    <Link to={`/hosts/${h.host_id}`} className="font-mono text-foreground hover:underline">{h.ip_address}</Link>
+                    {h.hostname && <span className="min-w-0 truncate text-muted-foreground">{h.hostname}</span>}
+                    {h.ports.length > 0 && (
+                      <span className="font-mono text-muted-foreground">{h.ports.join(', ')}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {gaps.items.length > GAP_PREVIEW && (
+                <button type="button" onClick={() => setShowAll((v) => !v)}
+                  className="mt-xxs rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {showAll ? 'Show fewer' : `Show ${gaps.items.length - GAP_PREVIEW} more`}
+                </button>
+              )}
+              {gaps.total > gaps.items.length && (
+                <p className="mt-xxs text-caption text-muted-foreground">Showing the first {gaps.items.length} of {gaps.total.toLocaleString()}.</p>
+              )}
+              <div className="mt-xs flex flex-wrap gap-xs">
+                <Button size="sm" variant="outline" onClick={() => void copyIps()} title="Copy the IPs as a target list for the collection step">
+                  Copy IPs
+                </Button>
+                <Button size="sm" variant={gaps.action.kind === 'plan' ? 'default' : 'outline'} onClick={planThese}
+                  title="Hand these hosts to the generate dialog as a fixed selection">
+                  Plan these
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const DomainCard: React.FC<{ d: EvidenceDomain }> = ({ d }) => {
   const { numerator, denominator } = d.coverage;
@@ -59,6 +171,7 @@ const DomainCard: React.FC<{ d: EvidenceDomain }> = ({ d }) => {
             <p className="text-caption tabular-nums text-muted-foreground">
               <span className="font-medium text-foreground">{numerator}</span> of {denominator} eligible hosts assessed
             </p>
+            <GapList domain={d.key} gapCount={Math.max(denominator - numerator, 0)} />
           </>
         )}
         <p className="text-caption text-muted-foreground">{d.note}</p>

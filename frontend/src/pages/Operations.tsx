@@ -129,9 +129,9 @@ const ProjectStateCard: React.FC<{
       <CardContent className="p-md">
         <h2 className="text-subheading font-semibold">Project state</h2>
         <p className="mb-sm text-caption text-muted-foreground">
-          Exposure (vulnerabilities from scanners) and assessment coverage
-          (pipeline progress) at a glance. "Findings" (promoted, curated) live on
-          the Findings page — these are the raw scanner counts.
+          Exposure (scanner observations, not yet judged) and assessment coverage
+          (pipeline progress) at a glance. Findings — the promoted, curated record,
+          under investigation or confirmed — live on the Findings page.
         </p>
 
         {stats && (
@@ -1177,6 +1177,7 @@ const Operations: React.FC = () => {
               tasks={workbench?.my_tasks ?? null}
               notes={workbench?.my_notes ?? null}
               findings={workbench?.my_findings ?? null}
+              investigate={workbench?.investigate ?? null}
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}

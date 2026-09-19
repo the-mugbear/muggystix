@@ -15,6 +15,7 @@ vi.mock('../../services/api', () => ({
   getFinding: vi.fn(),
   getFindingHistory: vi.fn(),
   setFindingStatus: vi.fn(),
+  setFindingEndpointStatus: vi.fn(),
   updateFinding: vi.fn(),
   removeFindingEndpoint: vi.fn(),
   addFindingHosts: vi.fn(),
@@ -82,6 +83,40 @@ describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
     expect(screen.getByLabelText('New comment')).toHaveValue('repro: openssl s_client …');
     // The whole-page skeleton never replaced the content.
     expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
+  });
+});
+
+describe('FindingDetail — item 7: each endpoint has its own state', () => {
+  const twoHosts = () => finding({
+    status: 'confirmed',
+    host_count: 2,
+    endpoint_status_counts: { open: 1, remediated: 1 },
+    hosts: [
+      { id: 31, host_id: 5, ip_address: '10.0.0.5', hostname: null, name_id: null, fqdn: null, host_status: 'open' },
+      { id: 32, host_id: 6, ip_address: '10.0.0.6', hostname: 'web2', name_id: null, fqdn: null, host_status: 'remediated' },
+    ],
+  });
+
+  it('says the status is the issue\'s and shows how the endpoints stand', async () => {
+    mocked.getFinding.mockResolvedValue(twoHosts());
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    expect(screen.getByText(/The status above is the issue/)).toBeInTheDocument();
+    expect(screen.getByText('open on 1 of 2 · 1 remediated')).toBeInTheDocument();
+  });
+
+  it('changing one endpoint\'s state calls the endpoint route, not the finding status', async () => {
+    const user = userEvent.setup();
+    mocked.getFinding.mockResolvedValue(twoHosts());
+    mocked.setFindingEndpointStatus.mockResolvedValue(undefined);
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+
+    await user.click(screen.getByLabelText('State of 10.0.0.5'));
+    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+
+    await waitFor(() => expect(mocked.setFindingEndpointStatus).toHaveBeenCalledWith(7, 31, 'retest'));
+    expect(mocked.setFindingStatus).not.toHaveBeenCalled();
   });
 });
 
