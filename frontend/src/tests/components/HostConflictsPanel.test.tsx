@@ -45,8 +45,8 @@ describe('HostConflictsPanel', () => {
   // heading — so "1 conflict" opened a panel that named no conflict.
   it('states a disagreement that has no confidence record', () => {
     renderPanel([entry()], []);
-    const list = screen.getByRole('list', { name: 'Host conflicts' });
-    expect(within(list).getByText('Operating system')).toBeInTheDocument();
+    const list = screen.getByRole('group', { name: 'Host conflicts' });
+    expect(within(list).getByRole('heading', { name: /Operating system/ })).toBeInTheDocument();
     expect(within(list).getByText('Microsoft Windows Server 2022')).toBeInTheDocument();
     expect(within(list).getByText('Windows 11')).toBeInTheDocument();
   });
@@ -71,14 +71,29 @@ describe('HostConflictsPanel', () => {
     expect(screen.queryByText('shown')).toBeNull();
   });
 
+  it('groups disagreements under their field instead of repeating the heading', () => {
+    renderPanel([
+      entry(),
+      entry({ id: 2, new_value: 'Red Hat Enterprise Linux 8' }),
+      entry({ id: 3, field_name: 'hostname', previous_value: 'DEV08', new_value: 'git.lab.local', current_value: 'ca-01.lab.local' }),
+    ]);
+    const os = screen.getByRole('region', { name: 'Operating system' });
+    expect(within(os).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(os).getByText('2 disagreements')).toBeInTheDocument();
+    // "shown" marks the value once per row that holds it; the hostname group
+    // holds neither value, and says what the host shows instead.
+    const names = screen.getByRole('region', { name: 'Hostname' });
+    expect(within(names).getByText('ca-01.lab.local')).toBeInTheDocument();
+  });
+
   it('names the port for a port-level disagreement and keeps it out of the counted list', () => {
     renderPanel(
       [entry(), entry({ id: 2, object_type: 'port', object_id: 55, field_name: 'service_name', current_value: null })],
       [],
       1,
     );
-    expect(within(screen.getByRole('list', { name: 'Host conflicts' })).getAllByRole('listitem')).toHaveLength(1);
-    expect(within(screen.getByRole('list', { name: 'Port conflicts' })).getByText('443/tcp · service name')).toBeInTheDocument();
+    expect(within(screen.getByRole('group', { name: 'Host conflicts' })).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(screen.getByRole('group', { name: 'Port conflicts' })).getByRole('heading', { name: /443\/tcp · service name/ })).toBeInTheDocument();
   });
 
   it('admits when the count exceeds what could be listed', () => {

@@ -194,6 +194,11 @@ class ConflictEntry(BaseModel):
     new_scan_id: Optional[int] = None
     new_method: Optional[str] = None
     resolved_at: Optional[str] = None
+    # v2.367.0 — declared HERE or the response model strips them (it did: the
+    # handler set them and the panel still read "scan #82" with no "shown").
+    previous_scan_filename: Optional[str] = None
+    new_scan_filename: Optional[str] = None
+    current_value: Optional[str] = None
 
 class HostConflictsResponse(BaseModel):
     # Canonical host-level conflict count (same definition as the Hosts-list

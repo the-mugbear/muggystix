@@ -168,3 +168,31 @@ def test_port_scan_history_deduped_within_one_scan(db_session, test_project):
         models.PortScanHistory.scan_id == scan.id,
     ).all()
     assert len(rows) == 1
+
+
+# --- GET /hosts/{id}/conflicts names the scans and the value held today -------
+# Asserted on the HTTP response on purpose: the handler set these fields and
+# the response model silently stripped them (v2.367.0, caught from a
+# screenshot reading "scan #82" with no "shown" marker).
+
+def test_conflicts_endpoint_names_scans_and_the_current_value(client, db_session, test_project):
+    host = models.Host(ip_address="10.9.3.1", state="up", os_name="Windows Server 2022",
+                       project_id=test_project.id)
+    held = models.Scan(project_id=test_project.id, filename="sweep.xml")
+    reported = models.Scan(project_id=test_project.id, filename="netexec-smb.txt")
+    db_session.add_all([host, held, reported])
+    db_session.flush()
+    HostDeduplicationService(db_session)._record_conflict(
+        "host", host.id, "os_name", "Windows Server 2022", "Windows 11", held.id, reported.id,
+    )
+    db_session.commit()
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/{host.id}/conflicts")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["conflict_count"] == 1
+    (entry,) = body["conflict_history"]
+    assert entry["previous_scan_filename"] == "sweep.xml"
+    assert entry["new_scan_filename"] == "netexec-smb.txt"
+    # The reported value was NOT adopted — the host still holds the earlier one.
+    assert entry["current_value"] == "Windows Server 2022"
