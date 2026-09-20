@@ -1,0 +1,34 @@
+# Build context for ./backend (compose builds from this directory, so the
+# repo-root .dockerignore is NOT consulted — Docker reads the one at the
+# context root). Before v2.368.1 there was none and `COPY . .` took everything.
+
+# Python leftovers from running on the host or in a bind-mounted container
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Bind-mounted at runtime by docker-compose (./backend/tests, pytest.ini); the
+# test recipe mounts all of ./backend over /app. Nothing in the image reads them.
+tests/
+pytest.ini
+test_*.py
+
+# Runtime data and stray trees — never part of an image
+uploads/
+artifacts/
+backend/
+
+# Local environment
+.env
+.env.*
+venv/
+.venv/
+.git
+.gitignore
+.dockerignore
+Dockerfile

@@ -1,0 +1,22 @@
+# Build context for ./frontend (compose builds from this directory, so the
+# repo-root .dockerignore is NOT consulted). Before v5.246.1 there was none:
+# the Dockerfile ran `npm ci` and then `COPY . .` laid the HOST's node_modules
+# (~286 MB) over that clean install — every image could differ from what the
+# lockfile resolved, and every build shipped the directory as context.
+
+node_modules/
+build/
+dist/
+coverage/
+
+# Generated inside the image by generate-build-info.js (the `prebuild` hook):
+# src/buildInfo.json and .env.local. The host's copies are stale by definition.
+src/buildInfo.json
+
+npm-debug.log*
+.env
+.env.*
+.git
+.gitignore
+.dockerignore
+Dockerfile

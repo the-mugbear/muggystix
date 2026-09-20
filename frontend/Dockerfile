@@ -77,10 +77,10 @@ RUN echo "Cache bust: $CACHE_BUST" > /tmp/cache_bust.txt
 # Copy source code (cache-busted)
 COPY . .
 
-# Generate build info and build the application
-RUN node generate-build-info.js \
-    && npm run build \
-    && npm prune --production
+# Build. The `prebuild` npm hook runs generate-build-info.js, so it is not
+# called here as well (it used to run twice). No `npm prune`: this stage is
+# discarded — only /app/build is copied into the nginx image below.
+RUN npm run build
 
 # Production stage
 FROM nginx:alpine AS production
