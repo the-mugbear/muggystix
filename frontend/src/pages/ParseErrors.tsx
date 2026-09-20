@@ -8,19 +8,16 @@ import {
   ChevronUp,
   ExternalLink,
   CloudUpload,
-  CheckCircle2,
-  AlertOctagon,
   Server,
-  Network,
   Copy,
   Loader2,
   Search,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Input } from '../components/ui/input';
 import {
   discardIngestionJob,
+  dismissIngestionJob,
   getIngestionResults,
   getParseError,
   getScans,
@@ -296,20 +293,7 @@ const ParseErrors: React.FC = () => {
               className="pl-xl"
             />
           </div>
-          {/* v2.86.2 — status filter (all / queued / processing /
-              completed / failed).  Mirrors the IngestionJob.status enum. */}
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="min-w-36" aria-label="Filter by status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="queued">Queued</SelectItem>
-              <SelectItem value="processing">Processing</SelectItem>
-              <SelectItem value="completed">Completed</SelectItem>
-              <SelectItem value="failed">Failed</SelectItem>
-            </SelectContent>
-          </Select>
+          {/* The status filter is the chip strip below (v5.242.0). */}
           {/* v2.86.2 — sort key + direction.  Two separate selects keep
               the dropdown content short; the previous single-control
               "Newest / Oldest / A→Z / …" pattern proliferates options
@@ -347,18 +331,38 @@ const ParseErrors: React.FC = () => {
         </Alert>
       )}
 
+      {/* v5.242.0 — the counts ARE the filter. This was five stat cards that
+          did nothing when clicked, beside a dropdown that filtered by the same
+          statuses; two of the cards ("Total Hosts" / "Total Ports") summed
+          per-scan history rows, so an 87-host project read well over a
+          thousand. One strip: each count sets the status filter, and "Needs
+          attention" (failed or finished partial, not dismissed) is the view
+          Operations' "Inspect import errors" opens. */}
       {summary && (
-        <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-5">
-          {/* Was items.length — the current page only. Its neighbours are
-              project-wide, so past 100 uploads this tile could read a total
-              SMALLER than the Completed count sitting next to it. `total` is
-              the match count for the active filters, which is what the label
-              means. */}
-          <StatCard label="Total Uploads" value={totalMatching.toLocaleString()} Icon={CloudUpload} tone="text-muted-foreground" />
-          <StatCard label="Completed" value={summary.total_completed} Icon={CheckCircle2} tone="text-success" />
-          <StatCard label="Failed" value={summary.total_failed} Icon={AlertOctagon} tone="text-destructive" />
-          <StatCard label="Total Hosts" value={summary.total_hosts.toLocaleString()} Icon={Server} tone="text-info" />
-          <StatCard label="Total Ports" value={summary.total_ports.toLocaleString()} Icon={Network} tone="text-warning" />
+        <div className="mb-md flex flex-wrap items-center gap-xs" role="group" aria-label="Filter by status">
+          {statusChips(summary, statusFilter).map((chip) => {
+            const active = statusFilter === chip.value;
+            return (
+              <button
+                key={chip.value}
+                type="button"
+                aria-pressed={active}
+                title={chip.hint}
+                onClick={() => setStatusFilter(active && chip.value !== 'all' ? 'all' : chip.value)}
+                className={cn(
+                  'inline-flex items-center gap-xs rounded-chip border px-sm py-xxs text-metadata focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  active
+                    ? 'border-primary bg-primary/10 text-foreground'
+                    : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <span>{chip.label}</span>
+                <strong className={cn('tabular-nums', chip.tone && chip.count > 0 ? chip.tone : 'text-foreground')}>
+                  {chip.count.toLocaleString()}
+                </strong>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -436,7 +440,25 @@ const ParseErrors: React.FC = () => {
                               {isExpanded ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
                             </Button>
                           </TableCell>
-                          <TableCell><StatusBadge status={item.status} /></TableCell>
+                          <TableCell>
+                            <div className="flex flex-col items-start gap-xxs">
+                              <StatusBadge status={item.status} />
+                              {/* "Completed" alone hid that part of the file
+                                  never made it into the inventory. */}
+                              {item.partial && (
+                                <Badge variant="warning" className="whitespace-nowrap"
+                                  title={item.parser_warnings ?? 'Part of this file was not imported'}>
+                                  partial
+                                </Badge>
+                              )}
+                              {item.dismissed_at && (
+                                <span className="text-caption text-muted-foreground"
+                                  title={`Dismissed ${new Date(item.dismissed_at).toLocaleString()}`}>
+                                  dismissed
+                                </span>
+                              )}
+                            </div>
+                          </TableCell>
                           <TableCell>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -610,6 +632,49 @@ const ParseErrors: React.FC = () => {
   );
 };
 
+/**
+ * Dismiss a failed or partial import (v5.242.0). Operations lists both as
+ * blocked until someone does; the action lived only on the Scans page's live
+ * queue, and only for failed jobs — so the page Operations sends people to
+ * could not clear what it was sent to clear. Dismissing acknowledges the row;
+ * it stays in this list, still failed / still partial.
+ */
+const DismissAction: React.FC<{ item: IngestionResultItem; onChanged: () => void }> = ({ item, onChanged }) => {
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const blocked = item.status === 'failed' || (item.status === 'completed' && !!item.partial);
+  if (!blocked) return null;
+  if (item.dismissed_at) {
+    return (
+      <span className="text-caption text-muted-foreground">
+        Dismissed {new Date(item.dismissed_at).toLocaleString()} — no longer listed as blocked
+      </span>
+    );
+  }
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      disabled={saving}
+      title="Acknowledge this import. It stays in this list; it stops being listed as blocked on Operations."
+      onClick={async () => {
+        setSaving(true);
+        try {
+          await dismissIngestionJob(item.id);
+          onChanged();
+        } catch (err) {
+          toast.error(formatApiError(err, 'Could not dismiss this import.'));
+        } finally {
+          setSaving(false);
+        }
+      }}
+    >
+      {saving && <Loader2 className="size-3 animate-spin" aria-hidden />}
+      Dismiss
+    </Button>
+  );
+};
+
 const RowDetail: React.FC<{
   item: IngestionResultItem;
   onViewParseError: (item: IngestionResultItem) => void;
@@ -649,6 +714,7 @@ const RowDetail: React.FC<{
               Review format and retry
             </Button>
           )}
+          <DismissAction item={item} onChanged={onChanged} />
           <span className="text-caption text-muted-foreground">{retainedNote}</span>
         </div>
         <FormatRetryDialog
@@ -703,6 +769,21 @@ const RowDetail: React.FC<{
   const stats = item.stats;
   return (
     <div className="flex flex-col gap-sm">
+      {/* v5.242.0 — a partial import says what was lost, first. */}
+      {item.partial && (
+        <Alert variant="warning">
+          <AlertDescription className="flex flex-col gap-xs">
+            <p className="font-semibold">
+              Partial import — part of this file is not in the inventory
+              {(item.skipped_count ?? 0) > 0 && ` (${item.skipped_count} skipped)`}
+            </p>
+            <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-caption">
+              {safeFallback(item.parser_warnings, 'The parser recorded no detail.')}
+            </p>
+            <div><DismissAction item={item} onChanged={onChanged} /></div>
+          </AlertDescription>
+        </Alert>
+      )}
       {/* v5.222.0 — the import result, the same block the upload banner
           and the scan page show, so a completed job is reconcilable here. */}
       {item.scan_id != null && item.status === 'completed' && (
@@ -799,21 +880,41 @@ const Field: React.FC<{ label: string; value: React.ReactNode }> = ({ label, val
   </div>
 );
 
-const StatCard: React.FC<{
+interface StatusChip {
+  /** The `?status=` value; `needs_attention` is a view, not a job status. */
+  value: string;
   label: string;
-  value: string | number;
-  Icon: LucideIcon;
-  tone: string;
-}> = ({ label, value, Icon, tone }) => (
-  <Card>
-    <CardContent className="flex items-center gap-sm p-md">
-      <Icon className={cn('size-6 shrink-0', tone)} aria-hidden />
-      <div className="min-w-0">
-        <p className="text-caption text-muted-foreground">{label}</p>
-        <p className="text-section-title font-semibold text-foreground">{value}</p>
-      </div>
-    </CardContent>
-  </Card>
-);
+  count: number;
+  hint: string;
+  tone?: string;
+}
+
+/** The status filter, as counts. Transient states appear only while they hold
+ *  something; "Needs attention" always shows, because zero is an answer. */
+const statusChips = (summary: IngestionResultsResponse['summary'], active: string): StatusChip[] => {
+  const queued = summary.total_queued ?? 0;
+  const processing = summary.total_processing ?? 0;
+  const staged = summary.total_staged ?? 0;
+  const all = summary.total_completed + summary.total_failed + queued + processing + staged;
+  const chips: StatusChip[] = [
+    { value: 'all', label: 'All uploads', count: all, hint: 'Every upload in this project' },
+    {
+      value: 'needs_attention', label: 'Needs attention', count: summary.total_needs_attention ?? 0,
+      tone: 'text-warning',
+      hint: 'Failed, or finished partial, and not dismissed — what Operations lists as blocked',
+    },
+    { value: 'failed', label: 'Failed', count: summary.total_failed, tone: 'text-destructive', hint: 'Nothing from these files is in the inventory (dismissed ones included)' },
+    { value: 'completed', label: 'Completed', count: summary.total_completed, hint: 'Imported — a partial import is marked on its row' },
+  ];
+  if (staged > 0) chips.push({ value: 'staged', label: 'Awaiting format review', count: staged, hint: 'Uploaded, not started' });
+  if (queued > 0) chips.push({ value: 'queued', label: 'Queued', count: queued, hint: 'Waiting for a worker' });
+  if (processing > 0) chips.push({ value: 'processing', label: 'Processing', count: processing, hint: 'Being imported now' });
+  // A deep link can carry a filter whose chip is hidden (an empty transient
+  // state): the active filter must always be visible, and clearable.
+  if (!chips.some((c) => c.value === active)) {
+    chips.push({ value: active, label: active, count: 0, hint: 'The active filter — click to clear' });
+  }
+  return chips;
+};
 
 export default ParseErrors;

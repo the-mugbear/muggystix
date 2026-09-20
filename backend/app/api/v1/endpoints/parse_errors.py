@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.db.session import get_db
 from app.db import models
 from app.services.format_registry import format_label
+from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import file_retained, retained_until
 from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
 from app.api.v1.endpoints.auth import get_current_user, require_role
@@ -97,6 +98,13 @@ class IngestionResultItem(BaseModel):
     # the format and retry" / re-process need no re-upload) and until when.
     file_retained: bool = False
     retained_until: Optional[datetime] = None
+    # v2.363.0 — "a partial job must stay visibly partial in every list that
+    # shows it" (v2.332.0), and this list did not: a truncated file read
+    # "Completed".  With what was lost, and whether someone has dismissed it.
+    partial: bool = False
+    skipped_count: int = 0
+    parser_warnings: Optional[str] = None
+    dismissed_at: Optional[datetime] = None
     # Stats (populated for completed jobs)
     stats: Optional[IngestionResultStats] = None
     # Error info (populated for failed jobs)
@@ -177,7 +185,12 @@ def get_ingestion_results(
     # query so the pagination math reflects the filtered set, not the
     # raw row count of the table.
     base = db.query(models.IngestionJob).filter(models.IngestionJob.project_id == project.id)
-    if status:
+    if status == "needs_attention":
+        # v2.363.0 — not a job status: failed OR finished partial, and not
+        # dismissed.  The same condition the Operations blockers count, so the
+        # number on "Inspect import errors" and this list cannot disagree.
+        base = base.filter(blocked_import_condition())
+    elif status:
         base = base.filter(models.IngestionJob.status == status)
     if tool:
         base = base.filter(func.lower(models.IngestionJob.tool_name) == tool.lower())
@@ -337,6 +350,10 @@ def get_ingestion_results(
             source_tool=job.source_tool,
             file_retained=file_retained(job),
             retained_until=retained_until(job),
+            partial=bool(job.partial),
+            skipped_count=int(job.skipped_count or 0),
+            parser_warnings=job.parser_warnings,
+            dismissed_at=job.dismissed_at,
         )
 
         # Attach stats for completed jobs
@@ -401,8 +418,15 @@ def get_ingestion_results(
         .all()
     )
     status_map = dict(status_counts)
+    needs_attention = (
+        db.query(func.count(models.IngestionJob.id))
+        .filter(models.IngestionJob.project_id == project.id, blocked_import_condition())
+        .scalar()
+    ) or 0
 
     summary = {
+        "total_needs_attention": needs_attention,
+        "total_staged": status_map.get("staged", 0),
         "total_completed": status_map.get("completed", 0),
         "total_failed": status_map.get("failed", 0),
         "total_queued": status_map.get("queued", 0),

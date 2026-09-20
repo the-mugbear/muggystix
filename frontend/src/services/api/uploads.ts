@@ -334,6 +334,14 @@ export interface IngestionResultItem {
   /** v2.354.0 — the uploaded bytes are still on disk, until when. */
   file_retained?: boolean;
   retained_until?: string | null;
+  /** v2.363.0 — finished, but part of the file is NOT in the inventory (a
+   *  truncated scan, targets that failed to import). Still "completed". */
+  partial?: boolean;
+  skipped_count?: number;
+  /** What was lost, in the parser's words. */
+  parser_warnings?: string | null;
+  /** Someone acknowledged this failed / partial import. */
+  dismissed_at?: string | null;
   stats: {
     hosts_parsed: number;
     hosts_up: number;
@@ -352,6 +360,10 @@ export interface IngestionResultsResponse {
   items: IngestionResultItem[];
   total: number;
   summary: {
+    /** v2.363.0 — failed or finished partial, and not dismissed: the same
+     *  condition Operations counts as blocked. */
+    total_needs_attention?: number;
+    total_staged?: number;
     total_completed: number;
     total_failed: number;
     total_queued: number;

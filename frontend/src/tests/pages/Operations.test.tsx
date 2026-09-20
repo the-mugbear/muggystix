@@ -417,7 +417,7 @@ describe('Operations page', () => {
         expect(await screen.findByRole('heading', { name: 'Blocked' })).toBeInTheDocument();
         expect(screen.getByText('1 import failed · 1 finished partial')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Inspect import errors' }));
-        expect(navigateSpy).toHaveBeenCalledWith('/parse-errors');
+        expect(navigateSpy).toHaveBeenCalledWith('/parse-errors?status=needs_attention');
 
         expect(screen.getByText('Run #31 lost its agent session')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Resume execution' }));

@@ -198,3 +198,61 @@ def test_nothing_blocked_is_empty_not_unavailable(client, test_project):
     body = client.get(_wb(test_project.id)).json()
     assert body["blockers_unavailable"] is False
     assert body["blockers"]["imports"] == [] and body["blockers"]["executions"] == []
+
+
+# --- the list the "Inspect import errors" button opens ----------------------
+
+def _results(client, pid, **params):
+    r = client.get(f"/api/v1/projects/{pid}/parse-errors/ingestion-results", params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_needs_attention_lists_exactly_what_the_blockers_counted(client, db_session, test_project):
+    """The button said "Inspect import errors" and landed on every upload.  The
+    filter is the SAME condition the blockers count, so they cannot disagree."""
+    pid = test_project.id
+    _job(db_session, pid, "broken.xml", "failed", error_message="not well-formed")
+    _job(db_session, pid, "half.nessus", "completed", partial=True, parser_warnings="hosts MISSING")
+    _job(db_session, pid, "fine.xml", "completed")
+    _job(db_session, pid, "old-broken.xml", "failed", dismissed_at=datetime.now(timezone.utc))
+    db_session.commit()
+
+    b = client.get(_wb(pid)).json()["blockers"]
+    body = _results(client, pid, status="needs_attention")
+    assert sorted(i["original_filename"] for i in body["items"]) == ["broken.xml", "half.nessus"]
+    assert body["total"] == b["failed_import_count"] + b["partial_import_count"] == 2
+    assert body["summary"]["total_needs_attention"] == 2
+    # Unfiltered, everything is still there — the filter hides nothing for good.
+    assert _results(client, pid)["total"] == 4
+
+
+def test_a_partial_import_is_visibly_partial_in_the_results_list(client, db_session, test_project):
+    _job(db_session, test_project.id, "half.nessus", "completed", partial=True,
+         skipped_count=3, parser_warnings="hosts after this point are MISSING")
+    db_session.commit()
+    (row,) = _results(client, test_project.id)["items"]
+    assert row["status"] == "completed" and row["partial"] is True
+    assert row["skipped_count"] == 3 and "MISSING" in row["parser_warnings"]
+    assert row["dismissed_at"] is None
+
+
+def test_a_partial_import_can_be_dismissed_and_then_stops_blocking(client, db_session, test_project):
+    """Only FAILED jobs were dismissable, so a partial import listed as blocked
+    could never be cleared — a permanent banner."""
+    pid = test_project.id
+    _job(db_session, pid, "half.nessus", "completed", partial=True, submitted_by_id=1)
+    _job(db_session, pid, "fine.xml", "completed", submitted_by_id=1)
+    db_session.commit()
+    jobs = {j.original_filename: j.id for j in db_session.query(models.IngestionJob).all()}
+
+    r = client.post(f"/api/v1/projects/{pid}/upload/jobs/{jobs['half.nessus']}/dismiss")
+    assert r.status_code == 200, r.text
+    assert client.get(_wb(pid)).json()["blockers"]["partial_import_count"] == 0
+    # Dismissed, not laundered: it still reads partial in the full list.
+    row = next(i for i in _results(client, pid)["items"] if i["original_filename"] == "half.nessus")
+    assert row["partial"] is True and row["dismissed_at"] is not None
+
+    # A clean completed job has nothing to dismiss.
+    r = client.post(f"/api/v1/projects/{pid}/upload/jobs/{jobs['fine.xml']}/dismiss")
+    assert r.status_code == 400

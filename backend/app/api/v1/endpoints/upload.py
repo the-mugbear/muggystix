@@ -592,11 +592,14 @@ def dismiss_ingestion_job(
     Ingestion Queue.
 
     Operator-set "I've seen this" — preserves the row + error message
-    for the audit trail / debugging.  Only ``failed`` jobs are
-    dismissable; queued/processing rows would be hiding live state, and
-    completed rows already don't appear in the queue.  Non-admins can
-    only dismiss jobs they submitted, mirroring the list endpoint's
-    visibility rule above.
+    for the audit trail / debugging.  ``failed`` jobs are dismissable, and
+    since v2.363.0 so is a job that finished ``partial``: Operations lists
+    both as blocked until someone deals with them, and a blocker nobody can
+    clear is a permanent banner.  The row stays visibly partial everywhere —
+    dismissal acknowledges it, it does not make it clean.  Queued/processing
+    rows would be hiding live state, and a clean completed row has nothing
+    to dismiss.  Non-admins can only dismiss jobs they submitted, mirroring
+    the list endpoint's visibility rule above.
     """
     job = (
         db.query(IngestionJob)
@@ -607,10 +610,10 @@ def dismiss_ingestion_job(
         raise HTTPException(status_code=404, detail="Ingestion job not found")
     if current_user.role != UserRole.ADMIN and job.submitted_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="Cannot dismiss another user's job")
-    if job.status != "failed":
+    if not (job.status == "failed" or (job.status == "completed" and job.partial)):
         raise HTTPException(
             status_code=400,
-            detail=f"Only failed jobs can be dismissed (current status: {job.status!r})",
+            detail=f"Only failed or partial jobs can be dismissed (current status: {job.status!r})",
         )
     if job.dismissed_at is None:
         from datetime import datetime, timezone

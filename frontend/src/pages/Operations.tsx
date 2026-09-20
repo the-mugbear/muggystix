@@ -906,7 +906,10 @@ const BlockersStrip: React.FC<{
                 ? 'nothing from a failed file is in the inventory'
                 : 'part of each file is missing from the inventory'}
             </span>
-            <Button size="sm" variant="outline" className="shrink-0" onClick={() => navigate('/parse-errors')}>
+            {/* The filtered view, not every upload: `needs_attention` is the
+                same condition these counts were taken with. */}
+            <Button size="sm" variant="outline" className="shrink-0"
+              onClick={() => navigate('/parse-errors?status=needs_attention')}>
               Inspect import errors
             </Button>
           </div>

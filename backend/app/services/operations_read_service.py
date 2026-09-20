@@ -1183,18 +1183,30 @@ class OperationsBlockers(BaseModel):
     executions: List[InterruptedExecution] = Field(default_factory=list)
 
 
+def blocked_import_condition():
+    """An import that needs someone: it FAILED, or it finished PARTIAL, and
+    nobody has dismissed it.  ONE definition — the Operations blockers count
+    it, `GET /parse-errors/ingestion-results?status=needs_attention` lists it,
+    and `POST /upload/jobs/{id}/dismiss` is what clears it.  The count on the
+    "Inspect import errors" button and the list it opens cannot disagree."""
+    Job = models.IngestionJob
+    return and_(
+        Job.dismissed_at.is_(None),
+        or_(Job.status == "failed", and_(Job.status == "completed", Job.partial.is_(True))),
+    )
+
+
 def compute_blockers(db: Session, project: Project, limit: int = 3) -> OperationsBlockers:
     from app.db.models_agent import ExecutionSession
 
     Job = models.IngestionJob
-    blocked = or_(Job.status == "failed", and_(Job.status == "completed", Job.partial.is_(True)))
     job_rows = (
         db.query(
             Job.id, Job.original_filename, Job.status, Job.error_message, Job.message,
             Job.parser_warnings, Job.created_at,
             func.count().over(partition_by=Job.status).label("n"),
         )
-        .filter(Job.project_id == project.id, Job.dismissed_at.is_(None), blocked)
+        .filter(Job.project_id == project.id, blocked_import_condition())
         .order_by(Job.created_at.desc())
         .all()
     )
