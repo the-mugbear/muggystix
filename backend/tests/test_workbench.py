@@ -96,9 +96,11 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # sources; the changed-since-scan window runs only when a tier-4
     # candidate exists), plus three for the review follow-ups (v2.359.0:
     # reviewed follows, ports first seen after the review, critical/high
-    # observations recorded after it).  Flag a fan-out blow-up (e.g. an N+1
-    # creeping into a section), not a fixed additive cost.
-    assert counter["n"] <= 28, (
+    # observations recorded after it), plus three more in v2.363.0 (hosts
+    # changed in the since-last-visit window; blocked imports; interrupted
+    # execution runs — each ONE grouped statement).  Flag a fan-out blow-up
+    # (e.g. an N+1 creeping into a section), not a fixed additive cost.
+    assert counter["n"] <= 31, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
 
@@ -146,12 +148,22 @@ def test_seen_then_nothing_new(client, db_session, test_project):
     assert body["new_high_findings"] == 0
 
 
+def _rewind_cursor(db_session, project_id, hours=2):
+    """Put the caller's last visit in the PAST and return it.  The counts are a
+    (last_viewed, as_of] window since v2.363.0, so test data belongs between
+    the cursor and now — not in the future, where the old open-ended count
+    found it and a real snapshot never would."""
+    cursor = db_session.query(models.OperationsCursor).filter(
+        models.OperationsCursor.project_id == project_id).one()
+    cursor.last_viewed_at = datetime.now(timezone.utc) - timedelta(hours=hours)
+    db_session.commit()
+    return cursor.last_viewed_at
+
+
 def test_changes_after_seen_are_reported(client, db_session, test_project):
-    # Seed + mark seen.
+    # Seed + mark seen, two hours ago.
     client.post(_url(test_project.id, "/seen"))
-    body = client.get(_url(test_project.id)).json()["since_last_visit"]
-    cursor = datetime.fromisoformat(body["last_viewed_at"])
-    after = cursor + timedelta(hours=1)
+    after = _rewind_cursor(db_session, test_project.id) + timedelta(hours=1)
 
     scan = _make_scan(db_session, test_project.id, "fresh.xml", created_at=after)
     host = _make_host(db_session, test_project.id, "10.9.2.1", first_seen=after)

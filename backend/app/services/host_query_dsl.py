@@ -416,6 +416,62 @@ def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return P.scan_predicate(ctx.db, ids)
 
 
+def _parse_window(field: str, value: str):
+    """``"<start>"`` or ``"<start>..<end>"`` (ISO 8601; quote it — a timestamp
+    contains ':').  Returns (start, end|None), both timezone-aware.  The window
+    is (start, end]: see host_query_predicates."""
+    from datetime import datetime, timezone
+
+    def one(text: str):
+        try:
+            dt = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise DSLError(
+                f'{field}: expects an ISO 8601 time, quoted — e.g. '
+                f'{field}:"2026-09-19T20:00:00Z" or {field}:"<start>..<end>" — got \'{value}\''
+            )
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    start_text, sep, end_text = value.partition("..")
+    start = one(start_text)
+    end = one(end_text) if sep else None
+    if end is not None and end < start:
+        raise DSLError(f"{field}: the window ends before it starts ('{value}')")
+    return start, end
+
+
+def _b_firstseen(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    return or_(*[P.first_seen_window_predicate(*_parse_window("firstseen", v)) for v in values])
+
+
+def _b_changedsince(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    return or_(*[
+        P.changed_window_predicate(ctx.db, ctx.project_id, *_parse_window("changedsince", v))
+        for v in values
+    ])
+
+
+_VULNSINCE_SEVERITIES = ("critical", "high", "medium", "low", "info")
+
+
+def _b_vulnsince(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    preds = []
+    for v in values:
+        sev, sep, window = v.partition("@")
+        if not sep:
+            sev, window = "", v
+        sev = sev.strip().lower()
+        if sev and sev not in _VULNSINCE_SEVERITIES:
+            raise DSLError(
+                f"vulnsince: unknown severity '{sev}' (one of: {', '.join(_VULNSINCE_SEVERITIES)})"
+            )
+        start, end = _parse_window("vulnsince", window)
+        preds.append(P.vuln_window_predicate(
+            ctx.db, ctx.project_id, start, end, [sev] if sev else None,
+        ))
+    return or_(*preds)
+
+
 def _parse_ports(field: str, values: List[str]) -> List[int]:
     # RV-5 — validate so a non-numeric value (``port:ssh``) is a 400, not a
     # silent broadening.  Pre-fix the leaf dropped non-numeric values and an
@@ -551,6 +607,21 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="A scan that observed the host — by numeric id. Type the "
                           "filename after “scan:” and autocomplete will find the id "
                           "(the Scans page lists ids too)."),
+    # v2.363.0 — time windows, (start, end].  They exist so a "since your last
+    # visit" count on Operations opens exactly the hosts it counted; the counts
+    # and these fields share one definition in host_query_predicates.
+    FieldSpec("firstseen", _b_firstseen, value_source="free",
+              description="Hosts FIRST observed in a time window — new records. Quote the "
+                          "ISO time: `firstseen:\"2026-09-19T20:00:00Z\"` (since then) or "
+                          "`firstseen:\"<start>..<end>\"`."),
+    FieldSpec("changedsince", _b_changedsince, value_source="free",
+              description="Hosts already known before the window that gained a port or a "
+                          "scanner observation in it — a change to an existing target, not "
+                          "a new record. Same value form as firstseen:."),
+    FieldSpec("vulnsince", _b_vulnsince, value_source="free",
+              description="Hosts with a scanner observation recorded in a time window, "
+                          "optionally of one severity matched on the same row: "
+                          "`vulnsince:\"critical@<start>..<end>\"`."),
     FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS),
               description="Derived boolean flag — takes one of the values below.",
               enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),

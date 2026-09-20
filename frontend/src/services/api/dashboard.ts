@@ -207,6 +207,32 @@ export interface MyFindingsResponse {
 
 // --- Operations workbench (batched personal surface + since-last-visit) ---
 
+// v2.363.0 — work that has stopped and will not resume by itself.
+export interface BlockedImport {
+  job_id: number;
+  filename: string;
+  kind: 'failed' | 'partial';
+  message?: string | null;
+  at?: string | null;
+}
+
+export interface InterruptedExecution {
+  session_id: number;
+  test_plan_id: number;
+  plan_title?: string | null;
+  /** `session_ended`: the run is still "active" but its agent session is not. */
+  reason: 'paused' | 'session_ended';
+  started_at?: string | null;
+}
+
+export interface OperationsBlockers {
+  failed_import_count: number;
+  partial_import_count: number;
+  imports: BlockedImport[];
+  interrupted_execution_count: number;
+  executions: InterruptedExecution[];
+}
+
 export interface SinceLastVisit {
   last_viewed_at: string | null;
   is_first_visit: boolean;
@@ -215,8 +241,15 @@ export interface SinceLastVisit {
   latest_scan_filename: string | null;
   latest_scan_created_at: string | null;
   new_host_count: number;
+  /** Hosts already known before the window that gained a port or a scanner
+   *  observation in it. Disjoint from `new_host_count`. (v2.363.0) */
+  changed_host_count?: number;
+  /** SCANNER OBSERVATIONS, despite the legacy field names — not judged findings. */
   new_critical_findings: number;
   new_high_findings: number;
+  /** Hosts carrying those observations — what the drill-down lists. */
+  new_critical_hosts?: number;
+  new_high_hosts?: number;
   /** When these counts were taken — handed back on acknowledge so it covers
    *  the snapshot shown, not changes that arrived after it loaded. */
   as_of?: string | null;
@@ -278,6 +311,9 @@ export interface WorkbenchResponse {
   /** Reviewed hosts that are not done (v2.359.0). */
   followups?: ReviewFollowupsResponse;
   followups_unavailable?: boolean;
+  blockers?: OperationsBlockers;
+  /** Could not be computed — must read as "unavailable", never "nothing blocked". */
+  blockers_unavailable?: boolean;
 }
 
 // v2.359.0 — a reviewed host left every queue for good. Two kinds are not

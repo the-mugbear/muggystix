@@ -389,6 +389,58 @@ describe('Operations page', () => {
       expect(await screen.findByRole('alert')).toBeInTheDocument();
       expect(screen.getByText('Since your last visit')).toBeInTheDocument();
     });
+
+    // v5.242.0 — a change inbox: the counts were passive badges.
+    it('each count is a link to the hosts it counted', async () => {
+      renderPage();
+      const link = await screen.findByRole('link', { name: /3 new hosts/ });
+      const q = new URLSearchParams(link.getAttribute('href')!.split('?')[1]).get('q');
+      expect(q).toBe(`firstseen:"${since.last_viewed_at}..${since.as_of}"`);
+      expect(screen.getByRole('link', { name: /2 new imports/ })).toHaveAttribute('href', '/scans');
+    });
+
+    // Blockers — stopped work, each with the action that unblocks it.
+    describe('blocked work', () => {
+      const blockers = {
+        failed_import_count: 1, partial_import_count: 1,
+        imports: [
+          { job_id: 4, filename: 'broken.xml', kind: 'failed', message: 'not well-formed' },
+          { job_id: 5, filename: 'half.nessus', kind: 'partial', message: '3 hosts skipped' },
+        ],
+        interrupted_execution_count: 1,
+        executions: [{ session_id: 31, test_plan_id: 7, plan_title: 'External sweep', reason: 'session_ended' }],
+      };
+
+      it('names what is blocked and carries the recovery action', async () => {
+        mockedApi.getWorkbench.mockResolvedValue({ ...workbench(since), blockers });
+        renderPage();
+        expect(await screen.findByRole('heading', { name: 'Blocked' })).toBeInTheDocument();
+        expect(screen.getByText('1 import failed · 1 finished partial')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Inspect import errors' }));
+        expect(navigateSpy).toHaveBeenCalledWith('/parse-errors');
+
+        expect(screen.getByText('Run #31 lost its agent session')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Resume execution' }));
+        expect(navigateSpy).toHaveBeenCalledWith('/executions/31');
+      });
+
+      it('renders nothing when nothing is blocked', async () => {
+        mockedApi.getWorkbench.mockResolvedValue({
+          ...workbench(since),
+          blockers: { failed_import_count: 0, partial_import_count: 0, imports: [], interrupted_execution_count: 0, executions: [] },
+        });
+        renderPage();
+        await screen.findByText('Since your last visit');
+        expect(screen.queryByRole('heading', { name: 'Blocked' })).not.toBeInTheDocument();
+      });
+
+      it('a failed check says so — never "nothing blocked"', async () => {
+        mockedApi.getWorkbench.mockResolvedValue({ ...workbench(since), blockers_unavailable: true });
+        renderPage();
+        expect(await screen.findByText(/could not be checked/)).toBeInTheDocument();
+        expect(screen.queryByRole('heading', { name: 'Blocked' })).not.toBeInTheDocument();
+      });
+    });
   });
 
   it('page Refresh also refetches the self-fetching Runs and Recent activity panels', async () => {

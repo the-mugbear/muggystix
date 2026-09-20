@@ -1141,6 +1141,113 @@ def compute_my_findings(
 
 
 # ---------------------------------------------------------------------------
+# Blockers (v2.363.0) — work that has STOPPED and will not resume by itself.
+#
+# Operations surfaced one kind of blocker, a plan awaiting approval.  Two more
+# were recorded and shown nowhere an analyst starts their day:
+#
+#   * an import that FAILED (nothing from that file is in the inventory) or
+#     finished PARTIAL (some of it is, and the rest silently is not) — until
+#     someone dismisses it on Ingestion Results;
+#   * an execution run that is no longer running but never completed: paused,
+#     or still "active" though the agent session driving it has ended.  Its
+#     plan is locked to that run (one active run per plan) until someone
+#     resumes or abandons it.
+#
+# Project-wide, not personal: these block the engagement, and who can act is
+# governed by role at the destination.  Counts + the few newest rows only —
+# the destination pages own the full lists.
+# ---------------------------------------------------------------------------
+class BlockedImport(BaseModel):
+    job_id: int
+    filename: str
+    kind: str  # "failed" | "partial"
+    message: Optional[str] = None
+    at: Optional[datetime] = None
+
+
+class InterruptedExecution(BaseModel):
+    session_id: int
+    test_plan_id: int
+    plan_title: Optional[str] = None
+    # "paused" | "session_ended" (run still active, its agent session is not)
+    reason: str
+    started_at: Optional[datetime] = None
+
+
+class OperationsBlockers(BaseModel):
+    failed_import_count: int = 0
+    partial_import_count: int = 0
+    imports: List[BlockedImport] = Field(default_factory=list)
+    interrupted_execution_count: int = 0
+    executions: List[InterruptedExecution] = Field(default_factory=list)
+
+
+def compute_blockers(db: Session, project: Project, limit: int = 3) -> OperationsBlockers:
+    from app.db.models_agent import ExecutionSession
+
+    Job = models.IngestionJob
+    blocked = or_(Job.status == "failed", and_(Job.status == "completed", Job.partial.is_(True)))
+    job_rows = (
+        db.query(
+            Job.id, Job.original_filename, Job.status, Job.error_message, Job.message,
+            Job.created_at,
+            func.count().over(partition_by=Job.status).label("n"),
+        )
+        .filter(Job.project_id == project.id, Job.dismissed_at.is_(None), blocked)
+        .order_by(Job.created_at.desc())
+        .all()
+    )
+    failed = next((int(r.n) for r in job_rows if r.status == "failed"), 0)
+    partial = next((int(r.n) for r in job_rows if r.status != "failed"), 0)
+
+    run_rows = (
+        db.query(
+            ExecutionSession.id, ExecutionSession.test_plan_id, ExecutionSession.status,
+            ExecutionSession.started_at, TestPlan.title, AgentSession.status.label("agent_status"),
+        )
+        .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
+        .outerjoin(AgentSession, AgentSession.id == ExecutionSession.agent_session_id)
+        .filter(
+            TestPlan.project_id == project.id,
+            or_(
+                ExecutionSession.status == "paused",
+                and_(
+                    ExecutionSession.status == "active",
+                    AgentSession.id.isnot(None),
+                    AgentSession.status != "active",
+                ),
+            ),
+        )
+        .order_by(ExecutionSession.started_at.desc())
+        .all()
+    )
+
+    return OperationsBlockers(
+        failed_import_count=failed,
+        partial_import_count=partial,
+        imports=[
+            BlockedImport(
+                job_id=r.id, filename=r.original_filename,
+                kind="failed" if r.status == "failed" else "partial",
+                message=(r.error_message or r.message),
+                at=r.created_at,
+            )
+            for r in job_rows[:limit]
+        ],
+        interrupted_execution_count=len(run_rows),
+        executions=[
+            InterruptedExecution(
+                session_id=r.id, test_plan_id=r.test_plan_id, plan_title=r.title,
+                reason="paused" if r.status == "paused" else "session_ended",
+                started_at=r.started_at,
+            )
+            for r in run_rows[:limit]
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # My recent activity (§27) — a unified personal work history across entities,
 # answering "what did I do?" better than the authored-notes-only Recent Notes.
 # Each source is user-attributed + timestamped; we normalise to one event shape,

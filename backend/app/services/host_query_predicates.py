@@ -708,6 +708,81 @@ def scan_predicate(db: Session, scan_ids: Sequence[int], first_seen_only: bool =
     return models.Host.id.in_(history_query)
 
 
+# ---------------------------------------------------------------------------
+# Time windows (v2.363.0) — "what changed since my last visit", as host sets.
+#
+# ONE definition, used twice: the Operations "since your last visit" counts
+# (workbench._compute_since_last_visit) and the DSL fields those counts link
+# to (firstseen: / changedsince: / vulnsince:).  A count that opens a list
+# derived some other way is how "12 new hosts" comes to open 9.
+#
+# A window is (start, end]: strictly after the cursor the analyst last
+# acknowledged, up to and including the snapshot they were shown.  ``end`` is
+# optional (open-ended = "until now").
+# ---------------------------------------------------------------------------
+
+def _in_window(column, start, end) -> ColumnElement:
+    cond = column > start
+    if end is not None:
+        cond = cond & (column <= end)
+    return cond
+
+
+def first_seen_window_predicate(start, end=None) -> ColumnElement:
+    """Hosts FIRST observed in the window — new records."""
+    return _in_window(models.Host.first_seen, start, end)
+
+
+def vuln_window_condition(start, end=None, severities: Optional[Iterable[str]] = None) -> ColumnElement:
+    """Row-level: a scanner observation recorded in the window, optionally of
+    the given severities (lower-case).  Severity is matched the way the
+    Operations counter always has — the enum cast to text, lowered — so the
+    count and the list cannot disagree on a casing quirk."""
+    cond = _in_window(Vulnerability.created_at, start, end)
+    if severities:
+        sev_col = func.lower(cast(Vulnerability.severity, SAString))
+        cond = cond & sev_col.in_([s.lower() for s in severities])
+    return cond
+
+
+def vuln_window_predicate(
+    db: Session, project_id: int, start, end=None, severities: Optional[Iterable[str]] = None,
+) -> ColumnElement:
+    """Hosts carrying a scanner observation recorded in the window.  Severity
+    and time are matched on the SAME row: `has:critical` AND "something new"
+    would also match a host whose only new row is informational."""
+    _H = aliased(models.Host)
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, vuln_window_condition(start, end, severities))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def changed_window_predicate(db: Session, project_id: int, start, end=None) -> ColumnElement:
+    """EXISTING hosts (first observed at or before ``start``) that gained a
+    port or a scanner observation in the window — a material change to a
+    target the analyst already knew, as opposed to a new record.  Disjoint
+    from ``first_seen_window_predicate`` by construction.
+
+    Removed ports are not detectable (the dedup keeps ports and does not track
+    per-scan presence — same limit as host_change_service)."""
+    new_port = (
+        db.query(models.Port.host_id)
+        .filter(_in_window(models.Port.first_seen, start, end))
+        .distinct()
+    )
+    return (
+        (models.Host.first_seen <= start)
+        & (
+            models.Host.id.in_(new_port)
+            | vuln_window_predicate(db, project_id, start, end)
+        )
+    )
+
+
 def attribution_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Hosts whose registered netblock owner matches any value (substring).
 

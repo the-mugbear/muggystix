@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Info, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
+import { AlertTriangle, Info, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
   DashboardStats,
+  OperationsBlockers,
   ProjectCoverageResponse,
   ScopeCoverageRow,
   SinceLastVisit,
@@ -32,6 +33,8 @@ import { Card, CardContent } from '../components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import SeverityBar from '../components/ui/SeverityBar';
 import { buildHostsUrl } from '../utils/drilldownLinks';
+import { sinceChips } from '../utils/sinceLastVisit';
+import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -797,46 +800,33 @@ const SinceLastVisitBanner: React.FC<{
   saving: boolean;
   error: string | null;
 }> = ({ since, onDismiss, saving, error }) => {
-  const navigate = useNavigate();
-
-  // First-ever visit would report "everything is new" — noise, not signal.
-  // Also nothing to show when the cursor caught up.
-  const hasUpdates =
-    since.new_scan_count > 0 ||
-    since.new_host_count > 0 ||
-    since.new_critical_findings > 0 ||
-    since.new_high_findings > 0;
-  if (since.is_first_visit || !hasUpdates) return null;
-
-  const chips: Array<{ key: string; label: string; tone: 'info' | 'secondary' | 'destructive' | 'warning' }> = [];
-  if (since.new_scan_count > 0)
-    chips.push({ key: 'scans', tone: 'info', label: `${since.new_scan_count} new scan${since.new_scan_count === 1 ? '' : 's'}` });
-  if (since.new_host_count > 0)
-    chips.push({ key: 'hosts', tone: 'secondary', label: `${since.new_host_count} new host${since.new_host_count === 1 ? '' : 's'}` });
-  if (since.new_critical_findings > 0)
-    chips.push({ key: 'crit', tone: 'destructive', label: `${since.new_critical_findings} new critical` });
-  if (since.new_high_findings > 0)
-    chips.push({ key: 'high', tone: 'warning', label: `${since.new_high_findings} new high` });
+  // v5.242.0 — a change inbox: each count opens exactly the records it counted
+  // (utils/sinceLastVisit). First-ever visit would report "everything is new"
+  // — noise, not signal; nothing to show either once the cursor caught up.
+  const chips = sinceChips(since);
+  if (since.is_first_visit || chips.length === 0) return null;
 
   return (
     <Card className="mb-md border-info/40 bg-info/5">
       <CardContent className="flex flex-wrap items-center gap-sm p-md">
-        <div className="flex min-w-0 flex-1 items-center gap-xs">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-xs">
           <Sparkles className="size-4 shrink-0 text-info" aria-hidden />
           <span className="text-metadata font-semibold text-foreground">Since your last visit</span>
-          <div className="flex flex-wrap items-center gap-xxs">
-            {chips.map((c) => (
-              <Badge key={c.key} variant={c.tone}>{c.label}</Badge>
-            ))}
+          <div className="flex min-w-0 flex-wrap items-center gap-xxs">
+            {chips.map((c) => (c.href ? (
+              <Link key={c.key} to={c.href} title={c.hint} aria-label={`${c.label} — ${c.hint}`}
+                className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <Badge variant={c.tone} className="gap-xxs hover:underline">
+                  {c.label}
+                  <SquareArrowOutUpRight className="size-3" aria-hidden />
+                </Badge>
+              </Link>
+            ) : (
+              <Badge key={c.key} variant={c.tone} title={c.hint}>{c.label}</Badge>
+            )))}
           </div>
         </div>
         <div className="flex items-center gap-xs">
-          {since.new_scan_count > 0 && (
-            <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
-              View scans
-              <SquareArrowOutUpRight className="size-3" aria-hidden />
-            </Button>
-          )}
           {/* Acknowledging is what advances the cursor — until then these
               changes persist across visits (no silent loss on a glance).
               "Acknowledge", not "reviewed": dismissing a summary reviews no host. */}
@@ -849,6 +839,101 @@ const SinceLastVisitBanner: React.FC<{
           <p role="alert" className="w-full break-words text-caption text-destructive">
             {error}
           </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Blockers (v5.242.0) — work that has stopped and will not resume by itself:
+// imports that failed or finished partial, execution runs that are paused or
+// whose agent session ended.  Each says what is blocked and carries the one
+// action that unblocks it.  Renders nothing when nothing is blocked; says so
+// when it could not be checked (never "nothing blocked" on a failure).
+// ---------------------------------------------------------------------------
+
+const BlockersStrip: React.FC<{
+  blockers: OperationsBlockers | null;
+  unavailable: boolean;
+}> = ({ blockers, unavailable }) => {
+  const navigate = useNavigate();
+
+  if (unavailable) {
+    return (
+      <p role="status" className="mb-md px-md text-caption text-muted-foreground">
+        Blocked work (failed imports, interrupted runs) could not be checked — this is not a
+        confirmation that nothing is blocked.
+      </p>
+    );
+  }
+  if (!blockers) return null;
+  const importCount = blockers.failed_import_count + blockers.partial_import_count;
+  if (importCount === 0 && blockers.interrupted_execution_count === 0) return null;
+
+  const importSummary = [
+    blockers.failed_import_count > 0
+      ? `${blockers.failed_import_count} import${blockers.failed_import_count === 1 ? '' : 's'} failed`
+      : null,
+    blockers.partial_import_count > 0
+      ? `${blockers.partial_import_count} finished partial`
+      : null,
+  ].filter(Boolean).join(' · ');
+  const moreRuns = blockers.interrupted_execution_count - blockers.executions.length;
+
+  return (
+    <Card className="mb-md border-warning/40 bg-warning/5">
+      <CardContent className="space-y-xs p-md">
+        <div className="flex items-center gap-xs">
+          <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
+          <h2 className="text-metadata font-semibold text-foreground">Blocked</h2>
+          <span className="text-caption text-muted-foreground">
+            stopped, and will not resume by itself
+          </span>
+        </div>
+
+        {importCount > 0 && (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs">
+            <span className="shrink-0 text-metadata text-foreground">{importSummary}</span>
+            <span
+              className="min-w-0 flex-1 truncate text-caption text-muted-foreground"
+              title={blockers.imports.map((i) => `${i.filename}${i.message ? ` — ${i.message}` : ''}`).join('\n')}
+            >
+              {blockers.imports.map((i) => i.filename).join(', ')}
+              {importCount > blockers.imports.length && ` +${importCount - blockers.imports.length} more`}
+              {' — '}
+              {blockers.failed_import_count > 0
+                ? 'nothing from a failed file is in the inventory'
+                : 'part of each file is missing from the inventory'}
+            </span>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => navigate('/parse-errors')}>
+              Inspect import errors
+            </Button>
+          </div>
+        )}
+
+        {blockers.executions.map((run) => (
+          <div key={run.session_id} className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs">
+            <span className="shrink-0 text-metadata text-foreground">
+              Run #{run.session_id} {run.reason === 'paused' ? 'is paused' : 'lost its agent session'}
+            </span>
+            <span
+              className="min-w-0 flex-1 truncate text-caption text-muted-foreground"
+              title={run.plan_title ?? undefined}
+            >
+              {safeFallback(run.plan_title, `plan #${run.test_plan_id}`)} — the plan is locked to this
+              run until it is resumed or abandoned
+            </span>
+            <Button size="sm" variant="outline" className="shrink-0"
+              onClick={() => navigate(`/executions/${run.session_id}`)}>
+              Resume execution
+            </Button>
+          </div>
+        ))}
+        {moreRuns > 0 && (
+          <Button size="sm" variant="ghost" className="text-caption" onClick={() => navigate('/executions')}>
+            +{moreRuns} more interrupted run{moreRuns === 1 ? '' : 's'}
+          </Button>
         )}
       </CardContent>
     </Card>
@@ -1206,6 +1291,10 @@ const Operations: React.FC = () => {
               waiting approval is a blocker and leads; with nothing waiting the
               same card keeps its empty state further down instead of pushing
               My work off the top. */}
+          <BlockersStrip
+            blockers={workbench?.blockers ?? null}
+            unavailable={workbench?.blockers_unavailable ?? false}
+          />
           {approvalsWaiting && approvalsBlock}
           {/* My Queue + My Tasks are personal by definition — the hosts
               YOU marked In Review, the tasks assigned to YOU.  They

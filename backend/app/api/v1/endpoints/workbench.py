@@ -34,6 +34,7 @@ from app.api.deps import get_current_project
 # CR4-2 — depend on the read service, not the dashboard route handlers.
 # Previously this composed the workbench by *calling* dashboard's route
 # functions, making one router depend on another's handlers.
+from app.services import host_query_predicates as P
 from app.services.operations_read_service import (
     compute_my_attention_queue,
     compute_my_tasks,
@@ -44,6 +45,8 @@ from app.services.operations_read_service import (
     compute_team_review,
     compute_investigation_queue,
     compute_review_followups,
+    compute_blockers,
+    OperationsBlockers,
     InvestigationQueueResponse,
     ReviewFollowupsResponse,
     MyAttentionResponse,
@@ -75,8 +78,17 @@ class SinceLastVisit(BaseModel):
     latest_scan_filename: Optional[str] = None
     latest_scan_created_at: Optional[datetime] = None
     new_host_count: int = 0
+    # v2.363.0 — hosts already known before the window that gained a port or
+    # a scanner observation in it.  Disjoint from ``new_host_count``.
+    changed_host_count: int = 0
+    # Named "findings" since before the vocabulary was settled: these count
+    # SCANNER OBSERVATIONS (raw vulnerability rows), not judged findings.  The
+    # field names stay for older clients; the UI labels them correctly.
     new_critical_findings: int = 0
     new_high_findings: int = 0
+    # How many hosts carry those observations — what the drill-down lists.
+    new_critical_hosts: int = 0
+    new_high_hosts: int = 0
     # When these counts were taken.  The client hands it back to
     # ``POST /workbench/seen`` so acknowledging covers the snapshot that was
     # displayed, not whatever arrived between the load and the click.
@@ -85,7 +97,7 @@ class SinceLastVisit(BaseModel):
     @property
     def has_updates(self) -> bool:  # convenience, not serialized
         return bool(
-            self.new_scan_count or self.new_host_count
+            self.new_scan_count or self.new_host_count or self.changed_host_count
             or self.new_critical_findings or self.new_high_findings
         )
 
@@ -114,6 +126,11 @@ class WorkbenchResponse(BaseModel):
     # queue above: unavailable is said, never rendered as "nothing owed".
     followups: ReviewFollowupsResponse = Field(default_factory=ReviewFollowupsResponse)
     followups_unavailable: bool = False
+    # v2.363.0 — work that has stopped and will not resume by itself: failed /
+    # partial imports nobody dismissed, execution runs that are paused or whose
+    # agent session ended.  Project-wide.  Same failure contract.
+    blockers: OperationsBlockers = Field(default_factory=OperationsBlockers)
+    blockers_unavailable: bool = False
 
 
 class MarkSeenRequest(BaseModel):
@@ -164,29 +181,40 @@ def _compute_since_last_visit(
     else:
         latest, new_scan_count = latest_row[0], int(latest_row[1])
 
-    # Hosts (first_seen is the discovery timestamp)
-    host_q = db.query(func.count(models.Host.id)).filter(
+    # v2.363.0 — the host and observation counts come from the SAME window
+    # predicates the DSL fields `firstseen:` / `changedsince:` / `vulnsince:`
+    # use, over the same (last_viewed, as_of] window, so each count on the
+    # banner opens exactly the hosts it counted.
+    host_base = db.query(func.count(models.Host.id)).filter(
         models.Host.project_id == project.id
     )
-    if last_viewed is not None:
-        host_q = host_q.filter(models.Host.first_seen > last_viewed)
-    new_host_count = host_q.scalar() or 0
-
-    # Findings by severity — ONE grouped query for critical + high (was two
-    # separate scans; review #7).  Cast the PG enum to text before lower(),
-    # same approach portfolio.py uses to avoid an enum type mismatch.
     sev_col = func.lower(Vulnerability.severity.cast(String))
-    sev_q = (
-        db.query(sev_col, func.count(Vulnerability.id))
-        .join(models.Host, Vulnerability.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            sev_col.in_(("critical", "high")),
+    sev_base = (
+        db.query(
+            sev_col,
+            func.count(Vulnerability.id),
+            func.count(func.distinct(Vulnerability.host_id)),
         )
+        .join(models.Host, Vulnerability.host_id == models.Host.id)
+        .filter(models.Host.project_id == project.id, sev_col.in_(("critical", "high")))
     )
     if last_viewed is not None:
-        sev_q = sev_q.filter(Vulnerability.created_at > last_viewed)
-    sev_counts = dict(sev_q.group_by(sev_col).all())
+        new_host_count = host_base.filter(
+            P.first_seen_window_predicate(last_viewed, as_of)
+        ).scalar() or 0
+        # Existing targets that gained a port or an observation — kept apart
+        # from new records: "12 new hosts" and "3 known hosts changed" are
+        # different work.
+        changed_host_count = host_base.filter(
+            P.changed_window_predicate(db, project.id, last_viewed, as_of)
+        ).scalar() or 0
+        sev_base = sev_base.filter(P.vuln_window_condition(last_viewed, as_of))
+    else:
+        new_host_count = host_base.scalar() or 0
+        changed_host_count = 0
+    # Scanner observations by severity — ONE grouped query for critical +
+    # high (review #7), now also counting the hosts that carry them.
+    sev_rows = {row[0]: (int(row[1]), int(row[2])) for row in sev_base.group_by(sev_col).all()}
 
     return SinceLastVisit(
         last_viewed_at=last_viewed,
@@ -196,8 +224,11 @@ def _compute_since_last_visit(
         latest_scan_filename=latest.filename if latest else None,
         latest_scan_created_at=latest.created_at if latest else None,
         new_host_count=new_host_count,
-        new_critical_findings=int(sev_counts.get("critical", 0)),
-        new_high_findings=int(sev_counts.get("high", 0)),
+        changed_host_count=changed_host_count,
+        new_critical_findings=sev_rows.get("critical", (0, 0))[0],
+        new_high_findings=sev_rows.get("high", (0, 0))[0],
+        new_critical_hosts=sev_rows.get("critical", (0, 0))[1],
+        new_high_hosts=sev_rows.get("high", (0, 0))[1],
         as_of=as_of,
     )
 
@@ -247,6 +278,15 @@ def get_workbench(
         db.rollback()
         followups = ReviewFollowupsResponse()
         followups_unavailable = True
+    blockers_unavailable = False
+    try:
+        blockers = compute_blockers(db, project)
+    except Exception:
+        # Same contract: a failure is said, never rendered as "nothing blocked".
+        logger.exception("blockers failed for project %s", project.id)
+        db.rollback()
+        blockers = OperationsBlockers()
+        blockers_unavailable = True
 
     return WorkbenchResponse(
         my_queue=my_queue,
@@ -260,6 +300,8 @@ def get_workbench(
         investigate_unavailable=investigate_unavailable,
         followups=followups,
         followups_unavailable=followups_unavailable,
+        blockers=blockers,
+        blockers_unavailable=blockers_unavailable,
     )
 
 
