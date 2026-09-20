@@ -7,6 +7,7 @@ magic-byte sniff (a renamed/polyglot non-image must not be stored as one),
 the 10 MB cap, the 0700/0600 on-disk layout — live here once rather than
 being copied per endpoint.
 """
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import models
+
+logger = logging.getLogger(__name__)
 
 # Image attachment limits.  Images only (so the report can embed them and the
 # browser can render thumbnails); 10 MB cap; magic-byte sniffed so a renamed
@@ -49,6 +52,35 @@ def _sniff_image(data: bytes, declared_type: str) -> Optional[str]:
 
 def _attachments_root() -> Path:
     return Path(settings.UPLOAD_DIR) / "note_attachments"
+
+
+UNREADABLE_UPLOADS_FIX = "docker compose exec backend chown -R appuser:appgroup /app/uploads"
+
+
+def require_readable_file(target: Path, what: str) -> None:
+    """404 when a stored file is gone; a 500 that NAMES THE CAUSE when it is
+    there but the app cannot read it (v2.374.4).
+
+    Stored files are owner-only (0700 dirs / 0600 files, uid 999).  An uploads
+    tree copied in from another deployment keeps the copier's ownership, and
+    ``Path.exists()`` then RAISES ``PermissionError`` — every note image
+    answered a bare 500 that said nothing.  The entrypoint now heals that at
+    boot; this is for a copy made while the stack is running."""
+    try:
+        ok = target.exists() and target.is_file()
+    except PermissionError:
+        logger.error(
+            "%s at %s exists but is not readable by the app user — the uploads "
+            "tree is not owned by uid 999 (copied from another deployment?). Fix: %s",
+            what, target, UNREADABLE_UPLOADS_FIX,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"{what} is on disk but the server cannot read it: the uploads directory is "
+                   f"not owned by the app user. An administrator can fix it with: {UNREADABLE_UPLOADS_FIX}",
+        )
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"{what} file missing on disk")
 
 
 def store_image_attachment(

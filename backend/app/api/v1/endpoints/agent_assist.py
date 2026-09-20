@@ -60,6 +60,7 @@ from app.api.v1.endpoints.agent_common import (
 )
 from app.services import dns_name_service
 from app.services.host_query_common import escape_like
+from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.systemic_insight_service import compute_systemic_insights
@@ -2599,8 +2600,7 @@ def download_assist_attachment(
         target.relative_to(base.resolve())
     except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Attachment path invalid")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Attachment file missing on disk")
+    require_readable_file(target, "Attachment")
     return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)
 
 
@@ -2658,8 +2658,7 @@ def download_assist_web_screenshot(
         target.relative_to(base)
     except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Screenshot path invalid")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Screenshot file missing on disk")
+    require_readable_file(target, "Screenshot")
     return FileResponse(
         path=str(target),
         media_type="image/png",

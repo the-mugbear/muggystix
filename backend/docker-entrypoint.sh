@@ -31,11 +31,19 @@ if [ "$(id -u)" = "0" ]; then
         "$UPLOADS/note_attachments" \
         "$UPLOADS/report_artifacts"
 
-    # Only chown when the root isn't already ours, so steady-state restarts
-    # don't pay a recursive chown over a potentially large uploads volume.
-    # First boot (or a mount left with wrong ownership) does one recursive
-    # pass; it's metadata-only and fast even with many files.
-    if [ "$(stat -c '%u' "$UPLOADS" 2>/dev/null || echo -1)" != "$APP_UID" ]; then
+    # Chown only when something under the mount is not ours, so steady-state
+    # restarts do not rewrite ownership over a potentially large volume.
+    #
+    # v2.374.4 — this used to test the ROOT only.  A deployment that had booted
+    # once (root already 999) and then had an older instance's uploads copied
+    # INTO it kept the copier's ownership on every copied entry; note
+    # attachment dirs are 0700 and files 0600, so the app (uid 999) could not
+    # enter them and every note image answered 500 — while the root still
+    # looked fine, so nothing healed it.  `find … -print -quit` stops at the
+    # first foreign entry: a metadata-only walk, and only in the steady state
+    # does it visit the whole tree.
+    if [ -n "$(find "$UPLOADS" ! -user "$APP_UID" -print -quit 2>/dev/null)" ]; then
+        echo "[entrypoint] $UPLOADS contains entries not owned by $APP_UID (copied in from another deployment?) — fixing ownership." >&2
         chown -R "$APP_USER:$APP_GROUP" "$UPLOADS" 2>/dev/null \
             || echo "[entrypoint] WARNING: could not chown $UPLOADS to $APP_UID; \
 uploads may not be writable (read-only mount?). seed_default_admin will \

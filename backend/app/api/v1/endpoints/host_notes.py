@@ -17,7 +17,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 from app.services.note_attachment_service import (
-    _attachments_root, store_image_attachment,
+    _attachments_root, require_readable_file, store_image_attachment,
 )
 from app.db.session import get_db
 from app.db import models
@@ -772,8 +772,7 @@ def get_note_attachment(
         target.relative_to(base.resolve())
     except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Attachment path invalid")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Attachment file missing on disk")
+    require_readable_file(target, "Attachment")
     return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)
 
 

@@ -31,6 +31,7 @@ from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHis
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
+from app.services.note_attachment_service import require_readable_file
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
     Host as HostSchema,
@@ -2472,8 +2473,7 @@ def get_web_interface_screenshot(
     except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Screenshot path invalid")
 
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Screenshot file missing on disk")
+    require_readable_file(target, "Screenshot")
 
     return FileResponse(
         path=str(target),

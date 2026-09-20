@@ -51,3 +51,33 @@ def test_purge_note_files_path_confined(tmp_path, monkeypatch):
     # A tampered note_id can't escape the attachments root.
     monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
     assert svc._safe_note_dir(123) is not None
+
+
+def test_an_unreadable_stored_file_names_its_cause(tmp_path, monkeypatch):
+    """v2.374.4 — prod, after an uploads tree was copied in from the previous
+    deployment: the copied 0700 dirs kept the copier's ownership, the app
+    (uid 999) could not enter them, ``Path.exists()`` RAISED PermissionError and
+    every note image answered a bare 500.  Missing is 404; unreadable is a 500
+    that says what is wrong and how to fix it."""
+    import pytest
+    from pathlib import Path
+    from fastapi import HTTPException
+    from app.services.note_attachment_service import (
+        UNREADABLE_UPLOADS_FIX, require_readable_file,
+    )
+
+    present = tmp_path / "img.png"
+    present.write_bytes(b"x")
+    require_readable_file(present, "Attachment")          # readable: no error
+
+    with pytest.raises(HTTPException) as missing:
+        require_readable_file(tmp_path / "gone.png", "Attachment")
+    assert missing.value.status_code == 404
+
+    def denied(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(Path, "exists", denied)
+    with pytest.raises(HTTPException) as unreadable:
+        require_readable_file(present, "Attachment")
+    assert unreadable.value.status_code == 500
+    assert UNREADABLE_UPLOADS_FIX in unreadable.value.detail
