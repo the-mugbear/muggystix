@@ -78,7 +78,6 @@ class PostureResponse(_Loose):
     label: PostureLabel
     conclusion: PostureConclusion
     reasons: List[PostureReason]
-    remediation_flow: Dict[str, Any]
     # Condition-family × site heatmap; null when systemic analysis isn't adopted.
     heatmap: Optional[Dict[str, Any]] = None
     headline: Dict[str, Any]

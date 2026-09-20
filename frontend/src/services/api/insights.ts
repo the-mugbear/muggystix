@@ -214,16 +214,26 @@ export const subnetHostsHref = (cidr: string): string => buildHostsUrl({ subnets
  * optionally narrowed to one site. Combines the condition DSL predicate(s) with
  * the site filter so the cell's affected count reconciles with the list it opens.
  * Returns null when none of the family's conditions have a host-filter predicate.
+ *
+ * `site` is a site name, null for the whole estate, or UNASSIGNED_SITE for the
+ * matrix's "Unassigned" column. That column used to pass null, which DROPPED the
+ * site filter — a cell counting 3 hosts opened every site's affected hosts.
  */
+export const UNASSIGNED_SITE = Symbol('unassigned-site');
+
 export const familyCellHostsHref = (
   conditions: string[],
-  site?: string | null,
+  site?: string | null | typeof UNASSIGNED_SITE,
 ): string | null => {
   const preds = conditions.map((k) => CONDITION_DSL[k]).filter(Boolean);
   if (preds.length === 0) return null;
   // Multiple conditions in one family → OR them (the /hosts DSL supports `or`).
-  const q = preds.length === 1 ? preds[0] : preds.join(' or ');
-  return buildHostsUrl({ q, sites: site ?? undefined });
+  const any = preds.length === 1 ? preds[0] : preds.join(' or ');
+  if (site === UNASSIGNED_SITE) {
+    // Adjacency is AND and binds tighter than `or`, hence the parentheses.
+    return buildHostsUrl({ q: preds.length === 1 ? `${any} site:none` : `(${any}) site:none` });
+  }
+  return buildHostsUrl({ q: any, sites: site ?? undefined });
 };
 
 /**

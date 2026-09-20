@@ -4,12 +4,10 @@ The per-subnet insights view (subnet_insight_service) ranks *locations* by how
 bad they are.  This view asks a different, cross-sectional question for a
 single engagement's snapshot: **which weaknesses recur across the estate, and
 how widely do they spread?**  A weakness on one host is incidental; the SAME
-weakness across many hosts spanning multiple subnets and sites is a process
-failure — and when it spans essentially the whole estate regardless of site,
-it points at an organisational blind spot about a particular threat/vector
-(SMB signing off everywhere → nobody understands relay; every cert self-signed
-→ no PKI governance; Telnet everywhere → no concept of cleartext-credential
-risk).  The spread IS the diagnosis.
+weakness across many hosts spanning multiple subnets and sites suggests a
+shared cause worth investigating (a common baseline, image or process).  Spread
+is the OBSERVATION; the cause is a hypothesis an analyst confirms with the
+people who run the estate — nothing here asserts how the organisation is run.
 
 Three nested tiers, broad → narrow:
 
@@ -21,8 +19,7 @@ Three nested tiers, broad → narrow:
      statistical outlier versus the estate's OWN median.  Normalised by host
      count, so a big subnet doesn't always win — the point is anomaly, not size.
   3. Diagnostic profiles — the co-occurrence signature of conditions within a
-     subnet, mapped to a likely root cause (patch-gap / no-PKI / cred-hygiene /
-     flat-network / abandoned).
+     subnet, with the question it raises (see ``_root_cause``).
 
 Everything is computed from one snapshot — no trends (engagements are short and
 don't re-ingest).  Like subnet_insight_service, it gathers a handful of
@@ -94,24 +91,27 @@ _OUTLIER_ABS_DENSITY = 1.0
 # (key, label, vector, severity_weight, recommended_action) for the conditions
 # computed from per-host state.  vuln monoculture is handled separately because
 # it's keyed per plugin, not a single estate-wide set.
+# ``vector`` states the RISK the condition carries and, where spread suggests
+# one, the shared cause worth checking — as a possibility ("may"), never as a
+# finding about the organisation (v2.372.0; see ``_root_cause``).
 _CONDITIONS = [
     ("eol_os", "End-of-life operating systems",
-     "No OS lifecycle / patch programme — unsupported systems accrete unpatched.",
+     "Unsupported systems no longer receive security fixes. Recurrence may point to a gap in OS lifecycle handling.",
      5, "Inventory and upgrade or isolate end-of-life systems."),
     ("cleartext_services", "Cleartext credential services (Telnet/FTP/POP/IMAP)",
-     "No policy against unencrypted protocols — credentials are observable on the wire.",
+     "Credentials are observable on the wire. Recurrence may point to a missing policy on unencrypted protocols.",
      6, "Disable cleartext services or migrate to encrypted equivalents."),
     ("tls_hygiene", "Expired or self-signed TLS certificates",
-     "No certificate / PKI governance — TLS trust is unmanaged.",
+     "Clients cannot verify these services. Recurrence may point to how certificates are issued and renewed.",
      3, "Stand up certificate issuance/renewal; replace self-signed/expired certs."),
     ("weak_tls", "Weak TLS protocols (SSLv2 / SSLv3 / TLS 1.0 / 1.1)",
-     "Deprecated TLS versions are offered — downgrade / interception risk; no modern-TLS baseline.",
+     "Deprecated TLS versions are offered — downgrade / interception risk. Recurrence may point to a shared TLS configuration.",
      4, "Disable SSLv2/SSLv3/TLS 1.0/1.1; require TLS 1.2+ across the estate."),
     ("weak_auth", "Guest / anonymous authentication succeeds",
-     "Unauthenticated access is tolerated — access control is not enforced.",
+     "Unauthenticated access succeeds on these hosts. Confirm whether it is intended before treating it as an access-control gap.",
      7, "Disable guest/null sessions; require authenticated, least-privilege access."),
     ("smb_signing", "SMB message signing disabled",
-     "No SMB hardening baseline — exposed to NTLM relay and lateral movement.",
+     "Exposed to NTLM relay and lateral movement. Recurrence may point to a shared SMB configuration baseline.",
      7, "Enable and require SMB signing across the estate."),
 ]
 
@@ -610,21 +610,28 @@ def _build_family_site_matrix(
 
 
 def _root_cause(conds: Set[str]) -> Dict[str, str]:
-    """Map a subnet's co-occurring conditions to a likely management failure."""
+    """Name a subnet's co-occurring conditions and the question they raise.
+
+    v2.372.0 — these used to be verdicts ("segment looks unmanaged/abandoned",
+    "no PKI governance", kind "flat-network" from cleartext ports).  Scanner
+    co-occurrence supports a hypothesis to investigate; it cannot establish a
+    cause or how an organisation is run, and a deliberate legacy enclave or an
+    uneven scan depth produces the same signature.  ``text`` is therefore the
+    observation plus what would test it.  (Key name kept for the API.)"""
     eol = "eol_os" in conds
     pki = "tls_hygiene" in conds
     cred = "weak_auth" in conds
     cleartext = "cleartext_services" in conds
     if eol and cred and (pki or cleartext):
-        return {"kind": "abandoned", "text": "Multiple compounding weaknesses — segment looks unmanaged/abandoned."}
+        return {"kind": "compounding", "text": "Several unrelated weaknesses co-occur here — check whether these hosts share an owner or maintenance arrangement, or are a known legacy enclave."}
     if eol and not (pki or cred or cleartext):
-        return {"kind": "patch-gap", "text": "End-of-life systems dominate — no patch/lifecycle programme."}
+        return {"kind": "lifecycle", "text": "End-of-life systems are the only recurring weakness — ask how OS lifecycle is handled for this segment."}
     if pki and not (eol or cred):
-        return {"kind": "no-pki", "text": "Certificate hygiene only — no PKI governance."}
+        return {"kind": "certificates", "text": "Certificate problems only — ask how certificates are issued and renewed here."}
     if cred and not (eol or pki):
-        return {"kind": "cred-hygiene", "text": "Weak/guest auth — credential and access-control hygiene."}
+        return {"kind": "access-control", "text": "Guest / anonymous access only — confirm whether it is intended on these hosts."}
     if cleartext and not (eol or pki or cred):
-        return {"kind": "flat-network", "text": "Cleartext/legacy services exposed — no hardening baseline."}
+        return {"kind": "legacy-services", "text": "Cleartext / legacy services only — confirm whether they are still required."}
     return {"kind": "mixed", "text": "Mixed weaknesses — review the per-condition breakdown."}
 
 

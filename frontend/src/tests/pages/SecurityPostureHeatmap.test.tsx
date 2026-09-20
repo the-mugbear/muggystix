@@ -30,25 +30,33 @@ import type { PostureResponse } from '../../services/api/posture';
 const cell = (segment: string, affected: number, assessed: number, in_scope: number) => ({
   segment, affected, assessed, in_scope, unassessed: assessed === 0,
   value: assessed ? affected / assessed : 0, numerator: affected, denominator: assessed,
-  drilldown_filter: { conditions: ['weak_tls'], site: segment === 'a' ? 'Site A' : 'Site B' },
+  // The backend sends site: null for the Unassigned column.
+  drilldown_filter: {
+    conditions: ['weak_tls'],
+    site: segment === 'a' ? 'Site A' : segment === 'b' ? 'Site B' : null,
+  },
 });
 
 const data = {
+  // 70 hosts inside scoped subnets of 82 in the project → 12 the grid cannot show.
+  headline: { review_coverage: { total: 82 } },
+  systemic: { adopted: true, estate: { hosts_in_scope: 70 } },
   heatmap: {
     segments: [
       { key: 'a', label: 'Site A', in_scope: 40, assessed: 40 },
       { key: 'b', label: 'Site B', in_scope: 25, assessed: 25 },
+      { key: 'unassigned', label: 'Unassigned', in_scope: 5, assessed: 5 },
     ],
     rows: [
       {
         family: 'encryption_trust', family_label: 'Encryption & trust', conditions: ['weak_tls'],
-        evidence_domain: 'web_tls', evidence_domain_label: 'Web / TLS', affected_total: 6,
-        cells: [cell('a', 6, 12, 40), cell('b', 0, 0, 25)],
+        evidence_domain: 'web_tls', evidence_domain_label: 'Web / TLS', affected_total: 9,
+        cells: [cell('a', 6, 12, 40), cell('b', 0, 0, 25), cell('unassigned', 3, 4, 5)],
       },
       {
         family: 'lateral_movement', family_label: 'Lateral-movement controls', conditions: ['smb_signing'],
         evidence_domain: 'auth_smb_ad', evidence_domain_label: 'Authentication / SMB / AD', affected_total: 0,
-        cells: [cell('a', 0, 18, 40), cell('b', 0, 0, 25)],
+        cells: [cell('a', 0, 18, 40), cell('b', 0, 0, 25), cell('unassigned', 0, 0, 5)],
       },
     ],
   },
@@ -79,7 +87,27 @@ describe('SecurityPosture heatmap — assessed denominator', () => {
     const clean = screen.getByTitle('Lateral-movement controls — 0 of 18 assessed hosts affected (40 in scope)');
     expect(clean).toHaveAttribute('data-state', 'clean');
     expect(clean.textContent).toBe('0/18');
-    expect(container.querySelectorAll('[data-state="unassessed"]').length).toBe(2);
+    expect(container.querySelectorAll('[data-state="unassessed"]').length).toBe(3);
     expect(screen.getByText(/nobody looked, which is not the same as clean/)).toBeInTheDocument();
+  });
+
+  it('opens the Unassigned cell on site:none, never on an unfiltered list (5.252.0)', () => {
+    renderHeatmap();
+    // It used to pass site: null through, which DROPPED the site filter: a cell
+    // counting 3 hosts opened every site's affected hosts.
+    const link = screen.getByText('3/4').closest('a');
+    const url = new URL(link!.getAttribute('href')!, 'http://x');
+    expect(url.searchParams.get('q')).toBe('has:weak_tls site:none');
+    expect(url.searchParams.get('sites')).toBeNull();
+    // A named site still filters by name.
+    const named = new URL(screen.getByText('6/12').closest('a')!.getAttribute('href')!, 'http://x');
+    expect(named.searchParams.get('sites')).toBe('Site A');
+    expect(named.searchParams.get('q')).toBe('has:weak_tls');
+  });
+
+  it('states which hosts the grid covers, and how many it cannot show', () => {
+    renderHeatmap();
+    expect(screen.getByText(/inside scoped subnets, of 82 in the project/)).toBeInTheDocument();
+    expect(screen.getByText(/12 hosts are outside every scoped subnet/)).toBeInTheDocument();
   });
 });

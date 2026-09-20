@@ -73,7 +73,8 @@ returning from leave.
 | How many hosts match X | `assist_count_hosts` | **have** |
 
 **`assist_get_posture`** wraps `posture_service` — the executive condition, the
-signals behind it, and the remediation flow. It is the single call that answers
+signals behind it, and the finding disposition (no remediation flow since
+v2.372.0 — the engagement ends at the report). It is the single call that answers
 "where are we?" with the same numbers the Posture page shows a manager, which
 matters: an agent and a page disagreeing about the headline is worse than the
 agent not having one.
@@ -259,7 +260,7 @@ they exist for hosts nobody has written a note about yet.
 
 1. ✅ `assist_get_patterns` — systemic insights: blind spots, segment outliers, condition spread, family root causes.
 2. ✅ `assist_get_finding` — one finding with its evidence note, thread and attachment references, plus `GET /assist/attachments/{id}` to fetch the images.
-3. ✅ `assist_get_posture` — headline condition + signals + remediation flow + per-site decomposition.
+3. ✅ `assist_get_posture` — headline condition + signals + disposition + per-site decomposition.
 4. ❌ `assist_get_attention` — **dropped**, subsumed by posture (see Stage 2).
 
 **P2 — completeness of the picture. ✅ Shipped in 2.297.0** (backend 2.297.0,

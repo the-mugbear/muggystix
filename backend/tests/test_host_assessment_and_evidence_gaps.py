@@ -128,3 +128,34 @@ def test_evidence_gap_lists_eligible_unassessed_hosts_with_their_ports(client, d
     assert r.status_code == 200, r.text
     assert r.json()["items"][0]["ip_address"] == "10.8.1.1"
     assert client.get(f"/api/v1/projects/{test_project.id}/posture/evidence/nope/gaps").status_code == 404
+
+
+def test_a_clean_vulnerability_scan_is_an_assessment(db_session, test_project):
+    """v2.372.0 — "assessed" used to mean "has a vulnerability row", so a host
+    Nessus covered and found clean read as never assessed (and with severity-0
+    plugins skipped at ingest a clean host has no rows at all).  The scanner's
+    run over the host counts; a port scan's does not."""
+    now = datetime.now(timezone.utc)
+    clean = _host(db_session, test_project.id, "10.8.2.1", now, ports=[(22, now)])
+    only_nmap = _host(db_session, test_project.id, "10.8.2.2", now, ports=[(22, now)])
+    # "Nessus" is what the importer stores — the match must not be case-sensitive.
+    nessus = models.Scan(project_id=test_project.id, filename="n.nessus", tool_name="Nessus")
+    nmap = models.Scan(project_id=test_project.id, filename="n.xml", tool_name="nmap")
+    db_session.add_all([nessus, nmap])
+    db_session.flush()
+    seen = now - timedelta(days=3)
+    db_session.add_all([
+        models.HostScanHistory(host_id=clean.id, scan_id=nessus.id, discovered_at=seen),
+        models.HostScanHistory(host_id=clean.id, scan_id=nmap.id, discovered_at=now),
+        models.HostScanHistory(host_id=only_nmap.id, scan_id=nmap.id, discovered_at=now),
+    ])
+    db_session.commit()
+
+    a = host_assessment(db_session, clean)
+    assert a["vuln_assessed"] is True
+    # Dated by the scanner's run, not by the later port scan.
+    assert a["last_vuln_assessed_at"] == seen
+    assert host_assessment(db_session, only_nmap)["vuln_assessed"] is False
+
+    gap = evidence_gap_hosts(db_session, test_project.id, "vuln_assessment")
+    assert [i["ip_address"] for i in gap["items"]] == ["10.8.2.2"]

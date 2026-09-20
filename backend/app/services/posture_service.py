@@ -30,10 +30,8 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from datetime import datetime, timezone
-
 from app.db import models
-from app.db.models_findings import Finding, FindingStatusHistory
+from app.db.models_findings import Finding
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import (
     TestPlan, TestPlanStatus, TestPlanEntry,
@@ -47,7 +45,6 @@ from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.evidence_service import has_minimum_assessment
 
 _ACTIVE = ("open", "confirmed", "retest")
-_RESOLVED = ("remediated", "false_positive", "accepted_risk")
 # Review-coverage floor below which the estate reads as under-assessed.
 _REVIEW_FLOOR = 0.5
 # Site criticality tiers that escalate a critical finding to "action required".
@@ -214,55 +211,6 @@ def _conclusion(label: str, reasons: List[Dict[str, Any]]) -> Dict[str, str]:
     }
 
 
-def _remediation_flow(db: Session, project_id: int) -> Dict[str, Any]:
-    """In-engagement remediation trajectory (snapshot, no cross-campaign baseline).
-
-    Findings open, get remediated, and sometimes reopen within an engagement, and
-    ``FindingStatusHistory`` records every transition — so this is legitimate
-    without scan-campaign comparability. Age bands describe the *current* active
-    backlog (how long open findings have been sitting), not a windowed delta.
-    """
-    now = datetime.now(timezone.utc)
-    remediated = (
-        db.query(func.count(Finding.id))
-        .filter(Finding.project_id == project_id, Finding.status == "remediated")
-        .scalar()
-        or 0
-    )
-    # Reopened: a finding that transitioned from a resolved state back to active.
-    reopened = (
-        db.query(func.count(func.distinct(FindingStatusHistory.finding_id)))
-        .join(Finding, FindingStatusHistory.finding_id == Finding.id)
-        .filter(
-            Finding.project_id == project_id,
-            FindingStatusHistory.from_status.in_(_RESOLVED),
-            FindingStatusHistory.to_status.in_(_ACTIVE),
-        )
-        .scalar()
-        or 0
-    )
-    # Age bands of the CURRENT active backlog (age from created_at).
-    bands = {"le_7d": 0, "le_30d": 0, "le_90d": 0, "gt_90d": 0}
-    for (ts,) in (
-        db.query(Finding.created_at)
-        .filter(Finding.project_id == project_id, Finding.status.in_(_ACTIVE))
-        .all()
-    ):
-        if ts is None:
-            continue
-        t = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-        age = max(0, (now - t).days)
-        if age <= 7:
-            bands["le_7d"] += 1
-        elif age <= 30:
-            bands["le_30d"] += 1
-        elif age <= 90:
-            bands["le_90d"] += 1
-        else:
-            bands["gt_90d"] += 1
-    return {"remediated": int(remediated), "reopened": int(reopened), "active_age_bands": bands}
-
-
 # Per-worker best-effort cache. /posture composes a dozen project-wide scans
 # (see compute_posture body); it's a read-mostly manager dashboard polled every
 # few minutes, so a short TTL collapses "N concurrent refreshes each re-scan the
@@ -419,13 +367,9 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         # One plain-language security-condition line — the executive read.
         "conclusion": _conclusion(label, reasons),
         "reasons": reasons,
-        # In-engagement remediation trajectory (opened backlog age, remediated,
-        # reopened) + the current unowned backlog.
-        "remediation_flow": {
-            **_remediation_flow(db, project_id),
-            "active_total": active,
-            "unowned_backlog": unowned_total,
-        },
+        # (No remediation block since v2.372.0: the engagement ends at the
+        # report — remediated / reopened / backlog-age measure a response
+        # BlueStick does not assess.  Active + unowned live in `headline`.)
         # Condition-family × site heatmap (the Overview hero). Present only when
         # systemic analysis is adopted (scoped subnets exist).
         "heatmap": systemic.get("family_matrix") if systemic.get("adopted") else None,

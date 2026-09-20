@@ -57,7 +57,7 @@ EVIDENCE_DOMAINS: List[Dict[str, str]] = [
     {"key": "os_detection", "label": "OS identification",
      "note": "Of hosts with ports, how many have a fingerprinted operating system — end-of-life is judged from this name."},
     {"key": "vuln_assessment", "label": "Vulnerability assessment",
-     "note": "Hosts with at least one vulnerability finding from a scanner (Nessus / OpenVAS / Nikto)."},
+     "note": "Hosts a vulnerability scanner (Nessus / OpenVAS) covered — including those it found clean — or that carry any scanner observation."},
     {"key": "web_tls", "label": "Web / TLS",
      "note": "Of hosts exposing a web port, how many have a fingerprinted web interface."},
     {"key": "auth_smb_ad", "label": "Authentication / SMB / AD",
@@ -66,6 +66,34 @@ EVIDENCE_DOMAINS: List[Dict[str, str]] = [
      "note": "Of hosts carrying a finding, how many have an executed test result confirming it."},
 ]
 DOMAIN_LABELS: Dict[str, str] = {d["key"]: d["label"] for d in EVIDENCE_DOMAINS}
+
+
+# Tools whose run against a host IS a vulnerability assessment of it, whatever
+# they reported (v2.372.0).  Matched case-insensitively on ``scans.tool_name``
+# ("Nessus" is stored capitalised).  Nikto is deliberately absent: it assesses
+# one web server, not the host.
+VULN_SCANNER_TOOLS = ("nessus", "openvas")
+
+
+def vuln_scanned_filter():
+    """``scans`` predicate: this scan came from a host vulnerability scanner."""
+    return func.lower(models.Scan.tool_name).in_(VULN_SCANNER_TOOLS)
+
+
+def _vuln_scanned_host_ids(db: Session, project_id: int) -> Set[int]:
+    """Hosts a vulnerability scanner observed — assessed even with no rows.
+
+    Before this, "assessed" meant "has a vulnerability row", so a host the
+    scanner covered and found clean read as never assessed — and with
+    severity-0 plugins skipped at ingest, a clean host has no rows at all."""
+    return {
+        hid for (hid,) in (
+            db.query(models.HostScanHistory.host_id)
+            .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
+            .filter(models.Scan.project_id == project_id, vuln_scanned_filter())
+            .distinct().all()
+        )
+    }
 
 
 def _host_ids(db: Session, project_id: int, model, *filters) -> Set[int]:
@@ -157,7 +185,9 @@ def assessed_host_ids(db: Session, project_id: int) -> Dict[str, Set[int]]:
         "port_discovery": _host_ids(db, project_id, models.Port),
         "service_detection": _host_ids(db, project_id, models.Port, models.Port.service_name.isnot(None)),
         "os_detection": with_os,
-        "vuln_assessment": _host_ids(db, project_id, Vulnerability),
+        # A scanner's run over the host counts; so does any vulnerability row
+        # (nikto / testssl / a manual import carry them without such a scan).
+        "vuln_assessment": _host_ids(db, project_id, Vulnerability) | _vuln_scanned_host_ids(db, project_id),
         "web_tls": with_web,
         "auth_smb_ad": with_auth,
         "validation": validated,

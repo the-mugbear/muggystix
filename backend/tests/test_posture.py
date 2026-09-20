@@ -5,7 +5,7 @@ priorities share one signal pass (so they can't disagree).
 from __future__ import annotations
 
 from app.db import models
-from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
+from app.db.models_findings import Finding, FindingHost
 from app.services.posture_service import compute_posture
 
 
@@ -146,14 +146,14 @@ def test_posture_response_contract(db_session, test_project):
     drifted from the manual TS interface before; this fails loudly on the next."""
     out = compute_posture(db_session, test_project.id, use_cache=False)
     assert set(out) >= {
-        "label", "conclusion", "reasons", "remediation_flow", "headline",
+        "label", "conclusion", "reasons", "headline",
         "priorities", "decisions", "sites", "systemic", "disposition", "evidence",
     }
     assert set(out["conclusion"]) >= {"text", "tone"}
-    assert set(out["remediation_flow"]) >= {
-        "remediated", "reopened", "active_age_bands", "active_total", "unowned_backlog",
-    }
-    assert set(out["remediation_flow"]["active_age_bands"]) == {"le_7d", "le_30d", "le_90d", "gt_90d"}
+    # v2.372.0 — the engagement ends at the report; remediated / reopened /
+    # backlog-age measure a response BlueStick does not assess.  Pinned absent
+    # so the block is not reintroduced by habit.
+    assert "remediation_flow" not in out
     assert set(out["headline"]) >= {
         "active_exposure", "review_coverage", "ownership", "systemic", "detected_exposure",
     }
@@ -163,27 +163,6 @@ def test_posture_response_contract(db_session, test_project):
     assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
     for p in out["priorities"]:
         assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}
-
-
-def test_remediation_flow_counts_remediated_and_reopened(db_session, test_project, test_user):
-    """remediation_flow reports remediated + reopened + active-backlog age bands."""
-    host = _host(db_session, test_project.id, "10.0.0.50")
-    db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
-    # One remediated finding.
-    _finding(db_session, test_project.id, severity="medium", status="remediated", owner_id=test_user.id, host=host)
-    # One reopened finding: a resolved -> active transition in its history.
-    reopened = _finding(db_session, test_project.id, severity="high", status="open", owner_id=test_user.id, host=host)
-    db_session.add(FindingStatusHistory(
-        finding_id=reopened.id, from_status="remediated", to_status="open",
-    ))
-    db_session.commit()
-
-    out = compute_posture(db_session, test_project.id, use_cache=False)
-    rf = out["remediation_flow"]
-    assert rf["remediated"] == 1
-    assert rf["reopened"] == 1
-    # The one active finding lands in a single age band.
-    assert sum(rf["active_age_bands"].values()) == rf["active_total"] == 1
 
 
 def test_heatmap_present_with_scoped_estate(db_session, test_project):
@@ -220,6 +199,52 @@ def test_heatmap_present_with_scoped_estate(db_session, test_project):
     cell = lifecycle["cells"][0]
     assert cell["numerator"] == 3 and cell["denominator"] == 3   # 3/3 EOL in HQ
     assert cell["drilldown_filter"]["conditions"] == ["eol_os"]
+
+
+def test_the_unassigned_cell_opens_exactly_the_hosts_it_counts(client, db_session, test_project):
+    """v2.372.0 — the grid's "Unassigned" column carried ``site: null`` and the
+    link built from it had NO site filter, so a cell counting 2 hosts opened
+    every site's affected hosts.  ``site:none`` is that column as a filter:
+    inside a scoped subnet, no site inherited — not merely "not in a named site"."""
+    from app.db.models import Scope, Subnet, Site, HostSubnetMapping
+
+    scope = Scope(project_id=test_project.id, name="scope")
+    site = Site(project_id=test_project.id, name="HQ", criticality_tier=1)
+    db_session.add_all([scope, site])
+    db_session.flush()
+    hq = Subnet(scope_id=scope.id, cidr="10.5.0.0/24", site="HQ", site_id=site.id)
+    hq_child = Subnet(scope_id=scope.id, cidr="10.5.0.0/28")   # unlabelled: inherits HQ
+    bare = Subnet(scope_id=scope.id, cidr="10.6.0.0/24")       # no site anywhere above it
+    db_session.add_all([hq, hq_child, bare])
+    db_session.flush()
+
+    def eol_host(ip, *subnets):
+        h = models.Host(project_id=test_project.id, ip_address=ip, state="up", os_name="Windows XP")
+        db_session.add(h)
+        db_session.flush()
+        for sn in subnets:
+            db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=sn.id))
+
+    eol_host("10.5.0.50", hq)
+    eol_host("10.5.0.5", hq, hq_child)      # most-specific subnet has no site; still HQ
+    eol_host("10.6.0.1", bare)
+    eol_host("10.6.0.2", bare)
+    eol_host("172.16.0.1")                  # outside every scoped subnet: unmapped, not unassigned
+    db_session.commit()
+
+    hm = compute_posture(db_session, test_project.id, use_cache=False)["heatmap"]
+    lifecycle = next(r for r in hm["rows"] if r["family"] == "lifecycle_patching")
+    cell = next(c for c in lifecycle["cells"] if c["segment"] == "unassigned")
+    assert cell["affected"] == 2
+
+    def ips(q):
+        r = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": q})
+        assert r.status_code == 200, r.text
+        return {i["ip_address"] for i in r.json()["items"]}
+
+    assert ips("has:eol site:none") == {"10.6.0.1", "10.6.0.2"}
+    # `none` ORs with names like any other value.
+    assert ips("has:eol site:HQ,none") == {"10.5.0.50", "10.5.0.5", "10.6.0.1", "10.6.0.2"}
 
 
 def test_posture_output_validates_against_response_model(db_session, test_project, test_user):

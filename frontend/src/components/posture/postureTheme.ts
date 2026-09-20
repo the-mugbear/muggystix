@@ -70,7 +70,8 @@ export const STATUS_HSL: Record<string, string> = {
   retest: 'hsl(var(--info))',
   remediated: 'hsl(var(--success))',
   false_positive: 'hsl(var(--muted-foreground))',
-  accepted_risk: 'hsl(var(--muted-foreground))',
+  // Lighter than false-positive: the two sit side by side in one bar.
+  accepted_risk: 'hsl(var(--muted-foreground) / 0.55)',
 };
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -78,8 +79,18 @@ export const STATUS_LABEL: Record<string, string> = {
   remediated: 'Remediated', false_positive: 'False positive', accepted_risk: 'Accepted risk',
 };
 
-export const ACTIVE_STATUSES = ['open', 'confirmed', 'retest'];
-export const RESOLVED_STATUSES = ['remediated', 'false_positive', 'accepted_risk'];
+/**
+ * The pipeline's groups, in the app's one finding vocabulary
+ * (`utils/findingStatus.ts`): under investigation → confirmed → closed. It used
+ * to be Active | Resolved, and "Resolved" read as "fixed" while holding false
+ * positives and accepted risks too — the engagement ends at the report, so a
+ * closed finding is a recorded conclusion, never a claim of improved security.
+ */
+export const POPULATION_STATUSES: Array<{ key: 'investigating' | 'confirmed' | 'closed'; statuses: string[] }> = [
+  { key: 'investigating', statuses: ['open', 'retest'] },
+  { key: 'confirmed', statuses: ['confirmed'] },
+  { key: 'closed', statuses: ['false_positive', 'accepted_risk', 'remediated'] },
+];
 
 /** Priority-row kind → short label + tone for the chip. */
 export const PRIORITY_KIND: Record<string, { label: string; severity: Severity }> = {

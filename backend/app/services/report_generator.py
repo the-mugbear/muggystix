@@ -598,7 +598,7 @@ class ReportGenerator:
     <div class="section" id="systemic">
         <div class="section-header">Systemic Insights</div>
         <div class="section-content">
-            <p class="muted">Which weaknesses recur across the in-scope estate and how widely they spread — the same weakness across many subnets and sites is a process failure, not an incident. Project-wide.</p>
+            <p class="muted">Which weaknesses recur across the in-scope estate and how widely they spread — the same weakness across many subnets and sites suggests a shared cause to investigate, not an isolated incident. Causes named here are hypotheses. Project-wide.</p>
             {self._generate_systemic_html()}
         </div>
     </div>"""
@@ -1713,7 +1713,7 @@ class ReportGenerator:
             outliers = [o for o in outliers if (o.get("site") or "") == site]
             profiles = [d for d in profiles if (d.get("site") or "") == site]
         if not blind and not conditions:
-            return '<p class="muted">No weakness recurs widely enough across the in-scope estate to suggest a systemic process failure.</p>'
+            return '<p class="muted">No weakness recurs widely enough across the in-scope estate to suggest a shared cause.</p>'
 
         parts: List[str] = []
 
@@ -1798,9 +1798,9 @@ class ReportGenerator:
                 )
             parts.append(
                 "<h4>Diagnostic profiles</h4>"
-                '<p class="muted">Per-subnet co-occurrence signature → likely management root cause.</p>'
+                '<p class="muted">Per-subnet co-occurrence signature → the question it raises (a lead to check, not a conclusion).</p>'
                 '<table class="data-table"><thead><tr>'
-                "<th>Subnet</th><th>Site</th><th>Conditions</th><th>Likely root cause</th>"
+                "<th>Subnet</th><th>Site</th><th>Conditions</th><th>Worth checking</th>"
                 f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
             )
 
@@ -1814,7 +1814,7 @@ class ReportGenerator:
             "",
             "Which weaknesses recur across the in-scope estate and how widely they"
             " spread. A weakness on one host is incidental; the same weakness across"
-            " many subnets and sites is a process failure. Project-wide.",
+            " many subnets and sites suggests a shared cause to investigate. Project-wide.",
             "",
         ]
         if not data.get("adopted"):
@@ -1825,7 +1825,7 @@ class ReportGenerator:
         outliers = data.get("segment_outliers") or []
         profiles = data.get("diagnostic_profiles") or []
         if not blind and not conditions:
-            lines += ["_No weakness recurs widely enough to suggest a systemic process failure._", ""]
+            lines += ["_No weakness recurs widely enough to suggest a shared cause._", ""]
             return lines
 
         if blind:
@@ -1876,7 +1876,7 @@ class ReportGenerator:
         if profiles:
             lines += [
                 "### Diagnostic profiles",
-                "| Subnet | Site | Conditions | Likely root cause |",
+                "| Subnet | Site | Conditions | Worth checking |",
                 "|---|---|---|---|",
             ]
             for d in profiles:

@@ -6,7 +6,9 @@ checked — or that it never was — so the inspector can put freshness beside
 the assertion instead of one "last seen" at the top:
 
 * observed        — the newest scan that saw the host at all;
-* vulnerabilities — newest vulnerability observation, or not assessed;
+* vulnerabilities — newest vulnerability observation OR vulnerability-scanner
+                    run over the host (a clean scan is an assessment), or not
+                    assessed;
 * web / TLS       — newest web-interface / cert evidence, or not assessed,
                     or not applicable (no web port);
 * auth / SMB      — SMB-signing or NetExec evidence present, or not, or n/a;
@@ -31,7 +33,7 @@ from app.db import models
 from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
 from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability
-from app.services.evidence_service import _AUTH_PORTS, _WEB_PORTS
+from app.services.evidence_service import _AUTH_PORTS, _WEB_PORTS, vuln_scanned_filter
 
 # A port observed within this window of the host's newest observation counts
 # as seen by the same sweep (parsers stamp rows over a few seconds).
@@ -65,6 +67,15 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
         .filter(Vulnerability.host_id == hid)
         .one()
     )
+    # A vulnerability scanner's run over the host is an assessment even when it
+    # reported nothing (v2.372.0) — same rule as the Evidence page.
+    last_vuln_scan_at = (
+        db.query(func.max(models.HostScanHistory.discovered_at))
+        .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
+        .filter(models.HostScanHistory.host_id == hid, vuln_scanned_filter())
+        .scalar()
+    )
+    vuln_dates = [d for d in (_aware(last_vuln_at), _aware(last_vuln_scan_at)) if d is not None]
 
     open_ports = [p for p in host.ports if p.state == "open"]
     web_eligible = any(
@@ -104,8 +115,8 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
 
     return {
         "last_observed_at": host.last_seen,
-        "vuln_assessed": bool(vuln_count),
-        "last_vuln_assessed_at": last_vuln_at,
+        "vuln_assessed": bool(vuln_count) or last_vuln_scan_at is not None,
+        "last_vuln_assessed_at": max(vuln_dates) if vuln_dates else None,
         "web_eligible": web_eligible,
         "web_assessed": bool(web_count),
         "last_web_assessed_at": last_web_at,

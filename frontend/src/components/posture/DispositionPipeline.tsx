@@ -1,7 +1,7 @@
 /**
- * Finding disposition as a lifecycle pipeline: one horizontal bar of findings
- * flowing through their statuses, split ACTIVE | RESOLVED (active warm,
- * resolved cool), segment width ∝ count. Fully static — counts sit inside wide
+ * Finding disposition as one horizontal bar of findings by status, grouped
+ * under investigation | confirmed | closed (the vocabulary in
+ * utils/findingStatus.ts), segment width ∝ count. Fully static — counts sit inside wide
  * segments and in the legend, so nothing is hidden behind a hover (an earlier
  * hover-reveal exposed an unlabelled severity bar that vanished on mouse-out;
  * removed). Severity lives in the "Active findings" headline card instead.
@@ -9,9 +9,8 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import {
-  STATUS_HSL, STATUS_LABEL, ACTIVE_STATUSES, RESOLVED_STATUSES,
-} from './postureTheme';
+import { STATUS_HSL, STATUS_LABEL, POPULATION_STATUSES } from './postureTheme';
+import { POPULATION_LABEL } from '../../utils/findingStatus';
 
 interface DispositionPipelineProps {
   byStatus: Record<string, number>;
@@ -26,12 +25,13 @@ const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus, sta
     return () => cancelAnimationFrame(id);
   }, []);
 
-  const active = ACTIVE_STATUSES.filter((s) => byStatus[s]);
-  const resolved = RESOLVED_STATUSES.filter((s) => byStatus[s]);
-  const ordered = [...active, ...resolved];
-  const total = ordered.reduce((sum, s) => sum + byStatus[s], 0);
-  const activeTotal = active.reduce((sum, s) => sum + byStatus[s], 0);
-  const resolvedTotal = resolved.reduce((sum, s) => sum + byStatus[s], 0);
+  const groups = POPULATION_STATUSES.map((g) => {
+    const statuses = g.statuses.filter((s) => byStatus[s]);
+    return { key: g.key, statuses, total: statuses.reduce((sum, s) => sum + byStatus[s], 0) };
+  });
+  const shown = groups.filter((g) => g.statuses.length > 0);
+  const ordered = shown.flatMap((g) => g.statuses);
+  const total = groups.reduce((sum, g) => sum + g.total, 0);
 
   if (total === 0) {
     return <p className="text-caption text-muted-foreground">No findings recorded yet.</p>;
@@ -69,18 +69,23 @@ const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus, sta
 
   return (
     <div className="space-y-sm">
-      <div className="flex items-center justify-between text-caption">
-        <span className="font-semibold text-foreground">Active · {activeTotal}</span>
-        <span className="text-muted-foreground">Resolved · {resolvedTotal}</span>
+      {/* All three populations always named — a zero is information here. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-md gap-y-xxs text-caption">
+        {groups.map((g) => (
+          <span key={g.key} className={g.key === 'closed' ? 'text-muted-foreground' : 'font-semibold text-foreground'}>
+            {POPULATION_LABEL[g.key]} · {g.total}
+          </span>
+        ))}
       </div>
 
       <div className="flex h-9 w-full overflow-hidden rounded-full bg-muted"
         role="img" aria-label={ordered.map((s) => `${byStatus[s]} ${STATUS_LABEL[s] ?? s}`).join(', ')}>
-        {active.map((s, i) => seg(s, i === 0, resolved.length === 0 && i === active.length - 1))}
-        {active.length > 0 && resolved.length > 0 && (
-          <div className="h-full w-0.5 shrink-0 bg-background" aria-hidden />
-        )}
-        {resolved.map((s, i) => seg(s, active.length === 0 && i === 0, i === resolved.length - 1))}
+        {shown.map((g, gi) => (
+          <React.Fragment key={g.key}>
+            {gi > 0 && <div className="h-full w-0.5 shrink-0 bg-background" aria-hidden />}
+            {g.statuses.map((s) => seg(s, s === ordered[0], s === ordered[ordered.length - 1]))}
+          </React.Fragment>
+        ))}
       </div>
 
       {/* Static legend with counts — everything visible, nothing hover-gated. */}

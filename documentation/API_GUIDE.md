@@ -461,7 +461,7 @@ These mount under `/projects/{project_id}/...` alongside the above. Most are das
 
 | Base path | Purpose |
 |---|---|
-| `/posture` | Security Posture roll-up — deterministic condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`), plain-language conclusion, remediation flow, and the condition-family × site heatmap. Drives the frontend **Posture** tab. |
+| `/posture` | Security Posture roll-up — deterministic condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`), plain-language conclusion, and the condition-family × site heatmap. Drives the frontend **Posture** tab. |
 | `/posture/evidence` | Per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) + contributing tools + parse-error data quality. Drives the frontend **Evidence** tab; answers whether the posture conclusions are trustworthy. |
 | `/insights/subnets` | Per-subnet insights (exposure + neglect + hygiene, worst-first). Drives the frontend **Segments** tab (Subnet lens). |
 | `/insights/systemic` | Systemic insights — pattern families, estate blind spots, segment outliers, diagnostic profiles. Drives the frontend **Patterns** tab. |

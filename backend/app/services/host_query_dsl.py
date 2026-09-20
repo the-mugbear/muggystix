@@ -525,6 +525,18 @@ def _b_assigned(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return or_(*preds)
 
 
+def _b_site(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    # `none` is the posture matrix's "Unassigned" column; every other value
+    # is a site name.  OR across values, like the other multi-value fields.
+    names = [v for v in values if v.lower() != "none"]
+    preds = []
+    if names:
+        preds.append(P.site_predicate(ctx.db, names))
+    if len(names) != len(values):
+        preds.append(P.site_none_predicate(ctx.db, ctx.project_id))
+    return or_(*preds)
+
+
 def _b_has(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     preds = []
     for v in values:
@@ -597,8 +609,9 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
               value_source="label",
               description="Project subnet label — applied by analysts (Scopes)."),
-    FieldSpec("site", lambda c, v: P.site_predicate(c.db, v), value_source="site",
-              description="Site the host’s subnet belongs to."),
+    FieldSpec("site", _b_site, value_source="site",
+              description="Site the host’s subnet belongs to. `site:none` is a host in a "
+                          "scoped subnet that carries no site (Posture’s “Unassigned”)."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any."),
     FieldSpec("assigned", _b_assigned, aliases=["assignee"],

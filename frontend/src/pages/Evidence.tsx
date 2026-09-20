@@ -246,7 +246,8 @@ const Evidence: React.FC = () => {
         ) : (
           <>
             <p className="text-caption text-muted-foreground">
-              Assessed against <span className="font-medium text-foreground">{data.total_hosts}</span> hosts in this project.
+              Assessed against all <span className="font-medium text-foreground">{data.total_hosts}</span> hosts in this project,
+              inside a scoped subnet or not — Patterns and the Posture grid count only hosts inside scoped subnets, so their totals can be smaller.
             </p>
 
             <div className="grid gap-sm md:grid-cols-2 xl:grid-cols-3">

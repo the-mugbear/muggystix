@@ -20,7 +20,7 @@ import {
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
-import { downloadSystemicReport, familyCellHostsHref } from '../services/api/insights';
+import { downloadSystemicReport, familyCellHostsHref, UNASSIGNED_SITE } from '../services/api/insights';
 import { useToast } from '../contexts/ToastContext';
 import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
@@ -120,14 +120,18 @@ const SecurityPosture: React.FC = () => {
     return () => controller.abort();
   }, [currentProject?.id, reloadNonce]);
 
+  // A project switch must not leave the PREVIOUS project's posture on screen
+  // while the new one loads (a Refresh keeps the data; it is the same project).
+  useEffect(() => { setData(null); setError(null); }, [currentProject?.id]);
+
   return (
     <div className="space-y-md p-md">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Security Posture</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            A management snapshot — the security condition, what changed, where weaknesses concentrate,
-            and the highest-leverage next action. Every number is explainable and links to the detail.
+            The assessment so far — the security condition, where weaknesses concentrate, and the
+            highest-leverage next action. Every number is explainable and links to the detail.
           </p>
         </div>
         <div className="flex flex-col items-end gap-xs">
@@ -166,16 +170,16 @@ const SecurityPosture: React.FC = () => {
           {/* 1. The executive read — one conclusion + label + top reasons. */}
           <PostureLabelBanner data={data} />
 
-          {/* 2. What changed — the in-engagement remediation trajectory. */}
-          <RemediationFlow data={data} />
-
-          {/* 3. Exposure vs. assurance — kept separate, never a single grade. */}
+          {/* 2. Exposure vs. assurance — kept separate, never a single grade.
+              (The remediation strip left in 5.252.0: the engagement ends at the
+              report, so remediated / reopened / backlog age measure a response
+              BlueStick does not assess.) */}
           <HeadlineMeasures data={data} />
 
-          {/* 4. The systemic hero — where weaknesses concentrate (families × sites). */}
+          {/* 3. The systemic hero — where weaknesses concentrate (families × sites). */}
           <ConditionSegmentHeatmap data={data} />
 
-          {/* 5. Highest-leverage actions beside finding disposition. The
+          {/* 4. Highest-leverage actions beside finding disposition. The
               systemic detail now lives on the Patterns page; sites on Segments. */}
           <div className="grid items-start gap-md lg:grid-cols-2">
             <ManagementPriorities priorities={data.priorities} decisions={data.decisions} />
@@ -388,85 +392,6 @@ const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Remediation flow — the in-engagement trajectory: current active backlog by
-// age, plus remediated / reopened counts and the unowned backlog.
-// ---------------------------------------------------------------------------
-const AGE_BAND_LABEL: Array<{ key: keyof PostureResponse['remediation_flow']['active_age_bands']; label: string }> = [
-  { key: 'le_7d', label: '≤ 7d' },
-  { key: 'le_30d', label: '8–30d' },
-  { key: 'le_90d', label: '31–90d' },
-  { key: 'gt_90d', label: '> 90d' },
-];
-
-const RemediationFlow: React.FC<{ data: PostureResponse }> = ({ data }) => {
-  const rf = data.remediation_flow;
-  const bands = rf.active_age_bands;
-  const maxBand = Math.max(1, ...AGE_BAND_LABEL.map((b) => bands[b.key]));
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-md p-md lg:flex-row lg:items-center lg:gap-lg">
-        <div className="flex items-center gap-lg">
-          <Stat label="Active" value={rf.active_total}
-            info="Curated findings still open / confirmed / in retest." />
-          <Stat label="Remediated" value={rf.remediated} tone="positive"
-            info="Findings marked remediated in this engagement." />
-          <Stat label="Reopened" value={rf.reopened} tone={rf.reopened > 0 ? 'warning' : undefined}
-            info="Findings that returned to an active state after being resolved — remediation that didn't hold." />
-          <Stat label="Unowned" value={rf.unowned_backlog} tone={rf.unowned_backlog > 0 ? 'warning' : undefined}
-            info="Active findings with nobody accountable to drive them to closure."
-            to={rf.unowned_backlog > 0 ? buildFindingsUrl({ status: 'active', owner: 'unowned' }) : undefined} />
-        </div>
-        {/* Backlog aging — how long the active findings have been open. */}
-        <div className="min-w-0 flex-1">
-          <p className="flex items-center gap-xxs text-caption text-muted-foreground">
-            Active backlog by age
-            <InfoTip text="How long the current active findings have been open (from when each was created). A backlog skewed to the right is aging — remediation is not keeping pace." />
-          </p>
-          {/* Number (top) + a FIXED-height bar area + label (bottom). The bar
-              lives in its own 36px box so the column can't overflow its parent
-              and spill the number over the header above it (the parent had a
-              44px cap while number+bar+label needed ~68px). */}
-          <div className="mt-xs flex items-end gap-sm">
-            {AGE_BAND_LABEL.map((b) => {
-              const n = bands[b.key];
-              const h = Math.round((n / maxBand) * 36);
-              const old = b.key === 'gt_90d' || b.key === 'le_90d';
-              return (
-                <div key={b.key} className="flex min-w-0 flex-1 flex-col items-center gap-xxs">
-                  <span className="text-caption tabular-nums text-muted-foreground">{n}</span>
-                  <div className="flex w-full items-end" style={{ height: 36 }}>
-                    <div className="w-full rounded-t"
-                      style={{ height: Math.max(2, h), backgroundColor: old && n > 0 ? 'hsl(var(--warning))' : 'hsl(var(--info))' }} />
-                  </div>
-                  <span className="text-caption text-muted-foreground">{b.label}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-};
-
-// A compact inline stat used by the remediation strip.
-const Stat: React.FC<{
-  label: string; value: number; info: string;
-  tone?: 'positive' | 'warning'; to?: string;
-}> = ({ label, value, info, tone, to }) => {
-  const toneClass = tone === 'positive' ? 'text-success' : tone === 'warning' ? 'text-warning' : 'text-foreground';
-  const num = to
-    ? <Link to={to} className={`${toneClass} hover:underline`}>{value.toLocaleString()}</Link>
-    : <span className={toneClass}>{value.toLocaleString()}</span>;
-  return (
-    <div className="min-w-0">
-      <p className="flex items-center gap-xxs text-caption text-muted-foreground">{label} <InfoTip text={info} /></p>
-      <p className="text-subheading font-bold tabular-nums leading-none">{num}</p>
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
 // Condition × segment heatmap — the systemic hero. Rows are pattern families,
 // columns are sites; each cell shows affected / in-scope hosts (not just a colour), and
 // links to exactly those hosts.
@@ -489,6 +414,11 @@ const heatCellStyle = (fraction: number): React.CSSProperties => {
 
 export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const hm = data.heatmap;
+  // This grid covers hosts inside scoped subnets; the measures above it cover
+  // every host in the project. Say so where the two meet, with the difference.
+  const total = data.headline.review_coverage.total;
+  const inScope = data.systemic.adopted ? data.systemic.estate?.hosts_in_scope : undefined;
+  const unmapped = inScope == null ? null : Math.max(0, total - inScope);
   return (
     <Card>
       <CardHeader>
@@ -496,6 +426,13 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
           Where weaknesses concentrate
           <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / assessed hosts — assessed means the site's in-scope hosts that carry evidence in the domain that can detect this family (hover a row label for its domain), so 0 of N is 'checked, none found'. A hatched cell is unassessed: nobody looked, which is not the same as clean. Darker = a larger share affected. Click a cell to open exactly those hosts." />
         </CardTitle>
+        {inScope != null && (
+          <p className="text-caption text-muted-foreground">
+            Covers the <span className="font-medium text-foreground">{inScope.toLocaleString()}</span> hosts
+            inside scoped subnets, of {total.toLocaleString()} in the project.
+            {unmapped ? ` ${unmapped.toLocaleString()} host${unmapped === 1 ? ' is' : 's are'} outside every scoped subnet and cannot appear here.` : ''}
+          </p>
+        )}
       </CardHeader>
       <CardContent>
         {!hm || hm.rows.length === 0 || hm.segments.length === 0 ? (
@@ -543,7 +480,10 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
                     </td>
                     {row.cells.map((cell) => {
                       const href = cell.affected > 0
-                        ? familyCellHostsHref(row.conditions, cell.drilldown_filter?.site)
+                        ? familyCellHostsHref(
+                            row.conditions,
+                            cell.segment === 'unassigned' ? UNASSIGNED_SITE : cell.drilldown_filter?.site,
+                          )
                         : null;
                       // Three states, three presentations: unassessed (hatched,
                       // "n/a"), assessed-and-clean ("—" over an assessed count),
@@ -669,7 +609,7 @@ const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
         <CardTitle className="flex items-center justify-between gap-xs">
           <span className="flex items-center gap-xs">
             Finding disposition
-            <InfoTip text="Where curated findings sit in their lifecycle. Active = open / confirmed / retest; Resolved = remediated / false-positive / accepted-risk. The two figures above split active findings by ORIGIN (analyst-raised vs scanner-sourced), which is independent of status." />
+            <InfoTip text="Where promoted findings stand. Under investigation = open / retest; Confirmed = an analyst validated it; Closed = false positive, accepted risk or remediated — a recorded conclusion, each counted separately below, and not a measure of improved security. The two figures above split active findings by ORIGIN (analyst-raised vs scanner-sourced), which is independent of status." />
           </span>
           <Link to="/findings" className="text-caption text-info hover:underline">Findings →</Link>
         </CardTitle>

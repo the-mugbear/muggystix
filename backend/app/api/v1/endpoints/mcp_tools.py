@@ -737,8 +737,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "The project's overall security condition — the headline label, "
             "the plain-language conclusion, the reasons behind it, the "
-            "prioritised next actions, exposure/ownership/review coverage, and "
-            "remediation flow. Start here for \"where is this project?\" and "
+            "prioritised next actions, exposure/ownership/review coverage and "
+            "finding disposition. Start here for \"where is this project?\" and "
             "build a report's executive summary from it rather than inventing "
             "a judgement from counts. Note that label='insufficient_evidence' "
             "means the estate has NOT been assessed enough to judge — it is "

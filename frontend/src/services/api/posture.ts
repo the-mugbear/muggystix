@@ -106,14 +106,6 @@ export interface PostureHeatmap {
   rows: HeatmapRow[];
 }
 
-export interface RemediationFlow {
-  remediated: number;
-  reopened: number;
-  active_age_bands: { le_7d: number; le_30d: number; le_90d: number; gt_90d: number };
-  active_total: number;
-  unowned_backlog: number;
-}
-
 export interface PostureConclusion {
   text: string;
   tone: 'negative' | 'caution' | 'neutral' | 'positive';
@@ -123,7 +115,6 @@ export interface PostureResponse {
   label: PostureLabel;
   conclusion: PostureConclusion;
   reasons: PostureReason[];
-  remediation_flow: RemediationFlow;
   heatmap: PostureHeatmap | null;
   headline: PostureHeadline;
   priorities: PriorityItem[];

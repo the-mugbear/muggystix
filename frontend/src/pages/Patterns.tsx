@@ -6,8 +6,9 @@
  * trust, lifecycle, …), each rolling up the conditions that evidence it; below,
  * the finer breakdown — estate blind spots, segment outliers (density vs the
  * estate's own median), and per-subnet diagnostic profiles (co-occurrence →
- * root cause). A weakness on one host is incidental; the same weakness spanning
- * many subnets and sites is a process failure — the spread IS the diagnosis.
+ * the question it raises). A weakness on one host is incidental; the same
+ * weakness spanning many subnets and sites suggests a shared cause — spread is
+ * the observation, the cause stays a hypothesis until an analyst supports it.
  *
  * UI-style-guide compliance: tables are `table-fixed` with explicit widths;
  * CIDR / site / vector cells truncate or wrap; every state (loading / error /
@@ -50,12 +51,13 @@ type BadgeVariant =
   | 'warning' | 'info' | 'outline' | 'muted';
 
 // Diagnostic root-cause kind → badge tone.
+// Kinds name WHAT co-occurs (v5.252.0), not a verdict on who runs the segment.
 const ROOT_CAUSE_TONE: Record<string, BadgeVariant> = {
-  abandoned: 'destructive',
-  'patch-gap': 'warning',
-  'no-pki': 'info',
-  'cred-hygiene': 'warning',
-  'flat-network': 'warning',
+  compounding: 'warning',
+  lifecycle: 'warning',
+  certificates: 'info',
+  'access-control': 'warning',
+  'legacy-services': 'warning',
   mixed: 'muted',
 };
 
@@ -208,9 +210,9 @@ const Patterns: React.FC = () => {
             <strong className="text-foreground">estate</strong> — every in-scope host across all
             sites and subnets — grouped into <strong className="text-foreground">pattern families</strong>{' '}
             (identity &amp; auth, encryption &amp; trust, lifecycle, …). A weakness on one host is
-            incidental; the same weakness across many subnets and sites is a process failure, and one
-            spanning essentially the whole estate points at an organisational blind spot. The spread
-            is the diagnosis. Root causes are evidence-backed hypotheses, not verdicts.
+            incidental; the same weakness across many subnets and sites suggests a shared cause worth
+            investigating. Spread is what was observed; every cause named here is a hypothesis to
+            confirm with the people who run the estate, not a conclusion.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
@@ -277,8 +279,9 @@ const Patterns: React.FC = () => {
               <ShieldCheck className="size-4" aria-hidden />
               <AlertTitle>No systemic patterns detected</AlertTitle>
               <AlertDescription>
-                No weakness recurs widely enough across the in-scope estate to suggest a systemic
-                process failure. Per-host issues still surface in{' '}
+                No weakness recurs widely enough across the in-scope estate to suggest a shared
+                cause. That is only as strong as the evidence collected — check{' '}
+                <Link to="/posture/evidence" className="underline">Evidence</Link>. Per-host issues still surface in{' '}
                 <Link to="/posture/segments" className="underline">Segments</Link>.
               </AlertDescription>
             </Alert>
@@ -460,10 +463,10 @@ const Patterns: React.FC = () => {
                 <section className="space-y-sm">
                   <div className="flex items-center gap-xs">
                     <h2 className="text-subheading font-semibold text-foreground">Diagnostic profiles</h2>
-                    <InfoTip text="Which conditions co-occur within each subnet, mapped to a likely management root cause — e.g. EOL OS + missing patches → patch-gap; expired/self-signed TLS → no-PKI; weak/guest auth → cred-hygiene. A hypothesis from the co-occurrence pattern, not a verdict." />
+                    <InfoTip text="Which conditions co-occur within each subnet, and the question that raises — e.g. only end-of-life systems → how is OS lifecycle handled here? A deliberate legacy enclave, different asset roles or uneven scan depth can produce the same signature, so treat it as a lead to check, not a conclusion." />
                   </div>
                   <p className="text-caption text-muted-foreground">
-                    Per-subnet co-occurrence signature → a likely management root cause.
+                    Per-subnet co-occurrence signature → the question it raises.
                   </p>
                   <Card>
                     <CardContent className="p-0">
@@ -474,7 +477,7 @@ const Patterns: React.FC = () => {
                               <TableHead className="w-[22%]">Subnet</TableHead>
                               <TableHead className="w-[14%]">Site</TableHead>
                               <TableHead className="w-[28%]">Conditions</TableHead>
-                              <TableHead className="w-[36%]">Likely root cause</TableHead>
+                              <TableHead className="w-[36%]">Worth checking</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -597,7 +600,7 @@ const PatternFamilyCard: React.FC<{ f: SystemicFamily }> = ({ f }) => {
           })}
         </div>
         <p className="text-caption text-muted-foreground">
-          <span className="font-medium text-foreground">Likely root cause (hypothesis): </span>
+          <span className="font-medium text-foreground">Hypothesis to check: </span>
           {f.root_cause_hypothesis}
         </p>
         <p className="flex items-start gap-xxs text-caption text-foreground">

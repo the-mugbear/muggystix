@@ -189,7 +189,7 @@ backend/app/
 │   ├── vulnerability_service.py
 │   ├── confidence_service.py
 │   ├── risk_insight_service.py
-│   ├── posture_service.py        # /posture composition (label + conclusion + remediation flow + heatmap)
+│   ├── posture_service.py        # /posture composition (label + conclusion + heatmap + disposition)
 │   ├── systemic_insight_service.py # cross-sectional pattern families + blind spots + monocultures
 │   ├── subnet_insight_service.py # per-subnet exposure/neglect/hygiene lens
 │   ├── pattern_families.py       # the program-level weakness taxonomy + classify()

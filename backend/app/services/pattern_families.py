@@ -69,27 +69,27 @@ FAMILIES: Dict[str, PatternFamily] = {
     f.key: f for f in [
         PatternFamily(
             "identity_auth", "Identity & authentication",
-            "Access control is not consistently enforced — accounts, guest/anonymous access, or weak auth are tolerated.",
+            "Guest / anonymous or weak authentication recurs — access control may not be enforced from one baseline.",
             "Establish an authentication baseline: no guest/null sessions, least-privilege, enforced everywhere.",
         ),
         PatternFamily(
             "encryption_trust", "Encryption & trust",
-            "No certificate / PKI governance — TLS trust is unmanaged.",
+            "Certificate and TLS weaknesses recur — issuance, renewal or a TLS baseline may not be managed centrally.",
             "Stand up certificate issuance/renewal and a TLS baseline; replace self-signed/expired certs.",
         ),
         PatternFamily(
             "lifecycle_patching", "Lifecycle & patching",
-            "No OS lifecycle / patch programme — unsupported systems accrete unpatched.",
+            "Unsupported systems recur — OS lifecycle may not be tracked for these hosts (or they are a known legacy estate).",
             "Inventory and upgrade or isolate end-of-life systems; establish a patch cadence.",
         ),
         PatternFamily(
             "legacy_cleartext", "Legacy & cleartext protocols",
-            "No policy against unencrypted / legacy protocols — credentials are observable on the wire.",
+            "Unencrypted / legacy protocols recur — there may be no policy against them, or they may still be required.",
             "Disable cleartext services or migrate to encrypted equivalents.",
         ),
         PatternFamily(
             "lateral_movement", "Lateral-movement controls",
-            "No hardening baseline against relay / lateral movement (e.g. SMB signing off).",
+            "Relay / lateral-movement exposure recurs (e.g. SMB signing off) — a shared configuration baseline may not require it.",
             "Enable and require SMB signing; harden against NTLM relay across the estate.",
         ),
         PatternFamily(

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional, Sequence
 
-from sqlalchemy import cast, func, or_, false
+from sqlalchemy import and_, cast, func, or_, false
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import exists
 from sqlalchemy.sql.elements import ColumnElement
@@ -564,6 +564,30 @@ def site_predicate(db: Session, names: Sequence[str]) -> ColumnElement:
         .distinct()
     )
     return models.Host.id.in_(sub)
+
+
+def site_none_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host sits in a scoped subnet but NO subnet it maps to carries a site —
+    the posture matrix's "Unassigned" column (v2.372.0).
+
+    Site is inherited from the nearest site-bearing subnet
+    (``subnet_insight_service.resolve_host_locations``), so a host is unassigned
+    exactly when none of its mapped subnets has one.  A host outside every
+    scoped subnet is NOT unassigned — it is unmapped, and absent from that
+    matrix — so this is not simply the negation of ``site_predicate``."""
+    mapped = (
+        db.query(models.HostSubnetMapping.host_id)
+        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
+        .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
+        .filter(models.Scope.project_id == project_id)
+    )
+    # Same test as the inheritance rule: a non-blank site NAME (name and
+    # site_id are always written together, scopes.py).
+    sited = mapped.filter(func.trim(func.coalesce(models.Subnet.site, "")) != "")
+    return and_(
+        models.Host.id.in_(mapped.distinct()),
+        models.Host.id.notin_(sited.distinct()),
+    )
 
 
 def label_predicate_by_name(db: Session, names: Sequence[str], project_id: int) -> ColumnElement:

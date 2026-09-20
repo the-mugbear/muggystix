@@ -1985,7 +1985,6 @@ def get_assist_posture(
         "reasons": p["reasons"],
         "headline": p["headline"],
         "evidence": p["evidence"],
-        "remediation_flow": p["remediation_flow"],
         "priorities": p["priorities"],
         "decisions": p["decisions"],
         "disposition": p["disposition"],
