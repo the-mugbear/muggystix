@@ -9,12 +9,10 @@ import {
   ProjectCoverageResponse,
   ScopeCoverageRow,
   SinceLastVisit,
-  StalenessResponse,
   TestPlanSummary,
   WorkbenchResponse,
   getDashboardStats,
   getProjectCoverage,
-  getStaleness,
   getTestPlans,
   getWorkbench,
   listAgentSessions,
@@ -46,7 +44,7 @@ const olderOf = (a?: Date, b?: Date): Date | null =>
   (a && b ? (a.getTime() <= b.getTime() ? a : b) : null);
 
 /** The page's independently fetched sources, each with its own load time. */
-type LoadedSource = 'workbench' | 'coverage' | 'pending' | 'stats' | 'staleness';
+type LoadedSource = 'workbench' | 'coverage' | 'pending' | 'stats';
 const SCOPE_STORAGE_KEY = 'nm.operations.scopeView';
 
 const loadStickyScope = (): ScopeView => {
@@ -285,89 +283,6 @@ const ProjectStateCard: React.FC<{
         )}
       </CardContent>
     </Card>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Scan freshness — flags scopes/project that need a re-scan (v2.73.0).
-// ---------------------------------------------------------------------------
-
-const ScanFreshness: React.FC<{ data: StalenessResponse | null; updated?: React.ReactNode }> = ({ data, updated }) => {
-  // Turn a "due for re-scan" warning into the action it implies. The old row
-  // linked to /scopes/:id, a route retired to a redirect that discards the id —
-  // a dead end. Recon needs analyst+, so viewers/auditors see the freshness
-  // signal without an action they can't take (the endpoint would 403 anyway).
-  const recon = useReconPlan();
-  const { hasPermission } = useAuth();
-  const canStartRecon = hasPermission('analyst');
-  if (!data || data.scopes.length === 0) return null;
-  // A scope's date is its NEWEST host observation, so one fresh host used to
-  // make a largely stale scope read as current. List a scope when any of its
-  // hosts is past the window, and say how many the date actually speaks for.
-  const partlyStale = (s: StalenessResponse['scopes'][number]) =>
-    (s.host_count ?? 0) > 0 && (s.recent_host_count ?? 0) < (s.host_count ?? 0);
-  const stale = data.scopes.filter((s) => s.is_stale || partlyStale(s));
-  const staleHostsLabel = (s: StalenessResponse['scopes'][number]): string => {
-    if (!s.last_activity_at) return 'no hosts discovered';
-    if (s.host_count == null) return `last seen by a scan ${s.days_since}d ago`;
-    return `${(s.recent_host_count ?? 0).toLocaleString()} of ${s.host_count.toLocaleString()} hosts seen in the last ${data.stale_days}d · newest ${s.days_since}d ago`;
-  };
-  return (
-    <>
-    <Card className="mb-md">
-      <CardContent className="p-md">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
-          <h2 className="text-subheading font-semibold">Scan freshness</h2>
-          {updated}
-        </div>
-        <p className="mb-sm text-caption text-muted-foreground">
-          How recent each scope's scan evidence is — a scope with hosts no scan has seen
-          in over {data.stale_days} days is due for a re-scan. This tracks the age of the data, not
-          the scope itself (scope definitions don't change).
-        </p>
-        <div className="mb-sm flex flex-wrap items-center gap-xs">
-          {/* Not green: a recent upload says nothing about how much it covered. */}
-          <Badge variant={data.project_is_stale ? 'warning' : 'outline'}>
-            {data.latest_scan_at ? `Last scan ${data.days_since_last_scan}d ago` : 'No scans yet'}
-          </Badge>
-          <Badge variant={stale.length > 0 ? 'warning' : 'success'}>
-            {stale.length > 0
-              ? `${stale.length} of ${data.scopes.length} scopes with hosts past ${data.stale_days}d`
-              : `every scoped host seen in the last ${data.stale_days}d`}
-          </Badge>
-        </div>
-        {stale.length > 0 && (
-          <ul className="flex flex-col gap-xxs">
-            {stale.slice(0, 5).map((s) => (
-              <li key={s.scope_id} className="flex flex-wrap items-center gap-xs">
-                <p className="min-w-0 flex-1 truncate text-metadata">
-                  <strong>{displayScopeName(s.scope_name)}</strong>{' '}
-                  <span className="text-caption text-muted-foreground">
-                    {staleHostsLabel(s)}
-                  </span>
-                </p>
-                {canStartRecon && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => recon.openFor(s.scope_id, s.scope_name)}
-                  >
-                    <Rocket className="size-3" aria-hidden />
-                    Start Recon
-                  </Button>
-                )}
-              </li>
-            ))}
-            {stale.length > 5 && (
-              <p className="text-caption text-muted-foreground">+{stale.length - 5} more</p>
-            )}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
-      {/* Opens when recon.scopeId becomes non-null via openFor (hook-driven). */}
-      <StartReconDialog recon={recon} />
-    </>
   );
 };
 
@@ -1008,16 +923,14 @@ const Operations: React.FC = () => {
   const [pendingLoading, setPendingLoading] = useState(true);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
-  const [staleness, setStaleness] = useState<StalenessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Per-section errors for the non-structural fetches.  Pre-fix a failed
-  // stats/pending/staleness request silently degraded to an empty card,
+  // stats/pending request silently degraded to an empty card,
   // which reads as "nothing needs attention" — falsely implying a clean
   // project.  Track each so we can show "unavailable" (with Retry) instead
   // of a deceptively-empty section.  (UX review #8.)
   const [statsError, setStatsError] = useState<string | null>(null);
   const [pendingError, setPendingError] = useState<string | null>(null);
-  const [stalenessError, setStalenessError] = useState<string | null>(null);
   // P2 — Operations owns ONE /workbench fetch covering the personal cards
   // (My Queue / My Tasks) + the since-last-visit diff, and prop-drives them.
   // The page-level Refresh re-runs this in lockstep with the coverage/stats
@@ -1107,11 +1020,12 @@ const Operations: React.FC = () => {
     // pending-plans too. Only coverage is structural (it gates the whole
     // page), so only its failure raises the page-level error; the other
     // sections degrade to their own empty/absent state.
-    const [coverageR, pendingR, statsR, stalenessR] = await Promise.allSettled([
+    // (No scan-freshness fetch since 5.255.2: a project is one assessment
+    // window, so the age of a scan is not something Operations chases.)
+    const [coverageR, pendingR, statsR] = await Promise.allSettled([
       getProjectCoverage(),
       getTestPlans({ status: 'proposed' }),
       getDashboardStats(),
-      getStaleness(),
     ]);
 
     // A newer reload superseded us while these were in flight — drop this
@@ -1140,14 +1054,6 @@ const Operations: React.FC = () => {
       markLoaded('stats');
     } else {
       setStatsError(formatApiError(statsR.reason, 'Could not load project statistics.'));
-    }
-    if (stalenessR.status === 'fulfilled') {
-      setStaleness(stalenessR.value);
-      setStalenessError(null);
-      markLoaded('staleness');
-    } else {
-      setStaleness(null);
-      setStalenessError(formatApiError(stalenessR.reason, 'Could not load scan freshness.'));
     }
 
     setCoverageLoading(false);
@@ -1426,18 +1332,6 @@ const Operations: React.FC = () => {
               />
             )}
           />
-          {stalenessError ? (
-            <Alert variant="warning" className="mb-md">
-              <AlertDescription className="flex items-center justify-between gap-md">
-                <span>{stalenessError}</span>
-                <Button variant="outline" size="sm" onClick={reload}>
-                  <RefreshCw className="size-4" aria-hidden /> Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <ScanFreshness data={staleness} updated={<UpdatedAt at={loadedAt.staleness ?? null} />} />
-          )}
         </>
       )}
     </div>

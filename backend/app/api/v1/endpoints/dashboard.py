@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, desc, case, and_, or_, distinct, false
+from sqlalchemy import func, desc, case, and_, or_, false
 from app.db.session import get_db
 from app.db import models
 from app.db.models import FollowStatus, HostFollow
@@ -308,125 +308,6 @@ class NewScansSinceResponse(BaseModel):
     latest_scan_id: Optional[int] = None
     latest_scan_filename: Optional[str] = None
     latest_scan_created_at: Optional[datetime] = None
-# ---------------------------------------------------------------------------
-# Scan staleness — "what needs re-scanning?".  Project-level age of the
-# newest scan, plus per-scope freshness (newest host observation in the
-# scope).  Drives the Operations "needs re-scan" tile and Scopes badges.
-# ---------------------------------------------------------------------------
-
-class ScopeStaleness(BaseModel):
-    scope_id: int
-    scope_name: str
-    last_activity_at: Optional[datetime] = None
-    days_since: Optional[int] = None
-    is_stale: bool = False
-    # ``last_activity_at`` is the NEWEST host observation, so one fresh host
-    # makes a largely stale scope look current.  These say how much of the
-    # scope that date actually speaks for (distinct hosts; recent = seen
-    # within ``stale_days``).
-    host_count: int = 0
-    recent_host_count: int = 0
-
-
-class StalenessResponse(BaseModel):
-    stale_days: int
-    latest_scan_at: Optional[datetime] = None
-    days_since_last_scan: Optional[int] = None
-    project_is_stale: bool = False
-    stale_scope_count: int = 0
-    scopes: List[ScopeStaleness] = Field(default_factory=list)
-
-
-def _days_since(dt: Optional[datetime]) -> Optional[int]:
-    if dt is None:
-        return None
-    # Host.last_seen / Scan.created_at are tz-aware; tolerate a naive value.
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return max(0, (datetime.now(timezone.utc) - dt).days)
-
-
-@router.get(
-    "/staleness",
-    response_model=StalenessResponse,
-    summary="Scan freshness — project + per-scope age, flags what needs re-scanning",
-)
-def get_staleness(
-    stale_days: int = Query(14, ge=1, le=365, description="Age (days) past which a scope/project is 'stale'."),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Report scan freshness for the project.
-
-    ``latest_scan_at`` is the newest scan upload; a scope's
-    ``last_activity_at`` is the newest ``Host.last_seen`` among hosts
-    mapped into that scope.  Scopes with no discovered hosts (or whose
-    newest observation is older than ``stale_days``) are flagged stale —
-    i.e. they need a (re-)scan.
-    """
-    latest_scan_at = (
-        db.query(func.max(models.Scan.created_at))
-        .filter(models.Scan.project_id == project.id)
-        .scalar()
-    )
-
-    # Per-scope newest host observation.  Outer joins so scopes with no
-    # hosts still appear (last_activity None → stale → "needs recon").
-    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
-    rows = (
-        db.query(
-            models.Scope.id, models.Scope.name, func.max(models.Host.last_seen),
-            # DISTINCT: a host mapped into two subnets of one scope is one host.
-            func.count(distinct(models.Host.id)),
-            func.count(distinct(case(
-                (models.Host.last_seen >= recent_cutoff, models.Host.id),
-            ))),
-        )
-        .select_from(models.Scope)
-        .outerjoin(models.Subnet, models.Subnet.scope_id == models.Scope.id)
-        .outerjoin(models.HostSubnetMapping, models.HostSubnetMapping.subnet_id == models.Subnet.id)
-        .outerjoin(models.Host, models.Host.id == models.HostSubnetMapping.host_id)
-        .filter(models.Scope.project_id == project.id)
-        .group_by(models.Scope.id, models.Scope.name)
-        .all()
-    )
-
-    scopes: List[ScopeStaleness] = []
-    stale_count = 0
-    for scope_id, scope_name, last_activity, host_count, recent_count in rows:
-        days = _days_since(last_activity)
-        is_stale = last_activity is None or (days is not None and days > stale_days)
-        if is_stale:
-            stale_count += 1
-        scopes.append(ScopeStaleness(
-            scope_id=scope_id,
-            scope_name=scope_name,
-            last_activity_at=last_activity,
-            days_since=days,
-            is_stale=is_stale,
-            host_count=int(host_count or 0),
-            recent_host_count=int(recent_count or 0),
-        ))
-
-    # Stalest first (None = never = most stale), then by name.
-    scopes.sort(key=lambda s: (-(s.days_since if s.days_since is not None else 10**9), s.scope_name or ""))
-
-    days_since_last_scan = _days_since(latest_scan_at)
-    project_is_stale = latest_scan_at is None or (
-        days_since_last_scan is not None and days_since_last_scan > stale_days
-    )
-
-    return StalenessResponse(
-        stale_days=stale_days,
-        latest_scan_at=latest_scan_at,
-        days_since_last_scan=days_since_last_scan,
-        project_is_stale=project_is_stale,
-        stale_scope_count=stale_count,
-        scopes=scopes,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Network topology — project → scope → subnet graph for the topology view.
 # Bounded by design: subnets carry host counts (not host-level nodes), and

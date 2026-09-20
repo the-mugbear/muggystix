@@ -413,38 +413,6 @@ export const getAuditStats = async (): Promise<AuditStats> => {
 };
 
 // ---------------------------------------------------------------------------
-// Scan staleness (v2.73.0)
-// ---------------------------------------------------------------------------
-
-export interface ScopeStaleness {
-  scope_id: number;
-  scope_name: string;
-  last_activity_at?: string | null;
-  days_since?: number | null;
-  is_stale: boolean;
-  /** Distinct hosts in the scope, and how many were seen within `stale_days`.
-   *  `last_activity_at` is only the NEWEST of them. */
-  host_count?: number;
-  recent_host_count?: number;
-}
-
-export interface StalenessResponse {
-  stale_days: number;
-  latest_scan_at?: string | null;
-  days_since_last_scan?: number | null;
-  project_is_stale: boolean;
-  stale_scope_count: number;
-  scopes: ScopeStaleness[];
-}
-
-export const getStaleness = async (staleDays?: number): Promise<StalenessResponse> => {
-  const response = await api.get(`${p()}/dashboard/staleness`, {
-    params: staleDays ? { stale_days: staleDays } : {},
-  });
-  return response.data;
-};
-
-// ---------------------------------------------------------------------------
 // Network topology (v2.75.0)
 // ---------------------------------------------------------------------------
 

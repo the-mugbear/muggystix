@@ -85,9 +85,9 @@ class Host(Base):
         # project_id index forces a state filter in the table; composite lets
         # the planner satisfy both from the index.
         Index('idx_host_project_state', 'project_id', 'state'),
-        # v2.85.0 — /staleness + dashboard "recent activity" tile filter
-        # by project_id and order by last_seen.  Composite avoids a sort
-        # step on every dashboard hit.
+        # v2.85.0 — the dashboard "recent activity" tile filters by project_id
+        # and orders by last_seen; the composite avoids a sort step on every
+        # dashboard hit.  (Its other reader, /staleness, left in v2.374.2.)
         Index('idx_host_project_last_seen', 'project_id', 'last_seen'),
     )
 

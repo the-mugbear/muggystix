@@ -1,7 +1,4 @@
-"""Phase 3 (alerting) backend tests: outbound webhooks + scan staleness."""
-from datetime import datetime, timedelta, timezone
-
-from app.db import models
+"""Phase 3 (alerting) backend tests: outbound webhooks."""
 from app.db.models_project import WebhookConfig
 from app.services import webhook_dispatcher as wd
 
@@ -91,75 +88,13 @@ def test_webhook_event_types(client, test_project):
 
 
 # ---------------------------------------------------------------------------
-# Scan staleness
+# Scan staleness — REMOVED (v2.374.2)
 # ---------------------------------------------------------------------------
 
-def _scope_with_host(db, project_id, name, cidr, ip, last_seen):
-    scope = models.Scope(project_id=project_id, name=name)
-    db.add(scope)
-    db.flush()
-    subnet = models.Subnet(scope_id=scope.id, cidr=cidr)
-    db.add(subnet)
-    db.flush()
-    if ip is not None:
-        host = models.Host(project_id=project_id, ip_address=ip, state="up", last_seen=last_seen)
-        db.add(host)
-        db.flush()
-        db.add(models.HostSubnetMapping(host_id=host.id, subnet_id=subnet.id))
-        db.flush()
-    return scope
-
-
-def test_staleness_flags_old_and_empty_scopes(client, db_session, test_project):
-    now = datetime.now(timezone.utc)
-    fresh = _scope_with_host(db_session, test_project.id, "fresh", "10.1.0.0/24", "10.1.0.5", now)
-    old = _scope_with_host(db_session, test_project.id, "old", "10.2.0.0/24", "10.2.0.5", now - timedelta(days=40))
-    empty = _scope_with_host(db_session, test_project.id, "empty", "10.3.0.0/24", None, None)
-    db_session.commit()
-
-    r = client.get(f"/api/v1/projects/{test_project.id}/dashboard/staleness", params={"stale_days": 14})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    by_id = {s["scope_id"]: s for s in body["scopes"]}
-
-    assert by_id[fresh.id]["is_stale"] is False
-    assert by_id[old.id]["is_stale"] is True
-    assert by_id[empty.id]["is_stale"] is True
-    assert by_id[empty.id]["last_activity_at"] is None
-    # No scans uploaded in this project → project flagged stale.
-    assert body["project_is_stale"] is True
-    assert body["stale_scope_count"] >= 2
-
-
-def test_staleness_says_how_much_of_the_scope_the_newest_date_speaks_for(
-    client, db_session, test_project,
-):
-    """A scope's date is its NEWEST host observation, so one host seen today
-    made a scope of stale hosts read as fresh.  The counts are what let the
-    page say "1 of 3 hosts seen in the last 14d"."""
-    now = datetime.now(timezone.utc)
-    scope = _scope_with_host(db_session, test_project.id, "mostly-old", "10.4.0.0/24", "10.4.0.5", now)
-    subnet = db_session.query(models.Subnet).filter(models.Subnet.scope_id == scope.id).one()
-    # A second subnet in the same scope that also contains the fresh host:
-    # it is still ONE host.
-    overlap = models.Subnet(scope_id=scope.id, cidr="10.4.0.0/25")
-    db_session.add(overlap)
-    db_session.flush()
-    fresh = db_session.query(models.Host).filter(models.Host.ip_address == "10.4.0.5").one()
-    db_session.add(models.HostSubnetMapping(host_id=fresh.id, subnet_id=overlap.id))
-    for ip in ("10.4.0.6", "10.4.0.7"):
-        h = models.Host(
-            project_id=test_project.id, ip_address=ip, state="up",
-            last_seen=now - timedelta(days=40),
-        )
-        db_session.add(h)
-        db_session.flush()
-        db_session.add(models.HostSubnetMapping(host_id=h.id, subnet_id=subnet.id))
-    db_session.commit()
-
-    r = client.get(f"/api/v1/projects/{test_project.id}/dashboard/staleness", params={"stale_days": 14})
-    assert r.status_code == 200, r.text
-    row = next(s for s in r.json()["scopes"] if s["scope_id"] == scope.id)
-    assert row["is_stale"] is False  # the newest-observation flag is unchanged
-    assert row["host_count"] == 3
-    assert row["recent_host_count"] == 1
+def test_the_staleness_endpoint_is_gone(client, test_project):
+    """`GET /dashboard/staleness` ("what needs re-scanning?") fed the Operations
+    "Scan freshness" card.  A project is a snapshot of one assessment window,
+    so the age of an observation inside it is not a defect to chase; both were
+    removed.  Pinned so the endpoint is not reintroduced by habit."""
+    r = client.get(f"/api/v1/projects/{test_project.id}/dashboard/staleness")
+    assert r.status_code == 404

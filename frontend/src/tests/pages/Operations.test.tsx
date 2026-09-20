@@ -28,8 +28,8 @@ vi.mock('../../services/api', () => ({
   getTestPlans: vi.fn(),
   listAgentSessions: vi.fn(),
   // v4.59.0 (NEW I) — Operations.reload Promise.all also awaits
-  // getDashboardStats() and getStaleness().  Pre-fix the mock
-  // omitted both; the resulting "X is not a function" throw
+  // getDashboardStats().  Pre-fix the mock
+  // omitted it; the resulting "X is not a function" throw
   // landed in the catch and the page rendered an error alert
   // instead of any of the section content the tests asserted on.
   // Default-empty resolves so the page renders its empty-state
@@ -44,7 +44,6 @@ vi.mock('../../services/api', () => ({
     recent_scans: [],
     subnet_stats: [],
   }),
-  getStaleness: vi.fn().mockResolvedValue(null),
   // P2 — Operations now owns ONE /workbench fetch and prop-drives the
   // personal cards (My Queue / My Tasks) + the since-last-visit diff.
   // Mocked empty so the cards render their empty-state and the banner
