@@ -1,7 +1,7 @@
 # UI Style Guide
 
 > **Stack:** Tailwind v4 + Radix UI (shadcn-style primitives) + lucide-react + Sonner
-> **Last verified against:** frontend 5.152.1 (2026-08-11) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
+> **Last verified against:** frontend 5.248.1 (2026-09-19) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
 
 ## Purpose
 This guide defines UI rules for BlueStick so feature work, bug fixes, and LLM-assisted changes preserve layout integrity, readability, and predictable behavior under real application data.
@@ -12,7 +12,7 @@ This is not only a visual guide. It is a behavioral contract for how UI must res
 - asynchronous loading
 - error states
 - dense tables
-- small viewports
+- narrowed or zoomed desktop windows (BlueStick is desktop-only — see §3)
 
 ## Scope
 This guide applies to:
@@ -33,7 +33,7 @@ All UI must be resilient to unknown content length, missing values, partial resp
 No component may assume:
 - short strings
 - complete data
-- desktop-only width
+- a wide window (the app is desktop-only, but windows get narrowed, split and zoomed)
 - stable row height from backend values
 - one-line labels
 
@@ -125,6 +125,8 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 ## Component Rules
 
 ### 7. Cards
+- **Cards are for dashboards and for the one exception on a page — not the default container for every block of data.** On a DETAIL surface (the host inspector, a finding, a run) use `InspectorSection` (`components/host-inspector/InspectorSection.tsx`): a heading row over a thin divider, collapsible, its state remembered per viewer. Giving every data source its own Card — border, shadow, page-sized title, two layers of padding — meant a host with two ports and two observations needed three screens, most of it chrome. `openInspectorSection` / `jumpToInspectorSection` re-open a collapsed target, so a jump link is never dead.
+- **A repeated evidence row is ONE line** — identity, one status, dot-separated metadata — and expands only on demand (scanner observations, port sightings, earlier observations of a web interface). A 300–400 px row per observation pushes everything else off the screen.
 - Card content must not determine card width.
 - Card headers must protect title, status, and actions from overlap.
 - Actions must remain visible even if body content grows.
@@ -158,13 +160,9 @@ Always set `table-fixed` (`<Table className="table-fixed">`) when column behavio
 ### 9. Chips, Badges, and Status Labels
 - Use the v4 `<Badge>` primitive from `src/components/ui/badge.tsx`.
 - Chips must not assume short labels.  Long labels must either wrap cleanly or truncate.
-- Status colors and meanings must stay consistent across pages.  The `<Badge>` variant prop (`default` / `secondary` / `destructive` / `success` / `warning` / `info` / `outline` / `muted`) maps to the semantic CSS-var tokens — do not pass raw hex.
-- Severity → variant mapping:
-  - critical → `destructive`
-  - high / medium → `warning`
-  - low → `info`
-  - info → `muted`
-  - unknown → `outline`
+- Status colors and meanings must stay consistent across pages.  The `<Badge>` variant prop (`default` / `secondary` / `destructive` / `success` / `warning` / `info` / `outline` / `muted`) maps to the semantic CSS-var tokens — do not pass raw hex. There are **16** variants: those eight semantic ones, four `severity-critical|high|medium|low`, and four lighter `destructive|warning|info|success-outline` chips that keep the semantic colour (they replaced ~19 sites of bespoke `border-warning/40 text-warning` class soup).
+- Severity → variant mapping: **import `SEVERITY_BADGE_VARIANT` from `src/utils/severity.ts`** — critical → `severity-critical`, high → `severity-high`, medium → `severity-medium`, low → `severity-low`, info → `muted`. Do not re-derive it per page; `severity.ts` is the one source for severity order, label, colour and variant, created precisely because pages had grown their own maps.
+- **Every count is a link.** A number shown to an operator navigates to the rows it summarises, or acts as the filter for them. If it cannot, cut it — an inert stat card is a vanity metric.
 - For long-label chips, combine with truncation: `<Badge className="max-w-[12rem]"><span className="truncate">{label}</span></Badge>`.
 
 #### When to use a badge — and when not
@@ -210,7 +208,7 @@ Anything else gets cut.  A card whose first impression is a row of pastel chips 
 - Inline action rows must remain usable when labels or messages are long.
 - Submit and destructive actions must retain stable placement.
 - Use the v4 form primitives: `<Input>`, `<Textarea>`, `<Label>`, `<Select>`, `<Checkbox>`, `<Switch>`, `<RadioGroup>`, `<Combobox>`, `<PasswordInput>` from `src/components/ui/`.
-- Always pair an `<Input>` with a `<Label htmlFor=…>` — the v4 primitives don't auto-wire `htmlFor` like MUI's TextField did.
+- Always pair an `<Input>` with a `<Label htmlFor=…>` — `<Input>` does not generate an id, so always pass `id` and a matching `htmlFor`.
 
 ### 11. Dialogs and Drawers
 - Dialog content must not overflow horizontally due to long values.
@@ -229,6 +227,7 @@ Anything else gets cut.  A card whose first impression is a row of pastel chips 
 - For inline loading spinners, use `<Loader2 className="size-4 animate-spin" />` from lucide-react.
 
 ### 13. Empty States
+- **Unavailable is not empty.** A section that failed to load, or has not loaded yet, renders as *unavailable* (say what could not be checked, offer a retry) — never as a zero or an empty list. "Nothing needs your approval" is a claim about the data; a failed request has not earned it. The API follows the same rule (`*_unavailable` flags on the workbench), so render them.
 - Empty states must not destabilize layout.
 - Pages should still preserve the overall structure so controls and context remain visible.
 - Empty text should be concise and action-oriented where applicable.
@@ -326,7 +325,7 @@ Example:
   - actions from metadata
 - Prefer deliberate grouping over adding more borders everywhere.
 - Compact layouts are acceptable; compressed layouts that reduce readability are not.
-- The Button primitive's default height is 32px (h-8) — denser than shadcn's default 36px to match the pentest-console density target.  Use `size="sm"` (h-7) for inline row actions.
+- The Button primitive's default is `size="md"` — 40px (h-10). Use `size="sm"` (h-8, 32px) for inline row actions and dense toolbars; `lg` is 44px (h-11) and `icon` is 40×40. In a one-line row, 28px (`h-7`) icon buttons are set with a class, not a size.
 
 ### 23. Motion and Interaction Polish
 - Motion should support comprehension, not decorate the page.
@@ -358,7 +357,7 @@ A new field is not complete if it only renders correctly for short fixture value
 - Long content must not move action groups below the fold unless that layout is intentional.
 
 ### 27. Navigation and Filters
-- Filter rows must wrap (`flex-wrap`) or stack (`flex-col sm:flex-row`) on smaller widths.
+- Filter rows must wrap (`flex-wrap`). Do not add breakpoint-stacked variants (`flex-col sm:flex-row`) — that is the mobile pattern §3 retired. Give toolbar controls a fixed width: a bare `SelectTrigger` is `w-full` and will stack the row.
 - Search, dropdowns, toggles, and sort controls must remain usable under narrow layouts.
 - Filter chips must not create unbounded horizontal growth.
 - For chip-style filter pickers, use `<button aria-pressed>` inside `role="group"` (matches the audit H5 fix pattern); for true selects use `<Select>`; for free-text + multi-select use `<Combobox>`.
@@ -405,7 +404,12 @@ Follow the UI style guide (Tailwind v4 + Radix primitives + lucide-react).
 - Do not let long values resize cards, tables, chips, buttons, or action areas unpredictably.
 - Add explicit truncation, wrapping, or clamping behavior where needed.
 - Target desktop browsers only — no mobile card fallbacks (see §3).
-- Handle loading, empty, and error states for new data surfaces.
+- Handle loading, empty, and error states for new data surfaces. A failed or
+  unloaded section is UNAVAILABLE, never rendered as empty or zero.
+- Detail surfaces use InspectorSection (heading + divider), not a Card per data
+  source; a repeated evidence row is one line that expands on demand.
+- Every count navigates to, or filters to, the rows it summarises. No inert stat cards.
+- Severity colours and badge variants come from src/utils/severity.ts.
 - Reuse the v4 primitives from src/components/ui/ instead of building inline.
 - Use semantic tokens (bg-card, text-muted-foreground, etc.) rather than raw colors.
 - The change is not complete unless worst-case realistic data renders cleanly.
@@ -472,9 +476,11 @@ When editing the current frontend:
 | Variants | `class-variance-authority` (cva) |
 | Toasts | `sonner` (wrapped in `useToast()`) |
 | Data grid | `@tanstack/react-table` via the `DataTable` primitive |
-| Command palette | `cmdk` (used inside `Combobox`; future cmd-K palette) |
+| Command palette | `cmdk` — `src/components/CommandPalette.tsx` (shipped) and `Combobox` |
 | Icons | `lucide-react` (default); `AppIcons.tsx` for custom hand-rolled SVGs |
-| Date picker | `react-day-picker` (installed; not yet consumed) |
+| Dates | `date-fns` for formatting; there is no date-picker dependency (`react-day-picker` was removed unused in 5.247.1) |
+| Graphs | `reactflow` (Topology map). No chart library — charts are hand-rolled SVG/CSS (`components/posture/PostureCharts.tsx`, `ui/SeverityBar.tsx`) |
+| File drop | `react-dropzone` (`components/scans/UploadReviewDialog.tsx`) |
 | Theming | CSS variables set by `theme/cssVars.ts`, palette in `theme/palettes.ts` |
 
 ### 36. Available v4 Primitives
@@ -482,11 +488,11 @@ Every primitive lives under `src/components/ui/`:
 
 - Surface: `Card` / `CardHeader` / `CardTitle` / `CardDescription` / `CardContent` / `CardFooter`
 - Form: `Input` / `Textarea` / `Label` / `Select` / `Checkbox` / `Switch` / `RadioGroup` / `PasswordInput` / `Combobox`
-- Action: `Button` / `Badge` (six variants + outline + muted)
-- Feedback: `Alert` (info / success / warning / destructive / default) / `Tooltip`
+- Action: `Button` / `Badge` (16 variants — see §9)
+- Feedback: `Alert` (info / success / warning / destructive / default) / `Tooltip` / `InfoTip` / `InlineLoader`
 - Layout: `Tabs` / `Accordion` / `Separator` / `Avatar`
-- Overlay: `Dialog` / `SideSheet` / `Popover` / `DropdownMenu`
-- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed)
+- Overlay: `Dialog` / `ConfirmDialog` (via `useConfirm`) / `SideSheet` / `Popover` / `DropdownMenu`
+- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `MetaField` / `CodeBlock` / `SeverityBar`
 
 ### 37. Suggested Shared Utilities
 These are good candidates for standardization if repeated:
