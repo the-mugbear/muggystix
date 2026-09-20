@@ -3,6 +3,7 @@ import { KeyRound, Loader2, FolderTree } from 'lucide-react';
 
 import { NetexecResult, getHostNetexecResults } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { latestObservations } from '../utils/latestObservations';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { InspectorSection } from './host-inspector/InspectorSection';
@@ -79,7 +80,7 @@ const normalizeShares = (shares: unknown): ShareEntry[] => {
   return [{ name: String(shares), detail: null }];
 };
 
-const NetExecResultRow: React.FC<{ result: NetexecResult }> = ({ result }) => {
+const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> = ({ result, seenCount = 1 }) => {
   const shares = normalizeShares(result.shares);
   const host = result.hostname || result.domain_name;
   return (
@@ -107,6 +108,12 @@ const NetExecResultRow: React.FC<{ result: NetexecResult }> = ({ result }) => {
         )}
         {shares.length === 0 && (
           <span className="text-caption text-muted-foreground">· no shares enumerated</span>
+        )}
+        {seenCount > 1 && (
+          <span className="text-caption text-muted-foreground"
+            title={`The same result was recorded by ${seenCount} scans; the latest is shown.`}>
+            · same result in {seenCount} scans
+          </span>
         )}
       </div>
 
@@ -161,13 +168,23 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
   // Nothing observed — render nothing (host wasn't enumerated with NetExec).
   if (count <= 0) return null;
 
+  // v5.241.0 — results are kept one row per scan. The SAME result repeated is
+  // one row here; the key includes the outcome (who, whether auth succeeded,
+  // which shares), so a probe that came back differently stays its own row.
+  const observed = latestObservations(
+    rows ?? [],
+    (r) => JSON.stringify([r.protocol, r.port ?? null, r.auth_success ?? null, r.username ?? null,
+      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null]),
+    (r) => r.first_seen,
+  );
+
   return (
     <InspectorSection
       id="host-detail-netexec"
       title="NetExec enumeration"
       titleHint="Credentialed protocol probes (SMB / LDAP / WinRM / RDP) — authentication outcome and enumerated shares."
       icon={<KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
-      count={rows ? rows.length : null}
+      count={rows ? observed.length : null}
     >
       <div className="space-y-sm">
         {loading && (
@@ -184,10 +201,10 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
         {!loading && !error && rows && rows.length === 0 && (
           <p className="text-caption text-muted-foreground">No NetExec results recorded.</p>
         )}
-        {rows && rows.length > 0 && (
+        {observed.length > 0 && (
           <div className="divide-y divide-border">
-            {rows.map((result) => (
-              <NetExecResultRow key={result.id} result={result} />
+            {observed.map(({ latest, count: seenCount }) => (
+              <NetExecResultRow key={latest.id} result={latest} seenCount={seenCount} />
             ))}
           </div>
         )}

@@ -8,6 +8,8 @@ import {
   fetchWebInterfaceScreenshot,
 } from '../services/api';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
+import { latestObservations } from '../utils/latestObservations';
+import { formatRelativeTime } from '../utils/relativeTime';
 import ScreenshotLightbox from './ScreenshotLightbox';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -107,12 +109,21 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
 
   if (count === 0) return null;
 
+  // v5.241.0 — one row per scan is kept in the data; the same URL from the
+  // same tool is ONE row here (the latest), saying how many scans saw it.
+  const observed = latestObservations(
+    rows ?? [],
+    (r) => `${r.source}|${r.url}`,
+    (r) => r.last_seen ?? r.first_seen,
+  );
+
   return (
     <InspectorSection
       id="host-detail-web"
       title="Web interfaces"
       icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
-      count={count}
+      // Distinct interfaces once loaded (the prop counts per-scan rows).
+      count={rows ? observed.length : count}
     >
       <div>
         {loading && (
@@ -134,11 +145,13 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
 
         {!loading && !error && rows && rows.length > 0 && (
           <div className="divide-y divide-border">
-            {rows.map((row) => (
+            {observed.map(({ latest, count: seenCount, firstSeen }) => (
               <WebInterfaceRow
-                key={row.id}
-                row={row}
-                onViewScreenshot={() => openScreenshot(row)}
+                key={latest.id}
+                row={latest}
+                seenCount={seenCount}
+                firstSeen={firstSeen}
+                onViewScreenshot={() => openScreenshot(latest)}
               />
             ))}
           </div>
@@ -161,6 +174,9 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
 
 interface RowProps {
   row: WebInterface;
+  /** Observations of this URL by this tool across scans; `row` is the latest. */
+  seenCount?: number;
+  firstSeen?: string | null;
   onViewScreenshot: () => void;
 }
 
@@ -254,7 +270,7 @@ const fmtBytes = (n: number): string => {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
+const WebInterfaceRow: React.FC<RowProps> = ({ row, seenCount = 1, firstSeen = null, onViewScreenshot }) => {
   const isHttps = (row.protocol || '').toLowerCase() === 'https';
   const tls = summarizeTls(row.tls_info);
   return (
@@ -320,6 +336,17 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
               favicon {row.favicon_hash}
             </span>
           )}
+          {/* When it was observed — and, for a re-scanned URL, that the row is
+              the latest of several rather than the only one. */}
+          <span
+            className="shrink-0 text-caption text-muted-foreground"
+            title={seenCount > 1
+              ? `Latest of ${seenCount} observations by ${row.source}${firstSeen ? `, first ${new Date(firstSeen).toLocaleString()}` : ''}. The details shown are the latest.`
+              : row.last_seen ?? undefined}
+          >
+            {formatRelativeTime(row.last_seen ?? row.first_seen ?? null, { fallback: 'time unknown' })}
+            {seenCount > 1 && ` · seen in ${seenCount} scans`}
+          </span>
         </div>
         {row.technologies && row.technologies.length > 0 && (
           <div className="flex flex-wrap gap-xxs">
