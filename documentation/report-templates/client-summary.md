@@ -63,7 +63,7 @@ numbers here — those belong in §3.}}
 
 <!--
 For each: assist_list_hosts with a q= that isolates it, then
-assist_get_host_findings on the affected hosts for the evidence.
+assist_get_host_vulnerabilities on the affected hosts for the evidence.
 Order by what you would fix first, not by severity label alone — an
 internet-reachable medium can outrank an isolated critical, and saying so is
 the value you add over a scanner.

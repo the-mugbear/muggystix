@@ -33,7 +33,7 @@ be able to re-run them rather than reconstruct your reasoning.
 ## Unowned critical findings
 
 <!-- assist_list_hosts q="has:critical AND assigned:none", then
-     assist_get_host_findings per host for the evidence. -->
+     assist_get_host_vulnerabilities per host for the evidence. -->
 
 | Host | Finding | Evidence | Suggested owner |
 |---|---|---|---|

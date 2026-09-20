@@ -47,7 +47,7 @@ each phase:
 | Work | Opened by | Tools |
 |---|---|---|
 | Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
-| Reconnaissance | `start_recon {scope_id}` | scope context, subnets, upload-job polling, summary, completion — each takes an optional `recon_session_id` for a session with more than one open run (v2.343.2) |
+| Reconnaissance | `start_recon {scope_id}` | scope context, subnets, in-scope domains (`recon_list_domains`), upload-job polling, summary, completion — each takes an optional `recon_session_id` for a session with more than one open run (v2.343.2) |
 | Plan generation | `create_test_plan {title}` | entry drafting, validation, submit-for-approval |
 | Execution | `start_execution {plan_id}` (plan must be approved) | execution context, sanity checks, test results, completion |
 
@@ -110,7 +110,9 @@ Two things an assist agent is routinely asked for, and how each is served:
   operator's machine**, in the working directory the agent already reads and
   writes. BlueStick hosts no templates and stores no finished report; its job is
   the data (`assist_count_hosts` for numbers, `assist_list_hosts` with a `q=` to
-  isolate a set, `assist_get_host_findings` for the evidence behind a claim, and
+  isolate a set, `assist_get_host_vulnerabilities` for the evidence behind a claim
+  (raw scanner observations on the host — not triaged findings; it was named
+  `assist_get_host_findings` before the vocabulary was fixed), and
   the `report-context.ndjson` download when the report spans more hosts than is
   sensible one at a time). The finished document is written next to the template.
   Copyable starting points live in [report-templates/](report-templates/).
@@ -118,10 +120,14 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Two tools are offered to every workflow: **`agent_identity`** (what am I, what
-may I write, when does my key expire) and **`suggest_tool`** (record a request
-for a tool the approved set doesn't cover). `read_agent_guide` and
-`list_approved_tools` are likewise universal.
+Every session sees the WHOLE catalogue (55 tools, about 51 KB / ~13k tokens as
+`tools/list` returns it) — nothing is filtered by workflow since v2.337.0.
+Eight of those belong to the session rather than to any phase:
+**`agent_identity`** (what am I, what may I write, when does my key expire),
+**`session_renew`** (same key, later deadline), **`end_session`**,
+**`record_environment`** (the one probe), **`read_agent_guide`**,
+**`list_approved_tools`**, **`suggest_tool`** (record a request for a tool the
+approved set doesn't cover) and **`submit_feedback`**.
 
 **The MCP layer makes no authorisation decision.** A `tools/call` loops back
 into the real `/agent/*` route forwarding the caller's key; that endpoint
@@ -146,6 +152,14 @@ The server `instructions` point at all of them with `curl`.
 
 ## 3. Connecting a client
 
+**Configure ONE server, named `bluestick`, with one key (`BLUESTICK_API_KEY`
+where the client reads it from the environment).** Before v2.337.0 an operator
+connected up to four (`bluestick-recon` / `-plan` / `-exec` / `-assist`); those
+names are gone, and a stale entry under one of them will simply fail to
+authenticate. Three clients have a recipe — VS Code Copilot, Claude Code and
+Codex. Cursor's was removed in v2.275.0 because its config shape was never
+verified against a real install.
+
 The Start dialogs (assist, recon, plan generation, execution) emit ready-to-paste
 config per client, built by `app/services/mcp_client_setup_service.py`. The
 reference page shows the same recipes with `<your-session-key>` in place of a
@@ -156,7 +170,7 @@ Clients disagree on config shape, which is why one blob can't serve them:
 
 | Client | Shape | Notes |
 |---|---|---|
-| VS Code Copilot | `.vscode/mcp.json`, servers under **`servers`** | supports `${input:…}` to keep the key out of the file |
+| VS Code Copilot | `.vscode/mcp.json`, servers under **`servers`** | the emitted file embeds a LIVE key — keep `.vscode/mcp.json` out of version control |
 | Claude Code | `claude mcp add --transport http …`, config uses **`mcpServers`** | `-s local` keeps the key out of the repo |
 | Codex | `codex mcp add --url … --bearer-token-env-var` | the only client where the key never touches a config file |
 
@@ -277,7 +291,8 @@ as-is).
 ### The approved-tool set
 
 Separate from the MCP registry, `tool_registry` is the table of **tools BlueStick
-knows about** — 61 seeded from `app/data/tool_registry_seed.json`, rendered for
+knows about** — seeded from `app/data/tool_registry_seed.json` (63 entries at
+v2.370; the number moves, the file is the source), rendered for
 humans at `/reference/tools` and filtered to the `approved` subset for agents at
 `GET /api/v1/references/tools?status=approved`.
 

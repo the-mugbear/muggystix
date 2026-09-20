@@ -11,8 +11,14 @@ questions come up. It records what exists, what's queued, what is deliberately
 *not* a tool, and why.
 
 Mechanically, a tool is a declarative mapping onto an HTTP endpoint
-(`mcp_tools.py` → an `/agent/assist/*` route); the MCP layer makes no
-authorization decision. See [MCP.md](MCP.md) §1 for the dispatch path.
+(`mcp_tools.py` → an `/api/v1/agent/*` route — reads under `/agent/assist/*`,
+the three writes under `/agent/hosts/*`); the MCP layer makes no authorization
+decision. See [MCP.md](MCP.md) §1 for the dispatch path.
+
+**Scope of this document:** the assist READ surface. The three writes —
+`assist_add_note`, `assist_set_follow`, `assist_patch_host` — exist and are
+allowed exactly when the operator's project role permits writes; they were not
+derived by this exercise and are not analysed here.
 
 ---
 
@@ -22,10 +28,16 @@ Every tool is text in the model's context on every session.
 
 | | tools | payload |
 |---|---|---|
-| Full catalog (all workflows) | 48 | ~40 KB (~10k tokens) |
-| An assist session sees | 27 | ~22 KB (~5.4k tokens) |
+| The catalogue — what EVERY session sees | 55 | ~51 KB (~13k tokens) |
+| of which `assist_*` | 24 | — |
 
-*(Measured after P2 via `tool_list_payload(workflow="assist")`, not estimated.)*
+*(Measured at v2.370 via `tool_list_payload()`, not estimated.)*
+
+**This constraint got tighter, not looser, in v2.337.0.** When this was first
+written a session saw only its own workflow's tools (27 for assist, ~22 KB of a
+48-tool catalogue). The per-workflow filter was removed with the per-workflow
+keys: one session does every kind of work, so every session now pays for every
+tool. A tool added for assist is context spent by a recon run too.
 
 That is affordable now and it grows linearly with the tool count. So the test
 for a new tool is **"is this a distinct question shape?"** — not "is this a
@@ -134,12 +146,13 @@ Largely done. This is the stage the surface was originally built for.
 |---|---|---|
 | Which hosts match | `assist_list_hosts` (`q=` DSL) | **have** |
 | One host in detail | `assist_get_host` | **have** |
-| Findings on a host / across the project | `assist_get_host_findings`, `assist_list_findings` | **have** |
+| Scanner observations on a host / findings across the project | `assist_get_host_vulnerabilities` (raw scanner rows, not triaged findings — named `assist_get_host_findings` until the vocabulary was fixed), `assist_list_findings` | **have** |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` | **have** |
 | What the team tested, and what it showed | `assist_get_host_testing` | **have** |
 | What values this project uses | `assist_get_vocabulary` | **have** |
 | Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
 | What a host is actually serving on the web | `assist_get_host` → `web_interfaces` | **have** (2.297.0) |
+| Every web interface on a host, past the cap on host detail (`web_interfaces_truncated`) | `assist_list_host_web_interfaces` | **have** (2.343.3) |
 
 **`assist_list_ingestion_issues`** matters more than it sounds: without it, "no
 data for that range" is indistinguishable from "the upload didn't parse", and
@@ -266,15 +279,20 @@ prompt 1.56.0), as **one** new tool rather than three:
 **P3 — needs design, not a wrapper.**
 
 8. Time-series: "what changed since the last scan / last week". Buildable from
-   `HostScanHistory` + finding status history; nothing computes it today.
+   `HostScanHistory` + finding status history. **Partly answered without a tool
+   (v2.363.0):** the host query DSL gained time windows — `firstseen:"A..B"`,
+   `changedsince:`, `vulnsince:"critical@A..B"` — so "which hosts are new /
+   changed / newly critical since X" is a `q=` filter on `assist_list_hosts`
+   (review-rule case 1). What is still uncomputed is a project-level delta
+   summary.
 
-The surface sits at **27 tools / ~22 KB** — under the ~29 this section
-predicted, because two of the three P2 items turned out not to be tools at all:
-one folded into an existing endpoint, one is a payload field plus a download.
-That is the ceiling I would want to stop at without revisiting the
-specific-vs-general trade-off in §"context is not free". **P3 must not be a
-28th tool by reflex** — check first whether "what changed" belongs on
-`assist_get_posture` as a delta block.
+The read surface is **24 `assist_*` tools** inside a 55-tool catalogue. Two of
+the three P2 items turned out not to be tools at all: one folded into an
+existing endpoint, one is a payload field plus a download. With the
+per-workflow filter gone there is no longer an "assist budget" to stay under —
+the ceiling is the whole catalogue, shared with recon, planning and execution.
+**P3 must not be another tool by reflex** — check first whether "what changed"
+belongs on `assist_get_posture` as a delta block.
 
 ---
 

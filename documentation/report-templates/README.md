@@ -14,7 +14,7 @@ BlueStick hosts or serves. The workflow is:
    through the assist tools, and writes the finished document next to it.
 
 BlueStick's part is the **data**: `assist_count_hosts` for every number,
-`assist_list_hosts` with a `q=` query to isolate a set, `assist_get_host_findings`
+`assist_list_hosts` with a `q=` query to isolate a set, `assist_get_host_vulnerabilities`
 for the evidence behind a claim, and the `report-context.ndjson` download when a
 report spans more hosts than is sensible to fetch one at a time.
 

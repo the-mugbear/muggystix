@@ -1,5 +1,22 @@
 # Agent surface consolidation — one surface, the user's own permissions
 
+> **HISTORICAL — a decision record, not current reference.** It records the
+> v2.30x consolidation as it was reasoned and decided at the time, in the
+> present tense of that time. **Its two concluding decisions were both reversed
+> in v2.337.0:** the workflow guards Phase 6 voted to keep
+> (`require_plan_scope`, `require_plan_generation_scope`,
+> `require_execution_session_scope`, `require_recon_scope`,
+> `require_assist_scope`) were removed, and so was the per-workflow `tools/list`
+> filter it cited as the surviving benefit. Today a key binds to **one
+> project-scoped `AgentSession`** and does whatever its operator's project role
+> allows; every session sees the whole tool catalogue. Statements below such as
+> "today a key is scoped to one of four workflows", "61 endpoints", "48 tools /
+> 27 for a scoped set", "keep the guards" and the capability snippets describe
+> the past. For the current surface read `MCP.md` and `AGENTS.md` (the
+> contract agents are served). Kept because the reasoning — especially what
+> each guard turned out to be load-bearing for — is still the best account of
+> why the surface looks the way it does.
+
 The agent API has its own authorization model. It should not.
 
 Today a key is scoped to one of four workflows (plan generation, execution,
@@ -501,6 +518,12 @@ data egress its own JWT session is denied. The end state needs a minimum *read*
 role per route, not a single membership check.
 
 ### Phase 6 — Audited, and the guard removal is **cancelled**
+
+> **Superseded in v2.337.0.** The guards *were* removed after this was written
+> (`backend/app/api/deps.py` records it). What replaced the boundary they held
+> is object-level: a plan must be human-approved, one active run per plan, and
+> a run belongs to the session that opened it.
+
 The precondition from Phase 5 was an audit of what each workflow check is
 actually load-bearing for, because `write:execution` turned out to be silently
 holding up the cross-workflow boundary. That audit says: **keep the guards.**

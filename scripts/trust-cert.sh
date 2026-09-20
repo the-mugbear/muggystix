@@ -192,7 +192,7 @@ when the client process STARTS: exporting them into a running client, or
 restarting it from a shell that never sourced the profile, changes nothing.
 
 Verify — "configured" and "connected" are different checks:
-    claude mcp list      # Claude Code: bluestick-* should report Connected
+    claude mcp list      # Claude Code: \`bluestick\` should report Connected
     codex mcp list       # Codex: shows the server is CONFIGURED only;
                          #   inside \`codex\`, /mcp shows whether it connected
     VS Code              # "MCP: List Servers" (command palette) shows Running
