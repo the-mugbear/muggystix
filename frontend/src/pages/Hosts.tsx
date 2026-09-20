@@ -62,6 +62,7 @@ import { cn } from '../utils/cn';
 import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { useConfirm } from '../hooks/useConfirm';
+import { hostConditionChips } from '../utils/hostConditionChips';
 import {
   hostFiltersFromUrl,
   type HostSortOption,
@@ -212,9 +213,8 @@ export default function Hosts() {
   const [updatingHostId, setUpdatingHostId] = useState<number | null>(null);
   // v4.51.0 — followFilter + onlyWithNotes now live inside `filters`
   // (see HostFilterOptions).  Reads use `filters.followFilter ?? 'all'`
-  // and `filters.onlyWithNotes === true`; writes go through
-  // setFollowFilter/setOnlyWithNotes helpers below so the chip
-  // handlers and saved-view restore paths still feel like setters.
+  // and `filters.onlyWithNotes === true`; the review chips write through
+  // setFollowFilter below.
   const followFilter: 'all' | 'none' | FollowStatus = filters.followFilter ?? 'all';
   const onlyWithNotes = filters.onlyWithNotes === true;
   const setFollowFilter = useCallback((next: 'all' | 'none' | FollowStatus) => {
@@ -224,17 +224,6 @@ export default function Hosts() {
         delete updated.followFilter;
       } else {
         updated.followFilter = next;
-      }
-      return updated;
-    });
-  }, [setFilters]);
-  const setOnlyWithNotes = useCallback((next: boolean) => {
-    setFilters((previous) => {
-      const updated = { ...previous };
-      if (next) {
-        updated.onlyWithNotes = true;
-      } else {
-        delete updated.onlyWithNotes;
       }
       return updated;
     });
@@ -271,46 +260,6 @@ export default function Hosts() {
     }
     return map;
   }, [filterData?.scans]);
-
-  // v2.86.0 — extended to include 'tags' and 'subnetLabels' so the
-  // per-chip ✕ delete button can remove individual tag/label values.
-  // Pre-v2.86.0 the type listed only the legacy six array filters; the
-  // chip-render block at :973 already drew tag chips but ✕ was a no-op
-  // because removeListFilterValue couldn't accept the key.
-  type ArrayFilterKeys =
-    | 'ports' | 'services' | 'portStates' | 'subnets' | 'scanIds' | 'tech'
-    | 'tags' | 'subnetLabels' | 'sites'
-    | 'orgs' | 'asns' | 'countries';
-
-  const clearFilterKey = useCallback(
-    (key: keyof HostFilterOptions) => {
-      setFilters((previous) => {
-        if (previous[key] === undefined) return previous;
-        const updated = { ...previous } as HostFilterOptions;
-        delete (updated as any)[key];
-        return updated;
-      });
-    },
-    [setFilters],
-  );
-
-  const removeListFilterValue = useCallback(
-    (key: ArrayFilterKeys, value: string) => {
-      setFilters((previous) => {
-        const current = (previous[key] as string[] | undefined) ?? [];
-        if (!current.includes(value)) return previous;
-        const nextList = current.filter((item) => item !== value);
-        const updated = { ...previous } as HostFilterOptions;
-        if (nextList.length > 0) {
-          (updated as any)[key] = nextList;
-        } else {
-          delete (updated as any)[key];
-        }
-        return updated;
-      });
-    },
-    [setFilters],
-  );
 
   const clearAllFilters = useCallback(() => {
     setFilters({});
@@ -1114,217 +1063,31 @@ export default function Hosts() {
   // -------------------------------------------------------------------------
   // Active-filter chips (derived from current filter state).
   // -------------------------------------------------------------------------
-  const activeFilterChips = useMemo(() => {
-    const chips: Array<{ key: string; label: string; onDelete?: () => void }> = [];
-    const titleCase = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
-
-    // The DSL query narrows results like any other filter, so it must be part
-    // of the active-filter model — otherwise a query-only view is described as
-    // the full inventory, its zero-result state shows the onboarding prompt,
-    // and Save view stays disabled (every consumer keys on activeFilterChips).
-    if (filters.query?.trim())
-      chips.push({
-        key: 'query',
-        label: `Query: ${filters.query.trim()}`,
-        onDelete: () => clearFilterKey('query'),
-      });
-    if (filters.search)
-      chips.push({
-        key: 'search',
-        label: `Search: ${filters.search}`,
-        onDelete: () => clearFilterKey('search'),
-      });
-    if (filters.state)
-      chips.push({
-        key: 'state',
-        label: `State: ${titleCase(filters.state)}`,
-        onDelete: () => clearFilterKey('state'),
-      });
-    filters.ports?.forEach((portValue) => {
-      chips.push({
-        key: `port-${portValue}`,
-        label: `Port: ${portValue}`,
-        onDelete: () => removeListFilterValue('ports', portValue),
-      });
-    });
-    filters.services?.forEach((service) => {
-      chips.push({
-        key: `service-${service}`,
-        label: `Service: ${service}`,
-        onDelete: () => removeListFilterValue('services', service),
-      });
-    });
-    filters.portStates?.forEach((state) => {
-      chips.push({
-        key: `port-state-${state}`,
-        label: `Port state: ${titleCase(state)}`,
-        onDelete: () => removeListFilterValue('portStates', state),
-      });
-    });
-    if (filters.hasOpenPorts !== undefined)
-      chips.push({
-        key: 'hasOpenPorts',
-        label: filters.hasOpenPorts ? 'Has open ports' : 'No open ports',
-        onDelete: () => clearFilterKey('hasOpenPorts'),
-      });
-    if (filters.osFilter)
-      chips.push({
-        key: 'osFilter',
-        label: `OS: ${filters.osFilter}`,
-        onDelete: () => clearFilterKey('osFilter'),
-      });
-    if (filters.hasWebInterface !== undefined)
-      chips.push({
-        key: 'hasWebInterface',
-        label: filters.hasWebInterface ? 'Has web interface' : 'No web interface',
-        onDelete: () => clearFilterKey('hasWebInterface'),
-      });
-    filters.tech?.forEach((techValue) => {
-      chips.push({
-        key: `tech-${techValue}`,
-        label: `Tech: ${techValue}`,
-        onDelete: () => removeListFilterValue('tech', techValue),
-      });
-    });
-    filters.subnets?.forEach((subnet) => {
-      chips.push({
-        key: `subnet-${subnet}`,
-        label: `Subnet: ${subnet}`,
-        onDelete: () => removeListFilterValue('subnets', subnet),
-      });
-    });
-    filters.scanIds?.forEach((scanId) => {
-      const display = scanLookup.get(scanId)?.label || `Scan #${scanId}`;
-      chips.push({
-        key: `scan-${scanId}`,
-        label: `Scan: ${display}`,
-        onDelete: () => removeListFilterValue('scanIds', scanId),
-      });
-    });
-    // v2.86.0 — tag + subnet-label chips.  Look up the display name
-    // from filterData so the chip reads "Tag: prod" instead of "Tag:
-    // 5" (which is what the URL/filter state actually holds).  Empty
-    // filterData (loading) falls back to the raw id — the chip stays
-    // useful, just terse.
-    filters.tags?.forEach((tagId) => {
-      const name = filterData?.tags?.find((t) => String(t.id) === tagId)?.name;
-      chips.push({
-        key: `tag-${tagId}`,
-        label: `Tag: ${name ?? tagId}`,
-        onDelete: () => removeListFilterValue('tags', tagId),
-      });
-    });
-    filters.subnetLabels?.forEach((labelId) => {
-      const name = filterData?.subnet_labels?.find((l) => String(l.id) === labelId)?.name;
-      chips.push({
-        key: `subnet-label-${labelId}`,
-        label: `Subnet label: ${name ?? labelId}`,
-        onDelete: () => removeListFilterValue('subnetLabels', labelId),
-      });
-    });
-    filters.sites?.forEach((site) => {
-      chips.push({
-        key: `site-${site}`,
-        label: `Site: ${site}`,
-        onDelete: () => removeListFilterValue('sites', site),
-      });
-    });
-    filters.orgs?.forEach((org) => {
-      chips.push({
-        key: `org-${org}`,
-        label: `Owner: ${org}`,
-        onDelete: () => removeListFilterValue('orgs', org),
-      });
-    });
-    filters.asns?.forEach((asn) => {
-      const name = filterData?.asns?.find((a) => String(a.asn) === asn)?.as_name;
-      chips.push({
-        key: `asn-${asn}`,
-        label: `ASN: AS${asn}${name ? ` (${name})` : ''}`,
-        onDelete: () => removeListFilterValue('asns', asn),
-      });
-    });
-    filters.countries?.forEach((country) => {
-      chips.push({
-        key: `country-${country}`,
-        label: `Country: ${country}`,
-        onDelete: () => removeListFilterValue('countries', country),
-      });
-    });
-    if (filters.firstSeenInSelectedScans)
-      chips.push({
-        key: 'firstSeenInSelectedScans',
-        label: 'First discovered in selected scans',
-        onDelete: () => clearFilterKey('firstSeenInSelectedScans'),
-      });
-    if (filters.hasCriticalVulns)
-      chips.push({
-        key: 'hasCriticalVulns',
-        label: 'Critical vulnerabilities',
-        onDelete: () => clearFilterKey('hasCriticalVulns'),
-      });
-    if (filters.hasHighVulns)
-      chips.push({
-        key: 'hasHighVulns',
-        label: 'High vulnerabilities',
-        onDelete: () => clearFilterKey('hasHighVulns'),
-      });
-    if (filters.hasMediumVulns)
-      chips.push({
-        key: 'hasMediumVulns',
-        label: 'Medium vulnerabilities',
-        onDelete: () => clearFilterKey('hasMediumVulns'),
-      });
-    if (filters.hasLowVulns)
-      chips.push({
-        key: 'hasLowVulns',
-        label: 'Low vulnerabilities',
-        onDelete: () => clearFilterKey('hasLowVulns'),
-      });
-    if (filters.hasExploitAvailable)
-      chips.push({
-        key: 'hasExploitAvailable',
-        label: 'Has PoC / exploit available',
-        onDelete: () => clearFilterKey('hasExploitAvailable'),
-      });
-    if (filters.hasTestExecution)
-      chips.push({
-        key: 'hasTestExecution',
-        label: 'Has been tested',
-        onDelete: () => clearFilterKey('hasTestExecution'),
-      });
-    if (filters.outOfScopeOnly)
-      chips.push({
-        key: 'outOfScopeOnly',
-        label: 'Out-of-scope hosts',
-        onDelete: () => clearFilterKey('outOfScopeOnly'),
-      });
-    if (followFilter !== 'all') {
-      const followLabel =
-        followFilter === 'none'
-          ? 'Not reviewed'
-          : FOLLOW_STATUS_OPTIONS.find((option) => option.value === followFilter)?.label ??
-            titleCase(followFilter);
-      chips.push({
-        key: 'followFilter',
-        label: `Review: ${followLabel}`,
-        onDelete: () => setFollowFilter('all'),
-      });
-    }
-    if (onlyWithNotes)
-      chips.push({
-        key: 'onlyWithNotes',
-        label: 'With notes only',
-        onDelete: () => setOnlyWithNotes(false),
-      });
-    if (filters.assignedToMe)
-      chips.push({
-        key: 'assignedToMe',
-        label: 'Assigned to me',
-        onDelete: () => clearFilterKey('assignedToMe'),
-      });
-    return chips;
-  }, [filters, clearFilterKey, removeListFilterValue, scanLookup, filterData]);
+  // One chip per CONDITION (utils/hostConditionChips.ts) — the strip reads as
+  // "matching all of", so values that are alternatives share a chip.  Every
+  // consumer that asks "is anything applied?" keys on this list too.
+  const activeFilterChips = useMemo(
+    () =>
+      hostConditionChips(filters, {
+        scan: (id) => scanLookup.get(id)?.label,
+        // The filter state holds ids; the chip shows the name once facets load.
+        tag: (id) => filterData?.tags?.find((t) => String(t.id) === id)?.name,
+        subnetLabel: (id) => filterData?.subnet_labels?.find((l) => String(l.id) === id)?.name,
+        asn: (asn) => filterData?.asns?.find((a) => String(a.asn) === asn)?.as_name ?? undefined,
+        followStatus: (value) => FOLLOW_STATUS_OPTIONS.find((o) => o.value === value)?.label,
+      }).map((chip) => ({
+        ...chip,
+        onDelete: () => {
+          setFilters((previous) => {
+            const updated = { ...previous } as Record<string, unknown>;
+            chip.clearKeys.forEach((key) => delete updated[key]);
+            return updated as HostFilterOptions;
+          });
+          setPage(0);
+        },
+      })),
+    [filters, scanLookup, filterData],
+  );
 
 
   useEffect(() => {
@@ -1576,7 +1339,7 @@ export default function Hosts() {
                     setPage(0);
                   }}
                 >
-                  <SelectTrigger id="hosts-sort" className="w-[14rem]">
+                  <SelectTrigger id="hosts-sort" className="h-9 w-[15rem] text-metadata">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1630,7 +1393,7 @@ export default function Hosts() {
                   key={chip.key}
                   className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-card px-sm py-px text-caption font-medium"
                 >
-                  <span className="truncate">{chip.label}</span>
+                  <span className="truncate" title={chip.title ?? chip.label}>{chip.label}</span>
                   {chip.onDelete && (
                     <button
                       type="button"

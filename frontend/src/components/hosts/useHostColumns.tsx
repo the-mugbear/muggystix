@@ -725,13 +725,19 @@ export function useHostColumns({
                   className="line-clamp-1 max-w-full text-caption text-muted-foreground"
                   title={`Assigned: ${host.assignees!.map((a) => a.name).join(', ')}`}
                 >
-                  Owner: <span className="text-foreground">{owner}</span>
+                  {/* "Assigned", not "Owner": this is who is assessing the host,
+                      not who owns or runs it. */}
+                  Assigned: <span className="text-foreground">{owner}</span>
                   {(host.assignees?.length ?? 0) > 1 ? ` +${host.assignees!.length - 1}` : ''}
                 </span>
               )}
-              <span className="text-caption text-muted-foreground">
-                {noteCount} note{noteCount === 1 ? '' : 's'}
-              </span>
+              {/* A count is shown when it says something; "0 notes" on nearly
+                  every row was noise. */}
+              {noteCount > 0 && (
+                <span className="text-caption text-muted-foreground">
+                  {noteCount} note{noteCount === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
           );
         },
