@@ -40,7 +40,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import logger from '../utils/logger';
-import { HUBS, type Hub } from '../config/navigation';
+import { HUBS, resolveActiveHub } from '../config/navigation';
 
 interface LayoutProps {
   children: ReactNode;
@@ -80,25 +80,6 @@ const DRAWER_WIDTH_PX = `${DRAWER_WIDTH}px`;
 // rendered "⌘K" on Mac — the help text disagreed with the visible
 // chrome on the very platform where the discrepancy mattered.
 import { isMacLike } from '../utils/platform';
-
-/**
- * Resolve the active hub from a route.  Matches the hub's landing path
- * OR any of its child paths (including descendants via prefix match).
- * Defaults to Operations when nothing matches — covers /portfolio,
- * /force-change-password, deep test-plan / host detail routes, etc.
- */
-function resolveActiveHub(pathname: string): Hub {
-  for (const hub of HUBS) {
-    if (hub.path !== '/operations' && pathname === hub.path) return hub;
-    for (const child of hub.children) {
-      if (pathname === child.path || pathname.startsWith(child.path + '/')) {
-        return hub;
-      }
-    }
-  }
-  // Operations is the catch-all when no other hub matches.
-  return HUBS[0];
-}
 
 export default function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
@@ -496,21 +477,25 @@ export default function Layout({ children }: LayoutProps) {
       </div>
 
       <nav
-        className="flex-1 overflow-y-auto px-xs py-xs"
+        className="flex flex-1 flex-col overflow-y-auto px-xs py-xs"
         aria-label="Primary navigation"
       >
-        {HUBS.map((hub) => {
+        {HUBS.map((hub, index) => {
           if (!hasPermission(hub.requiredRole)) return null;
           const selected = hub.id === activeHub.id;
           const { Icon } = hub;
+          // Utility hubs (Settings, Reference) sit at the foot, under a rule:
+          // they serve the project workflow above, they are not a step in it.
+          const startsUtility = hub.placement === 'utility' && HUBS[index - 1]?.placement !== 'utility';
           return (
-            // v4.58.0 (UX·5) — plain <NavLink> with no onClick
-            // hijack.  Always navigates to hub.path so the visible
-            // destination is the actual destination; modifier-clicks
-            // ("Open in new tab", middle-click) still work via the
-            // native link behaviour the v2.44.1 fix introduced.
+            <React.Fragment key={hub.id}>
+            {startsUtility && <div role="separator" className="mb-xs mt-auto border-t border-border pt-xs" />}
+            {/* v4.58.0 (UX·5) — plain <NavLink> with no onClick
+                hijack.  Always navigates to hub.path so the visible
+                destination is the actual destination; modifier-clicks
+                ("Open in new tab", middle-click) still work via the
+                native link behaviour the v2.44.1 fix introduced. */}
             <NavLink
-              key={hub.id}
               to={hub.path}
               className={cn(
                 // Left-edge accent rail on active gives the nav a
@@ -533,6 +518,7 @@ export default function Layout({ children }: LayoutProps) {
               />
               <span className="truncate">{hub.label}</span>
             </NavLink>
+            </React.Fragment>
           );
         })}
       </nav>

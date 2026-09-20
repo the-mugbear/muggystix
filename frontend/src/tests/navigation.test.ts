@@ -17,6 +17,7 @@ import {
   HUBS,
   NAV_COMMANDS,
   HUB_DEFS,
+  resolveActiveHub,
 } from '../config/navigation';
 
 /**
@@ -62,6 +63,32 @@ describe('navigation manifest', () => {
         expect(roleByPath[child.path]).toBe(child.requiredRole);
       }
     }
+  });
+
+  // v5.253.0 — Reference is its own sidebar destination, not a Settings tab.
+  it('Reference is a hub that stays highlighted on every page it owns', () => {
+    const settings = HUBS.find((h) => h.id === 'settings')!;
+    expect(settings.children.map((c) => c.path)).not.toContain('/reference');
+    // Still in the command palette.
+    expect(NAV_COMMANDS.map((c) => c.path)).toContain('/reference');
+
+    for (const path of [
+      '/reference', '/reference/user-guide/triage', '/reference/mcp', '/reference/sbom',
+      // Two of its pages live outside /reference/ — a prefix rule would miss them.
+      '/tool-reference', '/default-credentials',
+    ]) {
+      expect(resolveActiveHub(path).id, path).toBe('reference');
+    }
+    // A prefix is a path segment, not a string prefix.
+    expect(resolveActiveHub('/reference-data').id).toBe('operations');
+    expect(resolveActiveHub('/project-settings').id).toBe('settings');
+    expect(resolveActiveHub('/hosts/12').id).toBe('inventory');
+  });
+
+  it('utility hubs come last, so the sidebar draws one rule above them', () => {
+    const placements = HUBS.map((h) => h.placement === 'utility');
+    expect(placements.indexOf(true)).toBeGreaterThan(0);
+    expect(placements.slice(placements.indexOf(true)).every(Boolean)).toBe(true);
   });
 
   it('command-palette entries are a subset of manifest pages with matching roles', () => {

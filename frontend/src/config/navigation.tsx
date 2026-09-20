@@ -16,6 +16,7 @@
  */
 import React from 'react';
 import {
+  BookOpen,
   Bot,
   Compass,
   Folder,
@@ -24,7 +25,6 @@ import {
   KeyRound,
   MessageCircleQuestion,
   MessageSquareHeart,
-  Network as NetworkIcon,
   Plug,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -55,7 +55,8 @@ export type HubId =
   | 'posture'
   | 'workflows'
   | 'collaboration'
-  | 'settings';
+  | 'settings'
+  | 'reference';
 
 /** Presentation for a page's command-palette entry (Pages group). */
 interface PalettePresentation {
@@ -93,6 +94,19 @@ export interface HubDef {
    * (e.g. Inventory lists Scans first but Hosts is the natural landing).
    */
   defaultChildPath?: string;
+  /**
+   * Paths (and everything under them) that belong to this hub WITHOUT being
+   * tab-strip children — Reference's pages are cards on its landing, and two of
+   * them (`/tool-reference`, `/default-credentials`) sit outside `/reference/`.
+   * Drives only the sidebar's "you are here".
+   */
+  ownedPaths?: string[];
+  /**
+   * `utility` hubs sit at the foot of the sidebar, apart from the project
+   * workflow (v5.253.0): they support the work from anywhere, they are not a
+   * step in it.
+   */
+  placement?: 'utility';
 }
 
 // ---------------------------------------------------------------------------
@@ -100,9 +114,9 @@ export interface HubDef {
 // ---------------------------------------------------------------------------
 
 /**
- * The five top-level hubs.  Operations is its own landing page (no child
- * tab strip); the other four render a secondary tab strip of their child
- * pages (those NAV_PAGES whose `hub` matches).
+ * The top-level hubs.  Operations, Posture and Reference are their own landing
+ * pages; the others render a secondary tab strip of their child pages (those
+ * NAV_PAGES whose `hub` matches).  Reference has no strip at all.
  */
 export const HUB_DEFS: HubDef[] = [
   { id: 'operations', label: 'Operations', path: '/operations', requiredRole: 'viewer', Icon: Sparkles },
@@ -112,7 +126,15 @@ export const HUB_DEFS: HubDef[] = [
   { id: 'posture', label: 'Posture', path: '/posture', requiredRole: 'viewer', Icon: Gauge },
   { id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
-  { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon },
+  { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon, placement: 'utility' },
+  // v5.253.0 — its own destination, not a Settings tab: guides, the tool
+  // reference, default credentials and the API docs are reading material used
+  // from every page; under Settings they read as configuration and were hard to
+  // find.  Its own landing page (no tab strip), like Operations.
+  {
+    id: 'reference', label: 'Reference', path: '/reference', requiredRole: 'viewer', Icon: BookOpen,
+    placement: 'utility', ownedPaths: ['/reference', '/tool-reference', '/default-credentials'],
+  },
 ];
 
 /**
@@ -241,8 +263,9 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: SettingsIcon, keywords: ['account', 'password'], order: 16 },
   },
   {
-    id: 'reference', path: '/reference', label: 'Reference', requiredRole: 'viewer', hub: 'settings',
-    palette: { Icon: NetworkIcon, keywords: ['docs', 'help', 'guide'], order: 15 },
+    // Palette-only: the sidebar entry is the `reference` HUB (see HUB_DEFS).
+    id: 'reference', path: '/reference', label: 'Reference', requiredRole: 'viewer',
+    palette: { Icon: BookOpen, keywords: ['docs', 'help', 'guide'], order: 15 },
   },
   {
     // Palette-only (no hub): the page is a card under the Reference hub, but it
@@ -285,6 +308,9 @@ export interface Hub {
   children: HubChild[];
   /** Designated redirect target (see HubDef.defaultChildPath). */
   defaultChildPath?: string;
+  /** See HubDef.ownedPaths / HubDef.placement. */
+  ownedPaths: string[];
+  placement?: 'utility';
 }
 
 export interface NavCommand {
@@ -308,7 +334,30 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
     requiredRole: p.requiredRole,
   })),
   defaultChildPath: hub.defaultChildPath,
+  ownedPaths: hub.ownedPaths ?? [],
+  placement: hub.placement,
 }));
+
+/**
+ * Resolve the active hub from a route.  Matches the hub's landing path, any
+ * of its child paths, or any path it owns (descendants included).  Defaults to
+ * Operations when nothing matches — covers /portfolio,
+ * /force-change-password, deep test-plan / host detail routes, etc.
+ */
+export function resolveActiveHub(pathname: string): Hub {
+  for (const hub of HUBS) {
+    if (hub.path !== '/operations' && pathname === hub.path) return hub;
+    // Children and owned paths match the same way (Reference owns pages that
+    // are cards on its landing, not tabs — two of them outside /reference/).
+    for (const path of [...hub.children.map((c) => c.path), ...hub.ownedPaths]) {
+      if (pathname === path || pathname.startsWith(path + '/')) {
+        return hub;
+      }
+    }
+  }
+  // Operations is the catch-all when no other hub matches.
+  return HUBS[0];
+}
 
 /** Command-palette "Pages" entries, in their curated display order. */
 export const NAV_COMMANDS: NavCommand[] = NAV_PAGES
