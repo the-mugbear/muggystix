@@ -220,18 +220,55 @@ def start_staged_job(
     corrected format).  Raises ValueError for an unknown format."""
     if format_override is not None and format_override not in FORMATS:
         raise ValueError(f"Unknown format '{format_override}'")
-    job.format_override = format_override
-    job.source_tool = (source_tool or "").strip()[:64] or None
-    job.status = "queued"
-    job.error_message = None
-    job.last_error = None
-    job.parse_error_id = None
-    job.started_at = None
-    job.completed_at = None
-    job.message = "Queued by the operator" + (f" as {format_label(format_override)}" if format_override else "")
+    # v2.368.0 — through the shared transition layer: the row is locked, and
+    # the status + file checks happen UNDER that lock. This was a plain
+    # read-then-write, so a double start (two tabs, a double click, the review
+    # dialog plus the results page) could reset a job a worker had already
+    # claimed back to ``queued`` — and the file imported twice.
+    # Raises JobNotTransitionable (status, "file_missing" or "duplicate").
+    from app.services.ingestion_service import _transitions, ingestion_service
+
+    duplicate: Dict[str, Any] = {}
+
+    def _precondition(locked: IngestionJob) -> Optional[str]:
+        if not locked.storage_path or not Path(locked.storage_path).exists():
+            return "file_missing"
+        # The upload-time guard ran when this file arrived; since then an
+        # identical file may have been imported or queued (staged copies were
+        # not counted before this release, and a failed job can sit for days).
+        # Skipped when the operator chose "import anyway" at upload.
+        if locked.content_sha256 and not (locked.options or {}).get("allow_duplicate"):
+            found = ingestion_service._find_duplicate(
+                db, locked.project_id, locked.content_sha256, exclude_job_id=locked.id,
+            )
+            # A staged twin is not a reason to refuse: one of the two has to be
+            # startable, and whichever starts first then blocks the other.
+            if found is not None and found.job_status != STAGED_STATUS:
+                duplicate["error"] = found
+                return "duplicate"
+        return None
+
+    try:
+        started = _transitions.retry(
+            db, job.id,
+            allowed_from=(STAGED_STATUS, "failed"),
+            precondition=_precondition,
+            format_override=format_override,
+            source_tool=(source_tool or "").strip()[:64] or None,
+            parse_error_id=None,
+            message="Queued by the operator" + (f" as {format_label(format_override)}" if format_override else ""),
+        )
+    except Exception as exc:
+        db.rollback()
+        if duplicate:
+            raise duplicate["error"] from exc
+        raise
+    if started is None:  # deleted between the caller's load and the lock
+        db.rollback()
+        raise LookupError(f"Ingestion job {job.id} no longer exists")
     db.commit()
-    db.refresh(job)
-    return job
+    db.refresh(started)
+    return started
 
 
 def retention_window() -> timedelta:
@@ -335,18 +372,34 @@ def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime
     before import") so it leaves the queue but stays in Ingestion Results as
     history.  Only a ``staged`` job can be discarded; anything queued or
     later has its own cancel / dismiss."""
-    if job.status != STAGED_STATUS:
-        raise ValueError(f"Only a staged job can be discarded (current status: {job.status!r})")
+    from app.services.ingestion_service import _transitions
+    from app.services.job_transitions import JobNotTransitionable
+
     now = now or datetime.now(timezone.utc)
-    shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
-    job.status = "failed"
-    job.error_message = "Discarded before import"
-    job.message = "Discarded before import"
-    job.completed_at = now
-    job.dismissed_at = now
+    # v2.368.0 — status checked under the row lock, and the file removed only
+    # AFTER the transition is committed. It was removed first, on an unlocked
+    # read: a discard racing a start deleted the file of a job that then went
+    # to the worker.
+    try:
+        discarded = _transitions.cancel(
+            db, job.id, allowed_from=(STAGED_STATUS,), to_status="failed",
+            error_message="Discarded before import",
+            message="Discarded before import",
+            dismissed_at=now,
+        )
+    except JobNotTransitionable as exc:
+        db.rollback()
+        raise ValueError(f"Only a staged job can be discarded (current status: {exc.status!r})") from exc
+    if discarded is None:
+        db.rollback()
+        raise ValueError("Only a staged job can be discarded (the job no longer exists)")
+    discarded.completed_at = now
+    storage_path = discarded.storage_path
     db.commit()
-    db.refresh(job)
-    return job
+    if storage_path:
+        shutil.rmtree(Path(storage_path).parent, ignore_errors=True)
+    db.refresh(discarded)
+    return discarded
 
 
 def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now: Optional[datetime] = None) -> int:
@@ -354,21 +407,33 @@ def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now:
     files.  Returns how many were expired.  Called from the worker sweep."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - max_age
+    # v2.368.0 — FOR UPDATE SKIP LOCKED: a job an operator is starting right now
+    # holds its row lock and is simply not expired this sweep (Postgres
+    # re-checks ``status = 'staged'`` once it has the lock, so a job that was
+    # started a moment ago is not matched either). Unlocked, the sweep could
+    # fail a job — and delete its file — between the start's check and write.
     stale = (
         db.query(IngestionJob)
         .filter(IngestionJob.status == STAGED_STATUS, IngestionJob.created_at < cutoff)
+        .with_for_update(skip_locked=True)
         .all()
     )
+    paths = []
     for job in stale:
         job.status = "failed"
         msg = f"Staged upload expired: not started within {int(max_age.total_seconds() // 3600)} hours."
         job.error_message = msg
         job.message = msg
         job.completed_at = now
-        try:
-            shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
-        except Exception:  # pragma: no cover
-            logger.debug("could not remove staged dir for job %s", job.id, exc_info=True)
+        paths.append((job.id, job.storage_path))
     if stale:
         db.commit()
+    # Files go after the commit, never before: a rolled-back expiry must not
+    # leave a staged job without its file.
+    for job_id, storage_path in paths:
+        try:
+            if storage_path:
+                shutil.rmtree(Path(storage_path).parent, ignore_errors=True)
+        except Exception:  # pragma: no cover
+            logger.debug("could not remove staged dir for job %s", job_id, exc_info=True)
     return len(stale)

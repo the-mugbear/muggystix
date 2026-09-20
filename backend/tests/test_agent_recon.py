@@ -438,3 +438,36 @@ def test_recon_duplicate_is_refused_and_not_counted(client, db_session, recon_ke
     assert detail["job_id"] == first.json()["job_id"]
     db_session.refresh(recon_session_row)
     assert recon_session_row.uploads_submitted == 1
+
+
+def test_a_new_session_batch_is_committed_before_the_caller_can_await(db_session, test_project, recon_session_row):
+    """v2.368.0 — the worker hang. The recon upload handler is ``async`` and
+    awaits file I/O right after resolving the batch. While the new batch rode
+    the handler's open transaction, a parallel chunk with the same new label
+    blocked inside Postgres on the unique index, on the same event loop that
+    had to run for the first transaction to finish — a permanent freeze.
+
+    The fixture session cannot show a second connection's view (it lives in one
+    outer transaction), so this pins the mechanism: the helper has committed by
+    the time it returns, whether it created the batch or joined one."""
+    from app.services.scan_batch_service import get_or_create_session_batch
+
+    commits = []
+    real_commit = db_session.commit
+    db_session.commit = lambda: (commits.append(1), real_commit())[1]
+    try:
+        created = get_or_create_session_batch(
+            db_session, project_id=test_project.id,
+            recon_session_id=recon_session_row.id, label="nmap-tcp-top1000",
+        )
+        assert commits == [1], "a new batch must be committed before returning"
+        assert created not in db_session.new
+
+        joined = get_or_create_session_batch(
+            db_session, project_id=test_project.id,
+            recon_session_id=recon_session_row.id, label="nmap-tcp-top1000",
+        )
+        assert joined.id == created.id
+        assert commits == [1], "joining an existing batch writes nothing"
+    finally:
+        db_session.commit = real_commit

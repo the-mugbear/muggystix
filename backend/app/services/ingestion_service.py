@@ -46,15 +46,21 @@ class DuplicateUploadError(Exception):
     no data. Not a ValueError: callers map it to 409, not 400."""
 
     def __init__(self, *, scan_id: Optional[int] = None, job_id: Optional[int] = None,
-                 filename: Optional[str] = None):
+                 filename: Optional[str] = None, job_status: Optional[str] = None):
         self.scan_id = scan_id
         self.job_id = job_id
         self.filename = filename
-        where = f"scan #{scan_id}" if scan_id is not None else f"ingestion job #{job_id}, still processing"
+        self.job_status = job_status
         name = f" ({filename})" if filename else ""
-        super().__init__(
-            f"This exact file is already imported as {where}{name}; uploading it again would add nothing."
-        )
+        if scan_id is not None:
+            text_ = f"This exact file is already imported as scan #{scan_id}{name}"
+        elif job_status == "staged":
+            # v2.368.0 — a staged copy counts: two identical files waiting for
+            # their format review would otherwise both import.
+            text_ = f"This exact file is already uploaded as ingestion job #{job_id}{name}, waiting for its format review"
+        else:
+            text_ = f"This exact file is already imported as ingestion job #{job_id}, still processing{name}"
+        super().__init__(f"{text_}; uploading it again would add nothing.")
 
     def detail(self) -> Dict[str, object]:
         return {
@@ -63,6 +69,10 @@ class DuplicateUploadError(Exception):
             "scan_id": self.scan_id,
             "job_id": self.job_id,
         }
+
+
+# A job in one of these states makes an identical upload a duplicate.
+DUPLICATE_BLOCKING_STATUSES = ("staged", "queued", "processing")
 
 
 def carry_upload_identity(db: Session, job: IngestionJob) -> None:
@@ -348,7 +358,11 @@ class IngestionService:
             # ValueError, caught below to clean up the job dir.
             self._validate_content_matches_extension(destination, raw_name)
 
-            opts = options or {}
+            opts = dict(options or {})
+            if allow_duplicate:
+                # Remembered so a later start of this job (staged → queued, or
+                # a retry) does not re-refuse what the operator already chose.
+                opts["allow_duplicate"] = True
             if not allow_duplicate:
                 duplicate = self._find_duplicate(db, opts.get("project_id"), content_sha256)
                 if duplicate is not None:
@@ -389,6 +403,7 @@ class IngestionService:
     @staticmethod
     def _find_duplicate(
         db: Session, project_id: Optional[int], content_sha256: str,
+        exclude_job_id: Optional[int] = None,
     ) -> Optional["DuplicateUploadError"]:
         """The scan or in-flight job this exact file already is, if any.
 
@@ -416,17 +431,22 @@ class IngestionService:
         if scan is not None:
             return DuplicateUploadError(scan_id=scan.id, filename=scan.filename)
         job = (
-            db.query(IngestionJob.id, IngestionJob.original_filename)
+            db.query(IngestionJob.id, IngestionJob.original_filename, IngestionJob.status)
             .filter(
                 IngestionJob.project_id == project_id,
                 IngestionJob.content_sha256 == content_sha256,
-                IngestionJob.status.in_(("queued", "processing")),
+                # "staged" since v2.368.0: a file waiting for its format
+                # review is as much "already here" as one being parsed.
+                IngestionJob.status.in_(DUPLICATE_BLOCKING_STATUSES),
+                *([IngestionJob.id != exclude_job_id] if exclude_job_id is not None else []),
             )
             .order_by(IngestionJob.id)
             .first()
         )
         if job is not None:
-            return DuplicateUploadError(job_id=job.id, filename=job.original_filename)
+            return DuplicateUploadError(
+                job_id=job.id, filename=job.original_filename, job_status=job.status,
+            )
         return None
 
     def enqueue_job(self, job_id: int, db: Optional[Session] = None) -> None:

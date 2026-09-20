@@ -301,3 +301,114 @@ def test_staged_jobs_expire_and_their_files_go(client, db_session, test_project)
     assert old_job.status == "failed" and "expired" in old_job.error_message
     assert not old_path.exists()
     assert _job(db_session, fresh).status == "staged"
+
+
+# --- v2.368.0 — staged transitions are locked; a staged file is a duplicate ---
+# Code review findings 2 and 3. Every test below was run against the pre-fix
+# code and fails there.
+
+def _start(client, project, job_id, **body):
+    return client.post(f"/api/v1/projects/{project.id}/upload/jobs/{job_id}/start", json=body)
+
+
+def test_an_identical_staged_file_is_a_duplicate(client, db_session, test_project):
+    """The guard counted scans and queued/processing jobs only, so the same
+    file could sit staged twice and both copies import."""
+    first = _upload(client, test_project, HOST_PORT_TEXT, "a.txt", "text/plain", stage=True)
+    assert first.status_code in (200, 201), first.text
+    again = _upload(client, test_project, HOST_PORT_TEXT, "a-copy.txt", "text/plain", stage=True)
+    assert again.status_code == 409, again.text
+    detail = again.json()["detail"]
+    assert detail["code"] == "duplicate_scan"
+    assert detail["job_id"] == first.json()["job_id"]
+    # It is not "still processing" — nothing is parsing it.
+    assert "format review" in detail["message"]
+
+
+def test_start_rechecks_for_a_duplicate(client, db_session, test_project):
+    """A failed job can wait for days; by the time it is retried the same file
+    may already be queued or imported. Start used to skip the guard."""
+    failed_id = _upload(client, test_project, HOST_PORT_TEXT, "a.txt", "text/plain", stage=True).json()["job_id"]
+    failed = _job(db_session, failed_id)
+    failed.status = "failed"
+    db_session.commit()
+    # A failed job does not block a fresh upload of the same bytes…
+    queued = _upload(client, test_project, HOST_PORT_TEXT, "a-again.txt", "text/plain")
+    assert queued.status_code in (200, 201), queued.text
+
+    # …and once that one is in flight, retrying the old one would import twice.
+    r = _start(client, test_project, failed_id, format_override="naabu_output")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "duplicate_scan"
+    assert r.json()["detail"]["job_id"] == queued.json()["job_id"]
+    db_session.refresh(failed)
+    assert failed.status == "failed"
+
+
+def test_an_operators_import_anyway_survives_the_start(client, db_session, test_project):
+    """The operator already answered the duplicate question at upload; the
+    re-check at start must not ask it again."""
+    first = _upload(client, test_project, HOST_PORT_TEXT, "a.txt", "text/plain")
+    assert first.status_code in (200, 201), first.text
+    forced = _upload(client, test_project, HOST_PORT_TEXT, "a-forced.txt", "text/plain",
+                     stage=True, allow_duplicate=True)
+    assert forced.status_code in (200, 201), forced.text
+
+    r = _start(client, test_project, forced.json()["job_id"], format_override="naabu_output")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "queued"
+
+
+def test_start_reads_the_status_under_the_lock_not_the_one_it_loaded(db_session, client, test_project):
+    """The double start. The caller holds a job object that still says
+    ``staged``; meanwhile a worker has claimed the row. The transition must see
+    the row as it IS — it used to write ``queued`` over ``processing``, and the
+    file imported twice."""
+    import pytest
+    from sqlalchemy import text
+    from app.services.job_transitions import JobNotTransitionable
+    from app.services.staged_import_service import start_staged_job
+
+    job_id = _upload(client, test_project, HOST_PORT_TEXT, "a.txt", "text/plain", stage=True).json()["job_id"]
+    stale = _job(db_session, job_id)
+    assert stale.status == "staged"
+    # Behind the ORM's back, as another request's commit would be — committed
+    # (the service rolls back when it refuses) but WITHOUT expiring ``stale``,
+    # which is what would hide the bug this pins.
+    db_session.expire_on_commit = False
+    try:
+        db_session.execute(text("UPDATE ingestion_jobs SET status='processing' WHERE id=:i"), {"i": job_id})
+        db_session.commit()
+    finally:
+        db_session.expire_on_commit = True
+    assert stale.status == "staged"  # the caller's view is out of date
+
+    with pytest.raises(JobNotTransitionable) as exc:
+        start_staged_job(db_session, stale, format_override="naabu_output", source_tool=None)
+    assert exc.value.status == "processing"
+    assert db_session.execute(
+        text("SELECT status FROM ingestion_jobs WHERE id=:i"), {"i": job_id},
+    ).scalar() == "processing"
+
+
+def test_discard_keeps_the_file_of_a_job_that_was_started(db_session, client, test_project):
+    """Discard removed the file BEFORE its status check could be trusted: racing
+    a start, it deleted the file of a job on its way to the worker."""
+    import pytest
+    from sqlalchemy import text
+    from app.services.staged_import_service import discard_staged_job
+
+    job_id = _upload(client, test_project, HOST_PORT_TEXT, "a.txt", "text/plain", stage=True).json()["job_id"]
+    stale = _job(db_session, job_id)
+    path = Path(stale.storage_path)
+    db_session.expire_on_commit = False
+    try:
+        db_session.execute(text("UPDATE ingestion_jobs SET status='queued' WHERE id=:i"), {"i": job_id})
+        db_session.commit()
+    finally:
+        db_session.expire_on_commit = True
+    assert stale.status == "staged"
+
+    with pytest.raises(ValueError):
+        discard_staged_job(db_session, stale)
+    assert path.exists(), "a job that is no longer staged must keep its file"

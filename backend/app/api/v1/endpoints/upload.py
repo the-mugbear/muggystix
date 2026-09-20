@@ -297,12 +297,28 @@ def start_ingestion_job(
         )
     if not job.storage_path or not Path(job.storage_path).exists():
         raise HTTPException(status_code=409, detail="The uploaded file is no longer on disk — re-upload it.")
+    # The checks above are the friendly early answer; the service repeats them
+    # UNDER the row lock (v2.368.0), which is the one that counts when two
+    # starts race.
+    from app.services.ingestion_service import DuplicateUploadError
+    from app.services.job_transitions import JobNotTransitionable
     try:
         job = start_staged_job(
             db, job, format_override=body.format_override, source_tool=body.source_tool,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except DuplicateUploadError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail())
+    except JobNotTransitionable as exc:
+        if exc.status == "file_missing":
+            raise HTTPException(status_code=409, detail="The uploaded file is no longer on disk — re-upload it.")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only a staged or failed job can be started (current status: {exc.status!r})",
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Job not found")
     # On the request's own session: a second pooled connection per request
     # deadlocked the pool when the review dialog started every file at once.
     ingestion_service.enqueue_job(job.id, db=db)

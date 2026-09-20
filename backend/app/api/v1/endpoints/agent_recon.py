@@ -752,13 +752,27 @@ async def upload_recon_output(
     if command_run:
         opts["command_run"] = command_run
 
-    # Joins (or starts) the session's batch for this label in the same
-    # transaction as the job; a rejected upload rolls it back with the job.
+    # Joins (or starts) the session's batch for this label. The helper COMMITS
+    # a new batch before returning (v2.368.0): this handler awaits file I/O
+    # next, and an uncommitted unique-index entry held across that await is
+    # what froze a worker when a sweep's chunks arrived in parallel. A rejected
+    # upload therefore leaves the (empty) batch behind rather than rolling it
+    # back — see the helper's docstring.
     scan_batch = None
     if batch and batch.strip():
-        scan_batch = get_or_create_session_batch(
-            db, project_id=agent.project_id, recon_session_id=session.id, label=batch,
-        )
+        from sqlalchemy.exc import OperationalError
+        try:
+            scan_batch = get_or_create_session_batch(
+                db, project_id=agent.project_id, recon_session_id=session.id, label=batch,
+            )
+        except OperationalError:
+            # The lock_timeout backstop fired. Nothing was written.
+            db.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail="The upload batch is busy; retry this file in a few seconds.",
+                headers={"Retry-After": "5"},
+            )
 
     try:
         job = await ingestion_service.create_job(

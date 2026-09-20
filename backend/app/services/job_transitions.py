@@ -196,7 +196,16 @@ class JobTransitions:
     # ------------------------------------------------------------------
     def _locked(self, db: Session, job_id: int, *extra_conds: Any):
         m = self.model
-        stmt = select(m).where(m.id == job_id, *extra_conds).with_for_update()
+        # populate_existing (v2.368.0): a caller that already loaded this row in
+        # the same session (an endpoint's visibility check, say) would otherwise
+        # get its identity-mapped object back with the attributes it read
+        # BEFORE the lock — and the "check under the lock" would be checking a
+        # stale status. The lock is only worth what is read after it.
+        stmt = (
+            select(m).where(m.id == job_id, *extra_conds)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return db.execute(stmt).scalar_one_or_none()
 
     def cancel(
