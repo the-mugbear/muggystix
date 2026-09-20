@@ -88,7 +88,11 @@ export interface HeatmapCell extends Metric {
    *  domain applies to, and how many of those carry its evidence. */
   eligible?: number;
   eligible_assessed?: number;
-  drilldown_filter?: { conditions: string[]; site: string | null } | null;
+  /** `subnet` / `exclude_subnets` are set when the grid's columns are subnets. */
+  drilldown_filter?: {
+    conditions: string[]; site: string | null;
+    subnet?: string | null; exclude_subnets?: string[];
+  } | null;
 }
 
 export interface HeatmapSegment {
@@ -111,6 +115,9 @@ export interface HeatmapRow {
 }
 
 export interface PostureHeatmap {
+  /** What the columns are: sites, or — when the project defines no site at
+   *  all — the hosts' most-specific subnets (backend 2.373.1). */
+  group_by?: 'site' | 'subnet';
   segments: HeatmapSegment[];
   rows: HeatmapRow[];
 }

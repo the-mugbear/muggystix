@@ -132,7 +132,7 @@ export const describeConcentration = (r: ConcentrationRow, familyLabel: string):
   }
   const head = `${r.label}: ${r.affected} of ${r.assessed} assessed hosts affected (${pct(r.rate ?? 0)})`;
   if (r.state === 'limited') {
-    return `${head}. Limited comparison — ${r.limitedBecause}; collect the missing evidence before ranking it.`;
+    return `${head}. Limited comparison — ${r.limitedBecause}; collect the missing evidence before reading much into the rate.`;
   }
   if (r.restRate == null) return `${head}. No other segment was assessed to compare it with.`;
   const delta = Math.round(r.deltaPoints ?? 0);

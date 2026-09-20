@@ -124,6 +124,53 @@ describe('SecurityPosture — overview', () => {
     expect(within(decisions).getByRole('link', { name: /2 plans to approve in Operations/ })).toHaveAttribute('href', '/operations');
   });
 
+  // From the first real screenshot of this page: a project with no sites put
+  // every host in one "Unassigned" segment — a ranking of one.
+  it('calls a single segment a measurement, not a comparison', async () => {
+    const only = { ...response.heatmap.rows[0], cells: [cell('unassigned', null, 4, 10, 59, 21)] };
+    getPostureMock.mockResolvedValue({
+      ...response,
+      heatmap: { group_by: 'site', segments: [{ key: 'unassigned', label: 'Unassigned', in_scope: 59, assessed: 59 }], rows: [only] },
+    });
+    await renderPage();
+    const focus = screen.getByText('Where to focus').closest('section')!;
+    expect(within(focus).getByText(/nothing to compare it\s+with — this is a measurement, not a ranking/)).toBeInTheDocument();
+    expect(within(focus).queryByText(/marks the rate across the rest/)).toBeNull();
+    // The reason is the explanation — it wraps, it is never cut off.
+    const reason = within(focus).getByText(/Limited comparison — 48% of eligible hosts assessed/, { selector: 'p.text-warning' });
+    expect(reason.className).not.toMatch(/truncate/);
+  });
+
+  it('groups by subnet when no site is defined, and a parent subnet link excludes its nested child', async () => {
+    const sub = (key: string, cidr: string, affected: number, assessed: number, exclude: string[] = []) => ({
+      ...cell(key, null, affected, assessed, assessed + 2),
+      drilldown_filter: { conditions: ['eol_os'], site: null, subnet: cidr, exclude_subnets: exclude },
+    });
+    getPostureMock.mockResolvedValue({
+      ...response,
+      heatmap: {
+        group_by: 'subnet',
+        segments: [
+          { key: 'subnet:1', label: '10.7.0.0/24', in_scope: 42, assessed: 42 },
+          { key: 'subnet:2', label: '10.8.0.0/24', in_scope: 32, assessed: 32 },
+        ],
+        rows: [{ ...response.heatmap.rows[0], cells: [sub('subnet:1', '10.7.0.0/24', 20, 40, ['10.7.0.0/28']), sub('subnet:2', '10.8.0.0/24', 3, 30)] }],
+      },
+    });
+    await renderPage();
+    const focus = screen.getByText('Where to focus').closest('section')!;
+    expect(within(focus).getByRole('columnheader', { name: 'Subnet' })).toBeInTheDocument();
+    expect(within(focus).getByText(/No sites are defined, so hosts are grouped by their most-specific subnet/)).toBeInTheDocument();
+    const url = new URL(within(focus).getByRole('link', { name: /20 affected hosts/ }).getAttribute('href')!, 'http://x');
+    expect(url.searchParams.get('subnets')).toBe('10.7.0.0/24');
+    expect(url.searchParams.get('q')).toBe('has:eol AND NOT subnet:"10.7.0.0/28"');
+    expect(screen.getByText(/Every family × subnet/)).toBeInTheDocument();
+    // Two columns: the grid is sized to them, not stretched across the page.
+    const grid = screen.getByText(/Every family × subnet/).closest('section')!.querySelector('table')!;
+    // 18rem for the family column + 9rem per column (jsdom folds the calc()).
+    expect(grid.style.width).toBe('min(100%, 36rem)');
+  });
+
   it('truncates a 200-character site name instead of widening the page', async () => {
     await renderPage();
     const focus = screen.getByText('Where to focus').closest('section')!;

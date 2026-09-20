@@ -237,6 +237,34 @@ export const familyCellHostsHref = (
 };
 
 /**
+ * /hosts link for one cell of the posture grid, whatever its columns are: a
+ * named site, the "Unassigned" column, or — in a project that defines no sites
+ * (grid `group_by: 'subnet'`) — a most-specific subnet. The hosts filter matches
+ * a CIDR by containment, so a subnet column excludes the columns nested inside
+ * it (`exclude_subnets`): a host counts under its most-specific subnet only.
+ * Implicit AND does not reach a NOT, hence the explicit `AND NOT`.
+ */
+export const gridCellHostsHref = (
+  conditions: string[],
+  cell: {
+    segment: string;
+    drilldown_filter?: { site?: string | null; subnet?: string | null; exclude_subnets?: string[] } | null;
+  },
+): string | null => {
+  const subnet = cell.drilldown_filter?.subnet;
+  if (!subnet) {
+    return familyCellHostsHref(
+      conditions, cell.segment === 'unassigned' ? UNASSIGNED_SITE : cell.drilldown_filter?.site,
+    );
+  }
+  const preds = conditions.map((k) => CONDITION_DSL[k]).filter(Boolean);
+  if (preds.length === 0) return null;
+  const any = preds.length === 1 ? preds[0] : `(${preds.join(' or ')})`;
+  const nots = (cell.drilldown_filter?.exclude_subnets ?? []).map((c) => ` AND NOT subnet:"${c}"`).join('');
+  return buildHostsUrl({ q: `${any}${nots}`, subnets: subnet });
+};
+
+/**
  * Download the lightweight executive systemic report (standalone HTML) — a
  * self-contained file for sharing at a high-level meeting.  Fetched via the
  * authed client (the endpoint needs the JWT) and saved as a blob, mirroring the

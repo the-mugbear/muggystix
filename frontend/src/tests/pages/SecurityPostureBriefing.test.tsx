@@ -19,8 +19,7 @@ vi.mock('../../services/api', () => ({
 }));
 vi.mock('../../services/api/insights', () => ({
   downloadSystemicReport: (...a: unknown[]) => downloadMock(...a),
-  familyCellHostsHref: () => '/hosts',
-  UNASSIGNED_SITE: Symbol('unassigned-site'),
+  gridCellHostsHref: () => '/hosts',
 }));
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 1, name: 'P' } }),

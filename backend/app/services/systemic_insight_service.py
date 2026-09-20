@@ -421,6 +421,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     }
     family_matrix = _build_family_site_matrix(
         affected, host_site, in_scope, subnet_meta, assessed_by_domain, eligible_by_domain,
+        host_subnet,
     )
     family_summary = _build_family_summary(
         affected, host_subnet, host_site, cond_class, total_hosts,
@@ -504,12 +505,15 @@ def _build_family_site_matrix(
     subnet_meta: Dict[int, Dict[str, Any]],
     assessed_by_domain: Optional[Dict[str, Set[int]]] = None,
     eligible_by_domain: Optional[Dict[str, Set[int]]] = None,
+    host_subnet: Optional[Dict[int, int]] = None,
 ) -> Dict[str, Any]:
-    """Condition-family × site matrix — the Overview heatmap.
+    """Condition-family × segment matrix — the Overview grid and comparison.
 
     Rows are pattern families (each carrying the per-host conditions that roll up
     to it); columns are sites (plus an 'unassigned' column when in-scope hosts
-    have no site).  Every family that has per-host conditions gets a row, even
+    have no site) — or, when the project defines no site at all, the hosts'
+    most-specific subnets (``group_by`` says which).  Columns are disjoint
+    either way.  Every family that has per-host conditions gets a row, even
     with nothing affected — that is exactly the row that has to say "checked
     and clean" or "never assessed".
 
@@ -545,20 +549,47 @@ def _build_family_site_matrix(
         if sid is not None and name:
             site_label[sid] = name
 
-    # Columns: hosts per segment (site_id or None -> the 'unassigned' bucket).
+    # v2.373.1 — a project that defines NO sites used to get one "Unassigned"
+    # column holding every host: a comparison with nothing to compare and a grid
+    # of one stretched cell.  With no site anywhere, the columns are the
+    # most-specific SUBNETS instead (the grouping the operator did define).  A
+    # project with some sites keeps site columns — there "Unassigned" is honest.
     UNASSIGNED = "unassigned"
+    host_subnet = host_subnet or {}
+    group_by = "site" if any(host_site.get(h) is not None for h in in_scope) or not host_subnet else "subnet"
+
     seg_hosts: Dict[str, Set[int]] = defaultdict(set)
-    for hid in in_scope:
-        sid = host_site.get(hid)
-        seg_hosts[str(sid) if sid is not None else UNASSIGNED].add(hid)
-    # Named sites first (by population desc), unassigned last.
+    seg_label: Dict[str, Optional[str]] = {UNASSIGNED: "Unassigned"}
+    # Subnet columns only: the CIDR, and the OTHER columns' CIDRs nested inside
+    # it.  The hosts filter matches a CIDR by containment, so a /24 column's
+    # list must exclude its /28 child's hosts to reconcile with its count
+    # (a host counts under its most-specific subnet only).
+    seg_cidr: Dict[str, str] = {}
+    if group_by == "subnet":
+        for hid in in_scope:
+            key = f"subnet:{host_subnet[hid]}"
+            seg_hosts[key].add(hid)
+        for key in seg_hosts:
+            cidr = subnet_meta[int(key.split(":", 1)[1])]["cidr"]
+            seg_label[key] = cidr
+            seg_cidr[key] = cidr
+    else:
+        for hid in in_scope:
+            sid = host_site.get(hid)
+            key = str(sid) if sid is not None else UNASSIGNED
+            seg_hosts[key].add(hid)
+            if sid is not None:
+                seg_label[key] = site_label.get(sid)
+    seg_nested = _nested_cidrs(seg_cidr)
+
+    # Largest first; unassigned last.
     def _seg_sort(key: str):
-        return (key == UNASSIGNED, -len(seg_hosts[key]))
+        return (key == UNASSIGNED, -len(seg_hosts[key]), seg_label.get(key) or "")
     segment_keys = sorted(seg_hosts.keys(), key=_seg_sort)
     segments = [
         {
             "key": k,
-            "label": site_label.get(int(k)) if k != UNASSIGNED else "Unassigned",
+            "label": seg_label.get(k),
             "in_scope": len(seg_hosts[k]),
             # Legacy alias of in_scope (was the denominator before per-domain
             # evidence existed); cells carry the real per-family figure.
@@ -596,13 +627,18 @@ def _build_family_site_matrix(
             seg_set = seg_hosts[seg["key"]]
             hit = len(fam_hosts & seg_set)
             checked = len(domain_assessed & seg_set)
-            cell = ratio_metric(
-                hit, checked,
-                drilldown_filter={
+            if group_by == "subnet":
+                drill = {
+                    "conditions": conds, "site": None,
+                    "subnet": seg_cidr[seg["key"]],
+                    "exclude_subnets": seg_nested.get(seg["key"], []),
+                }
+            else:
+                drill = {
                     "conditions": conds,
                     "site": seg["label"] if seg["key"] != UNASSIGNED else None,
-                },
-            ).model_dump()
+                }
+            cell = ratio_metric(hit, checked, drilldown_filter=drill).model_dump()
             cell["segment"] = seg["key"]
             cell["affected"] = hit
             cell["assessed"] = checked
@@ -624,7 +660,29 @@ def _build_family_site_matrix(
     # Worst-first: families affecting the most hosts at the top; stable by label.
     rows.sort(key=lambda r: (-r["affected_total"], r["family_label"]))
 
-    return {"segments": segments, "rows": rows}
+    return {"group_by": group_by, "segments": segments, "rows": rows}
+
+
+def _nested_cidrs(seg_cidr: Dict[str, str]) -> Dict[str, List[str]]:
+    """For each subnet column, the other columns' CIDRs strictly inside it."""
+    import ipaddress
+
+    nets: Dict[str, Any] = {}
+    for key, cidr in seg_cidr.items():
+        try:
+            nets[key] = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+    out: Dict[str, List[str]] = {}
+    for key, net in nets.items():
+        inner = [
+            seg_cidr[k] for k, other in nets.items()
+            if k != key and other.version == net.version
+            and other.prefixlen > net.prefixlen and other.subnet_of(net)
+        ]
+        if inner:
+            out[key] = sorted(inner)
+    return out
 
 
 def _root_cause(conds: Set[str]) -> Dict[str, str]:

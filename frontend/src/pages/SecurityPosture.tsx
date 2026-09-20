@@ -22,7 +22,7 @@ import {
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
-import { downloadSystemicReport, familyCellHostsHref, UNASSIGNED_SITE } from '../services/api/insights';
+import { downloadSystemicReport, gridCellHostsHref } from '../services/api/insights';
 import { useToast } from '../contexts/ToastContext';
 import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
@@ -40,6 +40,9 @@ import FocusComparison from '../components/posture/FocusComparison';
 import {
   SEVERITY_HSL, LABEL_TONE, PRIORITY_KIND,
 } from '../components/posture/postureTheme';
+
+/** Grid columns shown before "the rest are on Segments" (largest first). */
+const GRID_MAX_COLUMNS = 12;
 
 const LABEL_ICON = {
   action_required: AlertTriangle,
@@ -319,7 +322,9 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
       >
         {h.systemic.adopted ? (
           <p className="truncate">
-            {h.systemic.condition_count} recurring condition{h.systemic.condition_count === 1 ? '' : 's'} in all
+            {h.systemic.condition_count === 0
+              ? 'no recurring conditions'
+              : `of ${h.systemic.condition_count} recurring condition${h.systemic.condition_count === 1 ? '' : 's'} observed`}
           </p>
         ) : (
           <Link to="/scopes" className="inline-flex items-center gap-xxs text-info hover:underline">
@@ -386,11 +391,18 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
   const total = data.headline.review_coverage.total;
   const inScope = data.systemic.adopted ? data.systemic.estate?.hosts_in_scope : undefined;
   const unmapped = inScope == null ? null : Math.max(0, total - inScope);
+  // Columns are sites — or subnets, in a project that defines no site.
+  const unit = hm?.group_by === 'subnet' ? 'subnet' : 'site';
+  // Largest first from the server. Past this many, columns only get narrower
+  // and less readable; the rest are one click away on Segments, never dropped
+  // from the comparison above (which ranks every column).
+  const columns = hm ? hm.segments.slice(0, GRID_MAX_COLUMNS) : [];
+  const hiddenColumns = hm ? hm.segments.length - columns.length : 0;
   return (
     <PostureSection
       title={<>
-        Every family × site
-        <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / assessed hosts — assessed means the site's in-scope hosts that carry evidence in the domain that can detect this family (hover a row label for its domain), so 0 of N is 'checked, none found'. A hatched cell is unassessed: nobody looked, which is not the same as clean. Darker = a larger share affected. Click a cell to open exactly those hosts." />
+        Every family × {unit}
+        <InfoTip text="Each row is a pattern family, each column a site (or, when the project defines no sites, a subnet). A cell shows affected / assessed hosts — assessed means the site's in-scope hosts that carry evidence in the domain that can detect this family (hover a row label for its domain), so 0 of N is 'checked, none found'. A hatched cell is unassessed: nobody looked, which is not the same as clean. Darker = a larger share affected. Click a cell to open exactly those hosts." />
       </>}
       description={inScope != null && (
         <>
@@ -416,13 +428,17 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
+            {/* Sized to its columns, not stretched to the page: with one or two
+                columns a full-width table turned each cell into a banner. */}
+            <table className="border-collapse text-metadata"
+              style={{ tableLayout: 'fixed', width: `min(100%, calc(18rem + ${columns.length} * 9rem))` }}>
               <thead>
                 <tr>
-                  <th className="w-[26%] p-xs text-left align-bottom text-caption font-medium text-muted-foreground">
+                  <th className="p-xs text-left align-bottom text-caption font-medium text-muted-foreground"
+                    style={{ width: '18rem' }}>
                     Pattern family
                   </th>
-                  {hm.segments.map((seg) => (
+                  {columns.map((seg) => (
                     <th key={seg.key} className="p-xs text-center align-bottom">
                       <span className="block truncate text-caption font-medium text-foreground" title={seg.label}>
                         {seg.label}
@@ -444,18 +460,14 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
                         via {row.evidence_domain_label}
                       </span>
                     </td>
-                    {row.cells.map((cell) => {
-                      const href = cell.affected > 0
-                        ? familyCellHostsHref(
-                            row.conditions,
-                            cell.segment === 'unassigned' ? UNASSIGNED_SITE : cell.drilldown_filter?.site,
-                          )
-                        : null;
+                    {/* Cells come in segment order, so the first N are the shown columns. */}
+                    {row.cells.slice(0, columns.length).map((cell) => {
+                      const href = cell.affected > 0 ? gridCellHostsHref(row.conditions, cell) : null;
                       // Three states, three presentations: unassessed (hatched,
                       // "n/a"), assessed-and-clean ("—" over an assessed count),
                       // affected (count / assessed).
                       const title = cell.unassessed
-                        ? `${row.family_label} — not assessed: no ${row.evidence_domain_label} evidence for this site's hosts (${cell.in_scope} in scope)`
+                        ? `${row.family_label} — not assessed: no ${row.evidence_domain_label} evidence for this ${unit}'s hosts (${cell.in_scope} in scope)`
                         : `${row.family_label} — ${cell.affected} of ${cell.assessed} assessed hosts affected (${cell.in_scope} in scope)`;
                       const inner = cell.unassessed
                         ? <span className="text-caption italic text-muted-foreground">n/a</span>
@@ -482,7 +494,13 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
               </tbody>
             </table>
             <p className="mt-xs text-caption text-muted-foreground">
-              Cells: affected / assessed hosts in the site, where assessed = hosts with evidence that
+              {hiddenColumns > 0 && (
+                <span className="text-foreground">
+                  Showing the {columns.length} largest {unit}s of {hm.segments.length} —{' '}
+                  <Link to="/posture/segments" className="text-info hover:underline">all of them on Segments</Link>.{' '}
+                </span>
+              )}
+              Cells: affected / assessed hosts in the {unit}, where assessed = hosts with evidence that
               can detect this family (the row's domain). 0/N = checked, none found. Hatched n/a =
               unassessed — nobody looked, which is not the same as clean.
             </p>
@@ -580,8 +598,8 @@ const PromotedFindings: React.FC<{ data: PostureResponse }> = ({ data }) => {
           No single "not scanner" predicate exists, so that figure stays
           passive: a plausible-but-wrong drill-down is worse than none (§26). */}
       <p className="mt-sm break-words text-caption text-muted-foreground">
-        Of the active findings, <span className="font-medium tabular-nums text-foreground">{d.non_scanner_active}</span> were
-        raised by an analyst (note / manual / execution) and{' '}
+        Of the active findings, <span className="font-medium tabular-nums text-foreground">{d.non_scanner_active}</span>{' '}
+        {d.non_scanner_active === 1 ? 'was' : 'were'} raised by an analyst (note / manual / execution) and{' '}
         <Link to={buildFindingsUrl({ status: 'active', source: 'scanner' })} className="text-info hover:underline">
           <span className="tabular-nums">{d.scanner_active}</span> promoted from a scanner observation →
         </Link>

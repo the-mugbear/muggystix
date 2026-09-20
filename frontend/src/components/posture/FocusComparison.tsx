@@ -14,7 +14,7 @@ import { Link } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 
 import type { PostureHeatmap } from '../../services/api/posture';
-import { familyCellHostsHref, UNASSIGNED_SITE } from '../../services/api/insights';
+import { gridCellHostsHref } from '../../services/api/insights';
 import {
   rankConcentration, leadingFamily, describeConcentration,
   LIMITED_MIN_ASSESSED, LIMITED_MIN_COVERAGE, type ConcentrationRow,
@@ -72,11 +72,12 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
   const shown = ranked.slice(0, TOP_ROWS);
   const selected = ranked.find((r) => r.key === segmentKey) ?? ranked[0];
   const hostsHref = selected && selected.affected > 0
-    ? familyCellHostsHref(
-        family.conditions,
-        selected.key === 'unassigned' ? UNASSIGNED_SITE : selected.cell.drilldown_filter?.site,
-      )
+    ? gridCellHostsHref(family.conditions, selected.cell)
     : null;
+  const bySubnet = heatmap.group_by === 'subnet';
+  // One segment is a measurement, not a comparison — say so instead of drawing
+  // a ranking of one and a legend for a tick that cannot appear.
+  const alone = ranked.length === 1;
 
   return (
     <div className="space-y-sm">
@@ -103,7 +104,7 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
           <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
             <thead>
               <tr className="text-left text-caption text-muted-foreground">
-                <th className="w-[26%] pb-xxs pr-sm font-medium">Segment</th>
+                <th className="w-[26%] pb-xxs pr-sm font-medium">{bySubnet ? 'Subnet' : 'Site'}</th>
                 <th className="pb-xxs pr-sm font-medium">
                   Affected / assessed — {family.family_label}
                 </th>
@@ -133,7 +134,8 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
                         </span>
                       </div>
                       {r.state === 'limited' && (
-                        <p className="mt-xxs truncate text-caption text-warning" title={r.limitedBecause}>
+                        // Wraps, never truncates: this line is the explanation.
+                        <p className="mt-xxs break-words text-caption text-warning">
                           Limited comparison — {r.limitedBecause}
                         </p>
                       )}
@@ -153,13 +155,22 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
               })}
             </tbody>
           </table>
-          <p className="mt-xs text-caption text-muted-foreground">
-            <span className="mr-xxs inline-block h-3 w-0.5 translate-y-0.5 bg-foreground" aria-hidden />
-            marks the rate across the rest of the assessed project. A comparison is limited below{' '}
-            {LIMITED_MIN_ASSESSED} assessed hosts or {Math.round(LIMITED_MIN_COVERAGE * 100)}% of eligible
-            hosts assessed — counts stay visible, the segment is ranked after the comparable ones.
-            {ranked.length > shown.length && ` ${ranked.length - shown.length} more segment${ranked.length - shown.length === 1 ? '' : 's'} in the grid below.`}
-          </p>
+          {alone ? (
+            <p className="mt-xs text-caption text-muted-foreground">
+              Every in-scope host falls in this one {bySubnet ? 'subnet' : 'segment'}, so there is nothing to compare it
+              with — this is a measurement, not a ranking.{' '}
+              {!bySubnet && <>Assign subnets to <Link to="/scopes" className="text-info hover:underline">sites</Link> to compare locations.</>}
+            </p>
+          ) : (
+            <p className="mt-xs text-caption text-muted-foreground">
+              <span className="mr-xxs inline-block h-3 w-0.5 translate-y-0.5 bg-foreground" aria-hidden />
+              marks the rate across the rest of the assessed project. A comparison is limited below{' '}
+              {LIMITED_MIN_ASSESSED} assessed hosts or {Math.round(LIMITED_MIN_COVERAGE * 100)}% of eligible
+              hosts assessed — counts stay visible, the {bySubnet ? 'subnet' : 'site'} is ranked after the comparable ones.
+              {bySubnet && ' No sites are defined, so hosts are grouped by their most-specific subnet.'}
+              {ranked.length > shown.length && ` ${ranked.length - shown.length} more in the grid below.`}
+            </p>
+          )}
         </div>
 
         {selected && (

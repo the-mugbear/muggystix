@@ -314,6 +314,53 @@ def test_the_unassigned_cell_opens_exactly_the_hosts_it_counts(client, db_sessio
     assert ips("has:eol site:HQ,none") == {"10.5.0.50", "10.5.0.5", "10.6.0.1", "10.6.0.2"}
 
 
+def test_a_project_without_sites_is_compared_by_subnet(client, db_session, test_project):
+    """v2.373.1 — with no site defined every host fell into one "Unassigned"
+    column: a comparison with nothing to compare.  The columns become the
+    most-specific subnets, and a parent column's link excludes its nested child
+    (the hosts filter matches a CIDR by containment) so count and list agree."""
+    from app.db.models import Scope, Subnet, HostSubnetMapping
+
+    scope = Scope(project_id=test_project.id, name="scope")
+    db_session.add(scope)
+    db_session.flush()
+    parent = Subnet(scope_id=scope.id, cidr="10.7.0.0/24")
+    child = Subnet(scope_id=scope.id, cidr="10.7.0.0/28")
+    other = Subnet(scope_id=scope.id, cidr="10.8.0.0/24")
+    db_session.add_all([parent, child, other])
+    db_session.flush()
+
+    def eol_host(ip, *subnets):
+        h = models.Host(project_id=test_project.id, ip_address=ip, state="up", os_name="Windows XP")
+        db_session.add(h)
+        db_session.flush()
+        for sn in subnets:
+            db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=sn.id))
+
+    eol_host("10.7.0.100", parent)
+    eol_host("10.7.0.101", parent)
+    eol_host("10.7.0.5", parent, child)     # counts under the /28 only
+    eol_host("10.8.0.1", other)
+    db_session.commit()
+
+    hm = compute_posture(db_session, test_project.id, use_cache=False)["heatmap"]
+    assert hm["group_by"] == "subnet"
+    assert [(s["label"], s["in_scope"]) for s in hm["segments"]] == [
+        ("10.7.0.0/24", 2), ("10.7.0.0/28", 1), ("10.8.0.0/24", 1),
+    ]
+    row = next(r for r in hm["rows"] if r["family"] == "lifecycle_patching")
+    cell = row["cells"][0]
+    assert cell["affected"] == 2
+    drill = cell["drilldown_filter"]
+    assert drill["subnet"] == "10.7.0.0/24" and drill["exclude_subnets"] == ["10.7.0.0/28"]
+
+    # Exactly the query the frontend builds (familyCellHostsHref).
+    q = "has:eol " + " ".join(f'AND NOT subnet:"{c}"' for c in drill["exclude_subnets"])
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": q, "subnets": drill["subnet"]})
+    assert r.status_code == 200, r.text
+    assert {i["ip_address"] for i in r.json()["items"]} == {"10.7.0.100", "10.7.0.101"}
+
+
 def test_posture_output_validates_against_response_model(db_session, test_project, test_user):
     """The endpoint's Pydantic response_model must accept a real compute_posture
     dict without dropping fields the frontend reads (extra="allow"), for every
