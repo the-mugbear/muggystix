@@ -240,17 +240,22 @@ def promote_vulnerability(
     resolve_project_assignee(db, project.id, body.owner_id)
     status = body.status or FindingStatus.CONFIRMED.value
     # v2.360.0 — a false-positive dismissal is about THIS host unless the
-    # caller says the whole issue; everything else is about the issue.
+    # caller says the whole issue.  v2.366.0 — a PROMOTION may be too
+    # (``scope: "host"``): "confirmed" is then recorded for the host that was
+    # looked at, not for every host carrying the issue.  The API default for a
+    # promotion is unchanged ("issue"), so agents and existing callers behave
+    # as before; the inspector's dialog sends its choice explicitly.  Accepted
+    # risk stays issue-wide: it is a decision about the issue, not a host.
     is_fp = status == FindingStatus.FALSE_POSITIVE.value
     scope = body.scope or ("host" if is_fp else "issue")
-    if scope == "host" and not is_fp:
+    if scope == "host" and status == FindingStatus.ACCEPTED_RISK.value:
         raise HTTPException(
             status_code=422,
-            detail="scope='host' applies to a false_positive dismissal only; "
-                   "promotion and accepted risk are about the issue on every host.",
+            detail="scope='host' does not apply to accepted risk, which is a decision "
+                   "about the issue on every host.",
         )
     svc = FindingService(db)
-    if scope == "host":
+    if scope == "host" and is_fp:
         finding = svc.dismiss_vulnerability_on_host(
             vuln=vuln, project_id=project.id, actor_id=current_user.id,
             severity=body.severity, owner_id=body.owner_id, summary=body.summary,
@@ -260,6 +265,7 @@ def promote_vulnerability(
             vuln=vuln, project_id=project.id, actor_id=current_user.id,
             severity=body.severity, status=status,
             owner_id=body.owner_id, summary=body.summary,
+            only_this_host=(scope == "host"),
         )
     db.commit()
     return _serialize(_load(db, project, finding.id))

@@ -497,15 +497,18 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       const finding = await promoteVulnerability(vulnId, {
         status: intent,
         summary: reason || undefined,
-        // Sent explicitly for a dismissal, so what the dialog showed is what
-        // the server does whatever its default.
-        scope: intent === 'false_positive' ? triageScope : undefined,
+        // ALWAYS sent (v5.245.0): what the dialog showed is what the server
+        // does, whatever its default — the API's default for a promotion is
+        // still the whole issue, the dialog's is this host.
+        scope: triageScope,
       });
       // Scanner findings span every host with the same plugin — report it.
       const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
       toast.success(
         intent === 'confirmed'
-          ? `Promoted to finding${span}: ${finding.title}`
+          ? (triageScope === 'host'
+            ? `Promoted to finding for this host: ${finding.title}`
+            : `Promoted to finding${span}: ${finding.title}`)
           : hostOnly
             ? `Dismissed as false positive on this host only: ${finding.title}`
             : `Dismissed as false positive${span}: ${finding.title}`,
@@ -2044,8 +2047,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           <div className="space-y-sm">
             {/* v5.238.0 — a dismissal is made in one host's inspector about
                 that host's observation: it defaults to THIS host.  Marking the
-                issue a false positive on every host is the explicit choice. */}
-            {triageVuln?.intent === 'false_positive' && triagePreview && (
+                issue a false positive on every host is the explicit choice.
+                v5.245.0 — the same rule for a PROMOTION: it could only be
+                issue-wide, so confirming what was verified on one host recorded
+                "confirmed" for every host carrying the issue, including hosts
+                nobody had looked at.  What is done in one host's inspector is
+                about that host unless it is widened. */}
+            {triagePreview && (
               <fieldset className="space-y-xxs">
                 <legend className="text-caption font-semibold text-foreground">Applies to</legend>
                 <label className="flex items-start gap-xs text-caption">
@@ -2071,7 +2079,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     </strong>
                     {triagePreview.affected_host_count <= 1
                       ? ' — no other host carries it.'
-                      : ' — the issue itself is a false positive (a scanner misfire, not something about this host).'}
+                      : triageVuln?.intent === 'confirmed'
+                        ? ' — record the finding on every host that reports it, verified here or not.'
+                        : ' — the issue itself is a false positive (a scanner misfire, not something about this host).'}
                   </span>
                 </label>
               </fieldset>
@@ -2097,6 +2107,24 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       {triagePreview.affected_host_count > 1 && (
                         <> The other {triagePreview.affected_host_count - 1} host{triagePreview.affected_host_count - 1 === 1 ? '' : 's'} carrying
                           this issue stay untriaged.</>
+                      )}
+                    </>
+                  )}
+                </span>
+              ) : triagePreview && triageVuln?.intent === 'confirmed' && triageScope === 'host' ? (
+                <span className="text-foreground">
+                  {triagePreview.already_promoted ? (
+                    <>
+                      Finding #{triagePreview.finding_id} already covers this issue. This adds{' '}
+                      <strong>{triagePreview.host_ip ?? 'this host'}</strong> to it and records this
+                      scanner&rsquo;s evidence; no other host is attached.
+                    </>
+                  ) : (
+                    <>
+                      Creates a finding for <strong>{triagePreview.host_ip ?? 'this host'}</strong> only.
+                      {triagePreview.affected_host_count > 1 && (
+                        <> The other {triagePreview.affected_host_count - 1} host{triagePreview.affected_host_count - 1 === 1 ? '' : 's'} reporting
+                          this issue stay untriaged; promoting it from one of them later joins this same finding.</>
                       )}
                     </>
                   )}

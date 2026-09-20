@@ -419,6 +419,49 @@ def test_issue_wide_dismissal_is_still_available_and_explicit(client, db_session
     assert r.status_code == 201, r.text
     assert r.json()["status"] == "false_positive" and r.json()["host_count"] == 3
 
-    # Promotion is about the issue: it has no host-only form.
-    bad = client.post(f"{base}/{vulns[1].id}/promote", json={"vuln_id": vulns[1].id, "scope": "host"})
+    # Accepted risk is a decision about the ISSUE: it has no host-only form.
+    bad = client.post(f"{base}/{vulns[1].id}/promote",
+                      json={"vuln_id": vulns[1].id, "status": "accepted_risk", "scope": "host", "summary": "x"})
     assert bad.status_code == 422
+
+
+# v2.366.0 — a promotion could only ever be issue-wide: confirming what you had
+# verified on ONE host recorded "confirmed" for every host carrying the issue,
+# including hosts nobody had looked at.  (The endpoint used to reject
+# scope='host' for a promotion with a 422 — that rule is reversed here.)
+
+def test_a_promotion_can_be_about_this_host_only(client, db_session, test_project, test_user):
+    hosts, vulns = _shared_issue(db_session, test_project)
+    base = f"/api/v1/projects/{test_project.id}/vulnerabilities"
+    r = client.post(f"{base}/{vulns[0].id}/promote", json={"vuln_id": vulns[0].id, "scope": "host"})
+    assert r.status_code == 201, r.text
+    finding = r.json()
+    assert finding["status"] == "confirmed" and finding["host_count"] == 1
+
+    # This host is on the finding; the others are still untriaged observations
+    # that merely know a finding exists for the issue.
+    here = _row_on(client, test_project, hosts[0], vulns[0])
+    assert here["finding_id"] == finding["id"] and here["finding_on_this_host"] is True
+    elsewhere = _row_on(client, test_project, hosts[1], vulns[1])
+    assert elsewhere["finding_on_this_host"] is False
+
+
+def test_promoting_the_same_issue_from_a_second_host_joins_the_finding(client, db_session, test_project, test_user):
+    """The finding is the ISSUE's — host-only promotion must not fork one per host."""
+    hosts, vulns = _shared_issue(db_session, test_project)
+    base = f"/api/v1/projects/{test_project.id}/vulnerabilities"
+    first = client.post(f"{base}/{vulns[0].id}/promote", json={"vuln_id": vulns[0].id, "scope": "host"}).json()
+    second = client.post(f"{base}/{vulns[1].id}/promote", json={"vuln_id": vulns[1].id, "scope": "host"}).json()
+    assert second["id"] == first["id"]
+    assert second["host_count"] == 2
+    # The third host was never looked at, and is not claimed.
+    assert _row_on(client, test_project, hosts[2], vulns[2])["finding_on_this_host"] is False
+
+
+def test_the_api_default_for_a_promotion_is_still_the_issue(client, db_session, test_project, test_user):
+    """Agents and existing callers send no scope; their behaviour is unchanged."""
+    _hosts, vulns = _shared_issue(db_session, test_project)
+    r = client.post(f"/api/v1/projects/{test_project.id}/vulnerabilities/{vulns[0].id}/promote",
+                    json={"vuln_id": vulns[0].id})
+    assert r.status_code == 201, r.text
+    assert r.json()["host_count"] == 3

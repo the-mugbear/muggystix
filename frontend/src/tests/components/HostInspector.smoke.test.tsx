@@ -111,6 +111,64 @@ describe('HostInspector — conflicts say when the selected value was recorded',
   });
 });
 
+// v5.245.0 — reported by the user: "Promote to finding" could only create the
+// finding across EVERY host carrying the issue, including hosts nobody had
+// verified. The dismiss dialog had a "this host only" choice; promote did not.
+describe('HostInspector — promoting a scanner observation', () => {
+  const hostWithObservation = {
+    id: 1, ip_address: '10.0.0.1', hostname: 'h1', state: 'up',
+    ports: [], assignees: [], tags: [], notes: [], discoveries: [], follow: null,
+    os_name: null, os_family: null, os_type: null, os_generation: null,
+    os_vendor: null, os_accuracy: null, smb_signing: null,
+    web_interface_count: 0, netexec_result_count: 0, dns_record_count: 0,
+    first_seen: '2026-06-14T00:00:00Z', last_seen: '2026-06-14T00:00:00Z',
+    vulnerabilities: [{
+      id: 77, plugin_id: '100', title: 'PostgreSQL Weak Password Policy', severity: 'high', source: 'openvas',
+      cvss_score: null, cvss_vector: null, cve_id: null, scan_id: 1, port_id: null, port_number: 5432,
+      protocol: 'tcp', service_name: 'postgresql', exploitable: null, finding_id: null,
+      first_seen: '2026-08-01T00:00:00Z', last_seen: '2026-08-01T00:00:00Z', solution: null,
+    }],
+    vulnerability_summary: { total_vulnerabilities: 1, critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+  };
+  const preview = {
+    plugin_id: '100', issue_key: 'k', affected_host_count: 2, affected_host_sample: ['10.0.0.1', '10.0.0.9'],
+    new_host_count: 2, already_promoted: false, finding_id: null, finding_status: null, host_ip: '10.0.0.1',
+  };
+
+  const openPromote = async () => {
+    (api.getHost as ReturnType<typeof vi.fn>).mockResolvedValueOnce(hostWithObservation);
+    (api.previewPromoteVulnerability as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+    (api.promoteVulnerability as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 5, title: 'x', host_count: 1 });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    // The row's own expand button — the pivot icons carry the title too.
+    fireEvent.click(await screen.findByRole('button', { name: /^HIGH\s*PostgreSQL Weak Password Policy$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Promote PostgreSQL Weak Password Policy/ }));
+    return screen.findByRole('dialog');
+  };
+
+  it('defaults to THIS host, says what that means, and sends it', async () => {
+    const dialog = await openPromote();
+    const thisHost = await screen.findByRole('radio', { name: /This host only/ });
+    expect(thisHost).toBeChecked();
+    expect(dialog).toHaveTextContent('Creates a finding for 10.0.0.1 only.');
+    expect(dialog).toHaveTextContent(/The other 1 host reporting this issue stay untriaged/);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Promote$/ }));
+    await waitFor(() => expect(api.promoteVulnerability).toHaveBeenCalledWith(
+      77, expect.objectContaining({ status: 'confirmed', scope: 'host' }),
+    ));
+  });
+
+  it('can still be widened to every host carrying the issue, explicitly', async () => {
+    await openPromote();
+    fireEvent.click(await screen.findByRole('radio', { name: /All 2 hosts carrying this issue/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Promote$/ }));
+    await waitFor(() => expect(api.promoteVulnerability).toHaveBeenCalledWith(
+      77, expect.objectContaining({ status: 'confirmed', scope: 'issue' }),
+    ));
+  });
+});
+
 describe('HostInspector smoke', () => {
   it('renders through loading→loaded without a hooks-order crash', async () => {
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);

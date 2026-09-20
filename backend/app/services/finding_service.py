@@ -286,6 +286,7 @@ class FindingService:
         status: str = FindingStatus.CONFIRMED.value,
         owner_id: Optional[int] = None,
         summary: Optional[str] = None,
+        only_this_host: bool = False,
     ) -> Finding:
         """Promote a scanner vulnerability into a Finding (references, never
         copies — Finding.vuln_id).  Severity defaults to the vuln's own
@@ -293,7 +294,20 @@ class FindingService:
         Idempotent on (vuln_id, source='scanner') so a double-click / a
         promote-then-dismiss can't fork two findings for one vuln — pass a
         terminal ``status`` (false_positive / accepted_risk) to dismiss.
+
+        ``only_this_host`` (v2.366.0): attach the row's OWN host instead of
+        every host carrying the issue.  The finding is still the ISSUE's — one
+        per ``dedup_key`` — so promoting the same issue later from another host
+        joins this finding rather than forking one.  What it changes is the
+        claim: "confirmed" is recorded for the host that was looked at, not for
+        hosts nobody has verified.  The others stay untriaged scanner
+        observations that say "Finding #N covers other hosts only".
         """
+        def _hosts_for(v, k):
+            if only_this_host:
+                return [v.host_id] if v.host_id else []
+            return self._issue_host_ids(v, project_id, k)
+
         raw = severity or getattr(vuln.severity, "value", vuln.severity) or "medium"
         sev = "info" if str(raw).lower() == "unknown" else str(raw).lower()
         validate_severity(sev)
@@ -332,7 +346,7 @@ class FindingService:
             self.attach_vulnerability(finding=existing, vuln=vuln)
             # A second scanner may see the issue on hosts the first one missed.
             self._attach_hosts(
-                existing, self._issue_host_ids(vuln, project_id, key),
+                existing, _hosts_for(vuln, key),
                 names_by_host=self._vuln_names_by_host(vuln),
             )
             # Already promoted — if the caller is dismissing/redispositioning,
@@ -358,7 +372,7 @@ class FindingService:
         self.db.flush()
         self.attach_vulnerability(finding=finding, vuln=vuln)
         self._attach_hosts(
-            finding, self._issue_host_ids(vuln, project_id, key),
+            finding, _hosts_for(vuln, key),
             names_by_host=self._vuln_names_by_host(vuln),
         )
         record_status_transition(
