@@ -111,6 +111,9 @@ def get_posture(
 class EvidenceCoverageResponse(_Loose):
     total_hosts: int
     domains: List[Dict[str, Any]]
+    # Domain × segment (sites, or subnets when no site is defined, plus the
+    # hosts outside every scoped subnet).
+    matrix: Optional[Dict[str, Any]] = None
     contributing_tools: List[Dict[str, Any]]
     data_quality: Dict[str, Any]
 
@@ -148,14 +151,19 @@ class EvidenceGapsResponse(_Loose):
 def get_evidence_gaps(
     domain: str,
     limit: int = Query(200, ge=1, le=1000),
+    segment: Optional[str] = Query(
+        None, max_length=64,
+        description="A segment key from the evidence matrix — narrows the list to one cell.",
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """v2.348.0 — a coverage gap as a list the operator can act on (design
     review item 4): the eligible-but-unassessed hosts, the open ports that
-    made them eligible, and the collection or planning step that closes it."""
-    result = evidence_gap_hosts(db, project.id, domain, limit=limit)
+    made them eligible, and the collection or planning step that closes it.
+    ``segment`` (v2.374.0) opens exactly one matrix cell's hosts."""
+    result = evidence_gap_hosts(db, project.id, domain, limit=limit, segment=segment)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"Unknown evidence domain: {domain}")
+        raise HTTPException(status_code=404, detail="Unknown evidence domain or segment")
     return result

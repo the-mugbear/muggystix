@@ -49,6 +49,8 @@ from app.services.subnet_insight_service import (
     _EPOCH,
     _load_subnet_meta,
     _normalize_dt,
+    UNASSIGNED_SEGMENT,
+    group_hosts_into_segments,
     resolve_host_locations,
 )
 from app.services.pattern_families import (
@@ -420,8 +422,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         k: v & in_scope for k, v in eligible_host_ids(db, project_id).items()
     }
     family_matrix = _build_family_site_matrix(
-        affected, host_site, in_scope, subnet_meta, assessed_by_domain, eligible_by_domain,
-        host_subnet,
+        affected, locations, assessed_by_domain, eligible_by_domain,
     )
     family_summary = _build_family_summary(
         affected, host_subnet, host_site, cond_class, total_hosts,
@@ -500,12 +501,9 @@ def _build_family_summary(
 
 def _build_family_site_matrix(
     affected: Dict[str, Set[int]],
-    host_site: Dict[int, Optional[int]],
-    in_scope: Set[int],
-    subnet_meta: Dict[int, Dict[str, Any]],
+    locations: Dict[int, Dict[str, Any]],
     assessed_by_domain: Optional[Dict[str, Set[int]]] = None,
     eligible_by_domain: Optional[Dict[str, Set[int]]] = None,
-    host_subnet: Optional[Dict[int, int]] = None,
 ) -> Dict[str, Any]:
     """Condition-family × segment matrix — the Overview grid and comparison.
 
@@ -542,66 +540,31 @@ def _build_family_site_matrix(
     """
     assessed_by_domain = assessed_by_domain or {}
     eligible_by_domain = eligible_by_domain or {}
-    # site_id -> label (from subnet metadata; a site may span several subnets).
-    site_label: Dict[int, str] = {}
-    for meta in subnet_meta.values():
-        sid, name = meta.get("site_id"), meta.get("site")
-        if sid is not None and name:
-            site_label[sid] = name
 
-    # v2.373.1 — a project that defines NO sites used to get one "Unassigned"
-    # column holding every host: a comparison with nothing to compare and a grid
-    # of one stretched cell.  With no site anywhere, the columns are the
-    # most-specific SUBNETS instead (the grouping the operator did define).  A
-    # project with some sites keeps site columns — there "Unassigned" is honest.
-    UNASSIGNED = "unassigned"
-    host_subnet = host_subnet or {}
-    group_by = "site" if any(host_site.get(h) is not None for h in in_scope) or not host_subnet else "subnet"
-
-    seg_hosts: Dict[str, Set[int]] = defaultdict(set)
-    seg_label: Dict[str, Optional[str]] = {UNASSIGNED: "Unassigned"}
-    # Subnet columns only: the CIDR, and the OTHER columns' CIDRs nested inside
-    # it.  The hosts filter matches a CIDR by containment, so a /24 column's
-    # list must exclude its /28 child's hosts to reconcile with its count
-    # (a host counts under its most-specific subnet only).
-    seg_cidr: Dict[str, str] = {}
-    if group_by == "subnet":
-        for hid in in_scope:
-            key = f"subnet:{host_subnet[hid]}"
-            seg_hosts[key].add(hid)
-        for key in seg_hosts:
-            cidr = subnet_meta[int(key.split(":", 1)[1])]["cidr"]
-            seg_label[key] = cidr
-            seg_cidr[key] = cidr
-    else:
-        for hid in in_scope:
-            sid = host_site.get(hid)
-            key = str(sid) if sid is not None else UNASSIGNED
-            seg_hosts[key].add(hid)
-            if sid is not None:
-                seg_label[key] = site_label.get(sid)
-    seg_nested = _nested_cidrs(seg_cidr)
-
-    # Largest first; unassigned last.
-    def _seg_sort(key: str):
-        return (key == UNASSIGNED, -len(seg_hosts[key]), seg_label.get(key) or "")
-    segment_keys = sorted(seg_hosts.keys(), key=_seg_sort)
+    # Sites — or, in a project that defines none, most-specific subnets
+    # (v2.373.1).  The rule lives in ``group_hosts_into_segments`` so the
+    # Evidence matrix's columns are the same hosts as these.
+    UNASSIGNED = UNASSIGNED_SEGMENT
+    grouping = group_hosts_into_segments(locations)
+    group_by = grouping["group_by"]
+    seg_hosts: Dict[str, Set[int]] = grouping["hosts"]
+    seg_cidr: Dict[str, str] = grouping["cidrs"]
+    # Subnet columns only: the OTHER columns' CIDRs nested inside each.  The
+    # hosts filter matches a CIDR by containment, so a /24 column's list must
+    # exclude its /28 child's hosts to reconcile with its count (a host counts
+    # under its most-specific subnet only).
+    seg_nested = nested_cidrs(seg_cidr)
     segments = [
         {
             "key": k,
-            "label": seg_label.get(k),
+            "label": grouping["labels"][k],
             "in_scope": len(seg_hosts[k]),
             # Legacy alias of in_scope (was the denominator before per-domain
             # evidence existed); cells carry the real per-family figure.
             "assessed": len(seg_hosts[k]),
         }
-        for k in segment_keys
+        for k in grouping["keys"]
     ]
-    # A named site whose label is missing (site_id with no metadata name) falls
-    # back to a stable placeholder so a column never renders blank.
-    for s in segments:
-        if s["label"] is None:
-            s["label"] = f"Site {s['key']}"
 
     # Rows: group the per-host condition affected-sets by family.  Every family
     # with conditions is a row (zero affected included) — see the docstring.
@@ -663,7 +626,7 @@ def _build_family_site_matrix(
     return {"group_by": group_by, "segments": segments, "rows": rows}
 
 
-def _nested_cidrs(seg_cidr: Dict[str, str]) -> Dict[str, List[str]]:
+def nested_cidrs(seg_cidr: Dict[str, str]) -> Dict[str, List[str]]:
     """For each subnet column, the other columns' CIDRs strictly inside it."""
     import ipaddress
 

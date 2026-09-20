@@ -462,7 +462,7 @@ These mount under `/projects/{project_id}/...` alongside the above. Most are das
 | Base path | Purpose |
 |---|---|
 | `/posture` | Security Posture roll-up — deterministic condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`), plain-language conclusion, and the condition-family × site heatmap. Drives the frontend **Posture** tab. |
-| `/posture/evidence` | Per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) + contributing tools + parse-error data quality. Drives the frontend **Evidence** tab; answers whether the posture conclusions are trustworthy. |
+| `/posture/evidence` | Per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) + `matrix` (domain × segment: sites, or most-specific subnets when no site is defined, plus `unmapped` for hosts outside every scoped subnet; each cell `eligible` / `assessed` / `gap`) + contributing tools + parse-error data quality. Three states only — assessed, not assessed, not applicable: a project is one assessment window, so nothing is judged by age. `GET /posture/evidence/{domain}/gaps?segment=<key>` lists one cell's hosts. Drives the frontend **Evidence** tab. |
 | `/insights/subnets` | Per-subnet insights (exposure + neglect + hygiene, worst-first). Drives the frontend **Segments** tab (Subnet lens). |
 | `/insights/systemic` | Systemic insights — pattern families, estate blind spots, segment outliers, diagnostic profiles. Drives the frontend **Patterns** tab. |
 | `/attention` | Project "needs help" attention model (the site-metrics arc). |

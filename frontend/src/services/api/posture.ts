@@ -163,15 +163,36 @@ export const getPosture = async (
 
 // --- Evidence coverage (Phase 4) -------------------------------------------
 export interface EvidenceDomain {
+  /** The collection or planning step that closes this domain's gap. */
+  action?: { kind: 'collect' | 'plan'; text: string };
   key: string;
   label: string;
   note: string;
   coverage: Metric;
 }
 
+/** One cell of the evidence matrix (backend 2.374.0). Three states and no more:
+ *  assessed, not assessed (`gap`), not applicable (`eligible === 0`). A project is
+ *  one assessment window — evidence does not go "stale" inside it. */
+export interface EvidenceMatrixCell {
+  segment: string;
+  eligible: number;
+  assessed: number;
+  gap: number;
+}
+
+export interface EvidenceMatrix {
+  /** Same columns as the Overview grid — sites, or subnets when no site is
+   *  defined — plus `unmapped` (hosts outside every scoped subnet). */
+  group_by: 'site' | 'subnet';
+  segments: { key: string; label: string; hosts: number }[];
+  rows: { domain: string; label: string; cells: EvidenceMatrixCell[] }[];
+}
+
 export interface EvidenceCoverageResponse {
   total_hosts: number;
   domains: EvidenceDomain[];
+  matrix?: EvidenceMatrix | null;
   contributing_tools: { tool: string; scans: number }[];
   data_quality: { scans: number; parse_errors_unresolved: number };
 }
@@ -188,6 +209,9 @@ export interface EvidenceGapHost {
 export interface EvidenceGapsResponse {
   domain: string;
   label: string;
+  /** Set when the list was narrowed to one matrix cell. */
+  segment?: string | null;
+  segment_label?: string | null;
   total: number;
   items: EvidenceGapHost[];
   action: { kind: 'collect' | 'plan'; text: string };
@@ -195,10 +219,13 @@ export interface EvidenceGapsResponse {
 
 export const getEvidenceGaps = async (
   domain: string,
-  options: { limit?: number; signal?: AbortSignal } = {},
+  options: { limit?: number; segment?: string; signal?: AbortSignal } = {},
 ): Promise<EvidenceGapsResponse> => {
+  const params: Record<string, string | number> = {};
+  if (options.limit) params.limit = options.limit;
+  if (options.segment) params.segment = options.segment;
   const response = await api.get<EvidenceGapsResponse>(`${p()}/posture/evidence/${domain}/gaps`, {
-    params: options.limit ? { limit: options.limit } : undefined,
+    params: Object.keys(params).length ? params : undefined,
     signal: options.signal,
   });
   return response.data;

@@ -130,6 +130,61 @@ def test_evidence_gap_lists_eligible_unassessed_hosts_with_their_ports(client, d
     assert client.get(f"/api/v1/projects/{test_project.id}/posture/evidence/nope/gaps").status_code == 404
 
 
+def test_evidence_matrix_locates_the_gap_and_a_cell_opens_exactly_its_hosts(client, db_session, test_project):
+    """v2.374.0 — the project total says web/TLS is 1-of-3 covered; the matrix
+    says WHERE the other two are, including a host outside every scoped subnet
+    (Evidence covers all hosts, so it is a column, not an omission)."""
+    from app.services.evidence_service import compute_evidence_coverage
+
+    now = datetime.now(timezone.utc)
+    scope = models.Scope(project_id=test_project.id, name="s")
+    db_session.add(scope)
+    db_session.flush()
+    a = models.Subnet(scope_id=scope.id, cidr="10.8.3.0/24")
+    b = models.Subnet(scope_id=scope.id, cidr="10.8.4.0/24")
+    db_session.add_all([a, b])
+    db_session.flush()
+
+    def web_host(ip, subnet=None):
+        h = _host(db_session, test_project.id, ip, now, ports=[(443, now)])
+        if subnet is not None:
+            db_session.add(models.HostSubnetMapping(host_id=h.id, subnet_id=subnet.id))
+        return h
+
+    done = web_host("10.8.3.1", a)
+    web_host("10.8.3.2", a)
+    web_host("192.168.9.9")                       # outside every scoped subnet
+    _host(db_session, test_project.id, "10.8.4.1", now, ports=[(22, now)])  # b: no web port -> n/a
+    db_session.add(models.HostSubnetMapping(
+        host_id=db_session.query(models.Host).filter_by(ip_address="10.8.4.1").one().id, subnet_id=b.id))
+    scan = models.Scan(project_id=test_project.id, filename="h.json", tool_name="httpx")
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(models.WebInterface(project_id=test_project.id, host_id=done.id, scan_id=scan.id,
+                                       url="https://10.8.3.1/", source="httpx"))
+    db_session.commit()
+
+    out = compute_evidence_coverage(db_session, test_project.id)
+    m = out["matrix"]
+    assert m["group_by"] == "subnet"          # no sites defined
+    assert [s["label"] for s in m["segments"]] == ["10.8.3.0/24", "10.8.4.0/24", "Outside scoped subnets"]
+    web = next(r for r in m["rows"] if r["domain"] == "web_tls")
+    assert [(c["eligible"], c["assessed"], c["gap"]) for c in web["cells"]] == [(2, 1, 1), (0, 0, 0), (1, 0, 1)]
+    # The columns are disjoint and complete: they sum to the project figure.
+    total = next(d for d in out["domains"] if d["key"] == "web_tls")["coverage"]
+    assert sum(c["eligible"] for c in web["cells"]) == total["denominator"] == 3
+    assert sum(c["assessed"] for c in web["cells"]) == total["numerator"] == 1
+
+    base = f"/api/v1/projects/{test_project.id}/posture/evidence/web_tls/gaps"
+    r = client.get(base, params={"segment": m["segments"][0]["key"]})
+    assert r.status_code == 200, r.text
+    assert [i["ip_address"] for i in r.json()["items"]] == ["10.8.3.2"]
+    assert r.json()["segment_label"] == "10.8.3.0/24"
+    r = client.get(base, params={"segment": "unmapped"})
+    assert [i["ip_address"] for i in r.json()["items"]] == ["192.168.9.9"]
+    assert client.get(base, params={"segment": "subnet:999999"}).status_code == 404
+
+
 def test_a_clean_vulnerability_scan_is_an_assessment(db_session, test_project):
     """v2.372.0 — "assessed" used to mean "has a vulnerability row", so a host
     Nessus covered and found clean read as never assessed (and with severity-0

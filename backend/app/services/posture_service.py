@@ -435,8 +435,9 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
             "detected_exposure": {"vuln_count": int(detected_vulns)},
             "open_questions": {"needs_evidence_hosts": int(needs_evidence_hosts)},
         },
-        # Evidence currency — how fresh the snapshot is. Absence of recent scans
-        # is itself a posture signal (the data may be stale).
+        # Provenance — how many scans, and days since the last import.  NOT a
+        # freshness judgment: a project is one assessment window, so its
+        # evidence does not go stale (the key name predates that decision).
         "evidence": {
             "scan_count": project_att["neglect"]["scan_count"],
             "scan_staleness_days": project_att["neglect"]["scan_staleness_days"],

@@ -57,19 +57,20 @@ const SevDot: React.FC<{ severity: Severity }> = ({ severity }) => (
 );
 
 
-// Evidence currency — how fresh the snapshot is. Stale/absent scans are
-// themselves a posture signal, so this rides next to the headline.
+// Provenance — how many scans the snapshot rests on and when the last one was
+// imported. Deliberately NOT a freshness judgment (v5.255.0): a project answers
+// "what was the posture during this assessment window", so an older import is
+// not a warning. Only "no scans at all" is — there is nothing to read.
 const EvidenceCurrency: React.FC<{ evidence: PostureResponse['evidence'] }> = ({ evidence }) => {
   const days = evidence.scan_staleness_days;
   const text = evidence.scan_count === 0
     ? 'No scans yet'
     : days == null ? `${evidence.scan_count} scans`
-      : days === 0 ? `${evidence.scan_count} scans · last today`
-        : `${evidence.scan_count} scans · last ${days}d ago`;
-  const stale = days != null && days >= 14;
+      : days === 0 ? `${evidence.scan_count} scans · last import today`
+        : `${evidence.scan_count} scans · last import ${days}d ago`;
   return (
-    <span className={`inline-flex items-center gap-xxs text-caption ${stale || evidence.scan_count === 0 ? 'text-warning' : 'text-muted-foreground'}`}
-      title="Evidence currency — how fresh this snapshot is">
+    <span className={`inline-flex items-center gap-xxs text-caption ${evidence.scan_count === 0 ? 'text-warning' : 'text-muted-foreground'}`}
+      title="What this snapshot rests on">
       <Clock className="size-3" aria-hidden /> {text}
     </span>
   );

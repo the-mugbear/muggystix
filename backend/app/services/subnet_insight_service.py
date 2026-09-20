@@ -208,6 +208,48 @@ def resolve_host_locations(
     return locations
 
 
+UNASSIGNED_SEGMENT = "unassigned"
+
+
+def group_hosts_into_segments(
+    locations: Dict[int, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Disjoint posture segments for the hosts in ``locations`` — ONE rule for
+    the Overview grid and the Evidence matrix (v2.374.0), so a column means the
+    same hosts on both pages.
+
+    Segments are SITES (plus ``unassigned`` for hosts that inherit none).  When
+    no host has a site at all, that would be one "Unassigned" column holding
+    everything — a comparison with nothing to compare — so the segments are the
+    hosts' most-specific SUBNETS instead (the grouping the operator did define).
+
+    Returns ``group_by`` (``site`` | ``subnet``), ``hosts`` (key -> host ids),
+    ``labels`` (key -> display label), ``cidrs`` (subnet keys -> CIDR) and
+    ``keys`` (largest first, ``unassigned`` last).  Keys: a site id as a
+    string, ``unassigned``, or ``subnet:<id>``.
+    """
+    by_site = any(loc.get("site_id") is not None for loc in locations.values())
+    hosts: Dict[str, set] = defaultdict(set)
+    labels: Dict[str, Optional[str]] = {}
+    cidrs: Dict[str, str] = {}
+    for hid, loc in locations.items():
+        if by_site:
+            sid = loc.get("site_id")
+            key = str(sid) if sid is not None else UNASSIGNED_SEGMENT
+            # A site id whose name is missing never renders as a blank column.
+            labels[key] = "Unassigned" if sid is None else (loc.get("site") or f"Site {sid}")
+        else:
+            key = f"subnet:{loc['subnet_id']}"
+            labels[key] = loc["cidr"]
+            cidrs[key] = loc["cidr"]
+        hosts[key].add(hid)
+    keys = sorted(hosts, key=lambda k: (k == UNASSIGNED_SEGMENT, -len(hosts[k]), labels.get(k) or ""))
+    return {
+        "group_by": "site" if by_site or not locations else "subnet",
+        "hosts": dict(hosts), "labels": labels, "cidrs": cidrs, "keys": keys,
+    }
+
+
 def compute_subnet_insights(
     db: Session, project_id: int, limit: Optional[int] = 50, offset: int = 0,
 ) -> Dict[str, Any]:

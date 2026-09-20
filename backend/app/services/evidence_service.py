@@ -44,6 +44,9 @@ def _domain(key: str, label: str, note: str, assessed: int, eligible: int) -> Di
         "label": label,
         "note": note,
         "coverage": ratio_metric(assessed, eligible).model_dump(),
+        # The step that closes this domain's gap (GAP_ACTIONS, defined below —
+        # resolved at call time).
+        "action": GAP_ACTIONS[key],
     }
 
 
@@ -209,11 +212,75 @@ GAP_ACTIONS: Dict[str, Dict[str, str]] = {
 }
 
 
-def evidence_gap_hosts(db: Session, project_id: int, domain: str, limit: int = 200) -> Optional[Dict[str, Any]]:
+# The Evidence matrix's extra column: hosts outside every scoped subnet.  The
+# Overview grid cannot show them (it is about scoped segments); Evidence covers
+# every host in the project, so here they are a column, never a silent omission.
+UNMAPPED_SEGMENT = "unmapped"
+
+
+def evidence_segments(db: Session, project_id: int) -> Dict[str, Any]:
+    """The Evidence matrix's columns: the SAME disjoint segments as the Overview
+    grid (``subnet_insight_service.group_hosts_into_segments`` — sites, or
+    most-specific subnets when the project defines no site) plus ``unmapped``.
+    Returns ``group_by``, ``keys`` (display order), ``labels``, ``hosts``."""
+    from app.services.subnet_insight_service import (
+        group_hosts_into_segments, resolve_host_locations,
+    )
+
+    all_hosts = {
+        hid for (hid,) in db.query(models.Host.id).filter(models.Host.project_id == project_id).all()
+    }
+    locations = resolve_host_locations(db, project_id)
+    grouping = group_hosts_into_segments(locations)
+    hosts: Dict[str, Set[int]] = {k: set(v) for k, v in grouping["hosts"].items()}
+    labels: Dict[str, str] = dict(grouping["labels"])
+    keys: List[str] = list(grouping["keys"])
+    unmapped = all_hosts - set(locations)
+    if unmapped:
+        hosts[UNMAPPED_SEGMENT] = unmapped
+        labels[UNMAPPED_SEGMENT] = "Outside scoped subnets"
+        keys.append(UNMAPPED_SEGMENT)
+    return {"group_by": grouping["group_by"], "keys": keys, "labels": labels, "hosts": hosts}
+
+
+def _evidence_matrix(
+    segments: Dict[str, Any], eligible: Dict[str, Set[int]], assessed: Dict[str, Set[int]],
+) -> Dict[str, Any]:
+    """Domain × segment: per cell, the hosts the domain applies to, how many
+    carry its evidence, and the ``gap`` between them.  Three states and no
+    more — assessed, not assessed, not applicable (``eligible == 0``).  A project
+    is one assessment window: evidence does not go "stale" inside it."""
+    rows = []
+    for d in EVIDENCE_DOMAINS:
+        el, done = eligible[d["key"]], assessed[d["key"]]
+        cells = []
+        for key in segments["keys"]:
+            seg_el = el & segments["hosts"][key]
+            seg_done = len(seg_el & done)
+            cells.append({
+                "segment": key, "eligible": len(seg_el),
+                "assessed": seg_done, "gap": len(seg_el) - seg_done,
+            })
+        rows.append({"domain": d["key"], "label": d["label"], "cells": cells})
+    return {
+        "group_by": segments["group_by"],
+        "segments": [
+            {"key": k, "label": segments["labels"][k], "hosts": len(segments["hosts"][k])}
+            for k in segments["keys"]
+        ],
+        "rows": rows,
+    }
+
+
+def evidence_gap_hosts(
+    db: Session, project_id: int, domain: str, limit: int = 200, segment: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """The hosts a domain applies to that carry no evidence in it — the
     coverage gap as a list the operator can act on, not just a ratio.
 
-    Returns None for an unknown domain.  ``ports`` carries the open ports
+    Returns None for an unknown domain OR an unknown ``segment``.  ``segment``
+    (a key from the Evidence matrix) narrows the list to one cell, so a cell's
+    ``gap`` count opens exactly its hosts.  ``ports`` carries the open ports
     that made the host eligible (the web or auth ports), so the list reads
     as endpoints, not addresses.
     """
@@ -221,6 +288,13 @@ def evidence_gap_hosts(db: Session, project_id: int, domain: str, limit: int = 2
         return None
     eligible = eligible_host_ids(db, project_id)[domain]
     assessed = assessed_host_ids(db, project_id)[domain]
+    segment_label: Optional[str] = None
+    if segment is not None:
+        segments = evidence_segments(db, project_id)
+        if segment not in segments["hosts"]:
+            return None
+        eligible = eligible & segments["hosts"][segment]
+        segment_label = segments["labels"][segment]
     gap_ids = sorted(eligible - assessed)
     total = len(gap_ids)
     chosen = gap_ids[:limit]
@@ -248,6 +322,8 @@ def evidence_gap_hosts(db: Session, project_id: int, domain: str, limit: int = 2
     return {
         "domain": domain,
         "label": DOMAIN_LABELS[domain],
+        "segment": segment,
+        "segment_label": segment_label,
         "total": total,
         "items": [
             {
@@ -305,6 +381,9 @@ def compute_evidence_coverage(db: Session, project_id: int) -> Dict[str, Any]:
     return {
         "total_hosts": total_hosts,
         "domains": domains,
+        # Where the gaps ARE (v2.374.0): the project totals above say a domain
+        # is 60% covered; this says which segment holds the other 40%.
+        "matrix": _evidence_matrix(evidence_segments(db, project_id), eligible, assessed),
         "contributing_tools": contributing_tools,
         "data_quality": {
             "scans": scan_count,
