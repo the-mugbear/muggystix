@@ -22,7 +22,7 @@ from app.services.host_serialization import _serialize_follow, _serialize_note
 from app.services.host_query import build_filtered_host_query as _build_filtered_host_query
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
-from app.db.models_findings import Finding, FindingHost, FindingHostStatus
+from app.db.models_findings import Finding, FindingHost, INACTIVE_ENDPOINT_STATES
 from app.db.models_agent import TestPlan, TestPlanEntry, TestExecutionResult
 from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row
 import base64
@@ -39,12 +39,9 @@ import html
 
 logger = logging.getLogger(__name__)
 
-# Endpoint states that are not live work on that host.  ``false_positive``
-# (v2.360.0) is a host-only judgment: the finding may be confirmed elsewhere,
-# but it is not an active finding HERE, and must not be counted as one.
-_INACTIVE_ENDPOINT_STATES = frozenset({
-    FindingHostStatus.REMEDIATED.value, FindingHostStatus.FALSE_POSITIVE.value,
-})
+# Endpoint states that are not live work on that host — the ONE definition
+# lives beside the model (v2.365.0) so the site / subnet summaries share it.
+_INACTIVE_ENDPOINT_STATES = INACTIVE_ENDPOINT_STATES
 
 # Systemic spread classification (Phase 1) → report label. Falls back to the
 # legacy is_blind_spot boolean when an older/cached snapshot lacks the field.

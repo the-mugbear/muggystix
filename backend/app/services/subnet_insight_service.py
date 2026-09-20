@@ -47,7 +47,7 @@ from app.db.models import (
     WebInterface,
 )
 from app.db.models_confidence import NetexecResult
-from app.db.models_findings import Finding, FindingHost
+from app.db.models_findings import Finding, FindingHost, finding_active_on_host
 from app.services.attention_service import (
     _ACTIVE_FINDING_STATUSES,
     _SEVERITY_WEIGHT,
@@ -267,7 +267,14 @@ def compute_subnet_insights(
     finding_rows = (
         db.query(FindingHost.host_id, Finding.id, Finding.severity, Finding.owner_id)
         .join(Finding, FindingHost.finding_id == Finding.id)
-        .filter(Finding.project_id == project_id, Finding.status.in_(_ACTIVE_FINDING_STATUSES))
+        .filter(
+            Finding.project_id == project_id,
+            Finding.status.in_(_ACTIVE_FINDING_STATUSES),
+            # v2.365.0 (code review finding 5) — and live ON THIS HOST: a host
+            # remediated or dismissed as a false positive must not keep adding
+            # its site / subnet to the finding's exposure.
+            finding_active_on_host(),
+        )
         .all()
     )
     finding_subnets: Dict[int, set] = defaultdict(set)

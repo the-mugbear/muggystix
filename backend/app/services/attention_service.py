@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
 from app.db.models import FollowStatus, HostFollow, HostSubnetMapping, Scan, Scope, Site, Subnet
-from app.db.models_findings import Finding, FindingHost
+from app.db.models_findings import Finding, FindingHost, finding_active_on_host
 
 _UNASSIGNED = "__unassigned__"
 
@@ -206,7 +206,14 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
     rows = (
         db.query(FindingHost.host_id, Finding.id, Finding.severity, Finding.owner_id)
         .join(Finding, FindingHost.finding_id == Finding.id)
-        .filter(Finding.project_id == project_id, Finding.status.in_(_ACTIVE_FINDING_STATUSES))
+        .filter(
+            Finding.project_id == project_id,
+            Finding.status.in_(_ACTIVE_FINDING_STATUSES),
+            # v2.365.0 (code review finding 5) — and live ON THIS HOST: a host
+            # remediated or dismissed as a false positive must not keep adding
+            # its site / subnet to the finding's exposure.
+            finding_active_on_host(),
+        )
         .all()
     )
     finding_sites: Dict[int, set] = defaultdict(set)

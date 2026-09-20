@@ -171,6 +171,24 @@ class FindingHost(Base):
     )
 
 
+# Endpoint states that are NOT live work on that host (v2.365.0 — one
+# definition; it lived privately in report_generator).  ``remediated``: fixed
+# here.  ``false_positive`` (v2.360.0): a host-only judgment — the finding may
+# be confirmed elsewhere, but it is not an active finding HERE.  A finding's own
+# status says nothing about a given host, so anything that attributes a finding
+# to a host, site or subnet must apply BOTH filters.  The site / subnet
+# summaries applied only the finding's, so a host dismissed as a false positive
+# kept adding its site to the finding's exposure — and disagreed with reports.
+INACTIVE_ENDPOINT_STATES = frozenset({
+    FindingHostStatus.REMEDIATED.value, FindingHostStatus.FALSE_POSITIVE.value,
+})
+
+
+def finding_active_on_host():
+    """SQL condition: this ``FindingHost`` row is live work on its host."""
+    return FindingHost.host_status.notin_(tuple(INACTIVE_ENDPOINT_STATES))
+
+
 class FindingVulnerability(Base):
     """A scanner vulnerability that evidences a finding (v2.236.0).
 
