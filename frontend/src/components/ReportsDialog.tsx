@@ -257,14 +257,17 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
     if (f.has_open_ports !== undefined) out.push(`Has open ports: ${f.has_open_ports ? 'Yes' : 'No'}`);
     if (f.os_filter) out.push(`OS: ${f.os_filter}`);
     if (f.tech) out.push(`Tech: ${f.tech}`);
-    if (f.has_critical_vulns) out.push('Critical vulnerabilities');
-    if (f.has_high_vulns) out.push('High vulnerabilities');
-    if (f.has_medium_vulns) out.push('Medium vulnerabilities');
-    if (f.has_low_vulns) out.push('Low vulnerabilities');
-    if (f.has_exploit_available) out.push('Exploit available');
-    if (f.has_test_execution) out.push('Has test execution');
-    if (f.has_web_interface !== undefined) out.push(`Web interface: ${f.has_web_interface ? 'Yes' : 'No'}`);
-    if (f.follow_status) out.push(`Follow: ${f.follow_status}`);
+    // One line: the selected severities are alternatives (the backend ORs
+    // them), and these lines are read as ANDed — same rule as the Hosts chips.
+    const severities = [
+      f.has_critical_vulns && 'Critical', f.has_high_vulns && 'High',
+      f.has_medium_vulns && 'Medium', f.has_low_vulns && 'Low',
+    ].filter(Boolean);
+    if (severities.length) out.push(`Scanner severity: ${severities.join(' or ')}`);
+    if (f.has_exploit_available) out.push('Exploit reported');
+    if (f.has_test_execution) out.push('Tested by agent');
+    if (f.has_web_interface !== undefined) out.push(`Web interface: ${f.has_web_interface ? 'recorded' : 'not recorded'}`);
+    if (f.follow_status) out.push(`Review: ${f.follow_status === 'none' ? 'not started' : f.follow_status}`);
     if (f.assigned_to) out.push(`Assigned: ${f.assigned_to}`);
     if (f.out_of_scope_only) out.push('Out of scope');
     if (f.scan_ids) out.push(`Scan IDs: ${f.scan_ids}`);

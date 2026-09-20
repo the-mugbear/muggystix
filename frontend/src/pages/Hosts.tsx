@@ -233,6 +233,8 @@ export default function Hosts() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const rowSelectionRef = useRef(rowSelection);
+  rowSelectionRef.current = rowSelection;
 
   // Saved Hosts page filter views (per-user, per-project).
   const [savedViews, setSavedViews] = useState<HostFilterView[]>([]);
@@ -363,8 +365,17 @@ export default function Hosts() {
     }
     if (prevFilterSignature.current !== filterSignature) {
       prevFilterSignature.current = filterSignature;
+      // Say so: a bulk bar that vanishes without a word reads as a lost action.
+      const dropped = Object.keys(rowSelectionRef.current).length;
+      if (dropped > 0) {
+        toast.info(
+          `Selection cleared (${dropped} host${dropped === 1 ? '' : 's'}) — the filters changed, so the rows are a different set.`,
+          { autoHideMs: 4000 },
+        );
+      }
       setRowSelection({});
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is stable; the selection is read through a ref
   }, [filterSignature, isInitialized]);
 
   // Two independent request lanes (rows vs filter facets) — see
@@ -904,12 +915,18 @@ export default function Hosts() {
   const lastPageIndex = Math.max(0, Math.ceil(totalHosts / rowsPerPage) - 1);
   // Position within the full result set (queue progress), not just the page.
   const inspectedAbsoluteIndex = inspectedIndex >= 0 ? page * rowsPerPage + inspectedIndex : -1;
-  const hasInspectorPrev = inspectedAbsoluteIndex > 0;
-  const hasInspectorNext =
-    inspectedAbsoluteIndex >= 0 && inspectedAbsoluteIndex < totalHosts - 1;
   // What to open once the next page loads. A ref (not state) so turning the
   // page doesn't add a render and the post-load effect reads the latest intent.
   const pendingInspectorEdgeRef = useRef<null | 'first' | 'last' | 'first-unreviewed'>(null);
+  // A filter edit or a page turn can take the open host out of the rows shown.
+  // The inspector keeps it (never a silent switch, never a lost note draft) and
+  // says so; Next then walks the queue that is on screen NOW, from its top.
+  const inspectedOutsideRows =
+    inspectedHostId !== null && inspectedIndex < 0 && !loading && pendingInspectorEdgeRef.current === null;
+  const hasInspectorPrev = inspectedAbsoluteIndex > 0;
+  const hasInspectorNext = inspectedOutsideRows
+    ? hosts.length > 0
+    : inspectedAbsoluteIndex >= 0 && inspectedAbsoluteIndex < totalHosts - 1;
   // "Unreviewed" = nobody has started it: skip both Reviewed AND In Review
   // (a teammate is already on the in-review ones). Untouched / legacy-watching
   // hosts are the queue targets.
@@ -919,7 +936,13 @@ export default function Hosts() {
   };
 
   const stepInspector = async (delta: 1 | -1) => {
-    if (inspectedIndex < 0) return;
+    if (inspectedIndex < 0) {
+      // Outside the rows shown: there is no "previous", and "next" is the top
+      // of the current queue.
+      if (delta !== 1 || !inspectedOutsideRows || hosts.length === 0) return;
+      if (await confirmDiscardDraft()) setInspectedHostId(hosts[0].id);
+      return;
+    }
     if (!(await confirmDiscardDraft())) return;
     const target = hosts[inspectedIndex + delta];
     if (target) { setInspectedHostId(target.id); return; }
@@ -936,7 +959,8 @@ export default function Hosts() {
   // Jump to the next host that still needs review, scanning forward across
   // pages and skipping ones already Reviewed.
   const stepToNextUnreviewed = async () => {
-    if (inspectedIndex < 0) return;
+    // From outside the rows shown the scan starts at the top (index -1 + 1).
+    if (inspectedIndex < 0 && !inspectedOutsideRows) return;
     if (!(await confirmDiscardDraft())) return;
     for (let i = inspectedIndex + 1; i < hosts.length; i += 1) {
       if (hostNeedsReview(hosts[i])) { setInspectedHostId(hosts[i].id); return; }
@@ -1084,16 +1108,36 @@ export default function Hosts() {
         ...chip,
         fieldId: fieldForChip(chip.key, filters)?.id,
         onDelete: () => {
+          // Removal is immediate, so it is reversible: a condition can be
+          // several values that took a while to pick.
+          const before = filters;
           setFilters((previous) => {
             const updated = { ...previous } as Record<string, unknown>;
             chip.clearKeys.forEach((key) => delete updated[key]);
             return updated as HostFilterOptions;
           });
           setPage(0);
+          toast.info(`Removed: ${chip.label}`, {
+            autoHideMs: 6000,
+            action: { label: 'Undo', onClick: () => { setFilters(before); setPage(0); } },
+          });
         },
       })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is stable
     [filters, scanLookup, filterData],
   );
+
+  // The filters as they were before the last change — what "Undo last change"
+  // on an empty result goes back to.  Not set by the initial restore.
+  const [previousFilters, setPreviousFilters] = useState<HostFilterOptions | null>(null);
+  const lastFiltersRef = useRef<HostFilterOptions | null>(null);
+  useEffect(() => {
+    if (!isInitialized) return;
+    if (lastFiltersRef.current !== null && lastFiltersRef.current !== filters) {
+      setPreviousFilters(lastFiltersRef.current);
+    }
+    lastFiltersRef.current = filters;
+  }, [filters, isInitialized]);
 
 
   useEffect(() => {
@@ -1485,11 +1529,26 @@ export default function Hosts() {
           <h2 className="text-section-title text-muted-foreground">
             No hosts match the current filters
           </h2>
+          {/* No guess at WHICH condition emptied the list — only the ways back. */}
           <p className="text-metadata text-muted-foreground">
-            {activeFilterChips.length} filter{activeFilterChips.length === 1 ? '' : 's'} active — adjust
-            them above or clear all to see every host.
+            {activeFilterChips.length} condition{activeFilterChips.length === 1 ? '' : 's'} applied, and a host
+            must match all of them. Edit one from its chip above, go back a step, or clear them.
           </p>
-          <Button onClick={clearAllFilters}>Clear filters</Button>
+          <div className="flex flex-wrap items-center justify-center gap-xs">
+            {previousFilters && (
+              <Button
+                onClick={() => {
+                  setFilters(previousFilters);
+                  setPage(0);
+                }}
+              >
+                Undo last change
+              </Button>
+            )}
+            <Button variant={previousFilters ? 'outline' : 'default'} onClick={clearAllFilters}>
+              Clear filters
+            </Button>
+          </div>
         </div>
       ) : hosts.length === 0 ? (
         <div className="space-y-xs py-xl text-center">
@@ -1599,6 +1658,8 @@ export default function Hosts() {
         open={toolReadyDialogOpen}
         onClose={() => setToolReadyDialogOpen(false)}
         filters={exportQueryContext}
+        totalHosts={totalHosts}
+        selectedCount={selectedIds.length}
       />
 
       <Dialog
@@ -1679,6 +1740,14 @@ export default function Hosts() {
                 {inspectedHostId !== null && totalHosts > 0 && inspectedAbsoluteIndex >= 0 && (
                   <span className="ml-xs text-caption font-normal text-muted-foreground">
                     {inspectedAbsoluteIndex + 1} of {totalHosts} in this queue
+                  </span>
+                )}
+                {inspectedOutsideRows && (
+                  <span
+                    className="ml-xs text-caption font-normal text-warning"
+                    title="A filter change or a page turn moved this host out of the rows shown. It stays open until you move on; Next opens the first host in the list as it is now."
+                  >
+                    outside the rows shown
                   </span>
                 )}
               </SideSheetTitle>

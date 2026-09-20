@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import Hosts from '../../pages/Hosts';
@@ -39,11 +39,36 @@ vi.mock('../../services/api', () => ({
   recordHostQuery: vi.fn(),
   deleteHostQuery: vi.fn(),
   clearHostQueryHistory: vi.fn(),
+  // The bulk bar (shown once a row is checked) loads its tag / member lists.
+  listHostTags: vi.fn(async () => []),
+  listProjectMembers: vi.fn(async () => []),
+  getMatchingHostIds: vi.fn(),
+  bulkTagHosts: vi.fn(),
+  bulkAssignHosts: vi.fn(),
+  bulkUnassignHosts: vi.fn(),
+  bulkFollowHosts: vi.fn(),
   // Project-scope helpers — needed because anything that imports from
   // ``../services/api`` (now a barrel re-exporting per-domain
   // submodules) may transitively touch them.  v2.29.0.
   getCurrentProjectId: vi.fn(() => 1),
   setCurrentProjectId: vi.fn(),
+}));
+
+// One shared toast object (the global mock hands out fresh spies per call), so
+// a test can read what was announced and press a toast's action.
+const toastMock = vi.hoisted(() => ({
+  success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), dismiss: vi.fn(),
+}));
+vi.mock('../../contexts/ToastContext', async () => ({
+  ...(await vi.importActual<typeof import('../../contexts/ToastContext')>('../../contexts/ToastContext')),
+  useToast: () => toastMock,
+}));
+
+// The inspector's body fetches a whole host; the page tests only need to know
+// WHICH host is open.
+vi.mock('../../components/HostInspector', () => ({
+  __esModule: true,
+  default: ({ hostId }: { hostId: number }) => <div data-testid="host-inspector">host {hostId}</div>,
 }));
 
 vi.mock('../../components/ReportsDialog', () => ({
@@ -358,5 +383,74 @@ describe('Hosts', () => {
     await screen.findByText('Discovered Hosts');
     expect(screen.queryByRole('button', { name: /Expand host details/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /Collapse host details/i })).toBeNull();
+  });
+
+  // ── 5.251.0 — investigation flow ─────────────────────────────────────────
+  const applyCriticalFilter = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: /Add filter/i }));
+    await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+  };
+
+  it('removing a condition is immediate and offers Undo, which restores it', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    routerState.search = '?ports=8080&sites=East';
+    renderHosts();
+
+    await user.click(await screen.findByRole('button', { name: 'Clear filter: Endpoint: port 8080' }));
+    await waitFor(() => expect(screen.queryByText('Endpoint: port 8080')).not.toBeInTheDocument());
+    expect(screen.getByText('Site: East')).toBeInTheDocument();
+
+    const [message, options] = toastMock.info.mock.calls[toastMock.info.mock.calls.length - 1];
+    expect(message).toBe('Removed: Endpoint: port 8080');
+    expect(options.action.label).toBe('Undo');
+    act(() => options.action.onClick());
+    expect(await screen.findByText('Endpoint: port 8080')).toBeInTheDocument();
+  });
+
+  it('keeps the open host when a filter takes it out of the rows shown, says so, and Next starts from the top', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    renderHosts();
+
+    // alpha (host 1) has no critical observation — the filter below drops it.
+    // The table re-renders once when the facet data lands, and a node found
+    // before that is detached by the time it is clicked (a browser user cannot
+    // click a detached node).  Query and click together until it takes.
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('link', { name: /Open host inspector for 10\.0\.0\.5 \(alpha\.internal\)/ }));
+      expect(screen.getByTestId('host-inspector')).toBeInTheDocument();
+    });
+    expect(await screen.findByTestId('host-inspector')).toHaveTextContent('host 1');
+    expect(screen.getByText(/of 30 in this queue/)).toBeInTheDocument();
+
+    await applyCriticalFilter(user);
+
+    expect(await screen.findByText('outside the rows shown')).toBeInTheDocument();
+    expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 1'); // never switched silently
+    expect(screen.getByRole('button', { name: 'Previous host (k)' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Next host (j)' }));
+    await waitFor(() => expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 2'));
+    expect(screen.getByText(/^1 of \d+ in this queue/)).toBeInTheDocument();
+  });
+
+  it('says that a filter change cleared the selection instead of dropping it silently', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    renderHosts();
+
+    // Same settle-then-click as above: select once the row is the live one.
+    await waitFor(() => {
+      const box = screen.getByRole('checkbox', { name: 'Select 10.0.0.3' });
+      if (box.getAttribute('aria-checked') !== 'true') fireEvent.click(box);
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+    });
+    await applyCriticalFilter(user);
+
+    await waitFor(() =>
+      expect(toastMock.info).toHaveBeenCalledWith(
+        expect.stringMatching(/^Selection cleared \(1 host\)/),
+        expect.anything(),
+      ),
+    );
   });
 });

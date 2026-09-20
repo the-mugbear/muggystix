@@ -26,6 +26,10 @@ interface ToolReadyOutputProps {
   open: boolean;
   onClose: () => void;
   filters: Record<string, string | boolean | number | string[] | undefined>;
+  /** Hosts in the view being exported — stated in the dialog when known. */
+  totalHosts?: number;
+  /** Rows checked in the table; they do NOT narrow this export, and the dialog says so. */
+  selectedCount?: number;
 }
 
 const TOOL_FORMATS = [
@@ -48,7 +52,9 @@ const NAME_AWARE_FORMATS = new Set(['nuclei', 'json', 'names', 'web-targets']);
 // <pre> stalls the dialog. Copy and Download always use the full output.
 const PREVIEW_CHARS = 100_000;
 
-export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOutputProps) {
+export default function ToolReadyOutput({
+  open, onClose, filters, totalHosts, selectedCount,
+}: ToolReadyOutputProps) {
   const [selectedFormat, setSelectedFormat] = useState('ip-list');
   const [includePorts, setIncludePorts] = useState(false);
   // Default in-scope: a declared domain must cover a name before it becomes
@@ -122,11 +128,21 @@ export default function ToolReadyOutput({ open, onClose, filters }: ToolReadyOut
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <Code className="size-5" aria-hidden />
-            Tool-Ready Output Generator
+            Export targets
           </DialogTitle>
         </DialogHeader>
-        <p className="text-metadata text-muted-foreground">
-          Generate tool-ready output from filtered hosts for penetration testing tools.
+        {/* Name the population: this exports the VIEW, never the checked rows. */}
+        <p className="text-metadata text-muted-foreground break-words">
+          Exports the <strong className="text-foreground">current view</strong>
+          {totalHosts != null && (
+            <> — all {totalHosts.toLocaleString()} host{totalHosts === 1 ? '' : 's'} matching the applied filters, on every page</>
+          )}
+          , formatted for your own tools.
+          {selectedCount ? (
+            <> The {selectedCount.toLocaleString()} row{selectedCount === 1 ? '' : 's'} you have checked
+              {selectedCount === 1 ? ' does' : ' do'} not narrow it — use <em>Copy IPs</em> in the selection bar for just those.</>
+          ) : null}
+          {' '}A target list is a hand-off; it authorises no scan.
         </p>
 
         <div className="space-y-xxs">

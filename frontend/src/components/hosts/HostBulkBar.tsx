@@ -26,6 +26,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
+import { cn } from '../../utils/cn';
 import { copyToClipboard } from '../../utils/clipboard';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -74,6 +75,11 @@ const STATUS_OPTIONS: Array<{ value: FollowStatus; label: string }> = [
 // Selections at/above this size (or any "all-matching" selection) require a
 // confirmation before the bulk mutation runs.
 const CONFIRM_THRESHOLD = 25;
+
+// Mirrors `_BULK_SELECT_CAP` in backend/app/api/v1/endpoints/hosts.py — the
+// most ids `GET /hosts/ids` returns.  The response still reports `capped`, so
+// a drifted constant is caught at action time rather than silently wrong.
+export const BULK_SELECT_CAP = 5000;
 
 interface PendingAction {
   summary: string;
@@ -128,7 +134,13 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
     setAllMatching(false);
   }, [selectedIds.length]);
 
-  const effectiveCount = allMatching ? totalMatching : selectedIds.length;
+  // The server resolves at most BULK_SELECT_CAP ids.  Above it, "all matching"
+  // is not what would be acted on, so nothing here may say "all": the button,
+  // the count and the confirmation all name the capped number BEFORE the action
+  // (the post-hoc toast in resolveIds stays as a backstop if the cap changes).
+  const matchingIsCapped = totalMatching > BULK_SELECT_CAP;
+  const reachableMatching = Math.min(totalMatching, BULK_SELECT_CAP);
+  const effectiveCount = allMatching ? reachableMatching : selectedIds.length;
   const canSelectAll = !allMatching && totalMatching > selectedIds.length && selectedIds.length > 0;
 
   const resolveIds = useCallback(async (): Promise<number[]> => {
@@ -177,7 +189,11 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
       setPending({
         summary:
           `${actionLabel} — ${effectiveCount.toLocaleString()} host${effectiveCount === 1 ? '' : 's'}` +
-          (allMatching ? ' matching the current filters' : '') +
+          (allMatching
+            ? matchingIsCapped
+              ? ` — the first ${BULK_SELECT_CAP.toLocaleString()} of the ${totalMatching.toLocaleString()} matching the current filters; the rest are NOT included`
+              : ' matching the current filters'
+            : '') +
           '.',
         run,
       });
@@ -219,11 +235,20 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
 
       {canSelectAll && (
         <Button size="sm" variant="ghost" onClick={() => setAllMatching(true)} disabled={working}>
-          Select all {totalMatching.toLocaleString()} matching
+          {matchingIsCapped
+            ? `Select the first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching`
+            : `Select all ${totalMatching.toLocaleString()} matching`}
         </Button>
       )}
       {allMatching && (
-        <span className="text-caption text-muted-foreground">All hosts matching the current filters.</span>
+        <span className={cn('text-caption', matchingIsCapped ? 'text-warning' : 'text-muted-foreground')}>
+          {matchingIsCapped
+            ? `The first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching hosts — bulk actions stop there. Narrow the filters to reach the rest.`
+            : 'Every host matching the current filters, on every page.'}
+        </span>
+      )}
+      {!allMatching && (
+        <span className="text-caption text-muted-foreground">checked rows only</span>
       )}
 
       <div className="ml-auto flex flex-wrap items-center gap-xs">
