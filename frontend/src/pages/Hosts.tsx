@@ -2,10 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   Code,
   Computer,
   Download,
@@ -13,7 +11,6 @@ import {
   Loader2,
   RefreshCw,
   SkipForward,
-  SlidersHorizontal,
   Star,
   X,
 } from 'lucide-react';
@@ -41,12 +38,14 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
-import HostFilters, {
+import {
   HOST_BUILT_IN_VIEWS,
   HostFilterOptions,
   activeFilterPresetId,
 } from '../components/HostFilters';
 import HostCommandBar from '../components/hosts/HostCommandBar';
+import HostFilterPopover from '../components/hosts/HostFilterPopover';
+import { fieldForChip } from '../components/hosts/hostFilterFields';
 import HostViewPicker, { type BuiltInHostView } from '../components/hosts/HostViewPicker';
 import {
   FOLLOW_STATUS_OPTIONS,
@@ -432,9 +431,15 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot post-load fetch
   }, [loading]);
 
-  // Panel-open state lives up here (above the cascading-facet effect) so the
-  // effect can gate on it.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The "+ Add filter" popover: open/closed, and which field's editor it shows
+  // (null = the catalog).  Lives above the cascading-facet effect, which gates
+  // on it.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterFieldId, setFilterFieldId] = useState<string | null>(null);
+  const openFilterEditor = useCallback((fieldId: string | null) => {
+    setFilterFieldId(fieldId);
+    setFilterOpen(true);
+  }, []);
 
   // Cascading refresh: when filters change (debounced 400ms), refetch
   // facet counts so the combobox trailing-count chips reflect the new
@@ -445,20 +450,20 @@ export default function Hosts() {
   // inputs.  Also gated on `filterData` having already loaded once, so
   // the initial post-load fetch above isn't double-fired.
   //
-  // #49 — those cascading counts only render inside the filter panel's
-  // comboboxes, so only refetch while the panel is open.  When it's closed
-  // (filtering via the sticky review chips / query bar), a filter change no
-  // longer fires a heavy facet query; opening the panel re-runs this effect
-  // and refreshes the counts.  Chip labels rely on the one-shot initial load
-  // (names don't change with filters), so they're unaffected.
+  // #49 — those cascading counts only render inside the filter editors, so
+  // only refetch while the popover is open.  When it's closed (filtering via
+  // the review chips / query bar), a filter change no longer fires a heavy
+  // facet query; opening the popover re-runs this effect and refreshes the
+  // counts.  Chip labels rely on the one-shot initial load (names don't change
+  // with filters), so they're unaffected.
   useEffect(() => {
-    if (filterData === null || !advancedOpen) return;
+    if (filterData === null || !filterOpen) return;
     const timer = setTimeout(() => {
       fetchFilterData(buildFacetParams());
     }, 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrowing per audit H18
-  }, [filters, advancedOpen]);
+  }, [filters, filterOpen]);
 
   useEffect(() => {
     if (isInitialized) return;
@@ -1077,6 +1082,7 @@ export default function Hosts() {
         followStatus: (value) => FOLLOW_STATUS_OPTIONS.find((o) => o.value === value)?.label,
       }).map((chip) => ({
         ...chip,
+        fieldId: fieldForChip(chip.key, filters)?.id,
         onDelete: () => {
           setFilters((previous) => {
             const updated = { ...previous } as Record<string, unknown>;
@@ -1313,16 +1319,21 @@ export default function Hosts() {
             onDeleteView={handleDeleteView}
             onToggleProjectDefault={handleToggleProjectDefault}
           />
-          <Button
-            variant="outline"
-            size="sm"
-            aria-expanded={advancedOpen}
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            <SlidersHorizontal className="size-4" aria-hidden />
-            Filters
-            {advancedOpen ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
-          </Button>
+          <HostFilterPopover
+            open={filterOpen}
+            onOpenChange={(open) => {
+              setFilterOpen(open);
+              // Always reopen on the catalog; a chip sets the field itself.
+              if (!open) setFilterFieldId(null);
+            }}
+            fieldId={filterFieldId}
+            onFieldChange={setFilterFieldId}
+            filters={filters}
+            onApply={handleFiltersChange}
+            data={filterData}
+            optionsLoading={filterDataLoading}
+            optionsError={filterDataError !== null}
+          />
           {/* The one result count: the listing's own total, so it always agrees
               with the table and the exports. */}
           <p className="ml-auto shrink-0 text-metadata text-muted-foreground" aria-live="polite">
@@ -1393,7 +1404,21 @@ export default function Hosts() {
                   key={chip.key}
                   className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-card px-sm py-px text-caption font-medium"
                 >
-                  <span className="truncate" title={chip.title ?? chip.label}>{chip.label}</span>
+                  {/* The label edits, the × removes — the same editor "+ Add
+                      filter" opens.  The query / text-search / host-state chips
+                      have no structured editor and stay plain text. */}
+                  {chip.fieldId ? (
+                    <button
+                      type="button"
+                      className="truncate rounded-sm text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title={`${chip.title ?? chip.label} — click to edit`}
+                      onClick={() => openFilterEditor(chip.fieldId!)}
+                    >
+                      {chip.label}
+                    </button>
+                  ) : (
+                    <span className="truncate" title={chip.title ?? chip.label}>{chip.label}</span>
+                  )}
                   {chip.onDelete && (
                     <button
                       type="button"
@@ -1417,16 +1442,6 @@ export default function Hosts() {
             </div>
         )}
       </div>
-
-      {advancedOpen && (
-        <HostFilters
-          filters={filters}
-          onFiltersChange={handleFiltersChange}
-          availableData={filterData}
-          optionsLoading={filterDataLoading}
-          notesToggleVisible
-        />
-      )}
 
       {error && (
         <Alert variant="destructive">

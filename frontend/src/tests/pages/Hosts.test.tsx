@@ -46,28 +46,6 @@ vi.mock('../../services/api', () => ({
   setCurrentProjectId: vi.fn(),
 }));
 
-// v4.51.0 — the "Critical" preset chip lives inside HostFilters now
-// (it was previously in the Hosts page sticky-bar Quick views row).
-// Expose a thin button stub that drives the same onFiltersChange the
-// real preset handler would so the existing Critical-quick-view test
-// continues to exercise the page-level integration (filter state →
-// buildFilterParams → getHosts) without pulling in the real
-// HostFilters' combobox/advanced-filter dependencies.
-vi.mock('../../components/HostFilters', async (importOriginal) => ({
-  // The page reads the built-in views and preset matching from this module;
-  // only the panel component itself is stubbed.
-  ...(await importOriginal<typeof import('../../components/HostFilters')>()),
-  __esModule: true,
-  default: ({ onFiltersChange }: { onFiltersChange: (next: any) => void }) => (
-    <div data-testid="host-filters">
-      Host Filters
-      <button type="button" onClick={() => onFiltersChange({ hasCriticalVulns: true })}>
-        Critical
-      </button>
-    </div>
-  ),
-}));
-
 vi.mock('../../components/ReportsDialog', () => ({
   __esModule: true,
   default: ({ open }: { open: boolean }) => <div data-testid="reports-dialog" data-open={String(open)} />,
@@ -224,20 +202,31 @@ describe('Hosts', () => {
     );
   });
 
-  it('a filter-panel change refetches with matching params', async () => {
+  // 5.250.0 — "+ Add filter": catalog → one field's editor → Apply.  Nothing is
+  // requested until the condition is applied, and two severities are ONE reload.
+  it('adds a condition through the filter catalog and refetches once it is applied', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
 
     await screen.findByText('Discovered Hosts');
-    await user.click(screen.getByRole('button', { name: /^Filters/i }));
-    await user.click(screen.getByRole('button', { name: 'Critical' }));
+    await user.click(screen.getByRole('button', { name: /Add filter/i }));
+    await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
+    const callsBefore = mockedApi.getHosts.mock.calls.length;
+    await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
+    await user.click(screen.getByRole('checkbox', { name: 'High' }));
+    expect(mockedApi.getHosts.mock.calls.length).toBe(callsBefore);
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
 
     await waitFor(() => {
       expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
-        expect.objectContaining({ has_critical_vulns: true, skip: 0, limit: 25 }),
+        expect.objectContaining({ has_critical_vulns: true, has_high_vulns: true, skip: 0, limit: 25 }),
         expect.anything(),
       );
     });
+    expect(mockedApi.getHosts.mock.calls.length).toBe(callsBefore + 1);
+    // One chip for the one condition, and its label reopens the same editor.
+    await user.click(screen.getByRole('button', { name: 'Scanner severity: Critical or High' }));
+    expect(await screen.findByRole('checkbox', { name: 'Critical' })).toBeChecked();
   });
 
   // 5.249.0 — the whole-view presets live in the View picker and REPLACE the
