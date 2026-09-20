@@ -101,16 +101,6 @@ class SubnetCorrelationService:
         )
         return [m.host for m in mappings]
 
-    def invalidate_subnet_cache(self):
-        # No-op: the batch correlation path (_batch_correlate_hosts)
-        # re-queries project-scoped subnets on every call, so there is no
-        # cross-request cache to invalidate.  Retained as a stable no-op
-        # because scopes.py calls it after subnet mutations — kept rather
-        # than churning that caller.  (The former global, cross-project
-        # SubnetParser trie + its single-host correlate path were removed:
-        # the trie ignored project boundaries, and nothing called it.)
-        return None
-
     # ------------------------------------------------------------------
     # Fast batch correlation
     # ------------------------------------------------------------------

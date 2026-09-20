@@ -328,7 +328,6 @@ async def upload_subnet_file(
         db.commit()
 
         correlation_service = SubnetCorrelationService(db)
-        correlation_service.invalidate_subnet_cache()
         correlated_hosts = None
         # Only a NEW subnet changes host membership; a duplicate-only or
         # description/label-only upload must not trigger the project-wide rebuild.

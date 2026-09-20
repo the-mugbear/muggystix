@@ -20,7 +20,7 @@ from the newest entry, so version and changelog can't drift).
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from fastapi import Request
 
@@ -183,28 +183,6 @@ def _feedback_section(base_url: str) -> str:
         f"**Metrics guidance:** report any `agent_metrics` fields you can access; "
         f"omit anything your environment does not expose.\n"
     )
-
-
-def _render_filter_criteria(fc: Dict[str, Any]) -> str:
-    """Render the user's host-filter selections as a readable bullet list."""
-    labels = {
-        "subnets": "Subnets",
-        "ports": "Ports",
-        "services": "Services",
-        "min_severity": "Minimum vulnerability severity",
-        "has_critical_vulns": "Only hosts with critical vulnerabilities",
-        "has_high_vulns": "Only hosts with high vulnerabilities",
-        "search": "Search term",
-    }
-    lines = []
-    for key, val in fc.items():
-        label = labels.get(key, key)
-        if isinstance(val, bool):
-            if val:
-                lines.append(f"  - {label}")
-        else:
-            lines.append(f"  - {label}: `{val}`")
-    return "\n".join(lines) if lines else "  - (none)"
 
 
 def _integration_block(integrations: list) -> str:

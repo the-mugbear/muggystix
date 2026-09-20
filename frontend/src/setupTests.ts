@@ -8,26 +8,6 @@ import { vi } from 'vitest';
 // Mock axios for API calls
 vi.mock('axios');
 
-// Mock Chart.js for charts
-vi.mock('chart.js', () => ({
-  Chart: {
-    register: vi.fn(),
-  },
-  CategoryScale: vi.fn(),
-  LinearScale: vi.fn(),
-  BarElement: vi.fn(),
-  ArcElement: vi.fn(),
-  Title: vi.fn(),
-  Tooltip: vi.fn(),
-  Legend: vi.fn(),
-}));
-
-// Mock react-chartjs-2
-vi.mock('react-chartjs-2', () => ({
-  Bar: () => 'Bar Chart Mock',
-  Doughnut: () => 'Doughnut Chart Mock',
-}));
-
 // Mock react-router-dom for navigation
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');

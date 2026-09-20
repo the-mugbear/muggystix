@@ -1395,10 +1395,8 @@ def get_host_v2(
     try:
         vulnerability_service = VulnerabilityService(db)
         # Count-only summary: the detail serializer reads only total +
-        # by_severity from this (via build_vuln_summary) and builds the
-        # actual vulnerability list separately from host.vulnerabilities.
-        # get_host_vulnerability_summary would serialize every vuln row to
-        # a dict that's then discarded — double work on Nessus-heavy hosts.
+        # by_severity from this (via build_vuln_summary); the vulnerability
+        # list itself is ``host_vulnerabilities``, queried above.
         vuln_summary = vulnerability_service.get_bulk_host_vulnerability_summaries(
             [host_id]
         ).get(host_id, {"total": 0, "by_severity": {}})

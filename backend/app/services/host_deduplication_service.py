@@ -715,16 +715,3 @@ class HostDeduplicationService:
     # If those per-scan counters need surfacing again, recompute them where
     # the scan is finalized and verify the subqueries scale on large scans.
 
-    def get_host_statistics(self) -> Dict[str, int]:
-        """Get overall host statistics"""
-        total_hosts = self.db.query(Host).count()
-        active_hosts = self.db.query(Host).filter(Host.state == 'up').count()
-        total_ports = self.db.query(Port).count()
-        open_ports = self.db.query(Port).filter(Port.state == 'open').count()
-        
-        return {
-            'total_hosts': total_hosts,
-            'active_hosts': active_hosts,
-            'total_ports': total_ports,
-            'open_ports': open_ports
-        }

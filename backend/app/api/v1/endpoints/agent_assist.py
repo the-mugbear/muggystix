@@ -1281,15 +1281,6 @@ def assist_coverage(
     return compute_evidence_coverage(db, session.project_id)
 
 
-def _sev_name(value) -> str:
-    """Severity as a lowercase string, whatever the column handed back.
-
-    The column is an enum, but a raw string arrives from some ingest paths and
-    from SQLite in tests — comparing the two shapes directly is how a rollup
-    silently counts zero criticals on a project that has plenty.
-    """
-    raw = value.value if hasattr(value, "value") else value
-    return str(raw or "").lower()
 
 
 class AssistTestResult(BaseModel):

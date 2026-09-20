@@ -792,20 +792,6 @@ def get_current_project(
     return project
 
 
-def get_project_membership(
-    project_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> ProjectMembership | None:
-    """Return the user's membership for the given project, or None for global admins."""
-    if current_user.role == UserRole.ADMIN:
-        return None  # admins bypass
-    return db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project_id,
-        ProjectMembership.user_id == current_user.id,
-    ).first()
-
-
 def is_project_admin(db: Session, project_id: int, user: User) -> bool:
     """True when ``user`` has admin authority over ``project_id``.
 
