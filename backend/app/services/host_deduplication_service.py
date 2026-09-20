@@ -522,7 +522,10 @@ class HostDeduplicationService:
         # guard it would overwrite the 'up' from the Status: line.
         new_state = host_data.get('state')
         if new_state and new_state != 'unknown' and new_state != host.state:
-            if host.state:
+            # A held 'unknown' is a blank being filled in, not a disagreement
+            # between two scans (v2.367.0) — it used to be recorded, and was the
+            # single most common "conflict" in the inventory.
+            if host.state and host.state != 'unknown':
                 self._record_conflict('host', host.id, 'state', host.state, new_state, prior_scan, scan_id)
             host.state = new_state
             # Only overwrite the reason when the new scan actually supplies one

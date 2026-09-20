@@ -1506,7 +1506,10 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
     # Get conflict history for this host
     host_conflicts = db.query(ConflictHistory).filter(
         ConflictHistory.host_id == host_id
-    ).order_by(ConflictHistory.resolved_at.desc()).limit(10).all()
+    # 100, not 10: ``conflict_count`` counts every host-level row, and a badge
+    # reading "14 conflicts" over a list of 10 is a count its drill-down
+    # cannot account for.
+    ).order_by(ConflictHistory.resolved_at.desc()).limit(100).all()
 
     # Get conflict history for ports of this host
     port_ids = db.query(models.Port.id).filter(models.Port.host_id == host_id).scalar_subquery()
@@ -1551,10 +1554,31 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
     # Format conflict history.  The storage is now host_id/port_id FKs; the
     # response keeps the object_type/object_id shape (derived) so the API
     # contract — and the frontend that reads it — is unchanged.
+    # v2.367.0 — what the panel needs to STATE a disagreement instead of
+    # pointing at scan ids: each scan's filename, and the value the host holds
+    # today (a conflict is recorded whether or not the reported value was
+    # adopted, so "previous → new" alone does not say which one won).
+    _scan_ids = {
+        sid for c in host_conflicts + port_conflicts
+        for sid in (c.previous_scan_id, c.new_scan_id) if sid is not None
+    }
+    _scan_names = dict(
+        db.query(models.Scan.id, models.Scan.filename)
+        .filter(models.Scan.id.in_(_scan_ids)).all()
+    ) if _scan_ids else {}
+    _host_fields = {'state', 'os_name', 'hostname'}
+
     conflicts = []
     for conflict in host_conflicts + port_conflicts:
         _is_host = conflict.host_id is not None
+        _current = (
+            getattr(host, conflict.field_name, None)
+            if _is_host and conflict.field_name in _host_fields else None
+        )
         conflicts.append({
+            'previous_scan_filename': _scan_names.get(conflict.previous_scan_id),
+            'new_scan_filename': _scan_names.get(conflict.new_scan_id),
+            'current_value': str(_current) if _current is not None else None,
             'id': conflict.id,
             'object_type': 'host' if _is_host else 'port',
             'object_id': conflict.host_id if _is_host else conflict.port_id,

@@ -52,6 +52,31 @@ def test_distinct_conflicts_kept_separate(db_session, test_project):
     assert len(_conflicts(db_session, host.id)) == 3
 
 
+def test_unknown_state_being_filled_in_is_not_a_conflict(db_session, test_project):
+    """v2.367.0 — a held 'unknown' carries no information, so learning the real
+    state is not two scans disagreeing.  It used to put a "1 conflict" badge on
+    hosts nothing disagreed about."""
+    host, scan = _mk_host_and_scan(db_session, test_project.id, "10.9.1.3")
+    host.state = "unknown"
+    db_session.flush()
+    svc = HostDeduplicationService(db_session)
+
+    svc._update_existing_host(host, scan.id, {"state": "up"})
+
+    assert host.state == "up"
+    assert _conflicts(db_session, host.id) == []
+
+
+def test_a_real_state_disagreement_is_still_recorded(db_session, test_project):
+    host, scan = _mk_host_and_scan(db_session, test_project.id, "10.9.1.4")  # state="up"
+    svc = HostDeduplicationService(db_session)
+
+    svc._update_existing_host(host, scan.id, {"state": "down"})
+
+    rows = _conflicts(db_session, host.id)
+    assert [(r.field_name, r.previous_value, r.new_value) for r in rows] == [("state", "up", "down")]
+
+
 # --- Scan-history intra-scan dedup (review A-3) ------------------------------
 # The O(n^2) db.new scan that caught an unflushed same-(id,scan) history row
 # was replaced by an O(1) dict.  These pin the property it must preserve:

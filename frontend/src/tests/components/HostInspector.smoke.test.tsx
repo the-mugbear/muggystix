@@ -86,15 +86,17 @@ describe('HostInspector — proposed tests', () => {
 // fixture has one: an earlier version of this test fed it two rows for the same
 // field — a shape the endpoint cannot produce — to exercise a "lower-ranked
 // source is newer" warning that therefore could never fire, and was removed.
-describe('HostInspector — conflicts say when the selected value was recorded', () => {
-  it('dates the selected value and the resolution history', async () => {
+//
+// v5.246.0 — reported by the user: a host read "1 conflict" and nothing said
+// what the conflict was. The panel only rendered history under a confidence
+// heading, and dedup-written conflicts have NO confidence record — which is
+// this fixture now (`confidence: []`). The panel detail is pinned in
+// HostConflictsPanel.test.tsx; this proves the inspector wires it up.
+describe('HostInspector — the conflict badge opens the disagreement itself', () => {
+  it('names both values with no confidence record present', async () => {
     (api.getHostConflicts as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       conflict_count: 1,
-      confidence: [{
-        id: 1, field_name: 'os_name', confidence_score: 95, scan_type: 'nmap',
-        data_source: 'os_fingerprint', method: 'nmap -O', scan_id: 3,
-        updated_at: '2026-06-01T00:00:00Z',
-      }],
+      confidence: [],
       conflict_history: [{
         id: 9, object_type: 'host', object_id: 1, field_name: 'os_name',
         previous_value: 'Linux 4.x', previous_confidence: 60, previous_scan_id: 2, previous_method: 'masscan',
@@ -105,8 +107,8 @@ describe('HostInspector — conflicts say when the selected value was recorded',
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
 
     fireEvent.click(await screen.findByRole('button', { name: /1 conflict/ }));
-    expect(await screen.findByText(/^recorded /)).toBeInTheDocument();
-    expect(screen.getByText(/^Resolved /)).toBeInTheDocument();
+    expect(await screen.findByText('Scans disagreed about this host')).toBeInTheDocument();
+    expect(screen.getByText('Linux 4.x')).toBeInTheDocument();
     expect(screen.getByText('Windows Server 2022')).toBeInTheDocument();
   });
 });

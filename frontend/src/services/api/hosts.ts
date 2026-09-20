@@ -404,14 +404,21 @@ export interface ConflictHistoryEntry {
   object_id: number;
   field_name: string;
   previous_value: string | null;
-  previous_confidence: number;
+  // Null for conflicts the dedup service records (it has no confidence model).
+  previous_confidence: number | null;
   previous_scan_id: number | null;
   previous_method: string | null;
   new_value: string | null;
-  new_confidence: number;
+  new_confidence: number | null;
   new_scan_id: number | null;
   new_method: string | null;
   resolved_at: string | null;
+  // v5.246.0 — the scans by name, and the value the host holds TODAY (host
+  // fields only). A conflict is recorded whether or not the reported value was
+  // adopted, so previous/new alone does not say which one the page shows.
+  previous_scan_filename?: string | null;
+  new_scan_filename?: string | null;
+  current_value?: string | null;
 }
 
 export interface HostConflictsResponse {

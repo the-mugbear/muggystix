@@ -23,6 +23,8 @@ import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } fr
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronRight,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -110,6 +112,7 @@ import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
 import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
 import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
+import HostConflictsPanel from './host-inspector/HostConflictsPanel';
 import { groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -215,14 +218,6 @@ const NOTE_STATUS_META: Record<
   in_progress: { label: 'In Progress', badgeVariant: 'warning' },
   resolved: { label: 'Resolved', badgeVariant: 'success' },
 };
-
-
-// The confidence service's score ranks detection METHODS against each other.
-// It was rendered as "95%" on a green/amber/red badge, which reads as a
-// measured probability (and a red "60%" as a bad value) — it is neither.
-const SOURCE_WEIGHT_TITLE =
-  'Source ranking weight for this detection method. It orders sources against each other; '
-  + 'it is not a probability that the value is correct.';
 
 
 interface PendingImage {
@@ -1139,14 +1134,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   }
 
   const hasConflicts = conflictCount > 0;
-  const conflictsByField = conflicts.reduce(
-    (acc, conflict) => {
-      if (!acc[conflict.field_name]) acc[conflict.field_name] = [];
-      acc[conflict.field_name].push(conflict);
-      return acc;
-    },
-    {} as Record<string, HostConflict[]>,
-  );
 
   // (noteThreadGroups useMemo hoisted to the top of the component body —
   // see line ~221.  Pre-fix it sat below the loading/!host early returns
@@ -1487,22 +1474,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             size="sm"
             aria-expanded={showConflicts}
             aria-controls="host-detail-conflicts"
-            onClick={() => {
-              const opening = !showConflicts;
-              setShowConflicts(opening);
-              // The detail panel renders near the bottom of the inspector and
-              // is conditionally mounted, so on open it appears off-screen and
-              // the click reads as a no-op ("where is this info?").  Scroll to
-              // it once it has mounted (two rAFs = after the commit + layout).
-              if (opening) {
-                requestAnimationFrame(() =>
-                  requestAnimationFrame(() => scrollToSection('host-detail-conflicts')),
-                );
-              }
-            }}
+            // The panel mounts directly under the overview (v5.246.0), so it
+            // opens in view; it used to mount near the bottom and need a scroll.
+            onClick={() => setShowConflicts((v) => !v)}
+            title="Two scans reported different values for this host — open to see which, and from which scans"
           >
-            <AlertTriangle className="size-4" aria-hidden />
+            <AlertTriangle className="size-4 text-warning" aria-hidden />
             {conflictCount} conflict{conflictCount === 1 ? '' : 's'}
+            {showConflicts
+              ? <ChevronDown className="size-3.5" aria-hidden />
+              : <ChevronRight className="size-3.5" aria-hidden />}
           </Button>
         ) : conflictsError ? (
           <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground" title="The data-conflict check failed to load — this is not a confirmation that the host has none">
@@ -1753,7 +1734,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               since, when, and who else is on this host. The status and its
               action are in the title row; an unreviewed host that nobody else
               follows renders nothing here. */}
-          {(followInfo || otherFollowers.length > 0 || followersError) && (
+          {/* v5.246.0 — a bare "Updated <time>" no longer holds this row open:
+              for a host merely In review it was a divided row carrying one
+              timestamp. The time still shows whenever the row has a reason. */}
+          {((followStatus === 'reviewed' && followInfo?.review_conclusion)
+            || newEvidenceSinceReview || otherFollowers.length > 0 || followersError) && (
           <div className="space-y-xs border-t border-border pt-xs">
             <div className="flex flex-wrap items-center gap-sm">
               <div className="flex flex-wrap items-center gap-xs">
@@ -1833,6 +1818,20 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
         </CardContent>
       </Card>
+
+      {/* Data conflicts — directly under the overview (v5.246.0). It used to
+          mount near the bottom of the inspector, so the title-row button had
+          to scroll the page to it; and it stays a bordered panel because it is
+          an exception the analyst asked to see, not routine evidence. */}
+      {showConflicts && hasConflicts && (
+        <HostConflictsPanel
+          id="host-detail-conflicts"
+          conflictCount={conflictCount}
+          history={conflictHistory}
+          confidence={conflicts}
+          ports={host.ports ?? []}
+        />
+      )}
 
       {/* At a glance — actionable counts as quiet linked stats, and the
           inspector's navigation. Sticky (v5.240.0): the links used to scroll
@@ -2618,128 +2617,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       {/* NetExec credentialed enumeration — renders nothing when the
           host was never probed with NetExec. */}
       <NetExecCard hostId={host.id} count={host.netexec_result_count ?? 0} />
-
-      {/* Data conflicts — the one section that stays a bordered panel: it is
-          an exception the analyst asked to see, not routine evidence. */}
-      {showConflicts && hasConflicts && (
-        <Card id="host-detail-conflicts" className="scroll-mt-20">
-          <CardHeader className="p-sm">
-            <div className="flex items-center gap-xs">
-              <AlertTriangle className="size-4 text-warning" aria-hidden />
-              <CardTitle className="text-subheading">Data conflicts &amp; confidence</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-md p-sm pt-0">
-            <Alert variant="info">
-              <AlertDescription>
-                When the same host is scanned by multiple tools, BlueStick keeps every value and
-                selects the one from the highest-ranked source for each field. The ranking is a
-                fixed weight per detection method — Nmap's <code>-sV</code> version probe (weight 95)
-                outranks Masscan's basic port check (weight 60). It is an ordering of sources, not a
-                measured probability that the value is correct.
-              </AlertDescription>
-            </Alert>
-            {Object.entries(conflictsByField).map(([fieldName, fieldConflicts]) => {
-              const sorted = [...fieldConflicts].sort(
-                (a, b) => b.confidence_score - a.confidence_score,
-              );
-              const winner = sorted[0];
-              const alternatives = sorted.slice(1);
-              const relatedHistory = conflictHistory.filter((h) => h.field_name === fieldName);
-
-              return (
-                <div key={fieldName} className="space-y-xs">
-                  <h3 className="text-subheading capitalize">{fieldName.replace(/_/g, ' ')}</h3>
-
-                  <div className="rounded-control border border-border bg-muted/30 p-sm">
-                    <div className="mb-xxs flex items-center gap-xs">
-                      <Badge variant="secondary" title={SOURCE_WEIGHT_TITLE}>
-                        weight {winner.confidence_score}
-                      </Badge>
-                      <span className="text-metadata font-semibold">
-                        Selected value — {winner.scan_type}
-                      </span>
-                    </div>
-                    <p className="text-caption text-muted-foreground">
-                      Source: {winner.data_source || 'unknown'} | Method:{' '}
-                      {winner.method || 'default'} | Scan #{winner.scan_id}
-                      {/* v5.243.0 — WHEN the selected value was recorded. (A
-                          "a lower-ranked source is newer" warning shipped with
-                          it and was removed in v5.244.0: the API returns ONE
-                          confidence row per host field — uq_host_confidence_
-                          host_field — and keys port fields per port, so a field
-                          group never holds an alternative to compare against.
-                          What displaced what, and when, is the resolution
-                          history below.) */}
-                      {' | '}
-                      <span title={winner.updated_at ? new Date(winner.updated_at).toLocaleString() : undefined}>
-                        recorded {formatRelativeTime(winner.updated_at, { fallback: 'time unknown' })}
-                      </span>
-                    </p>
-                    {winner.additional_factors &&
-                      Object.keys(winner.additional_factors).length > 0 && (
-                        <p className="text-caption text-muted-foreground">
-                          Factors:{' '}
-                          {Object.entries(winner.additional_factors)
-                            .map(([k, v]) => `${k}: ${v}`)
-                            .join(', ')}
-                        </p>
-                      )}
-                  </div>
-
-                  {alternatives.length > 0 && (
-                    <div className="ml-md border-l-2 border-border pl-sm">
-                      <p className="mb-xxs text-caption text-muted-foreground">
-                        Alternative values not chosen:
-                      </p>
-                      {alternatives.map((alt, idx) => (
-                        <div key={idx} className="flex items-center gap-xs">
-                          <Badge variant="outline" title={SOURCE_WEIGHT_TITLE}>
-                            weight {alt.confidence_score}
-                          </Badge>
-                          <span className="text-caption">
-                            {alt.scan_type} — {alt.data_source || 'unknown'} via{' '}
-                            {alt.method || 'default'} (Scan #{alt.scan_id})
-                            {' · '}
-                            <span className="text-muted-foreground"
-                              title={alt.updated_at ? new Date(alt.updated_at).toLocaleString() : undefined}>
-                              recorded {formatRelativeTime(alt.updated_at, { fallback: 'time unknown' })}
-                            </span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {relatedHistory.length > 0 && (
-                    <div className="ml-md border-l-2 border-warning pl-sm">
-                      <p className="mb-xxs text-caption font-semibold text-muted-foreground">
-                        Resolution history:
-                      </p>
-                      {relatedHistory.map((entry) => (
-                        <div key={entry.id} className="mb-xxs">
-                          <p className="text-caption">
-                            <strong>{entry.previous_value || '(empty)'}</strong> (
-                            weight {entry.previous_confidence} via {entry.previous_method || '?'})
-                            {' → '}
-                            <strong>{entry.new_value || '(empty)'}</strong> (
-                            weight {entry.new_confidence} via {entry.new_method || '?'})
-                          </p>
-                          {entry.resolved_at && (
-                            <p className="text-caption text-muted-foreground">
-                              Resolved {new Date(entry.resolved_at).toLocaleString()}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
 
       {/* Workflow lineage */}
       <HostLineagePanel hostId={host.id} />
