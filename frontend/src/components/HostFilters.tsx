@@ -218,6 +218,16 @@ export const HOST_FILTER_PRESETS: Array<{
   },
 ];
 
+// Two different things shared one chip row (5.249.0).  A PORT GROUP adds ports
+// or services to the endpoint filter and composes with everything else — it
+// stays in the filter panel.  A BUILT-IN VIEW is a whole named question ("my
+// review queue"); it lives in the View picker beside the saved views and, like
+// them, REPLACES the applied filters.
+const isPortGroup = (preset: { filters: HostFilterOptions }) =>
+  Boolean(preset.filters.ports?.length || preset.filters.services?.length);
+export const HOST_PORT_GROUP_PRESETS = HOST_FILTER_PRESETS.filter(isPortGroup);
+export const HOST_BUILT_IN_VIEWS = HOST_FILTER_PRESETS.filter((p) => !isPortGroup(p));
+
 // Treat a key set to ``undefined`` as absent — callers sometimes
 // set keys to undefined to "clear" instead of deleting outright.
 const definedFilterKeys = (filters: HostFilterOptions): string[] =>
@@ -502,7 +512,6 @@ const HostFilters: React.FC<HostFiltersProps> = ({
     }
     onFiltersChange(updated);
   };
-  const noFiltersActive = definedFilterKeys(filters).length === 0;
   // v5.2.0 — the legacy "Search hosts" field was removed; bare-text search now
   // lives in the command bar (maps to filters.query). The `/` focus shortcut
   // moved there too. filters.search may still arrive from a saved view or an
@@ -748,38 +757,20 @@ const HostFilters: React.FC<HostFiltersProps> = ({
           )}
         </div>
 
-        {/* Quick presets (v4.51.0 — unified surface; replaces both the
-            old Quick presets list here and the Quick views chip row
-            that lived on the Hosts sticky bar) */}
+        {/* Port groups — the presets that ADD ports/services.  The whole-view
+            presets (review queue, critical…) moved to the View picker. */}
         <div className="space-y-xxs">
           <div className="flex items-center gap-xs">
             <SlidersHorizontal className="size-4 text-muted-foreground" aria-hidden />
             <h3 className="text-metadata font-semibold uppercase tracking-wider text-muted-foreground">
-              Quick presets
+              Port groups
             </h3>
           </div>
           <p className="text-caption text-muted-foreground">
-            Click presets to combine them with your filters; click a lit preset to remove just its part. "All Hosts" clears everything.
+            Adds the group's open ports to your filters (a host matches ANY listed port); click a lit group to take its ports back out.
           </p>
-          <div className="flex flex-wrap gap-xs" role="group" aria-label="Filter presets">
-            <button
-              key="all"
-              type="button"
-              onClick={() => onFiltersChange({})}
-              aria-pressed={noFiltersActive}
-              title="Clear all filters"
-              className={cn(
-                'inline-flex items-center gap-xxs rounded-control border px-sm py-xxs text-caption font-medium transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                noFiltersActive
-                  ? 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
-                  : 'border-border bg-card text-foreground hover:bg-accent',
-              )}
-            >
-              {noFiltersActive && <Check className="size-3" aria-hidden />}
-              All Hosts
-            </button>
-            {HOST_FILTER_PRESETS.map((preset) => {
+          <div className="flex flex-wrap gap-xs" role="group" aria-label="Port group presets">
+            {HOST_PORT_GROUP_PRESETS.map((preset) => {
               const active = presetIsApplied(preset.filters, filters);
               return (
                 <button

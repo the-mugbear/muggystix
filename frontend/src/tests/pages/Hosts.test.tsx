@@ -53,7 +53,10 @@ vi.mock('../../services/api', () => ({
 // continues to exercise the page-level integration (filter state →
 // buildFilterParams → getHosts) without pulling in the real
 // HostFilters' combobox/advanced-filter dependencies.
-vi.mock('../../components/HostFilters', () => ({
+vi.mock('../../components/HostFilters', async (importOriginal) => ({
+  // The page reads the built-in views and preset matching from this module;
+  // only the panel component itself is stubbed.
+  ...(await importOriginal<typeof import('../../components/HostFilters')>()),
   __esModule: true,
   default: ({ onFiltersChange }: { onFiltersChange: (next: any) => void }) => (
     <div data-testid="host-filters">
@@ -221,14 +224,12 @@ describe('Hosts', () => {
     );
   });
 
-  it('applies the critical quick view and refetches with matching params', async () => {
+  it('a filter-panel change refetches with matching params', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
 
     await screen.findByText('Discovered Hosts');
-    // v5.0.0 — the structured panel (and its Critical preset) now lives
-    // behind the "Advanced filters" disclosure; expand it first.
-    await user.click(screen.getByRole('button', { name: /Advanced filters/i }));
+    await user.click(screen.getByRole('button', { name: /^Filters/i }));
     await user.click(screen.getByRole('button', { name: 'Critical' }));
 
     await waitFor(() => {
@@ -237,6 +238,26 @@ describe('Hosts', () => {
         expect.anything(),
       );
     });
+  });
+
+  // 5.249.0 — the whole-view presets live in the View picker and REPLACE the
+  // applied filters, exactly as a saved view does.
+  it('a built-in view replaces the applied filters and names itself in the picker', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    routerState.search = '?ports=8080';
+    renderHosts();
+
+    await screen.findByText('Discovered Hosts');
+    await user.click(await screen.findByRole('button', { name: /^View: Custom filters/ }));
+    await user.click(await screen.findByRole('menuitem', { name: /Critical observations/ }));
+
+    await waitFor(() => {
+      const calls = mockedApi.getHosts.mock.calls;
+      const lastParams = calls[calls.length - 1][0];
+      expect(lastParams).toMatchObject({ has_critical_vulns: true });
+      expect(lastParams.ports).toBeUndefined();
+    });
+    expect(screen.getByRole('button', { name: 'View: Critical observations' })).toBeInTheDocument();
   });
 
   it('forwards a command-bar query as the q param to getHosts', async () => {

@@ -1,7 +1,12 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import HostFilters, { HOST_FILTER_PRESETS, togglePreset } from '../../components/HostFilters';
+import HostFilters, {
+  HOST_BUILT_IN_VIEWS,
+  HOST_FILTER_PRESETS,
+  HOST_PORT_GROUP_PRESETS,
+  togglePreset,
+} from '../../components/HostFilters';
 
 // Several presets write the same keys (ports / portStates / followFilter).
 // Toggling used to assign and delete whole KEYS: a second port preset replaced
@@ -94,14 +99,14 @@ describe('HostFilters layout', () => {
     }
   });
 
-  // §6 guided review queue — the one-click "My review queue" entry seeds the
-  // assigned-to-me + not-yet-reviewed filter the analyst works through.
-  it('offers a "My review queue" preset that filters to my unreviewed hosts', () => {
+  // 5.249.0 — the panel keeps only the presets that ADD ports; the whole-view
+  // ones ("My review queue", "Critical observations"…) are in the View picker.
+  it('offers port groups that compose, and no whole-view presets', () => {
     const onFiltersChange = vi.fn();
     render(
       <MemoryRouter>
         <HostFilters
-          filters={{}}
+          filters={{ sites: ['3'] }}
           onFiltersChange={onFiltersChange}
           availableData={null}
           optionsLoading={false}
@@ -109,9 +114,15 @@ describe('HostFilters layout', () => {
         />
       </MemoryRouter>,
     );
-    fireEvent.click(screen.getByRole('button', { name: /My review queue/i }));
-    expect(onFiltersChange).toHaveBeenCalledWith(
-      expect.objectContaining({ assignedToMe: true, followFilter: 'none' }),
-    );
+    expect(screen.queryByRole('button', { name: /My review queue/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /SSH Servers/i }));
+    expect(onFiltersChange).toHaveBeenCalledWith({ sites: ['3'], ports: ['22'], portStates: ['open'] });
+  });
+
+  it('splits the presets into port groups and built-in views with none lost', () => {
+    expect(HOST_PORT_GROUP_PRESETS.map((p) => p.id)).toEqual(['web_hosts', 'ssh', 'database', 'windows', 'legacy']);
+    expect(HOST_BUILT_IN_VIEWS.find((v) => v.id === 'my_queue')?.filters)
+      .toEqual({ assignedToMe: true, followFilter: 'none' });
+    expect(HOST_PORT_GROUP_PRESETS.length + HOST_BUILT_IN_VIEWS.length).toBe(HOST_FILTER_PRESETS.length);
   });
 });

@@ -14,7 +14,6 @@ import {
   RefreshCw,
   SkipForward,
   SlidersHorizontal,
-  Crosshair,
   Star,
   X,
 } from 'lucide-react';
@@ -42,8 +41,13 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
-import HostFilters, { HostFilterOptions } from '../components/HostFilters';
+import HostFilters, {
+  HOST_BUILT_IN_VIEWS,
+  HostFilterOptions,
+  activeFilterPresetId,
+} from '../components/HostFilters';
 import HostCommandBar from '../components/hosts/HostCommandBar';
+import HostViewPicker, { type BuiltInHostView } from '../components/hosts/HostViewPicker';
 import {
   FOLLOW_STATUS_OPTIONS,
   useHostColumns,
@@ -58,6 +62,11 @@ import { cn } from '../utils/cn';
 import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { useConfirm } from '../hooks/useConfirm';
+import {
+  hostFiltersFromUrl,
+  type HostSortOption,
+  type SavedHostFilterState,
+} from '../utils/hostFiltersFromUrl';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
@@ -101,22 +110,10 @@ import HostInspector from '../components/HostInspector';
 // Helpers re-exported here so anything in this file
 // that still needs them keeps working.
 
-type HostSortOption =
-  | 'critical_desc'
-  | 'exploitable_desc'
-  | 'open_ports_desc'
-  | 'notes_desc'
-  | 'discoveries_desc'
-  | 'ip_asc'
-  | 'hostname_asc';
-
-// v4.51.0 — QuickViewPreset / QUICK_VIEW_PRESETS / matchesQuickViewPreset
-// retired.  Preset list + active-preset detection now lives in
-// HostFilters.tsx (`HOST_FILTER_PRESETS`, `activeFilterPresetId`) since
-// both preset surfaces were consolidated into the HostFilters card.
-// followFilter + onlyWithNotes were folded into HostFilterOptions in
-// the same pass, so the page state is a single object instead of
-// three useStates.
+// The preset list lives in HostFilters.tsx (`HOST_FILTER_PRESETS`), split into
+// the port groups the filter panel offers and the built-in views the View
+// picker offers.  followFilter + onlyWithNotes are part of HostFilterOptions,
+// so the page's filter state is a single object.
 
 type HostQueryContext = {
   state?: string;
@@ -156,6 +153,9 @@ type HostQueryContext = {
 };
 
 // FollowMenu moved to ../components/hosts/useHostColumns.tsx (v2.43.0 MONO-1).
+
+// Conditions shown in the sticky toolbar before "Show all conditions (N)".
+const MAX_STICKY_CHIPS = 8;
 
 export default function Hosts() {
   const navigate = useNavigate();
@@ -253,6 +253,9 @@ export default function Hosts() {
   const [saveViewName, setSaveViewName] = useState('');
   const [saveViewBusy, setSaveViewBusy] = useState(false);
   const [activeViewId, setActiveViewId] = useState<number | null>(null);
+  const [chipsExpanded, setChipsExpanded] = useState(false);
+  // The last view applied (saved or built-in) and how to apply it again.
+  const [baseView, setBaseView] = useState<{ name: string; reapply: () => void } | null>(null);
   const [confirmEl, confirm] = useConfirm();
 
   const scanLookup = useMemo(() => {
@@ -312,6 +315,12 @@ export default function Hosts() {
   const clearAllFilters = useCallback(() => {
     setFilters({});
     setPage(0);
+    // An explicit "show everything" has to survive a refresh: with no filters
+    // left the auto-apply would otherwise bring the project default straight
+    // back, and the operator's cleared list would silently be filtered again.
+    try {
+      sessionStorage.setItem(projectScopedKey('projectDefaultDismissed'), '1');
+    } catch { /* ignore */ }
   }, [setFilters, setPage]);
 
   const buildHostQueryContext = useCallback((): HostQueryContext => {
@@ -506,211 +515,17 @@ export default function Hosts() {
     if (isInitialized) return;
     const urlParams = new URLSearchParams(location.search);
 
-    // A shared link must reproduce the SENDER's result set, not blend with the
-    // recipient's previous session filters. So if the URL carries any recognized
-    // host parameter, treat it as authoritative and ignore sessionStorage
-    // entirely; fall back to the saved session only on a bare /hosts visit.
-    const HOST_URL_PARAMS = [
-      'search', 'q', 'state', 'os_filter', 'subnets', 'ports', 'services',
-      'port_states', 'scan_ids', 'tags', 'subnet_labels', 'sites', 'out_of_scope_only',
-      'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'has_critical_vulns',
-      'has_high_vulns', 'has_medium_vulns', 'has_low_vulns',
-      'has_exploit_available', 'has_test_execution',
-      'has_web_interface', 'tech', 'follow_status', 'follow',
-      'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
-      'orgs', 'asns', 'countries',
-    ];
-    const urlIsAuthoritative = HOST_URL_PARAMS.some((p) => urlParams.has(p));
-
-    let savedState: {
-      filters?: HostFilterOptions;
-      followFilter?: 'all' | 'none' | FollowStatus;
-      onlyWithNotes?: boolean;
-    } | null = null;
-    if (!urlIsAuthoritative && typeof window !== 'undefined') {
-      try {
-        const raw = sessionStorage.getItem(projectScopedKey('hostFiltersState'));
-        savedState = raw ? JSON.parse(raw) : null;
-      } catch {
-        savedState = null;
-      }
+    // URL first, saved session only on a bare /hosts visit — the rules live
+    // in utils/hostFiltersFromUrl.ts, where they are tested.
+    let savedState: SavedHostFilterState | null = null;
+    try {
+      const raw = sessionStorage.getItem(projectScopedKey('hostFiltersState'));
+      savedState = raw ? JSON.parse(raw) : null;
+    } catch {
+      savedState = null;
     }
-
-    const initialFilters: HostFilterOptions = savedState?.filters ? { ...savedState.filters } : {};
-
-    const applyListParam = (param: string, key: keyof HostFilterOptions) => {
-      if (urlParams.has(param)) {
-        const raw = urlParams.get(param) || '';
-        if (raw) {
-          const values = raw
-            .split(',')
-            .map((value) => value.trim())
-            .filter(Boolean);
-          (initialFilters as any)[key] = values;
-        } else {
-          delete (initialFilters as any)[key];
-        }
-      }
-    };
-
-    // Repeated params (?orgs=A&orgs=B) — read every value, don't comma-split,
-    // because the values themselves (org names) contain commas.
-    const applyRepeatedParam = (param: string, key: keyof HostFilterOptions) => {
-      if (urlParams.has(param)) {
-        const values = urlParams.getAll(param).map((v) => v.trim()).filter(Boolean);
-        if (values.length) {
-          (initialFilters as any)[key] = values;
-        } else {
-          delete (initialFilters as any)[key];
-        }
-      }
-    };
-
-    const applyStringParam = (param: string, key: keyof HostFilterOptions) => {
-      if (urlParams.has(param)) {
-        const value = urlParams.get(param);
-        if (value) {
-          (initialFilters as any)[key] = value;
-        } else {
-          delete (initialFilters as any)[key];
-        }
-      }
-    };
-
-    applyStringParam('search', 'search');
-    applyStringParam('q', 'query');
-    applyStringParam('state', 'state');
-    applyStringParam('os_filter', 'osFilter');
-    applyListParam('subnets', 'subnets');
-    applyListParam('ports', 'ports');
-    applyListParam('services', 'services');
-    applyListParam('port_states', 'portStates');
-    applyListParam('scan_ids', 'scanIds');
-    applyListParam('tags', 'tags');
-    applyListParam('subnet_labels', 'subnetLabels');
-    applyListParam('sites', 'sites');
-    applyRepeatedParam('orgs', 'orgs');
-    applyRepeatedParam('asns', 'asns');
-    applyRepeatedParam('countries', 'countries');
-
-    if (urlParams.has('out_of_scope_only') || urlParams.has('out_of_scope')) {
-      initialFilters.outOfScopeOnly =
-        (urlParams.get('out_of_scope_only') ?? urlParams.get('out_of_scope')) === 'true';
-    } else if (savedState?.filters?.outOfScopeOnly) {
-      initialFilters.outOfScopeOnly = true;
-    }
-
-    if (urlParams.has('has_open_ports')) {
-      initialFilters.hasOpenPorts = urlParams.get('has_open_ports') === 'true';
-    } else if (savedState?.filters?.hasOpenPorts !== undefined) {
-      initialFilters.hasOpenPorts = savedState.filters.hasOpenPorts;
-    }
-
-    if (urlParams.has('first_seen_in_scan')) {
-      initialFilters.firstSeenInSelectedScans = urlParams.get('first_seen_in_scan') === 'true';
-    } else if (savedState?.filters?.firstSeenInSelectedScans) {
-      initialFilters.firstSeenInSelectedScans = true;
-    }
-
-    if (urlParams.has('has_critical_vulns')) {
-      initialFilters.hasCriticalVulns = urlParams.get('has_critical_vulns') === 'true';
-    } else if (savedState?.filters?.hasCriticalVulns !== undefined) {
-      initialFilters.hasCriticalVulns = savedState.filters.hasCriticalVulns;
-    }
-
-    if (urlParams.has('has_high_vulns')) {
-      initialFilters.hasHighVulns = urlParams.get('has_high_vulns') === 'true';
-    } else if (savedState?.filters?.hasHighVulns !== undefined) {
-      initialFilters.hasHighVulns = savedState.filters.hasHighVulns;
-    }
-
-    if (urlParams.has('has_medium_vulns')) {
-      initialFilters.hasMediumVulns = urlParams.get('has_medium_vulns') === 'true';
-    } else if (savedState?.filters?.hasMediumVulns !== undefined) {
-      initialFilters.hasMediumVulns = savedState.filters.hasMediumVulns;
-    }
-
-    if (urlParams.has('has_low_vulns')) {
-      initialFilters.hasLowVulns = urlParams.get('has_low_vulns') === 'true';
-    } else if (savedState?.filters?.hasLowVulns !== undefined) {
-      initialFilters.hasLowVulns = savedState.filters.hasLowVulns;
-    }
-
-    if (urlParams.has('has_exploit_available')) {
-      initialFilters.hasExploitAvailable = urlParams.get('has_exploit_available') === 'true';
-    } else if (savedState?.filters?.hasExploitAvailable !== undefined) {
-      initialFilters.hasExploitAvailable = savedState.filters.hasExploitAvailable;
-    }
-
-    if (urlParams.has('has_test_execution')) {
-      initialFilters.hasTestExecution = urlParams.get('has_test_execution') === 'true';
-    } else if (savedState?.filters?.hasTestExecution !== undefined) {
-      initialFilters.hasTestExecution = savedState.filters.hasTestExecution;
-    }
-
-    if (urlParams.has('has_web_interface')) {
-      initialFilters.hasWebInterface = urlParams.get('has_web_interface') === 'true';
-    } else if (savedState?.filters?.hasWebInterface !== undefined) {
-      initialFilters.hasWebInterface = savedState.filters.hasWebInterface;
-    }
-    if (urlParams.has('tech')) {
-      const techList = (urlParams.get('tech') || '')
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
-      if (techList.length) initialFilters.tech = techList;
-    } else if (savedState?.filters?.tech?.length) {
-      initialFilters.tech = savedState.filters.tech;
-    }
-
-    // v4.51.0 — followFilter + onlyWithNotes fold into initialFilters
-    // directly.  Saved-view shape kept legacy-compatible: pre-v4.51.0
-    // saved blobs stored these as top-level keys ({followFilter,
-    // onlyWithNotes}) alongside `filters`; we honour those AND any
-    // copies that already live inside the new combined `filters`
-    // (newer writes).
-    const followParam = urlParams.get('follow_status') ?? urlParams.get('follow');
-    const legacyFollow = savedState?.followFilter;
-    if (followParam && ['watching', 'in_review', 'reviewed', 'none'].includes(followParam)) {
-      initialFilters.followFilter = followParam as 'none' | FollowStatus;
-    } else if (legacyFollow && legacyFollow !== 'all') {
-      initialFilters.followFilter = legacyFollow as 'none' | FollowStatus;
-    }
-
-    const notesParam = urlParams.get('with_notes_only') ?? urlParams.get('with_notes');
-    if (notesParam === 'true') {
-      initialFilters.onlyWithNotes = true;
-    } else if (notesParam === 'false') {
-      delete initialFilters.onlyWithNotes;
-    } else if (savedState?.onlyWithNotes === true && !initialFilters.onlyWithNotes) {
-      initialFilters.onlyWithNotes = true;
-    }
-
-    // v5.0.x — assignment + sort are written to the URL by the write-sync
-    // effect, so they must round-trip on restore too (a copied link should
-    // reopen with the same assignee filter and sort, not the defaults).
-    if (urlParams.get('assigned_to') === 'me') {
-      initialFilters.assignedToMe = true;
-    } else if (savedState?.filters?.assignedToMe) {
-      initialFilters.assignedToMe = true;
-    }
-
-    const sortByParam = urlParams.get('sort_by');
-    if (sortByParam) {
-      // Reverse of the API-key map in buildHostQueryContext; direction is
-      // encoded in the HostSortOption itself, so sort_by alone is enough.
-      const reverseSort: Record<string, HostSortOption> = {
-        critical_vulns: 'critical_desc',
-        exploitable_vulns: 'exploitable_desc',
-        open_ports: 'open_ports_desc',
-        note_count: 'notes_desc',
-        discovery_count: 'discoveries_desc',
-        ip_address: 'ip_asc',
-        hostname: 'hostname_asc',
-      };
-      const restored = reverseSort[sortByParam];
-      if (restored) setSortBy(restored);
-    }
+    const { filters: initialFilters, sortBy: restoredSort } = hostFiltersFromUrl(urlParams, savedState);
+    if (restoredSort) setSortBy(restoredSort);
 
     // Re-show the "project default applied" banner after a refresh: the restored
     // filters ARE the default, so set skipActiveClearRef so the filters-change
@@ -798,6 +613,7 @@ export default function Hosts() {
     if (blob.onlyWithNotes === true) next.onlyWithNotes = true;
     setFilters(next);
     setActiveViewId(view.id);
+    setBaseView({ name: view.name, reapply: () => applyViewFilters(view) });
     setPage(0);
     // Explicitly applying a view supersedes any auto-applied project default,
     // so the "project default applied" chip would be stale — drop it. The
@@ -809,6 +625,16 @@ export default function Hosts() {
   }, [toast]);
 
   const handleApplyView = (view: HostFilterView) => applyViewFilters(view);
+
+  // A built-in view replaces the applied filters exactly as a saved one does.
+  const handleApplyBuiltIn = (view: BuiltInHostView) => {
+    skipActiveClearRef.current = true;
+    setFilters({ ...view.filters });
+    setActiveViewId(null);
+    setBaseView({ name: view.name, reapply: () => handleApplyBuiltIn(view) });
+    setPage(0);
+    setProjectDefaultBanner(null);
+  };
 
   const handleDeleteView = async (view: HostFilterView) => {
     const ok = await confirm({
@@ -871,20 +697,15 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isInitialized]);
 
-  const dismissProjectDefault = () => {
-    setProjectDefaultBanner(null);
-    clearAllFilters();
-    try {
-      sessionStorage.setItem(projectScopedKey('projectDefaultDismissed'), '1');
-    } catch { /* ignore */ }
-  };
-
   useEffect(() => {
     if (skipActiveClearRef.current) {
       skipActiveClearRef.current = false;
       return;
     }
+    // The view is no longer what is shown, but it is still where the operator
+    // started ("<name> · Modified") — until nothing of it is left.
     setActiveViewId(null);
+    if (Object.keys(filters).length === 0) setBaseView(null);
     // A manual filter edit means the auto-applied project default no longer
     // describes what's shown — clear the chip so it can't go stale.
     setProjectDefaultBanner(null);
@@ -1640,7 +1461,7 @@ export default function Hosts() {
             disabled={loading || totalHosts === 0 || showingStaleResults}
           >
             <Code className="size-4" aria-hidden />
-            Tool Ready Output
+            Export targets
           </Button>
           <Button
             variant="outline"
@@ -1698,71 +1519,56 @@ export default function Hosts() {
         valueLabels={queryValueLabels}
       />
 
-      <div className="flex flex-wrap items-center gap-xs">
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen((open) => !open)}
-        >
-          <SlidersHorizontal className="size-4" aria-hidden />
-          Advanced filters
-          {advancedOpen ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
-        </Button>
-      </div>
-
-      {advancedOpen && (
-        <HostFilters
-          filters={filters}
-          onFiltersChange={handleFiltersChange}
-          availableData={filterData}
-          optionsLoading={filterDataLoading}
-          notesToggleVisible
-        />
-      )}
-
-      <Card className="sticky z-10 mb-md" style={stickyBelowChrome}>
-        <CardContent className="space-y-sm pt-md">
-          <div className="flex flex-col gap-sm lg:flex-row lg:items-center lg:justify-between">
-            <div className="min-w-0 space-y-xxs">
-              <div className="flex items-center gap-sm">
-                <span
-                  className={cn(
-                    'flex size-9 shrink-0 items-center justify-center rounded-control border transition-colors',
-                    activeFilterChips.length > 0
-                      ? 'border-primary/30 bg-primary/10 text-primary'
-                      : 'border-border bg-muted text-muted-foreground',
-                  )}
-                  aria-hidden
-                >
-                  <Crosshair className="size-4" />
-                </span>
-                <p className="text-body">
-                  {/* key remounts the number on change so the fade/zoom replays
-                      — transform + opacity only, so it never shifts layout. */}
-                  <span
-                    key={totalHosts}
-                    className={cn(
-                      'inline-block text-section-title font-bold tabular-nums animate-in fade-in zoom-in-95 duration-300',
-                      activeFilterChips.length > 0 ? 'text-primary' : 'text-foreground',
-                    )}
-                  >
-                    {totalHosts.toLocaleString()}
-                  </span>{' '}
-                  <span className="text-muted-foreground">
-                    host{totalHosts === 1 ? '' : 's'}{' '}
-                    {activeFilterChips.length > 0 ? 'match the current filters' : 'in inventory'}
-                  </span>
-                </p>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-end gap-sm">
-              {/* v4.26.0 — "Only hosts with notes" relocated into
-                  HostFilters' boolean panel where it sits with its
-                  peers.  Sort stays here as a table control, not a
-                  filter. */}
-              <div className="flex flex-col gap-xxs">
-                <Label htmlFor="hosts-sort">Sort by</Label>
+      {/* One toolbar (5.249.0) — view, filters, the single result count and the
+          sort, then the applied conditions.  It replaced a sticky CARD that
+          stacked a count, review chips, a default banner, a saved-view row and
+          the filter chips: five control surfaces before the first host.  No
+          card chrome, and the strip stays two or three lines tall. */}
+      <div
+        className="sticky z-10 space-y-xs border-b border-border bg-background py-xs"
+        style={stickyBelowChrome}
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-xs">
+          <HostViewPicker
+            builtInViews={HOST_BUILT_IN_VIEWS}
+            savedViews={savedViews}
+            savedViewsError={savedViewsError}
+            activeViewId={activeViewId}
+            activeBuiltInId={activeFilterPresetId(filters)}
+            baseViewName={appliedProjectDefault ?? baseView?.name ?? null}
+            hasConditions={activeFilterChips.length > 0}
+            projectDefaultApplied={appliedProjectDefault !== null}
+            canSetProjectDefault={canSetProjectDefault}
+            onAllHosts={clearAllFilters}
+            onApplyBuiltIn={handleApplyBuiltIn}
+            onApplyView={handleApplyView}
+            onReset={baseView && activeViewId === null ? baseView.reapply : undefined}
+            onSaveView={() => {
+              setSaveViewName('');
+              setSaveViewDialogOpen(true);
+            }}
+            onDeleteView={handleDeleteView}
+            onToggleProjectDefault={handleToggleProjectDefault}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            aria-expanded={advancedOpen}
+            onClick={() => setAdvancedOpen((open) => !open)}
+          >
+            <SlidersHorizontal className="size-4" aria-hidden />
+            Filters
+            {advancedOpen ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
+          </Button>
+          {/* The one result count: the listing's own total, so it always agrees
+              with the table and the exports. */}
+          <p className="ml-auto shrink-0 text-metadata text-muted-foreground" aria-live="polite">
+            <strong className="tabular-nums text-foreground">{totalHosts.toLocaleString()}</strong>{' '}
+            {activeFilterChips.length > 0 ? 'matching ' : ''}host{totalHosts === 1 ? '' : 's'}
+          </p>
+          <div className="flex shrink-0 items-center gap-xs">
+            {/* Sort is a display choice, never a filter — it has no chip. */}
+            <Label htmlFor="hosts-sort" className="text-metadata text-muted-foreground">Sort</Label>
                 <Select
                   value={sortBy}
                   onValueChange={(value) => {
@@ -1783,131 +1589,43 @@ export default function Hosts() {
                     <SelectItem value="hostname_asc">Hostname</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
           </div>
+        </div>
 
-          {/* v4.51.0 — Quick views chip row removed from the sticky
-              bar; the canonical preset surface lives in the
-              HostFilters card now.  See HOST_FILTER_PRESETS in
-              HostFilters.tsx. */}
-
-          {/* Review status */}
-          <div
-            className="flex flex-wrap items-center gap-xs"
-            role="group"
-            aria-label="Review status filter"
-          >
-            <span className="text-caption text-muted-foreground">Review status:</span>
-            {renderFollowChip('All', 'all')}
-            {/* "Not reviewed" = nobody on the team has this host In Review or
-                Reviewed (team-shared, follow:none). */}
-            {renderFollowChip('Not reviewed', 'none')}
-            {FOLLOW_STATUS_OPTIONS.map((option) =>
-              renderFollowChip(option.label, option.value, option.badgeClass),
-            )}
-          </div>
-
-          {/* Project default applied — dismissible, never a trap */}
+        {/* Team review status — the one filter used often enough to stay out
+            of the panel. */}
+        <div className="flex flex-wrap items-center gap-xs" role="group" aria-label="Review status filter">
+          <span className="text-caption text-muted-foreground">Review:</span>
+          {renderFollowChip('Any', 'all')}
+          {/* Nobody on the team has this host In Review or Reviewed
+              (team-shared, follow:none). */}
+          {renderFollowChip('Not started', 'none')}
+          {FOLLOW_STATUS_OPTIONS.map((option) =>
+            renderFollowChip(option.label, option.value, option.badgeClass),
+          )}
+          {/* A default the operator did not choose must never hide hosts
+              silently; the way out is one click. */}
           {appliedProjectDefault && (
-            <div className="flex flex-wrap items-center gap-xs rounded-control border border-primary/40 bg-accent/40 px-sm py-xxs text-caption">
+            <span className="ml-auto inline-flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
               <Star className="size-3.5 shrink-0 fill-current text-warning" aria-hidden />
-              <span className="text-foreground">
-                Project default filter applied: <strong>{appliedProjectDefault}</strong>
+              <span className="truncate">
+                Project default view applied: <strong className="text-foreground">{appliedProjectDefault}</strong>
               </span>
-              <Button variant="ghost" size="sm" className="h-6" onClick={dismissProjectDefault}>
-                Clear
+              <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
+                Show all hosts
               </Button>
-            </div>
+            </span>
           )}
+        </div>
 
-          {/* Saved views */}
-          {(savedViews.length > 0 || activeFilterChips.length > 0 || savedViewsError) && (
+        {/* Applied conditions.  Capped while the strip is sticky — an unbounded
+            chip list would grow the pinned area over the table. */}
+        {activeFilterChips.length > 0 && (
             <div className="flex flex-wrap items-center gap-xs">
-              <span className="text-caption text-muted-foreground">Saved views:</span>
-              {savedViewsError && savedViews.length === 0 && (
-                <p className="text-caption text-muted-foreground">
-                  Couldn't load saved views — refresh to retry.
-                </p>
-              )}
-              {!savedViewsError && savedViews.length === 0 && (
-                <span className="text-caption text-muted-foreground">
-                  none yet — apply some filters and click <strong>Save view</strong>
-                </span>
-              )}
-              {savedViews.map((view) => {
-                const isActive = activeViewId === view.id;
-                return (
-                  <span
-                    key={view.id}
-                    className={cn(
-                      'inline-flex max-w-[14rem] items-center gap-xxs overflow-hidden whitespace-nowrap rounded-chip border px-sm py-px text-caption font-medium',
-                      isActive
-                        ? 'border-transparent bg-primary text-primary-foreground'
-                        : 'border-border bg-card text-foreground',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => handleApplyView(view)}
-                      aria-pressed={isActive}
-                      className="truncate focus:outline-none focus:underline"
-                    >
-                      {view.name}
-                    </button>
-                    {view.is_project_default && (
-                      <Star
-                        className={cn('size-3 shrink-0 fill-current', isActive ? '' : 'text-warning')}
-                        aria-label="Project default"
-                      />
-                    )}
-                    {canSetProjectDefault && (
-                      <button
-                        type="button"
-                        onClick={() => handleToggleProjectDefault(view)}
-                        aria-label={view.is_project_default ? `Clear project default` : `Set "${view.name}" as project default`}
-                        title={view.is_project_default ? 'Clear project default' : 'Set as project default'}
-                        className={cn(
-                          'inline-flex size-6 shrink-0 items-center justify-center rounded-sm',
-                          isActive ? 'hover:bg-primary-foreground/20' : 'hover:bg-accent',
-                        )}
-                      >
-                        <Star className={cn('size-3', view.is_project_default && 'fill-current')} aria-hidden />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteView(view)}
-                      aria-label={`Delete saved view ${view.name}`}
-                      className={cn(
-                        'inline-flex size-6 shrink-0 items-center justify-center rounded-sm',
-                        isActive
-                          ? 'hover:bg-primary-foreground/20'
-                          : 'hover:bg-accent',
-                      )}
-                    >
-                      <X className="size-3" aria-hidden />
-                    </button>
-                  </span>
-                );
-              })}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={activeFilterChips.length === 0}
-                onClick={() => {
-                  setSaveViewName('');
-                  setSaveViewDialogOpen(true);
-                }}
-              >
-                Save view
-              </Button>
-            </div>
-          )}
-
-          {activeFilterChips.length > 0 && (
-            <div className="flex flex-wrap items-center gap-xs">
-              {activeFilterChips.map((chip) => (
+              <span className="text-caption text-muted-foreground" title="A host must match every condition. Within one condition, any of its values matches.">
+                Matching all of:
+              </span>
+              {(chipsExpanded ? activeFilterChips : activeFilterChips.slice(0, MAX_STICKY_CHIPS)).map((chip) => (
                 <span
                   key={chip.key}
                   className="inline-flex max-w-full items-center gap-xxs rounded-chip border border-border bg-card px-sm py-px text-caption font-medium"
@@ -1925,13 +1643,27 @@ export default function Hosts() {
                   )}
                 </span>
               ))}
-              <Button variant="ghost" size="sm" onClick={clearAllFilters}>
-                Clear all
+              {activeFilterChips.length > MAX_STICKY_CHIPS && (
+                <Button variant="ghost" size="sm" className="h-6" onClick={() => setChipsExpanded((v) => !v)}>
+                  {chipsExpanded ? 'Show fewer' : `Show all conditions (${activeFilterChips.length})`}
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" className="h-6" onClick={clearAllFilters}>
+                Clear filters
               </Button>
             </div>
-          )}
-        </CardContent>
-      </Card>
+        )}
+      </div>
+
+      {advancedOpen && (
+        <HostFilters
+          filters={filters}
+          onFiltersChange={handleFiltersChange}
+          availableData={filterData}
+          optionsLoading={filterDataLoading}
+          notesToggleVisible
+        />
+      )}
 
       {error && (
         <Alert variant="destructive">
@@ -2054,7 +1786,10 @@ export default function Hosts() {
                 if (p > 0) return `Planned · ${p} test${p === 1 ? '' : 's'} approved but not yet executed`;
                 return undefined;
               }}
-              tableClassName="table-fixed"
+              // The four sized columns take 790px; the floor keeps the Host
+              // column (the only unsized one) at ~270px in a narrowed window,
+              // where the wrapper scrolls sideways instead of crushing it.
+              tableClassName="table-fixed min-w-[1060px]"
             />
           </div>
 

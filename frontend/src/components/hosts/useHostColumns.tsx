@@ -454,8 +454,6 @@ export function useHostColumns({
         header: 'Host',
         cell: ({ row }) => {
           const host = row.original;
-          const lastSeenAge = relativeAge(host.last_seen);
-          const newHost = isNewHost(host.first_seen);
           // v2.44.1 (UX review #2): the IP/hostname is the keyboard-activation
           // target for the row-level "open host inspector" action — a real
           // <button> with a focus ring.  Only IP + hostname live inside it;
@@ -533,23 +531,6 @@ export function useHostColumns({
                   {host.os_name}
                 </PivotValue>
               )}
-              {/* Where the host lives + how fresh it is.  Subnet · site, then
-                  a relative last-seen age, then a "New" badge for hosts first
-                  discovered in the last week. */}
-              <div className="mt-xxs flex flex-wrap items-center gap-x-sm gap-y-xxs text-caption text-muted-foreground">
-                {host.primary_subnet ? (
-                  <span className="truncate font-mono" title={host.primary_subnet}>
-                    {host.primary_subnet}
-                  </span>
-                ) : (
-                  <ScopeCoverageLabel host={host} />
-                )}
-                {host.primary_site && (
-                  <span className="truncate" title={host.primary_site}>· {host.primary_site}</span>
-                )}
-                {lastSeenAge && <span title={host.last_seen ?? undefined}>seen {lastSeenAge} ago</span>}
-                {newHost && <Badge variant="info">New</Badge>}
-              </div>
               {host.tags && host.tags.length > 0 && (
                 <div className="mt-xxs flex flex-wrap gap-xxs">
                   {host.tags.slice(0, 3).map((tag) => (
@@ -571,6 +552,39 @@ export function useHostColumns({
                   )}
                 </div>
               )}
+            </div>
+          );
+        },
+      },
+      {
+        // Where the host lives + how fresh it is.  Its own column (5.249.0):
+        // stacked under the identity it made the Host cell the tallest in
+        // every row while the cells beside it stood half empty, and subnet /
+        // site could not be compared down the page.
+        id: 'network',
+        header: 'Network',
+        size: 170,
+        cell: ({ row }) => {
+          const host = row.original;
+          const lastSeenAge = relativeAge(host.last_seen);
+          return (
+            <div className="flex w-full min-w-0 flex-col gap-xxs text-caption text-muted-foreground">
+              {host.primary_subnet ? (
+                <span className="truncate font-mono text-foreground" title={host.primary_subnet}>
+                  {host.primary_subnet}
+                </span>
+              ) : (
+                <span className="truncate">
+                  <ScopeCoverageLabel host={host} />
+                </span>
+              )}
+              {host.primary_site && (
+                <span className="truncate" title={host.primary_site}>{host.primary_site}</span>
+              )}
+              <span className="flex min-w-0 flex-wrap items-center gap-xs">
+                {lastSeenAge && <span title={host.last_seen ?? undefined}>seen {lastSeenAge} ago</span>}
+                {isNewHost(host.first_seen) && <Badge variant="info">New</Badge>}
+              </span>
             </div>
           );
         },
