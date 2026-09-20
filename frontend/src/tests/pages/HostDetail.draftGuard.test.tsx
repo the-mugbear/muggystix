@@ -79,3 +79,47 @@ describe('HostDetail — unsaved-work guard', () => {
     expect(dirty.defaultPrevented).toBe(true);
   });
 });
+
+// v5.243.0 — "Back to my work" worked; Next did not follow the queue, because
+// the page only knew how to walk a Hosts query by index.
+describe('HostDetail — the Operations queue', () => {
+  const queue = { fromOperations: true, hostIds: [9, 5, 12], queueLabel: 'Worth a look' };
+
+  it('Prev / Next step through the section the host was opened from, carrying it along', async () => {
+    renderPage(queue);
+    expect(screen.getByText('2 of 3 in Worth a look')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/hosts/12', { state: queue, replace: true }));
+    fireEvent.click(screen.getByRole('button', { name: /Prev/ }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/hosts/9', { state: queue, replace: true }));
+    // No Hosts query is re-run for a fixed list.
+    const api = await import('../../services/api');
+    expect(api.getHosts).not.toHaveBeenCalled();
+  });
+
+  it('stops at the ends of the queue', () => {
+    renderPage({ ...queue, hostIds: [5, 12] });
+    expect(screen.getByRole('button', { name: /Prev/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Next/ })).toBeEnabled();
+  });
+
+  it('asks before Next discards a draft', async () => {
+    renderPage(queue);
+    reportDirty?.(true);
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+    expect(await screen.findByText('Discard unsaved work?')).toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('offers Back only when there is no queue, or the host is not in it', () => {
+    renderPage({ fromOperations: true });
+    expect(screen.queryByRole('button', { name: /Next/ })).not.toBeInTheDocument();
+  });
+
+  it('offers Back only when the host is not part of the queue it arrived with', () => {
+    renderPage({ ...queue, hostIds: [9, 12] });
+    expect(screen.queryByRole('button', { name: /Next/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Back to my work/ })).toBeInTheDocument();
+  });
+});

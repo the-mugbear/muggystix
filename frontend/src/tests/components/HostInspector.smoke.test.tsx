@@ -81,6 +81,47 @@ describe('HostInspector — proposed tests', () => {
   });
 });
 
+// v5.243.0 — the conflicts panel ranked sources by detection method and showed
+// no dates, so nothing revealed that the selected value might be the OLDER one.
+describe('HostInspector — conflicts say when each side was recorded', () => {
+  const side = (over: Record<string, unknown>) => ({
+    id: 1, field_name: 'os_name', confidence_score: 95, scan_type: 'nmap',
+    data_source: 'nmap -O', method: 'os_detection', scan_id: 3,
+    updated_at: '2026-06-01T00:00:00Z', ...over,
+  });
+
+  it('dates both sides and flags a lower-ranked source that is more recent', async () => {
+    (api.getHostConflicts as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      conflict_count: 1,
+      confidence: [
+        side({ id: 1, confidence_score: 95, updated_at: '2026-06-01T00:00:00Z' }),
+        side({ id: 2, confidence_score: 60, data_source: 'nessus', scan_id: 9, updated_at: '2026-09-01T00:00:00Z' }),
+      ],
+      conflict_history: [],
+    });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: /1 conflict/ }));
+    expect(await screen.findByText(/A lower-ranked source recorded this field more recently/)).toBeInTheDocument();
+    expect(screen.getAllByText(/^recorded /)).toHaveLength(2);
+  });
+
+  it('stays quiet when the selected value is also the newest', async () => {
+    (api.getHostConflicts as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      conflict_count: 1,
+      confidence: [
+        side({ id: 1, confidence_score: 95, updated_at: '2026-09-01T00:00:00Z' }),
+        side({ id: 2, confidence_score: 60, data_source: 'nessus', updated_at: '2026-06-01T00:00:00Z' }),
+      ],
+      conflict_history: [],
+    });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: /1 conflict/ }));
+    await screen.findByText(/Selected value/);
+    expect(screen.queryByText(/lower-ranked source recorded/)).not.toBeInTheDocument();
+  });
+});
+
 describe('HostInspector smoke', () => {
   it('renders through loading→loaded without a hooks-order crash', async () => {
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);

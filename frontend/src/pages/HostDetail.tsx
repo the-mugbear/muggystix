@@ -28,6 +28,8 @@ export default function HostDetail() {
   const rawNavState = location.state as {
     /** Opened from the Operations cards: Back returns to the work list. */
     fromOperations?: boolean;
+    /** The Operations section it was opened from (utils/operationsQueue). */
+    queueLabel?: string;
     fromHosts?: string;
     fromScan?: { id: number; filename: string };
     hostIds?: number[];
@@ -69,8 +71,13 @@ export default function HostDetail() {
 
   const hostIds = navState?.hostIds;
   const currentIndex = hostIds && numericHostId !== null ? hostIds.indexOf(numericHostId) : -1;
-  const absoluteIndex = navState?.absoluteIndex ?? currentIndex;
-  const totalHostsCount = navState?.totalHosts ?? hostIds?.length ?? 0;
+  // v5.243.0 — a host opened from an Operations section brings that section's
+  // host ids (utils/operationsQueue). Prev / Next then step through exactly
+  // those: a My-work section is a short list the analyst was looking at, not a
+  // Hosts query to re-run by index.
+  const opsQueue = !!navState?.fromOperations && !!hostIds && hostIds.length > 1 && currentIndex >= 0;
+  const absoluteIndex = opsQueue ? currentIndex : (navState?.absoluteIndex ?? currentIndex);
+  const totalHostsCount = opsQueue ? hostIds!.length : (navState?.totalHosts ?? hostIds?.length ?? 0);
   const hasPrev = absoluteIndex > 0;
   const hasNext =
     totalHostsCount > 0 && absoluteIndex >= 0 && absoluteIndex < totalHostsCount - 1;
@@ -110,6 +117,14 @@ export default function HostDetail() {
   };
 
   const navigateToHost = async (absoluteTargetIndex: number) => {
+    if (opsQueue) {
+      const targetId = hostIds![absoluteTargetIndex];
+      if (targetId == null) return;
+      if (!(await confirmDiscardDraft())) return;
+      // Same state, next id: the queue travels with the analyst.
+      navigate(`/hosts/${targetId}`, { state: navState, replace: true });
+      return;
+    }
     if (
       !navState?.queryContext ||
       absoluteTargetIndex < 0 ||
@@ -147,7 +162,7 @@ export default function HostDetail() {
 
   // Keyboard shortcuts: arrow keys / j-k for prev-next, Esc for back.
   useEffect(() => {
-    if (!navState?.fromHosts) return;
+    if (!navState?.fromHosts && !opsQueue) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (
@@ -192,7 +207,7 @@ export default function HostDetail() {
           <ArrowLeft className="size-4" aria-hidden />
           {navState?.fromOperations ? 'Back to my work' : navState?.fromScan ? 'Back to Scan' : 'Back to Hosts'}
         </Button>
-        {navState?.fromHosts && totalHostsCount > 1 && (
+        {(navState?.fromHosts || opsQueue) && totalHostsCount > 1 && (
           <div className="flex items-center gap-xxs">
             <Button
               variant="outline"
@@ -203,8 +218,10 @@ export default function HostDetail() {
               <ChevronLeft className="size-4" aria-hidden />
               Prev
             </Button>
-            <span className="text-metadata text-muted-foreground">
+            <span className="min-w-0 max-w-[20rem] truncate text-metadata text-muted-foreground"
+              title={opsQueue && navState?.queueLabel ? `${navState.queueLabel} — the hosts listed on Operations when you opened this one` : undefined}>
               {absoluteIndex + 1} of {totalHostsCount}
+              {opsQueue && navState?.queueLabel ? ` in ${navState.queueLabel}` : ''}
             </span>
             <Button
               variant="outline"

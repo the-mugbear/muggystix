@@ -26,6 +26,7 @@ import { formatApiError } from '../utils/apiErrors';
 import StartReconDialog from '../components/StartReconDialog';
 import MyWorkCard from '../components/MyWorkCard';
 import MyActivityCard from '../components/MyActivityCard';
+import UpdatedAt from '../components/UpdatedAt';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -40,6 +41,12 @@ import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 import { formatRelativeTime } from '../utils/relativeTime';
 
 type ScopeView = 'all' | 'mine';
+/** The older of two load times; null until both have loaded. */
+const olderOf = (a?: Date, b?: Date): Date | null =>
+  (a && b ? (a.getTime() <= b.getTime() ? a : b) : null);
+
+/** The page's independently fetched sources, each with its own load time. */
+type LoadedSource = 'workbench' | 'coverage' | 'pending' | 'stats' | 'staleness';
 const SCOPE_STORAGE_KEY = 'nm.operations.scopeView';
 
 const loadStickyScope = (): ScopeView => {
@@ -99,7 +106,9 @@ const ProjectStateCard: React.FC<{
   statsLoading: boolean;
   coverage: ProjectCoverageResponse | null;
   coverageLoading: boolean;
-}> = ({ stats, statsLoading, coverage, coverageLoading }) => {
+  /** "updated …" beside the heading (components/UpdatedAt). */
+  updated?: React.ReactNode;
+}> = ({ stats, statsLoading, coverage, coverageLoading, updated }) => {
   if ((statsLoading && !stats) || (coverageLoading && !coverage)) {
     return (
       <Card className="mb-md" aria-busy="true">
@@ -130,7 +139,10 @@ const ProjectStateCard: React.FC<{
   return (
     <Card className="mb-md" aria-busy={busy || undefined}>
       <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">Project state</h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
+          <h2 className="text-subheading font-semibold">Project state</h2>
+          {updated}
+        </div>
         <p className="mb-sm text-caption text-muted-foreground">
           Exposure (scanner observations, not yet judged) and assessment coverage
           (pipeline progress) at a glance. Findings — the promoted, curated record,
@@ -280,7 +292,7 @@ const ProjectStateCard: React.FC<{
 // Scan freshness — flags scopes/project that need a re-scan (v2.73.0).
 // ---------------------------------------------------------------------------
 
-const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) => {
+const ScanFreshness: React.FC<{ data: StalenessResponse | null; updated?: React.ReactNode }> = ({ data, updated }) => {
   // Turn a "due for re-scan" warning into the action it implies. The old row
   // linked to /scopes/:id, a route retired to a redirect that discards the id —
   // a dead end. Recon needs analyst+, so viewers/auditors see the freshness
@@ -304,7 +316,10 @@ const ScanFreshness: React.FC<{ data: StalenessResponse | null }> = ({ data }) =
     <>
     <Card className="mb-md">
       <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">Scan freshness</h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
+          <h2 className="text-subheading font-semibold">Scan freshness</h2>
+          {updated}
+        </div>
         <p className="mb-sm text-caption text-muted-foreground">
           How recent each scope's scan evidence is — a scope with hosts no scan has seen
           in over {data.stale_days} days is due for a re-scan. This tracks the age of the data, not
@@ -467,7 +482,8 @@ const NeedsAttentionSection: React.FC<{
   // Approving a plan needs analyst+; for viewers/auditors this is passive
   // project context, not personal work (§27 role-aware approvals).
   canApprove: boolean;
-}> = ({ pendingPlans, loading, canApprove }) => {
+  updated?: React.ReactNode;
+}> = ({ pendingPlans, loading, canApprove, updated }) => {
   const navigate = useNavigate();
 
   if (loading && !pendingPlans) {
@@ -496,6 +512,7 @@ const NeedsAttentionSection: React.FC<{
           {canApprove ? 'Needs your approval' : 'Pending approvals'}
         </h2>
         <span>{canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}</span>
+        {updated}
       </div>
     );
   }
@@ -503,9 +520,12 @@ const NeedsAttentionSection: React.FC<{
   return (
     <Card className="mb-md">
       <CardContent className="p-md">
-        <h2 className="text-subheading font-semibold">
-          {canApprove ? 'Needs your approval' : 'Pending approvals'}
-        </h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
+          <h2 className="text-subheading font-semibold">
+            {canApprove ? 'Needs your approval' : 'Pending approvals'}
+          </h2>
+          {updated}
+        </div>
         <p className="mb-sm text-caption text-muted-foreground">
           {canApprove
             ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide — independent of the Mine / All toggle.'
@@ -659,6 +679,8 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<RunsStatusFilter>('all');
   const [reloadNonce, setReloadNonce] = useState(0);
+  // This panel fetches for itself, so it keeps its own load time (v5.243.0).
+  const [runsLoadedAt, setRunsLoadedAt] = useState<Date | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -675,6 +697,7 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
       .then((resp) => {
         if (controller.signal.aborted) return;
         setRows(resp.sessions);
+        setRunsLoadedAt(new Date());
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -691,7 +714,11 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
     <Card className="mb-md">
       <CardContent className="p-md">
         <div className="mb-xs flex flex-wrap items-center gap-xs">
-          <h2 className="flex-1 text-subheading font-semibold">Runs</h2>
+          <h2 className="text-subheading font-semibold">Runs</h2>
+          {/* A failed refetch keeps the previous rows under its error. */}
+          {/* The wrapper keeps pushing the controls right before the first load,
+              when UpdatedAt renders nothing. */}
+          <div className="min-w-0 flex-1"><UpdatedAt at={runsLoadedAt} stale={!!error} /></div>
           <div
             className="inline-flex overflow-hidden rounded-control border border-border"
             role="group"
@@ -1010,6 +1037,14 @@ const Operations: React.FC = () => {
       .finally(() => setSinceSaving(false));
   }, [sinceAsOf]);
 
+  // v5.243.0 — when each independently fetched source last SUCCEEDED. Several
+  // sections keep their previous data on a failed refresh; this is how they
+  // say how old it is (components/UpdatedAt).
+  const [loadedAt, setLoadedAt] = useState<Partial<Record<LoadedSource, Date>>>({});
+  const markLoaded = useCallback((source: LoadedSource) => {
+    setLoadedAt((prev) => ({ ...prev, [source]: new Date() }));
+  }, []);
+
   const reload = useCallback(async () => {
     const gen = ++reloadGenRef.current;
     const isStale = () => gen !== reloadGenRef.current;
@@ -1027,6 +1062,7 @@ const Operations: React.FC = () => {
       .then((wb) => {
         if (isStale()) return;
         setWorkbench(wb);
+        markLoaded('workbench');
         // A fresh snapshot is diffed against the saved cursor, so anything it
         // reports arrived after the last acknowledgement — show it again.
         setSinceDismissed(false);
@@ -1067,6 +1103,7 @@ const Operations: React.FC = () => {
 
     if (coverageR.status === 'fulfilled') {
       setCoverage(coverageR.value);
+      markLoaded('coverage');
     } else {
       setError(formatApiError(coverageR.reason, 'Failed to load Operations data.'));
     }
@@ -1076,18 +1113,21 @@ const Operations: React.FC = () => {
     if (pendingR.status === 'fulfilled') {
       setPendingPlans(pendingR.value);
       setPendingError(null);
+      markLoaded('pending');
     } else {
       setPendingError(formatApiError(pendingR.reason, 'Could not load pending plans.'));
     }
     if (statsR.status === 'fulfilled') {
       setStats(statsR.value);
       setStatsError(null);
+      markLoaded('stats');
     } else {
       setStatsError(formatApiError(statsR.reason, 'Could not load project statistics.'));
     }
     if (stalenessR.status === 'fulfilled') {
       setStaleness(stalenessR.value);
       setStalenessError(null);
+      markLoaded('staleness');
     } else {
       setStaleness(null);
       setStalenessError(formatApiError(stalenessR.reason, 'Could not load scan freshness.'));
@@ -1159,7 +1199,12 @@ const Operations: React.FC = () => {
           </AlertDescription>
         </Alert>
       )}
-      <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} canApprove={canApprovePlans} />
+      <NeedsAttentionSection
+        pendingPlans={pendingPlans}
+        loading={pendingLoading}
+        canApprove={canApprovePlans}
+        updated={<UpdatedAt at={loadedAt.pending ?? null} stale={!!pendingError} />}
+      />
     </>
   );
 
@@ -1330,6 +1375,7 @@ const Operations: React.FC = () => {
               loading={workbenchLoading}
               error={workbenchError}
               onRetry={reload}
+              updated={<UpdatedAt at={loadedAt.workbench ?? null} />}
             />
             <MyActivityCard refreshKey={refreshKey} />
           </div>
@@ -1353,6 +1399,14 @@ const Operations: React.FC = () => {
             statsLoading={statsLoading}
             coverage={coverage}
             coverageLoading={coverageLoading}
+            // Two sources feed this card: it is as old as the OLDER of them,
+            // and stale when either refresh failed over data it kept.
+            updated={(
+              <UpdatedAt
+                at={olderOf(loadedAt.stats, loadedAt.coverage)}
+                stale={!!statsError || !!error}
+              />
+            )}
           />
           {stalenessError ? (
             <Alert variant="warning" className="mb-md">
@@ -1364,7 +1418,7 @@ const Operations: React.FC = () => {
               </AlertDescription>
             </Alert>
           ) : (
-            <ScanFreshness data={staleness} />
+            <ScanFreshness data={staleness} updated={<UpdatedAt at={loadedAt.staleness ?? null} />} />
           )}
         </>
       )}

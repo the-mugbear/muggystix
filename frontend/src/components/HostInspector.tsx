@@ -99,6 +99,7 @@ import HostFindingsCard from './HostFindingsCard';
 import HostNamesCard from './HostNamesCard';
 import HostLineagePanel from './HostLineagePanel';
 import { stickyBelowChrome } from '../utils/uiStyles';
+import { formatRelativeTime } from '../utils/relativeTime';
 import { NoteThread } from './host-inspector/NoteThread';
 import { NoteComposer } from './host-inspector/NoteComposer';
 import { InspectorSection, jumpToInspectorSection } from './host-inspector/InspectorSection';
@@ -2574,6 +2575,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               const winner = sorted[0];
               const alternatives = sorted.slice(1);
               const relatedHistory = conflictHistory.filter((h) => h.field_name === fieldName);
+              // The most recent alternative, when it is newer than the selection.
+              const stamp = (v?: string | null) => (v ? new Date(v).getTime() || 0 : 0);
+              const newerAlternative = alternatives
+                .filter((alt) => stamp(alt.updated_at) > stamp(winner.updated_at))
+                .sort((a, b) => stamp(b.updated_at) - stamp(a.updated_at))[0];
 
               return (
                 <div key={fieldName} className="space-y-xs">
@@ -2591,7 +2597,23 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <p className="text-caption text-muted-foreground">
                       Source: {winner.data_source || 'unknown'} | Method:{' '}
                       {winner.method || 'default'} | Scan #{winner.scan_id}
+                      {/* v5.243.0 — WHEN each side was recorded. The ranking is
+                          by detection method, not by age, so without the date
+                          nothing showed that the selected value might be the
+                          older one. */}
+                      {' | '}
+                      <span title={winner.updated_at ? new Date(winner.updated_at).toLocaleString() : undefined}>
+                        recorded {formatRelativeTime(winner.updated_at, { fallback: 'time unknown' })}
+                      </span>
                     </p>
+                    {newerAlternative && (
+                      <p className="text-caption text-warning">
+                        A lower-ranked source recorded this field more recently
+                        ({formatRelativeTime(newerAlternative.updated_at, { fallback: 'time unknown' })},{' '}
+                        {newerAlternative.data_source || 'unknown'}). The selection follows the
+                        source ranking, not recency — check which one still holds.
+                      </p>
+                    )}
                     {winner.additional_factors &&
                       Object.keys(winner.additional_factors).length > 0 && (
                         <p className="text-caption text-muted-foreground">
@@ -2616,6 +2638,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                           <span className="text-caption">
                             {alt.scan_type} — {alt.data_source || 'unknown'} via{' '}
                             {alt.method || 'default'} (Scan #{alt.scan_id})
+                            {' · '}
+                            <span className="text-muted-foreground"
+                              title={alt.updated_at ? new Date(alt.updated_at).toLocaleString() : undefined}>
+                              recorded {formatRelativeTime(alt.updated_at, { fallback: 'time unknown' })}
+                            </span>
                           </span>
                         </div>
                       ))}

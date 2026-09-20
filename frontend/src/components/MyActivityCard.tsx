@@ -14,6 +14,7 @@ import {
 import { getMyActivity, type ActivityEvent, type ActivityEventKind } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from './ui/card';
+import UpdatedAt from './UpdatedAt';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Alert, AlertDescription } from './ui/alert';
@@ -83,6 +84,9 @@ export const MyActivityCard: React.FC<{
   const [events, setEvents] = React.useState<ActivityEvent[] | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  // Self-fetching, so it keeps its own load time (v5.243.0); a failed refetch
+  // keeps the previous events under its error.
+  const [loadedAt, setLoadedAt] = React.useState<Date | null>(null);
   const [typeFilter, setTypeFilter] = React.useState<TypeFilter>('all');
   const [days, setDays] = React.useState<'all' | '7' | '30'>('all');
   const [searchInput, setSearchInput] = React.useState('');
@@ -102,7 +106,7 @@ export const MyActivityCard: React.FC<{
       days: days === 'all' ? undefined : Number(days),
       search: search || undefined,
     })
-      .then((res) => { setEvents(res.items); setError(null); })
+      .then((res) => { setEvents(res.items); setError(null); setLoadedAt(new Date()); })
       .catch((err) => setError(formatApiError(err, 'Failed to load your activity.')))
       .finally(() => setLoading(false));
   }, [typeFilter, days, search]);
@@ -135,7 +139,10 @@ export const MyActivityCard: React.FC<{
   return (
     <Card className="h-full">
       <CardContent className="p-md">
-        <p className="text-subheading font-semibold text-foreground">My recent activity</p>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
+          <p className="text-subheading font-semibold text-foreground">My recent activity</p>
+          <UpdatedAt at={loadedAt} stale={!!error} />
+        </div>
         <p className="mb-sm text-caption text-muted-foreground">
           What you’ve worked on — notes, findings, and reviews. Pick up where you left off.
         </p>

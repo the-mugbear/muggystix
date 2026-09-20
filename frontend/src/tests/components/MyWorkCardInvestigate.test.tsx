@@ -222,10 +222,14 @@ describe('MyWorkCard — Worth a look', () => {
       await waitFor(() => expect(onRetry).toHaveBeenCalled());
     });
 
-    it('opens the host with the way back to the work list', () => {
+    // v5.243.0 — and with the section itself, so Next on the host page walks
+    // these hosts instead of going nowhere.
+    it('opens the host with the way back to the work list, and the section as its queue', () => {
       renderCard(null, false, { followups });
       fireEvent.click(screen.getByRole('button', { name: '10.8.0.2' }));
-      expect(navigate).toHaveBeenCalledWith('/hosts/21', { state: { fromOperations: true } });
+      expect(navigate).toHaveBeenCalledWith('/hosts/21', {
+        state: { fromOperations: true, hostIds: [21, 22], queueLabel: 'Needs another look' },
+      });
     });
 
     it('is absent when nothing is owed, and says so when it could not be computed', () => {

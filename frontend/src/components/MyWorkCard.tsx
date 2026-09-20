@@ -52,6 +52,7 @@ import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { cn } from '../utils/cn';
 import { formatRelativeTime } from '../utils/relativeTime';
 import { buildHostsUrl } from '../utils/drilldownLinks';
+import { fromOperationsQueue, hostIdOf } from '../utils/operationsQueue';
 
 type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
 
@@ -239,6 +240,8 @@ export interface MyWorkCardProps {
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  /** "updated …" beside the heading (components/UpdatedAt). */
+  updated?: React.ReactNode;
 }
 
 const INVESTIGATE_PREVIEW = 5;
@@ -298,7 +301,12 @@ const FollowupsSection: React.FC<{
               <div className="flex min-w-0 items-baseline gap-xs">
                 <button
                   type="button"
-                  onClick={() => navigate(`/hosts/${row.host_id}`, FROM_OPERATIONS)}
+                  // The section's hosts ride along, so Next on the host page
+                  // walks THIS list (v5.243.0).
+                  onClick={() => navigate(
+                    `/hosts/${row.host_id}`,
+                    fromOperationsQueue(rows.map((r) => r.host_id), 'Needs another look'),
+                  )}
                   className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
                 >
@@ -425,7 +433,10 @@ const InvestigateSection: React.FC<{
                   <div className="flex min-w-0 items-baseline gap-xs">
                     <button
                       type="button"
-                      onClick={() => navigate(`/hosts/${row.host_id}`, FROM_OPERATIONS)}
+                      onClick={() => navigate(
+                        `/hosts/${row.host_id}`,
+                        fromOperationsQueue(rows.map((r) => r.host_id), 'Worth a look'),
+                      )}
                       className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
                     >
@@ -513,7 +524,7 @@ const GROUP_PREVIEW = 3;
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   queue, tasks, notes, findings, investigate = null, investigateUnavailable = false,
   followups = null, followupsUnavailable = false,
-  loading, error, onRetry,
+  loading, error, onRetry, updated,
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -587,6 +598,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           {totalCount > 0 && <Badge variant="secondary">{totalCount}</Badge>}
           {overdue > 0 && <Badge variant="destructive">{overdue} overdue</Badge>}
           {availableCount > 0 && <Badge variant="outline">{availableCount} to claim</Badge>}
+          {/* v5.243.0 — when the workbench last loaded. */}
+          <div className="ml-auto">{updated}</div>
         </div>
 
         {loading ? (
@@ -645,7 +658,14 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                   <div className="flex items-center gap-xxs">
                     <button
                       type="button"
-                      onClick={() => navigate(it.to, it.to.startsWith('/hosts/') ? FROM_OPERATIONS : undefined)}
+                      onClick={() => navigate(
+                        it.to,
+                        // A host row carries its category's hosts as the queue;
+                        // a finding / plan-step row is not a host page.
+                        hostIdOf(it.to) != null
+                          ? fromOperationsQueue(rows.map((r) => hostIdOf(r.to)), GROUP_META[g.key].label)
+                          : undefined,
+                      )}
                       className={cn(
                         'flex min-w-0 flex-1 items-center gap-xs px-xs py-xxs text-left',
                         'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
