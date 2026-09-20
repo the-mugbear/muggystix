@@ -362,10 +362,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                       className="truncate"
                       title={[version, port.service_extrainfo].filter(Boolean).join(' — ') || undefined}
                     >
-                      {version || <span className="text-muted-foreground">—</span>}
+                      {/* With no product, the extra info IS the cell — it read
+                          "— ([401] /console (512B))", a dash and then a value. */}
+                      {version || (!port.service_extrainfo && <span className="text-muted-foreground">—</span>)}
                       {port.service_extrainfo && (
-                        <span className="ml-xxs text-caption text-muted-foreground">
-                          ({port.service_extrainfo})
+                        <span className={version ? 'ml-xxs text-caption text-muted-foreground' : 'text-caption text-muted-foreground'}>
+                          {version ? `(${port.service_extrainfo})` : port.service_extrainfo}
                         </span>
                       )}
                     </TableCell>

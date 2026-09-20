@@ -574,12 +574,24 @@ def get_hosts_v2(
     # Batch lookup: web interface counts per host (v2.12.0).
     # Drives the "Web" badge on the Hosts list (phase 2 UI) and
     # feeds the per-host HostDetail card count.
+    # v2.362.0 — DISTINCT interfaces (tool + URL), not rows: web_interfaces
+    # keeps one row per scan, so a host re-scanned once showed "4 web" over a
+    # section listing 2. Same key as the inspector's latestObservations.
     wi_count_map: Dict[int, int] = {}
     if host_ids:
-        wi_rows = (
-            db.query(models.WebInterface.host_id, func.count(models.WebInterface.id))
+        distinct_wi = (
+            db.query(
+                models.WebInterface.host_id,
+                models.WebInterface.source,
+                models.WebInterface.url,
+            )
             .filter(models.WebInterface.host_id.in_(host_ids))
-            .group_by(models.WebInterface.host_id)
+            .distinct()
+            .subquery()
+        )
+        wi_rows = (
+            db.query(distinct_wi.c.host_id, func.count())
+            .group_by(distinct_wi.c.host_id)
             .all()
         )
         wi_count_map = {row[0]: row[1] for row in wi_rows}
@@ -1428,11 +1440,14 @@ def get_host_v2(
     # nikto rows).  HostDetail.tsx uses this to gate the "Web
     # Interfaces" card visibility — fetch the full list lazily
     # only when the count is > 0.
+    # v2.362.0 — distinct (tool, URL), matching the list badge above and the
+    # rows the section shows; the table keeps one row per scan.
     serialized["web_interface_count"] = (
-        db.query(func.count(models.WebInterface.id))
+        db.query(models.WebInterface.source, models.WebInterface.url)
         .filter(models.WebInterface.host_id == host_id)
-        .scalar()
-    ) or 0
+        .distinct()
+        .count()
+    )
     # v2.45.7 — gate the HostInspector NetExec card the same way as
     # the Web Interfaces card: a cheap count, full rows fetched lazily.
     serialized["netexec_result_count"] = (
