@@ -66,3 +66,43 @@ def test_host_list_agrees_with_the_detail(client, db_session, test_project):
     rows = {h["ip_address"]: h for h in r.json()["items"]}
     assert rows["10.44.0.1"]["web_interface_count"] == 3
     assert rows["10.44.0.2"]["web_interface_count"] == 0
+
+
+# --- when was it OBSERVED (v2.364.0, code review finding 21) -----------------
+
+def test_web_interfaces_say_when_they_were_observed_not_when_the_row_was_written(client, db_session, test_project):
+    """``first_seen`` / ``last_seen`` are the database's clock (``last_seen``
+    moves on any update), and the inspector now shows ONE row per (tool, URL) —
+    ranking by them let an old scan imported later become "the latest".  The
+    response carries the scan's own time when the tool recorded one."""
+    from datetime import datetime
+
+    host = _host(db_session, test_project.id, "10.44.1.1")
+    timed = models.Scan(filename="aug.xml", project_id=test_project.id,
+                        start_time=datetime(2026, 8, 7, 17, 0), end_time=datetime(2026, 8, 7, 18, 0),
+                        time_source="tool_run")
+    wall_clock = models.Scan(filename="clock.gnmap", project_id=test_project.id,
+                             start_time=datetime(2026, 8, 9, 9, 30), time_source="tool_clock")
+    untimed = models.Scan(filename="list.txt", project_id=test_project.id)
+    db_session.add_all([timed, wall_clock, untimed])
+    db_session.flush()
+    _iface(db_session, test_project.id, host, timed, "https://10.44.1.1/a")
+    _iface(db_session, test_project.id, host, wall_clock, "https://10.44.1.1/b")
+    _iface(db_session, test_project.id, host, untimed, "https://10.44.1.1/c")
+    db_session.commit()
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/{host.id}/web-interfaces")
+    assert r.status_code == 200, r.text
+    by_url = {w["url"].rsplit("/", 1)[1]: w for w in r.json()}
+
+    # The tool's own END time, as an absolute instant (UTC offset present).
+    assert by_url["a"]["observed_at_basis"] == "scan"
+    assert by_url["a"]["observed_at"].startswith("2026-08-07T18:00:00")
+    assert by_url["a"]["observed_at"].endswith(("Z", "+00:00"))
+    assert by_url["a"]["scan_filename"] == "aug.xml"
+    # A zone-less scanner wall clock stays naive — never converted (scan_time rule).
+    assert by_url["b"]["observed_at_basis"] == "scan"
+    assert by_url["b"]["observed_at"] == "2026-08-09T09:30:00"
+    # No scan time at all: all that is known is the import, and it says so.
+    assert by_url["c"]["observed_at_basis"] == "import"
+    assert by_url["c"]["observed_at"] == by_url["c"]["first_seen"]

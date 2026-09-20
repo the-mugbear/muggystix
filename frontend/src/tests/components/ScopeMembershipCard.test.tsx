@@ -65,6 +65,8 @@ describe('ScopeMembershipCard', () => {
       names: [{ fqdn: 'www.example.com', domain: 'example.com', include_subdomains: true }],
     });
     expect(screen.getByText('Reachable via in-scope name')).toBeInTheDocument();
+    // Code review D5: the approved name is beside the status, not behind a click.
+    expect(screen.getByText('www.example.com')).toBeInTheDocument();
     // The limit of what the name authorises is never behind the click.
     expect(screen.getByText(/does not put the address/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'show entries' }));

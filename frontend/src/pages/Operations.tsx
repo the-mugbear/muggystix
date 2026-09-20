@@ -483,7 +483,9 @@ const NeedsAttentionSection: React.FC<{
   // project context, not personal work (§27 role-aware approvals).
   canApprove: boolean;
   updated?: React.ReactNode;
-}> = ({ pendingPlans, loading, canApprove, updated }) => {
+  /** The fetch failed and there is nothing cached: the queue is UNKNOWN. */
+  unavailable?: boolean;
+}> = ({ pendingPlans, loading, canApprove, updated, unavailable = false }) => {
   const navigate = useNavigate();
 
   if (loading && !pendingPlans) {
@@ -502,6 +504,21 @@ const NeedsAttentionSection: React.FC<{
   }
 
   const hasAny = (pendingPlans?.length ?? 0) > 0;
+
+  // v5.244.0 (code review D6) — a failed load is "unknown", never "nothing":
+  // this rendered "Nothing needs your approval right now" directly under the
+  // error saying approvals could not be loaded. Same rule as every other
+  // section on this page: unavailable is said, not shown as empty.
+  if (unavailable && !hasAny) {
+    return (
+      <div className="mb-md flex min-w-0 flex-wrap items-baseline gap-x-sm px-md text-caption text-muted-foreground">
+        <h2 className="text-metadata font-semibold text-foreground">
+          {canApprove ? 'Needs your approval' : 'Pending approvals'}
+        </h2>
+        <span role="status">Could not be checked — this is not a confirmation that nothing is waiting.</span>
+      </div>
+    );
+  }
 
   // Nothing waiting: one line, not a card explaining a queue that is empty.
   // The heading stays a heading so the section is still findable.
@@ -1204,6 +1221,7 @@ const Operations: React.FC = () => {
         loading={pendingLoading}
         canApprove={canApprovePlans}
         updated={<UpdatedAt at={loadedAt.pending ?? null} stale={!!pendingError} />}
+        unavailable={!!pendingError}
       />
     </>
   );

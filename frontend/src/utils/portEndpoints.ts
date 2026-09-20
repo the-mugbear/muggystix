@@ -67,6 +67,19 @@ const tsOf = (iso: string | null | undefined): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
+/**
+ * When a web observation HAPPENED (v5.244.0, code review finding 21).
+ *
+ * `last_seen` is the database's clock and moves on every row update; no parser
+ * sets it. Ranking by it let an old scan imported later — or any metadata
+ * touch — become "the newest". The API now sends `observed_at`: the scan's own
+ * time when the tool recorded one (`observed_at_basis: 'scan'`), otherwise the
+ * import time (`'import'`). An older backend sends neither, so fall back to
+ * `first_seen` (written once, at import) before `last_seen`.
+ */
+export const webObservedAt = (w: Pick<WebInterface, 'observed_at' | 'first_seen' | 'last_seen'>): string | null =>
+  w.observed_at ?? w.first_seen ?? w.last_seen ?? null;
+
 /** Endpoints per `port_id`: named ones first (A→Z), the bare address last. */
 export function endpointsByPort(interfaces: WebInterface[]): Map<number, PortEndpoint[]> {
   const byPort = new Map<number, Map<string, PortEndpoint & { _ts: number }>>();
@@ -74,7 +87,7 @@ export function endpointsByPort(interfaces: WebInterface[]): Map<number, PortEnd
     if (w.port_id == null) continue;
     const name = endpointNameOf(w);
     const key = (name ?? '').toLowerCase();
-    const ts = tsOf(w.last_seen);
+    const ts = tsOf(webObservedAt(w));
     const forPort = byPort.get(w.port_id) ?? new Map<string, PortEndpoint & { _ts: number }>();
     const prev = forPort.get(key);
     if (!prev || ts >= prev._ts) {
@@ -84,7 +97,8 @@ export function endpointsByPort(interfaces: WebInterface[]): Map<number, PortEnd
         name,
         url: w.url,
         source: w.source,
-        last_seen: w.last_seen ?? null,
+        // Kept under its old name for the TLS cell; it is the OBSERVATION time.
+        last_seen: webObservedAt(w),
         tls: hasTlsSignal(w)
           ? {
               cert_not_after: w.cert_not_after,

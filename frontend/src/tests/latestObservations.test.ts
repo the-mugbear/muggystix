@@ -59,6 +59,18 @@ describe('latestObservations', () => {
     expect(out.map((o) => o.latest.url)).toEqual(['https://h/b', 'https://h/a']);
   });
 
+  // Code review finding 20: the first version kept only `latest`.
+  it('keeps every member of the group, newest first — collapsing never discards access', () => {
+    const [group] = latestObservations([
+      row({ id: 5, status: 401, last_seen: '2026-08-07T18:12:26Z' }),
+      row({ id: 41, status: 200, last_seen: '2026-09-10T02:22:38Z' }),
+      row({ id: 20, status: 302, last_seen: '2026-08-20T00:00:00Z' }),
+    ], key, time);
+    expect(group.members.map((m) => m.id)).toEqual([41, 20, 5]);
+    expect(group.members[0]).toBe(group.latest);
+    expect(group.count).toBe(group.members.length);
+  });
+
   it('returns nothing for nothing', () => {
     expect(latestObservations([], key, time)).toEqual([]);
   });

@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Flag, ImagePlus, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Flag, ImagePlus, Loader2, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
 import { AgentAuthorBadge } from '../AgentAuthorBadge';
@@ -116,6 +116,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
   const isReply = depth > 0;
   const attachRef = useRef<NoteAttachmentsHandle>(null);
   const [bodyOpen, setBodyOpen] = useState(false);
+  const [attachBusy, setAttachBusy] = useState(false);
   const body = note.body ?? '';
   const longBody = body.length > LONG_NOTE_CHARS || body.split('\n').length > LONG_NOTE_LINES;
   const statusMeta = noteStatusMeta[note.status];
@@ -206,9 +207,14 @@ const NoteRow: React.FC<NoteRowProps> = ({
                     size="icon"
                     className={ACTION_BUTTON}
                     onClick={() => attachRef.current?.openPicker()}
-                    aria-label="Attach image"
+                    // Disabled while an upload runs, as the built-in button
+                    // always was (NoteAttachments also refuses a second pick).
+                    disabled={attachBusy}
+                    aria-label={attachBusy ? 'Uploading image…' : 'Attach image'}
                   >
-                    <ImagePlus className={ACTION_ICON} aria-hidden />
+                    {attachBusy
+                      ? <Loader2 className={cn(ACTION_ICON, 'animate-spin')} aria-hidden />
+                      : <ImagePlus className={ACTION_ICON} aria-hidden />}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Attach image</TooltipContent>
@@ -284,6 +290,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
         <NoteAttachments
           ref={attachRef}
           externalTrigger
+          onBusyChange={setAttachBusy}
           hostId={hostId}
           noteId={note.id}
           attachments={note.attachments ?? []}

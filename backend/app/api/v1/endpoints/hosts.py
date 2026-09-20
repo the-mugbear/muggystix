@@ -2208,6 +2208,22 @@ class WebInterfaceResponse(BaseModel):
     last_seen: Optional[datetime] = None
     scan_id: int
     port_id: Optional[int] = None
+    # v2.364.0 (code review finding 21) — WHEN this was observed, as distinct
+    # from when the row was written.  ``first_seen`` / ``last_seen`` are the
+    # database's clock: ``first_seen`` is the import time and ``last_seen``
+    # moves on every row update, and no parser sets either.  Since the
+    # inspector shows ONE row per (tool, URL), ranking by ``last_seen`` let an
+    # old scan imported later — or any metadata touch — become "the latest".
+    #   observed_at        the scan's own end (else start) time, when the tool
+    #                      recorded one — emitted by the one scan-time rule
+    #                      (services/scan_time), so a zone-less tool clock
+    #                      stays naive;
+    #   observed_at_basis  "scan" when that time exists, else "import": all
+    #                      that is known is when the file was uploaded, and
+    #                      ``observed_at`` is then ``first_seen``.
+    observed_at: Optional[datetime] = None
+    observed_at_basis: str = "import"
+    scan_filename: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2244,6 +2260,30 @@ def list_host_web_interfaces(
         .order_by(models.WebInterface.port.asc().nulls_last(), models.WebInterface.url)
         .all()
     )
+    # One grouped lookup for the scans' own times (never per row).
+    scan_ids = {r.scan_id for r in rows}
+    scan_times = {
+        s.id: s
+        for s in (
+            db.query(
+                models.Scan.id, models.Scan.start_time, models.Scan.end_time,
+                models.Scan.time_source, models.Scan.filename,
+            )
+            .filter(models.Scan.id.in_(scan_ids))
+            .all()
+            if scan_ids else []
+        )
+    }
+
+    def _observed(r):
+        s = scan_times.get(r.scan_id)
+        tool_time = (s.end_time or s.start_time) if s else None
+        if tool_time is not None:
+            return scan_time_for_api(tool_time, s.time_source), "scan"
+        return r.first_seen, "import"
+
+    observed = {r.id: _observed(r) for r in rows}
+
     return [
         WebInterfaceResponse(
             id=r.id,
@@ -2269,6 +2309,9 @@ def list_host_web_interfaces(
             last_seen=r.last_seen,
             scan_id=r.scan_id,
             port_id=r.port_id,
+            observed_at=observed[r.id][0],
+            observed_at_basis=observed[r.id][1],
+            scan_filename=(scan_times[r.scan_id].filename if r.scan_id in scan_times else None),
         )
         for r in rows
     ]

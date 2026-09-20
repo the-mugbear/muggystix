@@ -60,6 +60,13 @@ export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ member
     status = (
       <>
         <Badge variant="info-outline">Reachable via in-scope name</Badge>
+        {/* v5.244.0 (code review D5) — the limitation below says "test what the
+            name serves"; the name itself used to be behind "show entries". */}
+        {names.length > 0 && !open && (
+          <span className="min-w-0 max-w-[22rem] truncate font-mono text-caption text-foreground" title={names.map((n) => n.fqdn).join('\n')}>
+            {names[0].fqdn}{names.length > 1 ? ` +${names.length - 1}` : ''}
+          </span>
+        )}
         <span className="text-caption text-muted-foreground">no subnet entry contains this address</span>
       </>
     );

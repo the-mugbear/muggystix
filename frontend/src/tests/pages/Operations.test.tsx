@@ -232,6 +232,15 @@ describe('Operations page', () => {
     });
   });
 
+  // Code review D6: this rendered "Nothing needs your approval right now"
+  // directly under the error saying approvals could not be loaded.
+  it('a failed approvals load reads as unknown, never as nothing waiting', async () => {
+    mockedApi.getTestPlans.mockRejectedValue(new Error('boom'));
+    renderPage();
+    expect(await screen.findByText(/Could not be checked — this is not a confirmation/)).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing needs your approval/)).not.toBeInTheDocument();
+  });
+
   it('renders the consolidated Runs section from /agent-sessions', async () => {
     // v3 alpha.15: ActiveRunsSection + RecentRunsSection collapsed
     // into a single RunsSection with status filter chips.  Default

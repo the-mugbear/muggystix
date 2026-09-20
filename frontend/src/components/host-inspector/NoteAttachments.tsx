@@ -33,6 +33,9 @@ interface NoteAttachmentsProps {
    * every note spent a row of its own on an "Attach image" button.
    */
   externalTrigger?: boolean;
+  /** Tells the owner of an external trigger that an upload is in flight, so
+   *  its control can disable itself the way the built-in one does. */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 export interface NoteAttachmentsHandle {
@@ -49,11 +52,21 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  * web-interface screenshots load.
  */
 const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(({
-  hostId, noteId, attachments, canManage, onChanged, uploadFn, externalTrigger = false,
+  hostId, noteId, attachments, canManage, onChanged, uploadFn, externalTrigger = false, onBusyChange,
 }, ref) => {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
-  useImperativeHandle(ref, () => ({ openPicker: () => fileRef.current?.click() }), []);
+  // v5.244.0 (code review finding 22) — the busy rule lives HERE, on the handler
+  // as well as the control. The built-in button was disabled while uploading;
+  // the external trigger added in v5.241.0 called straight through, so a second
+  // pick started a second upload over the first. They shared one `uploading`
+  // flag (the first to finish cleared the indicator while the other was still
+  // running) and the same image could be submitted twice. A ref, not the state:
+  // two picks can land before a re-render.
+  const busyRef = useRef(false);
+  useImperativeHandle(ref, () => ({
+    openPicker: () => { if (!busyRef.current) fileRef.current?.click(); },
+  }), []);
   const createdUrls = useRef<string[]>([]);
   const [urls, setUrls] = useState<Record<number, string>>({});
   const [uploading, setUploading] = useState(false);
@@ -92,7 +105,12 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     const file = e.target.files?.[0];
     if (fileRef.current) fileRef.current.value = '';
     if (!file) return;
+    // Guard the handler, not only the visible control (the picker can already
+    // be open when an upload starts).
+    if (busyRef.current) return;
+    busyRef.current = true;
     setUploading(true);
+    onBusyChange?.(true);
     try {
       if (uploadFn) {
         await uploadFn(file);
@@ -105,7 +123,9 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     } catch (err) {
       toast.error(formatApiError(err, 'Could not attach image.'));
     } finally {
+      busyRef.current = false;
       setUploading(false);
+      onBusyChange?.(false);
     }
   };
 

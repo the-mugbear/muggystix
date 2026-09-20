@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -70,6 +70,34 @@ describe('NoteThread — row density', () => {
     const click = vi.spyOn(input, 'click');
     fireEvent.click(attach);
     expect(click).toHaveBeenCalled();
+  });
+
+  // Code review finding 22 — the external button had no busy rule: a second
+  // pick started a second upload over the first, and they shared one flag.
+  it('refuses a second pick while an upload is in flight, and says it is uploading', async () => {
+    let finishFirst: () => void = () => undefined;
+    api.uploadNoteAttachment.mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }));
+    api.uploadNoteAttachment.mockResolvedValue(undefined);
+    const { container } = renderThread([note()]);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const pick = (name: string) =>
+      fireEvent.change(input, { target: { files: [new File(['x'], name, { type: 'image/png' })] } });
+    const opened = vi.spyOn(input, 'click');
+
+    pick('first.png');
+    const button = await screen.findByRole('button', { name: 'Uploading image…' });
+    expect(button).toBeDisabled();
+
+    // Neither the control nor the handler lets a second one through.
+    pick('second.png');
+    fireEvent.click(button);
+    expect(opened).not.toHaveBeenCalled();
+    expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(1);
+
+    finishFirst();
+    expect(await screen.findByRole('button', { name: 'Attach image' })).toBeEnabled();
+    pick('third.png');
+    await waitFor(() => expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(2));
   });
 
   it('a viewer who cannot manage notes gets no attach action', () => {

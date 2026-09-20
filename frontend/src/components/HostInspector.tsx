@@ -102,7 +102,8 @@ import { stickyBelowChrome } from '../utils/uiStyles';
 import { formatRelativeTime } from '../utils/relativeTime';
 import { NoteThread } from './host-inspector/NoteThread';
 import { NoteComposer } from './host-inspector/NoteComposer';
-import { InspectorSection, jumpToInspectorSection } from './host-inspector/InspectorSection';
+import { InspectorSection, jumpToInspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
+import { previewThreads, rootNoteId } from '../utils/notePreview';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
@@ -633,24 +634,62 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   //
   // MUST live above the loading/!host early returns below — a hook placed
   // after them runs only on some renders (React error #310).
+  //
+  // v5.244.0 (code review finding 19) — REVEAL, then scroll. This effect used
+  // to look for an element that was already mounted and give up otherwise. The
+  // density pass then made two things unmount a note: the thread preview (only
+  // some roots render) and a collapsed Notes section (its children unmount).
+  // A link to evidence that silently lands nowhere is worse than no link, so:
+  // resolve the hash against the LOADED notes, keep its root thread in the
+  // preview (`linkedRootId`, read by previewThreads below), open the section,
+  // and only then scroll — retrying across a few frames while the reveal
+  // commits. A hash naming a note this host does not have is left alone.
   const consumedNoteHashRef = React.useRef<string | null>(null);
+  const [linkedNoteId, setLinkedNoteId] = useState<number | null>(null);
   useEffect(() => {
-    if (typeof window === 'undefined' || notes.length === 0) return;
-    const hash = window.location.hash;
-    const match = hash.match(/^#note-(\d+)$/);
-    if (!match || consumedNoteHashRef.current === hash) return;
-    const el = document.getElementById(`note-${match[1]}`);
-    if (!el) return; // target not in this host's thread — leave the hash be
-    consumedNoteHashRef.current = hash;
-    requestAnimationFrame(() => {
+    if (typeof window === 'undefined') return undefined;
+    const read = () => {
+      const match = window.location.hash.match(/^#note-(\d+)$/);
+      setLinkedNoteId(match ? Number(match[1]) : null);
+    };
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
+  }, [hostId]);
+  const linkedRootId = React.useMemo(
+    () => (linkedNoteId != null ? rootNoteId(linkedNoteId, notes) : null),
+    [linkedNoteId, notes],
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || linkedNoteId == null || linkedRootId == null) return undefined;
+    const key = `${hostId}#note-${linkedNoteId}`;
+    if (consumedNoteHashRef.current === key) return undefined;
+    openInspectorSection('host-detail-notes');
+    let frame = 0;
+    let tries = 0;
+    let timer = 0;
+    const attempt = () => {
+      const el = document.getElementById(`note-${linkedNoteId}`);
+      if (!el) {
+        // The reveal (section open + preview membership) lands on a later commit.
+        if (tries++ < 20) frame = requestAnimationFrame(attempt);
+        return;
+      }
+      consumedNoteHashRef.current = key;
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.classList.add('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control');
-      window.setTimeout(
+      timer = window.setTimeout(
         () => el.classList.remove('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control'),
         2400,
       );
-    });
-  }, [notes]);
+    };
+    frame = requestAnimationFrame(attempt);
+    return () => {
+      cancelAnimationFrame(frame);
+      // Leave the highlight timer running: it only removes classes.
+      void timer;
+    };
+  }, [hostId, linkedNoteId, linkedRootId]);
 
   const refetchTestPlanEntries = React.useCallback(async () => {
     const fetchId = fetchIdRef.current;
@@ -1256,16 +1295,18 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   // Newest threads first in line for the space; the API's order is kept, and a
   // thread being replied to is never hidden.
-  const newestThreadIds = new Set(
-    [...noteThreadGroups.topLevel]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, NOTE_THREAD_PREVIEW_LIMIT)
-      .map((n) => n.id),
-  );
-  const visibleTopLevelNotes = showAllNotes
-    ? noteThreadGroups.topLevel
-    : noteThreadGroups.topLevel.filter((n) => newestThreadIds.has(n.id) || n.id === replyTo?.id);
-  const hiddenNoteCount = noteThreadGroups.topLevel.length - visibleTopLevelNotes.length;
+  // v5.244.0 — membership is decided in utils/notePreview: pinned threads, the
+  // one being replied to and the one a #note- link points into are always
+  // visible; the rest compete on latest ACTIVITY (a reply today keeps an old
+  // thread up), not on when the root was written.
+  const notePreview = previewThreads(noteThreadGroups.topLevel, noteThreadGroups.repliesByParent, {
+    limit: NOTE_THREAD_PREVIEW_LIMIT,
+    // A reply target can itself be a reply; what must stay visible is its ROOT.
+    keepIds: [replyTo ? rootNoteId(replyTo.id, notes) : null, linkedRootId],
+    showAll: showAllNotes,
+  });
+  const visibleTopLevelNotes = notePreview.visible;
+  const hiddenNoteCount = notePreview.hidden;
 
   // Scanner observations — what scanners reported on this host, grouped by
   // issue, not yet judged (v5.225.0 vocabulary). One line per issue.
@@ -1926,6 +1967,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           {hiddenNoteCount > 0 && (
             <Button size="sm" variant="ghost" className="text-caption" onClick={() => setShowAllNotes(true)}>
               Show {hiddenNoteCount} earlier thread{hiddenNoteCount === 1 ? '' : 's'}
+              {/* Hidden open work is never silent. */}
+              {notePreview.hiddenOpen > 0 && ` · ${notePreview.hiddenOpen} not resolved`}
             </Button>
           )}
         </div>

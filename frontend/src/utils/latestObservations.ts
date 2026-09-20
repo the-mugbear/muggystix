@@ -17,6 +17,14 @@ export interface LatestObservation<T> {
   count: number;
   /** Earliest timestamp seen for the key, when any row carried one. */
   firstSeen: string | null;
+  /**
+   * Every row that shared the key, newest first, the latest included
+   * (v5.244.0, code review finding 20). The first version kept only `latest`:
+   * a count said history existed and gave no way to reach it, and evidence
+   * only an OLDER row carried — a screenshot the latest scan did not take —
+   * became unreachable. Collapsing a list must never discard access to it.
+   */
+  members: T[];
 }
 
 const toTime = (value: string | null | undefined): number => {
@@ -36,16 +44,20 @@ export function latestObservations<T extends { id: number }>(
     const when = timeOf(row) ?? null;
     const group = groups.get(key);
     if (!group) {
-      groups.set(key, { latest: row, count: 1, firstSeen: when });
+      groups.set(key, { latest: row, count: 1, firstSeen: when, members: [row] });
       continue;
     }
     group.count += 1;
+    group.members.push(row);
     // Newest by time; the id breaks a tie (or decides when rows carry no time).
     const newer = toTime(when) > toTime(timeOf(group.latest))
       || (toTime(when) === toTime(timeOf(group.latest)) && row.id > group.latest.id);
     if (newer) group.latest = row;
     if (when && (!group.firstSeen || toTime(when) < toTime(group.firstSeen))) group.firstSeen = when;
   }
+  // Members newest first, by the same rule that picked `latest`.
+  const newestFirst = (a: T, b: T) => toTime(timeOf(b)) - toTime(timeOf(a)) || b.id - a.id;
+  groups.forEach((group) => group.members.sort(newestFirst));
   // First-appearance order of each key, so the list does not reshuffle.
   return Array.from(groups.values());
 }

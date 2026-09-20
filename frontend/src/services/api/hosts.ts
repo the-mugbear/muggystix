@@ -953,6 +953,12 @@ export interface WebInterface {
   has_screenshot: boolean;
   first_seen?: string | null;
   last_seen?: string | null;
+  /** v2.364.0 — when it was OBSERVED: the scan's own time when the tool
+   *  recorded one, else the import time. `last_seen` is the database's clock
+   *  and moves on any row update — never rank by it. */
+  observed_at?: string | null;
+  observed_at_basis?: 'scan' | 'import';
+  scan_filename?: string | null;
   scan_id: number;
   port_id?: number | null;
 }
