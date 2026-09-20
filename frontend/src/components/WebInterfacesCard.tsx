@@ -12,7 +12,7 @@ import ScreenshotLightbox from './ScreenshotLightbox';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 interface WebInterfacesCardProps {
@@ -108,15 +108,13 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
   if (count === 0) return null;
 
   return (
-    <Card className="mb-md">
-      <CardHeader>
-        <div className="flex items-center gap-xs">
-          <Globe className="size-5 text-primary" aria-hidden />
-          <CardTitle>Web Interfaces</CardTitle>
-          <span className="text-metadata text-muted-foreground">({count})</span>
-        </div>
-      </CardHeader>
-      <CardContent>
+    <InspectorSection
+      id="host-detail-web"
+      title="Web interfaces"
+      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
+      count={count}
+    >
+      <div>
         {loading && (
           <div className="flex items-center gap-xs text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -145,7 +143,6 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
             ))}
           </div>
         )}
-      </CardContent>
 
       <ScreenshotLightbox
         open={lightboxOpen}
@@ -155,7 +152,8 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
         error={lightboxError}
         caption={lightboxCaption}
       />
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

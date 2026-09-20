@@ -3,7 +3,7 @@ import { ScrollText, ShieldAlert } from 'lucide-react';
 
 import { Host, NseScript } from '../services/api';
 import { Badge } from './ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 import {
   Accordion,
   AccordionContent,
@@ -151,19 +151,14 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
   if (totalScripts === 0) return null;
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-xs">
-          <ScrollText className="size-5 text-muted-foreground" aria-hidden />
-          <CardTitle>NSE Script Output</CardTitle>
-          <Badge variant="outline">{totalScripts}</Badge>
-        </div>
-        <p className="mt-xxs text-caption text-muted-foreground">
-          Free-form results from the Nmap Scripting Engine (<code className="font-mono">-sC</code> /{' '}
-          <code className="font-mono">--script</code>). Expand a row to read the raw output.
-        </p>
-      </CardHeader>
-      <CardContent className="space-y-md">
+    <InspectorSection
+      id="host-detail-nse"
+      title="NSE script output"
+      titleHint="Free-form results from the Nmap Scripting Engine (-sC / --script). Expand a row to read the raw output."
+      icon={<ScrollText className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+      count={totalScripts}
+    >
+      <div className="space-y-md">
         {hostScripts.length > 0 && (
           <div>
             <h3 className="mb-xs text-metadata font-semibold">
@@ -217,8 +212,8 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
             ))}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

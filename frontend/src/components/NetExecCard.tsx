@@ -5,7 +5,7 @@ import { NetexecResult, getHostNetexecResults } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 
 /**
  * NetExecCard — surfaces NetExec credentialed-enumeration results that
@@ -159,19 +159,14 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
   if (count <= 0) return null;
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-xs">
-          <KeyRound className="size-5 text-muted-foreground" aria-hidden />
-          <CardTitle>NetExec Enumeration</CardTitle>
-          {rows && <Badge variant="outline">{rows.length}</Badge>}
-        </div>
-        <p className="mt-xxs text-caption text-muted-foreground">
-          Credentialed protocol probes (SMB / LDAP / WinRM / RDP) — authentication outcome and
-          enumerated shares.
-        </p>
-      </CardHeader>
-      <CardContent className="space-y-sm">
+    <InspectorSection
+      id="host-detail-netexec"
+      title="NetExec enumeration"
+      titleHint="Credentialed protocol probes (SMB / LDAP / WinRM / RDP) — authentication outcome and enumerated shares."
+      icon={<KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+      count={rows ? rows.length : null}
+    >
+      <div className="space-y-sm">
         {loading && (
           <div className="flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -189,8 +184,8 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
         {rows?.map((result) => (
           <NetExecResultRow key={result.id} result={result} />
         ))}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

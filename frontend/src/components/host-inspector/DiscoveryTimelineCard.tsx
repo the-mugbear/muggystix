@@ -16,7 +16,7 @@ import type { HostDiscovery } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { InspectorSection } from './InspectorSection';
 
 const formatDateTime = (value: string | null | undefined): string =>
   value ? new Date(value).toLocaleString() : 'Unknown date';
@@ -43,16 +43,12 @@ const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ dis
   const hiddenCount = sorted.length - COLLAPSED_COUNT;
 
   return (
-    <Card id="host-detail-discovery">
-      <CardHeader>
-        <div className="flex items-center gap-xs">
-          <History className="size-5 text-muted-foreground" aria-hidden />
-          <CardTitle>
-            Discovered in {sorted.length} scan{sorted.length === 1 ? '' : 's'}
-          </CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-xs">
+    <InspectorSection
+      id="host-detail-discovery"
+      title={`Discovered in ${sorted.length} scan${sorted.length === 1 ? '' : 's'}`}
+      icon={<History className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+    >
+      <div className="space-y-xs">
         {shown.map((entry) => {
           // SOC correlation needs the scan window (when the tool was probing),
           // not the ingest time; fall back to discovered_at only when the
@@ -120,8 +116,8 @@ const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ dis
               : <>Show all {sorted.length} scans <ChevronDown className="size-3.5" aria-hidden /></>}
           </Button>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

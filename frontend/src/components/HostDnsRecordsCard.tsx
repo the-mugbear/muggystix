@@ -9,7 +9,7 @@ import {
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 
 /**
  * HostDnsRecordsCard — surfaces DNS records stored in `dns_records`
@@ -109,15 +109,13 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
   const sortedTypes = data ? sortRecordTypes(Object.keys(grouped)) : [];
 
   return (
-    <Card id="host-detail-dns">
-      <CardHeader>
-        <div className="flex items-center gap-xs">
-          <Globe className="size-5 text-primary" aria-hidden />
-          <CardTitle>DNS Evidence</CardTitle>
-          {data && data.total > 0 && (
-            <Badge variant="outline">{data.total}</Badge>
-          )}
-        </div>
+    <InspectorSection
+      id="host-detail-dns"
+      title="DNS evidence"
+      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
+      count={data && data.total > 0 ? data.total : null}
+    >
+      <div className="space-y-sm">
         {data && data.resolvers.length > 0 && (
           <p className="text-caption text-muted-foreground">
             {data.total} record{data.total === 1 ? '' : 's'} · {data.resolvers.length}{' '}
@@ -134,8 +132,6 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
             that didn&apos;t carry resolver attribution (CSV or amass).
           </p>
         )}
-      </CardHeader>
-      <CardContent className="space-y-md">
         {loading && (
           <div className="flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -223,8 +219,8 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
               </div>
             );
           })}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

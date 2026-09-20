@@ -26,7 +26,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { FindingHistoryButton } from './FindingHistoryButton';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 import {
   Select,
   SelectContent,
@@ -115,14 +115,13 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
   if (!loaded || findings.length === 0) return null;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-xs">
-          <AlertHexIcon className="size-5 text-warning" aria-hidden />
-          Findings ({findings.length})
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-xs">
+    <InspectorSection
+      id="host-detail-findings"
+      title="Findings"
+      icon={<AlertHexIcon className="size-4 shrink-0 text-warning" aria-hidden />}
+      count={findings.length}
+    >
+      <div className="flex flex-col gap-xs">
         {findings.map((f) => (
           <div key={f.id} className="flex flex-wrap items-center gap-xs border-b border-border pb-xs last:border-0 last:pb-0">
             <Badge variant={SEVERITY_VARIANT[f.severity] as never}>
@@ -206,8 +205,8 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
             <FindingHistoryButton findingId={f.id} />
           </div>
         ))}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

@@ -1,5 +1,9 @@
 /**
- * Which scope entries cover this host.
+ * Which scope entries cover this host — one line in the inspector's header
+ * (v5.240.0; it was a card of its own, ~95px to say "no scope defined"). The
+ * status and the closest subnet are always visible; the full entry list opens
+ * on demand. Two things are never behind the click: "Out of scope", and the
+ * sentence limiting what an in-scope NAME authorises.
  *
  * The Hosts list shows only the most-specific subnet; an operator opening a
  * host wants the full answer: every subnet entry the address falls in, every
@@ -16,13 +20,12 @@
  *            has a scope and this host is outside it — worth acting on) from
  *            "this project has declared no scope yet" (nothing to check).
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Crosshair } from 'lucide-react';
 
 import type { HostScopeMembership } from '../../services/api';
 import { Badge } from '../ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 
 export interface ScopeMembershipCardProps {
   membership?: HostScopeMembership | null;
@@ -31,11 +34,16 @@ export interface ScopeMembershipCardProps {
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ membership }) => {
+  const [open, setOpen] = useState(false);
   // The detail endpoint always sends the block; its absence means an older
   // backend, and a card claiming "out of scope" on no evidence would mislead.
   if (!membership) return null;
 
   const { coverage, project_has_scope: hasScope, subnets, names } = membership;
+  const hasDetail = subnets.length > 0 || names.length > 0;
+  // The entry an analyst means by "its subnet": the longest prefix.
+  const prefix = (cidr: string) => Number(cidr.split('/')[1] ?? 0);
+  const closest = [...subnets].sort((a, b) => prefix(b.cidr) - prefix(a.cidr))[0];
 
   let status: React.ReactNode;
   if (coverage === 'subnet') {
@@ -75,23 +83,42 @@ export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ member
   }
 
   return (
-    <Card id="host-detail-scope">
-      <CardHeader>
-        <div className="flex items-center gap-xs">
-          <Crosshair className="size-5 text-info" aria-hidden />
-          <CardTitle>Scope</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-sm">
-        <div className="flex flex-wrap items-center gap-xs">{status}</div>
-
-        {coverage === 'name' && (
-          <p className="text-caption text-muted-foreground">
-            An approved name resolving here does not put the address&apos;s other names or
-            services in scope. Test what the name serves, not the host.
-          </p>
+    <div id="host-detail-scope" className="space-y-xs">
+      <div className="flex min-w-0 flex-wrap items-center gap-xs">
+        <Crosshair className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        {status}
+        {closest && !open && (
+          <Link
+            to={`/scopes/${closest.scope_id}`}
+            className="font-mono text-caption text-foreground underline-offset-2 hover:underline"
+            title="The most specific scope entry containing this address — open its scope"
+          >
+            {closest.cidr}
+          </Link>
         )}
+        {hasDetail && (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-controls="host-detail-scope-entries"
+            className="rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {open ? 'hide entries' : 'show entries'}
+          </button>
+        )}
+      </div>
 
+      {/* Never behind a click: this is the limit of what may be tested. */}
+      {coverage === 'name' && (
+        <p className="text-caption text-muted-foreground">
+          An approved name resolving here does not put the address&apos;s other names or
+          services in scope. Test what the name serves, not the host.
+        </p>
+      )}
+
+      {open && hasDetail && (
+      <div id="host-detail-scope-entries" className="space-y-sm rounded-control border border-border p-sm">
         {subnets.length > 0 && (
           <ul className="space-y-xxs" aria-label="Scope subnet entries">
             {subnets.map((s) => (
@@ -146,8 +173,9 @@ export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ member
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </div>
+      )}
+    </div>
   );
 };
 

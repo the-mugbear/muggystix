@@ -1,17 +1,24 @@
 /**
- * Port Details — the host's ports grouped by state (open / closed / filtered),
- * sortable by number, with per-port connection-helper commands.
+ * Ports — the host's open services as one dense table, with per-port
+ * connection-helper commands and per-endpoint TLS evidence (cert expiry,
+ * self-signed / weak-protocol state, the CA-validated subject org), joined
+ * from the host's web interfaces by ``port_id``.
  *
- * Extracted from HostInspector while adding the per-port **TLS column**: cert
- * expiry, self-signed / weak-protocol state, and the CA-validated subject org,
- * joined from the host's web interfaces by ``port_id``. Previously that cert
- * evidence lived only in the (URL-grouped) Provenance card, so an operator
- * triaging port 8443 saw the service banner but nothing about its certificate.
+ * v5.240.0 — density pass. The median host has three open ports, and the old
+ * card spent a title, an accordion trigger and eight columns on them:
+ *  - no State column: every row of the open table said "open" (the reason
+ *    nmap gave is on the port cell's tooltip);
+ *  - port and protocol are one cell (``443/tcp``);
+ *  - how the service was detected is a tooltip, not a second line that doubled
+ *    every row's height;
+ *  - the TLS column exists only when some port has TLS evidence;
+ *  - closed and filtered ports are one summary line until asked for.
+ * The freed width goes to Version, the column an analyst actually reads.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
 import {
-  ArrowDown, ArrowUp, ArrowUpDown, Copy, HelpCircle, Lock, Network, ShieldAlert, ShieldCheck, Terminal,
+  ArrowDown, ArrowUp, ArrowUpDown, Copy, Lock, Network, ShieldCheck, Terminal,
 } from 'lucide-react';
 
 import { getHostWebInterfaces, type Port } from '../../services/api';
@@ -23,17 +30,14 @@ import {
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { NOT_REVALIDATED_LABEL, NOT_REVALIDATED_TITLE, portFreshness } from '../../utils/evidenceFreshness';
 import { useToast } from '../../contexts/ToastContext';
-import {
-  Accordion, AccordionContent, AccordionItem, AccordionTrigger,
-} from '../ui/accordion';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+import { InspectorSection } from './InspectorSection';
 
 const stateBadgeVariant = (
   state: string | null,
@@ -103,8 +107,7 @@ const TlsCell: React.FC<{
   endpoints: PortEndpoint[];
   portNumber: number | null;
   tunnel?: string | null;
-  webError?: boolean;
-}> = ({ endpoints, portNumber, tunnel, webError }) => {
+}> = ({ endpoints, portNumber, tunnel }) => {
   const withTls = endpoints.filter((e) => e.tls);
   if (withTls.length > 1) {
     const s = summariseEndpointTls(endpoints);
@@ -162,8 +165,8 @@ const TlsCell: React.FC<{
   const tls = only?.tls ?? undefined;
   if (!tls) {
     // No web-interface / cert evidence for this port. Fall back to nmap's
-    // tunnel attribute so a TLS-wrapped service on a non-standard port is still
-    // marked, and keep "no evidence" (—) distinct from "evidence failed to load".
+    // tunnel attribute so a TLS-wrapped service on a non-standard port is
+    // still marked.
     if (isTlsTunnel(tunnel)) {
       return (
         <Tooltip>
@@ -176,16 +179,6 @@ const TlsCell: React.FC<{
             nmap saw this service running inside TLS (tunnel=ssl). No certificate detail was
             captured — run a web/cert probe for issuer and expiry.
           </TooltipContent>
-        </Tooltip>
-      );
-    }
-    if (webError) {
-      return (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <HelpCircle className="size-4 text-muted-foreground" tabIndex={0} aria-label="TLS evidence unavailable" />
-          </TooltipTrigger>
-          <TooltipContent>TLS evidence couldn’t be loaded for this host — reopen it to retry.</TooltipContent>
         </Tooltip>
       );
     }
@@ -228,19 +221,21 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   const [webError, setWebError] = useState(false);
   // Which endpoint a port's commands address; absent = the default below.
   const [helperTarget, setHelperTarget] = useState<Record<number, string>>({});
+  const [showNotOpen, setShowNotOpen] = useState(false);
 
   // Join the host's web interfaces onto ports by ``port_id`` as NAMED
   // ENDPOINTS (utils/portEndpoints): newest observation per (port, name),
   // nothing merged across names. Non-fatal: on failure the column falls back
-  // to nmap's tunnel attribute and marks the load as failed (so a fetch error
-  // reads differently from "no TLS evidence") rather than breaking the port
-  // table. State is reset per host — the inspector stays mounted across
-  // prev/next, so a stale map would otherwise bleed onto the next host.
+  // to nmap's tunnel attribute and the section says the load failed (so a
+  // fetch error reads differently from "no TLS evidence") rather than breaking
+  // the port table. State is reset per host — the inspector stays mounted
+  // across prev/next, so a stale map would otherwise bleed onto the next host.
   useEffect(() => {
     let cancelled = false;
     setEndpoints(new Map());
     setHelperTarget({});
     setWebError(false);
+    setShowNotOpen(false);
     getHostWebInterfaces(hostId)
       .then((interfaces) => {
         if (!cancelled) setEndpoints(endpointsByPort(interfaces));
@@ -258,6 +253,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
     [portSortDir],
   );
 
+  // A column of dashes is noise: on a host with no TLS evidence (a database
+  // server, a Windows workstation) the column is not drawn at all.
+  const showTls = openPorts.some(
+    (p) => (endpoints.get(p.id) ?? []).some((e) => e.tls) || isTlsTunnel(p.service_tunnel),
+  );
+
   const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
     <TableHead className={className}
       aria-sort={portSortDir ? (portSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
@@ -272,249 +273,235 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
     </TableHead>
   );
 
+  const notOpen = [...closedPorts, ...filteredPorts];
+  const notOpenSummary = [
+    closedPorts.length > 0 ? `${closedPorts.length} closed` : null,
+    filteredPorts.length > 0 ? `${filteredPorts.length} filtered` : null,
+  ].filter(Boolean).join(' · ');
+
   return (
-    <Card id="host-detail-ports">
-      <CardHeader>
-        <div className="flex items-center gap-xs">
-          <Network className="size-5 text-primary" aria-hidden />
-          <CardTitle>Port Details</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Accordion type="multiple" defaultValue={openPorts.length > 0 ? ['open'] : []}>
-          {openPorts.length > 0 && (
-            <AccordionItem value="open">
-              <AccordionTrigger>Open Ports ({openPorts.length})</AccordionTrigger>
-              <AccordionContent>
-                <div className="overflow-x-auto">
-                  <Table className="table-fixed">
-                    <TableHeader>
-                      <TableRow>
-                        <PortSortHead className="w-[8%]" />
-                        <TableHead className="w-[7%]">Proto</TableHead>
-                        <TableHead className="w-[16%]">Service</TableHead>
-                        <TableHead className="w-[22%]">Version</TableHead>
-                        <TableHead className="w-[9%]">State</TableHead>
-                        <TableHead className="w-[12%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
-                        <TableHead className="w-[16%]">TLS</TableHead>
-                        <TableHead className="w-[10%] text-center">Helpers</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortPorts(openPorts).map((port) => {
-                        const portEndpoints = endpoints.get(port.id) ?? [];
-                        // Only names that are plainly hostnames: they go into
-                        // commands the operator pastes into a shell.
-                        const names = portEndpoints.map((e) => e.name).filter(isSafeHostname);
-                        // With named endpoints on the port, an address alone
-                        // reaches the DEFAULT site — usually not the website
-                        // the evidence is about. Default to the first name;
-                        // the operator can switch, including back to the address.
-                        const target = helperTarget[port.id] ?? names[0] ?? '';
-                        const helpers = target && hostIp
-                          ? getConnectionHelpers(hostIp, port, hostname, { vhost: target })
-                          : connectionHelpersByPort.get(port.id) ?? [];
-                        const fresh = portFreshness(port, hostLastSeen);
-                        return (
-                          <TableRow key={port.id}>
-                            <TableCell>{port.port_number}</TableCell>
-                            <TableCell>{port.protocol}</TableCell>
-                            <TableCell className="truncate" title={port.service_name || undefined}>
-                              <div className="truncate">{port.service_name || 'Unknown'}</div>
-                              {(port.service_method || (port.service_conf != null && String(port.service_conf) !== '')) && (
-                                <div className="truncate text-caption text-muted-foreground" title="How the service was detected (and nmap confidence 0–10)">
-                                  {[
-                                    port.service_method,
-                                    port.service_conf != null && String(port.service_conf) !== ''
-                                      ? `conf ${port.service_conf}`
-                                      : null,
-                                  ].filter(Boolean).join(' · ')}
-                                </div>
-                              )}
-                            </TableCell>
-                            <TableCell className="max-w-[16rem] truncate" title={port.service_extrainfo || undefined}>
-                              {port.service_product && port.service_version
-                                ? `${port.service_product} ${port.service_version}`
-                                : port.service_product || 'N/A'}
-                              {port.service_extrainfo && (
-                                <span className="ml-xxs text-caption text-muted-foreground">
-                                  ({port.service_extrainfo})
-                                </span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={stateBadgeVariant(port.state)}>
-                                {port.state || 'unknown'}
-                              </Badge>
-                              {port.reason && (
-                                <div className="truncate text-caption text-muted-foreground" title={`Why this port is ${port.state || 'in this state'}: ${port.reason}`}>
-                                  {port.reason}
-                                </div>
-                              )}
-                            </TableCell>
-                            {/* v5.224.0 — the port's own freshness, not the host's. */}
-                            <TableCell className="min-w-0">
-                              <div className="truncate text-caption" title={port.last_seen ?? port.first_seen ?? undefined}>
-                                {fresh.seen ?? '—'}
+    <InspectorSection
+      id="host-detail-ports"
+      title="Ports"
+      icon={<Network className="size-4 shrink-0 text-primary" aria-hidden />}
+      count={openPorts.length}
+    >
+      {openPorts.length === 0 ? (
+        <p className="text-metadata text-muted-foreground">No open ports observed.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="table-fixed">
+            <TableHeader>
+              <TableRow>
+                <PortSortHead className="w-[12%]" />
+                <TableHead className={showTls ? 'w-[17%]' : 'w-[20%]'}>Service</TableHead>
+                <TableHead className={showTls ? 'w-[33%]' : 'w-[46%]'}>Version</TableHead>
+                <TableHead className="w-[14%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
+                {showTls && <TableHead className="w-[16%]">TLS</TableHead>}
+                <TableHead className="w-[8%] text-center">
+                  <span className="sr-only">Connection helpers</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortPorts(openPorts).map((port) => {
+                const portEndpoints = endpoints.get(port.id) ?? [];
+                // Only names that are plainly hostnames: they go into
+                // commands the operator pastes into a shell.
+                const names = portEndpoints.map((e) => e.name).filter(isSafeHostname);
+                // With named endpoints on the port, an address alone
+                // reaches the DEFAULT site — usually not the website
+                // the evidence is about. Default to the first name;
+                // the operator can switch, including back to the address.
+                const target = helperTarget[port.id] ?? names[0] ?? '';
+                const helpers = target && hostIp
+                  ? getConnectionHelpers(hostIp, port, hostname, { vhost: target })
+                  : connectionHelpersByPort.get(port.id) ?? [];
+                const fresh = portFreshness(port, hostLastSeen);
+                const detection = [
+                  port.service_method ? `detected by ${port.service_method}` : null,
+                  port.service_conf != null && String(port.service_conf) !== ''
+                    ? `nmap confidence ${port.service_conf}/10`
+                    : null,
+                ].filter(Boolean).join(' · ');
+                const version = port.service_product && port.service_version
+                  ? `${port.service_product} ${port.service_version}`
+                  : port.service_product || '';
+                return (
+                  <TableRow key={port.id}>
+                    <TableCell className="truncate font-mono text-metadata">
+                      <span title={port.reason ? `${port.state || 'open'} — ${port.reason}` : undefined}>
+                        {port.port_number}
+                        <span className="text-muted-foreground">/{port.protocol}</span>
+                      </span>
+                    </TableCell>
+                    <TableCell
+                      className="truncate"
+                      title={[port.service_name, detection].filter(Boolean).join(' — ') || undefined}
+                    >
+                      {port.service_name || <span className="text-muted-foreground">unknown</span>}
+                    </TableCell>
+                    <TableCell
+                      className="truncate"
+                      title={[version, port.service_extrainfo].filter(Boolean).join(' — ') || undefined}
+                    >
+                      {version || <span className="text-muted-foreground">—</span>}
+                      {port.service_extrainfo && (
+                        <span className="ml-xxs text-caption text-muted-foreground">
+                          ({port.service_extrainfo})
+                        </span>
+                      )}
+                    </TableCell>
+                    {/* v5.224.0 — the port's own freshness, not the host's. */}
+                    <TableCell className="min-w-0">
+                      <div className="truncate text-caption" title={port.last_seen ?? port.first_seen ?? undefined}>
+                        {fresh.seen ?? '—'}
+                      </div>
+                      {fresh.notRevalidated && (
+                        <div className="truncate text-caption text-warning" title={NOT_REVALIDATED_TITLE}>
+                          {NOT_REVALIDATED_LABEL}
+                        </div>
+                      )}
+                    </TableCell>
+                    {showTls && (
+                      <TableCell>
+                        <TlsCell
+                          endpoints={portEndpoints}
+                          portNumber={port.port_number}
+                          tunnel={port.service_tunnel}
+                        />
+                      </TableCell>
+                    )}
+                    <TableCell className="text-center">
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="ghost" size="icon"
+                            aria-label={`Connection helpers for port ${port.port_number}`}>
+                            <Terminal className="size-4" aria-hidden />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[34rem] max-w-[90vw]" align="end">
+                          <div className="max-h-[24rem] overflow-y-auto p-xs">
+                            <h4 className="mb-xs break-words text-subheading">
+                              Commands for {target || hostIp}:{port.port_number}
+                            </h4>
+                            {names.length > 0 && (
+                              <div className="mb-xs">
+                                <label className="text-caption text-muted-foreground" htmlFor={`helper-target-${port.id}`}>
+                                  Endpoint — this port answers as {names.length === 1 ? 'a named site' : `${names.length} named sites`};
+                                  the address alone reaches the default one.
+                                </label>
+                                <select
+                                  id={`helper-target-${port.id}`}
+                                  className="mt-xxs flex h-8 w-full rounded-control border border-input bg-background px-xs font-mono text-caption"
+                                  value={target}
+                                  onChange={(e) => setHelperTarget((prev) => ({ ...prev, [port.id]: e.target.value }))}
+                                >
+                                  {names.map((n) => <option key={n} value={n}>{n}</option>)}
+                                  <option value="">{hostIp} (address only — default site)</option>
+                                </select>
                               </div>
-                              {fresh.notRevalidated && (
-                                <div className="truncate text-caption text-warning" title={NOT_REVALIDATED_TITLE}>
-                                  {NOT_REVALIDATED_LABEL}
-                                </div>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <TlsCell
-                                endpoints={portEndpoints}
-                                portNumber={port.port_number}
-                                tunnel={port.service_tunnel}
-                                webError={webError}
-                              />
-                            </TableCell>
-                            <TableCell className="text-center">
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <Button variant="ghost" size="icon"
-                                    aria-label={`Connection helpers for port ${port.port_number}`}>
-                                    <Terminal className="size-4" aria-hidden />
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-[34rem] max-w-[90vw]" align="start">
-                                  <div className="max-h-[24rem] overflow-y-auto p-xs">
-                                    <h4 className="mb-xs break-words text-subheading">
-                                      Commands for {target || hostIp}:{port.port_number}
-                                    </h4>
-                                    {names.length > 0 && (
-                                      <div className="mb-xs">
-                                        <label className="text-caption text-muted-foreground" htmlFor={`helper-target-${port.id}`}>
-                                          Endpoint — this port answers as {names.length === 1 ? 'a named site' : `${names.length} named sites`};
-                                          the address alone reaches the default one.
-                                        </label>
-                                        <select
-                                          id={`helper-target-${port.id}`}
-                                          className="mt-xxs flex h-8 w-full rounded-control border border-input bg-background px-xs font-mono text-caption"
-                                          value={target}
-                                          onChange={(e) => setHelperTarget((prev) => ({ ...prev, [port.id]: e.target.value }))}
-                                        >
-                                          {names.map((n) => <option key={n} value={n}>{n}</option>)}
-                                          <option value="">{hostIp} (address only — default site)</option>
-                                        </select>
-                                      </div>
-                                    )}
-                                    <div className="space-y-xs">
-                                      {helpers.map((helper, idx) => (
-                                        <div key={idx} className="flex items-start gap-xs rounded-control bg-muted/30 p-xs">
-                                          <div className="min-w-0 flex-1">
-                                            <p className="text-caption text-muted-foreground">
-                                              {helper.tool} — {helper.description}
-                                            </p>
-                                            <div className="mt-xxs max-h-[8rem] overflow-y-auto rounded-control bg-muted/30 p-xs">
-                                              <code className="block whitespace-pre-wrap break-words font-mono text-caption">
-                                                {helper.command}
-                                              </code>
-                                            </div>
-                                          </div>
-                                          <Tooltip>
-                                            <TooltipTrigger asChild>
-                                              <Button variant="ghost" size="icon" className="shrink-0"
-                                                aria-label="Copy command to clipboard"
-                                                onClick={() => {
-                                                  copyToClipboard(helper.command).then((ok) => {
-                                                    if (ok) toast.info('Copied to clipboard', { autoHideMs: 1500 });
-                                                  });
-                                                }}>
-                                                <Copy className="size-4" aria-hidden />
-                                              </Button>
-                                            </TooltipTrigger>
-                                            <TooltipContent>Copy to clipboard</TooltipContent>
-                                          </Tooltip>
-                                        </div>
-                                      ))}
+                            )}
+                            <div className="space-y-xs">
+                              {helpers.map((helper, idx) => (
+                                <div key={idx} className="flex items-start gap-xs rounded-control bg-muted/30 p-xs">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-caption text-muted-foreground">
+                                      {helper.tool} — {helper.description}
+                                    </p>
+                                    <div className="mt-xxs max-h-[8rem] overflow-y-auto rounded-control bg-muted/30 p-xs">
+                                      <code className="block whitespace-pre-wrap break-words font-mono text-caption">
+                                        {helper.command}
+                                      </code>
                                     </div>
                                   </div>
-                                </PopoverContent>
-                              </Popover>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          )}
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button variant="ghost" size="icon" className="shrink-0"
+                                        aria-label="Copy command to clipboard"
+                                        onClick={() => {
+                                          copyToClipboard(helper.command).then((ok) => {
+                                            if (ok) toast.info('Copied to clipboard', { autoHideMs: 1500 });
+                                          });
+                                        }}>
+                                        <Copy className="size-4" aria-hidden />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Copy to clipboard</TooltipContent>
+                                  </Tooltip>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
-          {closedPorts.length > 0 && (
-            <AccordionItem value="closed">
-              <AccordionTrigger>Closed Ports ({closedPorts.length})</AccordionTrigger>
-              <AccordionContent>
-                <div className="overflow-x-auto">
-                  <Table className="table-fixed">
-                    <TableHeader>
-                      <TableRow>
-                        <PortSortHead className="w-[15%]" />
-                        <TableHead className="w-[15%]">Proto</TableHead>
-                        <TableHead className="w-[45%]">Service</TableHead>
-                        <TableHead className="w-[25%]">State</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortPorts(closedPorts).map((port) => (
-                        <TableRow key={port.id}>
-                          <TableCell>{port.port_number}</TableCell>
-                          <TableCell>{port.protocol}</TableCell>
-                          <TableCell>{port.service_name || 'Unknown'}</TableCell>
-                          <TableCell>
-                            <Badge variant={stateBadgeVariant(port.state)}>
-                              {port.state || 'unknown'}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          )}
+      {/* A failed evidence load must not read as "no TLS here". */}
+      {webError && (
+        <p className="pt-xs text-caption text-muted-foreground">
+          TLS evidence couldn’t be loaded for this host — reopen it to retry.
+        </p>
+      )}
 
-          {filteredPorts.length > 0 && (
-            <AccordionItem value="filtered">
-              <AccordionTrigger>Filtered Ports ({filteredPorts.length})</AccordionTrigger>
-              <AccordionContent>
-                <div className="overflow-x-auto">
-                  <Table className="table-fixed">
-                    <TableHeader>
-                      <TableRow>
-                        <PortSortHead className="w-[15%]" />
-                        <TableHead className="w-[15%]">Proto</TableHead>
-                        <TableHead className="w-[45%]">Service</TableHead>
-                        <TableHead className="w-[25%]">State</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortPorts(filteredPorts).map((port) => (
-                        <TableRow key={port.id}>
-                          <TableCell>{port.port_number}</TableCell>
-                          <TableCell>{port.protocol}</TableCell>
-                          <TableCell>{port.service_name || 'Unknown'}</TableCell>
-                          <TableCell>
-                            <Badge variant={stateBadgeVariant(port.state)}>
-                              {port.state || 'unknown'}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </AccordionContent>
-            </AccordionItem>
+      {/* Closed / filtered: a count until asked for. They are rarely what the
+          analyst came for, and each used to cost an accordion and a table. */}
+      {notOpen.length > 0 && (
+        <div className="pt-xs">
+          <button
+            type="button"
+            onClick={() => setShowNotOpen((v) => !v)}
+            aria-expanded={showNotOpen}
+            className="rounded text-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {notOpenSummary} · {showNotOpen ? 'hide' : 'show'}
+          </button>
+          {showNotOpen && (
+            <div className="overflow-x-auto pt-xs">
+              <Table className="table-fixed">
+                <TableHeader>
+                  <TableRow>
+                    <PortSortHead className="w-[15%]" />
+                    <TableHead className="w-[45%]">Service</TableHead>
+                    <TableHead className="w-[40%]">State</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortPorts(notOpen).map((port) => (
+                    <TableRow key={port.id}>
+                      <TableCell className="truncate font-mono text-metadata">
+                        {port.port_number}
+                        <span className="text-muted-foreground">/{port.protocol}</span>
+                      </TableCell>
+                      <TableCell className="truncate" title={port.service_name || undefined}>
+                        {port.service_name || <span className="text-muted-foreground">unknown</span>}
+                      </TableCell>
+                      <TableCell className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-xs">
+                          <Badge variant={stateBadgeVariant(port.state)}>{port.state || 'unknown'}</Badge>
+                          {port.reason && (
+                            <span className="min-w-0 truncate text-caption text-muted-foreground" title={port.reason}>
+                              {port.reason}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
-        </Accordion>
-      </CardContent>
-    </Card>
+        </div>
+      )}
+    </InspectorSection>
   );
 };
 

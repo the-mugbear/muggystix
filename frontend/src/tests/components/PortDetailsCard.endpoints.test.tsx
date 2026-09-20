@@ -92,3 +92,70 @@ describe('PortDetailsCard — named endpoints', () => {
     expect(screen.queryByText(/--resolve/)).not.toBeInTheDocument();
   });
 });
+
+// v5.240.0 — the median host has three open ports; the table stopped spending
+// columns and rows on things that say nothing.
+describe('PortDetailsCard — density', () => {
+  const ssh = {
+    id: 22, port_number: 22, protocol: 'tcp', state: 'open', service_name: 'ssh',
+    service_product: 'OpenSSH', service_version: '8.9', service_method: 'probed', service_conf: 10,
+    reason: 'syn-ack',
+  } as unknown as Port;
+  const closed = { id: 81, port_number: 81, protocol: 'tcp', state: 'closed', service_name: 'http', reason: 'reset' } as unknown as Port;
+  const filtered = { id: 445, port_number: 445, protocol: 'tcp', state: 'filtered', service_name: 'microsoft-ds' } as unknown as Port;
+
+  const renderWith = (open: Port[], closedPorts: Port[] = [], filteredPorts: Port[] = []) =>
+    render(
+      <TooltipProvider>
+        <PortDetailsCard
+          hostId={1} hostIp="10.0.0.5" openPorts={open} closedPorts={closedPorts} filteredPorts={filteredPorts}
+          connectionHelpersByPort={new Map()}
+        />
+      </TooltipProvider>,
+    );
+
+  it('draws no TLS or State column on a host with no TLS evidence, and keeps the row to one line', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    renderWith([ssh]);
+    await waitFor(() => expect(api.getHostWebInterfaces).toHaveBeenCalled());
+    expect(screen.queryByRole('columnheader', { name: 'TLS' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'State' })).not.toBeInTheDocument();
+    // Why nmap called it open rides on the port cell; the column is gone.
+    expect(screen.getByRole('cell', { name: /22\s*\/tcp/ })).toBeInTheDocument();
+    expect(screen.getByTitle('open — syn-ack')).toHaveTextContent('22/tcp');
+    expect(screen.getByText('OpenSSH 8.9')).toBeInTheDocument();
+    // How it was detected moved to the tooltip; it used to double the row.
+    expect(screen.queryByText(/conf 10/)).not.toBeInTheDocument();
+    expect(screen.getByText('ssh')).toHaveAttribute('title', expect.stringContaining('nmap confidence 10/10'));
+  });
+
+  it('draws the TLS column as soon as one port has evidence', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([
+      { id: 1, source: 'httpx', url: 'https://10.0.0.5/', fqdn: null, port_id: 443, cert_self_signed: true, last_seen: iso(-1), has_screenshot: false, scan_id: 1 },
+    ]);
+    renderWith([https, ssh]);
+    expect(await screen.findByRole('columnheader', { name: 'TLS' })).toBeInTheDocument();
+  });
+
+  it('closed and filtered ports are one line until asked for', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    renderWith([ssh], [closed], [filtered]);
+    const toggle = screen.getByRole('button', { name: '1 closed · 1 filtered · show' });
+    expect(screen.queryByText('microsoft-ds')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText('microsoft-ds')).toBeInTheDocument();
+    expect(screen.getByText('reset')).toBeInTheDocument();
+  });
+
+  it('a failed evidence load says so instead of reading as "no TLS"', async () => {
+    api.getHostWebInterfaces.mockRejectedValue(new Error('boom'));
+    renderWith([ssh]);
+    expect(await screen.findByText(/TLS evidence couldn’t be loaded/)).toBeInTheDocument();
+  });
+
+  it('says so when nothing is open', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    renderWith([], [closed]);
+    expect(screen.getByText('No open ports observed.')).toBeInTheDocument();
+  });
+});

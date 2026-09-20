@@ -6,7 +6,7 @@ import { getHostNames, HostNameBinding, HostNamesResponse } from '../services/ap
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 
 /**
  * HostNamesCard — every name bound to this address (v5.193.0).
@@ -90,20 +90,18 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
   if (!loading && !error && total === 0) return null;
 
   return (
-    <Card id="host-detail-names">
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-xs">
-          <Tag className="size-5 text-primary" aria-hidden />
-          <CardTitle>Names at this address</CardTitle>
-          {total > 0 && <Badge variant="outline">{total}</Badge>}
-          {data?.in_scope_via_names && (
-            <Badge variant="success-outline" title="An in-scope name resolves to this address. This is not subnet membership.">
-              reachable via in-scope name
-            </Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
+    <InspectorSection
+      id="host-detail-names"
+      title="Names at this address"
+      icon={<Tag className="size-4 shrink-0 text-primary" aria-hidden />}
+      count={total > 0 ? total : null}
+      actions={data?.in_scope_via_names ? (
+        <Badge variant="success-outline" title="An in-scope name resolves to this address. This is not subnet membership.">
+          reachable via in-scope name
+        </Badge>
+      ) : undefined}
+    >
+      <div>
         {loading && (
           <div className="flex items-center gap-xs text-metadata text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden /> Loading names…
@@ -150,8 +148,8 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
             </ul>
           </section>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

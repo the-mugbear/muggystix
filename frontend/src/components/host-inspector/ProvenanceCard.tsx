@@ -26,7 +26,7 @@ import { Globe, ShieldCheck, ShieldAlert } from 'lucide-react';
 
 import type { HostCertOrg, HostCertStatus, NetworkAttribution } from '../../services/api';
 import { Badge } from '../ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { InspectorSection } from './InspectorSection';
 import { safeFallback } from '../../utils/uiStyles';
 
 export interface ProvenanceCardProps {
@@ -121,17 +121,15 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
   const disagrees = certRegistrationDisagree(attributions, certOrgs);
 
   return (
-    <Card id="host-detail-provenance">
-      <CardHeader>
-        <div className="flex items-center gap-xs">
-          <Globe className="size-5 text-info" aria-hidden />
-          <CardTitle>Provenance</CardTitle>
-          {disagrees && (
-            <Badge variant="outline" className="border-warning/40 text-warning">scope check</Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-sm">
+    <InspectorSection
+      id="host-detail-provenance"
+      title="Provenance"
+      icon={<Globe className="size-4 shrink-0 text-info" aria-hidden />}
+      actions={disagrees ? (
+        <Badge variant="outline" className="border-warning/40 text-warning">scope check</Badge>
+      ) : undefined}
+    >
+      <div className="space-y-sm">
         {disagrees && (
           <div className="flex items-start gap-xs rounded-control border border-warning/40 bg-warning/10 p-sm">
             <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
@@ -229,8 +227,8 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
             })}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 

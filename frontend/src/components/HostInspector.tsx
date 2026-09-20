@@ -49,7 +49,6 @@ import {
   ShieldAlert,
   Terminal,
   Trash2,
-  X,
 } from 'lucide-react';
 import {
   getHost,
@@ -100,7 +99,10 @@ import HostFindingsCard from './HostFindingsCard';
 import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostNamesCard from './HostNamesCard';
 import HostLineagePanel from './HostLineagePanel';
+import { stickyBelowChrome } from '../utils/uiStyles';
 import { NoteThread } from './host-inspector/NoteThread';
+import { NoteComposer } from './host-inspector/NoteComposer';
+import { InspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
@@ -172,7 +174,10 @@ const REVIEW_CONCLUSION_LABEL: Record<ReviewConclusion, string> = {
   duplicate: 'Duplicate asset',
 };
 
-const VULNERABILITY_PREVIEW_LIMIT = 10;
+// One line per issue since v5.240.0, so the preview can afford most hosts'
+// whole list (the largest host here carries 26).
+const VULNERABILITY_PREVIEW_LIMIT = 25;
+const NOTE_THREAD_PREVIEW_LIMIT = 3;
 
 const VULNERABILITY_SEVERITY_ORDER = SEVERITY_RANK;
 
@@ -380,6 +385,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [noteError, setNoteError] = useState<string | null>(null);
+  // The thread shows its newest threads until asked for the rest (v5.240.0).
+  const [showAllNotes, setShowAllNotes] = useState(false);
+  useEffect(() => { setShowAllNotes(false); }, [hostId]);
   // Promote-note-to-finding dialog state (foundation 6b).
   const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
   const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
@@ -1242,8 +1250,153 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (typeof document === 'undefined') return;
     const el = document.getElementById(id);
     if (!el) return;
+    // A collapsed section would make the jump look like a dead link.
+    openInspectorSection(id);
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
+
+  // Newest threads first in line for the space; the API's order is kept, and a
+  // thread being replied to is never hidden.
+  const newestThreadIds = new Set(
+    [...noteThreadGroups.topLevel]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, NOTE_THREAD_PREVIEW_LIMIT)
+      .map((n) => n.id),
+  );
+  const visibleTopLevelNotes = showAllNotes
+    ? noteThreadGroups.topLevel
+    : noteThreadGroups.topLevel.filter((n) => newestThreadIds.has(n.id) || n.id === replyTo?.id);
+  const hiddenNoteCount = noteThreadGroups.topLevel.length - visibleTopLevelNotes.length;
+
+  // Scanner observations — what scanners reported on this host, grouped by
+  // issue, not yet judged (v5.225.0 vocabulary). One line per issue.
+  const observationsSection = hasVulnerabilities ? (
+    <InspectorSection
+      id="host-detail-vulnerabilities"
+      title="Scanner observations"
+      titleHint="What scanners reported on this host, grouped by issue. Not yet judged: promote an issue to make it a finding under investigation."
+      icon={<ShieldAlert className="size-4 shrink-0 text-destructive" aria-hidden />}
+      // Rows are issues, so the count is issues. When scanners overlapped,
+      // say so rather than showing a number that doesn't match the rows.
+      count={vulnGroups.length}
+      actions={(
+        <>
+          {totalVulnerabilities > vulnGroups.length && (
+            <span className="text-caption text-muted-foreground">
+              from {totalVulnerabilities} scanner observations
+            </span>
+          )}
+          {/* v5.215.0 — informational rows are hidden until asked; say how
+              many there are so nothing looks lost. */}
+          {(host.informational_count ?? 0) > 0 && host.informational_included === false && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-caption text-muted-foreground"
+              onClick={() => void loadInformational()}
+              disabled={loadingInformational}
+              aria-label={`Show ${host.informational_count} informational findings`}
+            >
+              {loadingInformational
+                ? 'Loading…'
+                : `${host.informational_count} informational hidden · show`}
+            </Button>
+          )}
+        </>
+      )}
+    >
+      <div className="space-y-xs">
+        {displayedVulnerabilities.map((group) => (
+          <VulnerabilityGroup
+            // Host-qualified: the inspector stays mounted across prev/next, and
+            // an issue shared by two hosts must not carry its open state over.
+            key={`${host.id}:${group.key}`}
+            group={group}
+            severityBadgeVariant={severityBadgeVariant}
+            expandedVulnIds={expandedVulnIds}
+            onToggleDescription={toggleVulnDescription}
+            promotedVulns={promotedVulns}
+            dismissedHereVulns={dismissedHereVulns}
+            vulnActionId={vulnActionId}
+            onTriage={openTriage}
+            onQueryHosts={handleQueryHosts}
+            onQueryExploitPort={handleQueryExploitPort}
+          />
+        ))}
+        {vulnGroups.length > VULNERABILITY_PREVIEW_LIMIT && (
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowAllVulnerabilities((prev) => !prev)}
+            >
+              {showAllVulnerabilities
+                ? 'Show fewer issues'
+                : `Show all issues (${vulnGroups.length})`}
+            </Button>
+          </div>
+        )}
+      </div>
+    </InspectorSection>
+  ) : null;
+
+  const glanceLinkClass =
+    'rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  // Severity numbers carry colour (genuine alerts); the rest stay muted.
+  const glanceLinks = (
+    <>
+      <button type="button" onClick={() => scrollToSection('host-detail-ports')} className={glanceLinkClass}>
+        <strong className="text-foreground">{openPorts.length}</strong> open
+        <span className="opacity-70"> / {host.ports.length} ports</span>
+      </button>
+      {host.vulnerability_summary && host.vulnerability_summary.total_vulnerabilities > 0 && (() => {
+        // Informational is excluded from the at-a-glance line — it dwarfs
+        // real severities. If a host has only info vulns, show a quiet count.
+        const sevs = (['critical', 'high', 'medium', 'low'] as const)
+          .filter((k) => (host.vulnerability_summary?.[k] ?? 0) > 0);
+        return (
+          <button type="button" onClick={() => scrollToSection('host-detail-vulnerabilities')}
+            className={cn('inline-flex items-center gap-sm', glanceLinkClass)}>
+            {sevs.length === 0 ? (
+              <span className="text-muted-foreground">
+                <strong className="text-muted-foreground">{host.vulnerability_summary?.info ?? 0}</strong> informational
+              </span>
+            ) : sevs.map((k) => (
+              <span key={k}>
+                <strong style={{ color: SEVERITY_HSL[k] }}>{host.vulnerability_summary?.[k]}</strong>{' '}{k}
+              </span>
+            ))}
+          </button>
+        );
+      })()}
+      {(host.web_interface_count ?? 0) > 0 && (
+        <button type="button" onClick={() => scrollToSection('host-detail-web')} className={glanceLinkClass}>
+          <strong className="text-foreground">{host.web_interface_count}</strong> web
+        </button>
+      )}
+      {/* Always present: quick capture is one jump from anywhere on the host,
+          and lands in the note field rather than beside it. */}
+      <button type="button"
+        onClick={() => {
+          scrollToSection('host-detail-notes');
+          requestAnimationFrame(() => document.getElementById(`host-${hostId}-note-body`)?.focus({ preventScroll: true }));
+        }}
+        className={cn('inline-flex items-center gap-xxs', glanceLinkClass)}>
+        <NotebookPen className="size-3.5" aria-hidden />
+        {notes.length > 0
+          ? <><strong className="text-foreground">{notes.length}</strong> note{notes.length === 1 ? '' : 's'} · add</>
+          : 'Add note'}
+      </button>
+      {(testPlanCounts.in_progress + testPlanCounts.pending + testPlanCounts.completed) > 0 && (
+        <button type="button" onClick={() => scrollToSection('host-detail-proposed-tests')}
+          className={cn('inline-flex items-center gap-xxs', glanceLinkClass)}>
+          <ClipboardList className="size-3.5" aria-hidden />
+          <strong className="text-foreground">{testPlanCounts.in_progress}</strong> in progress
+          {testPlanCounts.pending > 0 && <> · <strong className="text-foreground">{testPlanCounts.pending}</strong> proposed</>}
+        </button>
+      )}
+    </>
+  );
 
   const titleClasses = density === 'sheet' ? 'text-section-title' : 'text-page-title';
   const titleIconClass = density === 'sheet' ? 'size-5' : 'size-6';
@@ -1280,6 +1433,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             host.ip_address
           )}
         </h1>
+        {host.hostname && (
+          <span className="min-w-0 max-w-[24rem] truncate text-metadata text-muted-foreground" title={host.hostname}>
+            {host.hostname}
+          </span>
+        )}
         {hasConflicts ? (
           <Button
             variant={showConflicts ? 'default' : 'outline'}
@@ -1309,13 +1467,76 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             Couldn&apos;t check conflicts
           </span>
         ) : null}
+
+        {/* v5.240.0 — the review control lives in the title row. It used to
+            own 5/12 of the overview card, which for an unreviewed host was one
+            button over ~200px of nothing while the OS beside it truncated. */}
+        <div className="ml-auto flex flex-wrap items-center gap-xs">
+          {followStatus ? (
+            <Bookmark
+              className={cn(
+                'size-4',
+                followStatus === 'reviewed'
+                  ? 'text-success'
+                  : followStatus === 'in_review'
+                    ? 'text-warning'
+                    : 'text-info',
+              )}
+              aria-hidden
+            />
+          ) : (
+            <BookmarkPlus className="size-4 text-muted-foreground" aria-hidden />
+          )}
+          <Badge
+            variant={followStatus ? FOLLOW_STATUS_META[followStatus].badgeVariant : 'outline'}
+            title={followHelperText}
+          >
+            {followStatus ? FOLLOW_STATUS_META[followStatus].label : 'Not reviewed'}
+          </Badge>
+          {/* §6/§9 — one state-aware review control: primary action for the
+              common path + an overflow for the off-path transitions
+              (mark-reviewed-direct, clear status). */}
+          {followStatus === 'reviewed' ? (
+            <Button size="sm" variant="outline" disabled={followLoading}
+              onClick={() => updateFollow('in_review')}>
+              <RotateCcw className="size-3.5" aria-hidden /> Re-open review
+            </Button>
+          ) : followStatus === 'in_review' ? (
+            <Button size="sm" disabled={followLoading} onClick={openReviewCompletion}>
+              <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
+            </Button>
+          ) : (
+            <Button size="sm" disabled={followLoading}
+              onClick={() => updateFollow('in_review')}>
+              <Eye className="size-3.5" aria-hidden /> Start review
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="ghost" disabled={followLoading}
+                aria-label="More review actions">
+                <MoreHorizontal className="size-4" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
+                <DropdownMenuItem onClick={openReviewCompletion}>
+                  Mark reviewed…
+                </DropdownMenuItem>
+              )}
+              {followStatus && (
+                <DropdownMenuItem onClick={() => updateFollow('none')}>
+                  Clear review status
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
-      {host.hostname && (
-        <p className="-mt-sm truncate text-metadata text-muted-foreground" title={host.hostname}>
-          {host.hostname}
-        </p>
-      )}
+      {/* Scope is part of what this host IS to the engagement, so it sits with
+          the identity — not in a card of its own further down. */}
+      <ScopeMembershipCard membership={host.scope_membership} />
 
       {webLinks.length > 1 && (
         <div className="flex flex-wrap gap-xs">
@@ -1336,11 +1557,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
       {/* Host Overview */}
       <Card>
-        <CardContent className="grid gap-md pt-md md:grid-cols-12">
-          <div className="space-y-sm md:col-span-7">
+        <CardContent className="space-y-sm p-sm">
             {/* Identity — labelled key/value, not a badge soup. Colour is
                 reserved for genuine alerts (SMB disabled, unassigned owner). */}
-            <dl className="grid gap-x-lg gap-y-sm sm:grid-cols-2">
+            <dl className="grid gap-x-lg gap-y-xs sm:grid-cols-2">
               <div className="flex gap-sm">
                 <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">State</dt>
                 <dd className="min-w-0 text-metadata">
@@ -1460,59 +1680,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               )}
             </dl>
 
-            {/* At a glance — actionable counts as quiet linked stats. Severity
-                numbers carry colour (genuine alerts); the rest stay muted. */}
-            <div className="flex flex-wrap items-center gap-x-md gap-y-xs border-t border-border pt-sm text-caption text-muted-foreground">
-              <button type="button" onClick={() => scrollToSection('host-detail-ports')}
-                className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <strong className="text-foreground">{openPorts.length}</strong> open
-                <span className="opacity-70"> / {host.ports.length} ports</span>
-              </button>
-              {host.vulnerability_summary && host.vulnerability_summary.total_vulnerabilities > 0 && (() => {
-                // Informational is excluded from the at-a-glance line — it dwarfs
-                // real severities. If a host has only info vulns, show a quiet count.
-                const sevs = (['critical', 'high', 'medium', 'low'] as const)
-                  .filter((k) => (host.vulnerability_summary?.[k] ?? 0) > 0);
-                return (
-                  <button type="button" onClick={() => scrollToSection('host-detail-vulnerabilities')}
-                    className="inline-flex items-center gap-sm rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                    {sevs.length === 0 ? (
-                      <span className="text-muted-foreground">
-                        <strong className="text-muted-foreground">{host.vulnerability_summary?.info ?? 0}</strong> informational
-                      </span>
-                    ) : sevs.map((k) => (
-                      <span key={k}>
-                        <strong style={{ color: SEVERITY_HSL[k] }}>{host.vulnerability_summary?.[k]}</strong>{' '}{k}
-                      </span>
-                    ))}
-                  </button>
-                );
-              })()}
-              {(host.web_interface_count ?? 0) > 0 && (
-                <button type="button" onClick={() => scrollToSection('host-detail-web')}
-                  className="rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <strong className="text-foreground">{host.web_interface_count}</strong> web
-                </button>
-              )}
-              {/* Always present (v5.236.0): the composer now sits below the
-                  port table, so quick capture is one jump from the top. */}
-              <button type="button" onClick={() => scrollToSection('host-detail-notes')}
-                className="inline-flex items-center gap-xxs rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <NotebookPen className="size-3.5" aria-hidden />
-                {notes.length > 0
-                  ? <><strong className="text-foreground">{notes.length}</strong> note{notes.length === 1 ? '' : 's'} · add</>
-                  : 'Add note'}
-              </button>
-              {(testPlanCounts.in_progress + testPlanCounts.pending + testPlanCounts.completed) > 0 && (
-                <button type="button" onClick={() => scrollToSection('host-detail-proposed-tests')}
-                  className="inline-flex items-center gap-xxs rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <ClipboardList className="size-3.5" aria-hidden />
-                  <strong className="text-foreground">{testPlanCounts.in_progress}</strong> in progress
-                  {testPlanCounts.pending > 0 && <> · <strong className="text-foreground">{testPlanCounts.pending}</strong> proposed</>}
-                </button>
-              )}
-            </div>
-
             {/* v5.224.0 — evidence freshness beside each kind of evidence
                 (design review item 4): observed / vulnerabilities / web /
                 SMB / tested, each with its own date, "not assessed" or "n/a",
@@ -1537,37 +1704,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 ))}
               </dl>
             )}
-          </div>
 
-          {/* Right column: review workflow — status, the state-aware review
-              action, and who else is reviewing. Uses the ~5/12 the overview
-              previously left blank on desktop; on a narrow window it drops
-              below the identity block instead. */}
-          <div className="space-y-sm md:col-span-5 md:border-l md:border-border md:pl-md">
+          {/* Review detail — only what exists: the conclusion, what changed
+              since, when, and who else is on this host. The status and its
+              action are in the title row; an unreviewed host that nobody else
+              follows renders nothing here. */}
+          {(followInfo || otherFollowers.length > 0 || followersError) && (
+          <div className="space-y-xs border-t border-border pt-xs">
             <div className="flex flex-wrap items-center gap-sm">
-              <div className="flex items-center gap-xs">
-                {followStatus ? (
-                  <Bookmark
-                    className={cn(
-                      'size-4',
-                      followStatus === 'reviewed'
-                        ? 'text-success'
-                        : followStatus === 'in_review'
-                          ? 'text-warning'
-                          : 'text-info',
-                    )}
-                    aria-hidden
-                  />
-                ) : (
-                  <BookmarkPlus className="size-4 text-muted-foreground" aria-hidden />
-                )}
-                <Badge
-                  variant={
-                    followStatus ? FOLLOW_STATUS_META[followStatus].badgeVariant : 'outline'
-                  }
-                >
-                  {followStatus ? FOLLOW_STATUS_META[followStatus].label : 'Not reviewed'}
-                </Badge>
+              <div className="flex flex-wrap items-center gap-xs">
                 {followStatus === 'reviewed' && followInfo?.review_conclusion && (
                   <span className="text-caption font-medium text-foreground"
                     title={followInfo.review_summary ?? undefined}>
@@ -1607,53 +1752,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   </span>
                 )}
               </div>
-              {/* §6/§9 — one state-aware review control (replaces the status
-                  dropdown): primary action for the common path + an overflow
-                  for the off-path transitions, so nothing the dropdown did is
-                  lost (mark-reviewed-direct, clear status). */}
-              <div className="flex items-center gap-xs">
-                {followStatus === 'reviewed' ? (
-                  <Button size="sm" variant="outline" disabled={followLoading}
-                    onClick={() => updateFollow('in_review')}>
-                    <RotateCcw className="size-3.5" aria-hidden /> Re-open review
-                  </Button>
-                ) : followStatus === 'in_review' ? (
-                  <Button size="sm" disabled={followLoading} onClick={openReviewCompletion}>
-                    <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
-                  </Button>
-                ) : (
-                  <Button size="sm" disabled={followLoading}
-                    onClick={() => updateFollow('in_review')}>
-                    <Eye className="size-3.5" aria-hidden /> Start review
-                  </Button>
-                )}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button size="icon" variant="ghost" disabled={followLoading}
-                      aria-label="More review actions">
-                      <MoreHorizontal className="size-4" aria-hidden />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
-                      <DropdownMenuItem onClick={openReviewCompletion}>
-                        Mark reviewed…
-                      </DropdownMenuItem>
-                    )}
-                    {followStatus && (
-                      <DropdownMenuItem onClick={() => updateFollow('none')}>
-                        Clear review status
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <span className="text-caption text-muted-foreground">{followHelperText}</span>
             </div>
 
             {otherFollowers.length > 0 && (
-              <div className="rounded-control border border-border bg-muted/30 p-sm">
-                <p className="mb-xxs text-caption text-muted-foreground">Also reviewing this host</p>
+              <div className="flex flex-wrap items-center gap-xs">
+                <p className="text-caption text-muted-foreground">Also reviewing</p>
                 <div className="flex flex-wrap gap-xs">
                   {otherFollowers.map((f) => {
                     const label = f.full_name || f.username;
@@ -1682,9 +1785,23 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               <p className="text-caption text-muted-foreground">Follower list unavailable</p>
             )}
           </div>
+          )}
 
         </CardContent>
       </Card>
+
+      {/* At a glance — actionable counts as quiet linked stats, and the
+          inspector's navigation. Sticky (v5.240.0): the links used to scroll
+          away with the overview, which is exactly when they are needed. */}
+      <div
+        className={cn(
+          'sticky z-10 -mx-xs flex flex-wrap items-center gap-x-md gap-y-xs rounded-control border border-border px-sm py-xs text-caption text-muted-foreground shadow-raised',
+          density === 'sheet' ? 'top-0 bg-card' : 'bg-background',
+        )}
+        style={density === 'sheet' ? undefined : stickyBelowChrome}
+      >
+        {glanceLinks}
+      </div>
 
       {/* v4.54.0 — host detail section order rebalanced (UI/UX phase 1).
           Pre-fix the order was:
@@ -1712,14 +1829,18 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           analyst should not scroll through a conversation to find out what is
           listening, and a note is written ABOUT a service. The composer stays
           one jump away: the overview's "Add note" link scrolls to it.
+
+          v5.240.0 (density pass) — the median host here has 3 open ports and
+          3 scanner observations, and needed three screens: every data source
+          had its own Card, the composer was a permanently open ~250px form,
+          and each observation printed its whole write-up. Now: scope is a
+          header line, sections are heading + divider (InspectorSection), the
+          composer is one line until used, observations are one line each, and
+          the discussion follows the evidence instead of separating the ports
+          from the observations.
         */}
 
-      {/* Which scope entries cover this host — every subnet the address falls
-          in, every in-scope name resolving here, or a plain "out of scope".
-          The Hosts list shows only the most-specific subnet. */}
-      <ScopeMembershipCard membership={host.scope_membership} />
-
-      {/* Port Details — services, per-endpoint TLS evidence, connection helpers. */}
+      {/* Ports — services, per-endpoint TLS evidence, connection helpers. */}
       <PortDetailsCard
         hostId={host.id}
         hostIp={host.ip_address}
@@ -1731,157 +1852,44 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         connectionHelpersByPort={connectionHelpersByPort}
       />
 
-      {/* Add Note */}
-      <Card id="host-detail-notes">
-        <CardHeader>
-          <div className="flex items-center gap-xs">
-            <NotebookPen className="size-5 text-primary" aria-hidden />
-            <CardTitle>Add Investigation Note</CardTitle>
-          </div>
-          <p className="text-caption text-muted-foreground">
-            Capture observations, remediation actions, or handoff context for teammates.
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-sm">
-          {noteError && (
-            <Alert variant="destructive">
-              <AlertDescription className="flex items-center justify-between gap-sm">
-                <span>{noteError}</span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setNoteError(null)}
-                  aria-label="Dismiss note error"
-                >
-                  <X className="size-3.5" aria-hidden />
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
-          <div className="space-y-xxs">
-            <Label htmlFor={`host-${hostId}-note-body`}>Note</Label>
-            <Textarea
-              id={`host-${hostId}-note-body`}
-              rows={3}
-              placeholder="Example: Confirmed port 445 is exposed; scheduling remediation."
-              value={noteBody}
-              onChange={(event) => {
-                if (noteError) setNoteError(null);
-                setNoteBody(event.target.value);
-              }}
-              onPaste={handleComposerPaste}
-              disabled={noteSubmitting}
-            />
-            {failedAttachmentCount > 0 && (
-              <Alert variant="warning">
-                <AlertDescription>
-                  Note saved · {failedAttachmentCount} attachment{failedAttachmentCount === 1 ? '' : 's'} failed.
-                  Retry or remove each below — the note itself is already recorded.
-                </AlertDescription>
-              </Alert>
-            )}
-            {pendingImages.length > 0 && (
-              <div className="flex flex-wrap gap-xs">
-                {pendingImages.map((img, idx) => (
-                  <div key={img.url} className="group relative flex flex-col items-center gap-xxs">
-                    <img
-                      src={img.url}
-                      alt={`Pasted image ${idx + 1}`}
-                      title={img.error}
-                      className={cn(
-                        'size-16 rounded-control border object-cover',
-                        img.error ? 'border-destructive' : 'border-border',
-                      )}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removePendingImage(idx)}
-                      aria-label={`Remove pasted image ${idx + 1}`}
-                      className="absolute -right-1 -top-1 rounded-full bg-destructive p-0.5 text-white shadow"
-                      disabled={noteSubmitting}
-                    >
-                      <X className="size-3" aria-hidden />
-                    </button>
-                    {img.error && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-xs text-caption"
-                        onClick={() => retryPendingImage(idx)}
-                        disabled={noteSubmitting || img.error === 'Uploading…'}
-                        aria-label={`Retry uploading pasted image ${idx + 1}`}
-                      >
-                        {img.error === 'Uploading…' ? 'Uploading…' : 'Retry'}
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-            <p className="text-caption text-muted-foreground">
-              Tip: mention a teammate with <strong>@username</strong> to notify them — and you can
-              <strong> paste a screenshot</strong> (Ctrl/Cmd+V) to attach it as evidence.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-sm">
-            <div className="flex items-center gap-xs">
-              <Label htmlFor={`host-${hostId}-note-status`}>Status</Label>
-              <Select
-                value={noteStatus}
-                onValueChange={(value) => setNoteStatus(value as NoteStatus)}
-                disabled={noteSubmitting}
-              >
-                <SelectTrigger id={`host-${hostId}-note-status`} className="w-[10rem]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(NOTE_STATUS_META).map(([value, meta]) => (
-                    <SelectItem key={value} value={value}>
-                      {meta.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grow" />
-            <Button onClick={handleCreateNote} disabled={noteSubmitting}>
-              {noteSubmitting ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                  Saving…
-                </>
-              ) : (
-                <>
-                  <NotebookPen className="size-4" aria-hidden />
-                  Save Note
-                </>
-              )}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {/* This host's findings, inline — appears once a note here is promoted. */}
+      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
 
-      {/* Team Notes */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-xs">
-            <MessageSquare className="size-5 text-primary" aria-hidden />
-            <CardTitle>Team Notes</CardTitle>
-            <Badge variant="outline">{notes.length}</Badge>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {notes.length === 0 ? (
-            <p className="text-metadata text-muted-foreground">
-              No notes yet — add your first observation to start a review trail.
-            </p>
-          ) : (
+      {observationsSection}
+
+      {/* Notes — one section: the composer (a single line until used) over the
+          thread. It follows the evidence it is written about; a long thread
+          used to sit between the ports and the observations. */}
+      <InspectorSection
+        id="host-detail-notes"
+        title="Notes"
+        icon={<MessageSquare className="size-4 shrink-0 text-primary" aria-hidden />}
+        count={notes.length}
+      >
+        <div className="space-y-sm">
+          <NoteComposer
+            hostId={hostId}
+            body={noteBody}
+            onBodyChange={setNoteBody}
+            status={noteStatus}
+            onStatusChange={setNoteStatus}
+            statusMeta={NOTE_STATUS_META}
+            submitting={noteSubmitting}
+            onSubmit={handleCreateNote}
+            error={noteError}
+            onDismissError={() => setNoteError(null)}
+            onPaste={handleComposerPaste}
+            images={pendingImages}
+            failedAttachmentCount={failedAttachmentCount}
+            onRemoveImage={removePendingImage}
+            onRetryImage={retryPendingImage}
+          />
+          {notes.length > 0 && (
             // v2.43.0 — MONO-2: notes rendering is now <NoteThread> (see
             // ./host-inspector/NoteThread.tsx).  Pre-extraction this was
             // a 120-line closure capturing 11 pieces of parent state.
             <NoteThread
-              topLevel={noteThreadGroups.topLevel}
+              topLevel={visibleTopLevelNotes}
               repliesByParent={noteThreadGroups.repliesByParent}
               noteStatusMeta={NOTE_STATUS_META}
               replyTo={replyTo}
@@ -1912,8 +1920,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               onAttachmentsChanged={() => setRetryNonce((n) => n + 1)}
             />
           )}
-        </CardContent>
-      </Card>
+          {hiddenNoteCount > 0 && (
+            <Button size="sm" variant="ghost" className="text-caption" onClick={() => setShowAllNotes(true)}>
+              Show {hiddenNoteCount} earlier thread{hiddenNoteCount === 1 ? '' : 's'}
+            </Button>
+          )}
+        </div>
+      </InspectorSection>
 
       {/* §9 — review-completion dialog. Marking a host Reviewed records WHAT
           the reviewer concluded so "reviewed" is an auditable outcome. */}
@@ -2291,80 +2304,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         />
       )}
 
-      {/* This host's findings, inline — appears once a note here is promoted. */}
-      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
-
-      {/* Vulnerabilities */}
-      {hasVulnerabilities && (
-        <Card id="host-detail-vulnerabilities">
-          <CardHeader>
-            <div className="flex items-center gap-xs">
-              <ShieldAlert className="size-5 text-destructive" aria-hidden />
-              {/* v5.225.0 — named for what they are: what scanners reported
-                  on this host, not yet judged. Promote one to make it a
-                  finding under investigation (design review item 7). */}
-              <CardTitle className="text-destructive" title="What scanners reported on this host, grouped by issue. Not yet judged: promote an issue to make it a finding under investigation.">
-                Scanner observations
-              </CardTitle>
-              {/* Rows are issues now, so the badge counts issues. When
-                  scanners overlapped, say so rather than showing a number
-                  that doesn't match the rows underneath it. */}
-              <Badge variant="destructive">{vulnGroups.length}</Badge>
-              {totalVulnerabilities > vulnGroups.length && (
-                <span className="text-caption text-muted-foreground">
-                  from {totalVulnerabilities} scanner observations
-                </span>
-              )}
-              {/* v5.215.0 — informational rows are hidden until asked; say
-                  how many there are so nothing looks lost. */}
-              {(host.informational_count ?? 0) > 0 && host.informational_included === false && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="ml-auto text-caption text-muted-foreground"
-                  onClick={() => void loadInformational()}
-                  disabled={loadingInformational}
-                  aria-label={`Show ${host.informational_count} informational findings`}
-                >
-                  {loadingInformational
-                    ? 'Loading…'
-                    : `${host.informational_count} informational hidden · show`}
-                </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-sm">
-            {displayedVulnerabilities.map((group) => (
-              <VulnerabilityGroup
-                key={group.key}
-                group={group}
-                severityBadgeVariant={severityBadgeVariant}
-                expandedVulnIds={expandedVulnIds}
-                onToggleDescription={toggleVulnDescription}
-                promotedVulns={promotedVulns}
-                dismissedHereVulns={dismissedHereVulns}
-                vulnActionId={vulnActionId}
-                onTriage={openTriage}
-                onQueryHosts={handleQueryHosts}
-                onQueryExploitPort={handleQueryExploitPort}
-              />
-            ))}
-            {vulnGroups.length > VULNERABILITY_PREVIEW_LIMIT && (
-              <div className="flex justify-end">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowAllVulnerabilities((prev) => !prev)}
-                >
-                  {showAllVulnerabilities
-                    ? 'Show fewer issues'
-                    : `Show all issues (${vulnGroups.length})`}
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
 
       {/* Proposed Tests */}
       {testPlanError && testPlanEntries.length === 0 && (
@@ -2379,15 +2318,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </Alert>
       )}
       {entriesWithTests.length > 0 && (
-        <Card id="host-detail-proposed-tests">
-          <CardHeader>
-            <div className="flex items-center gap-xs">
-              <ClipboardList className="size-5 text-primary" aria-hidden />
-              <CardTitle>Proposed Tests</CardTitle>
-              <Badge variant="default">{totalProposedTests}</Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-md">
+        <InspectorSection
+          id="host-detail-proposed-tests"
+          title="Proposed tests"
+          icon={<ClipboardList className="size-4 shrink-0 text-primary" aria-hidden />}
+          count={totalProposedTests}
+        >
+          <div className="space-y-sm">
             {entriesWithTests.map((entry) => {
               const structured = entry.proposed_tests.filter(
                 (t): t is ProposedTestObject =>
@@ -2566,13 +2503,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </div>
               );
             })}
-          </CardContent>
-        </Card>
+          </div>
+        </InspectorSection>
       )}
 
-      <div id="host-detail-web">
-        <WebInterfacesCard hostId={host.id} count={host.web_interface_count ?? 0} />
-      </div>
+      <WebInterfacesCard hostId={host.id} count={host.web_interface_count ?? 0} />
 
       {/* v4.55.0 — DNS evidence card (UX phase 3 + #44.1 frontend
           surface).  Self-suppresses when the host has no DNS records,
@@ -2592,18 +2527,17 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           host was never probed with NetExec. */}
       <NetExecCard hostId={host.id} count={host.netexec_result_count ?? 0} />
 
-      {/* Port Details moved up, directly under the overview (v5.236.0). */}
-
-      {/* Data conflicts */}
+      {/* Data conflicts — the one section that stays a bordered panel: it is
+          an exception the analyst asked to see, not routine evidence. */}
       {showConflicts && hasConflicts && (
         <Card id="host-detail-conflicts" className="scroll-mt-20">
-          <CardHeader>
+          <CardHeader className="p-sm">
             <div className="flex items-center gap-xs">
-              <AlertTriangle className="size-5 text-warning" aria-hidden />
-              <CardTitle>Data Conflicts &amp; Confidence</CardTitle>
+              <AlertTriangle className="size-4 text-warning" aria-hidden />
+              <CardTitle className="text-subheading">Data conflicts &amp; confidence</CardTitle>
             </div>
           </CardHeader>
-          <CardContent className="space-y-md">
+          <CardContent className="space-y-md p-sm pt-0">
             <Alert variant="info">
               <AlertDescription>
                 When the same host is scanned by multiple tools, BlueStick keeps every value and
