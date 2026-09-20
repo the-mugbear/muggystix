@@ -1191,7 +1191,7 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
     job_rows = (
         db.query(
             Job.id, Job.original_filename, Job.status, Job.error_message, Job.message,
-            Job.created_at,
+            Job.parser_warnings, Job.created_at,
             func.count().over(partition_by=Job.status).label("n"),
         )
         .filter(Job.project_id == project.id, Job.dismissed_at.is_(None), blocked)
@@ -1230,7 +1230,12 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
             BlockedImport(
                 job_id=r.id, filename=r.original_filename,
                 kind="failed" if r.status == "failed" else "partial",
-                message=(r.error_message or r.message),
+                # A partial job's ``message`` is the parser's success line
+                # ("processed successfully"); what was LOST is in the warnings.
+                message=(
+                    (r.error_message or r.message) if r.status == "failed"
+                    else (r.parser_warnings or r.message)
+                ),
                 at=r.created_at,
             )
             for r in job_rows[:limit]

@@ -141,7 +141,9 @@ def _job(db, pid, name, status, **kw):
 def test_blockers_list_stopped_imports_until_dismissed(client, db_session, test_project):
     pid = test_project.id
     _job(db_session, pid, "broken.xml", "failed", error_message="not well-formed")
-    _job(db_session, pid, "half.nessus", "completed", partial=True, message="3 hosts skipped")
+    _job(db_session, pid, "half.nessus", "completed", partial=True,
+         message="Nessus file processed successfully",
+         parser_warnings="Incomplete XML — hosts after this point are MISSING")
     _job(db_session, pid, "fine.xml", "completed")
     _job(db_session, pid, "old-broken.xml", "failed", dismissed_at=datetime.now(timezone.utc))
     db_session.commit()
@@ -153,6 +155,10 @@ def test_blockers_list_stopped_imports_until_dismissed(client, db_session, test_
     kinds = {i["filename"]: i["kind"] for i in b["imports"]}
     assert kinds == {"broken.xml": "failed", "half.nessus": "partial"}
     assert next(i for i in b["imports"] if i["kind"] == "failed")["message"] == "not well-formed"
+    # A partial job's own message is the parser's success line; what was lost
+    # is in the warnings, and that is what a list of blocked work must show.
+    partial = next(i for i in b["imports"] if i["kind"] == "partial")
+    assert "MISSING" in partial["message"] and "successfully" not in partial["message"]
 
 
 def test_blockers_list_runs_that_stopped_without_completing(client, db_session, test_project, test_agent):
