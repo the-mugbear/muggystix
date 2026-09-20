@@ -484,6 +484,19 @@ const NeedsAttentionSection: React.FC<{
 
   const hasAny = (pendingPlans?.length ?? 0) > 0;
 
+  // Nothing waiting: one line, not a card explaining a queue that is empty.
+  // The heading stays a heading so the section is still findable.
+  if (!hasAny) {
+    return (
+      <div className="mb-md flex min-w-0 flex-wrap items-baseline gap-x-sm px-md text-caption text-muted-foreground">
+        <h2 className="text-metadata font-semibold text-foreground">
+          {canApprove ? 'Needs your approval' : 'Pending approvals'}
+        </h2>
+        <span>{canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}</span>
+      </div>
+    );
+  }
+
   return (
     <Card className="mb-md">
       <CardContent className="p-md">
@@ -495,12 +508,6 @@ const NeedsAttentionSection: React.FC<{
             ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide — independent of the Mine / All toggle.'
             : 'Agent-drafted test plans awaiting an analyst’s approve/reject decision. Shown for visibility — approving needs the analyst role.'}
         </p>
-
-        {!hasAny && (
-          <p className="text-metadata text-muted-foreground">
-            {canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}
-          </p>
-        )}
 
         {pendingPlans && pendingPlans.length > 0 && (
           <div>
