@@ -1,6 +1,6 @@
 # Parser Reference & Contributor Guide
 
-> **Last verified against:** backend 2.254.1 / frontend 5.152.1 (2026-08-11)
+> **Last verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19)
 >
 > Companion to [`UPLOAD_FORMATS.md`](./UPLOAD_FORMATS.md). That doc is the
 > *user-facing* "what can I upload" table. **This** doc is for operators and
@@ -12,18 +12,35 @@
 
 ## Part 0 — How ingestion routes a file to a parser
 
-A single upload becomes an `IngestionJob`; a background worker
-(`app/worker.py`) claims it and runs `IngestionService._process_job`. Routing:
+A single upload becomes an `IngestionJob`. From the UI it is first **staged**
+(`create_job(..., stage=True)` → status `staged`): the file is on disk, no
+worker touches it, and the operator reviews the detected format before
+pressing Import (`staged_import_service.detect_for_job` → `POST
+/upload/jobs/{id}/start`). Agents and direct API callers queue immediately.
+Once queued, a background worker (`app/worker.py`) claims the job and runs
+`IngestionService._process_job`. Routing:
 
+0. **Operator override** — if the job carries a `format_override` (chosen in the
+   review, or on a retry), the attempt list is **exactly that parser and nothing
+   else**, resolved through `format_registry.resolve_parser`. No fallbacks, on
+   purpose: a wrong choice fails visibly ("Review the format and retry") rather
+   than silently routing elsewhere. An unknown override fails with "The chosen
+   format '…' is not one this deployment can parse." Detection still runs in
+   shadow (`_detect_without_override`) so the job records the whole chain —
+   `detected_file_type` → `format_override` → `final_file_type`.
 1. **Sample read** — `_read_sample()` reads the first **64 KB** of the file.
 2. **Attempt list** — `_build_parsing_attempts(job, sample)`
    (`app/services/ingestion_service.py`) builds an **ordered** list of
-   `(label, ParserClass, description)` tuples, branched first on the file
-   **extension** (`.xml`/`.gnmap`/`.json`/`.jsonl`/`.zip`/`.csv`/`.txt`) and
-   then gated by per-tool **content detectors** (`looks_like_*` in
-   `app/parsers/content_detection.py`). Ordering is by structural specificity
-   — e.g. for `.xml`, `looks_like_masscan_xml` (scanner attr) is tried before
-   nmap, OpenVAS before nmap, and Nessus is always appended last-ditch.
+   `(file_type, ParserClass, description)` descriptors. `file_type` is a registry
+   key (`nmap_xml`, `masscan_list`, `dirbuster_csv`, …), not display text — the
+   label and family live in `format_registry.FORMATS`. The list is branched first
+   on the file **extension** (`.xml`/`.gnmap`/`.json`/`.jsonl`/`.ndjson`/`.zip`/
+   `.csv`/`.txt`; `.nessus`, or an `.xml` that `is_nessus_sample()` recognises, is
+   a pre-branch check) and then gated by per-tool **content detectors**
+   (`looks_like_*` in `app/parsers/content_detection.py`). Ordering is by
+   structural specificity — e.g. for `.xml`, `looks_like_masscan_xml` (scanner
+   attr) is tried before nmap, OpenVAS before nmap, and Nessus is appended
+   last-ditch.
 3. **First success wins** — each attempt's parser runs in turn; the first that
    parses without raising produces the `Scan` and the job completes. If the
    attempt list is **empty**, the job fails with an `Unsupported file type or
@@ -34,11 +51,37 @@ A single upload becomes an `IngestionJob`; a background worker
    left it blank, and records
    `skipped_count` / `parser_warnings` on the job (see Part 2).
 
-> **Two-place registration.** Every parser is referenced **twice** in
-> `ingestion_service.py`: once in `_build_parsing_attempts` (routing) and once
-> in `parser_map` / `_extra_parsers` (instantiation). The dispatcher raises
-> `Unsupported parser class` if a routed class isn't in the map. (Details in
-> Part 2.)
+### Detection basis — what the review shows the operator
+
+Detection is **structural first, filename second**. The staged review runs
+detection twice — with a neutral filename and with the real one — and the
+difference is each candidate's *basis*:
+
+| Basis | Meaning | Ready to import without the operator? |
+|---|---|---|
+| `structure` | the content alone selects this parser | yes |
+| `filename` | only the name does — a hint | no — confirm or choose |
+| `fallback` | the dispatcher would merely *try* it, having recognised nothing | no — never even suggested |
+
+A try-anyway attempt must be marked at the source: wrap it in
+`ingestion_service._fallback(...)` (a `FallbackAttempt` — still a 3-tuple to
+every consumer). Surviving the neutral-filename pass is not evidence by itself:
+before `fallback` existed, any unrelated `.xml` read "Nmap XML · recognised by
+structure".
+
+Parsers also receive `source_tool=` (the tool the operator named at import) in
+`parse_file(**kwargs)`. `amass_parser.attribute_tool` is the reference order —
+named tool, then JSON shape, then filename hint, else the honest generic label.
+Never invent attribution from a filename alone.
+
+> **Three-place registration.** A parser is named in **three** places, and three
+> tests fail if they disagree: `_build_parsing_attempts` (routing),
+> `build_parser_dispatch_map()` (instantiation — the dispatcher raises
+> `Unsupported parser class` for a routed class that is not in the map; this is
+> exactly how RDAP and testssl once broke), and `FORMATS` in
+> `app/services/format_registry.py` (the `file_type` key with its label and
+> family, which the review, the format chooser and the job's format chain all
+> read). (Details in Part 2.)
 
 ### The data model parsers write to
 
@@ -50,7 +93,9 @@ A single upload becomes an `IngestionJob`; a background worker
 | `HostScanHistory` / `PortScanHistory` | per-scan observation audit trail |
 | `Vulnerability` | `vulnerabilities` | **Nessus, OpenVAS, Nikto only** |
 | `WebInterface` | `web_interfaces` | **httpx, whatweb, eyewitness, testssl** (unified web view, keyed by `source`) |
-| `DNSRecord` | `dns_records` | **dnsx, dns CSV, amass** (columns are `domain` + `value`, *not* `hostname`/`ip_address`) |
+| `DNSRecord` | `dns_records` | The general name-evidence table: one immutable observation about a name per scan. Written by **dnsx, dns CSV, amass, httpx**, and by EVERY host parser through `host_deduplication_service` (a scanner-reported hostname becomes a `SCANNER` observation). `record_type` is a real RR type or one of the `IMPORT`/`DISCOVERED`/`SCANNER`/`HTTP`/`CERT` kinds. Columns are `domain` + `value` (*not* `hostname`/`ip_address`), plus `name_id` → `dns_names`. Single write path: `dns_name_service.record_observation`. |
+| `DNSName` | `dns_names` | The named asset itself (FQDN, unique per project + normalised name) — an identity, never merged into a `Host`. Created through `dns_name_service.get_or_create_name`. |
+| `NetworkAttribution` | `network_attributions` | **rdap** only — registration data for an address block (cidr, org, country, handle, ASN), correlated to hosts after ingest. |
 | `Subnet` / `SubnetLabel` | scope tables | `subnet_parser` (Scope import page only) |
 | `ScanInfo`, `Script`/`HostScript` | nmap |
 | `HostAttribute` | Nessus (confidence-tracked host facts) |
@@ -109,7 +154,14 @@ go through `upsert_vulnerability` (app-level dedup on
 - **Host:** `ip_address`, `hostname` (`host-fqdn`→`netbios-name`),
   `os_name` (`operating-system`), `state=up`. Also writes `HostAttribute` rows
   (hostname / netbios_name / os_name with per-field confidence).
-- **Port:** created only when the finding's port ≠ 0.
+- **Port:** created only when the finding's port ≠ 0, and keyed by **`(port, protocol)`** —
+  UDP and SCTP findings keep their protocol (v2.365.0). Before that every Nessus
+  finding was attached to a TCP port, so an SNMP/NTP/IKE/DNS-over-UDP finding
+  created or joined a phantom open TCP port; scans imported earlier need a
+  re-import to correct (the vulnerability row never stored the protocol).
+- **Informational (severity 0) rows** can be skipped at ingest — the upload form's
+  switch wins, then the project's setting, then the deployment default
+  (`resolve_skip_informational`).
 - **Vulnerability columns written:** `plugin_id`, `title` (plugin name),
   `description` (`description` → `synopsis`), `severity` (0–4 → INFO/LOW/
   MEDIUM/HIGH/CRITICAL), `source=NESSUS`, `solution`, `references` (CVE-MITRE
@@ -130,8 +182,7 @@ go through `upsert_vulnerability` (app-level dedup on
 - **Vulnerability columns written:** `title` (`name`), `severity`,
   `plugin_id` (NVT `oid`), `description`, **`cvss_score`** (← `<severity>` /
   `cvss_base`), `cve_id` (first CVE), `solution`, `source=OPENVAS`. Severity
-  from CVSS numeric, falling back to `<threat>` text. (OpenVAS *does* persist
-  `cvss_score`, unlike Nessus.)
+  from CVSS numeric, falling back to `<threat>` text.
 
 **NetExec (NXC)** (`.json` or console text; auto-detected): host
 (`hostname`, `os_name`, `domain`, `smb_signing`) + port (`445`/SMB etc.) + a
@@ -167,7 +218,7 @@ ingest via `cert_fields.derive_cert_fields(tls_info)`.
 | `screenshot_path` / `page_text` | — | — | ✓ |
 | `raw` | ✓ | ✓ | ✓ |
 
-- **httpx** / **whatweb** accept `.json`/`.jsonl`; **eyewitness** accepts
+- **httpx** / **whatweb** accept `.json`/`.jsonl`/`.ndjson`; **eyewitness** accepts
   `.json`/`.csv`/`.zip` (zip carries the screenshots, extracted under
   `uploads/web_screenshots/{scan_id}/`, with decompression-bomb caps: ≤50 MB
   per file, ≤500 MB total, ≤5000 entries). All three report
@@ -209,10 +260,32 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
   `DISCOVERED` observation with no host — pre-v2.322.0 they were dropped).
   Tags the scan `subfinder` when the filename says so.
 - **subnet_parser** is **not** a scan parser (no `parse_file`, no `Scan`). It's
-  used by the **Scope import** page: `parse_subnet_csv` returns
-  `(cidr, [labels], description, site)` tuples (labels ≤60 chars, site ≤255);
-  `parse_cidr_list` returns normalized CIDRs. It also hosts the subnet-matching
-  utilities (`find_matching_subnets`, IP-trie cache) used during correlation.
+  used by the **Scope import** page: it parses SCOPE, not just subnets —
+  `parse_scope_csv(...)` returns `(subnets, domains, ignored_columns)` where a
+  subnet row is `(cidr, [labels], description, site)` (labels ≤60 chars, site
+  ≤255) and a domain row carries the name and whether it is a wildcard;
+  `parse_scope_list(...)` returns `(cidrs, domains)` for a flat list. Any row that
+  is neither raises, so a typo is never silently dropped. Subnet matching is NOT
+  here: the IP trie is `app/services/ip_trie.py` and correlation is
+  `SubnetCorrelationService` (the parser's old DB-backed trie and lookup helpers
+  were deleted in v2.369.0 — nothing called them and they ignored project
+  boundaries).
+
+### Enrichment and TLS posture — the two parsers this reference used to omit
+
+**rdap** (`rdap_parser.py`; `.json`/`.ndjson` from the bundled
+`scripts/rdap-lookup.py`) is not a host scanner. It writes **`NetworkAttribution`**
+rows — registration data for an address block: `cidr`, organisation, country,
+registry handle, ASN — then `correlate_hosts` links each host to its most specific
+block. It builds its `Scan` directly rather than through `ensure_scan`, commits
+itself (see the contract below) and reports `last_parse_stats`. The lookup runs
+terminal-side: the server never queries a registry.
+
+**testssl** (`testssl_parser.py`; testssl.sh JSON) writes one **`web_interfaces`**
+row per `(ip, port)` with `source="testssl"`: no `title` / `technologies` /
+`screenshot_path`, but the promoted TLS columns — `tls_weak_protocol`
+(SSLv2/SSLv3/TLS 1.0/1.1 offered), certificate expiry and self-signed. Individual
+testssl checks are NOT stored as findings.
 
 ---
 
@@ -245,8 +318,9 @@ class MyToolParser:
 - **Constructor** takes the DB session; **`parse_file(file_path, filename,
   **kwargs)`** returns the `Scan` (read `project_id` from `kwargs`).
 - **The orchestrator** commits, tags `project_id`, backfills `command_line` — your parser should **not** commit the final
-  transaction itself (parsers that do, like masscan, do so deliberately for
-  batch memory reasons and accept the trade-off).
+  transaction itself. Two parsers do, deliberately: **masscan** (batch memory) and
+  **rdap** (it owns a post-commit `correlate_hosts` pass). Commit only if you own a
+  pass that needs committed rows, and accept the trade-off.
 - **Fail closed:** raise `ValueError` when the file yields **zero** records, so
   a misrouted or malformed file surfaces a parse error instead of a silent
   empty scan. (Most parsers do this; it's the expected convention.)
@@ -270,8 +344,10 @@ class MyToolParser:
   (keyword-only; wraps the dedup service you constructed in `__init__`;
   `isolate=True` puts each host in its own savepoint so one bad record can't
   fail the batch).
-- `upsert_vulnerability(db, host_id, scan_id, source, title, severity, ...)` —
-  the **only** correct way to create a `Vulnerability` (handles app-level dedup
+- `upsert_vulnerability(*, db, host_id, scan_id, source, title, severity, ...)` —
+  **keyword-only** (the positional form is a `TypeError`); also takes `plugin_id`,
+  `port_id` and `name_id` (the named endpoint a web finding was observed at). The
+  **only** correct way to create a `Vulnerability` (handles app-level dedup
   and the required `db.flush()`).
 - `map_numeric_severity(score)` / `map_text_severity(text)` — canonical
   severity mapping; reuse these instead of hand-rolling thresholds.
@@ -282,15 +358,20 @@ class MyToolParser:
 - `correlate_scan(db, scan_id)` — map newly-seen hosts to scopes/subnets
   (call once at the end).
 
-`app/parsers/streaming_json.py` → `iter_json_records(file_path, tool_label)`
-streams `.json` arrays, single objects, and `.jsonl` uniformly (use this, not
+`app/parsers/streaming_json.py` → `iter_json_records(file_path, *, array_keys=(),
+tool_label="JSON")` streams `.json` arrays, single objects, and `.jsonl` /
+`.ndjson` uniformly; `array_keys` points it at a wrapped payload such as
+`{"results": [...]}` (use this, not
 `json.load`, so large files don't OOM the worker).
 
 `app/parsers/xml_stream_helpers.py` → `iterparse_safe()` (XXE/billion-laughs/
 huge-tree-hardened lxml iterparse), `clear_element()`, `strip_namespace()`.
 
 `app/services/cert_fields.py` → `derive_cert_fields(tls_info)` for the typed
-`cert_not_after` / `cert_self_signed` columns.
+`cert_not_after` / `cert_self_signed` columns, `derive_cert_orgs(tls_info)` for
+the subject/issuer organisation, and `derive_weak_protocol(tls_info)` for
+`tls_weak_protocol` (what the testssl parser and the `has:weak_tls` DSL predicate
+depend on).
 
 ### Choose a persistence path
 
@@ -304,7 +385,7 @@ huge-tree-hardened lxml iterparse), `clear_element()`, `strip_namespace()`.
    needs; this gives up the dedup service's conflict-resolution and concurrency
    handling, so justify it.
 
-### Wire up detection + registration (TWO places + the detector)
+### Wire up detection + registration (the detector + THREE places + the docs)
 
 1. **Detector** — add `looks_like_mytool(sample: bytes, filename: str) -> bool`
    to `app/parsers/content_detection.py`. Make the signature **specific** (a
@@ -317,10 +398,31 @@ huge-tree-hardened lxml iterparse), `clear_element()`, `strip_namespace()`.
    extension branch, `attempts.append(("mytool_json", MyToolParser, "My Tool
    output"))` gated by your detector. Order it by specificity relative to the
    neighbours.
-3. **Instantiation** — register the class in `parser_map` (or `_extra_parsers`
-   for a lazily/optionally-imported one). **If you skip this, the dispatcher
-   raises `Unsupported parser class` at runtime** — the routing and the map
-   must agree.
+   A parser the dispatcher would try WITHOUT having recognised anything must be
+   wrapped: `attempts.append(_fallback("mytool_json", MyToolParser, "…"))` — that
+   is what stops the review showing it as "recognised by structure".
+3. **Instantiation** — add the class to `build_parser_dispatch_map()` in
+   `ingestion_service.py`: the `dispatch` dict for an always-imported parser, or
+   the `(module_path, class_name)` tuple below it for a lazily/optionally imported
+   one. **If you skip this, the dispatcher raises `Unsupported parser class` at
+   runtime** — the routing and the map must agree.
+4. **Format registry** — add a `_spec("mytool_json", "My Tool JSON", family,
+   module, class_name, description)` row to `FORMATS` in
+   `app/services/format_registry.py`. `family` is one of `port | vuln | web | dns
+   | auth | other`. Every `file_type` the dispatcher can emit must be here: it is
+   the one list the staged review, the "parse this as…" chooser and the job's
+   format chain read, and it is how an operator's override resolves to your class.
+5. **Tests that pin all of the above** — update them with the change:
+   `tests/test_parser_dispatch_contract.py` (every detected class is
+   dispatchable), `tests/test_ingestion_format_chain.py` (every emitted
+   `file_type` is in the registry), and
+   `tests/test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface`
+   (the public `looks_like_*` list).
+6. **What users are told** — add the tool to `documentation/UPLOAD_FORMATS.md`
+   AND `frontend/src/data/uploadFormats.ts` (the upload dialog's list);
+   `uploadFormats.test.ts` fails if they disagree, and
+   `uploadFormatContract.test.ts` pins the accepted extensions to the backend
+   allowlist (`ALLOWED_UPLOAD_EXTENSIONS` in `ingestion_service.py`).
 
 ### Schema discipline (read before adding columns)
 
