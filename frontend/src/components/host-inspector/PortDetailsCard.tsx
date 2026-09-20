@@ -372,10 +372,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                         />
                       </TableCell>
                     )}
-                    <TableCell className="text-center">
+                    {/* A full-size icon button (36px) set the height of every
+                        row; the row is as tall as its text now. */}
+                    <TableCell className="py-0 text-center align-middle">
                       <Popover>
                         <PopoverTrigger asChild>
-                          <Button variant="ghost" size="icon"
+                          <Button variant="ghost" size="icon" className="size-7"
                             aria-label={`Connection helpers for port ${port.port_number}`}>
                             <Terminal className="size-4" aria-hidden />
                           </Button>

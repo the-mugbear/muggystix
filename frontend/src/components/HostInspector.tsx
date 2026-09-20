@@ -1575,15 +1575,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <dd className="min-w-0 truncate text-metadata text-foreground"
                   title={[
                     [host.os_family, host.os_type, host.os_generation].filter(Boolean).join(' · '),
-                    host.os_accuracy != null && host.os_accuracy !== '' && Number(host.os_accuracy) < 70
+                    Number(host.os_accuracy) > 0 && Number(host.os_accuracy) < 70
                       ? `Low-confidence OS guess (${Number(host.os_accuracy)}% match)`
                       : '',
                   ].filter(Boolean).join(' — ') || undefined}>
                   {host.os_name ? (() => {
                     // De-weight a low-confidence guess so a 60% match doesn't read
                     // as authoritatively as a 98% one.
-                    const acc = host.os_accuracy != null && host.os_accuracy !== ''
-                      ? Number(host.os_accuracy) : null;
+                    // 0 is "the source gave no figure" (a Nessus / NetExec OS),
+                    // not a 0% match: it rendered "~Ubuntu 22.04 · 0%" in amber.
+                    const acc = Number(host.os_accuracy) > 0 ? Number(host.os_accuracy) : null;
                     const tentative = acc != null && acc < 70;
                     const label = host.os_vendor && !host.os_name.toLowerCase().includes(host.os_vendor.toLowerCase())
                       ? `${host.os_vendor} ${host.os_name}`
@@ -1795,7 +1796,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           away with the overview, which is exactly when they are needed. */}
       <div
         className={cn(
-          'sticky z-10 -mx-xs flex flex-wrap items-center gap-x-md gap-y-xs rounded-control border border-border px-sm py-xs text-caption text-muted-foreground shadow-raised',
+          'sticky z-10 flex flex-wrap items-center gap-x-md gap-y-xs rounded-control border border-border px-sm py-xs text-caption text-muted-foreground shadow-raised',
           density === 'sheet' ? 'top-0 bg-card' : 'bg-background',
         )}
         style={density === 'sheet' ? undefined : stickyBelowChrome}

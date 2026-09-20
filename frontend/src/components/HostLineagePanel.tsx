@@ -13,14 +13,14 @@
  */
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ExternalLink, Loader2 } from 'lucide-react';
+import { ExternalLink, Loader2, Workflow } from 'lucide-react';
 
 import { HostLineageResponse, getHostLineage } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { InspectorSection } from './host-inspector/InspectorSection';
 import { cn } from '../utils/cn';
 import { formatRelativeTime } from '../utils/relativeTime';
 
@@ -89,15 +89,13 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
   }, [hostId]);
 
   return (
-    <Card className="mb-md">
-      <CardHeader>
-        <CardTitle>Workflow lineage</CardTitle>
-        <p className="text-caption text-muted-foreground">
-          What agent workflows have touched this host: recon runs that discovered it, plans that
-          include it, and execution sessions that have tested it.
-        </p>
-      </CardHeader>
-      <CardContent className="space-y-md">
+    <InspectorSection
+      id="host-detail-lineage"
+      title="Workflow lineage"
+      titleHint="What agent workflows have touched this host: recon runs that discovered it, plans that include it, and execution sessions that have tested it."
+      icon={<Workflow className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+    >
+      <div className="space-y-md">
         {loading && (
           <div className="flex items-center gap-xs text-metadata text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -223,8 +221,8 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
             </div>
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </InspectorSection>
   );
 };
 
