@@ -9,8 +9,9 @@ point-in-time asset state to surface "lack of IT management":
     site criticality tier (reuses attention_service's weights verbatim so
     the project / site / subnet views can never disagree on what a
     "critical" is worth).
-  * Neglect  — unowned findings, unreviewed hosts, scan staleness, and the
-    coverage signal of a scoped subnet with no discovered hosts.
+  * Neglect  — unowned findings, unreviewed hosts, and the coverage signal of
+    a scoped subnet with no discovered hosts.  (Not the age of the scans: a
+    project is one assessment window.)
   * Hygiene  — EOL / unsupported OS, expired or self-signed TLS, weak/guest
     authentication, and risky exposed services.  Every number stays
     DECOMPOSED (3 EOL hosts, 2 cert issues, 1 weak-auth host) — never a
@@ -51,7 +52,6 @@ from app.db.models_findings import Finding, FindingHost, finding_active_on_host
 from app.services.attention_service import (
     _ACTIVE_FINDING_STATUSES,
     _SEVERITY_WEIGHT,
-    _STALE_DAYS,
     _TIER_WEIGHT,
 )
 from app.services.cert_fields import (
@@ -276,21 +276,19 @@ def compute_subnet_insights(
     for host_id, sid in host_to_subnet.items():
         subnet_hosts[sid].append(host_id)
 
-    # --- Per-host metadata (os_name + last_seen) for in-scope hosts -------
+    # --- Per-host metadata (os_name) for in-scope hosts --------------------
     # Filter on the indexed project_id and bucket in Python rather than an
     # IN(host_ids) clause that would balloon on a 40k-host project.
     host_os: Dict[int, Optional[str]] = {}
     host_ip: Dict[int, Optional[str]] = {}
-    host_last_seen: Dict[int, Optional[datetime]] = {}
-    for hid, os_name, last_seen, ip in (
-        db.query(models.Host.id, models.Host.os_name, models.Host.last_seen, models.Host.ip_address)
+    for hid, os_name, ip in (
+        db.query(models.Host.id, models.Host.os_name, models.Host.ip_address)
         .filter(models.Host.project_id == project_id)
         .all()
     ):
         if hid in host_to_subnet:
             host_os[hid] = os_name
             host_ip[hid] = ip
-            host_last_seen[hid] = last_seen
 
     # --- Reviewed hosts (any user) ----------------------------------------
     reviewed = {
@@ -455,23 +453,8 @@ def compute_subnet_insights(
         exposure_raw = sum(_SEVERITY_WEIGHT.get(s, 0) * c for s, c in by_sev.items())
         weighted = round(exposure_raw * _TIER_WEIGHT.get(tier, 1.0), 1)
 
-        # Staleness should describe the SUBNET, not just its freshest host:
-        # the old max(last_seen) let one recently-seen host make an otherwise
-        # stale subnet read as fresh.  Use the MEDIAN host age plus the count
-        # / share of hosts past the stale threshold.
-        ages = sorted(
-            max(0, (now - _normalize_dt(host_last_seen[h])).days)
-            for h in hids if host_last_seen.get(h) is not None
-        )
-        if ages:
-            median_age = ages[len(ages) // 2]
-            stale_host_count = sum(1 for a in ages if a >= _STALE_DAYS)
-            stale_host_pct = round(100.0 * stale_host_count / len(ages), 1)
-        else:
-            median_age = None
-            stale_host_count = 0
-            stale_host_pct = None
-
+        # (No host-age / "stale hosts" figures since v2.374.1: a project is one
+        # assessment window, so how long ago a host was seen is not neglect.)
         eol_list = eol_by_subnet.get(sid, [])
         eol_count = len(eol_list)
         cert_count = len(cert_issue_hosts.get(sid, set()))
@@ -494,7 +477,7 @@ def compute_subnet_insights(
         no_coverage = host_count == 0
         action = _recommend(
             no_coverage=no_coverage, unowned=unowned, critical=by_sev["critical"],
-            eol=eol_count, weak=weak_count, stale=median_age, cert=cert_count,
+            eol=eol_count, weak=weak_count, cert=cert_count,
             unreviewed=unreviewed,
         )
 
@@ -524,9 +507,6 @@ def compute_subnet_insights(
             "neglect": {
                 "unowned_active_findings": unowned,
                 "unreviewed_hosts": unreviewed,
-                "median_host_age_days": median_age,
-                "stale_host_count": stale_host_count,
-                "stale_host_pct": stale_host_pct,
             },
             "hygiene": {
                 "eol_os_hosts": eol_count,
@@ -571,10 +551,12 @@ def compute_subnet_insights(
             "limit": limit, "offset": offset, "totals": totals}
 
 
-def _recommend(*, no_coverage, unowned, critical, eol, weak, stale, cert, unreviewed) -> Dict[str, str]:
+def _recommend(*, no_coverage, unowned, critical, eol, weak, cert, unreviewed) -> Dict[str, str]:
     """Map the loudest component to the next action.  Order is deliberate:
     a never-discovered scoped range, then untriaged backlog, then open
-    criticals, then the management-hygiene signals, then review/staleness."""
+    criticals, then the management-hygiene signals, then review.  There is no
+    "stale — rescan" step (removed v2.374.1): a project is one assessment
+    window, and the age of an observation inside it is not a defect."""
     if no_coverage:
         return {"kind": "scan", "text": "Scoped range with no discovered hosts — confirm scan coverage."}
     if unowned > 0:
@@ -587,8 +569,6 @@ def _recommend(*, no_coverage, unowned, critical, eol, weak, stale, cert, unrevi
         return {"kind": "harden", "text": f"{weak} host{_s(weak)} with weak/guest authentication."}
     if cert > 0:
         return {"kind": "renew-cert", "text": f"{cert} host{_s(cert)} with an expired or self-signed certificate."}
-    if stale is not None and stale >= _STALE_DAYS:
-        return {"kind": "rescan", "text": f"Stale — typical host last seen {stale} days ago."}
     if unreviewed > 0:
         return {"kind": "review", "text": f"{unreviewed} host{_s(unreviewed)} not yet reviewed."}
     return {"kind": "ok", "text": "No outstanding attention items."}

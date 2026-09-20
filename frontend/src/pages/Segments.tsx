@@ -52,7 +52,7 @@ type BadgeVariant =
 
 // Recommended-action kind → badge tone.  Mirrors the attention surface's
 // vocabulary, extended with the hygiene actions (modernize / harden /
-// renew-cert / rescan).
+// renew-cert).  No "rescan": the age of a scan is not a defect (5.255.1).
 const ACTION_TONE: Record<string, BadgeVariant> = {
   scan: 'warning',
   triage: 'warning',
@@ -60,7 +60,6 @@ const ACTION_TONE: Record<string, BadgeVariant> = {
   modernize: 'warning',
   harden: 'warning',
   'renew-cert': 'info',
-  rescan: 'warning',
   review: 'muted',
   ok: 'success',
 };
@@ -71,12 +70,6 @@ function tierTone(tier: number): BadgeVariant {
   if (tier <= 1) return 'destructive';
   if (tier === 2) return 'warning';
   return 'muted';
-}
-
-function medianAgeLabel(days: number | null): string {
-  if (days === null) return 'no scans';
-  if (days === 0) return 'today';
-  return `${days}d`;
 }
 
 
@@ -170,7 +163,7 @@ const Segments: React.FC = () => {
             tier) and <strong className="text-foreground">Subnet</strong> (network ranges).{' '}
             <InfoTip text="Ranking: exposure first, then neglect + hygiene magnitude, then host count. Deliberately no single opaque score — each component is shown so the order is explainable. Site criticality tier is shown as its own column and never folded into the raw counts." />{' '}
             <strong className="text-foreground">Exposure</strong> is active findings by severity;{' '}
-            <strong className="text-foreground">neglect</strong> is unowned/unreviewed/stale signals;{' '}
+            <strong className="text-foreground">neglect</strong> is unowned findings and unreviewed hosts;{' '}
             <strong className="text-foreground">hygiene</strong> surfaces end-of-life OS, certificate
             issues, weak authentication, and risky exposed services.
           </p>
@@ -459,13 +452,11 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
               <div>
                 <p className="mb-xxs flex items-center gap-xxs text-caption font-semibold text-muted-foreground">
                   Neglect
-                  <InfoTip text="Under-management signals: active findings with no owner, hosts not yet marked Reviewed, and how stale the last scan is. The first tiebreaker after exposure in the ranking." />
+                  <InfoTip text="Assessment work still open here: active findings with no analyst assigned, and hosts not yet marked Reviewed. The first tiebreaker after exposure in the ranking. The age of the scans is deliberately not part of it — a project is one assessment window." />
                 </p>
                 <ul className="space-y-0.5 text-caption text-foreground">
                   <li>Unowned findings: <span className="font-medium">{s.neglect.unowned_active_findings}</span></li>
                   <li>Unreviewed hosts: <span className="font-medium">{s.neglect.unreviewed_hosts}</span></li>
-                  <li>Median host age: <span className="font-medium">{medianAgeLabel(s.neglect.median_host_age_days)}</span></li>
-                  <li>Stale hosts: <span className="font-medium">{s.neglect.stale_host_count}{s.neglect.stale_host_pct !== null ? ` (${s.neglect.stale_host_pct}%)` : ''}</span></li>
                 </ul>
               </div>
 

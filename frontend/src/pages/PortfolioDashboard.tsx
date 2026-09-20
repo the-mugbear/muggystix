@@ -35,12 +35,16 @@ const HEALTH_RANK: Record<string, number> = { critical: 0, warning: 1, stale: 2,
 type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'muted' | 'secondary' | 'outline';
 
 // Health is a backend-derived rollup (critical findings > exposure/low-review
-// > staleness > healthy). Surfacing it gives the "is this project OK at a
+// > quiet > healthy). Surfacing it gives the "is this project OK at a
 // glance?" answer the per-column numbers don't.
+// `stale` is the API's code for QUIET (5.255.1): a project still marked active
+// with no import for a fortnight. It is a question for the manager — finished?
+// mark it completed — and never a verdict on the evidence; a completed or
+// archived project kept for posterity is never flagged.
 const HEALTH_META: Record<string, { tone: Tone; label: string }> = {
   critical: { tone: 'destructive', label: 'Critical' },
   warning: { tone: 'warning', label: 'Warning' },
-  stale: { tone: 'muted', label: 'Stale' },
+  stale: { tone: 'muted', label: 'Quiet' },
   healthy: { tone: 'success', label: 'Healthy' },
   // Fail NEUTRAL, not reassuring: a null/malformed/unrecognized health value
   // must NOT render as green "Healthy" on a security dashboard.
@@ -64,7 +68,7 @@ const healthWhy = (card: ProjectCard): string => {
         : `${Math.round(card.review_progress_pct)}% of hosts reviewed`;
     case 'stale':
       return card.days_since_last_scan != null
-        ? `No scan in ${card.days_since_last_scan} days`
+        ? `Still marked active, but nothing imported for ${card.days_since_last_scan} days — if the engagement is finished, mark it completed`
         : 'No scans yet';
     case 'healthy':
       return 'No outstanding risk signals';
@@ -87,7 +91,7 @@ const healthHsl = (health: string | null | undefined): string =>
 
 const HEALTH_ORDER = ['critical', 'warning', 'stale', 'healthy', 'unknown'] as const;
 const HEALTH_LABEL: Record<string, string> = {
-  critical: 'Critical', warning: 'Warning', stale: 'Stale', healthy: 'Healthy', unknown: 'Unknown',
+  critical: 'Critical', warning: 'Warning', stale: 'Quiet', healthy: 'Healthy', unknown: 'Unknown',
 };
 
 const freshness = (card: ProjectCard): string =>
@@ -109,7 +113,7 @@ const ATTN_PREDICATE: Record<string, (p: ProjectCard) => boolean> = {
   blocked: (p) => p.blocked_sessions > 0,
 };
 const ATTN_FILTER_LABEL: Record<string, string> = {
-  critical: 'with critical', stale: 'stale', no_data: 'no data',
+  critical: 'with critical', stale: 'active but quiet', no_data: 'no data',
   pending: 'pending approvals', blocked: 'blocked runs',
 };
 
@@ -211,7 +215,7 @@ const PortfolioHero: React.FC<{
             onClick={onNeedsAttention} selected={attentionOnly} />
           <AttnTile label="With critical" value={summary.projects_with_critical} tone="destructive"
             onClick={() => onAttn('critical')} selected={attnFilter === 'critical'} />
-          <AttnTile label="Stale" value={summary.stale_projects} tone="muted"
+          <AttnTile label="Active but quiet" value={summary.stale_projects} tone="muted"
             onClick={() => onAttn('stale')} selected={attnFilter === 'stale'} />
           <AttnTile label="No data" value={summary.projects_no_data} tone="muted"
             onClick={() => onAttn('no_data')} selected={attnFilter === 'no_data'} />

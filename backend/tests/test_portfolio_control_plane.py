@@ -184,3 +184,31 @@ def test_portfolio_flags_no_data_project(client, db_session, test_project):
     assert "no_data" in card["attention_reasons"]
     assert card["host_count"] == 0
     assert body["summary"]["projects_no_data"] >= 1
+
+
+def test_only_an_active_project_is_flagged_quiet(client, db_session, test_project):
+    """v2.374.1 — a project runs for weeks and is then kept for posterity.
+    "No import for a fortnight" is a question about a project still marked
+    active (finished? mark it completed); on a completed one it was permanent
+    noise that also put it under "requires attention"."""
+    from datetime import timedelta
+
+    old = datetime.now(timezone.utc) - timedelta(days=40)
+    scan = models.Scan(project_id=test_project.id, filename="old.xml", tool_name="nmap")
+    scan.created_at = old
+    db_session.add(scan)
+    db_session.add(models.Host(project_id=test_project.id, ip_address="10.2.0.1", state="up"))
+    db_session.commit()
+
+    card = _card_for(client.get(PORTFOLIO_URL).json(), test_project.id)
+    assert card["is_stale"] is True and "stale" in card["attention_reasons"]
+
+    test_project.status = "completed"
+    db_session.commit()
+    body = client.get(PORTFOLIO_URL).json()
+    card = _card_for(body, test_project.id)
+    assert card["is_stale"] is False
+    assert "stale" not in card["attention_reasons"]
+    assert card["health"] != "stale"
+    # The date itself stays: it is provenance, not a verdict.
+    assert card["days_since_last_scan"] >= 40

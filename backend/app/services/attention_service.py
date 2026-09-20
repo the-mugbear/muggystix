@@ -4,7 +4,7 @@ Answers "which scope needs the most help?" along TWO axes that must not be
 collapsed (the lesson from the deleted risk-scoring system):
 
   * Exposure — how bad is what we've found (severity-weighted active findings).
-  * Neglect  — how under-served the scope is (stale/absent scans, untriaged
+  * Neglect  — how under-served the scope is (no scans at all, untriaged
                backlog, unreviewed hosts).
 
 The single most important property: **absence of findings ≠ healthy**. A
@@ -45,8 +45,6 @@ _SEVERITY_WEIGHT = {"critical": 10, "high": 5, "medium": 2, "low": 1, "info": 0}
 # site's findings outrank a tier-4 site's equal findings.  tier-3 (×1.0) is
 # the neutral default for unrated/auto-created sites.
 _TIER_WEIGHT = {1: 2.0, 2: 1.5, 3: 1.0, 4: 0.5}
-# Days since the last scan before a scope reads as "stale".
-_STALE_DAYS = 14
 
 
 def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
@@ -106,11 +104,11 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
 
     # --- Recommended action: dominant component → next step ----------------
     # Order matters: a never-scanned scope is the loudest signal, then
-    # staleness, then untriaged backlog, then open criticals, then review gap.
+    # untriaged backlog, then open criticals, then review gap.  The age of the
+    # last scan is NOT a step (removed v2.374.1): a project is one assessment
+    # window — `scan_staleness_days` below is provenance, never a judgment.
     if scan_count == 0:
         action = {"kind": "onboard", "text": "No recon yet — upload a scan or start a recon run."}
-    elif staleness_days is not None and staleness_days >= _STALE_DAYS:
-        action = {"kind": "scan", "text": f"Stale — last scan was {staleness_days} days ago."}
     elif unowned > 0:
         action = {"kind": "triage", "text": f"{unowned} active finding{'' if unowned == 1 else 's'} unowned — assign an owner."}
     elif by_severity["critical"] > 0:

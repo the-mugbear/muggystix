@@ -50,12 +50,6 @@ export interface SubnetInsight {
   neglect: {
     unowned_active_findings: number;
     unreviewed_hosts: number;
-    // Median age (days) of the subnet's hosts, plus how many / what share are
-    // past the stale threshold.  Replaces the old "freshest host" staleness,
-    // which let one recently-seen host mask a stale subnet.
-    median_host_age_days: number | null;
-    stale_host_count: number;
-    stale_host_pct: number | null;
   };
   hygiene: {
     eol_os_hosts: number;

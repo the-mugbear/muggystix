@@ -356,7 +356,16 @@ def get_portfolio_dashboard(
             ls_naive = ls.replace(tzinfo=None) if ls.tzinfo else ls
             now_naive = now.replace(tzinfo=None)
             days_since = (now_naive - ls_naive).days
-            is_stale = days_since >= STALE_THRESHOLD_DAYS
+            # "Quiet", and only for a project still marked active (v2.374.1).
+            # A project runs 6–12 weeks and is then kept for posterity, so
+            # flagging every finished project "stale — requires attention"
+            # forever was noise.  On an ACTIVE project, no import for a
+            # fortnight is a useful question for a manager — is it finished?
+            # mark it completed — and says nothing about its evidence.
+            is_stale = (
+                p.status in ("active", "in_progress")
+                and days_since >= STALE_THRESHOLD_DAYS
+            )
 
         # Health indicator
         if vs.critical > 0:
