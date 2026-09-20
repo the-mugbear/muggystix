@@ -176,7 +176,10 @@ def build_filtered_host_query(
     # ``port_match_subquery``.  ``has_open_ports=False`` is a standalone
     # exclusion of open-port hosts and intentionally ignores the other
     # port filters, preserving the long-standing behaviour.
-    if ports or services or port_states or has_open_ports:
+    # `is not None`, not truthiness: has_open_ports=False is a filter in its own
+    # right.  The old `or has_open_ports` skipped this whole block when False
+    # was the ONLY port filter, so "no open ports" returned every host.
+    if ports or services or port_states or has_open_ports is not None:
         port_ints = [int(p.strip()) for p in ports.split(',') if p.strip().isdigit()] if ports else None
         service_list = [s.strip() for s in services.split(',') if s.strip()] if services else None
         state_list = [s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None

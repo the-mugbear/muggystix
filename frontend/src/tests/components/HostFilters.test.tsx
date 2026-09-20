@@ -1,7 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import HostFilters, {
+import { describe, it, expect } from 'vitest';
+import {
   HOST_BUILT_IN_VIEWS,
   HOST_FILTER_PRESETS,
   HOST_PORT_GROUP_PRESETS,
@@ -42,87 +40,25 @@ describe('togglePreset', () => {
     expect(togglePreset(preset('ssh'), on)).toEqual({ sites: ['3'], ports: ['8080'] });
   });
 
-  it('switching "My review queue" off clears the review filter it implied', () => {
-    const on = togglePreset(preset('my_queue'), {});
-    expect(togglePreset(preset('my_queue'), on)).toEqual({});
+  it('a preset merely IMPLIED by the one being switched off holds nothing back', () => {
+    // `narrow` lights up whenever `wide` is applied, but it was never chosen.
+    const wide = { assignedToMe: true, followFilter: 'none' as const };
+    const narrow = { followFilter: 'none' as const };
+    const on = togglePreset(wide, {}, [wide, narrow]);
+    expect(togglePreset(wide, on, [wide, narrow])).toEqual({});
   });
 });
 
-// Finding 5: the legacy "Search hosts" field is gone (bare-text search lives in
-// the command bar), and the common network filters (OS/ports/services/subnets/
-// tags) are surfaced into the always-visible grid instead of hiding behind the
-// "More filters" disclosure. This also smoke-tests that the restructured
-// component mounts (the Hosts page test stubs HostFilters, so nothing else
-// renders the real one).
-describe('HostFilters layout', () => {
-  beforeEach(() => {
-    window.localStorage.clear();
-  });
-
-  const renderFilters = () =>
-    render(
-      <MemoryRouter>
-        <HostFilters
-          filters={{}}
-          onFiltersChange={vi.fn()}
-          availableData={null}
-          optionsLoading={false}
-          notesToggleVisible
-        />
-      </MemoryRouter>,
-    );
-
-  it('drops the duplicate "Search hosts" field', () => {
-    renderFilters();
-    expect(screen.queryByText('Search hosts')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Search hosts')).not.toBeInTheDocument();
-  });
-
-  it('surfaces every filter in flat intent sections — no "More filters" disclosure', () => {
-    renderFilters();
-    // v5.66.1 — the nested disclosure is gone; all controls render directly,
-    // including the formerly-advanced ones (Port states / Technologies /
-    // Subnet labels).
-    for (const label of [
-      'Operating system', 'Ports', 'Services', 'Subnets', 'Tags',
-      'Technologies', 'Subnet labels', 'Site', 'Discovered in scans',
-    ]) {
-      expect(screen.getByText(label)).toBeInTheDocument();
-    }
-    expect(screen.queryByRole('button', { name: /More filters/i })).not.toBeInTheDocument();
-  });
-
-  it('groups controls under intent section headers', () => {
-    renderFilters();
-    for (const section of ['Workflow', 'Risk', 'Network exposure', 'Inventory & location', 'Discovery']) {
-      expect(screen.getByText(section)).toBeInTheDocument();
-    }
-  });
-
-  // 5.249.0 — the panel keeps only the presets that ADD ports; the whole-view
-  // ones ("My review queue", "Critical observations"…) are in the View picker.
-  it('offers port groups that compose, and no whole-view presets', () => {
-    const onFiltersChange = vi.fn();
-    render(
-      <MemoryRouter>
-        <HostFilters
-          filters={{ sites: ['3'] }}
-          onFiltersChange={onFiltersChange}
-          availableData={null}
-          optionsLoading={false}
-          notesToggleVisible
-        />
-      </MemoryRouter>,
-    );
-    expect(screen.queryByRole('button', { name: /My review queue/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /SSH Servers/i }));
-    expect(onFiltersChange).toHaveBeenCalledWith({ sites: ['3'], ports: ['22'], portStates: ['open'] });
-  });
-
+// The panel component these used to render was deleted in 5.251.1 (the catalog
+// in HostFilterPopover replaced it; its tests are HostFilterPopover.test.tsx).
+describe('host filter presets', () => {
   it('splits the presets into port groups and built-in views with none lost', () => {
     expect(HOST_PORT_GROUP_PRESETS.map((p) => p.id)).toEqual(['web_hosts', 'ssh', 'database', 'windows', 'legacy']);
+    // "My review queue" must keep a host once work on it has STARTED: with
+    // `followFilter: 'none'` it emptied itself, since taking a host In review
+    // is what assigns it.
     expect(HOST_BUILT_IN_VIEWS.find((v) => v.id === 'my_queue')?.filters)
-      .toEqual({ assignedToMe: true, followFilter: 'none' });
+      .toEqual({ assignedToMe: true, query: 'NOT follow:reviewed' });
     expect(HOST_PORT_GROUP_PRESETS.length + HOST_BUILT_IN_VIEWS.length).toBe(HOST_FILTER_PRESETS.length);
   });
 });

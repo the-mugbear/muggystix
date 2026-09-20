@@ -1394,7 +1394,7 @@ export default function Hosts() {
                     setPage(0);
                   }}
                 >
-                  <SelectTrigger id="hosts-sort" className="h-9 w-[15rem] text-metadata">
+                  <SelectTrigger id="hosts-sort" className="h-8 w-[15rem] text-caption">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

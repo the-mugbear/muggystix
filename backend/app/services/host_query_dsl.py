@@ -761,17 +761,21 @@ def schema() -> dict:
     return {"fields": fields, "examples": EXAMPLES}
 
 
-# Curated starter queries surfaced in the template gallery.
+# Curated starter queries surfaced in the template gallery.  A label says what
+# the query MATCHES, never what it would prove: `port:` is a recorded port in
+# any state, `country:` is where the address block is registered (not where the
+# host is), a CVE row is a scanner's report, `has:exploit` is "an exploit is
+# reported to exist".
 EXAMPLES: List[dict] = [
-    {"label": "Open 80 AND 443", "q": "port:80 port:443"},
-    {"label": "Untested criticals", "q": "has:critical AND NOT has:tested"},
+    {"label": "Ports 80 AND 443 both recorded", "q": "port:80 port:443"},
+    {"label": "Critical observations, not tested", "q": "has:critical AND NOT has:tested"},
     # The /operations "not yet in any plan" coverage gap, as a query.
     {"label": "Not in any test plan", "q": "NOT has:planned"},
     # Provenance: what did we touch that isn't registered to the client?
     {"label": "Not registered to the client", "q": 'NOT org:"Acme Corp"'},
-    {"label": "Foreign-hosted (outside US)", "q": "NOT country:US"},
-    {"label": "Log4Shell-exposed web", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
-    {"label": "Critical and exploitable", "q": "has:critical AND has:exploit"},
+    {"label": "Registered outside the US", "q": "NOT country:US"},
+    {"label": "Log4Shell reported (CVE-2021-44228)", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
+    {"label": "Critical, with an exploit reported", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},
     {"label": "nginx servers", "q": "header:nginx OR tech:nginx"},
     {"label": "EOL OS, not yet reviewed", "q": "has:eol AND follow:none"},

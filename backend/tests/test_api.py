@@ -102,6 +102,20 @@ class TestHostsAPI:
         hosts = response.json()["items"]
         assert len(hosts) == 2  # Both hosts have open ports
 
+        # has_open_ports=false ALONE must exclude them.  The port block was
+        # guarded by truthiness, so False as the only port filter skipped the
+        # filter entirely and "no open ports" returned every host.
+        response = client.get(f"{base}?has_open_ports=false")
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
+
+        # …and it keeps the standalone meaning it always had beside other port
+        # filters (an exclusion of open-port hosts; the other filters are ignored).
+        response = client.get(f"{base}?has_open_ports=false&ports=22")
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+
     def test_get_hosts_with_pagination_metadata(self, client, db_session, sample_gnmap_data, temp_file, test_project):
         """Test hosts API returns pagination metadata."""
         from app.parsers.gnmap_parser import GnmapParser

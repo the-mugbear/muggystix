@@ -177,7 +177,7 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
   {
     kind: 'choice', id: 'noOpenPorts', key: 'hasOpenPorts', keys: ['hasOpenPorts'], chipKey: 'hasOpenPorts',
     label: 'No recorded open ports', category: 'services', keywords: ['closed', 'filtered', 'dark', 'silent'],
-    help: 'Hosts with no open port on record. Absence of a recorded port is not proof nothing listens.',
+    help: 'Hosts where no scan recorded a port in the OPEN state — only closed / filtered ports, or no ports at all. A host showing "3 open" never matches. Absence of a recorded port is not proof nothing listens.',
     choices: [
       { value: undefined, label: 'Any' },
       { value: false, label: 'No recorded open ports' },
