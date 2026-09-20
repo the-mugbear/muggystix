@@ -91,19 +91,56 @@ describe('Evidence — domain × segment matrix', () => {
     await waitFor(() => expect(gapsMock).toHaveBeenLastCalledWith('web_tls', expect.objectContaining({ segment: undefined })));
   });
 
-  it('ranks the largest gaps by hosts missing and gives each its next step', async () => {
+  // From the first real screenshot: "Vulnerability assessment · Outside scoped
+  // subnets → Run a vulnerability scan against these hosts" ranked second. In a
+  // project with a declared scope that tells an analyst to scan hosts nobody
+  // confirmed are authorized.
+  it('never recommends collecting against hosts outside the declared scope, and ranks them last', async () => {
     await renderPage();
     const list = screen.getByText('Largest gaps').closest('section')!;
     const rows = within(list).getAllByRole('row').slice(1);
-    expect(rows.map((r) => within(r).getAllByRole('cell')[1].textContent)).toEqual(['18 of 18', '11 of 11', '3 of 12']);
-    expect(within(rows[0]).getByText('Collect Web / TLS evidence and upload it.')).toBeInTheDocument();
+    // In-scope gaps by hosts missing, THEN the out-of-scope one — though it is the largest.
+    expect(rows.map((r) => within(r).getAllByRole('cell')[1].textContent)).toEqual(['11 of 11', '3 of 12', '18 of 18']);
+    expect(within(rows[1]).getByText('Collect Web / TLS evidence and upload it.')).toBeInTheDocument();
+    expect(within(rows[2]).getByText(/Confirm these hosts are in scope/)).toBeInTheDocument();
+    expect(within(rows[2]).queryByText(/Collect Web/)).toBeNull();
+  });
+
+  it('says so in the gap panel — for an out-of-scope cell, and for a whole-project list that mixes them in', async () => {
+    await renderPage();
+    const matrix = screen.getByText('Where the gaps are').closest('section')!;
+    fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS · Outside scoped subnets/ }));
+    expect(await within(matrix).findByText(/Outside every scoped subnet\. Confirm these hosts are in scope/)).toBeInTheDocument();
+    // The server's collection advice is NOT shown for them.
+    expect(within(matrix).queryByText(/Probe these hosts with httpx/)).toBeNull();
+
+    fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project/ }));
+    expect(await within(matrix).findByText(/whole-project list includes hosts outside every scoped subnet/)).toBeInTheDocument();
+    expect(within(matrix).getByText(/Probe these hosts with httpx/)).toBeInTheDocument();
+  });
+
+  it('treats unmapped hosts as ordinary when the project declares no scope at all', async () => {
+    coverageMock.mockResolvedValue({
+      ...coverage,
+      matrix: {
+        group_by: 'site',
+        segments: [{ key: 'unmapped', label: 'Outside scoped subnets', hosts: 87 }],
+        rows: [{ domain: 'web_tls', label: 'Web / TLS', cells: [c('unmapped', 30, 9)] }],
+      },
+    });
+    await renderPage();
+    const list = screen.getByText('Largest gaps').closest('section')!;
+    expect(within(list).getByText('Collect Web / TLS evidence and upload it.')).toBeInTheDocument();
+    expect(within(list).queryByText(/Confirm these hosts are in scope/)).toBeNull();
   });
 
   it('truncates a 220-character segment label inside a fixed table', async () => {
     await renderPage();
     const matrix = screen.getByText('Where the gaps are').closest('section')!;
     const header = within(matrix).getAllByTitle(LONG)[0];
-    expect(header.className).toMatch(/truncate/);
+    // Two lines, then clamped — "Outside scoped subnets" must fit; 220 chars must not.
+    expect(header.className).toMatch(/line-clamp-2/);
+    expect(header.className).toMatch(/break-words/);
     expect(matrix.querySelector('table')!.style.tableLayout).toBe('fixed');
   });
 });

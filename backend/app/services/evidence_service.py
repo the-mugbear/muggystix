@@ -216,6 +216,11 @@ GAP_ACTIONS: Dict[str, Dict[str, str]] = {
 # Overview grid cannot show them (it is about scoped segments); Evidence covers
 # every host in the project, so here they are a column, never a silent omission.
 UNMAPPED_SEGMENT = "unmapped"
+OUTSIDE_SCOPE_ACTION: Dict[str, str] = {
+    "kind": "confirm_scope",
+    "text": "Outside every scoped subnet. Confirm these hosts are in scope — e.g. reached "
+            "through an in-scope name — before collecting anything more against them.",
+}
 
 
 def evidence_segments(db: Session, project_id: int) -> Dict[str, Any]:
@@ -289,12 +294,18 @@ def evidence_gap_hosts(
     eligible = eligible_host_ids(db, project_id)[domain]
     assessed = assessed_host_ids(db, project_id)[domain]
     segment_label: Optional[str] = None
+    action = GAP_ACTIONS[domain]
     if segment is not None:
         segments = evidence_segments(db, project_id)
         if segment not in segments["hosts"]:
             return None
         eligible = eligible & segments["hosts"][segment]
         segment_label = segments["labels"][segment]
+        # Hosts outside every scoped subnet, in a project that HAS scoped
+        # subnets: "run a scan against these hosts" is not advice this server
+        # gives about hosts nobody confirmed are authorized (v2.374.3).
+        if segment == UNMAPPED_SEGMENT and len(segments["keys"]) > 1:
+            action = OUTSIDE_SCOPE_ACTION
     gap_ids = sorted(eligible - assessed)
     total = len(gap_ids)
     chosen = gap_ids[:limit]
@@ -334,7 +345,7 @@ def evidence_gap_hosts(
             }
             for h in by_ip
         ],
-        "action": GAP_ACTIONS[domain],
+        "action": action,
     }
 
 

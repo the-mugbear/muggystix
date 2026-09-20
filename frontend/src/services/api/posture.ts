@@ -164,7 +164,7 @@ export const getPosture = async (
 // --- Evidence coverage (Phase 4) -------------------------------------------
 export interface EvidenceDomain {
   /** The collection or planning step that closes this domain's gap. */
-  action?: { kind: 'collect' | 'plan'; text: string };
+  action?: { kind: 'collect' | 'plan' | 'confirm_scope'; text: string };
   key: string;
   label: string;
   note: string;
@@ -214,7 +214,7 @@ export interface EvidenceGapsResponse {
   segment_label?: string | null;
   total: number;
   items: EvidenceGapHost[];
-  action: { kind: 'collect' | 'plan'; text: string };
+  action: { kind: 'collect' | 'plan' | 'confirm_scope'; text: string };
 }
 
 export const getEvidenceGaps = async (

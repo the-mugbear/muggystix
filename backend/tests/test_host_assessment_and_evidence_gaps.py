@@ -180,8 +180,13 @@ def test_evidence_matrix_locates_the_gap_and_a_cell_opens_exactly_its_hosts(clie
     assert r.status_code == 200, r.text
     assert [i["ip_address"] for i in r.json()["items"]] == ["10.8.3.2"]
     assert r.json()["segment_label"] == "10.8.3.0/24"
+    assert r.json()["action"]["kind"] == "collect"
     r = client.get(base, params={"segment": "unmapped"})
     assert [i["ip_address"] for i in r.json()["items"]] == ["192.168.9.9"]
+    # v2.374.3 — the project has a declared scope and this host is outside it:
+    # the server does not advise running a tool against it.
+    assert r.json()["action"]["kind"] == "confirm_scope"
+    assert "httpx" not in r.json()["action"]["text"]
     assert client.get(base, params={"segment": "subnet:999999"}).status_code == 404
 
 

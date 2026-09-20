@@ -56,7 +56,22 @@ interface Selection {
   segmentLabel?: string;
   gap: number;
   eligible: number;
+  /** `all`: every listed host is outside the declared scope; `some`: a
+   *  whole-project list that mixes them in. Drives the panel's caution. */
+  outsideScope?: 'all' | 'some';
 }
+
+const UNMAPPED = 'unmapped';
+const OUTSIDE_SCOPE_STEP =
+  'Outside every scoped subnet. Confirm these hosts are in scope — e.g. reached through an in-scope name — before collecting anything more against them.';
+
+/** "Is this segment outside the declared scope?" — only meaningful when the
+ *  project HAS scoped subnets; with none, every host is unmapped and scope is
+ *  simply not being used. */
+const isUnscoped = (matrix?: EvidenceMatrix | null) => {
+  const hasScoped = Boolean(matrix?.segments.some((s) => s.key !== UNMAPPED));
+  return (segment?: string): boolean => hasScoped && segment === UNMAPPED;
+};
 
 const hatch: React.CSSProperties = {
   backgroundImage:
@@ -133,7 +148,21 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
       {error && <p className="mt-xs break-words text-caption text-destructive">{error}</p>}
       {gaps && (
         <>
-          <p className="mt-xs break-words text-caption text-foreground">{gaps.action.text}</p>
+          {/* The collection step is advice for IN-SCOPE hosts. Copy IPs and Plan
+              these stay available — the analyst may know the hosts are in scope
+              through a name — but never without saying what they are. */}
+          {selection.outsideScope === 'all' || gaps.action.kind === 'confirm_scope' ? (
+            <p className="mt-xs break-words text-caption text-warning" role="note">
+              {gaps.action.kind === 'confirm_scope' ? gaps.action.text : OUTSIDE_SCOPE_STEP}
+            </p>
+          ) : (
+            <p className="mt-xs break-words text-caption text-foreground">{gaps.action.text}</p>
+          )}
+          {selection.outsideScope === 'some' && (
+            <p className="mt-xxs break-words text-caption text-warning" role="note">
+              This whole-project list includes hosts outside every scoped subnet. Select a subnet or site column to leave them out.
+            </p>
+          )}
           <ul className="mt-xs grid gap-x-lg gap-y-xxs sm:grid-cols-2 xl:grid-cols-3" aria-label={`Hosts without ${gaps.label} evidence`}>
             {(showAll ? gaps.items : gaps.items.slice(0, GAP_PREVIEW)).map((h) => (
               <li key={h.host_id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-caption">
@@ -172,7 +201,9 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
   );
 };
 
-const selectButton = 'rounded tabular-nums hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+// A dotted underline at rest: a figure that opens a list has to look like it
+// does (in the first screenshot nothing distinguished it from a plain count).
+const selectButton = 'rounded tabular-nums underline decoration-dotted decoration-muted-foreground underline-offset-4 hover:decoration-solid hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 const CoverageMatrix: React.FC<{
   data: EvidenceCoverageResponse;
@@ -184,6 +215,7 @@ const CoverageMatrix: React.FC<{
   const hidden = matrix.segments.length - columns.length;
   const unit = matrix.group_by === 'subnet' ? 'subnet' : 'site';
   const totals = new Map(data.domains.map((d) => [d.key, d.coverage]));
+  const unscoped = isUnscoped(matrix);
   return (
     <div className="overflow-x-auto">
       {/* Sized to its columns, not stretched across the page. */}
@@ -199,7 +231,9 @@ const CoverageMatrix: React.FC<{
             </th>
             {columns.map((seg) => (
               <th key={seg.key} className="p-xs text-center align-bottom">
-                <span className="block truncate text-caption font-medium text-foreground" title={seg.label}>{seg.label}</span>
+                {/* Two lines before clamping: "Outside scoped subnets" was cut
+                    to "Outside scoped subn…" in a 9rem column. */}
+                <span className="line-clamp-2 break-words text-caption font-medium text-foreground" title={seg.label}>{seg.label}</span>
                 <span className="block text-caption text-muted-foreground">{seg.hosts.toLocaleString()} host{seg.hosts === 1 ? '' : 's'}</span>
               </th>
             ))}
@@ -223,7 +257,10 @@ const CoverageMatrix: React.FC<{
                   ) : (
                     <button type="button" className={cn(selectButton, 'font-medium text-foreground')} aria-pressed={rowSelected}
                       aria-label={`${row.label}, whole project: ${total.numerator} of ${total.denominator} eligible hosts assessed — show the ${totalGap} not assessed`}
-                      onClick={() => onSelect({ domain: row.domain, domainLabel: row.label, gap: totalGap, eligible: total.denominator })}>
+                      onClick={() => onSelect({
+                        domain: row.domain, domainLabel: row.label, gap: totalGap, eligible: total.denominator,
+                        outsideScope: row.cells.some((c) => unscoped(c.segment) && c.gap > 0) ? 'some' : undefined,
+                      })}>
                       {total.numerator}/{total.denominator}
                     </button>
                   )}
@@ -250,6 +287,7 @@ const CoverageMatrix: React.FC<{
                               domain: row.domain, domainLabel: row.label,
                               segment: cell.segment, segmentLabel: seg.label,
                               gap: cell.gap, eligible: cell.eligible,
+                              outsideScope: unscoped(cell.segment) ? 'all' : undefined,
                             })}>
                             {cell.assessed}/{cell.eligible}
                           </button>
@@ -302,6 +340,10 @@ const Evidence: React.FC = () => {
 
   // Every cell with a gap, largest first — ranked over ALL columns, not only the
   // ones the matrix has room to draw.
+  // Hosts outside every scoped subnet, in a project that HAS scoped subnets, are
+  // not something to go and scan: nobody has confirmed they are authorized. Their
+  // gaps are listed after the in-scope ones and get a different next step.
+  const unscoped = useMemo(() => isUnscoped(data?.matrix), [data]);
   const largest = useMemo(() => {
     const m = data?.matrix;
     if (!m) return [];
@@ -309,9 +351,10 @@ const Evidence: React.FC = () => {
     return m.rows
       .flatMap((row) => row.cells
         .filter((c) => c.gap > 0)
-        .map((c) => ({ row, cell: c, segmentLabel: labels.get(c.segment) ?? c.segment })))
-      .sort((a, b) => b.cell.gap - a.cell.gap || a.row.label.localeCompare(b.row.label));
-  }, [data]);
+        .map((c) => ({ row, cell: c, segmentLabel: labels.get(c.segment) ?? c.segment, outside: unscoped(c.segment) })))
+      .sort((a, b) => Number(a.outside) - Number(b.outside)
+        || b.cell.gap - a.cell.gap || a.row.label.localeCompare(b.row.label));
+  }, [data, unscoped]);
   const actions = useMemo(() => new Map((data?.domains ?? []).map((d) => [d.key, d.action?.text])), [data]);
 
   return (
@@ -379,7 +422,7 @@ const Evidence: React.FC = () => {
 
             <PostureSection
               title="Largest gaps"
-              description="The cells with the most eligible hosts not assessed, and the step that closes each. Ranked by hosts missing — not by age: this is one assessment window."
+              description="The cells with the most eligible hosts not assessed, and the step that closes each. Ranked by hosts missing — not by age: this is one assessment window. Gaps on hosts outside the declared scope come last, and are not a collection task until someone confirms they are in scope."
             >
               {largest.length === 0 ? (
                 <p className="text-metadata text-muted-foreground">Every eligible host carries evidence in every domain that applies to it.</p>
@@ -393,14 +436,15 @@ const Evidence: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {largest.slice(0, LARGEST_GAPS).map(({ row, cell, segmentLabel }) => (
+                    {largest.slice(0, LARGEST_GAPS).map(({ row, cell, segmentLabel, outside }) => (
                       <tr key={`${row.domain}-${cell.segment}`} className="border-t border-border/60 align-top">
                         <td className="py-xs pr-md">
-                          <button type="button" className="block w-full min-w-0 truncate rounded text-left font-medium text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          <button type="button" className="block w-full min-w-0 truncate rounded text-left font-medium text-foreground underline decoration-dotted decoration-muted-foreground underline-offset-4 hover:decoration-solid hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title={`${row.label} · ${segmentLabel}`}
                             onClick={() => setSelection({
                               domain: row.domain, domainLabel: row.label, segment: cell.segment,
                               segmentLabel, gap: cell.gap, eligible: cell.eligible,
+                              outsideScope: outside ? 'all' : undefined,
                             })}>
                             {row.label}
                           </button>
@@ -409,8 +453,12 @@ const Evidence: React.FC = () => {
                         <td className="py-xs pr-md text-right tabular-nums text-foreground">
                           {cell.gap.toLocaleString()} <span className="text-muted-foreground">of {cell.eligible.toLocaleString()}</span>
                         </td>
-                        <td className="py-xs text-caption text-foreground">
-                          <span className="line-clamp-2 break-words" title={actions.get(row.domain)}>{actions.get(row.domain) ?? '—'}</span>
+                        <td className={cn('py-xs text-caption', outside ? 'text-warning' : 'text-foreground')}>
+                          {outside ? (
+                            <span className="line-clamp-3 break-words" title={OUTSIDE_SCOPE_STEP}>{OUTSIDE_SCOPE_STEP}</span>
+                          ) : (
+                            <span className="line-clamp-2 break-words" title={actions.get(row.domain)}>{actions.get(row.domain) ?? '—'}</span>
+                          )}
                         </td>
                       </tr>
                     ))}
