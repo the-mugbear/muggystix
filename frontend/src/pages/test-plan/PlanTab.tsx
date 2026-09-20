@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
-  Loader2,
   Search,
   X,
 } from 'lucide-react';
@@ -26,7 +25,6 @@ import {
   StructuredTestCard,
 } from '../../components/ProposedTestList';
 import EntryResultsPanel from '../../components/EntryResultsPanel';
-import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
@@ -48,7 +46,6 @@ import {
   TableRow,
 } from '../../components/ui/table';
 import { useTestPlanContext } from './TestPlanLayout';
-import { cn } from '../../utils/cn';
 
 const ENTRY_STATUSES = ['proposed', 'approved', 'in_progress', 'completed', 'rejected'];
 const PRIORITY_ORDER: Record<string, number> = {

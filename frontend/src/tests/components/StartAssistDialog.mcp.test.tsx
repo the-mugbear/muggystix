@@ -8,7 +8,6 @@
  * Each client now gets its own tab, and this asserts the operator can reach
  * each one and that the payloads stay distinct.
  */
-import React from 'react';
 import { act, render, screen } from '@testing-library/react';
 // Radix tab triggers activate on pointer events, not the synthetic click
 // fireEvent dispatches — use userEvent so the switch actually happens.

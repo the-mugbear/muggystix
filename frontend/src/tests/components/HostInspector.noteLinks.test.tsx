@@ -6,7 +6,6 @@
  * element that was already there. Links from My work, the activity feed and a
  * finding's evidence then landed on a page that did not show what they named.
  */
-import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

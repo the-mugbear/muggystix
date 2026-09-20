@@ -1,8 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Bookmark,
-  BookmarkPlus,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -14,20 +13,15 @@ import {
   ExternalLink,
   Eye,
   Loader2,
-  Network,
   RefreshCw,
-  Server,
-  Shield,
   SkipForward,
   SlidersHorizontal,
-  StickyNote,
   Crosshair,
   Star,
-  Users,
   Wand2,
   X,
 } from 'lucide-react';
-import { ColumnDef, RowSelectionState } from '@tanstack/react-table';
+import { RowSelectionState } from '@tanstack/react-table';
 import {
   getHosts,
   getHostFilterData,
@@ -44,7 +38,6 @@ import type {
   Host,
   FollowStatus,
   HostFollowInfo,
-  HostDiscovery,
   HostFilterView,
   HostFilterData,
 } from '../services/api';
@@ -58,11 +51,6 @@ import { dslFromFilters, type DslConversion } from '../components/hosts/dslFromF
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import {
   FOLLOW_STATUS_OPTIONS,
-  FollowMenu,
-  formatRelativeLastViewed,
-  getLatestDiscovery,
-  getScanLabel,
-  getTopServices,
   useHostColumns,
   type HostFilterPivot,
 } from '../components/hosts/useHostColumns';
@@ -70,9 +58,6 @@ import ReportsDialog from '../components/ReportsDialog';
 import ToolReadyOutput from '../components/ToolReadyOutput';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { InlineLoader } from '../components/ui/inline-loader';
-import { PORTS_OF_INTEREST_SET, PORTS_OF_INTEREST } from '../utils/portsOfInterest';
-import { getHostWebLinks } from '../utils/webLinks';
-import { buildHostsUrl } from '../utils/drilldownLinks';
 import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
 import { copyToClipboard } from '../utils/clipboard';
@@ -82,7 +67,6 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
-import { Checkbox } from '../components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -91,13 +75,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../components/ui/dropdown-menu';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -182,33 +159,6 @@ type HostQueryContext = {
   q?: string;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
-};
-
-// Local helper kept here — not column-specific, used only in scan-meta tooltips.
-const formatDateTime = (value?: string | null) =>
-  value ? new Date(value).toLocaleString() : 'Unknown date';
-
-const stateBadgeClass = (state: string | null): string => {
-  switch (state) {
-    case 'up':
-      return 'bg-success text-success-foreground border-transparent';
-    case 'down':
-      return 'bg-destructive text-destructive-foreground border-transparent';
-    default:
-      return 'border-border text-muted-foreground';
-  }
-};
-
-// Mirrors the canonical severity tokens (utils/severity SEVERITY_HSL):
-// critical=destructive, high=warning, medium=info, low=success, info=muted.
-// (Previously medium read amber and low read blue — off from every other
-// severity surface in the app.)
-const severityChipClasses: Record<'critical' | 'high' | 'medium' | 'low' | 'info', string> = {
-  critical: 'bg-destructive text-destructive-foreground',
-  high: 'bg-warning text-warning-foreground',
-  medium: 'bg-info text-info-foreground',
-  low: 'bg-success text-success-foreground',
-  info: 'bg-muted text-muted-foreground',
 };
 
 // FollowMenu moved to ../components/hosts/useHostColumns.tsx (v2.43.0 MONO-1).

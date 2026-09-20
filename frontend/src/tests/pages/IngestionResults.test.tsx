@@ -6,7 +6,6 @@
  * when clicked; a partial import read "completed"; and the only Dismiss lived on
  * another page and refused partial imports.
  */
-import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
+import React, { useState, useEffect, useCallback, Fragment } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -8,7 +8,6 @@ import {
   ChevronUp,
   ExternalLink,
   CloudUpload,
-  Server,
   Copy,
   Loader2,
   Search,
@@ -150,7 +149,8 @@ const ParseErrors: React.FC = () => {
   // discard the `total` the endpoint already returns, so anything past the
   // 100th upload was unreachable by browsing and the truncation was invisible.
   const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
+  // Fixed: no control has ever changed it (it was state with an unused setter).
+  const pageSize = 50;
 
   const loadData = async () => {
     try {

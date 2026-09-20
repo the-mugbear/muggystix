@@ -2,7 +2,6 @@
  * Tag rename/delete — the gap this panel closes is that a typo'd tag was
  * permanent. These pin the parts an operator would be hurt by getting wrong.
  */
-import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

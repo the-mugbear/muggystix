@@ -5,7 +5,6 @@
  * both_match, both_diff — and confirms the side-by-side cards
  * surface attribution.
  */
-import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 

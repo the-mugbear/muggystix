@@ -4,7 +4,6 @@
  * Pins the three-section contract (recons / plans / executions),
  * cross-page navigation, and empty-state handling.
  */
-import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 

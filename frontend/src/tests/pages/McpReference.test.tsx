@@ -7,8 +7,7 @@
  * be presented as safe-to-always-allow), and a failed catalog fetch degrades to
  * the rest of the page instead of a blank screen.
  */
-import React from 'react';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

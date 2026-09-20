@@ -595,7 +595,9 @@ const CompareSection: React.FC<{
   currentId: number;
   currentScopeId: number;
   siblings: ReconSessionRow[];
-}> = ({ currentId, currentScopeId, siblings }) => {
+  /** Set when the other runs could not be loaded — not the same as none. */
+  siblingsError?: string | null;
+}> = ({ currentId, currentScopeId, siblings, siblingsError }) => {
   const navigate = useNavigate();
   const others = siblings.filter((s) => s.id !== currentId);
   const sameScope = others.filter((s) => s.scope_id === currentScopeId);
@@ -635,7 +637,14 @@ const CompareSection: React.FC<{
             </Button>
           )}
         </div>
-        {!preferred && (
+        {/* v5.247.0 — the error was stored and never shown, so a failed load
+            read "This is the only recon session recorded" — a claim the page
+            had no basis for. */}
+        {!preferred && siblingsError ? (
+          <p className="break-words text-metadata text-warning" role="status">
+            Other recon runs could not be checked: {siblingsError}
+          </p>
+        ) : !preferred && (
           <p className="text-metadata text-muted-foreground">
             This is the only recon session recorded for this project so far. Run another recon (any
             scope) and the Compare button will activate.
@@ -1043,6 +1052,7 @@ const ReconRunDetail: React.FC = () => {
             currentId={detail.summary.id}
             currentScopeId={detail.summary.scope_id}
             siblings={siblings}
+            siblingsError={siblingsError}
           />
         </>
       )}

@@ -4,7 +4,6 @@
  * Cross-execution compare needs same-plan; the page disables the
  * Compare button when two selected rows belong to different plans.
  */
-import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 

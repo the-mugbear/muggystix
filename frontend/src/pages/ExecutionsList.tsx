@@ -15,7 +15,6 @@ import { formatApiError } from '../utils/apiErrors';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useCompareSelection } from '../hooks/useCompareSelection';
 import { useSearchFocus } from '../hooks/useSearchFocus';
-import { useToast } from '../contexts/ToastContext';
 import { NavigableTableCell, NavigableTableRow } from '../components/NavigableTableRow';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { TableSkeleton } from '../components/PageSkeleton';
@@ -66,7 +65,6 @@ const fmtTime = (iso?: string | null): string => {
 
 const ExecutionsList: React.FC = () => {
   const navigate = useNavigate();
-  const toast = useToast();
   const [rows, setRows] = useState<ExecutionSessionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

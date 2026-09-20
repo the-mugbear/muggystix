@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
-import { Search, ChevronDown, ExternalLink, Copy, Loader2, RefreshCw } from 'lucide-react';
+import { Search, ExternalLink, Copy, Loader2, RefreshCw } from 'lucide-react';
 import {
   Accordion,
   AccordionContent,

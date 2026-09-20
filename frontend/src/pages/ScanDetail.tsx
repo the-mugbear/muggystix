@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, Loader2, RefreshCw, Upload, Globe } from 'lucide-react';
+import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, RefreshCw, Upload, Globe } from 'lucide-react';
 import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
 import type { Host, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';

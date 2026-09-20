@@ -5,7 +5,6 @@
  * id alone, header surfaces attribution, entry table summarises tests
  * and sanity checks, sort order puts findings-bearing entries first.
  */
-import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 

@@ -15,7 +15,6 @@ import {
   Para,
   Subhead,
   OrderedList,
-  UnorderedList,
   Mono,
 } from './UserGuideShell';
 

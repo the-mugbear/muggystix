@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../services/api';
@@ -13,11 +12,8 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { PasswordRulesChecklist, isPasswordValid } from '../components/PasswordRulesChecklist';
 
 const ForceChangePassword: React.FC = () => {
-  // navigate kept available for future redirect needs; unused here
-  // because the backend revokes all sessions on password change, so
+  // No navigate(): the backend revokes all sessions on password change, so
   // logout() forces the redirect to /login naturally.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _navigate = useNavigate();
   const { updateUser, logout } = useAuth();
 
   const [currentPassword, setCurrentPassword] = useState('');

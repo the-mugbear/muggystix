@@ -25,7 +25,6 @@ import { cn } from '../../utils/cn';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import {
   exposureChips,
-  type PortOfInterestDefinition,
 } from '../../utils/portsOfInterest';
 
 // Map a tag's palette key to a coloured dot.  Unknown / null colours

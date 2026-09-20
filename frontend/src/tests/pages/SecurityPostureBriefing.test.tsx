@@ -1,7 +1,6 @@
 /** "Create briefing" on the posture overview downloads the executive systemic
  *  report from here — no detour through Hosts → Export. Estate-wide on the
  *  overview (it has no site selection); Segments offers the per-site variant. */
-import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';

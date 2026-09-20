@@ -7,7 +7,6 @@
  * 21 — "latest" was chosen by `last_seen`, the row's write time, so importing
  *      an OLD scan later made the old evidence the visible row.
  */
-import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';

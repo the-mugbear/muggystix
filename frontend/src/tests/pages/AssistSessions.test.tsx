@@ -11,7 +11,6 @@
  * the notes the agent wrote, since those are its only durable output and the
  * thing that carries the operator's name.
  */
-import React from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';

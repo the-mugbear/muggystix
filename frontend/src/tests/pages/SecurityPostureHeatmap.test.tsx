@@ -3,7 +3,6 @@
  * assessed-and-clean, and UNASSESSED (no evidence in the family's domain for
  * the site), which must never look like clean.
  */
-import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi } from 'vitest';

@@ -22,7 +22,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  AlertTriangle,
   ClipboardList,
   Loader2,
   MessageSquare,

@@ -4,10 +4,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowDownToLine,
   Building2,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Copy,
   Loader2,
   Pencil,
   Plus,
@@ -48,7 +46,6 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import {
   Dialog,
-  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,

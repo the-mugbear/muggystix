@@ -27,7 +27,6 @@ import {
   CircleSlash,
   ClipboardCheck,
   Copy,
-  ExternalLink,
   FileDown,
   FileUp,
   Loader2,

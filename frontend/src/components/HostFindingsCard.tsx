@@ -14,7 +14,6 @@ import { AlertHexIcon } from './AppIcons';
 import {
   Finding,
   FindingHostStatus,
-  FindingSeverity,
   FindingStatus,
   listFindings,
   setFindingEndpointStatus,

@@ -2,7 +2,6 @@
  * The delivery outbox exists to distinguish "configured" from "working".
  * These pin the states where getting it wrong would mislead an operator.
  */
-import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

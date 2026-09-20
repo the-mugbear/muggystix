@@ -5,7 +5,6 @@
  * plans-generated-from.  Confirms cross-page navigation works
  * (open scan, open host, open plan).
  */
-import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
@@ -240,5 +239,14 @@ describe('ReconRunDetail page', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
     });
+  });
+
+  // v5.247.0 — found by the unused-variable sweep: the error was stored and
+  // never rendered, so a failed load of the other runs read as "there are none".
+  it('does not claim this is the only recon run when the others could not be loaded', async () => {
+    (mockedApi.listReconSessions as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network down'));
+    renderPage();
+    expect(await screen.findByText(/Other recon runs could not be checked/)).toBeInTheDocument();
+    expect(screen.queryByText(/only recon session recorded/)).toBeNull();
   });
 });

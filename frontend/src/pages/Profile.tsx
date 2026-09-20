@@ -33,7 +33,7 @@ import {
 } from '../components/ui/dialog';
 import { cn } from '../utils/cn';
 import { DetailSkeleton } from '../components/PageSkeleton';
-import { PasswordRulesChecklist, isPasswordValid } from '../components/PasswordRulesChecklist';
+import { PasswordRulesChecklist } from '../components/PasswordRulesChecklist';
 import TwoFactorCard from '../components/TwoFactorCard';
 
 interface UserSession {

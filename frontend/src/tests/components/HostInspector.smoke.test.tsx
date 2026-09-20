@@ -6,7 +6,6 @@
  * (the exact trigger). The Hosts page test stubs HostInspector, so only a
  * real-render test catches this.
  */
-import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 

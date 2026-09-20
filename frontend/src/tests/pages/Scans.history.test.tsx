@@ -3,7 +3,6 @@
  * in ONE chronological table, in the server's order, with a prominent
  * Grouped-by-upload / All-files selector.  First page-level test of Scans.
  */
-import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';

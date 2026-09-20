@@ -6,8 +6,7 @@
  * the agent-sessions calls, and Needs Attention surfaces pending
  * plans independently of the toggle.
  */
-import React from 'react';
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 // Override the global setupTests.ts react-router-dom mock so useNavigate

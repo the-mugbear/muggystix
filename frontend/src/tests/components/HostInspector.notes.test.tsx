@@ -3,7 +3,6 @@
  * written for, and a failed screenshot upload is kept for retry against the
  * note that was created rather than silently dropped.
  */
-import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';

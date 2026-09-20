@@ -30,13 +30,14 @@ export const isSafeHostname = (name: string | null | undefined): name is string 
 export const getConnectionHelpers = (
   ip: string,
   port: Port,
-  hostname?: string | null,
+  // Unused today (helpers target the IP; `options.vhost` carries a name), but
+  // positional — every caller passes it, so the slot stays.
+  _hostname?: string | null,
   options: ConnectionHelperOptions = {},
 ): ConnectionHelper[] => {
   const target = ip;
   const pn = port.port_number;
   const svc = (port.service_name || '').toLowerCase();
-  const product = (port.service_product || '').toLowerCase();
   const helpers: ConnectionHelper[] = [];
 
   // --- Web / HTTP(S) ---

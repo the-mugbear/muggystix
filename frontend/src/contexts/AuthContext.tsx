@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { flushSync } from 'react-dom';
-import { logger, createAuthLogger } from '../utils/logger';
+import { createAuthLogger } from '../utils/logger';
 import api, { setCurrentProjectId } from '../services/api';
 
 interface User {
@@ -339,29 +339,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
     return userLevel >= requiredLevel;
   }, [user]);
-
-  const logAuditEvent = async (action: string, resourceType: string, details?: any) => {
-    if (!token) {
-      authLogger.debug('Audit logging skipped - no token available', { action, resourceType });
-      return;
-    }
-
-    try {
-      authLogger.debug('Sending audit log to backend', { action, resourceType, details });
-      await api.post('/audit/log', {
-        action,
-        resource_type: resourceType,
-        details: details || { timestamp: new Date().toISOString() }
-      });
-      authLogger.debug('Audit log sent successfully', { action, resourceType });
-    } catch (error) {
-      authLogger.error('Audit logging failed with exception', {
-        action,
-        resourceType,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
 
   // Track authentication state changes
   const isAuthenticated = !!user && !!token;

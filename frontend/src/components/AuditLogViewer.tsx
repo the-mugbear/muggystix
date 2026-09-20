@@ -18,7 +18,6 @@ import {
   getAuditStats,
   listAuditLogs,
 } from '../services/api';
-import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
@@ -38,7 +37,6 @@ function when(value?: string | null): string {
 }
 
 const AuditLogViewer: React.FC = () => {
-  const toast = useToast();
   const [rows, setRows] = useState<AuditLogRow[]>([]);
   const [total, setTotal] = useState(0);
   const [skip, setSkip] = useState(0);

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Trash2, Loader2 } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
 import {
   getProjects,
@@ -99,7 +98,6 @@ const STATUS_VARIANT: Record<string, 'success' | 'info' | 'warning' | 'muted' | 
 };
 
 const ProjectSettings: React.FC = () => {
-  const { user } = useAuth();
   const { refreshProjects, currentProject } = useProject();
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();

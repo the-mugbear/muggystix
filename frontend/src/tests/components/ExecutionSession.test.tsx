@@ -9,7 +9,7 @@
  * will re-assemble them) gets a stable shape to compose against.
  */
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 import { ExecutionSessionHeader } from '../../components/execution/ExecutionSessionHeader';

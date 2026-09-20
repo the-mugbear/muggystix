@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useDropzone } from 'react-dropzone';
 import {
   AlertCircle,
   AlertTriangle,
@@ -27,7 +26,6 @@ import {
   getScansSummary,
   deleteScan,
   getScanDeletionImpact,
-  uploadFile,
   getIngestionJob,
   getRecentIngestionJobs,
   dismissIngestionJob,
@@ -38,9 +36,7 @@ import {
   getScanCommandExplanation,
   getScanBatches,
   getImportHistory,
-  createScanBatch,
   getScanInventoryMarker,
-  duplicateUploadOf,
 } from '../services/api';
 import type {
   Scan,
@@ -50,8 +46,6 @@ import type {
   ScanDeletionImpact,
   ScanBatchSummary,
   ImportHistoryEntry,
-  DuplicateUpload,
-  UploadOptions,
 } from '../services/api';
 import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
@@ -62,7 +56,6 @@ import { formatApiError } from '../utils/apiErrors';
 // From the barrel, like every other call here: a direct submodule import
 // bypasses a page test's mock and loads the real HTTP client.
 import { updateProjectIngestSettings } from '../services/api';
-import { Switch } from '../components/ui/switch';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -77,14 +70,12 @@ import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/sca
 import { formatDuration } from '../utils/scanTime';
 import {
   Dialog,
-  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
 import { Separator } from '../components/ui/separator';
 import {
   Table,
@@ -95,41 +86,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '../components/ui/accordion';
 import { cn } from '../utils/cn';
-import {
-  ACCEPTED_EXTENSIONS,
-  ACCEPTED_EXTENSION_LIST,
-  SUPPORTED_FORMATS,
-} from '../data/uploadFormats';
-
-
-// The advertised upload formats live in data/uploadFormats.ts (v5.204.0),
-// where a test pins them to documentation/UPLOAD_FORMATS.md.
-
-const ProgressBar: React.FC<{ value: number; tone?: 'default' | 'success' | 'destructive' }> = ({
-  value,
-  tone = 'default',
-}) => (
-  <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-    <div
-      className={cn(
-        'h-full transition-all',
-        tone === 'success' && 'bg-success',
-        tone === 'destructive' && 'bg-destructive',
-        tone === 'default' && 'bg-primary',
-      )}
-      style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
-    />
-  </div>
-);
-
-
 
 export default function Scans() {
   const navigate = useNavigate();
@@ -149,37 +106,21 @@ export default function Scans() {
   const [impactError, setImpactError] = useState(false);
 
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
-  // v2.43.1 — bug fix: per-file upload entries gained `startedAt` so the
-  // watchdog effect below can detect entries that get stuck in the
-  // 'uploading' state (we've seen this happen when xhr.upload.onprogress
-  // never fires on small fast uploads AND something in the .then path
-  // silently no-ops).  Stuck entries auto-clear with a console.warn after
-  // 60s so the user isn't trapped in a "Uploading: 0%" banner forever.
+  // The results banner: one entry per file the review dialog (or the staged
+  // queue's "Review and import") has STARTED, followed by job id to its import
+  // result (v5.222.0, design review item 5):
+  //   received → processing → imported | partial | failed
+  // v5.247.0 — the transfer itself, a refused duplicate and "Import again" all
+  // live in UploadReviewDialog / useUploadReview now. This page kept its own
+  // dropzone, uploader, duplicate handling and a stuck-upload watchdog for
+  // them; the dropzone was never attached to an element, so none of it could
+  // run. Removed with their three states ('uploading', 'error', 'duplicate').
   const [uploadProgress, setUploadProgress] = useState<
     Record<
       string,
       {
         filename: string;
-        percent: number;
-        // v5.222.0 — one entry follows the file from transfer to import
-        // result (design review item 5), so the operator can tell upload
-        // receipt, processing, a clean import, an import with gaps and a
-        // failure apart without leaving the page:
-        //   uploading → received → processing → imported | partial | failed
-        // 'error' is a transfer failure (the server never took the file);
-        // 'duplicate' a refused identical file.
-        status:
-          | 'uploading'
-          | 'received'
-          | 'processing'
-          | 'imported'
-          | 'partial'
-          | 'failed'
-          | 'error'
-          | 'duplicate';
+        status: 'received' | 'processing' | 'imported' | 'partial' | 'failed';
         error?: string;
         startedAt: number;
         jobId?: number;
@@ -188,10 +129,6 @@ export default function Scans() {
         /** The scan row's summary once the job completed — the import result. */
         result?: Scan | null;
         parseErrorId?: number | null;
-        // v5.207.0 — a refused identical file: what it already is, plus
-        // what "Import again" needs to resend it.
-        duplicate?: DuplicateUpload;
-        file?: File;
         batchId?: number;
       }
     >
@@ -557,197 +494,6 @@ export default function Scans() {
     [commandCache],
   );
 
-  // One file through upload → job tracking; shared by drops and by
-  // "Import again" on a refused duplicate.
-  const runUpload = (file: File, key: string, startedAt: number, options: UploadOptions) =>
-    uploadFile(
-      file,
-      (percent) => {
-        setUploadProgress((prev) => {
-          const existing = prev[key];
-          if (!existing) return prev; // entry already cleaned up — ignore late progress
-          return {
-            ...prev,
-            [key]: {
-              ...existing,
-              percent,
-              // Stays 'uploading' at 100% until the server answers — that
-              // answer is what makes the file 'received'.
-              status: 'uploading',
-            },
-          };
-        });
-      },
-      // v5.215.0 — the switch beside the drop zone rides along with every
-      // upload from this page, so what the operator saw is what applies even
-      // if the project setting changes before the worker gets to the file.
-      { skipInformational, ...options },
-    )
-      .then((result) => {
-        // The server has the file: 'received'.  The entry now waits for
-        // the ingestion job (tracked by jobId) and becomes the import
-        // result when it completes — it no longer auto-dismisses, because
-        // the result is the thing the operator needs to see.
-        // Use prev as the source of truth — if the entry was removed
-        // (watchdog, manual dismiss), this is a no-op.
-        setUploadProgress((prev) => {
-          const existing = prev[key];
-          return {
-            ...prev,
-            [key]: {
-              ...(existing ?? { filename: file.name, startedAt }),
-              percent: 100,
-              status: 'received',
-              jobId: result?.job_id ?? undefined,
-            },
-          };
-        });
-        if (result?.job_id != null) {
-          setActiveJobIds((prev) =>
-            prev.includes(result.job_id) ? prev : [...prev, result.job_id],
-          );
-        }
-      })
-      .catch((err: unknown) => {
-        // v5.207.0 — an identical file is refused (409 duplicate_scan). Not
-        // a failure: say what it already is, and keep the file so the
-        // operator can import it again on purpose.
-        const duplicate = duplicateUploadOf(err);
-        setUploadProgress((prev) => {
-          const existing = prev[key];
-          return {
-            ...prev,
-            [key]: {
-              ...(existing ?? { filename: file.name, percent: 0, startedAt }),
-              status: duplicate ? 'duplicate' : 'error',
-              // Audit FBK·H11 — route through formatApiError so the user
-              // sees the same normalized error shape (validation list,
-              // detail, fallback) used elsewhere instead of a raw
-              // response.data.detail that may be a list or undefined.
-              error: duplicate ? undefined : formatApiError(err, 'Upload failed'),
-              duplicate: duplicate ?? undefined,
-              file: duplicate ? file : undefined,
-              batchId: options.batchId,
-            },
-          };
-        });
-      });
-
-  const onDrop = (acceptedFiles: File[]) => {
-    if (acceptedFiles.length === 0) return;
-
-    setUploadError(null);
-    setUploadSuccess(null);
-
-    // v2.43.1 — bug fix: keys generated UPFRONT (one per file) before
-    // any setState call.  Pre-fix the keys lived inside a setUploadProgress
-    // updater that ALSO mutated a closure-captured `progressKeys` object —
-    // a side-effect-in-reducer antipattern that strict-mode runs twice,
-    // making the relationship between the outer for loop and the
-    // per-file closures fragile.  Now the upload-per-file helper owns the
-    // key and the entry's lifecycle end-to-end.
-    const startedAt = Date.now();
-    const fileKeys = acceptedFiles.map((file) => ({
-      file,
-      key: `${startedAt}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
-    }));
-
-    setUploadProgress((prev) => {
-      const next = { ...prev };
-      for (const { file, key } of fileKeys) {
-        next[key] = {
-          filename: file.name,
-          percent: 0,
-          status: 'uploading',
-          startedAt,
-        };
-      }
-      return next;
-    });
-
-    setUploading(true);
-    setUploadDialogOpen(false);
-
-    // v5.207.0 — a multi-file upload is one batch, shown on /scans as one
-    // row. If the batch can't be created the files still upload, ungrouped.
-    const batchReady: Promise<number | undefined> =
-      fileKeys.length > 1
-        ? createScanBatch(`${fileKeys.length} files · ${new Date(startedAt).toLocaleString()}`)
-            .then((batch) => batch.id)
-            .catch((err: unknown) => {
-              console.error('Could not start an upload batch; uploading ungrouped:', err);
-              return undefined;
-            })
-        : Promise.resolve(undefined);
-
-    void batchReady
-      .then((batchId) =>
-        Promise.allSettled(fileKeys.map(({ file, key }) => runUpload(file, key, startedAt, { batchId }))),
-      )
-      .finally(() => setUploading(false));
-  };
-
-  // A refused duplicate the operator wants anyway (e.g. to re-parse after a
-  // parser fix): resend the same file, in the same batch, allowing it.
-  const importAgain = (key: string) => {
-    const entry = uploadProgress[key];
-    if (!entry?.file) return;
-    const { file, batchId } = entry;
-    const startedAt = Date.now();
-    setUploadProgress((prev) => ({
-      ...prev,
-      [key]: { filename: file.name, percent: 0, status: 'uploading', startedAt },
-    }));
-    void runUpload(file, key, startedAt, { batchId, allowDuplicate: true });
-  };
-
-  // v2.43.1 watchdog: clear per-file entries that never escaped 'uploading'.
-  // We've seen "stuck at 0%" banners that survive page-life because some
-  // combination of strict-mode + the old key-in-reducer antipattern dropped
-  // the .then state update; this fail-safe prevents the user from being
-  // trapped behind a stale banner.  Successful flow clears within ~1.5s of
-  // upload completion, so 60s is a generous floor.
-  useEffect(() => {
-    const stuck = Object.entries(uploadProgress).filter(
-      ([, entry]) => entry.status === 'uploading' && Date.now() - entry.startedAt > 60_000,
-    );
-    if (stuck.length === 0) return;
-    const timer = setTimeout(() => {
-      setUploadProgress((prev) => {
-        const next = { ...prev };
-        for (const [key, entry] of stuck) {
-          if (next[key]?.status === 'uploading') {
-            console.warn(
-              '[scans] upload watchdog clearing stale entry %o (no progress in 60s); ' +
-                'check the network tab — the .then/onprogress path may have silently failed.',
-              entry,
-            );
-            delete next[key];
-          }
-        }
-        return next;
-      });
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [uploadProgress]);
-
-  const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
-    onDrop,
-    // The allowlist lives in data/uploadFormats.ts (v5.219.2) so the dialog
-    // can print the same list it enforces; it mirrors the backend
-    // ALLOWED_UPLOAD_EXTENSIONS.
-    accept: ACCEPTED_EXTENSIONS,
-    // v4.28.0 — keep in lockstep with nginx (ssl-nginx.conf
-    // `client_max_body_size`) and backend (`MAX_FILE_SIZE` in .env).
-    // v2.63.0 raised both to 2GB but missed this client-side gate,
-    // so 600MB+ Nessus uploads were instantly rejected before
-    // hitting the network.  Reject client-side so the user gets an
-    // instant error instead of a multi-minute upload ending in 413
-    // (audit H5).
-    maxSize: 2 * 1024 * 1024 * 1024,
-    multiple: true,
-  });
-
   // v5.222.0 — the banner entry that submitted a job follows it: queued /
   // processing show the worker's message; completed fetches the scan row's
   // summary (the same numbers the inventory shows) and becomes 'imported' or
@@ -931,11 +677,6 @@ export default function Scans() {
       .map(([g, rows]) => [g, rows.length] as [string, number])
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }, [inventorySummary, groupedScans]);
-
-  const orderedToolGroups = useMemo(
-    () => Object.keys(groupedScans).sort((a, b) => a.localeCompare(b)),
-    [groupedScans],
-  );
 
   // Rows render in the order the server returned them (`scans` is used
   // directly below — no client-side re-sort).  getScans is called with
@@ -1176,59 +917,29 @@ export default function Scans() {
         ))}
       </div>
 
-      {uploadError && (
-        <Alert variant="destructive" className="mb-sm">
-          <AlertDescription className="flex items-center justify-between gap-sm whitespace-pre-line">
-            <span>{uploadError}</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              // No id to carry here — uploadError is a plain message with no
-              // ParseError attached, so this stays a list-level link.
-              onClick={() => navigate('/parse-errors')}
-              className="shrink-0"
-            >
-              View Details
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-      {uploadSuccess && (
-        <Alert variant={activeJobIds.length > 0 ? 'info' : 'success'} className="mb-sm">
-          <AlertDescription>{uploadSuccess}</AlertDescription>
-        </Alert>
-      )}
-
-      {/* In-flight upload transfers — aria-live so screen readers
-          announce progress when the dialog has closed (audit C10). */}
+      {/* Files the operator has started, followed to their import result —
+          aria-live so screen readers announce progress when the dialog has
+          closed (audit C10). */}
       {Object.keys(uploadProgress).length > 0 && (
         <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
           {Object.entries(uploadProgress).map(([key, p]) => {
             const variant =
-              p.status === 'error' || p.status === 'failed'
+              p.status === 'failed'
                 ? 'destructive'
-                : p.status === 'duplicate' || p.status === 'partial'
+                : p.status === 'partial'
                 ? 'warning'
                 : p.status === 'imported'
                 ? 'success'
                 : 'info';
             const label: Record<typeof p.status, string> = {
-              uploading: 'Uploading',
               received: 'Upload received, waiting for the worker',
               processing: 'Processing',
               imported: 'Imported',
               partial: 'Imported with gaps',
               failed: 'Import failed',
-              duplicate: 'Already imported',
-              error: 'Upload failed',
             };
             const terminal =
-              p.status === 'imported' ||
-              p.status === 'partial' ||
-              p.status === 'failed' ||
-              p.status === 'error' ||
-              p.status === 'duplicate';
-            const transferring = p.status === 'uploading';
+              p.status === 'imported' || p.status === 'partial' || p.status === 'failed';
             return (
               <Alert key={key} variant={variant}>
                 <AlertDescription className="flex flex-col gap-xxs">
@@ -1236,9 +947,6 @@ export default function Scans() {
                     <span className="truncate font-semibold">
                       {label[p.status]}: {p.filename}
                     </span>
-                    {transferring && (
-                      <span className="shrink-0 text-caption text-muted-foreground">{p.percent}%</span>
-                    )}
                     {terminal && (
                       <Button
                         variant="ghost"
@@ -1256,32 +964,7 @@ export default function Scans() {
                       </Button>
                     )}
                   </div>
-                  {p.status === 'duplicate' && p.duplicate ? (
-                    <div className="flex flex-wrap items-center gap-xs">
-                      <span className="min-w-0 break-words">{p.duplicate.message}</span>
-                      {p.duplicate.scanId != null && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleViewScan(p.duplicate!.scanId!)}
-                        >
-                          View scan #{p.duplicate.scanId}
-                        </Button>
-                      )}
-                      {p.duplicate.scanId != null && p.file && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => importAgain(key)}
-                          title="Import this file again anyway — e.g. to re-parse it after a parser fix"
-                        >
-                          Import again
-                        </Button>
-                      )}
-                    </div>
-                  ) : p.status === 'error' ? (
-                    <span>{p.error || 'Upload failed'}</span>
-                  ) : p.status === 'failed' ? (
+                  {p.status === 'failed' ? (
                     <div className="flex flex-wrap items-center gap-xs">
                       <span className="min-w-0 break-words">{p.error || 'Import failed'}</span>
                       <Button
@@ -1308,14 +991,12 @@ export default function Scans() {
                         {p.jobMessage || 'Import complete.'}
                       </span>
                     )
-                  ) : p.status === 'processing' || p.status === 'received' ? (
+                  ) : (
                     <span className="text-caption text-muted-foreground">
                       {p.status === 'received'
                         ? 'The file is stored; parsing starts when a worker picks it up.'
                         : p.jobMessage || 'Parsing…'}
                     </span>
-                  ) : (
-                    <ProgressBar value={p.percent} tone="default" />
                   )}
                 </AlertDescription>
               </Alert>
@@ -2193,7 +1874,6 @@ export default function Scans() {
               ...prev,
               [`queue-${started.id}`]: {
                 filename: started.original_filename,
-                percent: 100,
                 status: 'received',
                 startedAt: Date.now(),
                 jobId: started.id,
@@ -2217,7 +1897,6 @@ export default function Scans() {
             ...prev,
             [started.key]: {
               filename: started.filename,
-              percent: 100,
               status: 'received',
               startedAt: started.startedAt,
               jobId: started.jobId,

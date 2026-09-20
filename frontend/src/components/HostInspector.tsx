@@ -18,39 +18,27 @@
  * that the same shape appears in both contexts.  Page chrome and
  * sheet header therefore stay minimal.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } from '../utils/severity';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
   Bookmark,
   BookmarkPlus,
-  Ban,
   CheckCircle2,
   ClipboardList,
   Computer,
-  Copy,
-  Crosshair,
   ExternalLink,
   Eye,
-  Flag,
   Loader2,
   MessageSquare,
   MoreHorizontal,
-  Network,
   NotebookPen,
-  ScanSearch,
   RefreshCw,
-  Reply,
   RotateCcw,
   ShieldAlert,
-  Terminal,
-  Trash2,
 } from 'lucide-react';
 import {
   getHost,
@@ -101,7 +89,6 @@ import HostFindingsCard from './HostFindingsCard';
 import HostNamesCard from './HostNamesCard';
 import HostLineagePanel from './HostLineagePanel';
 import { stickyBelowChrome } from '../utils/uiStyles';
-import { formatRelativeTime } from '../utils/relativeTime';
 import { NoteThread } from './host-inspector/NoteThread';
 import { NoteComposer } from './host-inspector/NoteComposer';
 import { InspectorSection, jumpToInspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
@@ -121,18 +108,11 @@ import { cn } from '../utils/cn';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { DetailSkeleton } from './PageSkeleton';
 import { useConfirm } from '../hooks/useConfirm';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from './ui/accordion';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import {
   Dialog,
   DialogContent,
@@ -154,16 +134,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from './ui/table';
 import { Textarea } from './ui/textarea';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 // §9 review-completion outcomes — what "reviewed" actually concluded, recorded
 // when a reviewer marks a host done. Order = how they're offered in the dialog.

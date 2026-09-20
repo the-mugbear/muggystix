@@ -10,7 +10,6 @@
  *   - "only in A" / "only in B" sample cards render the capped lists
  *     from the new diff endpoint with deep-link CTAs to Inventory
  */
-import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 

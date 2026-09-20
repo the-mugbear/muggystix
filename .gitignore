@@ -263,3 +263,9 @@ CODEREVIEW.txt
 
 # deploy.sh rollback snapshot state (B2-1) — operator-local, per-deploy
 .deploy-rollback-state
+
+# Root-owned mount-point stubs Docker creates when `docker compose run` is
+# started from inside backend/ or frontend/ instead of the repo root. They
+# were committed once (zero-byte files); never again.
+/backend/backend/
+/frontend/backend/

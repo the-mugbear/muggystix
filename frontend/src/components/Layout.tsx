@@ -384,11 +384,6 @@ export default function Layout({ children }: LayoutProps) {
     }
   }, [location.pathname, location.key, navigationType]);
 
-  const handleNavigation = (path: string) => {
-    navigate(path);
-    setMobileOpen(false);
-  };
-
   // v4.58.0 (UX·5) — hub-link auto-resume retired.  Pre-fix a plain
   // left-click on a hub link silently redirected to a localStorage'd
   // child path instead of the advertised href; the Shift+click escape
