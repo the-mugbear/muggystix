@@ -138,30 +138,32 @@ export const HOST_FILTER_PRESETS: Array<{
   },
   {
     id: 'not_reviewed',
-    name: 'Not Reviewed',
+    name: 'Review not started',
     Icon: Eye,
-    description: 'Hosts nobody on the team is reviewing yet',
+    description: 'Hosts nobody on the team has taken In review or marked Reviewed',
     filters: { followFilter: 'none' },
   },
   {
     id: 'critical',
-    name: 'Critical',
+    name: 'Critical observations',
     Icon: ShieldAlert,
-    description: 'Hosts with critical vulnerabilities',
+    description: 'Hosts with a critical-severity scanner observation',
     filters: { hasCriticalVulns: true },
   },
   {
+    // The id is kept for anything that stored it; the name no longer claims
+    // business value — the preset measures severity and exposure, nothing else.
     id: 'high_value',
-    name: 'High Value',
+    name: 'High severity + open ports',
     Icon: ShieldCheck,
-    description: 'Hosts with high-severity findings and open ports',
+    description: 'Hosts with a high-severity scanner observation and at least one open port',
     filters: { hasHighVulns: true, hasOpenPorts: true },
   },
   {
     id: 'out_of_scope',
     name: 'Out of Scope',
     Icon: Globe,
-    description: 'Hosts not mapped to any configured scope',
+    description: 'Hosts in no scope subnet and not reachable through an in-scope name',
     filters: { outOfScopeOnly: true },
   },
   {
@@ -195,16 +197,16 @@ export const HOST_FILTER_PRESETS: Array<{
   },
   {
     id: 'windows',
-    name: 'Windows Hosts',
+    name: 'Windows service ports',
     Icon: ComputerIcon,
-    description: 'Windows-specific services (135/139/445)',
+    description: 'Open 135/139/445 — ports Windows commonly exposes; not an OS identification',
     filters: { ports: ['135', '139', '445'], portStates: ['open'] },
   },
   {
     id: 'legacy',
-    name: 'Legacy Protocols',
+    name: 'FTP / Telnet / DNS / TFTP / NetBIOS',
     Icon: ShieldAlert,
-    description: 'Legacy/insecure protocols (21/23/53/69/135/139)',
+    description: 'Open 21/23/53/69/135/139 — whether any of these is a problem depends on the host',
     filters: { ports: ['21', '23', '53', '69', '135', '139'], portStates: ['open'] },
   },
   {
@@ -255,9 +257,10 @@ export const activeFilterPresetId = (filters: HostFilterOptions): string | null 
 };
 
 // Composable presets: a preset is "applied" when EVERY key it sets is
-// satisfied in the live filters (a subset match — extra active filters are
-// fine, since presets now compose rather than replace).  Drives both the lit
-// state and the toggle-off behaviour.
+// satisfied in the live filters.  A list key is satisfied when the live list
+// CONTAINS the preset's values — a list is "match any", so SSH (22) and
+// Windows (135/139/445) are both applied under ports 22,135,139,445.  Drives
+// both the lit state and the toggle-off behaviour.
 const presetIsApplied = (preset: HostFilterOptions, current: HostFilterOptions): boolean => {
   const pKeys = definedFilterKeys(preset);
   if (pKeys.length === 0) return false;
@@ -265,15 +268,63 @@ const presetIsApplied = (preset: HostFilterOptions, current: HostFilterOptions):
     const pv = (preset as Record<string, unknown>)[k];
     const cv = (current as Record<string, unknown>)[k];
     if (Array.isArray(pv)) {
-      if (!Array.isArray(cv) || pv.length !== cv.length) return false;
-      const sp = [...pv].sort();
-      const sc = [...(cv as unknown[])].sort();
-      if (sp.some((v, i) => v !== sc[i])) return false;
+      if (!Array.isArray(cv) || pv.some((v) => !cv.includes(v))) return false;
     } else if (pv !== cv) {
       return false;
     }
   }
   return true;
+};
+
+/**
+ * Toggle one preset against the live filters, by VALUE rather than by key.
+ * Several presets write the same keys (`ports`, `portStates`): assigning a
+ * key overwrote the other preset's ports, and deleting a key on toggle-off
+ * took the still-lit preset's `portStates` with it.  On: list values are
+ * added to what is there.  Off: a value or key stays when another applied
+ * preset still needs it.
+ */
+export const togglePreset = (
+  preset: HostFilterOptions,
+  filters: HostFilterOptions,
+  allPresets: HostFilterOptions[] = HOST_FILTER_PRESETS.map((p) => p.filters),
+): HostFilterOptions => {
+  const updated = { ...filters } as Record<string, unknown>;
+  const presetKeys = definedFilterKeys(preset);
+
+  if (!presetIsApplied(preset, filters)) {
+    for (const k of presetKeys) {
+      const pv = (preset as Record<string, unknown>)[k];
+      const cv = updated[k];
+      updated[k] = Array.isArray(pv) && Array.isArray(cv)
+        ? [...cv, ...pv.filter((v) => !cv.includes(v))]
+        : pv;
+    }
+    return updated as HostFilterOptions;
+  }
+
+  // A preset this one IMPLIES ("Review not started" inside "My review queue")
+  // lights up with it but was never chosen, so it holds nothing back.
+  const stillApplied = allPresets.filter(
+    (p) => p !== preset && presetIsApplied(p, filters) && !presetIsApplied(p, preset),
+  );
+  for (const k of presetKeys) {
+    const pv = (preset as Record<string, unknown>)[k];
+    const claims = stillApplied
+      .map((p) => (p as Record<string, unknown>)[k])
+      .filter((v) => v !== undefined);
+    if (Array.isArray(pv)) {
+      const claimed = claims.flatMap((v) => (Array.isArray(v) ? v : []));
+      const remaining = ((updated[k] as unknown[]) ?? []).filter(
+        (v) => !pv.includes(v) || claimed.includes(v),
+      );
+      if (remaining.length > 0) updated[k] = remaining;
+      else delete updated[k];
+    } else if (claims.length === 0) {
+      delete updated[k];
+    }
+  }
+  return updated as HostFilterOptions;
 };
 
 /**
@@ -399,10 +450,10 @@ const FieldHint: React.FC<{ children: React.ReactNode; commandsLink?: boolean }>
 // state provenance: severity rows come from imported vuln scanners only.
 const SEVERITY_SOURCE = 'from imported vulnerability scans (Nessus, OpenVAS, Nikto).';
 const SEVERITY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; activeClass: string; tooltip: string }> = [
-  { key: 'hasCriticalVulns', label: 'Critical', activeClass: 'border-transparent bg-destructive text-destructive-foreground', tooltip: `Hosts with ≥1 Critical-severity finding — ${SEVERITY_SOURCE}` },
-  { key: 'hasHighVulns', label: 'High', activeClass: 'border-transparent bg-warning text-warning-foreground', tooltip: `Hosts with ≥1 High-severity finding — ${SEVERITY_SOURCE}` },
-  { key: 'hasMediumVulns', label: 'Medium', activeClass: 'border-transparent bg-info text-info-foreground', tooltip: `Hosts with ≥1 Medium-severity finding — ${SEVERITY_SOURCE}` },
-  { key: 'hasLowVulns', label: 'Low', activeClass: 'border-transparent bg-success text-success-foreground', tooltip: `Hosts with ≥1 Low-severity finding — ${SEVERITY_SOURCE}` },
+  { key: 'hasCriticalVulns', label: 'Critical', activeClass: 'border-transparent bg-destructive text-destructive-foreground', tooltip: `Hosts with ≥1 Critical-severity scanner observation —${SEVERITY_SOURCE}` },
+  { key: 'hasHighVulns', label: 'High', activeClass: 'border-transparent bg-warning text-warning-foreground', tooltip: `Hosts with ≥1 High-severity scanner observation —${SEVERITY_SOURCE}` },
+  { key: 'hasMediumVulns', label: 'Medium', activeClass: 'border-transparent bg-info text-info-foreground', tooltip: `Hosts with ≥1 Medium-severity scanner observation —${SEVERITY_SOURCE}` },
+  { key: 'hasLowVulns', label: 'Low', activeClass: 'border-transparent bg-success text-success-foreground', tooltip: `Hosts with ≥1 Low-severity scanner observation —${SEVERITY_SOURCE}` },
 ];
 
 // Binary "show only" property filters (#42/#4) — each means "only hosts WITH
@@ -412,10 +463,10 @@ const SEVERITY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; act
 type FilterGroup = 'workflow' | 'risk' | 'exposure' | 'inventory';
 const PROPERTY_FILTERS: Array<{ key: keyof HostFilterOptions; label: string; tooltip: string; group: FilterGroup }> = [
   { key: 'hasOpenPorts', label: 'Open ports', group: 'exposure', tooltip: 'Hosts with ≥1 open port — from any port scan (Nmap, Masscan, Naabu, RustScan…).' },
-  { key: 'hasExploitAvailable', label: 'Exploitable', group: 'risk', tooltip: 'Hosts with a finding flagged exploitable — Nessus only: set when the plugin reports exploit_available, a Metasploit / Core Impact / Canvas module, or proof-of-concept-or-higher maturity.' },
+  { key: 'hasExploitAvailable', label: 'Exploit reported', group: 'risk', tooltip: 'Hosts with a scanner observation that reports an exploit exists (not proof this host was exploited) — Nessus only: set when the plugin reports exploit_available, a Metasploit / Core Impact / Canvas module, or proof-of-concept-or-higher maturity.' },
   { key: 'hasTestExecution', label: 'Tested by agent', group: 'workflow', tooltip: 'Hosts an agentic test plan was actually executed against (not merely drafted) — from the agent execution workflow.' },
-  { key: 'outOfScopeOnly', label: 'Out of scope', group: 'inventory', tooltip: 'Hosts outside every subnet in your defined scope — from your uploaded scope/subnets.' },
-  { key: 'assignedToMe', label: 'Assigned to me', group: 'workflow', tooltip: 'Hosts you own — explicitly assigned to you (the bulk Assign action) or that you took In Review / Reviewed.' },
+  { key: 'outOfScopeOnly', label: 'Out of scope', group: 'inventory', tooltip: 'Hosts in no scope subnet AND not reachable through an in-scope name — from your uploaded scope.' },
+  { key: 'assignedToMe', label: 'Assigned to me', group: 'workflow', tooltip: 'Your assessment work — hosts explicitly assigned to you (the bulk Assign action) or that you took In Review / Reviewed.' },
 ];
 
 /** A labelled filter group (#43) — one intent (Workflow / Risk / …) per box. */
@@ -526,26 +577,11 @@ const HostFilters: React.FC<HostFiltersProps> = ({
     onFiltersChange({});
   };
 
-  // v4.51.0 — REPLACE semantics.  A preset is a canonical view, not
-  // an additive shortcut; clicking "Critical" means "show me the
-  // Critical view", not "add hasCriticalVulns on top of whatever I
-  // already had".  This is the rule the old Quick views used; the
-  // old Quick presets used merge (`{ ...filters, ...preset.filters }`)
-  // and that was the reported "Critical AND Not Reviewed feels
-  // conflicting" symptom because the two preset systems disagreed.
-  // If the user picks the already-active preset, clear it (toggle
-  // behaviour matches the chip pressed-state).
+  // Compose, don't replace: a preset toggles on top of whatever is already
+  // active, so it never silently wipes the user's other filters — see
+  // `togglePreset` for how presets that share a key coexist.
   const applyPreset = (preset: (typeof HOST_FILTER_PRESETS)[number]) => {
-    // Compose, don't replace: clicking a preset toggles ITS keys on top of
-    // whatever is already active, so a preset never silently wipes the user's
-    // other filters.  Clicking a lit preset removes just its keys.
-    const updated = { ...filters } as Record<string, unknown>;
-    if (presetIsApplied(preset.filters, filters)) {
-      for (const k of definedFilterKeys(preset.filters)) delete updated[k];
-    } else {
-      Object.assign(updated, preset.filters);
-    }
-    onFiltersChange(updated as HostFilterOptions);
+    onFiltersChange(togglePreset(preset.filters, filters));
   };
 
   // ---------------------------------------------------------------------

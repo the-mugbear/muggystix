@@ -265,7 +265,13 @@ export default function HostCommandBar({
           <div className="absolute right-sm top-1/2 flex -translate-y-1/2 items-center gap-xs">
             {validating && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden />}
             {!validating && trimmedDraft && validationFresh && validation?.valid && (
-              <Badge variant="secondary" className="gap-xxs">
+              <Badge
+                variant="secondary"
+                className="gap-xxs"
+                // The validator counts the query text alone; the table total
+                // below also applies the structured filters, so they can differ.
+                title="Hosts matching this query on its own — other active filters narrow the list further"
+              >
                 <Check className="size-3" aria-hidden />
                 {/* null = the backend skipped the count (statement timeout); show
                     a dash rather than a misleading "0 matches". */}

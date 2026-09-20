@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  Bookmark,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -11,14 +10,12 @@ import {
   Computer,
   Download,
   ExternalLink,
-  Eye,
   Loader2,
   RefreshCw,
   SkipForward,
   SlidersHorizontal,
   Crosshair,
   Star,
-  Wand2,
   X,
 } from 'lucide-react';
 import { RowSelectionState } from '@tanstack/react-table';
@@ -47,8 +44,6 @@ import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import HostFilters, { HostFilterOptions } from '../components/HostFilters';
 import HostCommandBar from '../components/hosts/HostCommandBar';
-import { dslFromFilters, type DslConversion } from '../components/hosts/dslFromFilters';
-import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import {
   FOLLOW_STATUS_OPTIONS,
   useHostColumns,
@@ -64,7 +59,6 @@ import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { useConfirm } from '../hooks/useConfirm';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import {
@@ -1001,39 +995,6 @@ export default function Hosts() {
     setSaveViewDialogOpen(true);
   }, [setQuery]);
 
-  // A lossy conversion the user has been warned about and may still apply.
-  const [pendingConversion, setPendingConversion] = useState<DslConversion | null>(null);
-
-  const applyConversion = useCallback((conversion: DslConversion) => {
-    setFilters((previous) => {
-      const updated = { ...previous } as HostFilterOptions;
-      conversion.consumedKeys.forEach((key) => { delete (updated as any)[key]; });
-      updated.query = conversion.dsl;
-      return updated;
-    });
-    setPage(0);
-    toast.info('Converted filters into a query', { autoHideMs: 2000 });
-  }, [setFilters, setPage, toast]);
-
-  // One-way panel → DSL: serialize the representable panel filters into the
-  // query string and clear exactly the keys that were moved (id-based
-  // tag/label selections and out-of-scope / first-seen stay in the panel).
-  // When the conversion would silently change results (≥2 port dimensions
-  // combined — the panel matches them on one port row, the DSL can't), we
-  // confirm first instead of producing a wrong query.
-  const handleConvertFiltersToQuery = useCallback(() => {
-    const conversion = dslFromFilters(filters);
-    if (!conversion.dsl) {
-      toast.info('No filters to convert into a query', { autoHideMs: 2000 });
-      return;
-    }
-    if (conversion.lossy) {
-      setPendingConversion(conversion);
-      return;
-    }
-    applyConversion(conversion);
-  }, [filters, applyConversion, toast]);
-
   // Facet values for the command-bar autocomplete, keyed by the DSL
   // value_source.  Tag/label suggest by NAME (the DSL resolves them by
   // name), unlike the id-based panel.
@@ -1550,16 +1511,6 @@ export default function Hosts() {
     if (page > maxPage) setPage(maxPage);
   }, [page, rowsPerPage, totalHosts]);
 
-  const visibleReviewStats = useMemo(() => {
-    const viewed = hosts.filter((host) => Boolean(host.follow?.last_viewed_at)).length;
-    const followed = hosts.filter((host) => Boolean(host.follow?.status)).length;
-    return {
-      viewed,
-      pending: Math.max(hosts.length - viewed, 0),
-      followed,
-    };
-  }, [hosts]);
-
   // -------------------------------------------------------------------------
   // DataTable columns — extracted to useHostColumns hook (v2.43.0 — MONO-1).
   // -------------------------------------------------------------------------
@@ -1682,13 +1633,6 @@ export default function Hosts() {
       <div className="flex flex-col gap-md lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h1 className="text-page-title">Discovered Hosts</h1>
-          <div className="mt-xxs flex items-center gap-xs text-metadata text-muted-foreground">
-            <Computer className="size-4" aria-hidden />
-            <span>
-              <strong className="text-foreground">{totalHosts}</strong>{' '}
-              host{totalHosts === 1 ? '' : 's'} — dense inventory view for triage, filtering, and drill-down.
-            </span>
-          </div>
         </div>
         <div className="flex flex-col gap-xs sm:flex-row sm:items-center">
           <Button
@@ -1739,7 +1683,8 @@ export default function Hosts() {
       {filters.outOfScopeOnly && (
         <Alert variant="warning">
           <AlertDescription>
-            Showing only hosts that are not mapped to any configured scope.
+            Showing only hosts outside the configured scope: not in any scope subnet and not
+            reachable through an in-scope name.
           </AlertDescription>
         </Alert>
       )}
@@ -1763,15 +1708,6 @@ export default function Hosts() {
           <SlidersHorizontal className="size-4" aria-hidden />
           Advanced filters
           {advancedOpen ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label="Convert the structured filters into a query"
-          onClick={handleConvertFiltersToQuery}
-        >
-          <Wand2 className="size-4" aria-hidden />
-          Convert filters → query
         </Button>
       </div>
 
@@ -1819,35 +1755,6 @@ export default function Hosts() {
                   </span>
                 </p>
               </div>
-              <p className="text-metadata text-muted-foreground">
-                Page {Math.min(page + 1, Math.max(Math.ceil(totalHosts / rowsPerPage), 1))} of{' '}
-                {Math.max(Math.ceil(totalHosts / rowsPerPage), 1)}
-              </p>
-              <div className="flex flex-wrap gap-xs">
-                <Badge variant={visibleReviewStats.viewed > 0 ? 'success' : 'outline'}>
-                  <Eye className="size-3" aria-hidden />
-                  {visibleReviewStats.viewed} viewed
-                </Badge>
-                <Badge
-                  variant="outline"
-                  className={
-                    visibleReviewStats.pending > 0
-                      ? 'border-warning/50 text-warning'
-                      : undefined
-                  }
-                >
-                  {visibleReviewStats.pending} pending review
-                </Badge>
-                <Badge
-                  variant="outline"
-                  className={
-                    visibleReviewStats.followed > 0 ? 'border-info/50 text-info' : undefined
-                  }
-                >
-                  <Bookmark className="size-3" aria-hidden />
-                  {visibleReviewStats.followed} followed
-                </Badge>
-              </div>
             </div>
             <div className="flex flex-wrap items-end gap-sm">
               {/* v4.26.0 — "Only hosts with notes" relocated into
@@ -1867,8 +1774,8 @@ export default function Hosts() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="critical_desc">Critical vulnerabilities</SelectItem>
-                    <SelectItem value="exploitable_desc">Exploitable first</SelectItem>
+                    <SelectItem value="critical_desc">Critical scanner observations</SelectItem>
+                    <SelectItem value="exploitable_desc">Exploit reported first</SelectItem>
                     <SelectItem value="open_ports_desc">Open ports</SelectItem>
                     <SelectItem value="discoveries_desc">Most discoveries</SelectItem>
                     <SelectItem value="notes_desc">Most notes</SelectItem>
@@ -2349,27 +2256,6 @@ export default function Hosts() {
         </SideSheetContent>
       </SideSheet>
 
-      {/* Guard: converting combined port/service/state filters to a query
-          changes their meaning (panel matches one port row; the query matches
-          each clause independently).  Confirm before producing a wrong query. */}
-      <ConfirmDialog
-        open={pendingConversion !== null}
-        onOpenChange={(open) => { if (!open) setPendingConversion(null); }}
-        title="This conversion changes what you'll match"
-        description={
-          'Your panel combines port, service, or port-state filters, which match the SAME port '
-          + '(e.g. "HTTP on port 22"). The query language matches each independently, so the '
-          + 'converted query can return different hosts (e.g. "port 22 anywhere AND HTTP anywhere"). '
-          + 'Convert anyway?'
-        }
-        confirmLabel="Convert anyway"
-        confirmVariant="default"
-        cancelLabel="Keep the filters"
-        onConfirm={() => {
-          if (pendingConversion) applyConversion(pendingConversion);
-          setPendingConversion(null);
-        }}
-      />
       {confirmEl}
     </div>
   );

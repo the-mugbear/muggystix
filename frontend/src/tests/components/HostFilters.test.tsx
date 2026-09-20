@@ -1,7 +1,47 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import HostFilters from '../../components/HostFilters';
+import HostFilters, { HOST_FILTER_PRESETS, togglePreset } from '../../components/HostFilters';
+
+// Several presets write the same keys (ports / portStates / followFilter).
+// Toggling used to assign and delete whole KEYS: a second port preset replaced
+// the first one's ports, and switching one off removed `portStates` from under
+// the preset that was still lit.
+describe('togglePreset', () => {
+  const preset = (id: string) => HOST_FILTER_PRESETS.find((p) => p.id === id)!.filters;
+
+  it('adds a second port preset to the first instead of replacing its ports', () => {
+    const both = togglePreset(preset('ssh'), togglePreset(preset('windows'), {}));
+    expect(both.ports).toEqual(['135', '139', '445', '22']);
+    expect(both.portStates).toEqual(['open']);
+  });
+
+  it('switching one off keeps what the still-lit preset needs', () => {
+    const both = togglePreset(preset('ssh'), togglePreset(preset('windows'), {}));
+    const windowsOnly = togglePreset(preset('ssh'), both);
+    expect(windowsOnly.ports).toEqual(['135', '139', '445']);
+    expect(windowsOnly.portStates).toEqual(['open']);
+    expect(togglePreset(preset('windows'), windowsOnly)).toEqual({});
+  });
+
+  it('keeps ports two lit presets share (Windows and the 21/23/53/69/135/139 group)', () => {
+    const both = togglePreset(preset('legacy'), togglePreset(preset('windows'), {}));
+    const legacyOnly = togglePreset(preset('windows'), both);
+    expect([...(legacyOnly.ports ?? [])].sort()).toEqual([...preset('legacy').ports!].sort());
+  });
+
+  it('never touches filters the operator set that no preset wrote', () => {
+    const base = { sites: ['3'], ports: ['8080'] };
+    const on = togglePreset(preset('ssh'), base);
+    expect(on).toMatchObject({ sites: ['3'], ports: ['8080', '22'] });
+    expect(togglePreset(preset('ssh'), on)).toEqual({ sites: ['3'], ports: ['8080'] });
+  });
+
+  it('switching "My review queue" off clears the review filter it implied', () => {
+    const on = togglePreset(preset('my_queue'), {});
+    expect(togglePreset(preset('my_queue'), on)).toEqual({});
+  });
+});
 
 // Finding 5: the legacy "Search hosts" field is gone (bare-text search lives in
 // the command bar), and the common network filters (OS/ports/services/subnets/
