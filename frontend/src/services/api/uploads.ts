@@ -268,6 +268,22 @@ export const getIngestionJob = async (jobId: number): Promise<IngestionJob> => {
   return response.data;
 };
 
+/**
+ * The named jobs in ONE request (v5.248.0). Following N started files used to
+ * be N `getIngestionJob` calls per poll tick. A job the caller may not see, or
+ * that no longer exists, is absent from the answer rather than an error — so
+ * the caller can stop following it. The server takes at most 200 ids.
+ */
+export const getIngestionJobsByIds = async (jobIds: number[]): Promise<IngestionJob[]> => {
+  if (jobIds.length === 0) return [];
+  const chunks: number[][] = [];
+  for (let i = 0; i < jobIds.length; i += 200) chunks.push(jobIds.slice(i, i + 200));
+  const pages = await Promise.all(
+    chunks.map((chunk) => api.get(`${p()}/upload/jobs`, { params: { ids: chunk.join(',') } })),
+  );
+  return pages.flatMap((r) => r.data as IngestionJob[]);
+};
+
 export const getRecentIngestionJobs = async (limit = 5): Promise<IngestionJob[]> => {
   const response = await api.get(`${p()}/upload/jobs?limit=${limit}`);
   return response.data;

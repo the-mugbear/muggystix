@@ -21,12 +21,13 @@ import {
   PauseCircle,
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import {
   getScans,
   getScansSummary,
   deleteScan,
   getScanDeletionImpact,
-  getIngestionJob,
+  getIngestionJobsByIds,
   getRecentIngestionJobs,
   dismissIngestionJob,
   cancelIngestionJob,
@@ -568,45 +569,47 @@ export default function Scans() {
     });
   }, []);
 
-  useEffect(() => {
-    if (activeJobIds.length === 0) return undefined;
-    let cancelled = false;
-
-    const pollJobs = async () => {
-      // Audit H20: was sequential per-job awaits; 10 active jobs on
-      // a 200ms-RTT network was 2s of waterfall per poll tick.  Fan
-      // out via Promise.all so the round-trip is one batch.
-      const results = await Promise.allSettled(activeJobIds.map(getIngestionJob));
-      if (cancelled) return;
-      const finishedIds: number[] = [];
-      let anyCompleted = false;
-      const next: Record<number, IngestionJob> = {};
-      results.forEach((r, idx) => {
-        if (r.status !== 'fulfilled') return;
-        const job = r.value;
-        next[activeJobIds[idx]] = job;
-        if (job.status === 'completed' || job.status === 'failed') {
-          finishedIds.push(activeJobIds[idx]);
-          if (job.status === 'completed') anyCompleted = true;
-        }
-      });
-      setActiveJobs((prev) => ({ ...prev, ...next }));
-      // v5.222.0 — carry the job's state onto the file's banner entry.
-      applyJobsToUploadEntries(Object.values(next));
-      if (finishedIds.length > 0) {
-        setActiveJobIds((prev) => prev.filter((id) => !finishedIds.includes(id)));
-        fetchRecentJobs();
-        if (anyCompleted) fetchScans();
+  // v5.248.0 — following the started files is ONE request per tick
+  // (`GET /upload/jobs?ids=`), on the visibility-aware poll. It was one GET per
+  // job on a fixed 4 s interval: 30 files meant 30 requests a tick, a slow
+  // response overlapped the next tick, and a hidden tab kept going.
+  const pollJobs = useCallback(async () => {
+    const asked = activeJobIds;
+    if (asked.length === 0) return;
+    const jobs = await getIngestionJobsByIds(asked); // a rejection backs the poll off
+    const returned = new Set(jobs.map((j) => j.id));
+    const doneIds: number[] = [];
+    let anyCompleted = false;
+    const next: Record<number, IngestionJob> = {};
+    for (const job of jobs) {
+      next[job.id] = job;
+      if (job.status === 'completed' || job.status === 'failed') {
+        doneIds.push(job.id);
+        if (job.status === 'completed') anyCompleted = true;
       }
-    };
-
-    pollJobs();
-    const interval = setInterval(pollJobs, 4000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    }
+    // A job the server no longer returns (deleted, or not this user's) was a
+    // 404 the old per-job poll retried for the life of the page.
+    const goneIds = asked.filter((id) => !returned.has(id));
+    setActiveJobs((prev) => ({ ...prev, ...next }));
+    // v5.222.0 — carry the job's state onto the file's banner entry.
+    applyJobsToUploadEntries(jobs);
+    if (doneIds.length > 0 || goneIds.length > 0) {
+      const stop = new Set([...doneIds, ...goneIds]);
+      setActiveJobIds((prev) => prev.filter((id) => !stop.has(id)));
+      fetchRecentJobs();
+      if (anyCompleted) fetchScans();
+    }
   }, [activeJobIds, fetchScans, fetchRecentJobs, applyJobsToUploadEntries]);
+
+  useVisibilityPoll(pollJobs, 4000, activeJobIds.length > 0);
+  // The poll waits one interval before its first run; a file just handed over
+  // should show its state at once.
+  const pollJobsRef = useRef(pollJobs);
+  pollJobsRef.current = pollJobs;
+  useEffect(() => {
+    if (activeJobIds.length > 0) void pollJobsRef.current().catch(() => undefined);
+  }, [activeJobIds]);
 
   // Recent-jobs polling — depend only on the boolean, not the full
   // recentJobs array.  Pre-audit (H20) this effect re-ran on every
@@ -617,41 +620,32 @@ export default function Scans() {
     () => recentJobs.some((j) => j.status === 'queued' || j.status === 'processing'),
     [recentJobs],
   );
-  useEffect(() => {
-    if (!hasActiveRecent) return undefined;
-    const interval = setInterval(fetchRecentJobs, 5000);
-    return () => clearInterval(interval);
-  }, [hasActiveRecent, fetchRecentJobs]);
+  // Visibility-aware and settle-then-wait (v5.248.0) — it was a fixed interval
+  // that overlapped a slow response and kept running in a hidden tab.
+  useVisibilityPoll(fetchRecentJobs, 5000, hasActiveRecent);
 
   // v5.207.0 — refresh when ANY scan lands. The job polling above only
   // follows uploads this tab submitted, so scans from an agent or another
   // tab raised counters elsewhere while this list stayed stale. Polls a
   // count + newest-id marker (one indexed query) while the tab is visible.
   const inventoryMarkerRef = useRef<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      try {
-        const marker = await getScanInventoryMarker();
-        if (cancelled) return;
-        const key = `${marker.count}:${marker.latest_id ?? ''}`;
-        if (inventoryMarkerRef.current !== null && inventoryMarkerRef.current !== key) {
-          fetchScans();
-          fetchRecentJobs();
-        }
-        inventoryMarkerRef.current = key;
-      } catch {
-        /* transient — the next tick retries */
-      }
-    };
-    tick();
-    const interval = setInterval(tick, 15_000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+  const checkInventoryMarker = useCallback(async () => {
+    // Not caught: a rejection is what makes the poll back off during an
+    // outage (it used to swallow the error and keep its 15 s cadence).
+    const marker = await getScanInventoryMarker();
+    const key = `${marker.count}:${marker.latest_id ?? ''}`;
+    if (inventoryMarkerRef.current !== null && inventoryMarkerRef.current !== key) {
+      fetchScans();
+      fetchRecentJobs();
+    }
+    inventoryMarkerRef.current = key;
   }, [fetchScans, fetchRecentJobs]);
+  useVisibilityPoll(checkInventoryMarker, 15_000);
+  // Take the baseline at once, so the first change is seen on the first tick.
+  useEffect(() => {
+    void checkInventoryMarker().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const groupedScans = useMemo(
     () =>

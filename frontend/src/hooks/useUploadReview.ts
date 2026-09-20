@@ -27,6 +27,7 @@ import {
 import type { DetectionResponse, FormatOption, UploadOptions } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { duplicateUploadOf, type DuplicateUpload } from '../utils/duplicateUpload';
+import { runLimited, STAGE_CONCURRENCY, START_CONCURRENCY } from '../utils/runLimited';
 
 export type ReviewPhase =
   | 'uploading'
@@ -233,7 +234,9 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         }
       }
       if (batchId != null) setRows((prev) => prev.map((r) => (fresh.some((f) => f.key === r.key) ? { ...r, batchId } : r)));
-      await Promise.allSettled(fresh.map((row) => stageOne({ ...row, batchId }, { batchId })));
+      // Bounded: every file at once was 200 simultaneous uploads for a
+      // 200-file drop. Rows wait at "Uploading 0%" until a slot frees.
+      await runLimited(fresh, STAGE_CONCURRENCY, (row) => stageOne({ ...row, batchId }, { batchId }));
     },
     [api, stageOne],
   );
@@ -340,7 +343,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
 
   const importReady = useCallback(async () => {
     const targets = rows.filter(isImportable);
-    await Promise.allSettled(targets.map((row) => importOne(row)));
+    await runLimited(targets, START_CONCURRENCY, (row) => importOne(row));
   }, [rows, importOne]);
 
   const readyCount = rows.filter(isImportable).length;

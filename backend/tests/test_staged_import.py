@@ -412,3 +412,34 @@ def test_discard_keeps_the_file_of_a_job_that_was_started(db_session, client, te
     with pytest.raises(ValueError):
         discard_staged_job(db_session, stale)
     assert path.exists(), "a job that is no longer staged must keep its file"
+
+
+# --- v2.370.0 — GET /upload/jobs?ids= : follow N files with one request --------
+# Code review finding 10: the Scans page fetched every active job separately,
+# every four seconds.
+
+def test_jobs_can_be_fetched_by_id_in_one_request(client, db_session, test_project):
+    a = _upload(client, test_project, HOST_PORT_TEXT, "a.txt", "text/plain", stage=True).json()["job_id"]
+    b = _upload(client, test_project, NMAP_XML, "b.xml", stage=True).json()["job_id"]
+    other = _upload(client, test_project, b"10.1.1.1:22\n", "c.txt", "text/plain", stage=True).json()["job_id"]
+    # A dismissed job is still one the page may be following.
+    dismissed = _job(db_session, b)
+    dismissed.status = "failed"
+    dismissed.dismissed_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    url = f"/api/v1/projects/{test_project.id}/upload/jobs"
+    r = client.get(url, params={"ids": f"{a},{b},999999"})
+    assert r.status_code == 200, r.text
+    assert sorted(j["id"] for j in r.json()) == sorted([a, b])  # unknown id: absent, not an error
+    assert other not in [j["id"] for j in r.json()]
+
+    # Without ids the list is unchanged: dismissed rows stay hidden.
+    assert b not in [j["id"] for j in client.get(url).json()]
+
+
+def test_jobs_by_id_validates_its_input(client, test_project):
+    url = f"/api/v1/projects/{test_project.id}/upload/jobs"
+    assert client.get(url, params={"ids": "1,two"}).status_code == 422
+    assert client.get(url, params={"ids": ",".join(str(i) for i in range(1, 202))}).status_code == 422
+    assert client.get(url, params={"ids": ""}).json() == []

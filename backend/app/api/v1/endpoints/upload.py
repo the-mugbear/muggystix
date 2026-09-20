@@ -567,6 +567,15 @@ def list_ingestion_jobs(
             "Ingestion Queue, which wants only live + unacked rows."
         ),
     ),
+    ids: str | None = Query(
+        None,
+        description=(
+            "Comma-separated job ids (v2.370.0, at most 200). Returns exactly "
+            "those jobs the caller may see — dismissed ones included, status "
+            "and pagination ignored. The Scans page follows the files it "
+            "started with ONE request per tick instead of one per file."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -585,6 +594,22 @@ def list_ingestion_jobs(
     query = db.query(IngestionJob).filter(IngestionJob.project_id == project.id)
     if current_user.role != UserRole.ADMIN:
         query = query.filter(IngestionJob.submitted_by_id == current_user.id)
+    if ids is not None:
+        try:
+            wanted = sorted({int(part) for part in ids.split(",") if part.strip()})
+        except ValueError:
+            raise HTTPException(status_code=422, detail="ids must be comma-separated integers")
+        if len(wanted) > 200:
+            raise HTTPException(status_code=422, detail="At most 200 ids per request")
+        if not wanted:
+            return []
+        # Same project + visibility rule as above; an id the caller may not
+        # see, or that no longer exists, is simply absent from the answer.
+        return (
+            query.filter(IngestionJob.id.in_(wanted))
+            .order_by(desc(IngestionJob.created_at))
+            .all()
+        )
     if status:
         query = query.filter(IngestionJob.status == status)
     if not include_dismissed:

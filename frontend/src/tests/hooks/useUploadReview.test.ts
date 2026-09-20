@@ -5,6 +5,7 @@
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { STAGE_CONCURRENCY } from '../../utils/runLimited';
 
 // The hook reaches the API barrel only for its default dependencies (the
 // test injects its own), but the barrel's HTTP client must not load in jsdom.
@@ -289,6 +290,32 @@ describe('useUploadReview', () => {
     });
     await waitFor(() => expect(result.current.rows[0].phase).toBe('ready'));
     expect(deps.uploadFile.mock.calls[1][2]).toMatchObject({ stage: true, allowDuplicate: true });
+  });
+
+  // v5.248.0 — code review finding 10. Every selected file used to start
+  // uploading at once; over HTTP/2 nothing in the browser caps that.
+  it('stages a large selection a few files at a time, and still stages them all', async () => {
+    const deps = makeDeps();
+    let uploading = 0;
+    let peak = 0;
+    deps.uploadFile.mockImplementation(async (f: File) => {
+      uploading += 1;
+      peak = Math.max(peak, uploading);
+      await new Promise((r) => setTimeout(r, 5));
+      uploading -= 1;
+      return { job_id: 500 + Number(f.name.replace(/\D/g, '')), filename: f.name, status: 'staged', message: 'staged', scan_id: null };
+    });
+    deps.getJobDetection.mockImplementation(async (jobId: number) => ({ ...ready, job_id: jobId }));
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+
+    await act(async () => {
+      await result.current.addFiles(Array.from({ length: 12 }, (_, i) => file(`scan-${i}.xml`)));
+    });
+
+    expect(deps.uploadFile).toHaveBeenCalledTimes(12);
+    expect(peak).toBeLessThanOrEqual(STAGE_CONCURRENCY);
+    expect(peak).toBeGreaterThan(1); // bounded, not serialised
+    expect(result.current.rows.filter((r) => r.phase === 'ready')).toHaveLength(12);
   });
 });
 
