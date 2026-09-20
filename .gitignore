@@ -259,6 +259,7 @@ all_container_logs.txt
 
 # Oneoff planning docs
 suggestions.md
+CODEREVIEW.txt
 
 # deploy.sh rollback snapshot state (B2-1) — operator-local, per-deploy
 .deploy-rollback-state
