@@ -34,8 +34,10 @@ WORKFLOWS = ["plan_generation", "execution", "reconnaissance", "assist"]
 # heading — proving the slice kept its own body, not just shared preamble.
 # ASCII-only on purpose (no em-dash) so the assertion can't fail on encoding.
 WORKFLOW_ANCHORS = {
-    "plan_generation": "Build a Test Plan (from",
-    "execution": "Execute an Approved Plan (from",
+    # v2.370.2 — the headings dropped "(from `/generate`)" / "(from `/execute`)":
+    # a session opens these phases itself, the operator buttons are one way in.
+    "plan_generation": "## Workflow A — Build a Test Plan",
+    "execution": "## Workflow B — Execute an Approved Plan",
     "reconnaissance": "Populate Host Data via Reconnaissance",
     "assist": "Inventory-assist phase (interactive query",
 }

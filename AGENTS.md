@@ -1,12 +1,12 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Prompt version:** 1.44.0 · **Verified against:** backend 2.258.0 (2026-08-11)
+**Prompt version:** 1.44.0 · **Verified against:** backend 2.370.1 (2026-09-19)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 
 You are an AI assistant (Claude Code, Codex, ChatGPT, etc.) assigned to a workflow in BlueStick. This file is the entire surface you are authorized to use. Follow it literally — the surrounding scaffolding (human approval, per-session key scope, audit trail) depends on you behaving as described.
 
-Everything below is reachable through one auth mechanism: the API key the user pasted to you. Do not attempt to log in, reach admin surfaces, mint new keys, create new agents, or touch endpoints outside `/api/v1/agent/*`. They are not available to you and calling them will return 401/403.
+Everything below is reachable through one auth mechanism: the API key the user pasted to you. Do not attempt to log in, reach admin surfaces, mint new keys, create new agents, or touch endpoints outside `/api/v1/agent/*`. The only other surfaces that are yours are the public reference ones this guide sends you to — `/.well-known/networkmapper.json`, `/api/v1/agents-guide` and `/api/v1/references/*`. Everything else is not available to you and will return 401/403.
 
 One exception, and it matters: you **can** extend your own key's deadline via `POST /api/v1/agent/session/renew`. That is renewal, not rotation — same key, later expiry — and it is how you survive a long-running scan outliving your credential. See **If your key expires** below.
 
@@ -28,11 +28,15 @@ curl -sk https://<host>/.well-known/networkmapper.json
 
 The response contains `instance_id`, `name`, `version`, `purpose`, and a `safety_properties` block. Your instructions block includes the `instance_id` the prompt was generated with — cross-check the two values match **once** at the start of your session. If they match, the session is trusted for the duration of your API key; you do not need to re-check on every request. If they do not match, stop and alert the user — the prompt may have been tampered with, copied from a different instance, or served by an unrelated host.
 
-You can also read `safety_properties` to confirm the architectural guarantees you operate under: `all_commands_require_user_approval` + `no_autonomous_execution` (BlueStick is a coordinator — every command goes to the user's terminal for approval, nothing runs without human-in-the-loop), `audit_trail_persistent` (every action is recorded), `agent_keys_time_limited` (your key expires in 24h), and `agent_keys_scope_bound` (your key is locked to exactly one plan or scope; cross-scope access is rejected at the auth layer).
+You can also read `safety_properties`. Read them as the operating model, not as things the server enforces on your machine — it cannot see your terminal:
+- `all_commands_require_user_approval` + `no_autonomous_execution` — BlueStick is a coordinator; it never runs a command itself, and every command is the operator's to approve. **Approve by exception** (see *The working directory is also the approval boundary*) is the one standing approval: an approved tool, against a host already in the inventory, writing into the session's working directory, may run without asking each time. Anything else stops and asks. Holding to that is your discipline plus your client's sandbox; the server only records what you report.
+- `audit_trail_persistent` — every `/agent/*` request you make is recorded and shown to the operator.
+- `agent_keys_time_limited` — your key expires (24 h by default) and you can renew it yourself while the session lives, up to the session's maximum lifetime; ending the session, not expiry, is what revokes it.
+- `agent_keys_scope_bound` — read this as: your key is bound to **one project session and one operator**, and each *phase* you open is bound to one scope or one plan. The key is not locked to a single plan or scope (that was the pre-v2.337.0 model).
 
 ## Quick Start
 
-The user will give you an **API key** and an **instructions block** copied from the BlueStick UI. If you don't have one, ask the user to go to **Scopes → Start Agentic Recon** (to populate host data for a scope), **Test Plans → Generate with AI** (to populate a new plan), or click **Execute with AI** on an approved plan (to run one), then paste you whatever the UI produces.
+The user will give you an **API key** and an **instructions block** copied from the BlueStick UI. If you don't have one, ask the user to start an agent session from the BlueStick UI — any of **AI Assist**, **Scopes → Start Agentic Recon**, **Test Plans → Generate with AI** or **Execute with AI** on an approved plan — and paste you what it produces. All four mint the SAME kind of key: one session for the project. They differ only in which phase is already open when you start; you open any other phase yourself (`POST /agent/recon/start`, `POST /agent/test-plans`, `POST /agent/execution-sessions/start`).
 
 ### Authentication
 
@@ -81,7 +85,7 @@ If your client speaks MCP, the operator can hand you the same session as a set o
 
 Two things to know:
 
-- **You see only your own workflow's tools.** A recon key gets the recon tools, a plan key the planning tools. That is deliberate; there is no key that spans workflows. `agent_identity` tells you which one you are, what you may write, and when your key expires.
+- **You see the whole catalogue.** One session does every kind of work, so `tools/list` is not filtered (v2.337.0). A tool being listed does not mean a call will succeed: the endpoint behind it decides on every call — by your operator's project role, and by whether you have the phase open. `agent_identity` tells you what you may write, which phases you have open (`open_phases`), and when your key expires.
 - **Bulk data is not a tool.** The NDJSON streams, target-file downloads and `recon/upload` stay curl on purpose — they belong in a file on disk, not in your context. `GET /api/v1/references/mcp-tools` lists everything the server exposes.
 
 ### HTTPS / self-signed certs
@@ -141,7 +145,7 @@ curl.exe -sk -X POST "https://<host>/api/v1/agent/session/environment" `
 
 …or native `Invoke-RestMethod -SkipCertificateCheck -Method Post -Headers @{ 'X-API-Key' = $KEY } -ContentType 'application/json' -Body (... | ConvertTo-Json)`. The endpoint + body shape are identical to the bash form.
 
-Both endpoints echo back the persisted record with `probed_at`, `probed_by_user_id`, and `probed_from_ip` for the audit trail. The same data is then echoed on subsequent `/execution-context` and `/recon/context` responses, so once you've probed you don't have to re-send it — just read `environment` from the next context call.
+The endpoint echoes back the persisted record with `probed_at`, `probed_by_user_id`, and `probed_from_ip` for the audit trail. The same data is then echoed on subsequent `/execution-context` and `/recon/context` responses, so once you've probed you don't have to re-send it — just read `environment` from the next context call.
 
 ### Command-flavour preference order (use the environment to pick)
 
@@ -167,7 +171,7 @@ When you record the test result, put the *actual command you ran* in `command_ru
 
 ### What the user sees
 
-Every `/api/v1/agent/*` request is recorded and surfaced to the operator under "Agent API activity" (Test Plan Detail for plan-scoped calls, Recon Session detail for recon-scoped), filterable by host, target IP, and status code. Don't try to obscure activity by routing around the API — you'd only be visible-but-suspicious instead of visible-and-correct. Operate transparently.
+Every `/api/v1/agent/*` request is recorded and surfaced to the operator under "Agent API activity" (the test plan's API-calls tab for calls about a plan, the recon run page for recon calls, the assist sessions page otherwise), filterable by host, target IP, and status code. Don't try to obscure activity by routing around the API — you'd only be visible-but-suspicious instead of visible-and-correct. Operate transparently.
 
 <!-- agents:end -->
 
@@ -240,11 +244,15 @@ Show every command either way, including the ones you run under the exception. T
 
 <!-- agents:section tags="plan_generation" -->
 
-## Workflow A — Build a Test Plan (from `/generate`)
+## Workflow A — Build a Test Plan
 
-This is the flow when the user clicks **Test Plans → Generate with AI**. Your job is to populate a draft plan with structured test entries and submit it for human review.
+Your job is to populate a draft plan with structured test entries and submit it for human review. If the operator started you from **Test Plans → Generate with AI**, a draft already exists and your instructions name its `plan_id`; otherwise you open the draft yourself (step 0).
 
 ```bash
+# 0. Open the planning phase — only when you were NOT handed a plan_id.
+POST /agent/test-plans   {"title": "..."}        # optional: description, filter_criteria
+#    → 201 { id, ... }   use that id as {plan_id} below.   (MCP: create_test_plan)
+
 # 1. Review candidate hosts (services, vulnerabilities, port data).
 #    /context is PAGINATED — at most `limit` hosts per call (default 500).
 #    Page until you've seen every candidate; has_more: true means
@@ -260,7 +268,14 @@ PATCH /agent/test-plans/{plan_id}
 # 3. Add structured test entries for candidate hosts (≤500 per call —
 #    POST in multiple batches if you selected more than 500 hosts)
 POST /agent/test-plans/{plan_id}/entries
-{"entries": [{"host_id": ..., "priority": "...", ...}, ...]}
+{"entries": [{"host_id": ..., "priority": "...", "test_phase": "...",
+              "proposed_tests": [...], "rationale": "..."}, ...]}
+#    All FIVE are required — a missing `rationale` is a 422. Optional: notes,
+#    target_fqdn. /context hands you ready-made `entry_template`,
+#    `entry_batch_example` and `entry_schema`; copy those, do not guess the shape.
+#    If /context carries a `source` block (kind: "manual_hosts"), the operator
+#    picked these hosts BY HAND: `candidate_hosts` IS the permitted set. The
+#    server does not stop you adding other host ids — do not.
 
 # 4. Validate the plan (dry-run — check for warnings)
 GET /agent/test-plans/{plan_id}/validate
@@ -302,15 +317,28 @@ Use the highest-severity condition that applies. Always include `{ip}` placehold
 
 <!-- agents:section tags="execution" -->
 
-## Workflow B — Execute an Approved Plan (from `/execute`)
+## Workflow B — Execute an Approved Plan
 
-This is the flow when the user clicks **Execute with AI** on a plan in `approved` or `in_progress` status. You drive execution of the individual tests with **mandatory per-test human approval** and **per-host target verification**.
+The plan must be in `approved` or `in_progress` status — a human approves it; you cannot. You drive execution of the individual tests with **mandatory per-test human approval** and **per-host target verification**.
 
 > **Key principle:** You are a coordinator, not an autonomous executor. The user's terminal is the executor. You propose each command, wait for explicit approval, run it (if you have shell access) or ask the user to run it, then record the result.
 
 ### Execution flow
 
 ```bash
+# 0. Open the execution phase. WITHOUT an open run, every call below — starting
+#    with execution-context — answers 409 "No active execution run for this plan".
+#    (If the operator started you from "Execute with AI", the run is already
+#    open: GET /agent/identity lists it under open_phases. Calling start again is
+#    harmless — a run THIS session already has open on the plan is reused.)
+POST /agent/execution-sessions/start   {"plan_id": N}      # MCP: start_execution
+#    → 201: the execution context, plus `read_back` — the concrete bounds of this
+#      run (the plan's hosts, the working directory). State it before you act.
+#    → 404 unknown plan · 409 the plan is not approved/in_progress, or has no entries
+#    One run per plan is active at a time: opening yours PAUSES any other
+#    session's active run on the same plan. Do not open a plan someone else is
+#    executing unless the operator told you to take it over.
+
 # 1. Fetch execution context — hosts, tests, known services.
 #    Commands have {ip} resolved to actual IPs.
 GET /agent/test-plans/{plan_id}/execution-context
@@ -402,7 +430,7 @@ Three safety layers — do not skip any of them:
 2. **Terminal results.** No result row may be left `pending` / `pending_approval`.
 3. **Empty entry.** An entry with zero proposed tests (or one you're closing before covering every test) must pass an explicit `no_tests_run_reason` in the complete payload (e.g. "host went offline before testing", "reclassified out of scope mid-run"). It's captured next to `override_reason` in the audit row.
 
-The separate **sanity-check gate** still applies: completion also needs a passing `HostSanityCheck` for the entry, or an `override_reason`.
+The separate **sanity-check gate** still applies: completion also needs a passing `HostSanityCheck` for the entry, or an `override_reason`. **It applies to results too:** recording a test result with `status: "executed"`, or any result with `is_finding: true`, before the entry has a passing sanity check answers `409` unless the body carries `sanity_override_reason` — and an override is written to the audit log, so give a reason the operator would accept.
 
 ### Sanity check methods
 
@@ -445,14 +473,14 @@ This is the flow when the user clicks **Scopes → Start Agentic Recon**. Your j
 
 **You are populating BlueStick's host database.** You run scanner tools locally (nmap, masscan, etc.), submit the raw output to BlueStick for parsing, iterate until the scope is well-characterized, and then complete. A human reviews the populated data and (as a separate step) decides what to test.
 
-**You do NOT create test plan entries in this workflow.** Your API key is scope-bound, not plan-bound — every call to `/agent/test-plans/*` returns 403. Test plan generation is Workflow A, which runs *after* recon populates the database.
+**You do NOT create test plan entries as part of reconnaissance.** Planning is Workflow A, and it runs *after* recon has populated the database. Your key is not what stops you — one session can open a planning phase with the same key (`POST /agent/test-plans`) — so do it only when the operator asks for a plan, as its own phase, not as a side effect of a sweep.
 
 ### Key differences from Workflow A
 
 | | Workflow A (plan generation) | **Workflow C (reconnaissance)** |
 |---|---|---|
 | **Goal** | Create a prioritized list of tests to run | **Populate host/port/service data in the DB** |
-| **Key binding** | `test_plan_id` (plan-scoped) | `scope_id` (scope-scoped) |
+| **Phase binding** (the key is the same) | the draft plan you opened | the scope you opened a run on |
 | **Writes to** | `test_plans`, `test_plan_entries` | `hosts`, `ports`, `scans` (via ingestion pipeline) |
 | **Endpoint root** | `/agent/test-plans/*` | **`/agent/recon/*`** |
 | **What you submit** | JSON test entries | **Raw scanner output files (nmap XML, masscan, etc.)** |
@@ -471,6 +499,15 @@ When you see it:
 ### Recon flow
 
 ```bash
+# 0. Open the reconnaissance phase. WITHOUT an open run, /agent/recon/* answers
+#    409 { "error": "no_active_recon_run" }.  (Started from "Start Agentic Recon"?
+#    The run is already open — GET /agent/identity lists it under open_phases.)
+GET  /agent/scopes                                  # pick the scope
+POST /agent/recon/start   {"scope_id": N}           # optional: notes   (MCP: start_recon)
+#    → 201: the recon context below, plus `read_back` — this run's concrete bounds
+#      (the scope's CIDRs and names, the working directory). State it before you act.
+#    → 400 when the scope has no subnets
+
 # 1. Orient yourself — get the scope's CIDRs, size analysis, recommended sequence, tool catalog
 GET /agent/recon/context
 # → { recon_session_id, scope_id, scope_cidrs, scope_domains, scope_size, recommended_sequence,
@@ -495,7 +532,12 @@ POST /agent/recon/upload  (multipart/form-data)
   batch=<sweep label>              # send on EVERY chunk of a split sweep — see "Upload batches & duplicates"
 # → { job_id, filename, status: "queued", message, recon_session_id, batch_id, batch }
 # → 409 { "detail": { "code": "duplicate_scan", "scan_id" | "job_id", "message" } }
-#     this exact file is already ingested (or still parsing): it is DONE — never retry it
+#     this exact file is already in the project — as a scan, still parsing, or
+#     staged awaiting its format review: it is DONE — never retry it
+# → 503 + header `Retry-After: 5`  { "detail": "The upload batch is busy; retry this file in a few seconds." }
+#     parallel chunks of one sweep briefly contended for the batch label. NOTHING
+#     was stored. Wait the Retry-After seconds and re-POST the SAME file with the
+#     same batch label — it is not a duplicate, and it is not a failure to report.
 
 # 4. Poll the parse job
 GET /agent/recon/jobs/{job_id}
@@ -544,7 +586,7 @@ A large scope becomes many files — one per chunk (see § Very large scopes). W
 - **A one-off file** (one dnsx run, a single targeted re-scan) needs no label.
 - Labels are scoped to your recon session. After a resume (same session, new key) keep the same labels so later chunks join the earlier batches.
 
-**Never upload the same file twice.** BlueStick hashes every upload. A file identical to one already in the project — as a scan, or still parsing — is refused with `409` and `detail.code: "duplicate_scan"`, naming the `scan_id` (or `job_id`) it already is, and nothing is created or counted. That response means the file **is** ingested: mark it done and move on. Do not retry it, rename it, or alter its contents to get past the check — re-importing is the operator's call, made from the Scans page. If a lapsed key left you unsure whether an upload landed, renew and send it once more: `409 duplicate_scan` answers the question.
+**Never upload the same file twice.** BlueStick hashes every upload. A file identical to one already in the project — as a scan, still parsing, or staged awaiting its format review — is refused with `409` and `detail.code: "duplicate_scan"`, naming the `scan_id` (or `job_id`) it already is, and nothing is created or counted. That response means the file **is** ingested: mark it done and move on. Do not retry it, rename it, or alter its contents to get past the check — re-importing is the operator's call, made from the Scans page. If a lapsed key left you unsure whether an upload landed, renew and send it once more: `409 duplicate_scan` answers the question.
 
 ### Summary response shape
 
@@ -672,7 +714,7 @@ A scope can declare **domains** alongside subnets. Each entry is exact (`portal.
 **Plan for it — work in batches.** On a large multi-thousand-subnet scope you cannot hold every CIDR in context, run one scan, and be done — and you must **not** point one nmap/masscan run at the whole scope and upload one giant file. Instead: page a chunk of CIDRs → scan that chunk → upload (with a distinct metadata-bearing filename **and the sweep's `batch` label** — see the Scan-naming convention and § Upload batches & duplicates above) → poll → next chunk. Report progress between batches; don't queue ten scans and upload them all at the end.
 
 - **Chunk size** — roughly **256–1024 addresses (~/22–/24), or ~25–50 CIDRs from the paginated subnet list, per scan+upload**. Smaller for slow `-sV -sC` service scans, larger for fast masscan sweeps; when unsure, smaller is safer.
-- **Why chunk, not monolith:** a `/16` nmap XML can be hundreds of MB and exceed the upload proxy's 500 MB body cap (fails outright); if a giant upload fails to parse you lose *everything*, whereas one failed chunk of ten leaves the other nine safe; each chunk bumps the counts in `/agent/recon/summary` so the operator sees real progress; and the ingestion worker parses one job at a time, so a huge file monopolizes it while smaller chunks keep the queue moving.
+- **Why chunk, not monolith:** a `/16` nmap XML can be hundreds of MB and exceed `MAX_FILE_SIZE` (1 GB by default — the upload is refused with `400 File too large`); if a giant upload fails to parse you lose *everything*, whereas one failed chunk of ten leaves the other nine safe; each chunk bumps the counts in `/agent/recon/summary` so the operator sees real progress; and the ingestion worker parses one job at a time, so a huge file monopolizes it while smaller chunks keep the queue moving.
 
 `scope_size.total_addresses` tells you the magnitude up front — if it's in the millions, tell the user the estimated wall-clock (e.g. "~6h at default masscan rate") and ask whether to (a) proceed comprehensively, (b) sample a representative subnet first, or (c) narrow the scope. Wait for an explicit choice before burning hours of scan time.
 
@@ -891,27 +933,31 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) — a project write |
 | PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation — a project write. Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
 | POST | `/agent/feedback` | **File structured feedback at the moment you hit friction** (a retry, a guess, a workaround, a re-read of this guide) — several short submissions per session; `feedback_recorded: false` on a phase completion means you have filed none yet. Over MCP the tool is `submit_feedback`. Your session is attributed from your key; `source` names the kind of work (`assist` / `reconnaissance` / `plan_generation` / `in_session_execution`) and the matching `recon_session_id` / `test_plan_id` / `execution_session_id` is optional context. See the `## Feedback Requested` block at the end of the session prompt for the payload shape. |
+| GET | `/agent/identity` | **Who am I** — `session_id`, `can_write_project_data`, `environment_probed`, `key_expires_at` / `renew_path` / `renewable_until`, and **`open_phases`**: the recon and execution runs this session has open. Read it first after a resume — it is the only way to find the runs a previous key left open. |
+| POST | `/agent/session/environment` | Record the operator-environment probe on your session (once; rides into every run) |
+| POST | `/agent/session/renew` | Extend your key's deadline (same key; accepts an already-expired key while the session is under its lifetime cap) |
+| POST | `/agent/session/end` | **End the session — the last call you make.** Revokes your key; `409` while a recon / execution phase is still open (complete those first). Over MCP: `end_session`. Optional `notes` |
+| POST | `/agent/tool-suggestions` | Record a request for a tool the approved set does not cover (201). Do this instead of substituting a tool. |
 
 <!-- agents:end -->
 
 <!-- agents:section tags="plan_generation,execution" -->
 
-### Test-plan endpoints (plan-scoped or unscoped keys)
+### Planning and execution endpoints (any session; the plan comes from the phase you open)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/agent/test-plans` | List your plan (per-plan keys see only their own plan) |
+| POST | `/agent/test-plans` | **Open the planning phase** — create a draft (`{title}`, optional `description`, `filter_criteria`); 201 returns its `id` |
+| GET | `/agent/test-plans` | List the project's plans. `?mine=true` narrows to the ones this session drafted; `?status=` filters by status |
 | GET | `/agent/test-plans/{id}` | Get test plan detail |
 | GET | `/agent/test-plans/{id}/context` | **Planning context** — candidate hosts + enrichment in one call |
 | PATCH | `/agent/test-plans/{id}` | Update test plan metadata (description, title) |
 | POST | `/agent/test-plans/{id}/entries` | Batch-add entries (up to 500) |
 | PATCH | `/agent/test-plans/{id}/entries/{eid}` | Update an entry |
 | GET | `/agent/test-plans/{id}/validate` | Dry-run validation (check warnings before submit) |
-| POST | `/agent/test-plans/{id}/submit` | Submit draft for approval (requires description) |
+| POST | `/agent/test-plans/{id}/submit` | Submit draft for approval — requires a description, `draft` status and at least one entry (400 otherwise) |
+| POST | `/agent/execution-sessions/start` | **Open the execution phase** on an approved plan (`{plan_id}`); 201 returns the execution context + `read_back`. Reuses a run this session already has open; PAUSES another session's active run on the plan. 409 if the plan is not approved/in_progress or is empty |
 | GET | `/agent/test-plans/{id}/execution-context` | Execution context — hosts + tests + known services with `{ip}` resolved |
-| POST | `/agent/session/environment` | Record the operator-environment probe on your session (once; rides into every run) |
-| POST | `/agent/session/renew` | Extend your key's deadline (same key; accepts an already-expired key while the session is under its lifetime cap) |
-| POST | `/agent/session/end` | **End the session — the last call you make.** Revokes your key; `409` while a recon / execution phase is still open (complete those first). Over MCP: `end_session`. Optional `notes` |
 | POST | `/agent/test-plans/{id}/entries/{eid}/sanity-check` | Record per-host target verification |
 | POST | `/agent/test-plans/{id}/entries/{eid}/test-results` | Record one test's execution result |
 | POST | `/agent/test-plans/{id}/entries/{eid}/complete` | Mark entry completed (aggregates results) |
@@ -922,7 +968,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 <!-- agents:section tags="reconnaissance" -->
 
-### Reconnaissance endpoints (scope-bound keys only)
+### Reconnaissance endpoints (any session, once a recon run is open)
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -946,7 +992,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 <!-- agents:section tags="shared" -->
 
-> Recon endpoints require a **scope-bound** API key (minted by `POST /scopes/{id}/recon/start`). Plan-generation and execution keys are rejected with 403. Conversely, recon keys are rejected on every `/agent/test-plans/*` endpoint.
+> Recon endpoints need an OPEN recon run (`POST /agent/recon/start`), not a special key. Without one they answer `409 no_active_recon_run`. The same session can open a planning or execution phase with the same key; nothing is rejected for being "the wrong workflow" (that was the pre-v2.337.0 model).
 
 ### Host list filters (`GET /agent/hosts`)
 
@@ -958,7 +1004,7 @@ Each host in the response includes `open_port_count` and `vuln_summary` (`{criti
 
 ### Rate limit
 
-Default **240 requests/minute** per agent, enforced as a 60-second sliding window global across all Uvicorn workers (not per-process). See the 429 row in **Error Handling** for backoff; admins can raise individual keys up to 1200 rpm in System Settings → Agents.
+Default **240 requests/minute** per agent, enforced in FIXED 60-second windows, global across all Uvicorn workers (not per-process). A rejected call still counts toward the window. See the 429 row in **Error Handling** for backoff; admins can raise individual keys up to 1200 rpm in System Settings → Agents.
 
 <!-- agents:end -->
 
@@ -1170,12 +1216,13 @@ Use the `status` field meaningfully:
 |--------|---------|--------|
 | 401 | API key expired, revoked, or invalid | Read the body. `recoverable: true` → POST to `renew_path` with the same key and retry the failed request; never re-run work you already have output for. `recoverable: false` → save your output to a file and ask the user to start a new session. |
 | 403 (read-only / not a member) | Your key acts for its operator, and their role changed, or they left the project | Not retryable. Tell the user — only they can fix it. |
-| 403 — "scoped to a different test plan" | Your per-plan key was used against another plan's endpoint | Check the `plan_id` in your URL matches the one in your instructions block. If you need a different plan, ask the user for a new key. |
-| 403 — other | The operation isn't available to agent keys (e.g. creating new plans from a scoped key) | Use the endpoints documented in this guide. Scoped keys cannot spawn new plans. |
+| 403 — about your operator | A key carries its operator's project role, re-checked on EVERY request. Writes need the operator to hold `analyst`; bulk exports (`*.ndjson`, target lists, evidence downloads) need `auditor`. You also get 403 if the operator was deactivated or removed from the project mid-session. | Read `can_write_project_data` from `GET /agent/identity` before attempting writes. Do not retry: tell the operator what you were refused and why — only they (or a project admin) can change it. |
+| 403 — other | The operation is not one an agent may perform (approving a plan, promoting/dismissing a finding, user or project administration) | Use the endpoints documented in this guide; report what you wanted in a note instead. |
 | 404 | Resource not found | Verify the `plan_id`, `entry_id`, or `host_id`. The resource may have been deleted. |
-| 409 — `detail.code: "duplicate_scan"` (recon upload) | This exact file is already a scan in the project, or still parsing (`detail.scan_id` / `detail.job_id`) | Not a failure — the data is in. Mark the file done and continue. Never retry, rename, or alter the file to force a re-import. |
+| 409 — `detail.code: "duplicate_scan"` (recon upload) | This exact file is already in the project — a scan, still parsing, or staged awaiting its format review (`detail.scan_id` / `detail.job_id`) | Not a failure — the data is in. Mark the file done and continue. Never retry, rename, or alter the file to force a re-import. |
 | 422 | Validation error | Invalid field values — usually a wrong enum (`priority`, `test_phase`, `status`). Check the values against the lists in this file. |
-| 429 | Rate limited | Default 240 req/min. Window is 60 s sliding; wait for the oldest in-window call to age out and retry. Admins can raise individual keys up to 1200 rpm. |
+| 429 | Rate limited | Default 240 req/min in fixed 60 s windows. Wait for the current window to end (at most 60 s) and retry ONCE — rejected calls still count, so retrying in a loop keeps you locked out for the whole window. Admins can raise individual keys up to 1200 rpm. |
+| 503 + `Retry-After` (recon upload) | The sweep's batch label was briefly busy — parallel chunks contended for it. Nothing was stored. | Wait the `Retry-After` seconds and re-POST the same file with the same `batch`. Not a duplicate, not a failure to report. |
 
 ---
 
@@ -1236,6 +1283,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | `POST /agent/session/environment` | Probe (MANDATORY first step; one per session) |
 | `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
 | `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `port:`, `os:`, `service:`, `subnet:`, `tag:`, `label:`, `site:`, `cve:`, `vuln:`, `exploitport:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows — quote the ISO value: `firstseen:"2026-09-19T20:00:00Z"` = hosts first observed since then; `changedsince:"<start>..<end>"` = hosts already known that gained a port or a scanner observation; `vulnsince:"critical@<start>"` = a critical observation recorded since, severity and time on the same row), `has:`, **`follow:`**, **`assigned:`** (alias `assignee:`) combined with `AND`/`OR`/`NOT` and parentheses. `has:` values: `eol`, `smb_unsigned`, `weak_auth`, `cert_issue`, `weak_tls`, `cleartext`, `critical`/`high`/`medium`/`low`, `exploit`, `web`, `open_ports`, `tested`, `planned`, `notes`, `stale_review`. `assigned:me`/`follow:` resolve against the operator who started the session; `assigned:`/`assignee:` also take a **username** (case-insensitive) or numeric id. `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
+| `GET  /agent/assist/hosts/count` | **How many hosts match** — same filters and `q=` as the list; returns `{count, query}`. Use this for every counting question instead of paging. |
 | `GET  /agent/assist/hosts/{host_id}` | One host with its FULL open-port list (can be large for hosts with many ports — prefer `open_port_count` from the list for triage). Each port's `protocol` is the IP transport (`tcp`/`udp`); the application (smb/http/…) is `service_name`. `open_port_count` = distinct physical open ports. The host's `vuln_summary` is **severity counts only** — for the actual CVEs/evidence use the findings endpoint below. Both list and detail also carry `follow` = the session operator's review status on the host (watching/in_review/reviewed, or null), so you can check it before writing follow. |
 | `GET  /agent/assist/hosts/{host_id}/findings` | **Individual findings on a host** — the evidence `vuln_summary` only counts. Each carries `severity`, `cve_id`/`plugin_id`, `title`, `port_number`/`service_name` (null = host-level), `exploitable`, `cvss_score`, `description`, `solution` (remediation), and `evidence` (scanner output; truncated). Filter `?severity=critical,high`. **Paginated with `total`/`has_more`** (default 200, max 1000) — page `offset` until `has_more` is false to report complete coverage. Use this for evidence-rich reporting on ONE host. |
 | `GET  /agent/assist/report-context.ndjson` | **The report data source — use this to write a report.** Streams the COMPLETE per-host dossier for every matching host, one JSON object per line, **uncapped**: identity, ports (transport + service), findings (severity/CVE/plugin/port/evidence/remediation), notes, scan discoveries, canonical + execution findings, provenance, tags, and the operator's review state. Same discrete filters + `q` DSL as `/agent/assist/hosts`. This is the same correlated record the server-side report builds — populate your report template from it instead of stitching together per-host calls. **Redirect to a file and process it locally; NEVER read the stream whole into context** (`curl -sk -H "X-API-Key: $KEY" ".../agent/assist/report-context.ndjson" -o report-context.jsonl`). Safe on tens-of-thousands-of-host projects — the server hydrates one chunk at a time. |
@@ -1281,7 +1329,7 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
    - "What critical findings landed this week?" → `GET /agent/assist/hosts?has_critical_vulns=true` (or `q=has:critical`) + `GET /agent/assist/scans?limit=20` to correlate.
    - "Summarize scope X" → `GET /agent/assist/scopes` to confirm CIDR list + `GET /agent/assist/hosts?subnets=...` for the host count and posture.
    - "Which names are we allowed to test but haven't found yet?" → `GET /agent/assist/names?in_scope=true&resolved=false` (the context's `names.in_scope_unresolved` is the count). "What sits behind 10.0.0.5?" → `GET /agent/assist/names?host_id=<id>` — several names on one address means test each **by name**.
-4. **Cite what you read — and page before you count.** Every claim maps back to a specific endpoint + filter. A count is valid only from a *fully paged* `/agent/assist/hosts` result (or the `hosts.ndjson` download): one 500-row page is **not** "500 hosts." Say "12 hosts (per `?ports=21`, fully paged)," never a one-page count on a project that may have thousands of hosts.
+4. **Cite what you read — and count with the count endpoint.** Every claim maps back to a specific endpoint + filter. "How many" is ONE call: `GET /agent/assist/hosts/count` (MCP `assist_count_hosts`) takes the same filters and `q=` as the list and returns `{count, query}`. Page the list, or take the `hosts.ndjson` download, only when you need the rows themselves — and then one 500-row page is **not** "500 hosts." Say "12 hosts (per `?ports=21`, from `/hosts/count`)," never a one-page count on a project that may have thousands of hosts.
 5. **Flag uncertainty.**  If the data is ambiguous (e.g. the host has port 21 open but no service name), say so.  Don't infer.
 
 ### When to hand off
@@ -1298,6 +1346,8 @@ The operator drives every action; you assist their query.
 
 - Create notes or change follow status when `can_write_project_data` is false. Cannot assign hosts to anyone, ever.
 - Access other projects, or list other operators' assist sessions / environment probes.
+- **Promote, dismiss or otherwise triage a finding.** There is no agent route for it — that judgement is the operator's (and theirs can be about one host or the whole issue). You can READ findings (`/agent/assist/findings`, `/agent/assist/findings/{id}`); if a scanner observation looks real or looks like a false positive, say so in a note on the host with your evidence.
+- Approve a test plan, or execute one that a human has not approved.
 
 ### Tone
 

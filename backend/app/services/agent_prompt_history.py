@@ -21,6 +21,32 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.7.0",
+        "app_version": "2.370.2",
+        "summary": (
+            "Documentation audit of the guide against the routers. The three "
+            "workflows were documented starting one call too late: each flow "
+            "now begins with its phase opener (POST /agent/test-plans, "
+            "POST /agent/execution-sessions/start, POST /agent/recon/start) and "
+            "says what the 409 without one looks like; opening an execution run "
+            "reuses this session's own and PAUSES another session's. New server "
+            "behaviour agents met cold: recon upload can answer 503 + "
+            "Retry-After (batch briefly busy — wait and re-POST the same file), "
+            "and a STAGED identical file is a duplicate. Removed the per-key "
+            "scope model everywhere it survived (tools/list is unfiltered; a "
+            "recon session may open a planning phase; 403 is about the "
+            "operator's role, never 'the wrong kind of key'). Counting is one "
+            "call (GET /agent/assist/hosts/count). Entries need five fields; a "
+            "'source' block means candidate_hosts is the permitted set; "
+            "test-results are sanity-gated (sanity_override_reason); agents "
+            "cannot triage findings. Rate limiting is FIXED windows and "
+            "rejected calls count. Upload cap is MAX_FILE_SIZE (1 GB), not "
+            "500 MB. Session renew/end/identity rows moved into the shared "
+            "slice, so recon and assist agents see them. safety_properties are "
+            "explained as the operating model, not server enforcement."
+        ),
+    },
+    {
         "version": "2.6.0",
         "app_version": "2.343.2",
         "summary": (
