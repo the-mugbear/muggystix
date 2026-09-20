@@ -134,7 +134,7 @@ docker compose exec backend python scripts/seed_eval_scenarios.py   # a small pr
 - Tables are owned by Alembic — migrations live in `backend/alembic/versions/`. Every startup runs `alembic upgrade head` before serving traffic.
 - Baseline revision: `b46cd59c17f5_baseline_schema.py`. Subsequent migrations layer on additive changes (plan-generation metadata, ingestion-quality columns, environment probe columns, agent API call log).
 - `app/db/init.py` builds no schema itself — it takes an advisory lock and runs `alembic upgrade head` (skipped under `BLUESTICK_SKIP_DB_INIT=1`, test harness only). The old `create_all` + hand-rolled migration list is gone; the model is the schema, and Alembic enforces it.
-- CI walks every revision down and back up (`scripts/test-alembic-roundtrip.sh`), so a new migration needs a real `downgrade()`, and runs `alembic check` for model/migration drift.
+- `scripts/test-alembic-roundtrip.sh` walks every revision down and back up, so a new migration needs a real `downgrade()`; `alembic check` catches model/migration drift. There is no hosted CI — run both locally before pushing a migration.
 
 ## Asynchronous ingestion
 

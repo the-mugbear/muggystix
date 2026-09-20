@@ -7,24 +7,20 @@
 - Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~1,850 tests** across ~200 modules (v2.370) — the number moves; `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
-## Continuous Integration
+## The gates (run locally — there is no hosted CI)
 
-`.github/workflows/ci.yml` runs the gates on push-to-main and PRs — these tests are no longer
-local-only:
+The GitHub Actions workflow was removed in 2026-09: it had never run on this repository, so it
+enforced nothing. The same three gates exist as local commands; run them before a push.
 
-- **alembic-roundtrip job** — `scripts/test-alembic-roundtrip.sh` boots a throwaway Postgres and
-  walks EVERY revision down and back up, so a migration with a broken or no-op `downgrade()`
-  fails CI.
-- **Backend job** — spins up a Postgres service, runs `alembic upgrade head`, then
-  `alembic check` (model-vs-migration drift — it is what catches a model module missing from
-  `app/db/model_registry.py`), then `python -m pytest -q` **with coverage on**: the
-  `--cov-fail-under=68` floor in `backend/pytest.ini` is enforced here. (It was suppressed with
-  `--no-cov` until v2.232.0; the local recipes below still pass `--no-cov`, for speed.)
-- **Frontend job** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` → `npm run build`.
-  `tsconfig.json` has `noUnusedLocals` / `noUnusedParameters` on, so an unused import fails it.
-
-Keep all three green; a red gate blocks the merge. The backend job runs from `backend/` and resolves
-repo-root files (e.g. `AGENTS.md`) via `..`, so the docs-contract tests run rather than skip.
+- **Migrations** — `scripts/test-alembic-roundtrip.sh` boots a throwaway Postgres and walks EVERY
+  revision down and back up, so a migration with a broken or no-op `downgrade()` is caught.
+  `alembic check` (model-vs-migration drift) is what catches a model module missing from
+  `app/db/model_registry.py`.
+- **Backend** — `python -m pytest -q` in a one-off container (recipe below). The recipes pass
+  `--no-cov` for speed; drop it to check the `--cov-fail-under=68` floor in `backend/pytest.ini`.
+- **Frontend** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` → `npm run build`.
+  `tsconfig.json` has `noUnusedLocals` / `noUnusedParameters` on, so an unused import fails it
+  (and fails the image build).
 
 ## Backend Tests
 
@@ -74,7 +70,7 @@ OTHER command that imports `app.main` with the tree mounted still migrates.
 
 Mounting `AGENTS.md` keeps the docs-contract tests from skipping (they read it from disk).
 
-Coverage is enforced in CI at a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) and emits terminal + HTML reports. Measured coverage is **70%** as of v2.232.0; the floor sits just under so ordinary diffs don't trip it on rounding. Raise the floor as coverage climbs — never lower it to turn a red build green. (Before v2.232.0 the gate was configured but CI ran `--no-cov`, so it enforced nothing.)
+Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) and emits terminal + HTML reports. Measured coverage is **70%** as of v2.232.0; the floor sits just under so ordinary diffs don't trip it on rounding. Raise the floor as coverage climbs — never lower it to turn a red build green. (Before v2.232.0 the gate was configured but CI ran `--no-cov`, so it enforced nothing.)
 
 ## Frontend Tests
 

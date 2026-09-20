@@ -34,7 +34,7 @@ version tracking).
 
 - **`backup-db.sh`** - Back up the database: logical `pg_dump` (custom format), or a raw volume snapshot if Postgres is down. A logical dump carries the `pg_trgm` extension + all indexes.
 - **`restore-db.sh`** - Restore from a `backup-db.sh` artifact, then run `alembic upgrade head` to bring the schema to the current revision.
-- **`test-alembic-roundtrip.sh`** - CI/pre-release sanity check: spins up a throwaway Postgres and verifies every migration's `downgrade()` reverses cleanly (upgrade → downgrade → upgrade).
+- **`test-alembic-roundtrip.sh`** - Pre-release sanity check (run it locally — there is no hosted CI): spins up a throwaway Postgres and verifies every migration's `downgrade()` reverses cleanly (upgrade → downgrade → upgrade).
 - **`apply_scope_labels.py`** - Bulk-assign subnet labels to a project's scope from a CSV (CIDR column + label column). Runs inside the backend container, matches CIDRs to existing subnets, find-or-creates each label, and assigns it. Idempotent and **dry-run by default** (pass `--apply` to write):
   ```bash
   docker compose exec backend python /app/scripts/apply_scope_labels.py \
