@@ -147,6 +147,34 @@ describe('Ingestion Results — a partial import', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
   });
 
+  // Clearing a folder of fixture failures was expand → Dismiss, per row.
+  it('dismisses exactly the rows shown, after saying what that means', async () => {
+    api.getIngestionResults.mockResolvedValue(response([
+      partial,
+      row({ id: 11, original_filename: 'expected-results.json', status: 'failed' }),
+      row({ id: 12, original_filename: 'old.json', status: 'failed', dismissed_at: '2026-09-01T00:00:00Z' }),
+    ]));
+    api.dismissIngestionJob.mockResolvedValue({});
+    renderPage('/parse-errors?status=needs_attention');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss the 2 shown' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/1 of them imported only part of their file/)).toBeInTheDocument();
+    expect(api.dismissIngestionJob).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(api.dismissIngestionJob).toHaveBeenCalledTimes(2));
+    // The ids on screen — not the already-dismissed row, not "everything matching".
+    expect(api.dismissIngestionJob.mock.calls.map((c) => c[0])).toEqual([9, 11]);
+  });
+
+  it('offers no bulk dismiss on the unfiltered list', async () => {
+    api.getIngestionResults.mockResolvedValue(response([partial]));
+    renderPage();
+    await screen.findByText('23-nmap-truncated.xml');
+    expect(screen.queryByRole('button', { name: /Dismiss the/ })).not.toBeInTheDocument();
+  });
+
   it('a clean completed import has nothing to dismiss', async () => {
     api.getIngestionResults.mockResolvedValue(response([row({ id: 3, original_filename: 'fine.xml' })]));
     renderPage();

@@ -14,6 +14,7 @@ import {
   Search,
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useConfirm } from '../hooks/useConfirm';
 import { Input } from '../components/ui/input';
 import {
   discardIngestionJob,
@@ -141,6 +142,8 @@ const ParseErrors: React.FC = () => {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
+  const [confirmEl, askConfirm] = useConfirm();
+  const [bulkDismissing, setBulkDismissing] = useState(false);
   const [sortBy, setSortBy] = useState<IngestionResultsSortBy>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   // v5.135.0 — the page used to request skip:0/limit:100 unconditionally and
@@ -263,6 +266,46 @@ const ParseErrors: React.FC = () => {
   // which is only the current page.
   const totalMatching = data?.total ?? 0;
 
+  // v5.242.0 — dismiss what is on screen in one action. A project that imported
+  // a folder of fixtures has a dozen "unsupported format" failures; clearing
+  // them was expand → Dismiss, per row. Exactly the ids SHOWN are sent — never
+  // "everything matching" — so what is dismissed is what the operator saw.
+  const dismissable = items.filter(
+    (i) => !i.dismissed_at && (i.status === 'failed' || (i.status === 'completed' && !!i.partial)),
+  );
+  const dismissShown = async () => {
+    const partialCount = dismissable.filter((i) => i.status !== 'failed').length;
+    const ok = await askConfirm({
+      title: `Dismiss ${dismissable.length} import${dismissable.length === 1 ? '' : 's'}?`,
+      body: (
+        <>
+          The {dismissable.length} failed or partial import{dismissable.length === 1 ? '' : 's'} shown
+          on this page stop being listed as blocked on Operations. They stay in this list, still
+          failed or partial{partialCount > 0 ? ` — ${partialCount} of them imported only part of their file` : ''}.
+        </>
+      ),
+      confirmLabel: 'Dismiss',
+    });
+    if (!ok) return;
+    setBulkDismissing(true);
+    let failed = 0;
+    for (const item of dismissable) {
+      try {
+        // Sequential on purpose: small, and no burst of parallel writes.
+        await dismissIngestionJob(item.id);
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkDismissing(false);
+    if (failed > 0) {
+      toast.error(`${failed} of ${dismissable.length} could not be dismissed — you can only dismiss your own uploads unless you are an admin.`);
+    } else {
+      toast.success(`Dismissed ${dismissable.length} import${dismissable.length === 1 ? '' : 's'}`);
+    }
+    void loadData();
+  };
+
   const copyError = async (text: string) => {
     if (await copyToClipboard(text)) {
       toast.success('Copied error details', { id: 'copy-pe' });
@@ -273,10 +316,11 @@ const ParseErrors: React.FC = () => {
 
   return (
     <div className="p-md md:p-lg">
+      {confirmEl}
       <div className="mb-md flex flex-wrap items-center justify-between gap-sm">
         <h1 className="text-page-title">Ingestion Results</h1>
         <div className="flex flex-wrap items-center gap-xs">
-          <div className="relative min-w-56">
+          <div className="relative w-64 shrink-0">
             {/* v2.86.2 — server-side search across filename + error +
                 last_error.  Replaces the old client-side filename-only
                 filter that silently missed matches outside the loaded slice. */}
@@ -299,7 +343,9 @@ const ParseErrors: React.FC = () => {
               "Newest / Oldest / A→Z / …" pattern proliferates options
               factorially as more sort keys land. */}
           <Select value={sortBy} onValueChange={(v) => setSortBy(v as IngestionResultsSortBy)}>
-            <SelectTrigger className="min-w-36" aria-label="Sort by">
+            {/* Fixed width: the trigger is w-full by default, and as the only
+                select left in this row it took the whole line (v5.242.0). */}
+            <SelectTrigger className="w-44 shrink-0" aria-label="Sort by">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -363,6 +409,13 @@ const ParseErrors: React.FC = () => {
               </button>
             );
           })}
+          {dismissable.length > 0 && (statusFilter === 'needs_attention' || statusFilter === 'failed') && (
+            <Button size="sm" variant="outline" className="ml-auto" disabled={bulkDismissing || loading}
+              onClick={() => void dismissShown()}>
+              {bulkDismissing && <Loader2 className="size-3 animate-spin" aria-hidden />}
+              Dismiss the {dismissable.length} shown
+            </Button>
+          )}
         </div>
       )}
 
@@ -382,7 +435,9 @@ const ParseErrors: React.FC = () => {
                       + chip padding ~115-125px) into the Filename
                       column.  w-32 (128px) clears every value in
                       STATUS_VARIANT. */}
-                  <TableHead className="w-32">Status</TableHead>
+                  {/* w-48 since v5.242.0: "completed" + "partial" sit side by
+                      side instead of stacking into a second line. */}
+                  <TableHead className="w-48">Status</TableHead>
                   <TableHead className="w-56">Filename</TableHead>
                   <TableHead className="w-24">Tool</TableHead>
                   <TableHead className="w-24">Hosts</TableHead>
@@ -427,9 +482,12 @@ const ParseErrors: React.FC = () => {
                           className="cursor-pointer"
                         >
                           <TableCell>
+                            {/* 28px: a full-size icon button set every row's
+                                height to twice its content. */}
                             <Button
                               variant="ghost"
                               size="icon"
+                              className="size-7"
                               aria-expanded={isExpanded}
                               aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
                               onClick={(e) => {
@@ -441,7 +499,7 @@ const ParseErrors: React.FC = () => {
                             </Button>
                           </TableCell>
                           <TableCell>
-                            <div className="flex flex-col items-start gap-xxs">
+                            <div className="flex flex-wrap items-center gap-xxs">
                               <StatusBadge status={item.status} />
                               {/* "Completed" alone hid that part of the file
                                   never made it into the inventory. */}
