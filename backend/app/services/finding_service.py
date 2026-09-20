@@ -895,10 +895,11 @@ class FindingService:
     # report.  Same Annotation machinery as host notes, just a different target
     # column — finding_id instead of host_id.
     def list_finding_notes(self, finding_id: int, limit: int = 100) -> List[Annotation]:
+        from app.services.host_serialization import note_load_options
         return (
             self.db.query(Annotation)
             .filter(Annotation.finding_id == finding_id)
-            .options(selectinload(Annotation.author))
+            .options(*note_load_options())  # all that _serialize_note reads
             .order_by(Annotation.created_at.asc())  # oldest-first reads as a thread
             .limit(limit)
             .all()

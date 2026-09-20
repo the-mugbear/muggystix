@@ -18,7 +18,7 @@ from app.services.report_templates import ReportTemplates
 from app.services.subnet_insight_service import resolve_host_locations, compute_subnet_insights
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.attention_service import compute_site_attention
-from app.services.host_serialization import _serialize_follow, _serialize_note
+from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options
 from app.services.host_query import build_filtered_host_query as _build_filtered_host_query
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
@@ -160,7 +160,7 @@ class ReportGenerator:
             selectinload(models.Host.host_scripts),
             selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
             selectinload(models.Host.last_updated_scan),
-            selectinload(models.Host.notes).selectinload(models.Annotation.author),
+            *note_load_options(selectinload(models.Host.notes)),
             selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
             # Tags ride along on the inventory CSV (a queryable working-set
             # dimension analysts filter by); eager-load to avoid an N+1.
@@ -445,7 +445,7 @@ class ReportGenerator:
                     selectinload(models.Host.host_scripts),
                     selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
                     selectinload(models.Host.last_updated_scan),
-                    selectinload(models.Host.notes).selectinload(models.Annotation.author),
+                    *note_load_options(selectinload(models.Host.notes)),
                     selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
                     selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
                 )
@@ -471,7 +471,7 @@ class ReportGenerator:
             selectinload(models.Host.host_scripts),
             selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
             selectinload(models.Host.last_updated_scan),
-            selectinload(models.Host.notes).selectinload(models.Annotation.author),
+            *note_load_options(selectinload(models.Host.notes)),
             selectinload(models.Host.vulnerabilities).selectinload(Vulnerability.port),
             selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
         )

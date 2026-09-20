@@ -157,10 +157,14 @@ class HostFollowService:
             self.db.commit()
 
     def list_notes(self, host_id: int, limit: int = 50) -> List[Annotation]:
+        # v2.369.1 — every relationship the serializer reads, not just the
+        # author: this feeds the host detail, where ``promoted_findings``
+        # (one-to-many) cost one query PER NOTE on every host open.
+        from app.services.host_serialization import note_load_options
         return (
             self.db.query(Annotation)
             .filter(Annotation.host_id == host_id)
-            .options(selectinload(Annotation.author))
+            .options(*note_load_options())
             .order_by(Annotation.created_at.desc())
             .limit(limit)
             .all()

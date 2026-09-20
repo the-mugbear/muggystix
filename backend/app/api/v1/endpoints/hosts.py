@@ -30,7 +30,7 @@ from app.db import models
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
-from app.services.host_serialization import _serialize_follow, _serialize_note  # CR4-2
+from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
     Host as HostSchema,
@@ -457,11 +457,7 @@ def get_hosts_v2(
             for n in (
                 db.query(models.Annotation)
                 .filter(models.Annotation.id.in_(top_note_ids))
-                .options(
-                    selectinload(models.Annotation.author),
-                    selectinload(models.Annotation.assignee),
-                    selectinload(models.Annotation.promoted_findings),
-                )
+                .options(*note_load_options())
                 .all()
             ):
                 notes_by_host.setdefault(n.host_id, []).append(n)
@@ -1239,12 +1235,8 @@ def get_hosts_by_scan_v2(
     query = db.query(models.Host).options(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
-        selectinload(models.Host.notes).selectinload(models.Annotation.author),
-        # review #8a — _serialize_note reads note.assignee; eager-load it so
-        # the notes slice doesn't trigger an N+1 over assignees.
-        selectinload(models.Host.notes).selectinload(models.Annotation.assignee),
-        # _serialize_note reads note.promoted_findings for the "promoted" badge.
-        selectinload(models.Host.notes).selectinload(models.Annotation.promoted_findings),
+        # Everything _serialize_note reads, from the one list beside it.
+        *note_load_options(selectinload(models.Host.notes)),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
     ).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id

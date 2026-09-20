@@ -40,6 +40,33 @@ def _serialize_follow(follow: HostFollow) -> HostFollowInfo:
     )
 
 
+def note_load_options(via=None) -> list:
+    """Loader options for EVERY relationship ``_serialize_note`` reads (v2.369.1).
+
+    Callers used to spell these out themselves, and drifted: the host
+    endpoints listed author + assignee + promoted_findings, the report
+    loaders only author — so a report ran one ``promoted_findings`` query per
+    note (it is one-to-many, so nothing is ever served from the session the
+    way a repeated author is). Keep this list beside the serializer and in
+    step with it; ``tests/test_note_serialization_loads.py`` fails when the
+    serializer reads something this does not load.
+
+    ``via`` is the loader that reaches the notes, e.g.
+    ``selectinload(Host.notes)``; omit it when querying ``Annotation``
+    directly. ``attachments`` is ``lazy="selectin"`` on the model already.
+    """
+    from sqlalchemy.orm import selectinload
+
+    relationships = (
+        AnnotationModel.author,
+        AnnotationModel.assignee,
+        AnnotationModel.promoted_findings,
+    )
+    if via is None:
+        return [selectinload(rel) for rel in relationships]
+    return [via.selectinload(rel) for rel in relationships]
+
+
 def _serialize_note(note: AnnotationModel) -> Annotation:
     author_name = None
     if note.author:
