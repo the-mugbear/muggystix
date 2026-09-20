@@ -1,13 +1,13 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.305.0 / frontend 5.186.0 (2026-08-20)
+> **Last verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19) — and see the note at the end: the live OpenAPI is the authority for the full route list.
 
 Base path: `/api/v1`
 
 BlueStick exposes two parallel REST surfaces under the same versioned base path:
 
 1. **JWT user API** — everything humans touch. Login, browse, upload, approve, export, manage. Nested under `/projects/{project_id}/...` for all data-bearing routes (scans, hosts, test plans, etc.).
-2. **Agent API (`/agent/*`)** — terminal-side agents. Authenticates with `X-API-Key: nm_agent_...` headers minted on a per-project, per-test-plan basis. Separate dependency chain; fully isolated from the JWT surface.
+2. **Agent API (`/agent/*`)** — terminal-side agents. Authenticates with `X-API-Key: nm_agent_...` headers — one key per project-scoped agent SESSION (not per plan or per workflow). Separate dependency chain; fully isolated from the JWT surface.
 
 The live interactive spec is always at `GET /docs` (Swagger UI) and `GET /openapi.json`. Use this guide for architectural context and high-value shape references; use OpenAPI for field-level truth.
 
@@ -36,26 +36,33 @@ The throttle reads `audit_logs` (so the 429 response body says "Try again in 15 
 
 Expired user sessions are reaped hourly by a background task in the API process; `GET /auth/sessions` only returns rows where `expires_at > now() AND revoked_at IS NULL`.
 
-Roles: `admin`, `analyst`, `auditor`, `viewer`. Project membership adds a per-project role that can be the same as or stricter than the global role.
+The **global** role is binary — `admin` (user management, system settings, audit log) or `member`. Capability tiers — `admin` > `analyst` > `auditor` > `viewer` — live on the **project membership** (`ProjectMembership.role`) and are checked by `require_project_role`. There is no global analyst/auditor/viewer.
 
-### 1.2 Agent API keys
+### 1.2 Agent sessions and keys
 
-Agents get a short-lived key via one of these flows:
+An operator starts **one project-scoped agent session**; its key does whatever that operator's project role allows. There are no per-workflow keys (v2.337.0) and no capability grants (v2.309.0).
 
-- **Recon** — user clicks "Start Agentic Recon" on the Scopes page → `POST /api/v1/projects/{id}/scopes/{scope_id}/recon/start` mints a scope-bound `reconnaissance` key.
-- **Plan generation** — user clicks "Generate with AI" on the Test Plans page → `POST /api/v1/projects/{id}/test-plans/generate` mints a `plan_generation`-scoped key.
-- **Execution** — user approves a plan and clicks "Execute with AI" → `POST /api/v1/projects/{id}/test-plans/{plan_id}/execute` mints a plan-scoped `execution` key bound to that exact plan.
-- **Assist** — user starts a read-only Q&A session → `POST /api/v1/projects/{id}/assist/start` mints an `assist`-scoped key (v2.64.0). Read-only; rejected on plan/recon/execution endpoints. **Requires `auditor`** (v2.308.0) — lowered from `analyst` so an auditor can have a read-only agent, which is safe now that a key carries its operator's permissions. Recon, plan generation and execution remain `analyst`: they exist to change project state.
+All four operator entry points mint the SAME kind of key. They differ only in which *phase* is already open when the agent starts:
+
+| Entry point (JWT) | Floor | Pre-opened phase |
+|---|---|---|
+| `POST /api/v1/projects/{id}/assist/start` | `auditor` | none — assist reads are the default surface |
+| `POST /api/v1/projects/{id}/scopes/{scope_id}/recon/start` | `analyst` | a recon run on that scope |
+| `POST /api/v1/projects/{id}/test-plans/generate` | `analyst` | a draft test plan |
+| `POST /api/v1/projects/{id}/test-plans/{plan_id}/execute` | `analyst` | an execution run on that **approved** plan |
+
+The session opens any other phase itself, with the same key: `POST /agent/recon/start {scope_id}`, `POST /agent/test-plans {title}`, `POST /agent/execution-sessions/start {plan_id}` (the plan must be human-approved). Operators list, end and resume sessions at `GET /projects/{id}/agent-sessions`, `POST …/agent-sessions/{sid}/end`, `POST …/agent-sessions/{sid}/resume` (resume rotates the key and re-issues the prompt; the previous key is revoked). `POST …/test-plans/{plan_id}/rotate-key` ends the plan's current session and starts a fresh one holding a new key.
+
 - **Renew (agent-facing, v2.304.0)** — `POST /api/v1/agent/session/renew`, called by the agent with its **own** key. Same key, later deadline. It deliberately **accepts an already-expired key** while the session is active and under `AGENT_SESSION_MAX_LIFETIME_HOURS` (168h), because the failure it exists for is discovered late: an agent blocks for hours on nmap / masscan / Nessus and only learns its key lapsed when it tries to upload, with the scanning already done. No path parameter — the key identifies its own session.
-- **Rotate** — `POST /api/v1/projects/{id}/test-plans/{plan_id}/rotate-key` mints a fresh per-plan key and revokes the prior ones (v2.19.0). Superseded in practice by renewal: rotation issues a *new secret*, so an agent part-way through a job has to be re-bootstrapped.
+- **End (agent-facing)** — `POST /api/v1/agent/session/end`. Revokes the key; `409` while a recon or execution phase is still open.
 
 Keys are:
-- **Hashed at rest** in `agent_api_keys` (the plaintext is returned to the user **exactly once**, never stored).
+- **Hashed at rest** in `api_keys` (`ApiKey`, `app/db/models_auth.py`); the plaintext is returned to the operator **exactly once**, never stored.
 - **Time-bound but renewable** — default 24h TTL (`settings.AGENT_KEY_TTL_HOURS`), extendable by the agent itself while the session lives. **Ending the session, not expiry, is the revocation control**: an open session can renew past its key's deadline, so waiting for expiry is not a revocation.
-- **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, environment probe, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
+- **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, environment probe, session end, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
 
-  **Reads are not uniform (v2.308.0).** Most need only project membership, but bulk exports — `/assist/report-context.ndjson`, `/assist/hosts.ndjson`, `/recon/hosts.ndjson`, the recon target lists, and evidence downloads — require `auditor`, the same floor `export.py` and `reports.py` place on their JWT equivalents. Without that, lowering the session-start role would have given a viewer's agent data egress the viewer's own session is refused.
-- **Scoped** — each key declares its workflow (`plan_generation`, `execution`, `reconnaissance`, `assist`) and, for execution keys, a specific `test_plan_id`. Scope-mismatched calls return 403.
+  **Reads are not uniform (v2.308.0).** Most need only project membership, but bulk exports — `/assist/report-context.ndjson`, `/assist/hosts.ndjson`, `/recon/hosts.ndjson`, the recon target lists, and evidence downloads — require `auditor`, the same floor `export.py` and `reports.py` place on their JWT equivalents.
+- **Bound to ONE session, not to a workflow, a plan or a scope.** What the agent is working on is the phase it has open. A call about a phase the session has not opened answers `409` (e.g. `no_active_recon_run`), not `403`; a `403` is always about the operator's standing.
 
 A 401 from an expired key carries a **structured body**: `recoverable: true` means renew with the same key and retry the failed request, `false` means the session is finished and the output should be saved to a file. "Expired" and "revoked" are the same status code but opposite situations, and the caller is usually holding output it cannot cheaply reproduce.
 
@@ -65,7 +72,7 @@ Every `/api/v1/agent/*` request must include:
 X-API-Key: nm_agent_<plaintext>
 ```
 
-The `require_plan_scope` dependency validates the key, loads the bound agent + plan, and makes them available to the handler. (`deny_scoped_keys` was removed in v2.295.0 along with the unscoped global key — it admitted only that credential, so every endpoint behind it had become unreachable.)
+`get_current_agent` (`app/api/deps.py`) authenticates the key and resolves its session; `enforce_agent_operator_access`, mounted on every `/agent/*` router, then re-checks the **operator's** project role on that request. There are no workflow guards: `require_plan_scope`, `require_recon_scope`, `require_assist_scope`, `require_execution_session_scope` and `deny_scoped_keys` were all removed.
 
 ### 1.3 Sessions
 
@@ -91,7 +98,7 @@ The `require_plan_scope` dependency validates the key, loads the bound agent + p
 │   ├── /{id}/members         # project membership (admin or project-admin)
 │   └── /{id}/...             # PROJECT-SCOPED SUBTREE — see §4
 ├── /portfolio                # cross-project dashboard
-├── /activity                 # cross-project note/activity feed
+├── /activity                 # scan-correlation timeline ("what was scanning at time X") — NOT the note feed, which is /hosts/notes/activity
 ├── /notifications            # read/unread, mark-seen
 ├── /llm-providers            # per-user LLM credentials + /{id}/complete
 ├── /integrations             # per-user scanner tool credentials
@@ -123,7 +130,7 @@ The `require_plan_scope` dependency validates the key, loads the bound agent + p
 |---|---|---|---|
 | GET | `/users/` | admin | List all users (admin fields). |
 | GET | `/users/{user_id}` | admin | User detail. |
-| POST | `/users/` | admin | Create user. |
+| POST | `/auth/register` | admin | Create a user. (There is no `POST /users/` — creation lives on the auth router.) |
 | PUT | `/users/{user_id}` | admin | Update role, active state, etc. |
 | DELETE | `/users/{user_id}` | admin | Delete (or deactivate). |
 | POST | `/users/{user_id}/reset-password` | admin | Force-reset another user's password. |
@@ -152,7 +159,7 @@ The `require_plan_scope` dependency validates the key, loads the bound agent + p
 |---|---|---|
 | GET | `/notifications/` | Supports `?unread_only=true&limit=20`. |
 | GET | `/notifications/unread-count` | Lightweight polling endpoint. |
-| POST | `/notifications/{id}/mark-read` | |
+| POST | `/notifications/mark-read` | Body `{notification_ids: [...]}`; returns `{marked_read: n}`. |
 | POST | `/notifications/mark-all-read` | |
 
 ### 3.5 Portfolio
@@ -172,7 +179,7 @@ Per-user credentials for OpenAI, Anthropic, Azure OpenAI, Ollama, and OpenAI-com
 | PATCH | `/llm-providers/{id}` | Update. Setting `api_key=null` does not clear it; pass `clear_api_key=true` to remove. |
 | DELETE | `/llm-providers/{id}` | |
 | POST | `/llm-providers/{id}/test` | Non-destructive connectivity test via the provider's model-list endpoint (or a one-token completion for Anthropic). Uses `safe_http_client` with DNS re-validation. |
-| GET | `/llm-providers/default` | Returns the user's default provider (if any). |
+| GET | `/llm-providers/types` | The provider types this deployment supports. |
 | POST | `/llm-providers/{id}/complete` | Chat completion. Body: `{system?, messages, max_tokens?, temperature?}`. **Server-side prompt sanitization** runs before forwarding — see §8. |
 
 ### 3.7 Integrations (scanner credentials)
@@ -182,7 +189,8 @@ Per-user credentials for Nessus, OpenVAS, Nuclei, Burp, PDCP, and generic-API in
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/integrations/` | List integrations visible to current user. Supports `?project_id=` to return project-scoped + user-global. |
-| GET | `/integrations/{id}` | |
+| GET | `/integrations/types` | The integration types available. |
+| POST | `/integrations/test` | Connectivity test BEFORE creating one. |
 | POST | `/integrations/` | Create. `base_url` validated via SSRF check with the `is_integration_private_allowed()` carve-out (currently Ollama only). |
 | PATCH | `/integrations/{id}` | Update. `clear_secret` / `clear_secret2` flags remove encrypted material. |
 | DELETE | `/integrations/{id}` | |
@@ -242,8 +250,14 @@ Every endpoint in this subtree requires JWT auth AND project membership with the
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/upload/` | Multipart file upload. Returns a queued `IngestionJob` — poll for results. Magic-byte validation on the first 1 KB rejects disguised binaries. |
-| GET | `/upload/jobs` | List recent jobs. Supports `?skip=0&limit=25&status=failed`. Returns a plain array — v2.9.8 briefly wrapped this in an envelope, reverted because the Scans page consumes it directly. |
+| POST | `/upload/` | Multipart file upload (analyst). Form fields: `file`, `stage` (register the job as `staged` instead of queuing — what the UI does), `batch_id`, `allow_duplicate`, `skip_informational`. Magic-byte validation on the first 1 KB rejects disguised binaries. **409 `duplicate_scan`** (`detail: {code, message, scan_id \| job_id}`) when this exact file (SHA-256) is already a scan, or a staged / queued / processing job. |
+| GET | `/upload/formats` | Every format an operator can choose — independent of any one file's detection. |
+| GET | `/upload/jobs/{job_id}/detection` | The staged review: candidate formats, each with its `basis` (`structure` \| `filename` \| `fallback`), a read-only sample, and `needs_choice`. 409 if the retained file is gone. |
+| POST | `/upload/jobs/{job_id}/start` | Queue a **staged or failed** job, optionally as a chosen format: `{format_override?, source_tool?}`. The override is the WHOLE attempt list — a wrong choice fails visibly. Status, file presence and the duplicate check are re-run under a row lock: **409** if the job is no longer staged/failed, its file is gone, or it is now a duplicate (`duplicate_scan`); 422 for an unknown format. |
+| POST | `/upload/jobs/{job_id}/discard` · `/upload/jobs/discard-staged` | Discard a staged job (file removed, row kept as a dismissed failure). The bulk form takes `{job_ids}` — exactly the jobs the operator was shown; there is no "discard everything". |
+| POST | `/upload/jobs/{job_id}/reprocess` | Re-import a FINISHED job's retained file as a NEW job (prior scan untouched, duplicate guard bypassed on purpose). |
+| POST | `/upload/jobs/{job_id}/retry` · `/dismiss` | Retry a failed job; dismiss a failed or partial one so it leaves the live queue (the row stays). |
+| GET | `/upload/jobs` | List recent jobs. `?skip=0&limit=25&status=failed&include_dismissed=false`. **`?ids=1,2,3`** (≤200) returns exactly those jobs the caller may see — dismissed included, status and pagination ignored, unknown ids simply absent; 422 for non-integers or more than 200. Returns a plain array. |
 | GET | `/upload/jobs/{job_id}` | Job detail. |
 | POST | `/upload/jobs/{job_id}/cancel` | Cancel a queued or processing job. Only the owner or a global admin. |
 
@@ -258,8 +272,6 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | DELETE | `/scans/{scan_id}` | Admin. Deletes scan + history rows; hosts seen in other scans are preserved. |
 | GET | `/scans/{scan_id}/hosts/count` | Host count only (lightweight for list views). |
 | GET | `/scans/{scan_id}/command-explanation` | Human-readable explanation of the scan's command line. |
-| GET | `/scans/{scan_id}/eyewitness` | EyeWitness screenshot entries for a scan. |
-| GET | `/scans/{scan_id}/eyewitness/count` | Count only. |
 | GET | `/scans/out-of-scope` | Hosts parsed but not matching any scope. |
 | DELETE | `/scans/out-of-scope` | Admin. Bulk removal of out-of-scope records. |
 | GET | `/scans/{scan_id}/out-of-scope` | Per-scan OOS hosts. |
@@ -271,7 +283,7 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 |---|---|---|
 | GET | `/hosts/` | Deduplicated hosts with rich filter support: `state`, `ports`, `services`, `subnets`, `scan_ids`, `os_filter`, `min_risk_score`, `critical/high/medium/low_vuln_min`, `has_vuln`, `follow_status`, `search`. Supports `sort_by`, `sort_order`, `skip`, `limit`, `include_total`. |
 | GET | `/hosts/{host_id}` | Host detail with ports, scripts, vulnerabilities, follow state, notes, discoveries. |
-| GET | `/hosts/{host_id}/conflicts` | Confidence + conflict metadata across scan history. |
+| GET | `/hosts/{host_id}/conflicts` | `conflict_count` (the same number as the list badge — host-level disagreements), `confidence` (source ranking per field) and `conflict_history`. Each history row carries both values, both scan ids AND `previous_scan_filename` / `new_scan_filename` / `current_value` — a conflict is recorded whether or not the reported value was adopted, so `current_value` is what says which one the host shows today. A blank being filled in (`state: unknown → up`) is not recorded as a conflict (v2.367.0). |
 | GET | `/hosts/scan/{scan_id}` | Hosts seen in a specific scan. |
 | GET | `/hosts/filters/data` | Filter metadata (ports, services, OS, subnets, scans). Supports cascading — pass active filter params to scope the returned metadata. |
 | GET | `/hosts/tool-ready/{format}` | Export filtered host list as a tool-ready target file (nmap list, masscan range, newline-delimited IPs, etc.). |
@@ -322,6 +334,12 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | POST | `/findings/{finding_id}/status` | Transition disposition (terminal determinations require a justification). |
 | POST | `/findings/{finding_id}/hosts` | Attach a host to the finding. |
 | DELETE | `/findings/{finding_id}/hosts/{host_id}` | Detach a host. |
+| PATCH · DELETE | `/findings/{finding_id}/endpoints/{finding_host_id}` | ONE endpoint row's own state (`open` / `remediated` / `retest` / `false_positive`). The finding's status is the ISSUE's; never read it as the state of a given host. Responses carry `endpoint_status_counts`. |
+| GET | `/vulnerabilities/{vuln_id}/promote-preview` | What promoting this scanner observation would do — the finding it would join, the hosts carrying the issue. |
+| POST | `/vulnerabilities/{vuln_id}/promote` | Promote or dismiss a scanner observation: `{status?, severity?, owner_id?, summary?, scope?}`. **`scope: "host"`** acts on the inspected host only — a `false_positive` dismissal defaults to it; a promotion may use it (v2.366.0: the finding is still the issue's, one per `dedup_key`, but only this host is attached, so "confirmed" is never recorded for hosts nobody verified). `scope: "issue"` is every host carrying it, and is the API default for a promotion. `accepted_risk` is issue-wide only: with `scope: "host"` → **422**. |
+| POST | `/annotations/{annotation_id}/promote` | Promote a note thread to a finding (the note becomes its evidence). |
+| GET | `/findings/{finding_id}/history` · `GET`/`POST /findings/{finding_id}/notes` | Status history; the comment / evidence thread (terminal determinations need a justification). |
+| POST | `/findings/bulk/status` · `/findings/bulk/assign` | Bulk transitions and assignment. |
 
 ### 4.6 Scopes & subnets
 
@@ -329,7 +347,7 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 |---|---|---|
 | GET | `/scopes/default` | The project's default scope. |
 | GET | `/scopes/` | List scopes. |
-| POST | `/scopes/` | Create scope. |
+| POST | `/scopes/upload-subnets` | Import scope from a CSV or flat list — CIDR rows and domain/wildcard rows. Scopes are created through import; there is no bare `POST /scopes/`. |
 | GET | `/scopes/{scope_id}` | Scope detail. |
 | DELETE | `/scopes/{scope_id}` | |
 | POST | `/scopes/upload-subnets` | Analyst+. Upload a scope file: CIDR/IP rows → subnets, domain rows (`*.example.com` = include subdomains) → scope domains. 2 MB cap, 10 000 entry cap. |
@@ -372,6 +390,8 @@ operator produced on their own host (dnsx JSON, DNS CSV, amass). There is no
 server-side lookup/AXFR endpoint. Stored DNS records are read per host/scan via
 `GET /hosts/{id}/dns-records` and `GET /scans/{id}/dns-records`.
 
+**Named assets — `/names` (v2.322.0).** An FQDN is an identity of its own (`DNSName`), never merged into a host; it is linked to addresses only through observations. `GET /names/` (list), `GET /names/summary`, `GET /names/export`, `POST /names/import`, `GET /names/by-host/{host_id}` (names bound to one address), `GET /names/{name_id}` (addresses, evidence, siblings), `DELETE /names/{name_id}`. "Currently resolves to" is derived from the latest A/AAAA observations, never stored.
+
 ### 4.9 Parse errors
 
 | Method | Path | Notes |
@@ -393,14 +413,14 @@ Agent rows are auto-provisioned by each workflow's own start endpoint, and every
 key those mint is bound to exactly one `AgentSession`. Get a key by starting a
 session:
 
-| Workflow | Mint a key with |
+| Entry point | Start a session with |
 |---|---|
 | Plan generation | `POST /test-plans/generate` |
 | Execution | `POST /test-plans/{plan_id}/execute` |
 | Recon | `POST /scopes/{scope_id}/recon/start` |
 | Assist | `POST /assist/start` |
 
-Revoke by ending the session from that workflow's page. A key with no session
+All four mint the SAME project-scoped session key (§1.2); they differ only in the phase that is pre-opened. Sessions are managed uniformly: `GET /projects/{id}/agent-sessions` (the timeline), `POST /projects/{id}/agent-sessions/{sid}/end` (owner or project admin — this is what revokes the key) and `POST …/{sid}/resume` (rotates the key, re-issues the prompt and MCP setup). A key with no session
 binding is now **rejected at authentication** (403), so any credential predating
 the removal is inert.
 
@@ -419,7 +439,7 @@ the removal is inert.
 | PATCH | `/test-plans/{plan_id}/entries/{entry_id}` | Update an entry (status, rationale, findings, notes). Supports `expected_updated_at` for optimistic locking. |
 | GET | `/test-plans/{plan_id}/progress` | Progress rollup. |
 | GET | `/test-plans/{plan_id}/history` | Audit trail of plan changes. |
-| DELETE | `/test-plans/{plan_id}` | Delete. Only allowed if no execution sessions exist. |
+| DELETE | `/test-plans/{plan_id}` | Analyst. Cascade-deletes the plan's entries and history — there is NO "no execution sessions" guard; the UI warns when dispositioned entries exist. |
 | POST | `/test-plans/{plan_id}/execute` | Mint a plan-scoped execution API key and return instructions. |
 | POST | `/test-plans/{plan_id}/rotate-key` | **v2.19.0** — Mint a fresh per-plan agent key and revoke the prior ones. For the case where the original 24h key expired but the user wants to keep working on the same plan. |
 | GET | `/test-plans/{plan_id}/entries/{entry_id}/execution-results` | Per-entry test execution results + sanity checks for the latest (or a specified `session_id`) session. |
@@ -462,13 +482,15 @@ These mount under `/projects/{project_id}/...` alongside the above. Most are das
 
 ## 5. Agent API (`/api/v1/agent/*`) — X-API-Key auth
 
-All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the request headers. Project scope is implicit from the key. Plan-scoped keys are additionally restricted to their bound `plan_id`.
+All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the request headers. Project scope is implicit from the key. Which plan or scope a call is about comes from the PHASE the session has open — not from the key.
 
-The surface spans **four** workflows, each with its own scope and Swagger tag: **plan-generation** (`agent-plan-generation`), **execution** (`agent-execution`), **reconnaissance** (`agent-recon`), and **assist** (`agent-assist`). A key minted for one workflow is rejected on the others' endpoints (403).
+**One key, one session, every surface.** The Swagger tags — `agent-plan-generation`, `agent-execution`, `agent-recon`, `agent-assist` — group the routes by kind of work; they are not scopes, and nothing is rejected for being "the wrong workflow" (that model ended in v2.337.0). Assist reads are the default surface; recon, planning and execution become available once the session opens that phase.
+
+**Session lifecycle:** `POST /agent/session/environment` (ONE probe per session) → open a phase — `POST /agent/recon/start {scope_id}` · `POST /agent/test-plans {title}` · `POST /agent/execution-sessions/start {plan_id}` (201; each returns its context plus a `read_back` of the run's concrete bounds) → work → complete the phase (`POST /agent/recon/complete`, `POST /agent/execution-sessions/{session_id}/complete`, `POST /agent/test-plans/{id}/submit`) → `POST /agent/session/end` (409 while a recon or execution phase is still open). `GET /agent/identity` reports `open_phases`, `can_write_project_data`, `key_expires_at` and `renew_path`. A call about a phase that is not open answers **409**, not 403.
 
 Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, same checks, same audit row.
 
-### 5.1 Project context (global-scope keys only)
+### 5.1 Project context (every session)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -504,7 +526,8 @@ Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, 
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/execution-sessions/{session_id}/environment` | **v2.23.0** — MANDATORY first call on a new session. Records the operator-host environment probe (OS, shell, PowerShell version + execution policy, real-vs-stub Python, WSL, tools on PATH). Re-POSTing replaces the probe. See §6.8. |
+| POST | `/agent/session/environment` | **One probe per SESSION** (it replaced the three per-phase probe routes in v2.337.0). Records the operator-host environment — OS, shell, PowerShell version + execution policy, real-vs-stub Python, WSL, tools on PATH — plus `agent_model` / `agent_tool` / `agent_prompt_version`; snapshotted onto every run the session opens. |
+| POST | `/agent/execution-sessions/start` | **Open the execution phase** on an approved plan (`{plan_id}`) — 201, execution context + `read_back`. Reuses a run this session already has open; pauses another session's active run. 409 if the plan is not approved/in_progress or is empty. |
 | GET | `/agent/test-plans/{plan_id}/execution-context` | Hosts + entries + tests with `{ip}` resolved. Response now carries an `environment` block echoing the probe so the agent translates intent → command for the right platform. |
 | POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check` | Record a host sanity check result. |
 | POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/test-results` | Record test execution results. |
@@ -515,7 +538,7 @@ Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, 
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/recon/sessions/{session_id}/environment` | **v2.23.0** — Same probe as execution but for recon sessions. |
+| POST | `/agent/recon/start` | **Open the recon phase** on a scope (`{scope_id}`, optional `notes`) — 201, recon context + `read_back`; 400 if the scope has no subnets. Probe once per session at `/agent/session/environment`. |
 | GET | `/agent/recon/context` | Scope CIDR list, scope-size analysis, recommended discovery sequence, known-host probe helper, tool catalog. Carries `environment` once probed. |
 | POST | `/agent/recon/upload` | Multipart upload of scanner output. Stamped with the recon session ID. |
 | GET | `/agent/recon/jobs/{job_id}` | Poll an ingestion job to completion. |
@@ -530,11 +553,10 @@ Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, 
 
 ### 5.7 Assist workflow (read-only Q&A — v2.64.0)
 
-For "ask questions about this project" agents that shouldn't trigger the plan-approval ceremony. All endpoints require an `assist`-scoped key (`require_assist_scope`); plan/recon/execution keys are rejected here, and assist keys are rejected on the other agent surfaces.
+For "ask questions about this project" agents that shouldn't trigger the plan-approval ceremony. These reads are the DEFAULT surface of every session — no phase, no special key (`require_assist_scope` is gone). Project membership is the floor; the NDJSON exports, attachments and screenshots require `auditor`. The table below is a sample: the router also serves `/assist/hosts/count`, `/assist/hosts/{id}/findings` (raw scanner observations), `/assist/hosts/{id}/web-interfaces`, `/assist/hosts/{id}/notes`, `/assist/hosts/{id}/testing`, `/assist/findings[/{id}]`, `/assist/posture`, `/assist/patterns`, `/assist/segments`, `/assist/coverage`, `/assist/vocabulary`, `/assist/notes`, `/assist/names`, `/assist/ingestion-issues`, and the `hosts.ndjson` / `report-context.ndjson` downloads.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/assist/sessions/{session_id}/environment` | Per-session environment probe, same shape as execution/recon. |
 | GET | `/agent/assist/context` | Project + assist-session context. |
 | GET | `/agent/assist/hosts` | Paginated, filterable host list (read-only). Accepts the discrete filters AND a `q=` boolean query DSL — see below. |
 | GET | `/agent/assist/hosts/count` | **v2.291.0** — how many hosts match, same filters + `q` DSL. The list returns a bare array with no total, so a counting question was previously answerable only by paging to exhaustion — and an agent that stopped early reported a confident wrong number. Shares the query builder with the list, so "which hosts" and "how many hosts" cannot drift. |
@@ -562,7 +584,7 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
 
 * **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so workflow scope, the operator's project role, and the audit log are unchanged. The MCP layer makes no authorization decision.
 * **401 vs. isError.** No usable credential answers a real **HTTP 401** with a bare `WWW-Authenticate: Bearer` challenge (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
-* **Scoped listing.** `tools/list` returns only the caller's workflow's tools, plus `agent_identity`, `suggest_tool`, `read_agent_guide` and `list_approved_tools`. This is presentation, not authorisation — an unlisted tool called anyway still hits the endpoint's own guard.
+* **Unfiltered listing.** `tools/list` returns the whole catalogue (55 tools) to every session; each tool's `workflows` field is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
 * **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages.
 * **Not tools:** the file-shaped endpoints (`report-context.ndjson`, `recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt`, `POST recon/upload`) stay `curl` — they belong on disk, not in a model's context.
 
@@ -793,7 +815,9 @@ Null metrics are acceptable — the guide explicitly notes that agents running i
 - **The `referenced_*` lists** are parsed out of path + query + body so a filter like `?target_ip=10.0.0.5` is a single indexed query.
 - Authentication: **JWT only** — agents cannot read their own audit log.
 
-### 6.8 `POST /api/v1/agent/execution-sessions/{session_id}/environment` (v2.23.0)
+### 6.8 `POST /api/v1/agent/session/environment` (v2.23.0; one route since v2.337.0)
+
+No path parameter — the key identifies its session. ONE probe per session; it replaced the three per-phase routes (`/agent/execution-sessions/{id}/environment`, `/agent/recon/sessions/{id}/environment`, `/agent/assist/sessions/{id}/environment`), which no longer exist.
 
 Request body (`EnvironmentProbeRequest` — `extra="allow"`, so the agent can attach observed facts beyond the fixed shape):
 
@@ -823,7 +847,8 @@ Response is the same shape echoed back plus the audit-trail fields:
 ```json
 {
   "session_id": 17,
-  "session_type": "execution",
+  "session_type": "session",
+  "agent_model": "…", "agent_tool": "…", "agent_prompt_version": "2.7.0",
   "probed_at": "2026-05-15T09:30:00.000Z",
   "probed_by_user_id": 42,
   "probed_from_ip": "192.168.10.55",
@@ -831,7 +856,7 @@ Response is the same shape echoed back plus the audit-trail fields:
 }
 ```
 
-Subsequent `/execution-context` responses carry an `environment` block reflecting this probe so the agent doesn't have to re-send. The recon equivalent (`POST /agent/recon/sessions/{session_id}/environment`) uses the same shape.
+Subsequent `/execution-context` responses carry an `environment` block reflecting this probe so the agent doesn't have to re-send. The probe is snapshotted onto every recon and execution run the session opens, so `/recon/context` carries it too.
 
 ---
 
@@ -885,4 +910,4 @@ Callers should be aware of these enforced constraints — they're documented her
 
 ---
 
-This document reflects the v2.201.0 state of the API. Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.
+This document was last reconciled with the routers at v2.370.2. **It is not an exhaustive route list and never stays one for long** — sections 4 and 5 give the shape and the contracts that matter; for every route, parameter and schema use the live OpenAPI at `https://<host>/docs` (Swagger UI), `/redoc`, or `/openapi.json`, all proxied by nginx (the backend's own :8000 is not published). Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.
