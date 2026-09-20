@@ -1349,7 +1349,17 @@ def get_host_v2(
     host = db.query(models.Host).options(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
-        selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan)
+        selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
+        # v2.368.2 — these three are ``lazy="selectin"`` on the model, so the
+        # entity load fetched them all and nothing below read them: the
+        # vulnerability list is queried again just under here WITH its
+        # informational filter (so the eager copy defeated it — every info row
+        # and its plugin text was loaded anyway), notes come from the follow
+        # service, and the serializer never touches attributes. The list query
+        # has carried the same three ``noload``s since it was written.
+        noload(models.Host.vulnerabilities),
+        noload(models.Host.attributes),
+        noload(models.Host.notes),
     ).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
 
     if not host:
