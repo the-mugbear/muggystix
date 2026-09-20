@@ -159,7 +159,7 @@ backend/app/
 │   ├── model_registry.py     # imports every model module — CI's `alembic check` fails
 │   │                         # (proposes dropping tables) when a new module is missing here
 │   └── models_confidence.py  # per-attribute confidence + conflict tracking
-├── services/                 # ~90 modules — `ls` is the source; the ones that carry a subsystem:
+├── services/                 # ~80 modules — `ls` is the source; the ones that carry a subsystem:
 │   ├── host_query.py, host_query_dsl.py, host_query_predicates.py, host_serialization.py
 │   │                         # the Hosts query DSL (the SAME engine serves the UI, agents and
 │   │                         # MCP) and the one host/note serializer (`note_load_options`)
