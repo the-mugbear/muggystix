@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.8.1",
+        "app_version": "2.373.0",
+        "summary": (
+            "Two host-filter additions an agent can use, documented in the "
+            "assist hosts row of AGENTS.md: `conclusion:` (what a finished "
+            "review concluded — `conclusion:needs_evidence` is every reviewed "
+            "host whose question is still open, the same set Posture counts as "
+            "\"still needs evidence\") and `site:none` (a host inside a scoped "
+            "subnet that inherits no site — Posture's \"Unassigned\" column). "
+            "The posture payload no longer carries `remediation_flow` (the "
+            "engagement ends at the report) and its `priorities` rows carry a "
+            "`tier`: `work` rows (an unassigned finding) are things to do and "
+            "never explain the label."
+        ),
+    },
+    {
         "version": "2.8.0",
         "app_version": "2.371.0",
         "summary": (

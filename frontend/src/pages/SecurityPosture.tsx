@@ -1,11 +1,13 @@
 /**
- * Security Posture — the manager-facing roll-up.
+ * Security Posture — Overview: the assessment's argument on one page.
  *
- * A well-supported snapshot (not a time series — tests are rarely rerun): one
- * deterministic label + its reasons, four headline measures, where risk
- * concentrates, the ranked decisions, and the systemic/disposition/site
- * breakdowns. Composes the attention + systemic + finding + agent aggregates
- * (GET /posture); links DOWN into Insights / Systemic / Findings for the detail.
+ * A snapshot, not a time series, and it ends at the report (no remediation or
+ * response tracking). Top to bottom: the conclusion and what it rests on, four
+ * quiet measures, ONE ranked comparison ("Where to focus"), the decisions it
+ * leads to, then the full family × site grid and the promoted findings as
+ * reference. Sections over thin rules, not cards (v5.254.0). Composes the
+ * attention + systemic + finding aggregates (GET /posture); links DOWN into
+ * Segments / Patterns / Evidence / Findings for the detail.
  *
  * UI-style-guide: tables are table-fixed with truncating cells; every state
  * (loading / error / empty) renders a safe fallback; no page-level overflow.
@@ -13,8 +15,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle, ArrowUpRight, Clock, Eye, FileText, HelpCircle, Loader2, RefreshCw, ShieldAlert,
-  ShieldCheck, Telescope, Layers, UserCheck,
+  AlertTriangle, ArrowUpRight, Clock, FileText, HelpCircle, Loader2, RefreshCw,
+  ShieldCheck, Telescope,
 } from 'lucide-react';
 
 import {
@@ -22,20 +24,19 @@ import {
 } from '../services/api';
 import { downloadSystemicReport, familyCellHostsHref, UNASSIGNED_SITE } from '../services/api/insights';
 import { useToast } from '../contexts/ToastContext';
-import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
+import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
-import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-// Plain-English "what is this / how it's derived" help — this is a management
-// surface, so every metric explains itself on an explicit (i).
+// Plain-English "what is this / how it's derived" help — every measure
+// explains itself on an explicit (i), never on hover alone.
 import { InfoTip } from '../components/ui/info-tip';
-import { Meter } from '../components/posture/PostureCharts';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
+import PostureSection from '../components/posture/PostureSection';
+import FocusComparison from '../components/posture/FocusComparison';
 import {
   SEVERITY_HSL, LABEL_TONE, PRIORITY_KIND,
 } from '../components/posture/postureTheme';
@@ -166,27 +167,19 @@ const SecurityPosture: React.FC = () => {
           </AlertDescription>
         </Alert>
       ) : data ? (
-        <>
-          {/* 1. The executive read — one conclusion + label + top reasons. */}
-          <PostureLabelBanner data={data} />
-
-          {/* 2. Exposure vs. assurance — kept separate, never a single grade.
-              (The remediation strip left in 5.252.0: the engagement ends at the
-              report, so remediated / reopened / backlog age measure a response
-              BlueStick does not assess.) */}
-          <HeadlineMeasures data={data} />
-
-          {/* 3. The systemic hero — where weaknesses concentrate (families × sites). */}
+        // v5.254.0 — one argument, top to bottom: the conclusion and what it
+        // rests on, four quiet measures on one baseline, ONE comparison, then
+        // the decisions it leads to. Sections, not cards (PostureSection); the
+        // full grid and the findings follow as reference. Target: conclusion,
+        // comparison and the start of the decisions on the first screen.
+        <div className="space-y-lg">
+          <PostureConclusion data={data} />
+          <ContextStrip data={data} />
+          <WhereToFocus data={data} />
+          <ReviewDecisions priorities={data.priorities} decisions={data.decisions} />
           <ConditionSegmentHeatmap data={data} />
-
-          {/* 4. Highest-leverage actions beside finding disposition. The
-              systemic detail now lives on the Patterns page; sites on Segments. */}
-          <div className="grid items-start gap-md lg:grid-cols-2">
-            <ManagementPriorities priorities={data.priorities} decisions={data.decisions} />
-            <FindingDisposition data={data} />
-          </div>
-
-        </>
+          <PromotedFindings data={data} />
+        </div>
       ) : null}
     </div>
   );
@@ -196,198 +189,172 @@ const SecurityPosture: React.FC = () => {
 // Security condition — leads with one plain-language conclusion, with the
 // deterministic label as a chip and the top reasons as supporting detail.
 // ---------------------------------------------------------------------------
-const PostureLabelBanner: React.FC<{ data: PostureResponse }> = ({ data }) => {
+const PostureConclusion: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const tone = LABEL_TONE[data.label];
   const Icon = LABEL_ICON[data.label];
+  const rc = data.headline.review_coverage;
+  const inScope = data.systemic.adopted ? data.systemic.estate?.hosts_in_scope : undefined;
+  // The reasons after the first: the conclusion sentence IS the first one.
+  const more = data.reasons.slice(1);
   return (
-    <Card className={`border-l-4 ${tone.borderClass} ${tone.tintClass}`}>
-      <CardContent className="flex flex-col gap-sm p-md md:flex-row md:gap-lg">
-        <div className="flex min-w-0 flex-1 items-start gap-sm">
-          <Icon className={`mt-0.5 size-7 shrink-0 ${tone.textClass}`} aria-hidden />
-          <div className="min-w-0">
-            <p className="flex items-center gap-xxs text-caption uppercase tracking-wide text-muted-foreground">
-              Security condition
-              <InfoTip text="A deterministic label, not a score. Action required = any unowned critical/high finding, estate blind spot, or hot tier-1/2 site. Needs assessment = low review coverage, untriaged scan data, or a site coverage gap. Insufficient evidence = no scan evidence yet, so a clear reading can't be trusted. Otherwise No urgent signals. Operational queues (pending approvals, blocked runs) are shown separately and do not change this label." />
-            </p>
-            {/* The plain-language conclusion is the executive read — the lead. */}
-            <p className="mt-xxs text-subheading font-semibold text-foreground break-words">
-              {safeFallback(data.conclusion?.text, tone.text)}
-            </p>
-            <span className={`mt-xs inline-flex items-center gap-xxs text-caption font-medium ${tone.textClass}`}>
-              <SevDot severity={data.label === 'action_required' ? 'critical'
-                : data.label === 'needs_assessment' ? 'medium' : 'low'} />
-              {tone.text}
-            </span>
-          </div>
-        </div>
-        <ul className="min-w-0 flex-1 space-y-xxs md:max-w-sm md:border-l md:border-border md:pl-lg">
-          {data.reasons.length === 0 ? (
-            <li className="text-caption text-muted-foreground">No outstanding signals.</li>
-          ) : data.reasons.map((r, i) => (
-            <li key={i} className="flex items-start gap-xs text-metadata text-foreground">
+    <div className={`border-l-4 py-xs pl-md ${tone.borderClass}`}>
+      <p className="flex items-center gap-xs text-caption uppercase tracking-wide text-muted-foreground">
+        <Icon className={`size-4 shrink-0 ${tone.textClass}`} aria-hidden />
+        <span className={`font-semibold ${tone.textClass}`}>{tone.text}</span>
+        <InfoTip text="A deterministic label, not a score, and it follows what was OBSERVED — never who is assigned. Action required = any active critical/high finding, estate-wide weakness, or critical finding on a tier-1/2 site. Needs assessment = low review coverage, scanner observations nobody has judged, or a site below its expected host count. Insufficient evidence = no scan evidence yet, so a quiet reading can't be trusted. Otherwise No urgent signals. Unassigned findings, pending approvals and blocked runs are listed as work and do not change it." />
+      </p>
+      {/* The plain-language conclusion is the lead. */}
+      <p className="mt-xxs break-words text-subheading font-semibold text-foreground">
+        {safeFallback(data.conclusion?.text, tone.text)}
+      </p>
+      {more.length > 0 && (
+        <ul className="mt-xs flex flex-wrap gap-x-lg gap-y-xxs">
+          {more.map((r, i) => (
+            <li key={i} className="flex min-w-0 items-start gap-xs text-metadata text-foreground">
               <span className="mt-1"><SevDot severity={r.severity} /></span>
-              <span className="min-w-0">{r.text}</span>
+              <span className="min-w-0 break-words">{r.text}</span>
             </li>
           ))}
         </ul>
-      </CardContent>
-    </Card>
+      )}
+      {/* What the conclusion rests on — beside it, not a trip to Evidence away. */}
+      <p className="mt-xs break-words text-caption text-muted-foreground">
+        Rests on: {rc.reviewed.toLocaleString()} of {rc.total.toLocaleString()} hosts reviewed
+        {inScope != null && <> · {inScope.toLocaleString()} of {rc.total.toLocaleString()} hosts inside scoped subnets</>}
+        {' · '}
+        <Link to="/posture/evidence" className="text-info hover:underline">what has and hasn’t been assessed →</Link>
+      </p>
+    </div>
   );
 };
 
 // ---------------------------------------------------------------------------
-// Headline measures — four cards, each with a micro-visual.
+// Context strip — at most four quiet, linked measures on ONE baseline. They
+// support the conclusion; they are not the page. (Were four stat cards, each
+// with its own icon, meter and border; "Ownership" is gone — an unassigned
+// finding is a row under Decisions, not a measure of the estate.)
 // ---------------------------------------------------------------------------
-// One consistent stat-card shell so the row reads as a set: label + icon, a
-// big number, a thin supporting visual, then a caption. (Replaces the mixed
-// donut-gauge / stacked-bar cards that looked off against each other.)
-const StatCard: React.FC<{
+const Measure: React.FC<{
   label: string;
-  icon: React.ReactNode;
-  value: React.ReactNode;
   info: string;
-  visual?: React.ReactNode;
-  children?: React.ReactNode;
-  /** Drill-down for the headline number (§26) — renders it as a link. */
+  value: React.ReactNode;
+  /** Drill-down for the number (§26) — the list it opens is the set it counts. */
   to?: string;
   toLabel?: string;
-}> = ({ label, icon, value, info, visual, children, to, toLabel }) => (
-  <Card>
-    <CardContent className="flex h-full flex-col gap-sm p-md">
-      <div className="flex items-center justify-between gap-xs">
-        <span className="flex items-center gap-xxs text-caption text-muted-foreground">
-          {label} <InfoTip text={info} />
-        </span>
-        <span className="text-muted-foreground" aria-hidden>{icon}</span>
-      </div>
+  children?: React.ReactNode;
+}> = ({ label, info, value, to, toLabel, children }) => (
+  <div className="min-w-0 px-md first:pl-0">
+    <p className="flex items-center gap-xxs text-caption text-muted-foreground">
+      <span className="truncate">{label}</span> <InfoTip text={info} />
+    </p>
+    <p className="mt-xxs text-subheading font-bold tabular-nums leading-none text-foreground">
       {to ? (
         <Link to={to} aria-label={toLabel ?? `${label} — view`}
-          className="text-page-title font-bold tabular-nums leading-none text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded">
+          className="rounded hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {value}
         </Link>
-      ) : (
-        <p className="text-page-title font-bold tabular-nums leading-none text-foreground">{value}</p>
-      )}
-      <div className="flex h-6 items-center">{visual}</div>
-      <div className="mt-auto">{children}</div>
-    </CardContent>
-  </Card>
+      ) : value}
+    </p>
+    <div className="mt-xs min-w-0 text-caption text-muted-foreground">{children}</div>
+  </div>
 );
 
-const HeadlineMeasures: React.FC<{ data: PostureResponse }> = ({ data }) => {
+const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const h = data.headline;
-  const ownPct = h.ownership.pct;
-  const conditions = data.systemic.conditions;
-  const ActiveFindingsCard = (
-    <StatCard
-      label="Active findings"
-      icon={<ShieldAlert className="size-4" />}
-      value={h.active_exposure.active_findings}
-      info="Curated findings still open, confirmed, or in retest — issues an analyst has accepted as real. Excludes resolved (remediated / false-positive / accepted-risk) and raw scanner detections (counted separately below)."
-      to={buildFindingsUrl({ status: 'active' })}
-      toLabel={`${h.active_exposure.active_findings} active findings — view`}
-      visual={<SeverityBar counts={h.active_exposure.by_severity} variant="compact"
-        segmentHref={(sev) => buildFindingsUrl({ status: 'active', severity: sev })} />}
-    >
-      <p className="text-caption text-muted-foreground">
-        curated · open / confirmed / retest ·{' '}
-        <span title="Scanner-detected vulnerabilities — raw, not analyst-curated. Shown separately, never summed.">
-          {h.detected_exposure.vuln_count.toLocaleString()} scanner-detected
-        </span>
-      </p>
-    </StatCard>
-  );
-
-  const SystemicCard = (
-    <StatCard
-      label="Systemic weaknesses"
-      icon={<Layers className="size-4" />}
-      value={h.systemic.adopted ? h.systemic.blind_spot_count : '—'}
-      info="Weaknesses that recur estate-wide (e.g. SMB signing disabled on many hosts). Counted as 'blind spots' when one condition spans a meaningful share of hosts AND most sites. Derived from the systemic-insights analysis; needs scoped subnets to assess."
-      visual={h.systemic.adopted ? (
-        <div className="flex flex-wrap items-center gap-1">
-          {conditions.length === 0
-            ? <span className="text-caption text-muted-foreground">no recurring conditions</span>
-            : conditions.slice(0, 10).map((c) => (
-              <span key={c.key} className="size-2.5 rounded-full"
-                title={`${c.label} — ${Math.round(c.host_fraction * 100)}% of hosts`}
-                style={{ background: c.is_blind_spot ? 'hsl(var(--destructive))' : 'hsl(var(--warning))' }} />
-            ))}
-        </div>
-      ) : <span className="text-caption text-warning">Not assessed</span>}
-    >
-      {h.systemic.adopted ? (
-        <Link to="/posture/patterns" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
-          estate blind spots · {h.systemic.condition_count} condition{h.systemic.condition_count === 1 ? '' : 's'}
-          <ArrowUpRight className="size-3" aria-hidden />
-        </Link>
-      ) : (
-        <Link to="/scopes" className="inline-flex items-center gap-xxs text-caption text-info hover:underline">
-          Needs scoped subnets <ArrowUpRight className="size-3" aria-hidden />
-        </Link>
-      )}
-    </StatCard>
-  );
-
-  const CoverageCard = (
-    <StatCard
-      label="Assessment coverage"
-      icon={<Eye className="size-4" />}
-      value={h.review_coverage.pct == null ? '—' : `${h.review_coverage.pct}%`}
-      info="Share of discovered hosts an analyst has marked Reviewed — derived as reviewed ÷ total hosts. 'Validated' counts hosts with a completed test (a stronger signal than review)."
-      to={reviewedHostsUrl(true)}
-      toLabel="Reviewed hosts — view"
-      visual={<Meter pct={h.review_coverage.pct} color="hsl(var(--info))" />}
-    >
-      <p className="text-caption text-muted-foreground">
-        {h.review_coverage.reviewed.toLocaleString()} / {h.review_coverage.total.toLocaleString()} hosts reviewed
-        {' · '}{h.review_coverage.validated_hosts.toLocaleString()} validated
-      </p>
-      {h.review_coverage.total - h.review_coverage.reviewed > 0 && (
-        <Link to={reviewedHostsUrl(false)} className="text-caption text-info hover:underline">
-          {(h.review_coverage.total - h.review_coverage.reviewed).toLocaleString()} unreviewed →
-        </Link>
-      )}
-    </StatCard>
-  );
-
-  const OwnershipCard = (
-    <StatCard
-      label="Ownership"
-      icon={<UserCheck className="size-4" />}
-      value={ownPct == null ? '—' : `${ownPct}%`}
-      info="Share of active findings with an assigned owner — derived as owned ÷ active findings. Unowned findings have nobody accountable to drive them to closure."
-      visual={<Meter pct={ownPct} color={ownPct != null && ownPct < 60 ? 'hsl(var(--warning))' : 'hsl(var(--success))'} />}
-    >
-      <p className="text-caption text-muted-foreground">
-        {h.ownership.owned} owned
-        {h.ownership.unowned > 0 && (
-          <Link to={buildFindingsUrl({ status: 'active', owner: 'unowned' })}
-            className="text-warning hover:underline"> · {h.ownership.unowned} unowned →</Link>
-        )}
-      </p>
-    </StatCard>
-  );
-
-  // Exposure and assurance shown SEPARATELY — never collapsed into one grade.
-  // Exposure = what's wrong (findings, systemic spread); Assurance = how well
-  // we know (coverage, ownership). A clean exposure with weak assurance is not
-  // the same as a genuinely clean estate.
+  const sev = h.active_exposure.by_severity;
+  const criticalHigh = (sev.critical ?? 0) + (sev.high ?? 0);
+  const unreviewed = h.review_coverage.total - h.review_coverage.reviewed;
+  const needsEvidence = h.open_questions?.needs_evidence_hosts ?? 0;
   return (
-    <div className="grid gap-md lg:grid-cols-2">
-      <section className="space-y-sm">
-        <h2 className="flex items-center gap-xxs text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-          Exposure <InfoTip text="What's wrong: curated active findings and weaknesses that recur across the estate." />
-        </h2>
-        <div className="grid gap-md sm:grid-cols-2">{ActiveFindingsCard}{SystemicCard}</div>
-      </section>
-      <section className="space-y-sm">
-        <h2 className="flex items-center gap-xxs text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-          Assurance <InfoTip text="How well we know: how much of the estate has been reviewed/validated, and whether findings have owners. High exposure with low assurance means the picture is both bad and incomplete." />
-        </h2>
-        <div className="grid gap-md sm:grid-cols-2">{CoverageCard}{OwnershipCard}</div>
-      </section>
+    <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
+      <Measure
+        label="Critical / high findings, active"
+        info="Promoted findings of critical or high severity that are under investigation or confirmed. Scanner observations nobody has judged are counted beside it, never added to it."
+        value={criticalHigh.toLocaleString()}
+        to={buildFindingsUrl({ status: 'active' })}
+        toLabel={`${criticalHigh} critical or high active findings — view active findings`}
+      >
+        <SeverityBar counts={sev} variant="compact"
+          segmentHref={(s) => buildFindingsUrl({ status: 'active', severity: s })} />
+        <p className="mt-xxs truncate">
+          {h.active_exposure.active_findings.toLocaleString()} active ·{' '}
+          <span title="What the tools reported, per host, not yet judged by an analyst. Shown separately, never summed.">
+            {h.detected_exposure.vuln_count.toLocaleString()} scanner observations
+          </span>
+        </p>
+      </Measure>
+
+      <Measure
+        label="Hosts reviewed"
+        info="Hosts an analyst has marked Reviewed, of every host in the project. It describes analyst activity — it is not proof a host was fully assessed; see Evidence for that. 'Tested' counts hosts with an executed test result."
+        value={`${h.review_coverage.reviewed.toLocaleString()} / ${h.review_coverage.total.toLocaleString()}`}
+        to={reviewedHostsUrl(true)}
+        toLabel="Reviewed hosts — view"
+      >
+        <p className="truncate">
+          {h.review_coverage.pct == null ? 'no hosts yet' : `${h.review_coverage.pct}%`}
+          {' · '}{h.review_coverage.validated_hosts.toLocaleString()} tested
+          {unreviewed > 0 && (
+            <> · <Link to={reviewedHostsUrl(false)} className="text-info hover:underline">{unreviewed.toLocaleString()} unreviewed →</Link></>
+          )}
+        </p>
+      </Measure>
+
+      <Measure
+        label="Still needs evidence"
+        info="Hosts whose review concluded “needs more evidence” — an explicit record that a question is still open, not something inferred from counts. A host that went back into review no longer counts."
+        value={needsEvidence.toLocaleString()}
+        to={needsEvidence > 0 ? buildHostsUrl({ q: 'conclusion:needs_evidence' }) : undefined}
+        toLabel={`${needsEvidence} hosts still needing evidence — view`}
+      >
+        <p className="truncate">{needsEvidence === 0 ? 'no open questions recorded' : 'open questions from finished reviews'}</p>
+      </Measure>
+
+      <Measure
+        label="Widespread weaknesses"
+        info="Conditions that recur across a meaningful share of hosts AND most sites (e.g. SMB signing disabled everywhere). Needs scoped subnets to assess. A spread is an observation; its cause is a hypothesis — see Patterns."
+        value={h.systemic.adopted ? h.systemic.blind_spot_count.toLocaleString() : '—'}
+        to={h.systemic.adopted ? '/posture/patterns' : undefined}
+        toLabel="Widespread weaknesses — open Patterns"
+      >
+        {h.systemic.adopted ? (
+          <p className="truncate">
+            {h.systemic.condition_count} recurring condition{h.systemic.condition_count === 1 ? '' : 's'} in all
+          </p>
+        ) : (
+          <Link to="/scopes" className="inline-flex items-center gap-xxs text-info hover:underline">
+            Not assessed — needs scoped subnets <ArrowUpRight className="size-3" aria-hidden />
+          </Link>
+        )}
+      </Measure>
     </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Where to focus — the page's ONE primary visual: a ranked comparison for one
+// named measure. When nothing recurs, or nothing is scoped, it says which.
+// ---------------------------------------------------------------------------
+const WhereToFocus: React.FC<{ data: PostureResponse }> = ({ data }) => {
+  const hm = data.heatmap;
+  const hasAffected = Boolean(hm && hm.segments.length > 0 && hm.rows.some((r) => r.affected_total > 0));
+  return (
+    <PostureSection
+      title="Where to focus"
+      description="One measure at a time: which segments carry it disproportionately, and how complete the evidence behind each rate is."
+    >
+      {hm && hasAffected ? (
+        <FocusComparison heatmap={hm} />
+      ) : (
+        <p className="text-metadata text-muted-foreground">
+          {!hm
+            ? <>No scoped subnets yet, so nothing can be compared by location. Group subnets into scopes and sites — see{' '}
+              <Link to="/posture/segments" className="text-info hover:underline">Segments</Link>.</>
+            : <>No recurring weakness was observed in any segment. That is only as strong as the evidence collected — the grid
+              below shows which cells were never assessed.</>}
+        </p>
+      )}
+    </PostureSection>
   );
 };
 
@@ -420,21 +387,20 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
   const inScope = data.systemic.adopted ? data.systemic.estate?.hosts_in_scope : undefined;
   const unmapped = inScope == null ? null : Math.max(0, total - inScope);
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-xs">
-          Where weaknesses concentrate
-          <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / assessed hosts — assessed means the site's in-scope hosts that carry evidence in the domain that can detect this family (hover a row label for its domain), so 0 of N is 'checked, none found'. A hatched cell is unassessed: nobody looked, which is not the same as clean. Darker = a larger share affected. Click a cell to open exactly those hosts." />
-        </CardTitle>
-        {inScope != null && (
-          <p className="text-caption text-muted-foreground">
-            Covers the <span className="font-medium text-foreground">{inScope.toLocaleString()}</span> hosts
-            inside scoped subnets, of {total.toLocaleString()} in the project.
-            {unmapped ? ` ${unmapped.toLocaleString()} host${unmapped === 1 ? ' is' : 's are'} outside every scoped subnet and cannot appear here.` : ''}
-          </p>
-        )}
-      </CardHeader>
-      <CardContent>
+    <PostureSection
+      title={<>
+        Every family × site
+        <InfoTip text="Each row is a pattern family, each column a site. A cell shows affected / assessed hosts — assessed means the site's in-scope hosts that carry evidence in the domain that can detect this family (hover a row label for its domain), so 0 of N is 'checked, none found'. A hatched cell is unassessed: nobody looked, which is not the same as clean. Darker = a larger share affected. Click a cell to open exactly those hosts." />
+      </>}
+      description={inScope != null && (
+        <>
+          Covers the <span className="font-medium text-foreground">{inScope.toLocaleString()}</span> hosts
+          inside scoped subnets, of {total.toLocaleString()} in the project.
+          {unmapped ? ` ${unmapped.toLocaleString()} host${unmapped === 1 ? ' is' : 's are'} outside every scoped subnet and cannot appear here.` : ''}
+        </>
+      )}
+      actions={<Link to="/posture/segments" className="text-info hover:underline">Segments →</Link>}
+    >
         {!hm || hm.rows.length === 0 || hm.segments.length === 0 ? (
           <div className="py-lg text-center">
             <Telescope className="mx-auto mb-sm size-7 text-muted-foreground" aria-hidden />
@@ -522,120 +488,105 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
             </p>
           </div>
         )}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 
 // ---------------------------------------------------------------------------
 // Management priorities — the ranked decision list.
 // ---------------------------------------------------------------------------
-const ManagementPriorities: React.FC<{
+const ReviewDecisions: React.FC<{
   priorities: PriorityItem[];
   decisions: PostureResponse['decisions'];
 }> = ({ priorities, decisions }) => (
-  <Card>
-    <CardHeader>
-      <CardTitle className="flex items-center justify-between gap-xs">
-        <span className="flex items-center gap-xs">
-          Highest-leverage actions
-          <InfoTip text="The ranked next actions, worst-first — the same signals that set the security condition above (unowned critical/high findings, estate blind spots, hot tier-1/2 sites, low review coverage, untriaged scan data). Operational queue counts are shown as badges but never change the strategic label." />
-        </span>
-        {(decisions.pending_approvals > 0 || decisions.blocked_sessions > 0) && (
-          <span className="flex gap-xxs">
-            {decisions.pending_approvals > 0 && (
-              <Badge variant="info">{decisions.pending_approvals} to approve</Badge>
-            )}
-            {decisions.blocked_sessions > 0 && (
-              <Badge variant="warning">{decisions.blocked_sessions} blocked</Badge>
-            )}
-          </span>
-        )}
-      </CardTitle>
-    </CardHeader>
-    <CardContent className="p-0">
-      {priorities.length === 0 ? (
-        <p className="p-md text-caption text-muted-foreground">Nothing demands a decision right now.</p>
-      ) : (
-        <ol className="divide-y divide-border">
+  <PostureSection
+    title={<>
+      Decisions for this review
+      <InfoTip text="What was observed, how far it reaches, and the next assessment step — ranked worst-first from the same signals that set the security condition. Rows marked Assessment work (an unassigned finding) are things to do, and never change the condition; neither do pending approvals or blocked runs, which live in Operations." />
+    </>}
+    actions={(decisions.pending_approvals > 0 || decisions.blocked_sessions > 0) && (
+      <Link to="/operations" className="text-info hover:underline">
+        {[
+          decisions.pending_approvals > 0 && `${decisions.pending_approvals} plan${decisions.pending_approvals === 1 ? '' : 's'} to approve`,
+          decisions.blocked_sessions > 0 && `${decisions.blocked_sessions} blocked run${decisions.blocked_sessions === 1 ? '' : 's'}`,
+        ].filter(Boolean).join(' · ')} in Operations →
+      </Link>
+    )}
+  >
+    {priorities.length === 0 ? (
+      <p className="text-metadata text-muted-foreground">Nothing demands a decision right now.</p>
+    ) : (
+      <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
+        <thead>
+          <tr className="text-left text-caption text-muted-foreground">
+            <th className="w-[38%] pb-xxs pr-md font-medium">Observed</th>
+            <th className="w-[30%] pb-xxs pr-md font-medium">Reach</th>
+            <th className="pb-xxs font-medium">Next step</th>
+          </tr>
+        </thead>
+        <tbody>
           {priorities.map((p, i) => {
             const kind = PRIORITY_KIND[p.kind] ?? { label: p.kind, severity: p.severity };
-            const row = (
-              <div className="flex items-start gap-sm px-md py-sm">
-                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-caption font-semibold tabular-nums text-muted-foreground">
-                  {i + 1}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-xs">
-                    <SevDot severity={p.severity} />
-                    <span className="min-w-0 truncate font-medium text-foreground" title={p.title}>
-                      {p.title}
-                    </span>
-                    <Badge variant="muted" className="shrink-0">{kind.label}</Badge>
-                  </div>
-                  <p className="mt-xxs truncate text-caption text-muted-foreground" title={p.blast_radius}>
-                    {p.blast_radius}
-                    {p.owner && <span className="text-foreground"> · owner {p.owner}</span>}
-                  </p>
-                  <p className="mt-xxs truncate text-caption text-foreground" title={p.action}>
-                    → {p.action}
-                  </p>
-                </div>
-                {p.link && <ArrowUpRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />}
-              </div>
+            const title = (
+              <span className="min-w-0 truncate font-medium text-foreground" title={p.title}>{p.title}</span>
             );
             return (
-              <li key={`${p.kind}-${i}`}>
-                {p.link
-                  ? <Link to={p.link} className="block hover:bg-muted/50">{row}</Link>
-                  : row}
-              </li>
+              <tr key={`${p.kind}-${i}`} className="border-t border-border/60 align-top" data-tier={p.tier ?? 'action'}>
+                <td className="py-xs pr-md">
+                  <div className="flex min-w-0 items-center gap-xs">
+                    <SevDot severity={p.severity} />
+                    {p.link
+                      ? <Link to={p.link} className="flex min-w-0 hover:underline">{title}</Link>
+                      : title}
+                  </div>
+                  <p className="mt-xxs truncate pl-[1.125rem] text-caption text-muted-foreground">
+                    {p.tier === 'work' ? 'Assessment work — does not change the condition' : kind.label}
+                  </p>
+                </td>
+                <td className="py-xs pr-md text-caption text-muted-foreground">
+                  <span className="line-clamp-2 break-words" title={p.blast_radius}>
+                    {p.blast_radius}
+                    {p.owner && <span className="text-foreground"> · site owner {p.owner}</span>}
+                  </span>
+                </td>
+                <td className="py-xs text-caption text-foreground">
+                  <span className="line-clamp-2 break-words" title={p.action}>{p.action}</span>
+                </td>
+              </tr>
             );
           })}
-        </ol>
-      )}
-    </CardContent>
-  </Card>
+        </tbody>
+      </table>
+    )}
+  </PostureSection>
 );
 
 // ---------------------------------------------------------------------------
 // Finding disposition — scanner-confirmed kept visually separate.
 // ---------------------------------------------------------------------------
-const FindingDisposition: React.FC<{ data: PostureResponse }> = ({ data }) => {
+const PromotedFindings: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const d = data.disposition;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between gap-xs">
-          <span className="flex items-center gap-xs">
-            Finding disposition
-            <InfoTip text="Where promoted findings stand. Under investigation = open / retest; Confirmed = an analyst validated it; Closed = false positive, accepted risk or remediated — a recorded conclusion, each counted separately below, and not a measure of improved security. The two figures above split active findings by ORIGIN (analyst-raised vs scanner-sourced), which is independent of status." />
-          </span>
-          <Link to="/findings" className="text-caption text-info hover:underline">Findings →</Link>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-md">
-        {/* Active split by SOURCE/origin, not disposition — never summed.
-            (How a finding originated, independent of its confirmation status.) */}
-        <div className="grid grid-cols-2 gap-sm">
-          {/* No single "not scanner" predicate, so non-scanner stays passive —
-              a plausible-but-wrong drill-down is worse than none (§26). */}
-          <div className="rounded-control border border-border p-sm">
-            <p className="text-page-title font-bold tabular-nums text-foreground">{d.non_scanner_active}</p>
-            <p className="text-caption text-muted-foreground">non-scanner active</p>
-          </div>
-          <Link to={buildFindingsUrl({ status: 'active', source: 'scanner' })}
-            className="rounded-control border border-dashed border-border p-sm hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <p className="text-page-title font-bold tabular-nums text-muted-foreground">{d.scanner_active}</p>
-            <p className="text-caption text-muted-foreground">scanner-sourced active →</p>
-          </Link>
-        </div>
-        <p className="text-caption text-muted-foreground">By origin (note / manual / execution vs scanner) — not confirmation status.</p>
-
-        <DispositionPipeline byStatus={d.by_status}
-          statusHref={(status) => buildFindingsUrl({ status: status as never })} />
-      </CardContent>
-    </Card>
+    <PostureSection
+      title={<>
+        Promoted findings
+        <InfoTip text="Where promoted findings stand — what feeds the report. Under investigation = open / retest; Confirmed = an analyst validated it; Closed = false positive, accepted risk or remediated — a recorded conclusion, each counted separately, and not a measure of improved security." />
+      </>}
+      actions={<Link to="/findings" className="text-info hover:underline">Findings →</Link>}
+    >
+      <DispositionPipeline byStatus={d.by_status}
+        statusHref={(status) => buildFindingsUrl({ status: status as never })} />
+      {/* Active split by ORIGIN, independent of status — never summed with it.
+          No single "not scanner" predicate exists, so that figure stays
+          passive: a plausible-but-wrong drill-down is worse than none (§26). */}
+      <p className="mt-sm break-words text-caption text-muted-foreground">
+        Of the active findings, <span className="font-medium tabular-nums text-foreground">{d.non_scanner_active}</span> were
+        raised by an analyst (note / manual / execution) and{' '}
+        <Link to={buildFindingsUrl({ status: 'active', source: 'scanner' })} className="text-info hover:underline">
+          <span className="tabular-nums">{d.scanner_active}</span> promoted from a scanner observation →
+        </Link>
+      </p>
+    </PostureSection>
   );
 };
 

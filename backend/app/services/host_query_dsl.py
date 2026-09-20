@@ -45,6 +45,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.models import FollowStatus
 from app.db.models_auth import User
+from app.schemas.schemas import REVIEW_CONCLUSIONS
 from app.services import host_query_predicates as P
 from app.services.host_query_common import escape_like  # noqa: F401  (parity w/ predicates)
 
@@ -512,6 +513,16 @@ def _b_follow(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return or_(*preds)
 
 
+def _b_conclusion(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    wanted = [v.lower() for v in values]
+    unknown = [v for v in wanted if v not in REVIEW_CONCLUSIONS]
+    if unknown:
+        raise DSLError(
+            f"Unknown review conclusion '{unknown[0]}' (one of: {', '.join(sorted(REVIEW_CONCLUSIONS))})"
+        )
+    return P.review_conclusion_predicate(ctx.db, wanted)
+
+
 def _b_assigned(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     preds = []
     for v in values:
@@ -614,6 +625,9 @@ _FIELD_SPECS: List[FieldSpec] = [
                           "scoped subnet that carries no site (Posture’s “Unassigned”)."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any."),
+    FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
+              description="What a finished review concluded — e.g. `conclusion:needs_evidence` "
+                          "is every reviewed host whose question is still open."),
     FieldSpec("assigned", _b_assigned, aliases=["assignee"],
               description="Host assignment — “me”, “any”, “none”, a username, or a user id."),
     FieldSpec("scan", _b_scan, value_source="scan",

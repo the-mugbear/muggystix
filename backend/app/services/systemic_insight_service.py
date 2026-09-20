@@ -59,7 +59,7 @@ from app.services.pattern_families import (
     FAMILIES,
     _CONDITION_FAMILY,
 )
-from app.services.evidence_service import DOMAIN_LABELS, assessed_host_ids
+from app.services.evidence_service import DOMAIN_LABELS, assessed_host_ids, eligible_host_ids
 from app.schemas.metric import ratio_metric
 
 # A weakness must touch at least this fraction of in-scope hosts before it's
@@ -413,8 +413,14 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     assessed_by_domain: Dict[str, Set[int]] = {
         k: v & in_scope for k, v in assessed_host_ids(db, project_id).items()
     }
+    # ...and the hosts each domain APPLIES to, so a cell can say how complete
+    # its evidence is (assessed of eligible) — "12 assessed of 40 in scope" is
+    # not thin coverage when only 12 of the 40 expose a web port.
+    eligible_by_domain: Dict[str, Set[int]] = {
+        k: v & in_scope for k, v in eligible_host_ids(db, project_id).items()
+    }
     family_matrix = _build_family_site_matrix(
-        affected, host_site, in_scope, subnet_meta, assessed_by_domain,
+        affected, host_site, in_scope, subnet_meta, assessed_by_domain, eligible_by_domain,
     )
     family_summary = _build_family_summary(
         affected, host_subnet, host_site, cond_class, total_hosts,
@@ -497,6 +503,7 @@ def _build_family_site_matrix(
     in_scope: Set[int],
     subnet_meta: Dict[int, Dict[str, Any]],
     assessed_by_domain: Optional[Dict[str, Set[int]]] = None,
+    eligible_by_domain: Optional[Dict[str, Set[int]]] = None,
 ) -> Dict[str, Any]:
     """Condition-family × site matrix — the Overview heatmap.
 
@@ -518,12 +525,19 @@ def _build_family_site_matrix(
       ``unassessed`` ``assessed == 0``: nothing in this site was checked for
                      this family, which is a different thing from
                      ``affected == 0``
+      ``eligible`` / ``eligible_assessed`` (v2.373.0)  the site's hosts the
+                     family's domain applies to, and how many of THOSE carry
+                     its evidence — the cell's evidence completeness.  Kept
+                     apart from ``assessed`` (evidence can exist on a host the
+                     port-based eligibility rule misses) so neither ratio is
+                     ever clamped to look plausible.
     Assessed sets are never summed across domains.  Segments carry ``in_scope``
     (``assessed`` is kept as its alias for older readers — the per-cell value is
     the authoritative one).  ``drilldown_filter`` carries the family's condition
     keys + the site so the frontend can open exactly those hosts.
     """
     assessed_by_domain = assessed_by_domain or {}
+    eligible_by_domain = eligible_by_domain or {}
     # site_id -> label (from subnet metadata; a site may span several subnets).
     site_label: Dict[int, str] = {}
     for meta in subnet_meta.values():
@@ -576,6 +590,7 @@ def _build_family_site_matrix(
         conds = sorted(conds_list)
         domain = evidence_domain_for_family(fam_key)
         domain_assessed = assessed_by_domain.get(domain, set())
+        domain_eligible = eligible_by_domain.get(domain, set())
         cells = []
         for seg in segments:
             seg_set = seg_hosts[seg["key"]]
@@ -593,6 +608,9 @@ def _build_family_site_matrix(
             cell["assessed"] = checked
             cell["in_scope"] = len(seg_set)
             cell["unassessed"] = checked == 0
+            seg_eligible = domain_eligible & seg_set
+            cell["eligible"] = len(seg_eligible)
+            cell["eligible_assessed"] = len(seg_eligible & domain_assessed)
             cells.append(cell)
         rows.append({
             "family": fam_key,

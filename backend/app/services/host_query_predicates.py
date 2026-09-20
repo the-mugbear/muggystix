@@ -657,6 +657,19 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
     return models.Host.id.in_(follow_ids)
 
 
+def review_conclusion_predicate(db: Session, conclusions: Sequence[str]) -> ColumnElement:
+    """Host whose review CONCLUDED one of these (v2.373.0) — team-level, like
+    ``follow_predicate``: any teammate's Reviewed row counts.  A conclusion
+    left on a row that has since gone back to In Review does not: the review
+    is open again, so nothing is concluded.  ``needs_evidence`` is the
+    Posture overview's "still needs evidence" count, and this is its list."""
+    concluded = db.query(HostFollow.host_id).filter(
+        HostFollow.status == FollowStatus.REVIEWED.value,
+        HostFollow.review_conclusion.in_(list(conclusions)),
+    )
+    return models.Host.id.in_(concluded)
+
+
 def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[ColumnElement]:
     """Assignment predicate: ``any`` → assigned to anyone, ``none`` → assigned
     to nobody, ``me`` → the caller, a **username** (the normal case — user ids

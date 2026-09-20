@@ -19,7 +19,9 @@ export interface PostureReason {
 }
 
 export interface PriorityItem {
-  kind: string;          // ownership | systemic | site | blocked | coverage | triage | approval | onboard
+  kind: string;          // exposure | ownership | systemic | site | coverage | triage | onboard
+  /** action | assess set the label; `work` (an unassigned finding) never does. */
+  tier?: 'action' | 'assess' | 'work';
   title: string;
   blast_radius: string;
   action: string;
@@ -35,6 +37,9 @@ export interface PostureHeadline {
   ownership: { owned: number; unowned: number; total: number; pct: number | null };
   systemic: { adopted: boolean; blind_spot_count: number; condition_count: number };
   detected_exposure: { vuln_count: number };
+  /** Reviewed hosts whose review concluded "needs more evidence" — the list
+   *  is the hosts filter `conclusion:needs_evidence`. */
+  open_questions?: { needs_evidence_hosts: number };
 }
 
 export interface PostureSiteExposure {
@@ -79,6 +84,10 @@ export interface HeatmapCell extends Metric {
   assessed: number;
   in_scope: number;
   unassessed: boolean;
+  /** Evidence completeness (backend 2.373.0): the site's hosts this family's
+   *  domain applies to, and how many of those carry its evidence. */
+  eligible?: number;
+  eligible_assessed?: number;
   drilldown_filter?: { conditions: string[]; site: string | null } | null;
 }
 

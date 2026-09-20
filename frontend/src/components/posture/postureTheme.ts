@@ -94,7 +94,8 @@ export const POPULATION_STATUSES: Array<{ key: 'investigating' | 'confirmed' | '
 
 /** Priority-row kind → short label + tone for the chip. */
 export const PRIORITY_KIND: Record<string, { label: string; severity: Severity }> = {
-  ownership: { label: 'Ownership', severity: 'high' },
+  exposure: { label: 'Promoted findings', severity: 'critical' },
+  ownership: { label: 'Assignment', severity: 'high' },
   systemic: { label: 'Systemic', severity: 'critical' },
   site: { label: 'Site', severity: 'critical' },
   blocked: { label: 'Blocked run', severity: 'high' },

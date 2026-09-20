@@ -41,21 +41,78 @@ def test_empty_project_reads_needs_assessment(db_session, test_project):
     assert "adopted" in out["headline"]["systemic"]
 
 
-def test_unowned_critical_is_action_required(db_session, test_project):
-    """An unowned critical active finding escalates to action_required, and the
-    top reason names it. The headline severity breakdown reflects it."""
+def test_active_critical_is_action_required_whoever_holds_it(db_session, test_project, test_user):
+    """v2.373.0 — the label follows SEVERITY.  It used to fire only for an
+    UNOWNED critical/high, so assigning an analyst to a confirmed critical
+    turned the label to "no urgent signals": assignment is assessment work and
+    says nothing about what was observed."""
     host = _host(db_session, test_project.id, "10.0.0.10")
-    _finding(db_session, test_project.id, severity="critical", owner_id=None, host=host)
+    db_session.add(models.HostFollow(
+        host_id=host.id, user_id=test_user.id, status=models.FollowStatus.REVIEWED.value,
+    ))
+    db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
+    db_session.add(models.Port(host_id=host.id, port_number=443, protocol="tcp",
+                               state="open", service_name="https"))
+    f = _finding(db_session, test_project.id, severity="critical", owner_id=None, host=host)
     db_session.commit()
 
     out = compute_posture(db_session, test_project.id, use_cache=False)
     assert out["label"] == "action_required"
     assert out["headline"]["active_exposure"]["by_severity"]["critical"] == 1
-    assert out["headline"]["ownership"]["unowned"] == 1
-    # The label, reasons, and priorities share one pass — the ownership signal
-    # is both the top reason and the top priority.
-    assert any("unowned" in r["text"].lower() for r in out["reasons"])
-    assert out["priorities"][0]["kind"] == "ownership"
+    assert out["priorities"][0]["kind"] == "exposure"
+    # Unassigned is listed as work — and explains nothing about the label.
+    work = [p for p in out["priorities"] if p["kind"] == "ownership"]
+    assert len(work) == 1 and work[0]["tier"] == "work"
+    assert not any("assigned" in r["text"].lower() for r in out["reasons"])
+
+    # Assign an analyst: the work row goes, the label does not move.
+    f.owner_id = test_user.id
+    db_session.commit()
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out["label"] == "action_required"
+    assert not [p for p in out["priorities"] if p["kind"] == "ownership"]
+
+
+def test_open_questions_count_opens_exactly_its_hosts(client, db_session, test_project, test_user):
+    """"Still needs evidence" is an explicit record (a review that concluded
+    needs_evidence), and `conclusion:needs_evidence` is its list."""
+    def reviewed(ip, conclusion, status=models.FollowStatus.REVIEWED.value):
+        h = _host(db_session, test_project.id, ip)
+        db_session.add(models.HostFollow(host_id=h.id, user_id=test_user.id, status=status,
+                                         review_conclusion=conclusion))
+
+    reviewed("10.9.0.1", "needs_evidence")
+    reviewed("10.9.0.2", "no_issue")
+    # Back in review: the old conclusion no longer stands.
+    reviewed("10.9.0.3", "needs_evidence", status=models.FollowStatus.IN_REVIEW.value)
+    _host(db_session, test_project.id, "10.9.0.4")
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out["headline"]["open_questions"]["needs_evidence_hosts"] == 1
+
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": "conclusion:needs_evidence"})
+    assert r.status_code == 200, r.text
+    assert [i["ip_address"] for i in r.json()["items"]] == ["10.9.0.1"]
+    bad = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": "conclusion:maybe"})
+    assert bad.status_code == 400
+
+
+def test_unassigned_low_finding_alone_does_not_move_the_label(db_session, test_project, test_user):
+    host = _host(db_session, test_project.id, "10.0.0.11")
+    db_session.add(models.HostFollow(
+        host_id=host.id, user_id=test_user.id, status=models.FollowStatus.REVIEWED.value,
+    ))
+    db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
+    db_session.add(models.Port(host_id=host.id, port_number=443, protocol="tcp",
+                               state="open", service_name="https"))
+    _finding(db_session, test_project.id, severity="low", owner_id=None, host=host)
+    db_session.commit()
+
+    out = compute_posture(db_session, test_project.id, use_cache=False)
+    assert out["label"] == "no_urgent_signals"
+    assert [p["tier"] for p in out["priorities"]] == ["work"]
+    assert out["reasons"] == []
 
 
 def test_owned_reviewed_finding_no_urgent_signals(db_session, test_project, test_user):
@@ -188,6 +245,13 @@ def test_heatmap_present_with_scoped_estate(db_session, test_project):
         db_session.add(h)
         db_session.flush()
         db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=sn.id))
+        db_session.add(models.Port(host_id=h.id, port_number=445, protocol="tcp", state="open"))
+    # A fourth host with a port but NO fingerprinted OS: eligible, not assessed.
+    blind = models.Host(project_id=test_project.id, ip_address="10.4.4.9", state="up")
+    db_session.add(blind)
+    db_session.flush()
+    db_session.add(HostSubnetMapping(host_id=blind.id, subnet_id=sn.id))
+    db_session.add(models.Port(host_id=blind.id, port_number=22, protocol="tcp", state="open"))
     db_session.commit()
 
     out = compute_posture(db_session, test_project.id, use_cache=False)
@@ -199,6 +263,9 @@ def test_heatmap_present_with_scoped_estate(db_session, test_project):
     cell = lifecycle["cells"][0]
     assert cell["numerator"] == 3 and cell["denominator"] == 3   # 3/3 EOL in HQ
     assert cell["drilldown_filter"]["conditions"] == ["eol_os"]
+    # v2.373.0 — evidence completeness: OS identification applies to the 4 hosts
+    # with ports, 3 of which carry it; the site has 4 hosts in scope.
+    assert (cell["eligible"], cell["eligible_assessed"], cell["in_scope"]) == (4, 3, 4)
 
 
 def test_the_unassigned_cell_opens_exactly_the_hosts_it_counts(client, db_session, test_project):

@@ -60,7 +60,7 @@ def _signal(tier: str, score: float, reason: str, *, kind: str, title: str,
             blast_radius: str, action: str, severity: str,
             owner: Optional[str], link: Optional[str]) -> Dict[str, Any]:
     return {
-        "tier": tier,            # "action" | "assess"
+        "tier": tier,            # "action" | "assess" drive the label; "work" never does
         "score": round(float(score), 1),
         "reason": reason,        # one-line, for the headline's top-3 reasons
         "priority": {
@@ -91,25 +91,40 @@ def _gather_signals(
             severity="medium", owner=None, link="/scans",
         ))
 
-    # A. Unowned critical/high findings → assign an owner (action).
+    # A. Active critical/high findings (action) — by SEVERITY, whoever holds
+    # them (v2.373.0).  This used to fire only for UNOWNED critical/high, so
+    # assigning an analyst to a confirmed critical turned the estate's label to
+    # "no urgent signals": assignment is assessment work, it says nothing about
+    # what was observed.
+    ch = int(by_sev.get("critical", 0)) + int(by_sev.get("high", 0))
+    if ch > 0:
+        crit = int(by_sev.get("critical", 0))
+        signals.append(_signal(
+            "action", 90 + ch,
+            f"{ch} critical/high finding{'' if ch == 1 else 's'} active",
+            kind="exposure", title=f"{ch} critical/high finding{'' if ch == 1 else 's'} active",
+            blast_radius=f"{ch} of {active} active findings"
+                         + (f" · {crit} critical" if crit else ""),
+            action="Confirm the evidence and how each is reported",
+            severity="critical" if crit else "high",
+            owner=None, link="/findings?status=active",
+        ))
+
+    # A2. Findings nobody is assigned to — assessment WORK.  Listed, never a
+    # label driver ("work" tier): see the note on A.
     uo_ch = unowned_by_sev.get("critical", 0) + unowned_by_sev.get("high", 0)
     uo_total = project_att["neglect"]["unowned_active_findings"]
-    if uo_ch > 0:
+    if uo_total > 0:
         signals.append(_signal(
-            "action", 90 + uo_ch,
-            f"{uo_ch} unowned critical/high finding{'' if uo_ch == 1 else 's'}",
-            kind="ownership", title=f"{uo_ch} critical/high finding{'' if uo_ch == 1 else 's'} unowned",
-            blast_radius=f"{uo_ch} of {active} active findings", action="Assign an owner to triage",
-            severity="critical" if unowned_by_sev.get("critical", 0) else "high",
-            owner=None, link="/findings",
-        ))
-    elif uo_total > 0:
-        signals.append(_signal(
-            "assess", 40 + uo_total,
-            f"{uo_total} active finding{'' if uo_total == 1 else 's'} unowned",
-            kind="ownership", title=f"{uo_total} active finding{'' if uo_total == 1 else 's'} unowned",
-            blast_radius=f"{uo_total} of {active} active findings", action="Assign owners",
-            severity="medium", owner=None, link="/findings",
+            "work", (60 + uo_ch) if uo_ch else (40 + min(uo_total, 15)),
+            f"{uo_total} active finding{'' if uo_total == 1 else 's'} with no analyst assigned",
+            kind="ownership",
+            title=f"{uo_total} active finding{'' if uo_total == 1 else 's'} unassigned"
+                  + (f" ({uo_ch} critical/high)" if uo_ch else ""),
+            blast_radius=f"{uo_total} of {active} active findings",
+            action="Assign an analyst",
+            severity="high" if uo_ch else "medium", owner=None,
+            link="/findings?status=active&owner=unowned",
         ))
 
     # B. Estate blind spots — one systemic weakness replicated estate-wide (action).
@@ -206,7 +221,7 @@ def _conclusion(label: str, reasons: List[Dict[str, Any]]) -> Dict[str, str]:
         # The top contributing reason IS the strongest driver.
         return {"text": reasons[0]["text"], "tone": _LABEL_TONE.get(label, "neutral")}
     return {
-        "text": "No urgent signals — active findings are owned and reviewed, and no estate-wide weakness stands out.",
+        "text": "No urgent signals — no critical or high finding is active, hosts are reviewed, and no estate-wide weakness stands out.",
         "tone": "positive",
     }
 
@@ -304,6 +319,22 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         or 0
     )
 
+    # Open assessment questions — reviewed hosts whose review concluded "needs
+    # more evidence" (v2.373.0).  An EXPLICIT record, never inferred from
+    # unowned findings; the same set as the `conclusion:needs_evidence` filter
+    # (host_query_predicates.review_conclusion_predicate).
+    needs_evidence_hosts = (
+        db.query(func.count(func.distinct(models.HostFollow.host_id)))
+        .join(models.Host, models.HostFollow.host_id == models.Host.id)
+        .filter(
+            models.Host.project_id == project_id,
+            models.HostFollow.status == models.FollowStatus.REVIEWED.value,
+            models.HostFollow.review_conclusion == "needs_evidence",
+        )
+        .scalar()
+        or 0
+    )
+
     # Decisions awaiting a human.
     pending_approvals = (
         db.query(func.count(TestPlan.id))
@@ -338,7 +369,12 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         label = "insufficient_evidence"
     else:
         label = "no_urgent_signals"
-    reasons = [{"text": s["reason"], "severity": s["priority"]["severity"]} for s in signals[:3]]
+    # Reasons explain the LABEL, so only label-driving signals qualify; "work"
+    # rows (unassigned findings) stay in the priorities list below.
+    reasons = [
+        {"text": s["reason"], "severity": s["priority"]["severity"]}
+        for s in [s for s in signals if s["tier"] != "work"][:3]
+    ]
 
     # Disposition: status × severity, scanner-source kept countable but separate.
     disp_rows = (
@@ -397,6 +433,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
                 "condition_count": len(systemic.get("conditions", [])),
             },
             "detected_exposure": {"vuln_count": int(detected_vulns)},
+            "open_questions": {"needs_evidence_hosts": int(needs_evidence_hosts)},
         },
         # Evidence currency — how fresh the snapshot is. Absence of recent scans
         # is itself a posture signal (the data may be stale).
@@ -404,7 +441,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
             "scan_count": project_att["neglect"]["scan_count"],
             "scan_staleness_days": project_att["neglect"]["scan_staleness_days"],
         },
-        "priorities": [s["priority"] | {"score": s["score"]} for s in signals[:8]],
+        "priorities": [s["priority"] | {"score": s["score"], "tier": s["tier"]} for s in signals[:8]],
         "decisions": {
             "pending_approvals": int(pending_approvals),
             "blocked_sessions": int(blocked_sessions),
