@@ -1,10 +1,10 @@
 # BlueStick Testing Guide
 
-> **Last verified against:** backend 2.201.0 / frontend 5.106.0 (2026-06-13)
+> **Last verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19)
 
 ## Current Test Stack
 
-- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite currently runs **~975 tests** across ~120 files.
+- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~1,850 tests** across ~200 modules (v2.370) — the number moves; `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
 ## Continuous Integration
@@ -12,11 +12,18 @@
 `.github/workflows/ci.yml` runs the gates on push-to-main and PRs — these tests are no longer
 local-only:
 
-- **Backend job** — spins up a Postgres service, runs `alembic upgrade head` (so a broken or
-  irreversible migration fails CI), then `python -m pytest -q --no-cov`.
-- **Frontend job** — `tsc --noEmit` → `vitest run` → `npm run build`.
+- **alembic-roundtrip job** — `scripts/test-alembic-roundtrip.sh` boots a throwaway Postgres and
+  walks EVERY revision down and back up, so a migration with a broken or no-op `downgrade()`
+  fails CI.
+- **Backend job** — spins up a Postgres service, runs `alembic upgrade head`, then
+  `alembic check` (model-vs-migration drift — it is what catches a model module missing from
+  `app/db/model_registry.py`), then `python -m pytest -q` **with coverage on**: the
+  `--cov-fail-under=68` floor in `backend/pytest.ini` is enforced here. (It was suppressed with
+  `--no-cov` until v2.232.0; the local recipes below still pass `--no-cov`, for speed.)
+- **Frontend job** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` → `npm run build`.
+  `tsconfig.json` has `noUnusedLocals` / `noUnusedParameters` on, so an unused import fails it.
 
-Keep both green; a red gate blocks the merge. The backend job runs from `backend/` and resolves
+Keep all three green; a red gate blocks the merge. The backend job runs from `backend/` and resolves
 repo-root files (e.g. `AGENTS.md`) via `..`, so the docs-contract tests run rather than skip.
 
 ## Backend Tests
@@ -48,10 +55,22 @@ run the backend suite against uncommitted `app/` changes** — there is no host 
 is baked into the image so only mounting the host source picks up your edits):
 
 ```bash
-docker compose run --rm --no-deps \
-  -v "$PWD/backend:/app" -v "$PWD/AGENTS.md:/app/AGENTS.md:ro" -w /app backend \
-  python -m pytest --no-cov -q
+# FROM THE REPO ROOT. Run it from backend/ or frontend/ and Docker creates a root-owned
+# stray tree of mount-point stubs there.
+R=$PWD; docker compose -f "$R/docker-compose.yml" --project-directory "$R" run --rm --no-deps \
+  -v "$R/backend:/app" -v "$R/AGENTS.md:/app/AGENTS.md:ro" -e COVERAGE_FILE=/tmp/.coverage backend \
+  sh -c "cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"
 ```
+
+Running from `/tmp` with the cache plugin off keeps root-owned `.pytest_cache` / `.coverage`
+files out of the working tree (the older `-w /app` form left them in `backend/`).
+
+**The suite does not touch your dev database's schema or data.** Data: it creates and drops its
+own `<database>_test_<pid>` database when the compose `db` is reachable, else uses in-memory
+SQLite. Schema: importing the app normally runs `alembic upgrade head` against `DATABASE_URL`,
+and `tests/conftest.py` sets `BLUESTICK_SKIP_DB_INIT=1` before that import (v2.370.1) — before
+then, a run with an unmerged migration in the tree applied it to the real dev database. Any
+OTHER command that imports `app.main` with the tree mounted still migrates.
 
 Mounting `AGENTS.md` keeps the docs-contract tests from skipping (they read it from disk).
 
@@ -93,6 +112,27 @@ OpenAPI tag described in `app/main.py` is used by a real route (and the agent-wo
 all described); and every agent endpoint documented in AGENTS.md's API-reference tables exists as
 a route. **If you rename or remove an agent route or an OpenAPI tag, update AGENTS.md / `main.py`
 in the same commit or this test fails.**
+
+## Guard tests — they fail on drift, on purpose
+
+Update these WITH the change, never around it:
+
+| Test | What it pins |
+|---|---|
+| `test_schema_fk_ondelete_contract.py` | every `ForeignKey(ondelete=…)` against the ground-truth map (tests build the schema from the models, so a missing `ondelete` makes tests and prod diverge) |
+| `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | the three-place parser registration: detection → dispatch → `format_registry.FORMATS` |
+| `test_service_router_boundary.py` | a module under `app/services` never imports from `app.api` |
+| `test_workbench.py::test_workbench_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
+| `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
+| `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | `AGENTS.md` section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
+| `test_db_init_migration.py` | boot-migration error handling, and that the harness runs with `BLUESTICK_SKIP_DB_INIT=1` |
+| `uploadFormats.test.ts`, `uploadFormatContract.test.ts` | the advertised upload formats against `documentation/UPLOAD_FORMATS.md`, and the dropzone allowlist against the backend's |
+| `versionConsistency.test.ts` | every version fallback in `docker-compose.yml` against `platform_version.json` |
+
+A regression test earns its place by FAILING on the code it guards: run it against the pre-fix
+code before keeping it (`git stash push <the fixed files>`, run, `git stash pop`). Size fixtures
+past any UI preview cap, and give fixtures distinct related rows (assignees, promotions) so the
+session's identity map cannot hide a per-row query.
 
 ## Practical Guidance
 

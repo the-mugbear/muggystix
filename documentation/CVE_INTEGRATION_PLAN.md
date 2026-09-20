@@ -1,6 +1,6 @@
 # CVE Database Integration Plan
 
-> **Status:** Unimplemented planning document. No live CVE API integration exists — CVE data currently comes from Nessus/OpenVAS scan imports only. Still accurate as of backend 2.254.1 (2026-08-11): no live CVE feed has been wired in (KEV/EPSS enrichment remains a planned, not-yet-built enhancement).
+> **Status:** Unimplemented planning document. No live CVE API integration exists — CVE data currently comes from Nessus/OpenVAS scan imports only. Still accurate as of backend 2.370.2 (2026-09-19): no live CVE feed has been wired in (KEV/EPSS enrichment remains a planned, not-yet-built enhancement).
 > **Written against:** backend 1.3.3 (2026-03-31)
 
 ## Real CVE Integration Options
