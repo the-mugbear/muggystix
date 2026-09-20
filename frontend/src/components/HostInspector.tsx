@@ -2618,11 +2618,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               const winner = sorted[0];
               const alternatives = sorted.slice(1);
               const relatedHistory = conflictHistory.filter((h) => h.field_name === fieldName);
-              // The most recent alternative, when it is newer than the selection.
-              const stamp = (v?: string | null) => (v ? new Date(v).getTime() || 0 : 0);
-              const newerAlternative = alternatives
-                .filter((alt) => stamp(alt.updated_at) > stamp(winner.updated_at))
-                .sort((a, b) => stamp(b.updated_at) - stamp(a.updated_at))[0];
 
               return (
                 <div key={fieldName} className="space-y-xs">
@@ -2640,23 +2635,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <p className="text-caption text-muted-foreground">
                       Source: {winner.data_source || 'unknown'} | Method:{' '}
                       {winner.method || 'default'} | Scan #{winner.scan_id}
-                      {/* v5.243.0 — WHEN each side was recorded. The ranking is
-                          by detection method, not by age, so without the date
-                          nothing showed that the selected value might be the
-                          older one. */}
+                      {/* v5.243.0 — WHEN the selected value was recorded. (A
+                          "a lower-ranked source is newer" warning shipped with
+                          it and was removed in v5.244.0: the API returns ONE
+                          confidence row per host field — uq_host_confidence_
+                          host_field — and keys port fields per port, so a field
+                          group never holds an alternative to compare against.
+                          What displaced what, and when, is the resolution
+                          history below.) */}
                       {' | '}
                       <span title={winner.updated_at ? new Date(winner.updated_at).toLocaleString() : undefined}>
                         recorded {formatRelativeTime(winner.updated_at, { fallback: 'time unknown' })}
                       </span>
                     </p>
-                    {newerAlternative && (
-                      <p className="text-caption text-warning">
-                        A lower-ranked source recorded this field more recently
-                        ({formatRelativeTime(newerAlternative.updated_at, { fallback: 'time unknown' })},{' '}
-                        {newerAlternative.data_source || 'unknown'}). The selection follows the
-                        source ranking, not recency — check which one still holds.
-                      </p>
-                    )}
                     {winner.additional_factors &&
                       Object.keys(winner.additional_factors).length > 0 && (
                         <p className="text-caption text-muted-foreground">

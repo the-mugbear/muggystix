@@ -81,44 +81,33 @@ describe('HostInspector — proposed tests', () => {
   });
 });
 
-// v5.243.0 — the conflicts panel ranked sources by detection method and showed
-// no dates, so nothing revealed that the selected value might be the OLDER one.
-describe('HostInspector — conflicts say when each side was recorded', () => {
-  const side = (over: Record<string, unknown>) => ({
-    id: 1, field_name: 'os_name', confidence_score: 95, scan_type: 'nmap',
-    data_source: 'nmap -O', method: 'os_detection', scan_id: 3,
-    updated_at: '2026-06-01T00:00:00Z', ...over,
-  });
-
-  it('dates both sides and flags a lower-ranked source that is more recent', async () => {
+// v5.243.0 — the conflicts panel showed source, method and scan for the selected
+// value and no date. The API returns ONE confidence row per host field, so the
+// fixture has one: an earlier version of this test fed it two rows for the same
+// field — a shape the endpoint cannot produce — to exercise a "lower-ranked
+// source is newer" warning that therefore could never fire, and was removed.
+describe('HostInspector — conflicts say when the selected value was recorded', () => {
+  it('dates the selected value and the resolution history', async () => {
     (api.getHostConflicts as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       conflict_count: 1,
-      confidence: [
-        side({ id: 1, confidence_score: 95, updated_at: '2026-06-01T00:00:00Z' }),
-        side({ id: 2, confidence_score: 60, data_source: 'nessus', scan_id: 9, updated_at: '2026-09-01T00:00:00Z' }),
-      ],
-      conflict_history: [],
+      confidence: [{
+        id: 1, field_name: 'os_name', confidence_score: 95, scan_type: 'nmap',
+        data_source: 'os_fingerprint', method: 'nmap -O', scan_id: 3,
+        updated_at: '2026-06-01T00:00:00Z',
+      }],
+      conflict_history: [{
+        id: 9, object_type: 'host', object_id: 1, field_name: 'os_name',
+        previous_value: 'Linux 4.x', previous_confidence: 60, previous_scan_id: 2, previous_method: 'masscan',
+        new_value: 'Windows Server 2022', new_confidence: 95, new_scan_id: 3, new_method: 'nmap -O',
+        resolved_at: '2026-06-01T00:00:00Z',
+      }],
     });
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
 
     fireEvent.click(await screen.findByRole('button', { name: /1 conflict/ }));
-    expect(await screen.findByText(/A lower-ranked source recorded this field more recently/)).toBeInTheDocument();
-    expect(screen.getAllByText(/^recorded /)).toHaveLength(2);
-  });
-
-  it('stays quiet when the selected value is also the newest', async () => {
-    (api.getHostConflicts as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      conflict_count: 1,
-      confidence: [
-        side({ id: 1, confidence_score: 95, updated_at: '2026-09-01T00:00:00Z' }),
-        side({ id: 2, confidence_score: 60, data_source: 'nessus', updated_at: '2026-06-01T00:00:00Z' }),
-      ],
-      conflict_history: [],
-    });
-    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole('button', { name: /1 conflict/ }));
-    await screen.findByText(/Selected value/);
-    expect(screen.queryByText(/lower-ranked source recorded/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/^recorded /)).toBeInTheDocument();
+    expect(screen.getByText(/^Resolved /)).toBeInTheDocument();
+    expect(screen.getByText('Windows Server 2022')).toBeInTheDocument();
   });
 });
 
