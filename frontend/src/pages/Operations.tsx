@@ -1049,6 +1049,25 @@ const Operations: React.FC = () => {
     refresh: refreshAssistSessions,
   } = useMyAssistSessions();
 
+  // Approvals: one block, placed by whether anything is waiting (see the
+  // ordering note in the layout below).
+  const approvalsWaiting = (pendingPlans?.length ?? 0) > 0;
+  const approvalsBlock = (
+    <>
+      {pendingError && (
+        <Alert variant="warning" className="mb-md">
+          <AlertDescription className="flex items-center justify-between gap-md">
+            <span>{pendingError}</span>
+            <Button variant="outline" size="sm" onClick={reload}>
+              <RefreshCw className="size-4" aria-hidden /> Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} canApprove={canApprovePlans} />
+    </>
+  );
+
   return (
     <div className="p-md md:p-lg">
       <div className="mb-md flex flex-wrap items-center gap-sm">
@@ -1161,9 +1180,6 @@ const Operations: React.FC = () => {
 
       {coverage && coverage.total_hosts > 0 && (
         <>
-          {/* Security snapshot leads the page — the project-level "what
-              do we have and how exposed is it?" headline numbers, above
-              the personal queue widgets. */}
           {/* Since your last visit — what changed in this project while
               the operator was away (durable per-user cursor, P2). Leads
               the personal section: "what's new?" before "what's mine?". */}
@@ -1175,34 +1191,15 @@ const Operations: React.FC = () => {
               error={sinceError}
             />
           )}
-          {statsError && (
-            <Alert variant="warning" className="mb-md">
-              <AlertDescription className="flex items-center justify-between gap-md">
-                <span>{statsError}</span>
-                <Button variant="outline" size="sm" onClick={reload}>
-                  <RefreshCw className="size-4" aria-hidden /> Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
-          <ProjectStateCard
-            stats={stats}
-            statsLoading={statsLoading}
-            coverage={coverage}
-            coverageLoading={coverageLoading}
-          />
-          {stalenessError ? (
-            <Alert variant="warning" className="mb-md">
-              <AlertDescription className="flex items-center justify-between gap-md">
-                <span>{stalenessError}</span>
-                <Button variant="outline" size="sm" onClick={reload}>
-                  <RefreshCw className="size-4" aria-hidden /> Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <ScanFreshness data={staleness} />
-          )}
+          {/* v5.241.0 — order follows what the page is FOR (design review
+              2026-09-19, the one item of it not yet shipped): what changed →
+              what is blocked on me → my work → runs → the project's state.
+              Project state + scan freshness used to lead, so the work an
+              analyst came to resume started below two cards of context. A
+              waiting approval is a blocker and leads; with nothing waiting the
+              same card keeps its empty state further down instead of pushing
+              My work off the top. */}
+          {approvalsWaiting && approvalsBlock}
           {/* My Queue + My Tasks are personal by definition — the hosts
               YOU marked In Review, the tasks assigned to YOU.  They
               render unconditionally; the Mine/All toggle scopes only
@@ -1240,18 +1237,36 @@ const Operations: React.FC = () => {
           {/* Exposure + neglect analytics live on the Insights pages (per-subnet
               hygiene + by-site rollup + cross-sectional hotspots) — reachable
               from the nav, not duplicated here. */}
-          {pendingError && (
+          {!approvalsWaiting && approvalsBlock}
+          <RunsSection refreshKey={refreshKey} />
+          {statsError && (
             <Alert variant="warning" className="mb-md">
               <AlertDescription className="flex items-center justify-between gap-md">
-                <span>{pendingError}</span>
+                <span>{statsError}</span>
                 <Button variant="outline" size="sm" onClick={reload}>
                   <RefreshCw className="size-4" aria-hidden /> Retry
                 </Button>
               </AlertDescription>
             </Alert>
           )}
-          <NeedsAttentionSection pendingPlans={pendingPlans} loading={pendingLoading} canApprove={canApprovePlans} />
-          <RunsSection refreshKey={refreshKey} />
+          <ProjectStateCard
+            stats={stats}
+            statsLoading={statsLoading}
+            coverage={coverage}
+            coverageLoading={coverageLoading}
+          />
+          {stalenessError ? (
+            <Alert variant="warning" className="mb-md">
+              <AlertDescription className="flex items-center justify-between gap-md">
+                <span>{stalenessError}</span>
+                <Button variant="outline" size="sm" onClick={reload}>
+                  <RefreshCw className="size-4" aria-hidden /> Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : (
+            <ScanFreshness data={staleness} />
+          )}
         </>
       )}
     </div>

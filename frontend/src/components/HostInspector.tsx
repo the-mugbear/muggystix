@@ -96,13 +96,12 @@ import WebInterfacesCard from './WebInterfacesCard';
 import NseScriptsCard from './NseScriptsCard';
 import NetExecCard from './NetExecCard';
 import HostFindingsCard from './HostFindingsCard';
-import HostDnsRecordsCard from './HostDnsRecordsCard';
 import HostNamesCard from './HostNamesCard';
 import HostLineagePanel from './HostLineagePanel';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { NoteThread } from './host-inspector/NoteThread';
 import { NoteComposer } from './host-inspector/NoteComposer';
-import { InspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
+import { InspectorSection, jumpToInspectorSection } from './host-inspector/InspectorSection';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
@@ -387,7 +386,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [noteError, setNoteError] = useState<string | null>(null);
   // The thread shows its newest threads until asked for the rest (v5.240.0).
   const [showAllNotes, setShowAllNotes] = useState(false);
-  useEffect(() => { setShowAllNotes(false); }, [hostId]);
+  // Finished proposed-test entries the analyst opened (they start as one line).
+  const [openDoneEntries, setOpenDoneEntries] = useState<Record<number, boolean>>({});
+  useEffect(() => { setShowAllNotes(false); setOpenDoneEntries({}); }, [hostId]);
   // Promote-note-to-finding dialog state (foundation 6b).
   const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
   const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
@@ -1247,12 +1248,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // a soft offset so the section header lands just under the
   // top chrome instead of flush with the viewport edge.
   const scrollToSection = (id: string) => {
-    if (typeof document === 'undefined') return;
-    const el = document.getElementById(id);
-    if (!el) return;
-    // A collapsed section would make the jump look like a dead link.
-    openInspectorSection(id);
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Re-opens the target first: a collapsed section would make the jump look
+    // like a dead link.
+    jumpToInspectorSection(id);
   };
 
   // Newest threads first in line for the space; the API's order is kept, and a
@@ -2337,6 +2335,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               const isFindingsOpen = !!findingsOpen[entry.id];
               const isTerminal = entry.status === 'completed' || entry.status === 'rejected';
               const isSaving = savingEntryId === entry.id;
+              // v5.241.0 — a completed or rejected entry is one line until
+              // asked for: it was dimmed but kept its full height, so finished
+              // work outweighed the work still to do.
+              const entryBodyOpen = !isTerminal || !!openDoneEntries[entry.id] || isFindingsOpen;
+              const testCount = structured.length + legacy.length;
 
               return (
                 <div
@@ -2346,7 +2349,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     isTerminal && 'opacity-80',
                   )}
                 >
-                  <div className="mb-sm flex flex-wrap items-center justify-between gap-xs">
+                  <div className={cn('flex flex-wrap items-center justify-between gap-xs', entryBodyOpen && 'mb-sm')}>
                     <div className="flex flex-wrap items-center gap-xs">
                       <button
                         type="button"
@@ -2371,6 +2374,18 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                         {entry.priority}
                       </Badge>
                       <Badge variant="outline">{entry.test_phase.replace('_', ' ')}</Badge>
+                      {isTerminal && (
+                        <button
+                          type="button"
+                          onClick={() => setOpenDoneEntries((prev) => ({ ...prev, [entry.id]: !prev[entry.id] }))}
+                          aria-expanded={entryBodyOpen}
+                          className="rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {entryBodyOpen
+                            ? 'hide detail'
+                            : `${testCount} test${testCount === 1 ? '' : 's'}${entry.findings ? ' · summary' : ''} · show`}
+                        </button>
+                      )}
                     </div>
 
                     {canManageEntries ? (
@@ -2413,6 +2428,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     )}
                   </div>
 
+                  {entryBodyOpen && (
+                  <>
                   <div className="space-y-xs">
                     {structured.map((test, i) => (
                       <StructuredTestCard
@@ -2501,6 +2518,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       )}
                     </div>
                   )}
+                  </>
+                  )}
                 </div>
               );
             })}
@@ -2510,14 +2529,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
       <WebInterfacesCard hostId={host.id} count={host.web_interface_count ?? 0} />
 
-      {/* v4.55.0 — DNS evidence card (UX phase 3 + #44.1 frontend
-          surface).  Self-suppresses when the host has no DNS records,
-          so it doesn't add visual clutter on freshly-discovered hosts. */}
-      <HostDnsRecordsCard hostId={host.id} />
-
       {/* v5.193.0 — every name bound to this address (the host row shows
-          one display name; a load balancer carries many).  Self-suppresses
-          when no name was ever observed here. */}
+          one display name; a load balancer carries many). v5.241.0 — the DNS
+          records behind those names are a disclosure INSIDE this section
+          (HostDnsRecordsCard, embedded); it stands alone only when the host
+          has no names at all. */}
       <HostNamesCard hostId={host.id} />
 
       {/* NSE script output — port + host scripts.  Renders nothing

@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { Flag, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Flag, ImagePlus, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
 import { AgentAuthorBadge } from '../AgentAuthorBadge';
@@ -16,7 +16,12 @@ import {
 import { Textarea } from '../ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { cn } from '../../utils/cn';
-import NoteAttachments from './NoteAttachments';
+import NoteAttachments, { type NoteAttachmentsHandle } from './NoteAttachments';
+
+// v5.241.0 — a note's actions are 28px, not 36px: five full-size icon buttons
+// and a select made every note's header the tallest thing in it.
+const ACTION_BUTTON = 'size-7';
+const ACTION_ICON = 'size-3.5';
 
 /**
  * Recursive note-thread renderer extracted from HostInspector.tsx
@@ -106,6 +111,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
   onAttachmentsChanged,
 }) => {
   const isReply = depth > 0;
+  const attachRef = useRef<NoteAttachmentsHandle>(null);
   const statusMeta = noteStatusMeta[note.status];
   const authorLabel = note.author_name || 'Unknown analyst';
   const children = repliesByParent[note.id] || [];
@@ -123,7 +129,9 @@ const NoteRow: React.FC<NoteRowProps> = ({
       >
         <div className="mb-xxs flex flex-wrap items-center justify-between gap-xs">
           <div className="flex flex-wrap items-center gap-xs">
-            <Badge variant={statusMeta.badgeVariant}>{statusMeta.label}</Badge>
+            {/* A root note's status is the select on the right; the badge
+                beside it said the same word twice. Replies have no select. */}
+            {isReply && <Badge variant={statusMeta.badgeVariant}>{statusMeta.label}</Badge>}
             {!isReply && note.pinned && <Badge variant="warning">Pinned</Badge>}
             {!isReply && note.note_type && (
               <Badge variant="outline" className="capitalize">{note.note_type}</Badge>
@@ -169,6 +177,7 @@ const NoteRow: React.FC<NoteRowProps> = ({
                 <Button
                   variant="ghost"
                   size="icon"
+                  className={ACTION_BUTTON}
                   onClick={() =>
                     onReplyToChange(
                       replyTo?.id === note.id
@@ -178,21 +187,38 @@ const NoteRow: React.FC<NoteRowProps> = ({
                   }
                   aria-label="Reply to note"
                 >
-                  <Reply className="size-4" aria-hidden />
+                  <Reply className={ACTION_ICON} aria-hidden />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Reply</TooltipContent>
             </Tooltip>
+            {canManageNotes && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={ACTION_BUTTON}
+                    onClick={() => attachRef.current?.openPicker()}
+                    aria-label="Attach image"
+                  >
+                    <ImagePlus className={ACTION_ICON} aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Attach image</TooltipContent>
+              </Tooltip>
+            )}
             {!isReply && onEditDetails && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
+                    className={ACTION_BUTTON}
                     onClick={() => onEditDetails(note)}
                     aria-label="Edit note details (type, assignee, due date, pin)"
                   >
-                    <SlidersHorizontal className="size-4" aria-hidden />
+                    <SlidersHorizontal className={ACTION_ICON} aria-hidden />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Type · assignee · due · pin</TooltipContent>
@@ -204,10 +230,11 @@ const NoteRow: React.FC<NoteRowProps> = ({
                   <Button
                     variant="ghost"
                     size="icon"
+                    className={ACTION_BUTTON}
                     onClick={() => onPromoteNote(note.id)}
                     aria-label="Promote note to finding"
                   >
-                    <Flag className="size-4" aria-hidden />
+                    <Flag className={ACTION_ICON} aria-hidden />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Promote to finding</TooltipContent>
@@ -218,11 +245,12 @@ const NoteRow: React.FC<NoteRowProps> = ({
                 <Button
                   variant="ghost"
                   size="icon"
+                  className={ACTION_BUTTON}
                   onClick={() => onDeleteNote(note.id)}
                   disabled={noteActionId === note.id}
                   aria-label="Delete note"
                 >
-                  <Trash2 className="size-4" aria-hidden />
+                  <Trash2 className={ACTION_ICON} aria-hidden />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Delete</TooltipContent>
@@ -232,6 +260,8 @@ const NoteRow: React.FC<NoteRowProps> = ({
         <p className="whitespace-pre-wrap text-body">{note.body}</p>
         {/* Evidence images attached to this note. */}
         <NoteAttachments
+          ref={attachRef}
+          externalTrigger
           hostId={hostId}
           noteId={note.id}
           attachments={note.attachments ?? []}

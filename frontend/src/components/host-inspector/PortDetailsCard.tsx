@@ -37,7 +37,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
-import { InspectorSection } from './InspectorSection';
+import { InspectorSection, jumpToInspectorSection } from './InspectorSection';
 
 const stateBadgeVariant = (
   state: string | null,
@@ -259,6 +259,22 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
     (p) => (endpoints.get(p.id) ?? []).some((e) => e.tls) || isTlsTunnel(p.service_tunnel),
   );
 
+  // v5.241.0 — a port row links to the evidence recorded ABOUT that port (its
+  // web interfaces, its NSE scripts), which lives in sections further down.
+  // Same rule as TLS: no column unless some port has something to link.
+  const evidenceFor = (port: Port) => ({
+    web: (endpoints.get(port.id) ?? []).length,
+    nse: port.scripts?.length ?? 0,
+  });
+  const showEvidence = openPorts.some((p) => {
+    const e = evidenceFor(p);
+    return e.web + e.nse > 0;
+  });
+  // Version takes whatever the optional columns leave (fixed layout).
+  const versionWidth = 100 - 12 - 18 - 14 - 8 - (showTls ? 16 : 0) - (showEvidence ? 12 : 0);
+  const evidenceLinkClass =
+    'rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
   const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
     <TableHead className={className}
       aria-sort={portSortDir ? (portSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
@@ -294,10 +310,11 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
             <TableHeader>
               <TableRow>
                 <PortSortHead className="w-[12%]" />
-                <TableHead className={showTls ? 'w-[17%]' : 'w-[20%]'}>Service</TableHead>
-                <TableHead className={showTls ? 'w-[33%]' : 'w-[46%]'}>Version</TableHead>
+                <TableHead className="w-[18%]">Service</TableHead>
+                <TableHead style={{ width: `${versionWidth}%` }}>Version</TableHead>
                 <TableHead className="w-[14%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
                 {showTls && <TableHead className="w-[16%]">TLS</TableHead>}
+                {showEvidence && <TableHead className="w-[12%]">Evidence</TableHead>}
                 <TableHead className="w-[8%] text-center">
                   <span className="sr-only">Connection helpers</span>
                 </TableHead>
@@ -372,6 +389,30 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                         />
                       </TableCell>
                     )}
+                    {showEvidence && (() => {
+                      const e = evidenceFor(port);
+                      return (
+                        <TableCell className="min-w-0">
+                          <div className="flex min-w-0 flex-wrap gap-x-xs">
+                            {e.web > 0 && (
+                              <button type="button" className={evidenceLinkClass}
+                                onClick={() => jumpToInspectorSection('host-detail-web')}
+                                aria-label={`${e.web} web interface${e.web === 1 ? '' : 's'} on port ${port.port_number} — jump to Web interfaces`}>
+                                web {e.web}
+                              </button>
+                            )}
+                            {e.nse > 0 && (
+                              <button type="button" className={evidenceLinkClass}
+                                onClick={() => jumpToInspectorSection('host-detail-nse')}
+                                aria-label={`${e.nse} NSE script${e.nse === 1 ? '' : 's'} on port ${port.port_number} — jump to NSE script output`}>
+                                nse {e.nse}
+                              </button>
+                            )}
+                            {e.web + e.nse === 0 && <span className="text-caption text-muted-foreground">—</span>}
+                          </div>
+                        </TableCell>
+                      );
+                    })()}
                     {/* A full-size icon button (36px) set the height of every
                         row; the row is as tall as its text now. */}
                     <TableCell className="py-0 text-center align-middle">

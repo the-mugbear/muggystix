@@ -44,16 +44,42 @@ vi.mock('../../components/WebInterfacesCard', () => ({ default: () => null }));
 vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
 vi.mock('../../components/HostFindingsCard', () => ({ default: () => null }));
-vi.mock('../../components/HostDnsRecordsCard', () => ({ default: () => null }));
 vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
 vi.mock('../../components/HostLineagePanel', () => ({ default: () => null }));
 // PortDetailsCard fetches web interfaces (getHostWebInterfaces) which the api
 // mock above doesn't provide; stub it like the other fetching child cards.
 vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () => null }));
+vi.mock('../../components/EntryResultsPanel', () => ({ default: () => <p>results panel</p> }));
 
 import HostInspector from '../../components/HostInspector';
 
 import * as api from '../../services/api';
+
+// v5.241.0 — a finished entry was dimmed but kept its full height, so done work
+// outweighed the work still to do.
+describe('HostInspector — proposed tests', () => {
+  it('a completed entry is one line until asked for; an open one shows its tests', async () => {
+    const entry = (over: Record<string, unknown>) => ({
+      id: 1, test_plan_id: 9, plan_title: 'Plan A', plan_status: 'approved', host_id: 1,
+      priority: 'high', test_phase: 'enumeration', proposed_tests: ['nmap -sV'], rationale: '',
+      status: 'proposed', created_at: '2026-06-14T00:00:00Z', updated_at: '2026-06-14T00:00:00Z', ...over,
+    });
+    (api.getHostTestPlanEntries as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      entry({ id: 1, status: 'completed', proposed_tests: ['done-test'], findings: 'All clear.' }),
+      entry({ id: 2, status: 'proposed', proposed_tests: ['todo-test'] }),
+    ]);
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+
+    expect(await screen.findByText('todo-test')).toBeInTheDocument();
+    expect(screen.queryByText('done-test')).not.toBeInTheDocument();
+    expect(screen.queryByText('All clear.')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '1 test · summary · show' }));
+    expect(screen.getByText('done-test')).toBeInTheDocument();
+    expect(screen.getByText('All clear.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'hide detail' })).toHaveAttribute('aria-expanded', 'true');
+  });
+});
 
 describe('HostInspector smoke', () => {
   it('renders through loading→loaded without a hooks-order crash', async () => {

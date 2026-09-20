@@ -205,6 +205,33 @@ describe('Operations page', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/test-plans/5');
   });
 
+  // v5.241.0 — the page is ordered by what it is for: blockers, my work, runs,
+  // then the project's state. Project state used to lead.
+  describe('section order', () => {
+    const before = (a: HTMLElement, b: HTMLElement) =>
+      // eslint-disable-next-line no-bitwise
+      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    it('a waiting approval leads, then My work, then Runs, then Project state', async () => {
+      renderPage();
+      const approvals = await screen.findByRole('heading', { name: 'Needs your approval' });
+      const myWork = await screen.findByText('My work');
+      const runs = await screen.findByRole('heading', { name: 'Runs' });
+      const state = await screen.findByText('Project state');
+      expect(before(approvals, myWork)).toBe(true);
+      expect(before(myWork, runs)).toBe(true);
+      expect(before(runs, state)).toBe(true);
+    });
+
+    it('with nothing waiting, the approvals empty state does not push My work down', async () => {
+      mockedApi.getTestPlans.mockResolvedValue([]);
+      renderPage();
+      const myWork = await screen.findByText('My work');
+      const approvals = await screen.findByRole('heading', { name: 'Needs your approval' });
+      expect(before(myWork, approvals)).toBe(true);
+    });
+  });
+
   it('renders the consolidated Runs section from /agent-sessions', async () => {
     // v3 alpha.15: ActiveRunsSection + RecentRunsSection collapsed
     // into a single RunsSection with status filter chips.  Default

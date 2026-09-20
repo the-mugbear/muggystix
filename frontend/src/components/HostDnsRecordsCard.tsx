@@ -28,6 +28,9 @@ import { InspectorSection } from './host-inspector/InspectorSection';
 
 interface HostDnsRecordsCardProps {
   hostId: number;
+  /** Render as a disclosure inside "Names at this address" rather than as a
+   *  section of its own. */
+  embedded?: boolean;
 }
 
 // Display ordering — operators read forward records first, then
@@ -52,7 +55,8 @@ const sortRecordTypes = (types: string[]): string[] => {
   return [...known, ...unknown];
 };
 
-const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
+const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedded = false }) => {
+  const [open, setOpen] = useState(false);
   const [data, setData] = useState<HostDnsRecordsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +72,7 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
     setLoading(true);
     setError(null);
     setData(null);
+    setOpen(false);
     getHostDnsRecords(hostId)
       .then((res) => {
         if (!cancelled) setData(res);
@@ -108,13 +113,7 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
   }
   const sortedTypes = data ? sortRecordTypes(Object.keys(grouped)) : [];
 
-  return (
-    <InspectorSection
-      id="host-detail-dns"
-      title="DNS evidence"
-      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
-      count={data && data.total > 0 ? data.total : null}
-    >
+  const body = (
       <div className="space-y-sm">
         {data && data.resolvers.length > 0 && (
           <p className="text-caption text-muted-foreground">
@@ -220,6 +219,40 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId }) => {
             );
           })}
       </div>
+  );
+
+  // v5.241.0 — inside "Names at this address" the records are the evidence
+  // BEHIND the names listed above them: one disclosure line, not a second
+  // section repeating the same name → address pairs.
+  if (embedded) {
+    // Nothing of this host's to disclose, and the names above already render.
+    if (!error && (loading || !data || data.total === 0)) return null;
+    return (
+      <div className="border-t border-border pt-xs">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {error
+            ? 'DNS records could not be loaded'
+            : `${data?.total} DNS record${data?.total === 1 ? '' : 's'} behind these names`}
+          {' · '}{open ? 'hide' : 'show'}
+        </button>
+        {open && <div className="pt-xs">{body}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <InspectorSection
+      id="host-detail-dns"
+      title="DNS evidence"
+      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
+      count={data && data.total > 0 ? data.total : null}
+    >
+      {body}
     </InspectorSection>
   );
 };

@@ -7,6 +7,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { InspectorSection } from './host-inspector/InspectorSection';
+import HostDnsRecordsCard from './HostDnsRecordsCard';
 
 /**
  * HostNamesCard — every name bound to this address (v5.193.0).
@@ -87,7 +88,10 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
   }, [hostId]);
 
   const total = (data?.current.length ?? 0) + (data?.previous?.length ?? 0) + (data?.other.length ?? 0);
-  if (!loading && !error && total === 0) return null;
+  // No name was ever observed here. DNS records can still exist (or the
+  // project-wide "none match this host" hint applies), so that section stands
+  // alone instead of disappearing with this one.
+  if (!loading && !error && total === 0) return <HostDnsRecordsCard hostId={hostId} />;
 
   return (
     <InspectorSection
@@ -148,6 +152,10 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
             </ul>
           </section>
         )}
+        {/* v5.241.0 — the DNS records are the observations BEHIND these names.
+            They were a section of their own that repeated the same
+            name → address pairs a few lines away. */}
+        {!loading && <HostDnsRecordsCard hostId={hostId} embedded />}
       </div>
     </InspectorSection>
   );

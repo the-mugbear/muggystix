@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Loader2, ImagePlus, Trash2 } from 'lucide-react';
 import {
   NoteAttachment,
@@ -27,6 +27,16 @@ interface NoteAttachmentsProps {
    * no override.
    */
   uploadFn?: (file: File) => Promise<unknown>;
+  /**
+   * The caller draws the attach control (the host note row puts it with the
+   * note's other actions) and opens the picker through the ref. Without it
+   * every note spent a row of its own on an "Attach image" button.
+   */
+  externalTrigger?: boolean;
+}
+
+export interface NoteAttachmentsHandle {
+  openPicker: () => void;
 }
 
 const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
@@ -38,9 +48,12 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  * needs the bearer token, so a bare <img src> wouldn't load) — mirrors how the
  * web-interface screenshots load.
  */
-const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attachments, canManage, onChanged, uploadFn }) => {
+const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(({
+  hostId, noteId, attachments, canManage, onChanged, uploadFn, externalTrigger = false,
+}, ref) => {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
+  useImperativeHandle(ref, () => ({ openPicker: () => fileRef.current?.click() }), []);
   const createdUrls = useRef<string[]>([]);
   const [urls, setUrls] = useState<Record<number, string>>({});
   const [uploading, setUploading] = useState(false);
@@ -107,8 +120,11 @@ const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attac
 
   if (attachments.length === 0 && !canManage) return null;
 
+  // With the control drawn elsewhere, a note with no images takes no space.
+  const takesSpace = attachments.length > 0 || !externalTrigger || uploading;
+
   return (
-    <div className="mt-xs space-y-xs">
+    <div className={takesSpace ? 'mt-xs space-y-xs' : undefined}>
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-xs">
           {attachments.map((att) => {
@@ -148,10 +164,16 @@ const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attac
       {canManage && (
         <>
           <input ref={fileRef} type="file" accept={ACCEPT} className="hidden" onChange={onPick} />
-          <Button variant="ghost" size="sm" disabled={uploading} onClick={() => fileRef.current?.click()}>
-            {uploading ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <ImagePlus className="size-4" aria-hidden />}
-            Attach image
-          </Button>
+          {!externalTrigger ? (
+            <Button variant="ghost" size="sm" disabled={uploading} onClick={() => fileRef.current?.click()}>
+              {uploading ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <ImagePlus className="size-4" aria-hidden />}
+              Attach image
+            </Button>
+          ) : uploading ? (
+            <p className="flex items-center gap-xs text-caption text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" aria-hidden /> Uploading image…
+            </p>
+          ) : null}
         </>
       )}
 
@@ -163,6 +185,7 @@ const NoteAttachments: React.FC<NoteAttachmentsProps> = ({ hostId, noteId, attac
       />
     </div>
   );
-};
+});
+NoteAttachments.displayName = 'NoteAttachments';
 
 export default NoteAttachments;

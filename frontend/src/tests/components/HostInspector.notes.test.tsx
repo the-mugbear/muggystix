@@ -48,7 +48,6 @@ vi.mock('../../components/WebInterfacesCard', () => ({ default: () => null }));
 vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
 vi.mock('../../components/HostFindingsCard', () => ({ default: () => null }));
-vi.mock('../../components/HostDnsRecordsCard', () => ({ default: () => null }));
 vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
 vi.mock('../../components/HostLineagePanel', () => ({ default: () => null }));
 vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () => null }));

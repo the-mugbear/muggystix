@@ -153,6 +153,32 @@ describe('PortDetailsCard — density', () => {
     expect(await screen.findByText(/TLS evidence couldn’t be loaded/)).toBeInTheDocument();
   });
 
+  // v5.241.0 — a port links to the evidence recorded about it.
+  it('links a port to its web interfaces and NSE output, and draws no column when there is none', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([
+      { id: 1, source: 'httpx', url: 'http://10.0.0.5/', fqdn: null, port_id: 443, last_seen: iso(-1), has_screenshot: false, scan_id: 1 },
+    ]);
+    const web = document.createElement('section');
+    web.id = 'host-detail-web';
+    web.scrollIntoView = vi.fn();
+    document.body.appendChild(web);
+    const sshWithScripts = { ...ssh, scripts: [{ id: 1 }, { id: 2 }] } as unknown as Port;
+
+    renderWith([https, sshWithScripts]);
+    expect(await screen.findByRole('columnheader', { name: 'Evidence' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /2 NSE scripts on port 22/ })).toHaveTextContent('nse 2');
+    fireEvent.click(screen.getByRole('button', { name: /1 web interface on port 443/ }));
+    expect(web.scrollIntoView).toHaveBeenCalled();
+    web.remove();
+  });
+
+  it('draws no Evidence column on a host with nothing to link', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    renderWith([ssh]);
+    await waitFor(() => expect(api.getHostWebInterfaces).toHaveBeenCalled());
+    expect(screen.queryByRole('columnheader', { name: 'Evidence' })).not.toBeInTheDocument();
+  });
+
   it('says so when nothing is open', async () => {
     api.getHostWebInterfaces.mockResolvedValue([]);
     renderWith([], [closed]);

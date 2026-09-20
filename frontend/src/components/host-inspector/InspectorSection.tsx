@@ -46,6 +46,15 @@ export const openInspectorSection = (id: string) => {
   window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: id }));
 };
 
+/** Re-open a section and scroll to it; a no-op when it is not on this host. */
+export const jumpToInspectorSection = (id: string) => {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  openInspectorSection(id);
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+
 export interface InspectorSectionProps {
   /** DOM id — the jump-link target and the collapse-memory key. */
   id: string;
