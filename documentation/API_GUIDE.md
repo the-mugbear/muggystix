@@ -881,7 +881,7 @@ Callers should be aware of these enforced constraints — they're documented her
 - **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than 3× `INGESTION_JOB_TIMEOUT` are transitioned to `failed` by the worker's reaper loop (~1 min cadence). Users see a clear "worker likely crashed" message in the UI with `retry_count` incremented.
 - **Workflow-scoped AGENTS.md.** Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution`, `reconnaissance`, or `assist`) to get the workflow-sliced subset. The `workflow` enum now carries `assist` as a fourth value. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
 - **Health probes.** `GET /health` on the backend; `/health.html` on the nginx frontend.
-- **Version visibility.** `GET /` returns `{message, version, frontend_version, cors_origins}`. Every UI page renders the VersionFooter in the bottom-right. Backend and frontend stay in lockstep per-release; always update both.
+- **Version visibility.** `GET /` returns `{message, version, frontend_version, cors_origins}`. The UI shows both versions in the user menu under **About BlueStick**. Backend and frontend stay in lockstep per-release; always update both.
 
 ---
 

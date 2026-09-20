@@ -352,7 +352,7 @@ frontend/src/
 ├── components/
 │   ├── ui/                  # ~28 Radix-wrapped shadcn-style primitives
 │   │                        # (dialog, select, tabs, tooltip, switch, …)
-│   └── (shared widgets)     # Layout, VersionFooter, UserMenu, HostFilters,
+│   └── (shared widgets)     # Layout, UserMenu (About → versions), HostFilters,
 │                            # HostCommandBar, ToolReadyOutput, ProposedTestList, …
 ├── contexts/
 │   ├── AuthContext.tsx      # JWT token + user profile + must_change gate
@@ -398,7 +398,7 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 - **Parse errors** — `parse_errors` has a dedicated browse page with `user_message` strings tuned for operators. Linked to `ingestion_jobs` via FK so the UI can show "this scan failed — see error #42".
 - **Dead-letter columns** — `ingestion_jobs.retry_count` + `ingestion_jobs.last_error` surface in the `IngestionJobSchema` so the UI can highlight jobs that crashed repeatedly. `ingestion_jobs.skipped_count` + `parser_warnings` (v2.22.0) carry per-job parser quality stats (how many records were dropped, what malformed), persisted from `parser.last_parse_stats` after each successful parse.
 - **Orphan reaping** — covered in §4; this is the recovery path when a worker segfaults or the container is killed mid-parse.
-- **Version visibility** — `/` returns `{backend, frontend_version}`, the VersionFooter component renders them in the bottom-right of every page, and startup logs print them on every boot.
+- **Version visibility** — `/` returns `{backend, frontend_version}`, the user menu's **About BlueStick** item shows both (the bottom-right VersionFooter was retired by UX audit #12 and its component deleted in 5.247.0), and startup logs print them on every boot.
 
 ---
 
@@ -430,7 +430,7 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 ## 10. Test & quality gates
 
 - **Backend** — `pytest` with a 68% coverage floor enforced in CI (measured 70% at v2.232.0). The suite currently runs **~975 tests** across service, parser, and contract layers under `backend/tests/`. `conftest.py` uses the SQLAlchemy join-to-outer-transaction + nested savepoint pattern so services that commit internally (integration, LLM provider, agent API log middleware) don't break test isolation. **Postgres is the preferred test backend** — the harness auto-creates a `<app-db>_test` database on the app's own Postgres server when reachable, falling back to in-memory SQLite when not. The Postgres path lets the Postgres-only code (`pg_advisory_lock`, masscan batch-upserts, the raw `pg_catalog` SQL in `delete_scan`) actually run.
-- **Frontend** — Vitest + Testing Library. Coverage spans page-level views (Hosts, Operations, ProjectActivity, the execution + recon detail/list views, the compare views), shared components (HostFilters, HostCommandBar, HostLineagePanel, ExecutionSession, VersionFooter), and pure utilities (host query-DSL translation, tool-ready output, navigation manifest, version consistency).
+- **Frontend** — Vitest + Testing Library. Coverage spans page-level views (Hosts, Operations, ProjectActivity, the execution + recon detail/list views, the compare views), shared components (HostFilters, HostCommandBar, HostLineagePanel, ExecutionSession), and pure utilities (host query-DSL translation, tool-ready output, navigation manifest, version consistency).
 - **CI** — not yet wired; tests run locally via `docker-compose exec backend python -m pytest` and `cd frontend && npx tsc --noEmit && npm test`.
 - **Type safety** — frontend runs TypeScript strict mode; every PR should typecheck clean before merge. Backend uses gradual typing via type hints but does not enforce mypy in CI.
 

@@ -84,3 +84,41 @@ def test_db_not_ready_reraises_without_critical(monkeypatch, caprecords):
         for r in caprecords
         if r.levelno == logging.CRITICAL
     )
+
+
+# --- v2.370.1 — the test harness must not migrate the developer's database ----
+# ``app.main`` runs initialize_database() at import. The suite mounts the
+# working tree, so an unmerged revision was applied to a real dev database.
+
+def _count_syncs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dbinit, "_sync_schema_with_alembic", lambda: calls.append(1))
+    monkeypatch.setattr(dbinit, "_done", False)
+    return calls
+
+
+def test_initialize_database_is_skipped_when_the_harness_says_so(monkeypatch):
+    calls = _count_syncs(monkeypatch)
+    monkeypatch.setenv("BLUESTICK_SKIP_DB_INIT", "1")
+
+    dbinit.initialize_database()
+
+    assert calls == []
+    # Not recorded as done: a later call without the flag must still migrate.
+    assert dbinit._done is False
+
+
+def test_initialize_database_still_migrates_by_default(monkeypatch):
+    calls = _count_syncs(monkeypatch)
+    monkeypatch.delenv("BLUESTICK_SKIP_DB_INIT", raising=False)
+
+    dbinit.initialize_database()
+
+    assert calls == [1]
+
+
+def test_the_suite_itself_runs_with_the_flag_set():
+    """conftest sets it before importing the app — if that line is lost, every
+    test run migrates whatever DATABASE_URL points at again."""
+    import os
+    assert os.environ.get("BLUESTICK_SKIP_DB_INIT") == "1"

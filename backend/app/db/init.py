@@ -183,6 +183,20 @@ def initialize_database() -> None:
     if _done:
         return
 
+    # v2.370.1 — ``app.main`` calls this at IMPORT time, so anything that
+    # imports the app migrates whatever DATABASE_URL points at. The test suite
+    # builds its own schema in its own ``<db>_test_<pid>`` database and never
+    # needed that — but it ran with the working tree mounted, so an unmerged
+    # revision was applied to the developer's real database (2026-09-20: a
+    # data migration deleted rows before they had been exported). The test
+    # harness sets this; nothing in a deployment should.
+    if os.getenv("BLUESTICK_SKIP_DB_INIT") == "1":
+        logger.warning(
+            "BLUESTICK_SKIP_DB_INIT=1 — not migrating %s. Test harness only; "
+            "a deployment must never set this.", engine.dialect.name,
+        )
+        return
+
     max_attempts = int(os.getenv("DB_INIT_MAX_RETRIES", "10"))
     backoff_seconds = float(os.getenv("DB_INIT_RETRY_DELAY", "3"))
     last_exc: OperationalError | None = None

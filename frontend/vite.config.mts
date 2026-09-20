@@ -7,10 +7,9 @@ import { visualizer } from 'rollup-plugin-visualizer'
 export default defineConfig({
   plugins: [
     react(),
-    // Tailwind v4 — only scans src/{components,pages}/v4/** (see
-    // tailwind.config.ts content[]).  Preflight is opt-in via the CSS
-    // @import; we deliberately do NOT import it so MUI's CssBaseline
-    // continues to own base styles.
+    // Tailwind v4 — scans all of src (tailwind.config.ts content[]).
+    // Preflight IS imported, in src/index.css: MUI was uninstalled in
+    // alpha.22 and nothing else owns base styles.
     tailwindcss(),
     // Emits build/stats.html when ANALYZE=1.  Kept off by default so a
     // normal `vite build` does not write the report file.

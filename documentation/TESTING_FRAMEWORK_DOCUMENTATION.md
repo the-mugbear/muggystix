@@ -61,7 +61,7 @@ Coverage is enforced in CI at a `68%` ratchet floor (`--cov-fail-under` in `back
 
 Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `ExecutionDetail`, `ExecutionsList`, `ReconRunDetail`, `ReconRunsList`, the compare views), shared components (`HostFilters`, `HostCommandBar`, `HostLineagePanel`, `ExecutionSession`, `VersionFooter`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
+Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `ExecutionDetail`, `ExecutionsList`, `ReconRunDetail`, `ReconRunsList`, the compare views), shared components (`HostFilters`, `HostCommandBar`, `HostLineagePanel`, `ExecutionSession`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 

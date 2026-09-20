@@ -29,15 +29,19 @@ cp .env.example .env                         # set SECRET_KEY first
 docker compose up --build -d
 ```
 
-The deployed backend version surfaces at `GET /` and in startup logs; the frontend version
-renders in the VersionFooter (bottom-right). Both must match `platform_version.json` after a
-rebuild — they're the visual confirmation that the running app includes your changes.
+The deployed backend version surfaces at `GET /` and in startup logs; both versions are shown
+in the user menu (top-right) under **About BlueStick**. They must match
+`platform_version.json` after a rebuild — they're the visual confirmation that the running app
+includes your changes.
 
 ## Running tests (and CI)
 
 CI (`.github/workflows/ci.yml`) runs on push-to-main + PRs: a **backend** job (Postgres
-service → `alembic upgrade head` → `pytest -q --no-cov`) and a **frontend** job
-(`tsc --noEmit` → `vitest run` → `npm run build`). Keep both green.
+service → `alembic upgrade head` → `alembic check` → `pytest -q`, **with the coverage floor
+enforced** — `--cov-fail-under` lives in `backend/pytest.ini`) and a **frontend** job
+(`tsc --noEmit` → `vitest run` → `npm run build`). Keep both green. `tsc` runs with
+`noUnusedLocals` / `noUnusedParameters`, so an unused import fails the frontend job and the
+image build. The local recipes below pass `--no-cov` for speed; CI does not.
 
 - **Frontend** tests run on the host: `cd frontend && npx vitest run` / `npx tsc --noEmit`.
 - **Backend** tests do **not** run on the host — there's no host `pytest`, and `app/` is baked
@@ -51,7 +55,14 @@ service → `alembic upgrade head` → `pytest -q --no-cov`) and a **frontend** 
     backend python -m pytest -q --no-cov
   ```
 
-  `--no-deps` skips Postgres (the suite uses its own isolated engine via `tests/conftest.py`).
+  `--no-deps` starts no other service. The suite's DATA is isolated: when the compose `db` is
+  reachable it creates and drops its own `<database>_test_<pid>` database, otherwise it falls
+  back to in-memory SQLite (`tests/conftest.py`). It also does not migrate your dev database:
+  importing the app normally runs `alembic upgrade head` against `DATABASE_URL`, and the
+  harness turns that off with `BLUESTICK_SKIP_DB_INIT=1` (since v2.370.1 — before that, a test
+  run with an unmerged migration in the tree applied it to the real dev database). Anything
+  ELSE that imports `app.main` — a script, a `python -c` probe — still migrates; a data
+  migration gets applied the moment you do that, so export first.
   Mounting `AGENTS.md` keeps the docs-contract tests from skipping.
 
 ## Versioning (keep three files in sync)
