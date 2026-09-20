@@ -415,7 +415,10 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                     })()}
                     {/* A full-size icon button (36px) set the height of every
                         row; the row is as tall as its text now. */}
-                    <TableCell className="py-0 text-center align-middle">
+                    {/* A 28px button is the height of the row's text line, so it
+                        takes the same padding and top alignment as its
+                        neighbours — middle-aligned it sat below the text. */}
+                    <TableCell className="text-center">
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button variant="ghost" size="icon" className="size-7"

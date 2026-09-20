@@ -77,6 +77,26 @@ describe('NoteThread — row density', () => {
     expect(screen.queryByRole('button', { name: 'Attach image' })).not.toBeInTheDocument();
   });
 
+  // A note body is unbounded — an agent's assessment, or a pasted paragraph,
+  // ran to a screen and buried everything under it.
+  it('clamps a long body until asked for, and leaves a short one alone', () => {
+    const long = 'Lorem ipsum dolor sit amet. '.repeat(40);
+    renderThread([note({ id: 1, body: long }), note({ id: 2, body: 'Short.' })]);
+    const body = screen.getByText(long.trim());
+    expect(body).toHaveClass('line-clamp-4');
+    expect(screen.getByText('Short.')).not.toHaveClass('line-clamp-4');
+    expect(screen.getAllByRole('button', { name: 'Show full note' })).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show full note' }));
+    expect(body).not.toHaveClass('line-clamp-4');
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('clamps a body of many short lines too (agent markdown)', () => {
+    renderThread([note({ body: ['## Assessment', '', '- a', '- b', '- c', '- d'].join('\n') })]);
+    expect(screen.getByRole('button', { name: 'Show full note' })).toBeInTheDocument();
+  });
+
   it('a root note states its status once — in the select; a reply keeps its badge', () => {
     renderThread([note()], { 1: [note({ id: 2, parent_id: 1, status: 'resolved', body: 'Patched.' })] });
     expect(screen.getByRole('combobox', { name: /Update status for note by Ada/ })).toHaveTextContent('Open');

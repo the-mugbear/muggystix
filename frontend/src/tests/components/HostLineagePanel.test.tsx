@@ -116,7 +116,9 @@ describe('HostLineagePanel', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/executions/77');
   });
 
-  it('renders explicit empty state per section when nothing recorded', async () => {
+  // v5.241.0 — the common case on a scanned-but-untouched host. It used to be
+  // three headings each saying "none".
+  it('says it once when nothing at all is recorded', async () => {
     mockedApi.getHostLineage.mockResolvedValue({
       host_id: 500,
       ip_address: '10.0.0.5',
@@ -125,12 +127,19 @@ describe('HostLineagePanel', () => {
       execution_sessions: [],
     });
     renderPanel();
-    await waitFor(() => {
-      expect(screen.getByText('Recon sessions')).toBeInTheDocument();
+    expect(await screen.findByText(/No agent workflow has touched this host/)).toBeInTheDocument();
+    expect(screen.queryByText('Recon sessions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Plan entries')).not.toBeInTheDocument();
+  });
+
+  it('keeps the explicit per-section empty state when only some are empty', async () => {
+    mockedApi.getHostLineage.mockResolvedValue({
+      ...fullLineage,
+      plan_entries: [],
+      execution_sessions: [],
     });
-    expect(
-      screen.getByText(/No agent-attributed recon sessions/),
-    ).toBeInTheDocument();
+    renderPanel();
+    expect(await screen.findByText('Recon sessions')).toBeInTheDocument();
     expect(screen.getByText(/No plan includes this host/)).toBeInTheDocument();
     expect(
       screen.getByText(/No execution session has tested this host/),

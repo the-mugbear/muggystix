@@ -83,8 +83,10 @@ const NetExecResultRow: React.FC<{ result: NetexecResult }> = ({ result }) => {
   const shares = normalizeShares(result.shares);
   const host = result.hostname || result.domain_name;
   return (
-    <div className="rounded-control border border-border bg-card p-sm">
-      <div className="mb-xs flex flex-wrap items-center gap-xs">
+    // v5.241.0 — a divided row, not a bordered box: a result with no shares is
+    // one line (it was a ~100px card to say "auth failed, no shares").
+    <div className="py-xs first:pt-0 last:pb-0">
+      <div className={`flex flex-wrap items-center gap-xs${shares.length > 0 ? ' mb-xs' : ''}`}>
         <Badge variant={protocolBadgeVariant(result.protocol)}>
           {result.protocol.toUpperCase()}
         </Badge>
@@ -103,9 +105,12 @@ const NetExecResultRow: React.FC<{ result: NetexecResult }> = ({ result }) => {
             {host}
           </span>
         )}
+        {shares.length === 0 && (
+          <span className="text-caption text-muted-foreground">· no shares enumerated</span>
+        )}
       </div>
 
-      {shares.length > 0 ? (
+      {shares.length > 0 && (
         <div>
           <div className="mb-xxs flex items-center gap-xxs text-caption font-semibold">
             <FolderTree className="size-3.5 text-muted-foreground" aria-hidden />
@@ -127,8 +132,6 @@ const NetExecResultRow: React.FC<{ result: NetexecResult }> = ({ result }) => {
             ))}
           </ul>
         </div>
-      ) : (
-        <p className="text-caption text-muted-foreground">No shares enumerated.</p>
       )}
     </div>
   );
@@ -181,9 +184,13 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
         {!loading && !error && rows && rows.length === 0 && (
           <p className="text-caption text-muted-foreground">No NetExec results recorded.</p>
         )}
-        {rows?.map((result) => (
-          <NetExecResultRow key={result.id} result={result} />
-        ))}
+        {rows && rows.length > 0 && (
+          <div className="divide-y divide-border">
+            {rows.map((result) => (
+              <NetExecResultRow key={result.id} result={result} />
+            ))}
+          </div>
+        )}
       </div>
     </InspectorSection>
   );

@@ -1795,7 +1795,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       <div
         className={cn(
           'sticky z-10 flex flex-wrap items-center gap-x-md gap-y-xs rounded-control border border-border px-sm py-xs text-caption text-muted-foreground shadow-raised',
-          density === 'sheet' ? 'top-0 bg-card' : 'bg-background',
+          // The sheet's scroll body has `py-md`, and a sticky offset is measured
+          // from INSIDE that padding: `top-0` parked the strip 16px down with
+          // the content scrolling visibly above it. `-top-md` cancels it.
+          density === 'sheet' ? '-top-md bg-card' : 'bg-background',
         )}
         style={density === 'sheet' ? undefined : stickyBelowChrome}
       >

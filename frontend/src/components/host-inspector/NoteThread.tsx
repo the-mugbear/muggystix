@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Flag, ImagePlus, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
@@ -22,6 +22,9 @@ import NoteAttachments, { type NoteAttachmentsHandle } from './NoteAttachments';
 // and a select made every note's header the tallest thing in it.
 const ACTION_BUTTON = 'size-7';
 const ACTION_ICON = 'size-3.5';
+// A body past either bound is clamped to four lines until opened.
+const LONG_NOTE_CHARS = 400;
+const LONG_NOTE_LINES = 5;
 
 /**
  * Recursive note-thread renderer extracted from HostInspector.tsx
@@ -112,6 +115,9 @@ const NoteRow: React.FC<NoteRowProps> = ({
 }) => {
   const isReply = depth > 0;
   const attachRef = useRef<NoteAttachmentsHandle>(null);
+  const [bodyOpen, setBodyOpen] = useState(false);
+  const body = note.body ?? '';
+  const longBody = body.length > LONG_NOTE_CHARS || body.split('\n').length > LONG_NOTE_LINES;
   const statusMeta = noteStatusMeta[note.status];
   const authorLabel = note.author_name || 'Unknown analyst';
   const children = repliesByParent[note.id] || [];
@@ -257,7 +263,23 @@ const NoteRow: React.FC<NoteRowProps> = ({
             </Tooltip>
           </div>
         </div>
-        <p className="whitespace-pre-wrap text-body">{note.body}</p>
+        {/* v5.241.0 — a note body is unbounded (an agent's assessment runs to
+            a screen of markdown); three of them buried everything below. Long
+            bodies open on demand; the threshold is on the text, not a DOM
+            measurement, so it holds in the sheet and on the standalone page. */}
+        <p className={cn('whitespace-pre-wrap break-words text-body', longBody && !bodyOpen && 'line-clamp-4')}>
+          {note.body}
+        </p>
+        {longBody && (
+          <button
+            type="button"
+            onClick={() => setBodyOpen((v) => !v)}
+            aria-expanded={bodyOpen}
+            className="rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {bodyOpen ? 'Show less' : 'Show full note'}
+          </button>
+        )}
         {/* Evidence images attached to this note. */}
         <NoteAttachments
           ref={attachRef}

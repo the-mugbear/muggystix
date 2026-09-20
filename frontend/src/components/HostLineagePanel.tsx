@@ -88,6 +88,9 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
     };
   }, [hostId]);
 
+  const untouched = !!lineage
+    && lineage.recon_sessions.length + lineage.plan_entries.length + lineage.execution_sessions.length === 0;
+
   return (
     <InspectorSection
       id="host-detail-lineage"
@@ -109,7 +112,16 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
           </Alert>
         )}
 
-        {lineage && !error && (
+        {/* All three empty is the common case on a scanned-but-untouched host:
+            one line, not three headings each saying "none" (v5.241.0). */}
+        {lineage && !error && untouched && (
+          <p className="text-metadata text-muted-foreground">
+            No agent workflow has touched this host — no recon session discovered it, no plan
+            includes it, and no execution session has tested it.
+          </p>
+        )}
+
+        {lineage && !error && !untouched && (
           <>
             <div>
               <SectionHeader

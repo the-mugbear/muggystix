@@ -133,7 +133,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
         )}
 
         {!loading && !error && rows && rows.length > 0 && (
-          <div className="space-y-sm">
+          <div className="divide-y divide-border">
             {rows.map((row) => (
               <WebInterfaceRow
                 key={row.id}
@@ -258,9 +258,11 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
   const isHttps = (row.protocol || '').toLowerCase() === 'https';
   const tls = summarizeTls(row.tls_info);
   return (
-    <div className="flex flex-col gap-sm rounded-control border border-border bg-card p-sm md:flex-row">
+    // v5.241.0 — a divided row, not a bordered box per URL: a plain interface
+    // is two lines (URL; status · source · server · title · size).
+    <div className="flex flex-col gap-sm py-xs first:pt-0 last:pb-0 md:flex-row">
       <div className="min-w-0 flex-1">
-        <div className="mb-xxs flex items-center gap-xs">
+        <div className="flex items-center gap-xs">
           {isHttps ? (
             <Lock className="size-4 text-success" aria-hidden />
           ) : (
@@ -277,9 +279,9 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
           </a>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button asChild variant="ghost" size="icon" aria-label={`Open ${row.url} in new tab`}>
+              <Button asChild variant="ghost" size="icon" className="size-7 shrink-0" aria-label={`Open ${row.url} in new tab`}>
                 <a href={row.url} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="size-4" aria-hidden />
+                  <ExternalLink className="size-3.5" aria-hidden />
                 </a>
               </Button>
             </TooltipTrigger>
@@ -301,12 +303,24 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
             </Link>
           )}
           {row.server_header && (
-            <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted-foreground">
+            <span className="min-w-0 max-w-[16rem] truncate font-mono text-caption text-muted-foreground" title={row.server_header}>
               {row.server_header}
             </span>
           )}
+          {row.title && (
+            <span className="min-w-0 max-w-[24rem] truncate text-metadata" title={row.title}>{row.title}</span>
+          )}
+          {/* v4.7.9 — content length + favicon hash (the mmh3 value used to
+              pivot to other hosts serving the same favicon). */}
+          {row.content_length != null && (
+            <span className="shrink-0 text-caption text-muted-foreground">body {fmtBytes(row.content_length)}</span>
+          )}
+          {row.favicon_hash && (
+            <span className="min-w-0 max-w-[12rem] truncate font-mono text-caption text-muted-foreground" title={row.favicon_hash}>
+              favicon {row.favicon_hash}
+            </span>
+          )}
         </div>
-        {row.title && <p className="mb-xxs line-clamp-2 text-metadata">{row.title}</p>}
         {row.technologies && row.technologies.length > 0 && (
           <div className="flex flex-wrap gap-xxs">
             {row.technologies.map((tech, i) => (
@@ -363,21 +377,6 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, onViewScreenshot }) => {
           </div>
         )}
 
-        {/* v4.7.9 — content length + favicon hash.  Both stored by the
-            httpx parser; favicon hash is the mmh3 value used to pivot
-            to other hosts serving the same favicon. */}
-        {(row.content_length != null || row.favicon_hash) && (
-          <div className="mt-xxs flex flex-wrap items-center gap-sm text-caption text-muted-foreground">
-            {row.content_length != null && (
-              <span>body {fmtBytes(row.content_length)}</span>
-            )}
-            {row.favicon_hash && (
-              <span className="min-w-0 max-w-[12rem] truncate font-mono">
-                favicon {row.favicon_hash}
-              </span>
-            )}
-          </div>
-        )}
       </div>
 
       {row.has_screenshot && (
