@@ -841,7 +841,26 @@ class TestSystemIdentityEndpoint:
         assert body["name"] == "BlueStick"
         assert body["instance_id"] is not None
         assert "safety_properties" in body
-        # Declared safety facts must be honest about the architecture
-        assert body["safety_properties"]["all_commands_require_user_approval"] is True
-        assert body["safety_properties"]["no_autonomous_execution"] is True
-        assert body["safety_properties"]["agent_keys_scope_bound"] is True
+        # Declared safety facts must be honest about the architecture.
+        # v2.371.0 — they were not: this test pinned three claims that had
+        # stopped being true BY DESIGN (approve-by-exception, v2.279.0; one
+        # project session per key, v2.337.0). An overstated safety document is
+        # read as fact by agents and auditors alike.
+        props = body["safety_properties"]
+        for retired in (
+            "all_commands_require_user_approval",
+            "no_autonomous_execution",
+            "agent_keys_scope_bound",
+        ):
+            assert retired not in props, f"{retired} is no longer true and must not be published"
+        # What the server really enforces…
+        assert props["server_executes_commands"] is False
+        assert props["plan_execution_requires_human_approval"] is True
+        assert props["agent_authority"] == "operator_project_role"
+        assert props["agent_key_binding"] == "project_session"
+        assert props["audit_trail_persistent"] is True
+        # …and what it cannot: command approval is the agent's contract, held
+        # by the client sandbox, and the document says so rather than implying
+        # server enforcement.
+        assert props["command_approval"] == "by_exception"
+        assert props["command_approval_enforced_by"] == "agent_and_client_sandbox"

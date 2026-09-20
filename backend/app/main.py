@@ -693,11 +693,27 @@ async def well_known_identity():
         'purpose': 'Authorized penetration testing operations platform',
         'documentation_url': '/docs',
         'security_contact': os.getenv('NM_SECURITY_CONTACT'),
+        # v2.371.0 — this block describes the model the product CHOSE, and says
+        # which parts the server enforces. It used to assert
+        # ``all_commands_require_user_approval``, ``no_autonomous_execution``
+        # and ``agent_keys_scope_bound``: the first two stopped being true by
+        # design when approve-by-exception shipped (v2.279.0, after testing and
+        # evaluation), and the third described the per-plan/per-scope keys that
+        # v2.337.0 replaced. A safety document that overstates is worse than
+        # none — an agent or an auditor reads it as fact.
         'safety_properties': {
-            'all_commands_require_user_approval': True,
-            'no_autonomous_execution': True,
-            'audit_trail_persistent': True,
+            # What BlueStick itself does and enforces.
+            'server_executes_commands': False,          # a coordinator: every command runs on the operator's machine
+            'plan_execution_requires_human_approval': True,   # enforced: an execution phase opens only on an approved plan
+            'agent_authority': 'operator_project_role',  # enforced per request; never more than the operator may do
+            'agent_key_binding': 'project_session',      # one session + one operator; each phase binds to one scope or plan
             'agent_keys_time_limited': True,
-            'agent_keys_scope_bound': True,
+            'agent_keys_renewable': True,                # by the agent, within the session's lifetime cap; ending the session revokes
+            'audit_trail_persistent': True,              # every /agent/* request is recorded and shown to the operator
+            # How commands are approved — the AGENT'S contract, which the server
+            # cannot observe. The boundary that actually holds is the client's
+            # sandbox; the server contributes the record and the read-back.
+            'command_approval': 'by_exception',          # approved tool + host already in inventory + output in the working dir may run without asking; anything else stops and asks
+            'command_approval_enforced_by': 'agent_and_client_sandbox',
         },
     }

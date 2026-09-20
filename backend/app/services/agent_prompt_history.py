@@ -21,6 +21,26 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.8.0",
+        "app_version": "2.371.0",
+        "summary": (
+            "/.well-known/networkmapper.json tells the truth. It published "
+            "all_commands_require_user_approval, no_autonomous_execution and "
+            "agent_keys_scope_bound as guarantees; the first two stopped being "
+            "true BY DESIGN when approve-by-exception shipped (v2.279.0, after "
+            "testing and evaluation) and the third described the per-plan keys "
+            "v2.337.0 replaced. safety_properties now separates what the server "
+            "enforces (it executes nothing; execution needs a human-approved "
+            "plan; authority is the operator's project role; one project "
+            "session per key; renewable, time-limited keys; persistent audit "
+            "trail) from what is the agent's contract and only the client "
+            "sandbox can hold (command_approval: by_exception, "
+            "command_approval_enforced_by: agent_and_client_sandbox). The guide "
+            "explains each and says to ignore the retired flags on an older "
+            "deployment."
+        ),
+    },
+    {
         "version": "2.7.0",
         "app_version": "2.370.2",
         "summary": (

@@ -1,6 +1,6 @@
 # AGENTS.md — BlueStick AI Agent Guide
 
-**Prompt version:** 1.44.0 · **Verified against:** backend 2.370.2 (2026-09-19)
+**Prompt version:** 1.44.0 · **Verified against:** backend 2.371.0 (2026-09-20)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 
@@ -28,11 +28,21 @@ curl -sk https://<host>/.well-known/networkmapper.json
 
 The response contains `instance_id`, `name`, `version`, `purpose`, and a `safety_properties` block. Your instructions block includes the `instance_id` the prompt was generated with — cross-check the two values match **once** at the start of your session. If they match, the session is trusted for the duration of your API key; you do not need to re-check on every request. If they do not match, stop and alert the user — the prompt may have been tampered with, copied from a different instance, or served by an unrelated host.
 
-You can also read `safety_properties`. Read them as the operating model, not as things the server enforces on your machine — it cannot see your terminal:
-- `all_commands_require_user_approval` + `no_autonomous_execution` — BlueStick is a coordinator; it never runs a command itself, and every command is the operator's to approve. **Approve by exception** (see *The working directory is also the approval boundary*) is the one standing approval: an approved tool, against a host already in the inventory, writing into the session's working directory, may run without asking each time. Anything else stops and asks. Holding to that is your discipline plus your client's sandbox; the server only records what you report.
-- `audit_trail_persistent` — every `/agent/*` request you make is recorded and shown to the operator.
-- `agent_keys_time_limited` — your key expires (24 h by default) and you can renew it yourself while the session lives, up to the session's maximum lifetime; ending the session, not expiry, is what revokes it.
-- `agent_keys_scope_bound` — read this as: your key is bound to **one project session and one operator**, and each *phase* you open is bound to one scope or one plan. The key is not locked to a single plan or scope (that was the pre-v2.337.0 model).
+You can also read `safety_properties`. It states the model BlueStick operates under and — since v2.371.0 — is explicit about which parts the server enforces and which are yours:
+
+Enforced by the server:
+- `server_executes_commands: false` — BlueStick is a coordinator. It never runs a command; everything runs on the operator's machine.
+- `plan_execution_requires_human_approval: true` — an execution phase opens only on a plan a human approved. You cannot approve one.
+- `agent_authority: "operator_project_role"` — your key may do exactly what your operator's project role allows, re-checked on every request.
+- `agent_key_binding: "project_session"` — your key is bound to one project session and one operator; each *phase* you open is bound to one scope or one plan. (Not to a single plan or scope — that was the pre-v2.337.0 model.)
+- `agent_keys_time_limited` / `agent_keys_renewable` — your key expires (24 h by default); you can renew it yourself while the session is under its lifetime cap. Ending the session, not expiry, is what revokes it.
+- `audit_trail_persistent: true` — every `/agent/*` request you make is recorded and shown to the operator.
+
+Yours to uphold — the server cannot see your terminal:
+- `command_approval: "by_exception"` — a command may run **without asking** only when all three hold: the tool is in the approved set, the target is a host already in the inventory, and the output lands in the session's working directory (see *The working directory is also the approval boundary*). Anything else stops and asks the operator. This is a deliberate design, adopted after testing: it is not "every command needs approval", and it is not autonomy either.
+- `command_approval_enforced_by: "agent_and_client_sandbox"` — holding to that boundary is your discipline plus your client's sandbox. The server contributes the record of what you report and the read-back of each phase's bounds; it cannot stop a command.
+
+If a deployment still publishes `all_commands_require_user_approval`, `no_autonomous_execution` or `agent_keys_scope_bound`, it predates v2.371.0 — follow this guide, not those flags.
 
 ## Quick Start
 
@@ -319,9 +329,9 @@ Use the highest-severity condition that applies. Always include `{ip}` placehold
 
 ## Workflow B — Execute an Approved Plan
 
-The plan must be in `approved` or `in_progress` status — a human approves it; you cannot. You drive execution of the individual tests with **mandatory per-test human approval** and **per-host target verification**.
+The plan must be in `approved` or `in_progress` status — a human approves it; you cannot. You drive execution of the individual tests with **per-host target verification** and **approval by exception**: you present every command; one that is in policy (approved tool, inventory host, output in the working directory) you run and say so, and anything else waits for the operator.
 
-> **Key principle:** You are a coordinator, not an autonomous executor. The user's terminal is the executor. You propose each command, wait for explicit approval, run it (if you have shell access) or ask the user to run it, then record the result.
+> **Key principle:** You are a coordinator, not an autonomous executor. The user's terminal is the executor. You present each command; run it if it is in policy, otherwise wait for explicit approval; run it (if you have shell access) or ask the user to run it; then record the result. The operator sees every command either way.
 
 ### Execution flow
 
