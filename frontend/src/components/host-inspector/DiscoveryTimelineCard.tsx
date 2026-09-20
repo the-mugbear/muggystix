@@ -21,7 +21,8 @@ import { InspectorSection } from './InspectorSection';
 const formatDateTime = (value: string | null | undefined): string =>
   value ? new Date(value).toLocaleString() : 'Unknown date';
 
-const COLLAPSED_COUNT = 3;
+// A scan is one line since v5.241.0, so the preview affords five.
+const COLLAPSED_COUNT = 5;
 
 const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ discoveries }) => {
   const toast = useToast();
@@ -48,61 +49,54 @@ const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ dis
       title={`Discovered in ${sorted.length} scan${sorted.length === 1 ? '' : 's'}`}
       icon={<History className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
     >
-      <div className="space-y-xs">
+      <div className="divide-y divide-border">
         {shown.map((entry) => {
           // SOC correlation needs the scan window (when the tool was probing),
           // not the ingest time; fall back to discovered_at only when the
           // parser couldn't extract start/end (masscan list, some gnmap).
           const hasWindow = entry.scan_start || entry.scan_end;
           return (
-            <div
-              key={`disc-${entry.scan_id}-${entry.discovered_at ?? ''}`}
-              className="rounded-control border border-border/60 bg-background/40 px-xs py-xxs"
-            >
-              <div className="flex items-center gap-xs">
-                <Badge variant="outline">{entry.scan_type || entry.tool_name || 'Scan'}</Badge>
+            // v5.241.0 — one divided line per scan (type · file · when), not a
+            // bordered two-line box; the command is a second line only when
+            // the scan recorded one.
+            <div key={`disc-${entry.scan_id}-${entry.discovered_at ?? ''}`} className="py-xxs">
+              <div className="flex min-w-0 items-center gap-xs">
+                <Badge variant="outline" className="shrink-0">{entry.scan_type || entry.tool_name || 'Scan'}</Badge>
                 <span className="min-w-0 flex-1 truncate text-caption"
                   title={entry.scan_filename || `Scan #${entry.scan_id}`}>
                   {entry.scan_filename || `Scan #${entry.scan_id}`}
                 </span>
-              </div>
-              <dl className="mt-xxs grid grid-cols-[auto_1fr] gap-x-xs gap-y-0 text-metadata text-muted-foreground">
                 {hasWindow ? (
-                  <>
-                    <dt className="font-medium">Scan start:</dt>
-                    <dd className="tabular-nums">{entry.scan_start ? formatDateTime(entry.scan_start) : '—'}</dd>
-                    <dt className="font-medium">Scan end:</dt>
-                    <dd className="tabular-nums">{entry.scan_end ? formatDateTime(entry.scan_end) : '—'}</dd>
-                  </>
+                  <span className="shrink-0 text-caption tabular-nums text-muted-foreground"
+                    title="When the tool was probing (scan start → scan end)">
+                    {entry.scan_start ? formatDateTime(entry.scan_start) : '—'}
+                    {' → '}
+                    {entry.scan_end ? formatDateTime(entry.scan_end) : '—'}
+                  </span>
                 ) : (
-                  <>
-                    <dt className="font-medium" title="Scan tool did not record start/end; this is when the file was ingested.">
-                      Ingested:
-                    </dt>
-                    <dd className="tabular-nums">{formatDateTime(entry.discovered_at)}</dd>
-                  </>
+                  <span className="shrink-0 text-caption tabular-nums text-muted-foreground"
+                    title="Scan tool did not record start/end; this is when the file was ingested.">
+                    ingested {formatDateTime(entry.discovered_at)}
+                  </span>
                 )}
-                {entry.command_line && (
-                  <>
-                    <dt className="font-medium">Command:</dt>
-                    <dd className="flex min-w-0 items-center gap-1">
-                      <span className="min-w-0 truncate font-mono" title={entry.command_line}>
-                        {entry.command_line}
-                      </span>
-                      <Button variant="ghost" size="icon"
-                        className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
-                        aria-label="Copy scan command to clipboard" title="Copy command"
-                        onClick={() => {
-                          copyToClipboard(entry.command_line as string).then((ok) => {
-                            if (ok) toast.info('Command copied', { autoHideMs: 1500 });
-                          });
-                        }}>
-                        <Copy className="size-3.5" aria-hidden />
-                      </Button>
-                    </dd>
-                  </>
-                )}
-              </dl>
+              </div>
+              {entry.command_line && (
+                <div className="flex min-w-0 items-center gap-1 text-caption text-muted-foreground">
+                  <span className="min-w-0 truncate font-mono" title={entry.command_line}>
+                    {entry.command_line}
+                  </span>
+                  <Button variant="ghost" size="icon"
+                    className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label="Copy scan command to clipboard" title="Copy command"
+                    onClick={() => {
+                      copyToClipboard(entry.command_line as string).then((ok) => {
+                        if (ok) toast.info('Command copied', { autoHideMs: 1500 });
+                      });
+                    }}>
+                    <Copy className="size-3.5" aria-hidden />
+                  </Button>
+                </div>
+              )}
             </div>
           );
         })}
