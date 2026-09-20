@@ -30,6 +30,7 @@ export default function HostDetail() {
     fromOperations?: boolean;
     /** The Operations section it was opened from (utils/operationsQueue). */
     queueLabel?: string;
+    queuePartial?: boolean;
     fromHosts?: string;
     fromScan?: { id: number; filename: string };
     hostIds?: number[];
@@ -222,6 +223,8 @@ export default function HostDetail() {
               title={opsQueue && navState?.queueLabel ? `${navState.queueLabel} — the hosts listed on Operations when you opened this one` : undefined}>
               {absoluteIndex + 1} of {totalHostsCount}
               {opsQueue && navState?.queueLabel ? ` in ${navState.queueLabel}` : ''}
+              {/* Operations had loaded only the first part of this section. */}
+              {opsQueue && navState?.queuePartial ? ' · more on Operations' : ''}
             </span>
             <Button
               variant="outline"

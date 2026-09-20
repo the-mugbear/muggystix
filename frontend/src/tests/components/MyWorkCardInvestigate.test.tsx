@@ -247,3 +247,45 @@ describe('MyWorkCard — Worth a look', () => {
     expect(screen.queryByText('Worth a look')).not.toBeInTheDocument();
   });
 });
+
+// Reported by the user against v5.243.0's first build: four hosts in review,
+// the card previews three behind "Show 1 more", and opening one of the three
+// gave a Next that walked only those three. The queue was built from the rows
+// ON SCREEN; it is the category.
+describe('MyWorkCard — the queue a host is opened with', () => {
+  const inReview = (id: number) => ({
+    host_id: id, ip_address: `10.9.0.${id}`, hostname: null, follow_status: 'in_review' as const,
+    open_port_count: 2, critical_vulns: 0, high_vulns: 0, last_viewed_at: null,
+    follow_updated_at: `2026-09-19T0${id}:00:00Z`,
+  });
+  const four = { items: [1, 2, 3, 4].map(inReview), in_review_count: 4, watching_count: 0 };
+
+  it('carries every host in the category, not only the previewed rows', () => {
+    renderCard(null, false, { queue: four });
+    // The preview really is three of four.
+    expect(screen.getByRole('button', { name: /Show 1 more/ })).toBeInTheDocument();
+    const shown = screen.getAllByRole('button').filter((b) => /^10\.9\.0\.\d/.test(b.textContent ?? ''));
+    expect(shown).toHaveLength(3);
+
+    fireEvent.click(shown[0]);
+    const [, options] = navigate.mock.calls[0];
+    expect([...options.state.hostIds].sort()).toEqual([1, 2, 3, 4]);
+    expect(options.state.queueLabel).toBe('In review');
+    expect(options.state.queuePartial).toBeUndefined();
+  });
+
+  it('says the queue is partial when the server holds more than Operations loaded', () => {
+    renderCard(null, false, { queue: { ...four, in_review_count: 14 } });
+    const shown = screen.getAllByRole('button').filter((b) => /^10\.9\.0\.\d/.test(b.textContent ?? ''));
+    fireEvent.click(shown[0]);
+    expect(navigate.mock.calls[0][1].state).toMatchObject({ hostIds: expect.any(Array), queuePartial: true });
+    expect(navigate.mock.calls[0][1].state.hostIds).toHaveLength(4);
+  });
+
+  it('Worth a look carries its whole list too', () => {
+    const many = { ...queue, queue_total: 7, items: [1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...queue.items[0], host_id: 100 + n, ip_address: `10.7.7.${n}` })) };
+    renderCard(many);
+    fireEvent.click(screen.getByRole('button', { name: '10.7.7.1' }));
+    expect(navigate.mock.calls[0][1].state.hostIds).toEqual([101, 102, 103, 104, 105, 106, 107]);
+  });
+});

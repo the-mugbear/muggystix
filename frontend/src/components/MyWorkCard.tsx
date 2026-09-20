@@ -305,7 +305,11 @@ const FollowupsSection: React.FC<{
                   // walks THIS list (v5.243.0).
                   onClick={() => navigate(
                     `/hosts/${row.host_id}`,
-                    fromOperationsQueue(rows.map((r) => r.host_id), 'Needs another look'),
+                    // The whole section, not the rows on screen: `rows` is the
+                    // collapsed preview, and a queue built from it silently
+                    // dropped the hosts behind "Show more".
+                    fromOperationsQueue(data.items.map((r) => r.host_id), 'Needs another look',
+                      { partial: data.total > data.items.length }),
                   )}
                   className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
@@ -435,7 +439,8 @@ const InvestigateSection: React.FC<{
                       type="button"
                       onClick={() => navigate(
                         `/hosts/${row.host_id}`,
-                        fromOperationsQueue(rows.map((r) => r.host_id), 'Worth a look'),
+                        fromOperationsQueue(data.items.map((r) => r.host_id), 'Worth a look',
+                          { partial: data.queue_total > data.items.length }),
                       )}
                       className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
@@ -663,7 +668,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                         // A host row carries its category's hosts as the queue;
                         // a finding / plan-step row is not a host page.
                         hostIdOf(it.to) != null
-                          ? fromOperationsQueue(rows.map((r) => hostIdOf(r.to)), GROUP_META[g.key].label)
+                          ? fromOperationsQueue(g.rows.map((r) => hostIdOf(r.to)), GROUP_META[g.key].label,
+                            { partial: beyond > 0 })
                           : undefined,
                       )}
                       className={cn(

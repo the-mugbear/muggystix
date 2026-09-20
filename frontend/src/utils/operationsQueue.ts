@@ -15,6 +15,10 @@ export interface OperationsNavState {
   hostIds?: number[];
   /** What to call the queue in the position counter ("2 of 5 in Worth a look"). */
   queueLabel?: string;
+  /** The section holds more than Operations had loaded, so `hostIds` is its
+   *  first part. A flag, not a number: the server's totals count ROWS, and a
+   *  row is not always a host. */
+  queuePartial?: boolean;
 }
 
 const HOST_PATH = /^\/hosts\/(\d+)(?:[/?#]|$)/;
@@ -39,15 +43,25 @@ export const uniqueHostIds = (ids: Array<number | null | undefined>): number[] =
 };
 
 /** Navigation options for a host opened from an Operations section. A queue of
- *  one is no queue: the page then offers Back only, as before. */
+ *  one is no queue: the page then offers Back only, as before.
+ *
+ *  Pass the WHOLE section — every row Operations loaded for it — never the rows
+ *  on screen. The cards preview three to five rows behind a "Show more", and a
+ *  queue built from the preview silently dropped the rest (v5.243.0's first
+ *  build: four hosts in review, Next walked three). */
 export const fromOperationsQueue = (
   hostIds: Array<number | null | undefined>,
   queueLabel: string,
+  options: { partial?: boolean } = {},
 ): { state: OperationsNavState } => {
   const ids = uniqueHostIds(hostIds);
+  if (ids.length <= 1) return { state: { fromOperations: true } };
   return {
-    state: ids.length > 1
-      ? { fromOperations: true, hostIds: ids, queueLabel }
-      : { fromOperations: true },
+    state: {
+      fromOperations: true,
+      hostIds: ids,
+      queueLabel,
+      ...(options.partial ? { queuePartial: true } : {}),
+    },
   };
 };
