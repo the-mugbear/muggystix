@@ -71,23 +71,28 @@ def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
     # "run it, then restart" leaves the client with no trust unless the exports
     # went into a profile (or the client was launched from a shell that has
     # them). Say so here, where the config is copied.
+    # v2.374.7 — the hint is several separate notes (save step, certificate,
+    # remote host, Windows, sandbox). They were concatenated with single spaces
+    # and the dialog rendered one 12-line paragraph; each note is now its own
+    # paragraph ("\n\n") and every command is a backtick span, which
+    # McpConnectPanel renders as paragraphs and <code>.
     common = (
-        " Run ./scripts/trust-cert.sh on the machine running the client: it "
+        " Run `./scripts/trust-cert.sh` on the machine running the client: it "
         "installs the certificate and PRINTS two exports, which it cannot apply "
         "to your shell for you. Add them to your shell profile, then relaunch "
-        "the client from a new shell — both are read only at client start. "
-        f"Remote host? Fetch the cert first: curl -sk {cert_url} -o bluestick.pem"
+        "the client from a new shell — both are read only at client start."
+        f"\n\nRemote host? Fetch the cert first: `curl -sk {cert_url} -o bluestick.pem`"
     )
     if client_id == "codex":
         # v2.342.1 — the pin is verified on Linux/macOS only; a Windows
         # operator gets a route that works (WSL) rather than silence.
         return (
-            "Self-signed cert? Codex refuses it until pinned. Codex is a Rust "
+            "\n\nSelf-signed cert? Codex refuses it until pinned. Codex is a Rust "
             "binary: NODE_EXTRA_CA_CERTS does nothing for it, and SSL_CERT_FILE "
             "does not take effect either (tested on 0.147.0) — it reads "
             "SSL_CERT_DIR, a directory of hash-named symlinks."
             + common
-            + " Windows: this pin (and the read -rs line above) is bash and has "
+            + "\n\nWindows: this pin (and the `read -rs` line above) is bash and has "
             "only been verified on Linux/macOS — run Codex inside WSL and do "
             "these steps there."
         )
@@ -96,17 +101,17 @@ def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
     # menu. setx stores the variable per user, which is what such a client
     # reads. curl.exe, because bare curl in PowerShell is Invoke-WebRequest.
     return (
-        "Self-signed cert? Node-based clients refuse it — Node ignores the OS "
+        "\n\nSelf-signed cert? Node-based clients refuse it — Node ignores the OS "
         "trust store, so trusting it system-wide won't help. Export "
-        "NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem, which trusts this one "
+        "`NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem`, which trusts this one "
         "deployment and leaves verification on everywhere else."
         + common
-        + " Windows without WSL (PowerShell 7): the script is bash, so fetch the "
-        f"PEM with curl.exe -sk {cert_url} -o bluestick.pem (bare curl is an "
+        + "\n\nWindows without WSL (PowerShell 7): the script is bash, so fetch the "
+        f"PEM with `curl.exe -sk {cert_url} -o bluestick.pem` (bare curl is an "
         "Invoke-WebRequest alias), check its SHA-256 against the reference "
-        "page, then setx NODE_EXTRA_CA_CERTS <full path> (a per-user variable "
+        "page, then `setx NODE_EXTRA_CA_CERTS <full path>` (a per-user variable "
         "for every process started from now on; a shell profile would not reach "
-        "a Start-menu launch) AND $env:NODE_EXTRA_CA_CERTS = <full path> for the "
+        "a Start-menu launch) AND `$env:NODE_EXTRA_CA_CERTS = <full path>` for the "
         "current window, which setx does not update — then launch the client "
         "from a new terminal or the Start menu."
     )
@@ -121,24 +126,25 @@ def sandbox_note(client_id: str) -> str:
     The wording is deliberately "your client enforces this": an operator who
     believes the server is enforcing it would grant more than they meant to.
     """
+    # One paragraph ("\n\n" opens it — see tls_note): launch line, then why.
     common = (
-        " Run the client FROM the directory you want the run's output in: that "
+        "Run the client FROM the directory you want the run's output in: that "
         "directory is the sandbox, and anything outside it — other paths, machine "
         "settings — should come back to you as a prompt, not happen quietly."
     )
     if client_id == "codex":
         return (
-            " Launch with `codex --sandbox workspace-write --ask-for-approval on-request`"
-            " so writes stay in the working directory and anything else asks first."
+            "\n\nLaunch with `codex --sandbox workspace-write --ask-for-approval on-request`"
+            " so writes stay in the working directory and anything else asks first. "
             + common
         )
     if client_id == "claude_code":
         return (
-            " Launch plain `claude` in that directory — it defaults to asking before "
-            "acting outside it. Do not pass --dangerously-skip-permissions for a run "
-            "that executes scanners." + common
+            "\n\nLaunch plain `claude` in that directory — it defaults to asking before "
+            "acting outside it. Do not pass `--dangerously-skip-permissions` for a run "
+            "that executes scanners. " + common
         )
-    return common
+    return "\n\n" + common
 
 
 # ---------------------------------------------------------------------------

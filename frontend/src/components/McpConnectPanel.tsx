@@ -46,7 +46,30 @@ interface Props {
   withCertTrust?: boolean;
 }
 
-const McpConnectPanel: React.FC<Props> = ({ clients, blurb, withCertTrust = false }) => {
+/** The server's hint is several separate notes — save step, certificate,
+ *  remote host, Windows, sandbox — joined by blank lines, with commands in
+ *  backticks. Rendered as one <p> it was a 12-line wall with the commands lost
+ *  in the prose (and the backticks shown literally). */
+const inlineCode = (text: string) =>
+  text.split(/(`[^`]+`)/).map((part, j) =>
+    part.length > 2 && part.startsWith('`') && part.endsWith('`') ? (
+      <code key={j} className="break-all rounded-sm bg-accent px-1 font-mono text-foreground">
+        {part.slice(1, -1)}
+      </code>
+    ) : (
+      <React.Fragment key={j}>{part}</React.Fragment>
+    ),
+  );
+
+const HintText: React.FC<{ text: string }> = ({ text }) => (
+  <div className="mt-xxs space-y-xs text-caption text-muted-foreground">
+    {text.split(/\n{2,}/).map((para) => para.trim()).filter(Boolean).map((para, i) => (
+      <p key={i} className="break-words">{inlineCode(para)}</p>
+    ))}
+  </div>
+);
+
+const McpConnectPanel: React.FC<Props> =({ clients, blurb, withCertTrust = false }) => {
   const [selected, setSelected] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -110,7 +133,7 @@ const McpConnectPanel: React.FC<Props> = ({ clients, blurb, withCertTrust = fals
             <div className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control border border-border bg-accent p-sm font-mono text-caption">
               {client.payload}
             </div>
-            <p className="mt-xxs text-caption text-muted-foreground">{client.hint}</p>
+            <HintText text={client.hint ?? ''} />
             {/* v5.203.0 — the handoff. The config block used to be the end of
                 the story, and the two signals a client offers both mislead:
                 "registered" says nothing about the key, and the tool list
@@ -123,7 +146,7 @@ const McpConnectPanel: React.FC<Props> = ({ clients, blurb, withCertTrust = fals
                 <p className="mb-xs text-caption text-muted-foreground">
                   Your client makes the connection after you configure and relaunch it;
                   you then ask the agent to use BlueStick’s tools.{' '}
-                  {client.verify_check ?? ''}
+                  {inlineCode(client.verify_check ?? '')}
                 </p>
                 <p className="mb-xxs text-caption text-muted-foreground">
                   Seeing the tools listed is not proof — the list is public. Ask this first;
