@@ -192,8 +192,12 @@ const COUNTS_NOTE = 'Counts are hosts under the filters applied now; a host can 
 function EditorFooter({
   onApply, onCancel, onRemove, applyDisabled,
 }: { onApply: () => void; onCancel: () => void; onRemove?: () => void; applyDisabled?: boolean }) {
+  // Pinned to the bottom of the popover's scroll area: on a short viewport the
+  // editor scrolls, and the action must not be the part that scrolls away.
+  // The negative offset + matching padding covers the popover's own `p-sm`,
+  // so list rows never show through beneath the buttons.
   return (
-    <div className="flex items-center gap-xs border-t border-border pt-xs">
+    <div className="sticky -bottom-sm z-10 -mb-sm flex items-center gap-xs border-t border-border bg-popover pb-sm pt-xs">
       {onRemove && (
         <Button variant="ghost" size="sm" onClick={onRemove}>Remove condition</Button>
       )}
@@ -626,7 +630,11 @@ export default function HostFilterPopover({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="flex max-h-[min(36rem,calc(100vh-8rem))] w-[30rem] max-w-[calc(100vw-2rem)] flex-col overflow-y-auto p-sm"
+        collisionPadding={8}
+        // Capped by the room Radix measures below the trigger, not by the
+        // viewport: the trigger sits ~250px down the page, so `100vh - 8rem`
+        // still ran off the bottom of a short window.
+        className="flex max-h-[min(36rem,var(--radix-popover-content-available-height))] w-[30rem] max-w-[calc(100vw-2rem)] flex-col overflow-y-auto p-sm"
         aria-label={field ? `Filter: ${field.label}` : 'Add a filter'}
       >
         {field ? (

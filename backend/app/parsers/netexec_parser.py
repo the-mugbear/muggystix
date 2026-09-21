@@ -22,6 +22,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Real nxc output rarely starts at the protocol token: a terminal capture
+# (`tee`, `script`) carries ANSI colour codes around it and the `--log` file
+# prefixes every line with a timestamp and level.  Every line pattern below is
+# anchored, so the line is normalised to start at "PROTO IP PORT" first.
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]')
+_LINE_HEAD = re.compile(r'(?<![\w.-])[A-Za-z][A-Za-z0-9]*\s+\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+\[')
+
+
+def _normalise_line(line: str) -> str:
+    line = _ANSI_ESCAPE.sub('', line).strip()
+    head = _LINE_HEAD.search(line)
+    return line[head.start():] if head else line
+
 
 class NetexecParser:
     """Parser for NetExec output with confidence-based conflict resolution"""
@@ -31,38 +44,41 @@ class NetexecParser:
         self.confidence_service = ConfidenceService()
         self.dedup_service = HostDeduplicationService(db)
 
-        # Regex patterns for different netexec output formats
+        # Regex patterns for different netexec output formats.  The hostname
+        # column is `\S+`, not `\w+`: Windows' default names are hyphenated
+        # (WIN-…, DESKTOP-…) and LDAP prints an FQDN, and `\w+` dropped every
+        # such line — a whole file imported as "no hosts".
         self.patterns = {
             # Basic host discovery
             'host_basic': re.compile(
-                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\w+)\s+\[([^\]]+)\]\s+(.*)'
+                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+\[([^\]]+)\]\s+(.*)'
             ),
 
             # SMB enumeration patterns
             'smb_enum': re.compile(
-                r'SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\w+)\s+\[([^\]]+)\]\s+'
-                r'Windows\s+([^(]+)\s*\(name:([^)]+)\)\s*\(domain:([^)]+)\)'
+                r'SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+\[([^\]]+)\]\s+'
+                r'(?:Windows\s+)?([^(]+)\s*\(name:([^)]+)\)\s*\(domain:([^)]+)\)'
             ),
 
             # Share enumeration
             'smb_shares': re.compile(
-                r'SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\w+\s+\[([^\]]+)\]\s+'
+                r'SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[([^\]]+)\]\s+'
                 r'Enumerated shares.*?'
             ),
 
             # Authentication success
             'auth_success': re.compile(
-                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\w+\s+\[\+\]\s+(.*)'
+                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[\+\]\s+(.*)'
             ),
 
             # LDAP enumeration
             'ldap_enum': re.compile(
-                r'LDAP\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\w+)\s+\[([^\]]+)\]'
+                r'LDAP\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+\[([^\]]+)\]'
             ),
 
             # Service banners
             'service_banner': re.compile(
-                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\w+\s+\[([^\]]+)\]\s+'
+                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[([^\]]+)\]\s+'
                 r'(?:Name:|Banner:|Version:)\s*(.*)'
             )
         }
@@ -70,6 +86,7 @@ class NetexecParser:
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Parse netexec output file"""
         self._project_id = kwargs.get("project_id")
+        self._hosts_recorded = 0
         logger.info(f"Starting netexec parse of {filename}")
 
         # Create scan record
@@ -90,6 +107,15 @@ class NetexecParser:
                 self._parse_json_output(content, scan.id)
             else:
                 self._parse_console_output(content, scan.id)
+
+            # Fail closed on 0 hosts (same rule as naabu/smbmap): a completed
+            # `tool_name='netexec'` scan with no hosts hid a parser that had
+            # matched nothing behind a "successful" import.
+            if not self._hosts_recorded:
+                raise ValueError(
+                    f"NetExec parser found no host lines in {filename}; "
+                    f"file is empty or not NetExec output."
+                )
 
             logger.info(f"Successfully parsed netexec output: {filename}")
 
@@ -150,7 +176,7 @@ class NetexecParser:
         processed_hosts = set()
 
         for line in lines:
-            line = line.strip()
+            line = _normalise_line(line)
             if not line or line.startswith('#'):
                 continue
 
@@ -310,6 +336,7 @@ class NetexecParser:
         host = self._find_or_create_host_with_confidence(
             ip_address, scan_id, extracted_host_data, confidence
         )
+        self._hosts_recorded = getattr(self, '_hosts_recorded', 0) + 1
 
         # SMB signing posture → queryable host column (don't clobber a prior
         # observation with None when this line didn't report it).

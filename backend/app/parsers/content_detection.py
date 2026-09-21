@@ -209,6 +209,9 @@ def is_nessus_sample(sample: bytes) -> bool:
 
 def looks_like_netexec(sample: bytes, filename: str) -> bool:
     lowered = sample.decode("utf-8", errors="ignore").lower()
+    # A terminal capture wraps the protocol token in ANSI colour codes, which
+    # split "smb" from its column padding.
+    lowered = re.sub(r"\x1b\[[0-9;?]*[a-z]", "", lowered)
     name = filename.lower()
     indicators = [
         "netexec",
