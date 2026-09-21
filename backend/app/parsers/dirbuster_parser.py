@@ -32,6 +32,13 @@ from app.parsers.parser_utils import (
     normalize_ip,
     persist_host_observation,
 )
+from app.services.dns_name_service import (
+    InvalidName,
+    address_state_for_names,
+    get_or_create_name,
+    normalize_fqdn,
+    record_observation,
+)
 from app.services.host_deduplication_service import HostDeduplicationService
 
 # ---------------------------------------------------------------------------
@@ -118,9 +125,84 @@ class DirBusterParser:
         if not hosts:
             raise ValueError("No valid URL entries found in file")
 
+        hosts, unresolved = self._bind_named_targets(hosts, scan)
+        if not hosts and not unresolved:
+            raise ValueError("No valid URL entries found in file")
+
         self._persist(hosts, scan)
+        if unresolved:
+            paths = sum(unresolved.values())
+            sample = ", ".join(sorted(unresolved)[:5])
+            self.last_parse_stats = {
+                "skipped": paths,
+                "warnings": (
+                    f"{paths} discovered path(s) on {len(unresolved)} name(s) with no single "
+                    f"known address were not attached to a host ({sample}). The names were "
+                    f"recorded; import DNS evidence for them (dnsx, DNS CSV) and re-process "
+                    f"this file to attach the paths."
+                ),
+                "summary": f"{len(hosts)} web service{'s' if len(hosts) != 1 else ''}",
+                "partial": True,
+            }
         correlate_scan(self.db, scan.id)
         return scan
+
+    def _bind_named_targets(
+        self, hosts: Dict[HostKey, List[dict]], scan: models.Scan,
+    ) -> Tuple[Dict[HostKey, List[dict]], Dict[str, int]]:
+        """Re-key every target that is a NAME to the address the inventory
+        currently holds for it; return ``(by_address, unresolved)``.
+
+        The URL's hostname used to be passed straight through as
+        ``Host.ip_address`` — a host whose "IP" was ``web.example.test``, which
+        no subnet can correlate and which becomes a second identity the moment
+        the real address is imported.  The server never resolves anything, so
+        a name binds ONLY through existing evidence (the one
+        ``current_binding_condition`` rule), and only when that evidence names
+        a single address: the tool does not say which address it reached, so
+        several current addresses is not a binding.  Otherwise the name is
+        kept as a DISCOVERED named asset and its paths are reported, not
+        attached."""
+        bound: Dict[HostKey, List[dict]] = {}
+        named: Dict[str, List[HostKey]] = {}
+        for key, findings in hosts.items():
+            if normalize_ip(key[0]):
+                bound.setdefault(key, []).extend(findings)
+            else:
+                named.setdefault(key[0], []).append(key)
+
+        unresolved: Dict[str, int] = {}
+        if not named:
+            return bound, unresolved
+
+        name_ids: Dict[str, int] = {}
+        if self._project_id is not None:
+            for raw in named:
+                try:
+                    fqdn, kind = normalize_fqdn(raw)
+                except InvalidName:
+                    continue
+                name_ids[raw] = get_or_create_name(self.db, self._project_id, fqdn, kind).id
+        states = (
+            address_state_for_names(self.db, self._project_id, list(name_ids.values()))
+            if name_ids else {}
+        )
+
+        for raw, keys in named.items():
+            state = states.get(name_ids.get(raw))
+            current = list(state.current) if state else []
+            if len(current) == 1:
+                for _name, port, scheme in keys:
+                    bound.setdefault((current[0], port, scheme), []).extend(hosts[(raw, port, scheme)])
+                continue
+            unresolved[raw] = sum(len(hosts[k]) for k in keys)
+            if raw in name_ids:
+                record_observation(
+                    self.db, project_id=self._project_id, name=raw,
+                    record_type=models.DNS_OBS_DISCOVERED, value=scan.tool_name or "dirbuster",
+                    scan_id=scan.id,
+                )
+        return bound, unresolved
 
     # ------------------------------------------------------------------
     # Tool detection

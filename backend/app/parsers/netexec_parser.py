@@ -173,7 +173,12 @@ class NetexecParser:
     def _parse_console_output(self, content: str, scan_id: int):
         """Parse console output from netexec"""
         lines = content.strip().split('\n')
-        processed_hosts = set()
+        # Every parsed line, grouped by IP in file order.  The host is written
+        # ONCE per IP (from its most detailed line), but each further line is
+        # still evidence: keeping only the first line per IP dropped every
+        # auth success (the banner always comes first) and every service after
+        # the first (SMB 445 recorded, WinRM 5985 lost).
+        observations: Dict[str, List[Dict[str, Any]]] = {}
 
         for line in lines:
             line = _normalise_line(line)
@@ -200,10 +205,49 @@ class NetexecParser:
                 if match:
                     host_data = self._parse_basic_host_line(match, line)
 
-            # Process host data if found
-            if host_data and host_data['ip_address'] not in processed_hosts:
-                self._process_host_with_confidence(host_data, scan_id, line)
-                processed_hosts.add(host_data['ip_address'])
+            if host_data:
+                observations.setdefault(host_data['ip_address'], []).append(host_data)
+
+        for ip_observations in observations.values():
+            # The SMB banner names the host, its OS, domain and signing
+            # posture; an auth line carries none of that.  Order in the file
+            # must not decide which one describes the host.
+            primary = next(
+                (o for o in ip_observations if o.get('os_name')), ip_observations[0]
+            )
+            host = self._process_host_with_confidence(primary, scan_id, primary['raw_line'])
+            seen_ports = {primary.get('port')}
+            for observation in ip_observations:
+                if observation is primary:
+                    continue
+                self._process_additional_observation(host, observation, scan_id, seen_ports)
+
+    def _process_additional_observation(
+        self, host: models.Host, host_data: Dict[str, Any], scan_id: int, seen_ports: set
+    ):
+        """A further line about a host already written in this scan: its
+        auth/enumeration result and, when the service is new, its port.  The
+        host row itself is not rewritten, so one file never logs a confidence
+        "conflict" against itself."""
+        raw_line = host_data['raw_line']
+        if not host.hostname and host_data.get('hostname'):
+            host.hostname = host_data['hostname']
+        # `_store_netexec_result` is keyed (scan, host, protocol, port,
+        # username), so a repeated line is still one row.
+        self._store_netexec_result(host.id, scan_id, host_data, raw_line)
+
+        port = host_data.get('port')
+        if port and port not in seen_ports:
+            seen_ports.add(port)
+            scan_type, data_source, method = self.confidence_service.detect_netexec_scan_type(raw_line)
+            confidence = self.confidence_service.create_confidence_score(
+                scan_type=scan_type,
+                data_source=data_source,
+                method=method,
+                timestamp=datetime.now(),
+                additional_factors=host_data.get('confidence_factors', {}),
+            )
+            self._process_port_with_confidence(host.id, scan_id, host_data, confidence)
 
     def _parse_smb_enum_line(self, match, full_line: str) -> Dict[str, Any]:
         """Parse SMB enumeration line"""
@@ -351,6 +395,8 @@ class NetexecParser:
             self._process_port_with_confidence(
                 host.id, scan_id, host_data, confidence
             )
+
+        return host
 
     def _find_or_create_host_with_confidence(
         self,

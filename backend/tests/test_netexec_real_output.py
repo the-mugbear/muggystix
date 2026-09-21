@@ -69,6 +69,49 @@ def test_samba_banner_keeps_name_and_signing(db_session, test_project, tmp_path)
     assert hosts["10.9.4.1"].smb_signing == "disabled"
 
 
+def _results(db, scan):
+    from app.db.models_confidence import NetexecResult
+    return db.query(NetexecResult).filter(NetexecResult.scan_id == scan.id).all()
+
+
+@pytest.mark.parametrize("banner_first", [True, False])
+def test_later_lines_about_a_host_are_kept(db_session, test_project, tmp_path, banner_first):
+    """Only the FIRST line per IP used to be recorded: the banner always
+    precedes the auth line, so every auth success — and every service after
+    the first — was dropped."""
+    banner = BANNER.format(proto="SMB", ip="10.9.5.1", port=445, host="SRV-01")
+    rest = [
+        r"SMB         10.9.5.1        445    SRV-01           [+] corp.local\bob:Passw0rd (Pwn3d!)",
+        r"SMB         10.9.5.1        445    SRV-01           [+] corp.local\alice:Summer1",
+        r"WINRM       10.9.5.1        5985   SRV-01           [+] corp.local\bob:Passw0rd (Pwn3d!)",
+    ]
+    lines = [banner, *rest] if banner_first else [*rest, banner]
+    hosts, scan = _parse(db_session, test_project, tmp_path, "\n".join(lines))
+
+    host = hosts["10.9.5.1"]
+    # The banner describes the host whichever line came first.
+    assert host.hostname == "SRV-01"
+    assert host.smb_signing == "disabled"
+    ports = {
+        (p.port_number, p.protocol, p.service_name)
+        for p in db_session.query(models.Port).filter(models.Port.host_id == host.id)
+    }
+    assert ports == {(445, "tcp", "smb"), (5985, "tcp", "winrm")}
+
+    auth = {(r.protocol, r.port, r.username) for r in _results(db_session, scan) if r.auth_success}
+    assert auth == {("smb", 445, "bob"), ("smb", 445, "alice"), ("winrm", 5985, "bob")}
+
+
+def test_one_file_logs_no_conflict_against_itself(db_session, test_project, tmp_path):
+    from app.db.models_confidence import ConflictHistory
+    text = "\n".join([
+        BANNER.format(proto="SMB", ip="10.9.6.1", port=445, host="SRV-02"),
+        r"SMB         10.9.6.1        445    SRV-02           [+] corp.local\bob:Passw0rd (Pwn3d!)",
+    ])
+    _, scan = _parse(db_session, test_project, tmp_path, text)
+    assert db_session.query(ConflictHistory).filter(ConflictHistory.new_scan_id == scan.id).count() == 0
+
+
 def test_no_host_lines_fails_instead_of_completing_empty(db_session, test_project, tmp_path):
     with pytest.raises(ValueError, match="no host lines"):
         _parse(db_session, test_project, tmp_path, "[*] Initializing SMB protocol database\n")
