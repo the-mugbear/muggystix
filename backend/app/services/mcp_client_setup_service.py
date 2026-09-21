@@ -194,6 +194,12 @@ def verify_prompt() -> str:
     the dialog, and tells the agent what to do when the tools are missing —
     otherwise a model with no tools answers from general knowledge and the
     operator reads a confident paragraph as a working connection.
+
+    v2.374.8 — it also forbids the workaround a field report showed: with the
+    client unconnected (untrusted certificate), the model read the key out of
+    mcp.json and drove the endpoint by hand with curl — on Windows, where
+    ``curl`` is an Invoke-WebRequest alias — then reported SSE/session problems
+    this server does not have (it answers plain JSON, statelessly).
     """
     name = server_name()
     return (
@@ -203,7 +209,11 @@ def verify_prompt() -> str:
         "returned them. Then, from the guide, summarise in a few lines what you can "
         f"help me do in this session. If the {name} tools are not available or the "
         "call fails, say so plainly and help me troubleshoot the connection rather "
-        "than answering from general knowledge."
+        "than answering from general knowledge. Do not reach the server yourself "
+        "with curl or a script, and do not read the API key out of the config file: "
+        "a hand-made request says nothing about whether this client is connected. "
+        "The first thing to check is whether this client trusts the server's "
+        "certificate."
     )
 
 
