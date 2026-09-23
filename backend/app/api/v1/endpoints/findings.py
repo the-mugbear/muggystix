@@ -508,11 +508,16 @@ def add_finding_hosts(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     viewer: _Viewer = Depends(get_finding_viewer),
+    current_user: User = Depends(get_current_user),
 ):
+    """Attach hosts (``host_ids``: the issue was verified there too; any host
+    already on the finding is skipped) and/or restore exact endpoints
+    (``endpoints``: the detach Undo).  Every host must be in this project, or
+    the request fails with nothing written."""
     finding = _load(db, project, finding_id)
     svc = FindingService(db)
     if body.host_ids:
-        svc.add_hosts(finding=finding, host_ids=body.host_ids)
+        svc.add_hosts(finding=finding, host_ids=body.host_ids, actor_id=current_user.id)
     for ep in body.endpoints:
         svc.restore_endpoint(finding=finding, host_id=ep.host_id, name_id=ep.name_id, host_status=ep.host_status)
     db.commit()

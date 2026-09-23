@@ -767,10 +767,38 @@ class FindingService:
         self.db.flush()
         return finding
 
-    def add_hosts(self, *, finding: Finding, host_ids: Sequence[int]) -> Finding:
-        self._attach_hosts(finding, host_ids)
+    def add_hosts(
+        self, *, finding: Finding, host_ids: Sequence[int], actor_id: Optional[int] = None,
+    ) -> List[int]:
+        """An analyst records that the issue affects these hosts too — the
+        explicit "someone verified it here" path, distinct from promotion.
+
+        A host already on the finding in ANY form (host-level or a named
+        endpoint) is skipped, not given a second, unnamed row.  Every id must
+        be a host of the finding's project or nothing is written
+        (``_attach_hosts`` raises 422).  New rows start ``open``; one history
+        entry names what was added.  Returns the host ids actually added."""
+        attached = {
+            hid for (hid,) in self.db.query(FindingHost.host_id)
+            .filter(FindingHost.finding_id == finding.id).distinct()
+        }
+        wanted = [hid for hid in dict.fromkeys(host_ids) if hid is not None and hid not in attached]
+        if not wanted:
+            return []
+        self._attach_hosts(finding, wanted)
         self.db.flush()
-        return finding
+        labels = [
+            ip for (ip,) in self.db.query(Host.ip_address)
+            .filter(Host.id.in_(wanted)).order_by(Host.ip_address)
+        ]
+        shown = ", ".join(labels[:10]) + (f" and {len(labels) - 10} more" if len(labels) > 10 else "")
+        self.db.add(FindingStatusHistory(
+            finding_id=finding.id, from_status=finding.status, to_status=finding.status,
+            changed_by_id=actor_id,
+            summary=f"Added {len(wanted)} affected host{'s' if len(wanted) != 1 else ''}: {shown}",
+        ))
+        self.db.flush()
+        return wanted
 
     def remove_host(self, *, finding: Finding, host_id: int) -> Finding:
         """Detach EVERY endpoint row on ``host_id`` (named and unnamed).
