@@ -275,3 +275,59 @@ describe('Report detail — TODOs and the team (v5.263.0)', () => {
     })));
   });
 });
+
+describe('Template images', () => {
+  const asset = (over: Record<string, unknown>) => ({
+    id: 'logo', path: 'img/logo.png', label: 'Company logo', description: 'Above the title',
+    note: '', required: false, formats: ['html', 'pdf'], present: false, ...over,
+  });
+  const withAssets = (assets: unknown[]) => mocked.listReportTemplates.mockResolvedValue([
+    { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx', 'pdf'], assets },
+  ]);
+
+  it('lists each image with where it goes, and a missing required one blocks preview and issue', async () => {
+    withAssets([
+      asset({ id: 'cover', path: 'img/cover.png', label: 'Cover art', required: true, description: 'Page one' }),
+      asset({ present: true, note: 'A Word header belongs in reference.docx.' }),
+    ]);
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    expect(await screen.findByText('Missing · required')).toBeInTheDocument();
+    expect(screen.getByText('Installed')).toBeInTheDocument();
+    expect(screen.getByText('1 missing')).toBeInTheDocument();
+    expect(screen.getByText('report-templates/pentest/img/cover.png')).toBeInTheDocument();
+    expect(screen.getByText('A Word header belongs in reference.docx.')).toBeInTheDocument();
+    expect(screen.getAllByText('Used in HTML, PDF')).toHaveLength(2);
+
+    const previewPdf = screen.getByRole('button', { name: 'Preview PDF' });
+    expect(previewPdf).toBeDisabled();
+    expect(previewPdf).toHaveAttribute('title', expect.stringContaining('Cover art'));
+    expect(screen.getByRole('button', { name: /Issue report/ })).toBeDisabled();
+    expect(screen.getByText(/A required template image is not installed/)).toBeInTheDocument();
+  });
+
+  it('an optional image that is missing never blocks', async () => {
+    withAssets([asset({})]);
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    expect(await screen.findByText('Missing · optional')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview PDF' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled();
+  });
+
+  it('says so when a template uses no images of its own', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    expect(await screen.findByText(/uses no images of its own/)).toBeInTheDocument();
+  });
+
+  it("shows the default template's images on the Reports page", async () => {
+    withAssets([asset({ required: true })]);
+    mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
+    renderList();
+    expect(await screen.findByText('Missing · required')).toBeInTheDocument();
+    expect(screen.getByText('report-templates/pentest/img/logo.png')).toHaveAttribute(
+      'title', 'report-templates/pentest/img/logo.png',
+    );
+  });
+});

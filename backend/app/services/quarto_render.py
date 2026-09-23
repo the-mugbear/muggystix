@@ -21,8 +21,10 @@ with delimiters that cannot collide with Quarto: ``<% … %>`` statements,
   render, listed AFTER ``quarto`` in the template's ``filters``) reads the text
   from ``data.json`` and parses it as GitHub Markdown with raw HTML off, then
   drops raw blocks, images, non-web links, headings and attributes.
-* ``<< image(e) >>`` and ``<< plain(v) >>`` are the only other ways out of
-  escaping, and both validate their input against a strict pattern.
+* ``<< image(e) >>``, ``<< plain(v) >>`` and ``<< asset("logo") >>`` are the
+  only other ways out of escaping, and each validates its input against a
+  strict pattern.  ``asset`` prints a path from the template's OWN manifest
+  (``template.json`` → ``assets``), never data.
 * Reusable parts are ``<% include %>``s (their output is written straight
   through); a macro's output would be printed via ``<< >>`` and escaped.
 
@@ -65,10 +67,115 @@ _EVIDENCE = re.compile(r"^evidence/\d+\.(png|jpg|gif)$")
 _WIDTH = re.compile(r"^\d+(\.\d+)?(in|cm|mm|px|%)$")
 _PLAIN = re.compile(r"^[0-9A-Za-z .:+_-]*$")
 _SKIP = {"_output", ".quarto", "__pycache__", ".git"}
+# A template's own images (logo, cover art …) declared in template.json.  The
+# path charset is narrow on purpose: ``asset()`` prints it unescaped into
+# Markdown, so it must never hold a space, bracket, brace or quote.
+_ASSET_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_ASSET_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$")
+ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")
 
 
 class RenderError(RuntimeError):
     """Quarto (or the template) failed; the message is safe to show."""
+
+
+class TemplateAssetError(ValueError):
+    """template.json declares an asset it may not (the message names it)."""
+
+
+def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List[dict]:
+    """The images a template expects besides the findings' evidence, from
+    ``template.json`` → ``assets``, each with ``present``: the file is in the
+    folder and would be copied into the render (a regular file, no symlink on
+    the way — ``_copy_template`` skips symlinks).
+
+    Raises ``TemplateAssetError`` for a declaration that is not a plain
+    relative image path inside the folder (absolute, ``..``, a skipped folder,
+    another extension) or a duplicate id."""
+    if manifest is None:
+        manifest = json.loads((template_dir / "template.json").read_text(encoding="utf-8"))
+    raw = manifest.get("assets") or []
+    if not isinstance(raw, list):
+        raise TemplateAssetError("`assets` must be a list.")
+    out: List[dict] = []
+    seen = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise TemplateAssetError("Each asset must be an object with an id and a path.")
+        asset_id = str(entry.get("id") or "")
+        path = str(entry.get("path") or "")
+        if not _ASSET_ID.match(asset_id):
+            raise TemplateAssetError(f"Asset id '{asset_id[:40]}' is not a short lower-case name.")
+        if asset_id in seen:
+            raise TemplateAssetError(f"Asset id '{asset_id}' is declared twice.")
+        seen.add(asset_id)
+        parts = path.split("/")
+        if (
+            not _ASSET_PATH.match(path)
+            or any(p in ("", ".", "..") for p in parts)
+            or any(p in _SKIP or p.endswith("_files") for p in parts)
+        ):
+            raise TemplateAssetError(
+                f"Asset '{asset_id}': '{path[:80]}' is not a relative path inside the template folder."
+            )
+        if not path.lower().endswith(ASSET_EXTENSIONS):
+            raise TemplateAssetError(
+                f"Asset '{asset_id}': '{path}' is not an image ({', '.join(e[1:] for e in ASSET_EXTENSIONS)})."
+            )
+        formats = [f for f in (entry.get("formats") or list(FORMATS)) if f in FORMATS]
+        out.append({
+            "id": asset_id,
+            "path": path,
+            "label": str(entry.get("label") or asset_id),
+            "description": str(entry.get("description") or ""),
+            "note": str(entry.get("note") or ""),
+            "required": bool(entry.get("required", False)),
+            "formats": formats,
+            "present": _asset_present(template_dir, parts),
+        })
+    return out
+
+
+def _asset_present(template_dir: Path, parts: List[str]) -> bool:
+    node = template_dir
+    for part in parts:
+        node = node / part
+        if node.is_symlink():
+            return False
+    return node.is_file()
+
+
+def missing_required_assets(template_dir: Path) -> List[dict]:
+    """The declared, REQUIRED images whose file is not in the folder."""
+    if not (template_dir / "template.json").is_file():
+        return []
+    try:
+        return [a for a in template_assets(template_dir) if a["required"] and not a["present"]]
+    except (TemplateAssetError, ValueError, OSError) as exc:
+        raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
+
+
+def missing_assets_message(template_name: str, missing: List[dict]) -> str:
+    where = ", ".join(f"report-templates/{template_name}/{a['path']} ({a['label']})" for a in missing)
+    return (
+        f"The '{template_name}' template needs image(s) that are not installed: {where}. "
+        "Put the file(s) there on the server — the folder is mounted, no rebuild needed."
+    )
+
+
+def _asset_factory(template_dir: Path):
+    assets = {a["id"]: a for a in template_assets(template_dir)} if (template_dir / "template.json").is_file() else {}
+
+    def asset(asset_id: str) -> Markup:
+        """The path of one of the template's declared images when the file is
+        there, else '' — so ``<% if asset("logo") %>`` leaves the layout alone
+        without one.  An undeclared id fails the render (a typo would
+        otherwise drop the logo silently)."""
+        found = assets.get(asset_id)
+        if found is None:
+            raise RenderError(f"asset(): '{asset_id}' is not declared in template.json.")
+        return Markup(found["path"] if found["present"] else "")
+    return asset
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +298,14 @@ def jinja_environment(template_dir: Path, dataset: Optional[dict] = None) -> San
         undefined=StrictUndefined, finalize=_finalize, autoescape=False,
         trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
     )
-    env.globals.update(md=_md_factory(dataset) if dataset is not None else md, image=image, plain=plain, todo=todo)
+    try:
+        asset = _asset_factory(template_dir)
+    except (TemplateAssetError, ValueError, OSError) as exc:
+        raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
+    env.globals.update(
+        md=_md_factory(dataset) if dataset is not None else md,
+        image=image, plain=plain, todo=todo, asset=asset,
+    )
     return env
 
 
@@ -304,6 +418,9 @@ def render(
         raise RenderError("No format to render.")
     if not re.match(r"^[A-Za-z0-9._-]{1,120}$", basename):
         raise RenderError("Unusable output file name.")
+    missing_assets = missing_required_assets(template_dir)
+    if missing_assets:
+        raise RenderError(missing_assets_message(template_dir.name, missing_assets))
     out_dir.mkdir(parents=True, exist_ok=True)
     dataset = json.loads(json.dumps(dataset))  # a private copy; evidence is pruned below
     with tempfile.TemporaryDirectory(prefix="bs-report-") as tmp:
@@ -376,6 +493,14 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
     manifest = json.loads((args.template / "template.json").read_text(encoding="utf-8"))
     dataset = json.loads(args.data.read_text(encoding="utf-8"))
+    try:
+        for a in template_assets(args.template, manifest):
+            if not a["present"]:
+                kind = "required" if a["required"] else "optional"
+                print(f"note: {kind} image '{a['id']}' is not installed ({a['path']})", file=sys.stderr)
+    except TemplateAssetError as exc:
+        print(f"error: template.json: {exc}", file=sys.stderr)
+        return 1
     evidence_dir = args.evidence
 
     def resolve(item: dict) -> Optional[Path]:

@@ -37,9 +37,10 @@ import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
-import PostureSection from '../components/posture/PostureSection';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
+import TemplateImages, { missingAssetsReason, missingRequiredAssets } from '../components/reports/TemplateImages';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
@@ -264,6 +265,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const editable = isDraft && report.can_edit;
   const template = templates.find((t) => t.name === report.template);
   const formats: ClientReportFormat[] = template?.formats ?? ['html', 'docx', 'pdf'];
+  // A required template image that is not installed blocks every render (the
+  // server refuses too); say so on the buttons instead of failing a job.
+  const assetsBlock = missingAssetsReason(template);
+  const assetsTemplate = templates.find((t) => t.name === form.template);
+  const assetsMissing = (assetsTemplate?.assets ?? []).filter((a) => !a.present).length;
 
   let lead: React.ReactNode;
   if (s.error) {
@@ -303,8 +309,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </div>
           <div className="flex shrink-0 flex-wrap gap-xs">
             {isDraft && report.can_issue && (
-              <Button onClick={() => void issue()} disabled={busy !== null || dirty || !!s.error}
-                title={dirty ? 'Save your changes first' : undefined}>
+              <Button onClick={() => void issue()} disabled={busy !== null || dirty || !!s.error || !!assetsBlock}
+                title={dirty ? 'Save your changes first' : assetsBlock}>
                 {busy === 'issue' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Stamp className="size-4" aria-hidden />}
                 Issue report
               </Button>
@@ -322,6 +328,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {isDraft && dirty && (
               <p className="w-full text-right text-caption text-muted-foreground">
                 Save your changes below before issuing.
+              </p>
+            )}
+            {isDraft && !dirty && assetsBlock && (
+              <p className="w-full text-right text-caption text-destructive">
+                {missingRequiredAssets(template).length === 1 ? 'A required template image is' : 'Required template images are'} not installed — see Template images.
               </p>
             )}
           </div>
@@ -375,6 +386,14 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         </PostureSection>
       )}
 
+      {isDraft && (
+        <PostureSection
+          title={<>Template images{assetsMissing > 0 && <SectionCount>{assetsMissing} missing</SectionCount>}</>}
+          description="The logo and other images the template itself places, besides the findings' evidence.">
+          <TemplateImages template={assetsTemplate} templateName={form.template} />
+        </PostureSection>
+      )}
+
       {isDraft ? (
         <PostureSection title="Preview" description="Rendered from the live findings on the report worker. Previews expire after a day.">
           {dirty && (
@@ -389,7 +408,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               return (
                 <div key={fmt} className="flex min-w-0 items-center gap-xs">
                   <Button variant="outline" size="sm" onClick={() => void preview(fmt)}
-                    disabled={!!running || !report.can_edit || dirty} title={dirty ? 'Save your changes first' : undefined}>
+                    disabled={!!running || !report.can_edit || dirty || !!assetsBlock}
+                    title={dirty ? 'Save your changes first' : assetsBlock}>
                     {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
                     {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `Preview ${FORMAT_LABEL[fmt]}`}
                   </Button>

@@ -16,7 +16,9 @@ from __future__ import annotations
 import copy
 import json
 import shutil
+import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -252,3 +254,41 @@ def test_todos_are_highlighted_in_every_format(tmp_path):
     with zipfile.ZipFile(files["docx"]) as z:
         docx = z.read("word/document.xml").decode("utf-8")
     assert '<w:highlight w:val="yellow"' in docx and "TODO: Classification" in docx
+
+
+# --- template assets (the template's own images) ---------------------------------
+
+def _png(width: int, height: int) -> bytes:
+    """A valid RGB PNG (Typst checks every CRC)."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\x00" + b"\x1e\x50\xa0" * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+@needs_template
+def test_the_pentest_template_declares_its_logo_and_is_unchanged_without_it():
+    by_id = {a["id"]: a for a in quarto_render.template_assets(TEMPLATE)}
+    assert by_id["logo"]["path"] == "img/logo.png" and by_id["logo"]["required"] is False
+    if not by_id["logo"]["present"]:
+        src = quarto_render.render_source(
+            TEMPLATE, "report.qmd", json.loads((TEMPLATE / "sample-data.json").read_text()),
+        )
+        assert "bs-logo-wrap" not in src and "logo:" not in src and "top: 3.2cm" not in src
+
+
+@needs_template
+@needs_quarto
+def test_an_installed_logo_heads_the_html_and_the_pdf(tmp_path):
+    folder = tmp_path / "pentest"
+    shutil.copytree(TEMPLATE, folder, ignore=shutil.ignore_patterns("_output", "*_files", ".quarto"))
+    (folder / "img").mkdir(exist_ok=True)
+    (folder / "img" / "logo.png").write_bytes(_png(40, 12))
+    data = json.loads((folder / "sample-data.json").read_text())
+    files = quarto_render.render(folder, "report.qmd", data, ["html", "pdf"], tmp_path / "out", timeout=240)
+    html = files["html"].read_text(encoding="utf-8")
+    logo_at = html.index('class="bs-logo-wrap"')
+    assert logo_at < html.index('id="title-block-header"')
+    assert "data:image/png;base64" in html[logo_at:logo_at + 400]
+    assert files["pdf"].stat().st_size > 0
