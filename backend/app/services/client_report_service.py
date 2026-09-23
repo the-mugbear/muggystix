@@ -174,6 +174,45 @@ class ClientReportService:
         team.sort(key=lambda t: (t.pop("_order"), (t["name"] or "").lower()))
         return team
 
+    def _with_full_names(self, entries: Optional[Iterable[dict]]) -> Tuple[List[dict], List[str]]:
+        """Team entries with each account-linked person under their FULL NAME,
+        never their username.
+
+        An entry keeps the name written when it was added, so one added while
+        the account had no full name (the picker then falls back to the
+        username), or before it was set, would print the username for good.
+        Here an entry whose name is empty or is exactly its account's username
+        takes the account's current full name; a name someone typed stays as
+        written.  Returns the entries and the usernames still without a full
+        name (listed as a missing detail, so a reviewer can fix the account)."""
+        from app.db.models_auth import User
+
+        entries = [dict(e) for e in (entries or []) if isinstance(e, dict)]
+        ids = {e.get("user_id") for e in entries if isinstance(e.get("user_id"), int)}
+        if not ids:
+            return entries, []
+        users = {
+            uid: (username, (full_name or "").strip())
+            for uid, username, full_name in
+            self.db.query(User.id, User.username, User.full_name).filter(User.id.in_(ids))
+        }
+        unnamed: List[str] = []
+        for e in entries:
+            account = users.get(e.get("user_id"))
+            if account is None:
+                continue
+            username, full_name = account
+            stored = (e.get("name") or "").strip()
+            if stored and stored != username:
+                continue  # written by someone — theirs
+            if full_name:
+                e["name"] = full_name
+            else:
+                e["name"] = stored or username
+                if username not in unnamed:
+                    unnamed.append(username)
+        return entries, unnamed
+
     def settings_from_profile(self, project_id: int) -> Dict[str, Any]:
         """A new draft's engagement details: the profile's, with the project's
         analysts and admins as the team when the profile names nobody."""
@@ -452,7 +491,8 @@ class ClientReportService:
         counts["total"] = sum(counts[s] for s in SEVERITY_ORDER)
 
         settings = {k: (report.settings or {}).get(k) for k in SETTINGS_KEYS}
-        settings["testers"] = list(settings.get("testers") or [])
+        # The team is linked to accounts; the distribution list is names typed in.
+        settings["testers"], no_full_name = self._with_full_names(settings.get("testers"))
         settings["distribution"] = list(settings.get("distribution") or [])
 
         revision_of = report.revision_of
@@ -511,7 +551,10 @@ class ClientReportService:
                 if any(not (item.get(k) or "").strip() for k in REQUIRED_TEXT)
             ],
             # Report details still empty — printed as a highlighted TODO.
-            "missing_details": self._missing_details(dataset),
+            "missing_details": self._missing_details(dataset) + (
+                [f"a full name on the account of {', '.join(no_full_name)} (the report shows the username)"]
+                if no_full_name else []
+            ),
             "images": sum(len(i["evidence"]) for i in items),
             "images_skipped": skipped_images,
             "delta": {

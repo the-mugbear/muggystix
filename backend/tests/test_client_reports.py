@@ -498,6 +498,33 @@ def test_a_new_draft_lists_the_projects_analysts_and_admins_as_the_team(client, 
     assert client.get(f"{_base(test_project)}/profile").json()["testers_from_project"] is False
 
 
+def test_the_report_names_people_by_full_name_not_username(client, db_session, test_project, people):
+    """v2.398.x — a team entry keeps the name written when it was added, so
+    one added while the account had no full name printed the username for
+    good.  The report now uses the account's current full name for an entry
+    whose name is empty or its username; a name someone typed stays."""
+    from app.services.client_report_service import ClientReportService
+
+    ana, ben, adm = people["analyst"], people["analyst2"], people["admin"]
+    ben.full_name = None  # no full name on this account
+    db_session.commit()
+    report = _create(client, test_project)
+    r = client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {
+        "testers": [
+            {"user_id": ana.id, "name": "ana"},               # the username, from before a full name was set
+            {"user_id": ben.id, "name": "ben"},               # the account still has none
+            {"user_id": adm.id, "name": "Dr. A. Admin"},      # typed by someone: kept
+            {"user_id": None, "name": "Contractor"},
+        ],
+    }})
+    assert r.status_code == 200, r.text
+    assert "a full name on the account of ben (the report shows the username)" in r.json()["summary"]["missing_details"]
+
+    dataset, _, _ = ClientReportService(db_session).build(db_session.get(Report, report["id"]))
+    assert [t["name"] for t in dataset["engagement"]["testers"]] == ["Ana", "ben", "Dr. A. Admin", "Contractor"]
+    assert dataset["report"]["authors"] == ["Ana", "ben", "Dr. A. Admin", "Contractor"]
+
+
 def test_the_summary_names_the_report_details_still_empty(client, test_project):
     report = _create(client, test_project)
     missing = report["summary"]["missing_details"]
