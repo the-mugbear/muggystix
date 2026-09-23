@@ -1928,7 +1928,10 @@ def get_tool_ready_hosts(
         response_headers["X-Tool-Ready-Returned"] = str(total_count)
         return StreamingResponse(_stream_names(), media_type=content_type, headers=response_headers)
     else:
-        hosts = query.limit(TOOL_READY_ENTITY_CAP).all()
+        # Host-id order, as the streamed IP formats use: without an ORDER BY
+        # both the file's order and WHICH hosts survive the cap were whatever
+        # the plan returned (a test flaked on it).
+        hosts = query.order_by(models.Host.id).limit(TOOL_READY_ENTITY_CAP).all()
         hosts_returned = len(hosts)
         if total_count > TOOL_READY_ENTITY_CAP:
             response_headers["X-Tool-Ready-Truncated"] = "true"

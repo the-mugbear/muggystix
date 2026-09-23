@@ -231,10 +231,24 @@ def get_note_activity(
 
         return current.id
 
-    thread_note_counts = {}
+    # Whole-thread size, not what this page happens to hold: a thread split
+    # across pages (or narrowed by a filter) still reports every entry.
+    # Roots stamp thread_root_id = own id; a legacy root without the stamp
+    # is keyed by its id through the coalesce.  The page count stays the
+    # floor for legacy replies whose thread_root_id was never stamped.
+    thread_note_counts: dict[int, int] = {}
     for note in notes:
-        key = (note.host_id, resolve_thread_root_id(note))
+        key = resolve_thread_root_id(note)
         thread_note_counts[key] = thread_note_counts.get(key, 0) + 1
+    if thread_note_counts:
+        thread_key = func.coalesce(AnnotationModel.thread_root_id, AnnotationModel.id)
+        for root_id, count in (
+            db.query(thread_key, func.count(AnnotationModel.id))
+            .filter(thread_key.in_(list(thread_note_counts)))
+            .group_by(thread_key)
+            .all()
+        ):
+            thread_note_counts[root_id] = max(thread_note_counts[root_id], count)
 
     results = []
     for note in notes:
@@ -271,7 +285,7 @@ def get_note_activity(
             "parent_id": note.parent_id,
             "thread_root_id": thread_root_id,
             "thread_root_status": thread_root_status,
-            "thread_note_count": thread_note_counts.get((note.host_id, thread_root_id), 1),
+            "thread_note_count": thread_note_counts.get(thread_root_id, 1),
             "created_at": note.created_at.isoformat() if note.created_at else None,
             "updated_at": note.updated_at.isoformat() if note.updated_at else None,
             "host_note_count": host_note_counts.get(note.host_id, 0),

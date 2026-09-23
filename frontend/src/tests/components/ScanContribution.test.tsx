@@ -37,7 +37,7 @@ describe('contributionRows', () => {
       },
     });
     expect(rows.map((r) => r.key)).toEqual(['ports', 'hosts']);
-    expect(rows[0].parts).toEqual(['45 open', '+8 new', '30 with a service name', '40 TCP / 5 UDP']);
+    expect(rows[0].parts).toEqual(['45 open', '+8 new', '30 with a service name', '40 TCP / 5 UDP', 'on 9 port numbers']);
     expect(rows[1].parts).toEqual(['10 up', '5 OS fingerprinted']);
   });
 

@@ -52,6 +52,7 @@ from app.services.subnet_insight_service import (
     UNASSIGNED_SEGMENT,
     group_hosts_into_segments,
     resolve_host_locations,
+    site_nested_exclusions,
 )
 from app.services.pattern_families import (
     classify,
@@ -423,6 +424,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     }
     family_matrix = _build_family_site_matrix(
         affected, locations, assessed_by_domain, eligible_by_domain,
+        site_exclusions=site_nested_exclusions(subnet_meta),
     )
     family_summary = _build_family_summary(
         affected, host_subnet, host_site, cond_class, total_hosts,
@@ -504,6 +506,7 @@ def _build_family_site_matrix(
     locations: Dict[int, Dict[str, Any]],
     assessed_by_domain: Optional[Dict[str, Set[int]]] = None,
     eligible_by_domain: Optional[Dict[str, Set[int]]] = None,
+    site_exclusions: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """Condition-family × segment matrix — the Overview grid and comparison.
 
@@ -601,6 +604,11 @@ def _build_family_site_matrix(
                     "conditions": conds,
                     "site": seg["label"] if seg["key"] != UNASSIGNED else None,
                 }
+                # Other sites' subnets nested in this site's: their hosts
+                # count there, but `site:` would list them here too.
+                nested = (site_exclusions or {}).get(seg["key"])
+                if nested:
+                    drill["exclude_subnets"] = nested
             cell = ratio_metric(hit, checked, drilldown_filter=drill).model_dump()
             cell["segment"] = seg["key"]
             cell["affected"] = hit

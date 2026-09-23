@@ -208,6 +208,36 @@ def resolve_host_locations(
     return locations
 
 
+def site_nested_exclusions(subnet_meta: Dict[int, Dict[str, Any]]) -> Dict[str, List[str]]:
+    """For each site (keyed like a segment: ``str(site_id)``), the CIDRs of
+    subnets carrying ANOTHER site that sit strictly inside one of its subnets.
+
+    A host counts under its NEAREST site-bearing subnet
+    (``resolve_host_locations``), but the hosts filter's ``site:`` matches a
+    host in ANY subnet of the site.  A site column's list therefore adds
+    ``AND NOT subnet:"…"`` for these CIDRs to reconcile with its count.  Not
+    covered: a subnet of the site nested again inside one of these (three
+    levels, alternating sites) — its hosts are excluded from the list too.
+    """
+    sited = []
+    for m in subnet_meta.values():
+        if m.get("site_id") is None or not (m.get("site") or "").strip():
+            continue
+        try:
+            sited.append((str(m["site_id"]), ipaddress.ip_network(m["cidr"], strict=False), m["cidr"]))
+        except ValueError:
+            continue
+    out: Dict[str, set] = defaultdict(set)
+    for site_key, outer, _ in sited:
+        for other_key, inner, inner_cidr in sited:
+            if (
+                other_key != site_key and inner.version == outer.version
+                and inner.prefixlen > outer.prefixlen and inner.subnet_of(outer)
+            ):
+                out[site_key].add(inner_cidr)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 UNASSIGNED_SEGMENT = "unassigned"
 
 

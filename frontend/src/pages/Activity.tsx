@@ -73,6 +73,9 @@ type NoteThreadGroup = {
   participantNames: string[];
   latestStatus: string;
   hostNoteCount: number;
+  // The whole thread's size from the server — `notes` holds only the
+  // entries on the loaded pages that match the filters.
+  threadNoteCount: number;
   imageCount: number;
 };
 
@@ -267,6 +270,7 @@ const Activity: React.FC = () => {
           // thread look reopened.
           latestStatus: latest.thread_root_status ?? latest.status,
           hostNoteCount: latest.host_note_count,
+          threadNoteCount: Math.max(sorted.length, ...sorted.map((n) => n.thread_note_count ?? 0)),
           imageCount: sorted.reduce((sum, n) => sum + (n.attachments?.length ?? 0), 0),
         };
       })
@@ -553,8 +557,8 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
       <span className="flex shrink-0 flex-col items-end text-right text-caption text-muted-foreground">
         <span>{formatRelativeTime(thread.latestTimestamp)}</span>
         <span>
-          {thread.notes.length} entr{thread.notes.length === 1 ? 'y' : 'ies'}
-          {thread.hostNoteCount > thread.notes.length ? ` · ${thread.hostNoteCount} on host` : ''}
+          {thread.threadNoteCount} entr{thread.threadNoteCount === 1 ? 'y' : 'ies'}
+          {thread.hostNoteCount > thread.threadNoteCount ? ` · ${thread.hostNoteCount} on host` : ''}
         </span>
         {thread.imageCount > 0 && (
           <span className="inline-flex items-center gap-xxs">

@@ -32,7 +32,6 @@ export interface ProjectCard {
   last_scan_at?: string;
   days_since_last_scan?: number;
   is_stale: boolean;
-  review_progress_pct: number;
   unreviewed_hosts: number;
   /** Hosts in review or reviewed, each once. */
   hosts_tested: number;
@@ -63,17 +62,13 @@ export interface PortfolioSummary {
   total_hosts: number;
   total_open_ports: number;
   total_scans: number;
-  total_unreviewed: number;
   /** v5.275.0 — for the lead and measures. */
   total_reviewed: number;
   total_in_review: number;
   findings: SeverityBrief;
   unjudged_observations: SeverityBrief;
   // P4 attention rollups.
-  projects_requiring_attention: number;
-  projects_with_critical: number;
   stale_projects: number;
-  projects_no_data: number;
   pending_approvals_total: number;
   blocked_sessions_total: number;
 }
@@ -108,7 +103,6 @@ export interface TeamMember {
 
 export interface TeamResponse {
   members: TeamMember[];
-  total_members: number;
 }
 
 export const getPortfolioTeam = async (): Promise<TeamResponse> => {

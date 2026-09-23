@@ -246,16 +246,19 @@ export const gridCellHostsHref = (
   },
 ): string | null => {
   const subnet = cell.drilldown_filter?.subnet;
-  if (!subnet) {
-    return familyCellHostsHref(
-      conditions, cell.segment === 'unassigned' ? UNASSIGNED_SITE : cell.drilldown_filter?.site,
-    );
+  const site = cell.drilldown_filter?.site;
+  const excluded = cell.drilldown_filter?.exclude_subnets ?? [];
+  // A site column carries exclusions too: another site's subnet nested in
+  // this site's, whose hosts count there (nearest site wins) though `site:`
+  // matches any subnet of the site.
+  if (!subnet && (cell.segment === 'unassigned' || !site || excluded.length === 0)) {
+    return familyCellHostsHref(conditions, cell.segment === 'unassigned' ? UNASSIGNED_SITE : site);
   }
   const preds = conditions.map((k) => CONDITION_DSL[k]).filter(Boolean);
   if (preds.length === 0) return null;
   const any = preds.length === 1 ? preds[0] : `(${preds.join(' or ')})`;
-  const nots = (cell.drilldown_filter?.exclude_subnets ?? []).map((c) => ` AND NOT subnet:"${c}"`).join('');
-  return buildHostsUrl({ q: `${any}${nots}`, subnets: subnet });
+  const nots = excluded.map((c) => ` AND NOT subnet:"${c}"`).join('');
+  return buildHostsUrl(subnet ? { q: `${any}${nots}`, subnets: subnet } : { q: `${any}${nots}`, sites: site ?? undefined });
 };
 
 /**

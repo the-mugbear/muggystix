@@ -211,6 +211,14 @@ export const ProvenanceCard: React.FC<ProvenanceCardProps> = ({
                       self-signed
                     </Badge>
                   )}
+                  {/* The organisation a certificate names, when the validated
+                      list above does not already show it for this URL — on a
+                      self-signed certificate it is only the subject's claim. */}
+                  {c.subject_org && !certOrgs.some((o) => o.url === c.url) && (
+                    <span className="min-w-0 truncate text-caption text-muted-foreground" title={c.subject_org}>
+                      names “{c.subject_org}”{c.self_signed ? ' (unverified)' : ''}
+                    </span>
+                  )}
                   {days !== null && (
                     <span
                       className={

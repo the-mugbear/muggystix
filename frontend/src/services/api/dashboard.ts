@@ -13,23 +13,6 @@
  * scope/host code; it'll move when those domains are extracted.
  */
 import { api, p } from './client';
-import type { Scan } from './scans';
-import type { NoteStatus } from './shared';
-
-// --- Subnet stats (dashboard per-subnet rollup) ---
-export interface SubnetStats {
-  id: number;
-  cidr: string;
-  scope_name: string;
-  description: string | null;
-  host_count: number;
-  total_addresses?: number;
-  usable_addresses?: number;
-  utilization_percentage?: number;
-  risk_level?: string;
-  network_address?: string;
-  is_private?: boolean;
-}
 
 export interface VulnerabilityStats {
   total_vulnerabilities: number;
@@ -41,6 +24,9 @@ export interface VulnerabilityStats {
   hosts_with_vulnerabilities: number;
 }
 
+// The response also carries recent_scans, subnet_stats and note_activity
+// (left from the old dashboard); nothing here reads them, so they are not
+// typed.
 export interface DashboardStats {
   total_scans: number;
   total_hosts: number;
@@ -48,37 +34,7 @@ export interface DashboardStats {
   up_hosts: number;
   open_ports: number;
   total_subnets: number;
-  recent_scans: Scan[];
-  subnet_stats: SubnetStats[];
   vulnerability_stats?: VulnerabilityStats;
-  note_activity?: NoteActivitySummary;
-}
-
-export interface NoteActivityEntry {
-  note_id: number;
-  host_id: number;
-  ip_address: string;
-  hostname: string | null;
-  status: NoteStatus;
-  preview: string;
-  created_at: string;
-  updated_at?: string | null;
-}
-
-export interface ReviewProgress {
-  total_hosts: number;
-  not_reviewed: number;
-  watching: number;
-  in_review: number;
-  reviewed: number;
-}
-
-export interface NoteActivitySummary {
-  total_notes: number;
-  active_host_count: number;
-  following_count: number;
-  review_progress?: ReviewProgress;
-  recent_notes: NoteActivityEntry[];
 }
 
 export const getDashboardStats = async (): Promise<DashboardStats> => {

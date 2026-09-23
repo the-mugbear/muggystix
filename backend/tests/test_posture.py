@@ -361,6 +361,53 @@ def test_a_project_without_sites_is_compared_by_subnet(client, db_session, test_
     assert {i["ip_address"] for i in r.json()["items"]} == {"10.7.0.100", "10.7.0.101"}
 
 
+def test_a_site_cell_list_excludes_another_sites_nested_subnet(client, db_session, test_project):
+    """Review 2026-09-23 A8 — a host counts under its NEAREST site-bearing
+    subnet, but `site:` lists a host in ANY subnet of the site, so the outer
+    site's list held hosts its count did not.  The cell now carries the other
+    site's nested CIDR, and the frontend's query reconciles."""
+    from app.db.models import Scope, Subnet, HostSubnetMapping, Site
+
+    scope = Scope(project_id=test_project.id, name="scope")
+    db_session.add(scope)
+    db_session.flush()
+    campus = Site(project_id=test_project.id, name="Campus", criticality_tier=1)
+    lab = Site(project_id=test_project.id, name="Lab", criticality_tier=2)
+    db_session.add_all([campus, lab])
+    db_session.flush()
+    outer = Subnet(scope_id=scope.id, cidr="10.9.0.0/16", site="Campus", site_id=campus.id)
+    inner = Subnet(scope_id=scope.id, cidr="10.9.5.0/24", site="Lab", site_id=lab.id)
+    db_session.add_all([outer, inner])
+    db_session.flush()
+
+    def eol_host(ip, *subnets):
+        h = models.Host(project_id=test_project.id, ip_address=ip, state="up", os_name="Windows XP")
+        db_session.add(h)
+        db_session.flush()
+        for sn in subnets:
+            db_session.add(HostSubnetMapping(host_id=h.id, subnet_id=sn.id))
+
+    eol_host("10.9.1.1", outer)
+    eol_host("10.9.5.1", outer, inner)      # Lab's, not Campus's
+    db_session.commit()
+
+    hm = compute_posture(db_session, test_project.id, use_cache=False)["heatmap"]
+    assert hm["group_by"] == "site"
+    row = next(r for r in hm["rows"] if r["family"] == "lifecycle_patching")
+    cell = next(c for c in row["cells"] if c["segment"] == str(campus.id))
+    assert cell["affected"] == 1
+    drill = cell["drilldown_filter"]
+    assert drill["site"] == "Campus" and drill["exclude_subnets"] == ["10.9.5.0/24"]
+    lab_cell = next(c for c in row["cells"] if c["segment"] == str(lab.id))
+    assert "exclude_subnets" not in lab_cell["drilldown_filter"]
+
+    # Exactly the query the frontend builds (gridCellHostsHref).
+    q = "has:eol " + " ".join(f'AND NOT subnet:"{c}"' for c in drill["exclude_subnets"])
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": q, "sites": drill["site"]})
+    assert r.status_code == 200, r.text
+    assert {i["ip_address"] for i in r.json()["items"]} == {"10.9.1.1"}
+
+
 def test_posture_output_validates_against_response_model(db_session, test_project, test_user):
     """The endpoint's Pydantic response_model must accept a real compute_posture
     dict without dropping fields the frontend reads (extra="allow"), for every

@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const dashboardMock = vi.fn();
 vi.mock('../../services/api', () => ({
   getPortfolioDashboard: (...a: unknown[]) => dashboardMock(...a),
-  getPortfolioTeam: vi.fn().mockResolvedValue({ members: [], total_members: 0 }),
+  getPortfolioTeam: vi.fn().mockResolvedValue({ members: [] }),
 }));
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ projects: [], selectProject: vi.fn() }),
@@ -29,7 +29,7 @@ const LONG = 'engagement-with-a-very-long-name-'.repeat(6);
 const card = (over: Partial<ProjectCard>): ProjectCard => ({
   id: 1, name: 'P', slug: 'p', status: 'active', host_count: 10, up_host_count: 10,
   open_port_count: 0, scan_count: 1, days_since_last_scan: 1, is_stale: false,
-  review_progress_pct: 30, unreviewed_hosts: 7, hosts_tested: 5, hosts_in_review: 2, hosts_reviewed: 3,
+  unreviewed_hosts: 7, hosts_tested: 5, hosts_in_review: 2, hosts_reviewed: 3,
   findings: sev(), unjudged_observations: sev(), health: 'healthy', attention_reasons: [],
   pending_plan_reviews: 0, open_tasks: 0, active_sessions: 0, blocked_sessions: 0,
   member_count: 1, user_role: 'admin', last_scan_at: '2026-09-20T10:00:00Z',
@@ -46,9 +46,9 @@ const projects = [
 
 const summary = {
   total_projects: 3, active_projects: 3, total_hosts: 30, total_open_ports: 0, total_scans: 3,
-  total_unreviewed: 21, total_reviewed: 9, total_in_review: 6,
+  total_reviewed: 9, total_in_review: 6,
   findings: sev(1, 2), unjudged_observations: sev(3, 0, 5),
-  projects_requiring_attention: 2, projects_with_critical: 2, stale_projects: 0, projects_no_data: 0,
+  stale_projects: 0,
   pending_approvals_total: 1, blocked_sessions_total: 0,
 };
 

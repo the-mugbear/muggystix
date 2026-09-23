@@ -68,6 +68,16 @@ describe('Activity — threads as rows', () => {
     expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
   });
 
+  it('counts the whole thread, not only the entries on the loaded page', async () => {
+    getNoteActivity.mockResolvedValue(payload([
+      note({ note_id: 4, parent_id: 1, body: 'Newest reply.', thread_note_count: 5, host_note_count: 5 }),
+    ]));
+    const { container } = render(<MemoryRouter><Activity /></MemoryRouter>);
+    await screen.findByText('Newest reply.');
+    const row = container.querySelector('a[data-thread]') as HTMLElement;
+    expect(within(row).getByText('5 entries')).toBeInTheDocument();
+  });
+
   it('the status counts filter the feed, as the stat cards did', async () => {
     getNoteActivity.mockResolvedValue(payload([note({})]));
     render(<MemoryRouter><Activity /></MemoryRouter>);

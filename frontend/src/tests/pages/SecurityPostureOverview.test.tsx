@@ -179,6 +179,17 @@ describe('SecurityPosture — overview', () => {
     expect(grid.style.width).toBe('min(100%, 36rem)');
   });
 
+  it("a site cell's link excludes another site's subnet nested inside it", async () => {
+    const { gridCellHostsHref } = await vi.importActual<typeof import('../../services/api/insights')>('../../services/api/insights');
+    const siteCell = {
+      segment: '4', drilldown_filter: { conditions: ['eol_os'], site: 'Campus', exclude_subnets: ['10.9.5.0/24'] },
+    };
+    const url = new URL(gridCellHostsHref(['eol_os'], siteCell)!, 'http://x');
+    expect(url.searchParams.get('sites')).toBe('Campus');
+    expect(url.searchParams.get('subnets')).toBeNull();
+    expect(url.searchParams.get('q')).toBe('has:eol AND NOT subnet:"10.9.5.0/24"');
+  });
+
   it('truncates a 200-character site name instead of widening the page', async () => {
     await renderPage();
     const focus = screen.getByText('Where to focus').closest('section')!;

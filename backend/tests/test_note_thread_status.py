@@ -77,3 +77,18 @@ def test_combined_reply_patch_returns_reply_not_root(client, db_session, test_pr
     roots = client.get(base).json()
     root_now = next(n for n in roots if n["id"] == root["id"])
     assert root_now["status"] == "resolved"
+
+
+def test_thread_note_count_is_the_whole_thread_not_the_page(client, db_session, test_project):
+    """Review 2026-09-23 B-UI-5 — a thread split across Activity pages
+    reported only the entries on the current page."""
+    host = _make_host(db_session, test_project.id, "10.10.2.1")
+    base = _notes_base(test_project.id, host.id)
+    root = client.post(base, json={"body": "root", "status": "open"}).json()
+    for i in range(3):
+        client.post(base, json={"body": f"reply {i}", "parent_id": root["id"]})
+
+    activity_url = f"/api/v1/projects/{test_project.id}/hosts/notes/activity"
+    page = client.get(activity_url, params={"limit": 2}).json()["notes"]
+    assert len(page) == 2
+    assert {n["thread_note_count"] for n in page} == {4}

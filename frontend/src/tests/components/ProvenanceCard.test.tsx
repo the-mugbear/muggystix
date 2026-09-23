@@ -105,6 +105,15 @@ describe('certificate status (v5.143.0)', () => {
     });
     expect(screen.getByText(/expires in 14 days/)).toBeInTheDocument();
   });
+
+  it('shows the organisation a self-signed certificate claims, marked unverified', () => {
+    renderCard({
+      attributions: [],
+      certOrgs: [],
+      certStatus: [{ url: 'https://10.0.0.1', not_after: null, self_signed: true, subject_org: 'Acme Corp' }],
+    });
+    expect(screen.getByText('names “Acme Corp” (unverified)')).toBeInTheDocument();
+  });
 });
 
 // The header shows a one-line owner summary; the card renders only when it adds

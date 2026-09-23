@@ -126,11 +126,16 @@ export function contributionRows(scan: ContributionScan): ContributionRow[] {
     if (ports.open_udp_ports > 0) {
       parts.push(`${num(ports.open_tcp_ports)} TCP / ${num(ports.open_udp_ports)} UDP`);
     }
+    // Distinct port numbers, only when it says something the open count
+    // does not (a sweep of one service across many hosts).
+    if (ports.unique_ports > 0 && ports.unique_ports < scan.open_ports) {
+      parts.push(`on ${plural(ports.unique_ports, 'port number')}`);
+    }
     rows.ports = {
       key: 'ports',
       label: 'Ports',
       parts,
-      hint: 'Open ports this scan observed. "New" = ports no earlier scan had recorded on that host. "With a service name" = the scan identified what is listening.',
+      hint: 'Open ports this scan observed. "New" = ports no earlier scan had recorded on that host. "With a service name" = the scan identified what is listening. "On N port numbers" = how many distinct port numbers those open ports use across hosts.',
     };
   }
 
