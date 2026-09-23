@@ -65,9 +65,14 @@ class ReportJobService:
     def create_job(
         self, db, *, project_id: int, requested_by_id: Optional[int],
         format: str, report_type: str, filters: Dict[str, Any],
+        commit: bool = True,
     ) -> ReportJob:
         """Insert a queued report job and return it (the API then calls
-        ``enqueue_job`` to wake the worker)."""
+        ``enqueue_job`` to wake the worker).
+
+        ``commit=False`` stages the row in the caller's transaction (flush) so
+        a workflow can commit its own state change and the job together — the
+        issue of a client report must never commit without its render job."""
         job = ReportJob(
             project_id=project_id,
             requested_by_id=requested_by_id,
@@ -78,8 +83,11 @@ class ReportJobService:
             message="Queued for generation",
         )
         db.add(job)
-        db.commit()
-        db.refresh(job)
+        if commit:
+            db.commit()
+            db.refresh(job)
+        else:
+            db.flush()
         return job
 
     def enqueue_job(self, job_id: int, db=None) -> None:
@@ -391,6 +399,7 @@ class ReportJobService:
                         "message": f"Re-queued after stall (attempt {job.retry_count}/{_REAP_MAX_RETRIES})",
                     }
                 err = "Report generation stalled and exceeded its retry budget"
+                self._fail_issued_render(db, job, err)
                 return "fail", {"error_message": err, "last_error": err}
 
             # Each candidate is re-locked (FOR UPDATE SKIP LOCKED) with the
@@ -407,6 +416,24 @@ class ReportJobService:
         finally:
             db.close()
         return reaped
+
+    @staticmethod
+    def _fail_issued_render(db, job, error: str) -> None:
+        """A dead issue render leaves its report ``render_status = FAILED``.
+
+        The report is otherwise PENDING forever: ``/render`` refused a pending
+        report and nothing else wrote the status, so an OOM-killed or stalled
+        render could only be recovered by hand (review 2026-09-23 C4)."""
+        from app.db.models_reports import RenderStatus, Report
+        from app.services.client_report_render import ISSUE_FORMAT
+
+        if job.report_type != "client" or job.format != ISSUE_FORMAT:
+            return
+        report_id = (job.filters or {}).get("report_id")
+        report = db.get(Report, report_id) if report_id else None
+        if report is not None and report.render_status == RenderStatus.PENDING:
+            report.render_status = RenderStatus.FAILED
+            report.render_error = error
 
     def cleanup_expired(self) -> int:
         """Delete artifacts (and their job rows) past ``expires_at``."""

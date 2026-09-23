@@ -147,17 +147,46 @@ def _issued_baseline(db: Session, project: Project, baseline_id: Optional[int]) 
         raise HTTPException(status_code=404, detail="Baseline report not found")
     if baseline.status == ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An addendum is compared against an ISSUED report, not a draft.")
+    if baseline.status == ReportStatus.SUPERSEDED:
+        raise HTTPException(
+            status_code=409,
+            detail="That report was superseded by a revision; compare against the current issue.",
+        )
     return baseline
 
 
-def _enqueue(db: Session, *, project: Project, user: User, fmt: str, report_id: int):
+def _enqueue(db: Session, *, project: Project, user: User, fmt: str, report_id: int,
+             commit: bool = True):
+    """Queue a client-report job.  ``commit=False`` stages it in the caller's
+    transaction; the caller commits and then wakes the worker with
+    ``ReportJobService().enqueue_job``."""
     service = ReportJobService()
     job = service.create_job(
         db, project_id=project.id, requested_by_id=user.id,
         format=fmt, report_type=CLIENT_REPORT_JOB, filters={"report_id": report_id},
+        commit=commit,
     )
-    service.enqueue_job(job.id, db=db)
+    if commit:
+        service.enqueue_job(job.id, db=db)
     return job
+
+
+def _live_issue_job(db: Session, report: Report) -> bool:
+    """Whether an issue render for ``report`` is queued or running."""
+    from app.db.models import ReportJob
+    from app.services.client_report_render import ISSUE_FORMAT
+
+    jobs = (
+        db.query(ReportJob.filters)
+        .filter(
+            ReportJob.project_id == report.project_id,
+            ReportJob.report_type == CLIENT_REPORT_JOB,
+            ReportJob.format == ISSUE_FORMAT,
+            ReportJob.status.in_(("queued", "processing")),
+        )
+        .all()
+    )
+    return any((filters or {}).get("report_id") == report.id for (filters,) in jobs)
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +451,10 @@ def issue_report(
     except ReportStateError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc))
-    # log_audit_event commits — the issue and its audit row land together.
+    # The issue, its audit row and its render job commit TOGETHER.  They used
+    # to be three commits (log_audit_event and create_job each committed): a
+    # failure after the first left a PENDING report with no job, which
+    # nothing could recover (review 2026-09-23 C4).
     log_audit_event(
         db, user_id=current_user.id, action="report_issued", resource_type="report",
         resource_id=str(report.id),
@@ -432,8 +464,12 @@ def issue_report(
             "template_fingerprint": report.template_fingerprint,
             "revision_of_id": report.revision_of_id, "baseline_report_id": report.baseline_report_id,
         },
+        commit=False,
     )
-    _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id)
+    job = _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id,
+                   commit=False)
+    db.commit()
+    ReportJobService().enqueue_job(job.id, db=db)
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)
 
@@ -449,16 +485,29 @@ def rerender_report(
     current_user: User = Depends(get_current_user),
 ):
     """Render an issued report's files again from its frozen data — after a
-    failed render.  The data is the snapshot; only the files are rebuilt."""
+    failed render.  The data is the snapshot; only the files are rebuilt.
+
+    Only when there is no good set of files and nothing rendering: a FAILED
+    render, or a PENDING one with no live job (a render lost before
+    v2.390.4).  Rendered files are never replaced — an issued report does not
+    change (review 2026-09-23 C4)."""
     report = _load(db, project, report_id)
     if report.status == ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="A draft is previewed, not rendered.")
-    if report.render_status == RenderStatus.PENDING:
+    if report.render_status == RenderStatus.DONE:
+        raise HTTPException(
+            status_code=409,
+            detail="This report's files are rendered, and an issued report does not change. "
+                   "Revise it to issue a corrected version.",
+        )
+    if report.render_status == RenderStatus.PENDING and _live_issue_job(db, report):
         raise HTTPException(status_code=409, detail="The files are being rendered.")
     report.render_status = RenderStatus.PENDING
     report.render_error = None
+    job = _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id,
+                   commit=False)
     db.commit()
-    _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id)
+    ReportJobService().enqueue_job(job.id, db=db)
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)
 
 

@@ -242,8 +242,12 @@ def test_the_addendum_delta_is_by_finding_and_endpoint_and_never_remediation(cli
     assert withdrawn["Default creds"]["reason"] == "The finding was judged a false positive."
     assert withdrawn["Weak TLS"]["endpoints"] == ["10.42.0.2"]
     assert "SMB signing" not in withdrawn
-    # The addendum's reported state is cumulative: the next one compares with everything.
-    assert set(reported) == {str(sqli.id), str(tls.id), str(smb.id), str(new.id)}
+    # The addendum's reported state is cumulative: the next one compares with
+    # everything, and the withdrawn finding keeps its reference, flagged.
+    assert set(reported) == {str(sqli.id), str(tls.id), str(smb.id), str(new.id), str(creds.id)}
+    assert reported[str(creds.id)]["withdrawn"] is True
+    assert reported[str(creds.id)]["ref"] == refs["Default creds"]
+    assert not any(e.get("withdrawn") for fid, e in reported.items() if fid != str(creds.id))
 
     # Issuing it, then deleting the new finding, shows up in the NEXT addendum.
     _issue(client, test_project, add["id"])
@@ -252,6 +256,156 @@ def test_the_addendum_delta_is_by_finding_and_endpoint_and_never_remediation(cli
     second = _create(client, test_project, kind="addendum")
     assert second["baseline"]["number"] == 2
     assert second["summary"]["delta"] == {"new_findings": 0, "findings_with_new_endpoints": 0, "withdrawn": 1}
+
+
+def _refs(db_session, report_id):
+    db_session.expire_all()
+    return {f["title"]: f["ref"] for f in db_session.get(Report, report_id).snapshot["dataset"]["findings"]}
+
+
+def test_a_withdrawn_reference_is_never_given_to_another_finding(client, db_session, test_project):
+    """Review 2026-09-23 C3: a withdrawn F-02 left ``reported``, so the next
+    addendum handed F-02 to a brand-new finding."""
+    a = _host(db_session, test_project, "10.43.0.1")
+    _finding(db_session, test_project, "Alpha", "critical", hosts=[a])
+    bravo = _finding(db_session, test_project, "Bravo", "high", hosts=[a])
+    first = _issue(client, test_project, _create(client, test_project)["id"])
+    assert _refs(db_session, first["id"]) == {"Alpha": "F-01", "Bravo": "F-02"}
+
+    bravo.status = "false_positive"
+    db_session.commit()
+    _issue(client, test_project, _create(client, test_project, kind="addendum")["id"])
+
+    _finding(db_session, test_project, "Charlie", "medium", hosts=[a])
+    second = _issue(client, test_project, _create(client, test_project, kind="addendum")["id"])
+    assert _refs(db_session, second["id"]) == {"Charlie": "F-03"}
+
+    # Bravo judged real again: it comes back under its OWN number.
+    bravo.status = "confirmed"
+    db_session.commit()
+    third = _issue(client, test_project, _create(client, test_project, kind="addendum")["id"])
+    assert _refs(db_session, third["id"]) == {"Bravo": "F-02"}
+
+
+def test_a_revision_keeps_the_references_the_client_already_has(client, db_session, test_project):
+    a = _host(db_session, test_project, "10.44.0.1")
+    _finding(db_session, test_project, "Echo", "high", hosts=[a])
+    first = _issue(client, test_project, _create(client, test_project)["id"])
+    _finding(db_session, test_project, "Kilo", "critical", hosts=[a])
+    add = _issue(client, test_project, _create(client, test_project, kind="addendum")["id"])
+    assert _refs(db_session, add["id"]) == {"Kilo": "F-02"}
+
+    rev = client.post(f"{_base(test_project)}/{first['id']}/revise").json()
+    issued = _issue(client, test_project, rev["id"])
+    # Kilo sorts first (critical) but keeps F-02; Echo keeps F-01.
+    assert _refs(db_session, issued["id"]) == {"Kilo": "F-02", "Echo": "F-01"}
+
+
+def test_an_addendum_is_issued_only_against_the_current_issue(client, db_session, test_project):
+    a = _host(db_session, test_project, "10.45.0.1")
+    _finding(db_session, test_project, "Lima", "high", hosts=[a])
+    first = _issue(client, test_project, _create(client, test_project)["id"])
+    one = _create(client, test_project, kind="addendum")
+    two = _create(client, test_project, kind="addendum")
+    _finding(db_session, test_project, "Mike", "high", hosts=[a])
+    _issue(client, test_project, one["id"])
+
+    # ``two`` still compares with report 1: issuing it would list Mike again.
+    r = client.post(f"{_base(test_project)}/{two['id']}/issue")
+    assert r.status_code == 409 and "no longer the current issue" in r.json()["detail"]
+    # Re-pointed at the current issue, it goes out.
+    latest = client.get(_base(test_project)).json()["latest_issued_id"]
+    assert client.patch(f"{_base(test_project)}/{two['id']}", json={"baseline_report_id": latest}).status_code == 200
+    _issue(client, test_project, two["id"])
+
+    # Revising the latest addendum compares with ITS baseline — allowed.
+    rev = client.post(f"{_base(test_project)}/{two['id']}/revise").json()
+    _issue(client, test_project, rev["id"])
+    # A superseded report is not a baseline at all.
+    r = client.post(_base(test_project), json={"kind": "addendum", "baseline_report_id": two["id"]})
+    assert r.status_code == 409
+
+
+def test_issuing_commits_the_report_and_its_render_job_together(client, db_session, test_project):
+    issued = _issue(client, test_project, _create(client, test_project)["id"])
+    db_session.expire_all()
+    jobs = [j for j in db_session.query(ReportJob).filter_by(project_id=test_project.id, format="report-issue")
+            if (j.filters or {}).get("report_id") == issued["id"]]
+    assert len(jobs) == 1 and jobs[0].status == "queued"
+    assert db_session.query(AuditLog).filter_by(action="report_issued", resource_id=str(issued["id"])).count() == 1
+
+
+def test_render_again_only_when_there_are_no_good_files(client, db_session, test_project):
+    from app.db.models_reports import RenderStatus
+
+    issued = _issue(client, test_project, _create(client, test_project)["id"])
+    url = f"{_base(test_project)}/{issued['id']}/render"
+    # Pending with its job queued: being rendered.
+    assert client.post(url).status_code == 409
+    # Pending with NO live job (a render lost before the fix): recoverable.
+    db_session.query(ReportJob).filter_by(project_id=test_project.id).update({"status": "failed"})
+    db_session.commit()
+    assert client.post(url).status_code == 200
+    # Rendered files are never replaced.
+    report = db_session.get(Report, issued["id"])
+    report.render_status = RenderStatus.DONE
+    db_session.commit()
+    r = client.post(url)
+    assert r.status_code == 409 and "does not change" in r.json()["detail"]
+
+
+def test_the_reaper_fails_the_report_of_a_dead_issue_render(db_session, test_project):
+    from app.db.models_reports import RenderStatus, ReportStatus
+    from app.services.report_job_service import ReportJobService
+
+    report = Report(project_id=test_project.id, kind="full", title="R", template="pentest",
+                    status=ReportStatus.ISSUED, number=1, render_status=RenderStatus.PENDING)
+    db_session.add(report)
+    db_session.flush()
+    job = ReportJob(project_id=test_project.id, format="report-issue", report_type="client",
+                    filters={"report_id": report.id}, status="processing")
+    db_session.add(job)
+    db_session.flush()
+    ReportJobService._fail_issued_render(db_session, job, "stalled")
+    assert (report.render_status, report.render_error) == (RenderStatus.FAILED, "stalled")
+
+
+def test_a_draft_build_loads_no_scanner_data_of_the_affected_hosts(client, db_session, test_project):
+    """Review 2026-09-23 C7: the endpoints need an address and a name, but
+    loading the Host entity selectin-loaded every port and scanner row."""
+    from app.db.models_vulnerability import Vulnerability
+    from app.services.client_report_service import ClientReportService
+
+    a = _host(db_session, test_project, "10.46.0.1")
+    scan = models.Scan(project_id=test_project.id, filename="n.nessus", scan_type="nessus", tool_name="nessus")
+    db_session.add(scan)
+    db_session.flush()
+    for i in range(5):
+        db_session.add(models.Port(host_id=a.id, port_number=1000 + i, protocol="tcp", state="open"))
+        db_session.add(Vulnerability(host_id=a.id, scan_id=scan.id, title=f"v{i}", severity="low",
+                                     source="nessus", description="x" * 1000))
+    _finding(db_session, test_project, "November", "high", hosts=[a])
+    rid = _create(client, test_project)["id"]
+
+    from sqlalchemy import event
+
+    # Count loads with the mapper's load event: the identity map is weak, so
+    # what a build loaded is already gone by the time it returns.
+    loaded = []
+
+    def _count(target, _context):
+        loaded.append(type(target).__name__)
+
+    db_session.expunge_all()
+    for cls in (Vulnerability, models.Port):
+        event.listen(cls, "load", _count)
+    try:
+        dataset, _, _ = ClientReportService(db_session).build(db_session.get(Report, rid))
+    finally:
+        for cls in (Vulnerability, models.Port):
+            event.remove(cls, "load", _count)
+    assert dataset["findings"][0]["affected"][0]["address"] == "10.46.0.1"
+    assert loaded == []
 
 
 def test_a_revision_supersedes_the_original(client, db_session, test_project):

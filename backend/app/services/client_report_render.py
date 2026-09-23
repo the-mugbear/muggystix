@@ -8,10 +8,14 @@ Two job formats, both ``report_type='client'`` with ``filters={"report_id"}``:
 * ``report-issue`` — an ISSUED report's files: every format the template
   produces, rendered from the FROZEN snapshot and kept under
   ``REPORT_FILES_DIR`` with a ``report_files`` row each (sha256 recorded).
-  Re-running it (``POST /client-reports/{id}/render``) replaces the files from
-  the same snapshot.
+  Re-running it (``POST /client-reports/{id}/render``, only after a failed
+  render) builds the files from the same snapshot.
 
-Evidence images are read from the note-attachment store at render time.
+Evidence images are read from the note-attachment store at render time.  An
+issued render refuses what would make its files differ from what was signed
+off (review 2026-09-23 C4): a template whose fingerprint changed since the
+issue, or an evidence image that has gone.  Either is a revision, not a
+re-render.
 """
 from __future__ import annotations
 
@@ -61,8 +65,15 @@ def _evidence_resolver(db: Session, project_id: int):
     return resolve
 
 
-def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, basename: str):
+def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, basename: str,
+            *, issued: bool = False):
     template = templates.get_template(report.template)
+    if issued and report.template_fingerprint and templates.fingerprint(template) != report.template_fingerprint:
+        raise ValueError(
+            f"The '{report.template}' template has changed since this report was issued, so its "
+            "files would no longer be the document that was signed off. Revise the report to "
+            "issue it with the current template."
+        )
     wanted = [f for f in formats if f in template.formats]
     return quarto_render.render(
         template.path, template.entry, dataset, wanted, out_dir,
@@ -70,6 +81,7 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         resolve_evidence=_evidence_resolver(db, report.project_id),
         postprocess=template.postprocess,
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
+        strict_evidence=issued,
     )
 
 
@@ -119,7 +131,7 @@ def _render_issued(db: Session, report: Report) -> None:
     root = Path(settings.REPORT_FILES_DIR)
     final_dir = root / str(report.project_id) / str(report.id)
     with tempfile.TemporaryDirectory(prefix="bs-issue-") as tmp:
-        files = _render(db, report, dataset, quarto_render.FORMATS, Path(tmp), basename)
+        files = _render(db, report, dataset, quarto_render.FORMATS, Path(tmp), basename, issued=True)
         final_dir.mkdir(parents=True, exist_ok=True)
         existing = {f.format: f for f in report.files}
         for fmt, path in files.items():

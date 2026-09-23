@@ -290,8 +290,15 @@ def render(
     postprocess: Optional[Dict[str, str]] = None,
     timeout: int = 300,
     quarto: str = "quarto",
+    strict_evidence: bool = False,
 ) -> Dict[str, Path]:
-    """Render ``dataset`` with the template into ``out_dir`` → {format: file}."""
+    """Render ``dataset`` with the template into ``out_dir`` → {format: file}.
+
+    ``strict_evidence`` (an ISSUED report): an evidence image that cannot be
+    found fails the render instead of being dropped.  A draft preview drops it
+    — the draft is live — but an issued report that silently lost an image
+    would no longer be the document that was signed off (review 2026-09-23
+    C4)."""
     formats = [f for f in formats if f in FORMATS]
     if not formats:
         raise RenderError("No format to render.")
@@ -305,7 +312,13 @@ def render(
         _copy_template(template_dir, work)
         (work / "_bluestick").mkdir(exist_ok=True)
         shutil.copyfile(FIELDS_FILTER, work / "_bluestick" / "fields.lua")
-        _place_evidence(dataset, work, resolve_evidence or (lambda _item: None))
+        missing = _place_evidence(dataset, work, resolve_evidence or (lambda _item: None))
+        if missing and strict_evidence:
+            raise RenderError(
+                "Evidence images of this issued report are missing (deleted since it was "
+                f"issued?): {', '.join(missing[:10])}{' …' if len(missing) > 10 else ''}. "
+                "Restore them, or revise the report."
+            )
         (work / "data.json").write_text(json.dumps(dataset, ensure_ascii=False), encoding="utf-8")
         source_name = "report.qmd"
         (work / source_name).write_text(render_source(template_dir, entry, dataset), encoding="utf-8")

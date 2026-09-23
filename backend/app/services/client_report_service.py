@@ -14,9 +14,11 @@ scope, counts, and one entry per finding with its report text, affected
 endpoints and the images marked for the report.  A DRAFT is built from the
 live findings every time; ISSUING freezes it into ``Report.snapshot`` together
 with ``reported`` — the state the report stood for: every included finding
-with its reference and endpoints.  ``reported`` is cumulative (an addendum's
-covers everything reported so far), so the next addendum always compares
-against one state.
+with its reference and endpoints.  ``reported`` is cumulative: it also carries
+every finding a previous issue reported that is no longer included, flagged
+``withdrawn`` with its reference, so a number is never handed to another
+finding (v2.390.4; before, a withdrawn F-02 left ``reported`` and the next
+addendum gave F-02 to a new finding).
 
 **The delta** (an addendum) compares the live state with the baseline's
 ``reported`` by finding AND endpoint — never by date: a promotion that joins an
@@ -26,10 +28,15 @@ new findings, new endpoints on reported findings, and what was withdrawn since
 detached or set false positive).  It never reports remediation: a project is
 one assessment window, not response tracking.
 
-**References.**  A full report numbers its findings F-01, F-02… in report
-order.  An addendum keeps the baseline's references for findings already
-reported and continues the numbering for new ones, so "F-03" means the same
-finding in the report and its addenda.
+**References.**  A reference is assigned ONCE per project and kept by every
+later document — full report, revision or addendum — so "F-03" means the same
+finding everywhere (review 2026-09-23 C3).  The ledger is the merge of every
+issued (and superseded) report's ``reported``; a finding it knows keeps its
+reference, a new one continues after the highest ever issued.  The first
+report therefore numbers F-01, F-02… in report order; later ones may list
+them out of sequence, which is the price of a stable reference.  An addendum
+may only be ISSUED against the current issue: a draft compared with an older
+or superseded report would re-list findings the client already has.
 """
 from __future__ import annotations
 
@@ -39,9 +46,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, load_only, noload, selectinload
 
-from app.db.models import Annotation, NoteAttachment, Port, Scope, ScopeDomain, Subnet
+from app.db.models import Annotation, Host, NoteAttachment, Port, Scope, ScopeDomain, Subnet
 from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
 )
@@ -185,11 +192,21 @@ class ClientReportService:
     # Live state
     # ------------------------------------------------------------------
     def _included(self, project_id: int) -> List[Finding]:
+        # Only the host columns an endpoint prints.  Host's relationships are
+        # lazy="selectin", so loading the entity dragged in every port,
+        # scanner row (with its plugin output), note and tag of every
+        # affected host — on each draft view, save, preview and inside the
+        # issue lock (review 2026-09-23 C7).
         findings = (
             self.db.query(Finding)
             .options(
-                selectinload(Finding.hosts).selectinload(FindingHost.host),
+                selectinload(Finding.hosts).selectinload(FindingHost.host).options(
+                    load_only(Host.id, Host.ip_address, Host.hostname),
+                    noload(Host.ports), noload(Host.vulnerabilities),
+                    noload(Host.notes), noload(Host.tag_assignments),
+                ),
                 selectinload(Finding.hosts).selectinload(FindingHost.name),
+                noload(Finding.vulnerabilities),
             )
             .filter(Finding.project_id == project_id, Finding.status.in_(INCLUDED_STATUSES))
             .all()
@@ -347,36 +364,44 @@ class ClientReportService:
             baseline = report.baseline
             if baseline is None or baseline.status == ReportStatus.DRAFT or not baseline.snapshot:
                 raise ReportStateError("An addendum needs an issued report to compare against.")
-            baseline_reported = dict((baseline.snapshot or {}).get("reported") or {})
+            # What the client HAS: the baseline's live entries (a finding it
+            # already listed as withdrawn is not "reported").
+            baseline_reported = {
+                fid: entry for fid, entry in ((baseline.snapshot or {}).get("reported") or {}).items()
+                if not entry.get("withdrawn")
+            }
 
-        # References.
+        # References: assigned once per project, kept by every document.
+        ledger = self._ledger(report.project_id)
+        next_n = max((_ref_number(v.get("ref")) for v in ledger.values()), default=0)
         refs: Dict[int, str] = {}
-        if report.kind == ReportKind.ADDENDUM:
-            next_n = max((_ref_number(v.get("ref")) for v in baseline_reported.values()), default=0)
-            for f in findings:
-                prior = baseline_reported.get(str(f.id))
-                if prior and prior.get("ref"):
-                    refs[f.id] = prior["ref"]
-                else:
-                    next_n += 1
-                    refs[f.id] = f"F-{next_n:02d}"
-        else:
-            for i, f in enumerate(findings, start=1):
-                refs[f.id] = f"F-{i:02d}"
+        for f in findings:
+            prior = ledger.get(str(f.id))
+            if prior and prior.get("ref"):
+                refs[f.id] = prior["ref"]
+            else:
+                next_n += 1
+                refs[f.id] = f"F-{next_n:02d}"
 
-        reported = {
+        live_reported = {
             str(f.id): {
                 "ref": refs[f.id], "title": f.title, "severity": f.severity, "status": f.status,
                 "endpoints": {k: self._label(ep) for k, ep in endpoints[f.id].items()},
             }
             for f in findings
         }
+        # Cumulative: every earlier reference that is not live now stays,
+        # flagged, so its number is never reused.
+        reported = dict(live_reported)
+        for fid, entry in ledger.items():
+            if fid not in reported:
+                reported[fid] = {**entry, "withdrawn": True}
 
         # Which findings the document shows.
         delta = None
         shown: List[Tuple[Finding, Optional[str], List[dict]]] = []
         if report.kind == ReportKind.ADDENDUM:
-            withdrawn = self._withdrawn(report.project_id, baseline_reported, reported)
+            withdrawn = self._withdrawn(report.project_id, baseline_reported, live_reported)
             for f in findings:
                 prior = baseline_reported.get(str(f.id))
                 if prior is None:
@@ -543,6 +568,29 @@ class ClientReportService:
                 out.append({**base, "reason": "No longer affects these endpoints.", "endpoints": gone})
         return out
 
+    def _ledger(self, project_id: int) -> Dict[str, dict]:
+        """Every finding any issued report has referenced: finding id → its
+        latest ``reported`` entry.  Merged over every issued and superseded
+        report in issue order, so a reference that fell out of a later
+        ``reported`` (issued before v2.390.4, when withdrawn entries were
+        dropped) is still known and never handed to another finding."""
+        rows = (
+            self.db.query(Report.snapshot)
+            .filter(
+                Report.project_id == project_id,
+                Report.status.in_((ReportStatus.ISSUED, ReportStatus.SUPERSEDED)),
+                Report.number.isnot(None),
+            )
+            .order_by(Report.number)
+            .all()
+        )
+        ledger: Dict[str, dict] = {}
+        for (snapshot,) in rows:
+            for fid, entry in ((snapshot or {}).get("reported") or {}).items():
+                if isinstance(entry, dict):
+                    ledger[fid] = entry
+        return ledger
+
     def summary(self, report: Report) -> dict:
         """What the report page shows before (draft) or after (issued) issuing."""
         if report.status != ReportStatus.DRAFT and report.snapshot:
@@ -565,8 +613,14 @@ class ClientReportService:
 
     def issue(self, report_id: int, project_id: int, *, user_id: int, fingerprint: str) -> Report:
         """Freeze a draft.  Serialised per project (the project row is locked)
-        so two issues cannot take the same number."""
-        self.db.query(Project).filter(Project.id == project_id).with_for_update().one()
+        so two issues cannot take the same number.
+
+        ``FOR NO KEY UPDATE`` (``key_share=True``), not ``FOR UPDATE``: two
+        issues still exclude each other, but the lock no longer blocks the
+        ``FOR KEY SHARE`` every insert into a project-owned table takes, so
+        ingestion, notes and triage keep running while a report is issued
+        (review 2026-09-23 R4)."""
+        self.db.query(Project).filter(Project.id == project_id).with_for_update(key_share=True).one()
         report = (
             self.db.query(Report)
             .filter(Report.id == report_id, Report.project_id == project_id)
@@ -590,6 +644,25 @@ class ClientReportService:
             baseline = report.baseline
             if baseline is None or baseline.status == ReportStatus.DRAFT:
                 raise ReportStateError("An addendum needs an issued report to compare against.")
+            # The current issue — other than the one this draft revises (a
+            # revision of the latest addendum compares with that addendum's
+            # own baseline).
+            latest = (
+                self.db.query(Report)
+                .filter(
+                    Report.project_id == project_id, Report.status == ReportStatus.ISSUED,
+                    Report.id != (original.id if original is not None else -1),
+                )
+                .order_by(Report.number.desc())
+                .first()
+            )
+            if latest is None or latest.id != baseline.id:
+                raise ReportStateError(
+                    f"Report {baseline.number} is no longer the current issue"
+                    + (f" (report {latest.number} was issued since)" if latest is not None else "")
+                    + ". Compare this addendum against the current issue before issuing it, or it "
+                    "would list again what the client already has."
+                )
 
         number = (
             self.db.query(func.max(Report.number)).filter(Report.project_id == project_id).scalar() or 0

@@ -300,9 +300,16 @@ def log_audit_event(
     user_agent: Optional[str] = None,
     details: Optional[Dict[str, Any]] = None,
     success: bool = True,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
+    commit: bool = True,
 ):
-    """Log security audit event"""
+    """Log security audit event.
+
+    Commits by default (most callers log a finished action).  A multi-step
+    workflow passes ``commit=False`` to stage the row in its own transaction
+    and commit once, so the audit row cannot land without the rest — or the
+    rest half-land because this helper committed in the middle (review
+    2026-09-23 B-Debt-8)."""
     audit_log = AuditLog(
         user_id=user_id,
         action=action,
@@ -316,8 +323,11 @@ def log_audit_event(
     )
 
     db.add(audit_log)
-    db.commit()
-    db.refresh(audit_log)
+    if commit:
+        db.commit()
+        db.refresh(audit_log)
+    else:
+        db.flush()
     return audit_log.id
 
 
