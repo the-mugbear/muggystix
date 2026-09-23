@@ -36,6 +36,7 @@ import { InfoTip } from '../components/ui/info-tip';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
 import PostureSection from '../components/posture/PostureSection';
+import PostureMeasure from '../components/posture/PostureMeasure';
 import FocusComparison from '../components/posture/FocusComparison';
 import {
   SEVERITY_HSL, LABEL_TONE, PRIORITY_KIND,
@@ -238,30 +239,8 @@ const PostureConclusion: React.FC<{ data: PostureResponse }> = ({ data }) => {
 // with its own icon, meter and border; "Ownership" is gone — an unassigned
 // finding is a row under Decisions, not a measure of the estate.)
 // ---------------------------------------------------------------------------
-const Measure: React.FC<{
-  label: string;
-  info: string;
-  value: React.ReactNode;
-  /** Drill-down for the number (§26) — the list it opens is the set it counts. */
-  to?: string;
-  toLabel?: string;
-  children?: React.ReactNode;
-}> = ({ label, info, value, to, toLabel, children }) => (
-  <div className="min-w-0 px-md first:pl-0">
-    <p className="flex items-center gap-xxs text-caption text-muted-foreground">
-      <span className="truncate">{label}</span> <InfoTip text={info} />
-    </p>
-    <p className="mt-xxs text-subheading font-bold tabular-nums leading-none text-foreground">
-      {to ? (
-        <Link to={to} aria-label={toLabel ?? `${label} — view`}
-          className="rounded hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          {value}
-        </Link>
-      ) : value}
-    </p>
-    <div className="mt-xs min-w-0 text-caption text-muted-foreground">{children}</div>
-  </div>
-);
+// The measure itself is shared with Oversight (components/posture/PostureMeasure).
+const Measure = PostureMeasure;
 
 const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const h = data.headline;

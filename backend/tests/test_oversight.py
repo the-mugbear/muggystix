@@ -259,3 +259,64 @@ def test_organisation_accounts(client, db_session):
     assert acc["total"] == acc["enabled"] + acc["disabled"]
     assert acc["disabled"] >= 1
     assert acc["without_membership"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Growth series and the "first recorded in the period" severity basis
+# ---------------------------------------------------------------------------
+
+def test_growth_series_carries_the_earlier_total(client, db_session, test_project):
+    ana = _user(db_session, "grower")
+    today = NOW.date()
+    _host(db_session, test_project, "10.24.0.1", first_seen=NOW - timedelta(days=40))   # before
+    h2 = _host(db_session, test_project, "10.24.0.2", first_seen=NOW - timedelta(days=2))
+    _host(db_session, test_project, "10.24.0.3", first_seen=NOW - timedelta(days=2))
+    _follow(db_session, ana, h2, FollowStatus.REVIEWED, reviewed_at=NOW - timedelta(days=1))
+    db_session.commit()
+
+    start = today - timedelta(days=6)
+    g = client.get(URL, params={"start": start.isoformat(), "end": today.isoformat()}).json()["growth"]
+    assert g["unit"] == "day"
+    assert [p["start"] for p in g["points"]][0] == start.isoformat()
+    assert len(g["points"]) == 7
+    by_day = {p["start"]: p for p in g["points"]}
+    two_ago = (NOW - timedelta(days=2)).date().isoformat()
+    assert g["points"][0]["cumulative_targets"] == 1                      # the host recorded earlier
+    assert by_day[two_ago]["targets_added"] == 2
+    assert by_day[two_ago]["cumulative_targets"] == 3
+    assert by_day[(NOW - timedelta(days=1)).date().isoformat()]["reviews_concluded"] == 1
+    assert g["points"][-1]["cumulative_targets"] == 3
+
+    # A long range folds into weeks / months, never thousands of points.
+    wide = client.get(URL, params={"start": (today - timedelta(days=200)).isoformat(),
+                                   "end": today.isoformat()}).json()["growth"]
+    assert wide["unit"] == "week" and len(wide["points"]) <= 30
+    assert client.get(URL).json()["growth"]["unit"] in ("day", "week", "month")
+
+
+def test_period_severity_basis_counts_what_was_recorded_in_the_dates(client, db_session, test_project):
+    p = test_project
+    scan = models.Scan(project_id=p.id, filename="n.nessus")
+    db_session.add(scan)
+    h = _host(db_session, p, "10.25.0.1")
+    old = Vulnerability(title="Old", severity=VulnerabilitySeverity.CRITICAL,
+                        source=VulnerabilitySource.NESSUS, host_id=h.id, scan_id=scan.id)
+    old.first_seen = (NOW - timedelta(days=90)).replace(tzinfo=None)
+    new = Vulnerability(title="New", severity=VulnerabilitySeverity.CRITICAL,
+                        source=VulnerabilitySource.NESSUS, host_id=h.id, scan_id=scan.id)
+    db_session.add_all([old, new])
+    f_old = _finding(db_session, p, "high", [h])
+    f_old.created_at = NOW - timedelta(days=90)
+    _finding(db_session, p, "high", [h])
+    db_session.commit()
+
+    params = {"start": (NOW - timedelta(days=7)).date().isoformat(), "end": NOW.date().isoformat()}
+    current = client.get(URL, params=params).json()
+    period = client.get(URL, params={**params, "severity_basis": "period"}).json()
+    assert current["severity_basis"] == "current" and period["severity_basis"] == "period"
+    assert current["summary"]["severity"]["observations"]["critical"] == 2
+    assert period["summary"]["severity"]["observations"]["critical"] == 1
+    assert current["summary"]["severity"]["findings"]["high"] == 2
+    assert period["summary"]["severity"]["findings"]["high"] == 1
+    # The defect rate is current in both.
+    assert current["summary"]["severity"]["defect_rate"] == period["summary"]["severity"]["defect_rate"]

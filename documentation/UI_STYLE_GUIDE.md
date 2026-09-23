@@ -124,8 +124,16 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 
 ## Component Rules
 
-### 7. Cards
-- **Cards are for dashboards and for the one exception on a page — not the default container for every block of data.** On a DETAIL surface (the host inspector, a finding, a run) use `InspectorSection` (`components/host-inspector/InspectorSection.tsx`): a heading row over a thin divider, collapsible, its state remembered per viewer. Giving every data source its own Card — border, shadow, page-sized title, two layers of padding — meant a host with two ports and two observations needed three screens, most of it chrome. `openInspectorSection` / `jumpToInspectorSection` re-open a collapsed target, so a jump link is never dead.
+### 7. Sections, not cards
+- **Data pages are sections over thin rules, not cards — dashboards included.** A card per measure turns a page into a wall of equal-weight boxes: border, shadow, title and two layers of padding around every number. The house pattern is the Posture Overview (`pages/SecurityPosture.tsx`, v5.254.0), also used by Oversight (`pages/Oversight.tsx`, v5.259.0):
+  - **Page header:** `text-page-title`, one caption line saying what the page answers, actions (Refresh…) and provenance ("Updated …") at the right.
+  - **Filters:** one wrapping row above everything they scope, closed by a `border-b` — never inside a card or a section.
+  - **Lead:** one plain sentence of fact (or the conclusion), `border-l-4` + `text-subheading`, with what it rests on underneath.
+  - **Measures:** at most four quiet numbers on ONE baseline — `PostureMeasure` (`components/posture/PostureMeasure.tsx`) in a `grid lg:grid-cols-4 lg:divide-x`: label + (i) `InfoTip`, value, one or two caption lines. No icon, meter or border per number; a number that can link, links (§9).
+  - **Sections:** `PostureSection` (`components/posture/PostureSection.tsx`): an uppercase caption heading with an optional (i), one description line, right-aligned actions or a segmented control, over a `border-b`; the content keeps the full width. Nothing collapses — these pages are read top to bottom.
+  - **Explanations** go on an explicit (i) `InfoTip`, never on hover alone.
+- On a DETAIL surface (the host inspector, a finding, a run) use `InspectorSection` (`components/host-inspector/InspectorSection.tsx`): the same heading-over-divider shape, collapsible, its state remembered per viewer. Giving every data source its own Card meant a host with two ports and two observations needed three screens, most of it chrome. `openInspectorSection` / `jumpToInspectorSection` re-open a collapsed target, so a jump link is never dead.
+- **A `<Card>` is the exception**: a self-contained object in a grid of like objects (a project tile, a person on a roster), a form panel, or an empty/error state that must stand apart. Never a card per metric.
 - **A repeated evidence row is ONE line** — identity, one status, dot-separated metadata — and expands only on demand (scanner observations, port sightings, earlier observations of a web interface). A 300–400 px row per observation pushes everything else off the screen.
 - Card content must not determine card width.
 - Card headers must protect title, status, and actions from overlap.
@@ -133,6 +141,14 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 - Long metadata rows must truncate or wrap without shifting action placement.
 - Summary cards should prefer stable heights over fully free-form text expansion.
 - Use the v4 `<Card>` / `<CardHeader>` / `<CardContent>` / `<CardFooter>` primitives from `src/components/ui/card.tsx`.
+
+#### Charts
+There is no chart library (§35); charts are small, hand-built SVG inside a section. References: `components/posture/FocusComparison.tsx` (ranked rows with inline bars), `components/oversight/JudgmentBySeverity.tsx` (part-to-whole per row), `components/oversight/GrowthCharts.tsx` (small multiples over time).
+- **Pick the form first; sometimes it is not a chart.** A single number is a measure (§7), a handful of exact values is a table. Draw only what a table cannot show (a gap, a trend, a rank).
+- **One y-axis per plot.** Two measures of different scale (a running total and per-day counts) are two charts on a shared x-axis — never a dual-axis plot.
+- **Colour follows meaning.** Severity colours only for severity (`utils/severity.ts`); status tokens only for status; one accent (`--info`) for a single series, or accent + recessive grey when one part is the point (emphasis). Check any colour pair against the light AND dark themes with the dataviz palette validator before shipping.
+- **Every value is readable without hovering**: direct labels (the end value, the gap), plus a table view where the series is long. Hover and keyboard (arrow keys) move one crosshair and a readout; tooltips enhance, never gate.
+- **Marks are thin**: 2px lines, ≤ 24px columns with a 2px gap, 4px rounded data-ends, hairline grid; text wears text tokens, never the series colour.
 
 ### 8. Tables
 - Tables must be designed for worst-case content, not happy-path fixtures.
@@ -192,9 +208,9 @@ If a cell ends up holding three or more chips of similar weight, that's the cue 
 
 #### Card surfaces
 
-Cards exist for dashboards and detail panels, not as a small-screen fallback for
-tables (see §3 — there is no mobile target). Where a card is the right surface,
-the same density discipline applies:
+Cards are the exception (§7), never a small-screen fallback for tables (see §3 —
+there is no mobile target) and never a container for a single metric. Where a
+card is the right surface, the same density discipline applies:
 
 - ≤ 2 chips at the top (state + alert-when-firing, or state + interactive control).
 - One metadata sentence underneath (dot-separated: `12 open · 3 notes · Linux · viewed 2h ago`).
@@ -288,10 +304,11 @@ Example:
 - Do not give all elements equal visual weight.
 
 ### 19. Surface Design
-- Avoid flat, undifferentiated screens where every card and section blends together.
+- Avoid flat, undifferentiated screens where every block has the same weight. Group with headings, thin rules and whitespace first (§7); reach for a panel only when a block is genuinely a separate object.
 - Use a consistent surface system for:
   - page background (`bg-background`)
-  - primary panels (`bg-card border border-border rounded-panel`)
+  - section rules (`border-b border-border` under a `PostureSection` / `InspectorSection` heading)
+  - primary panels, where a panel is warranted (`bg-card border border-border rounded-panel`)
   - secondary panels (`bg-muted/30` inside a Card)
   - elevated overlays such as dialogs and popovers (Dialog / Popover primitives, `shadow-overlay`)
 - Borders, shadows, and background tints should be subtle but intentional.
@@ -406,8 +423,12 @@ Follow the UI style guide (Tailwind v4 + Radix primitives + lucide-react).
 - Target desktop browsers only — no mobile card fallbacks (see §3).
 - Handle loading, empty, and error states for new data surfaces. A failed or
   unloaded section is UNAVAILABLE, never rendered as empty or zero.
-- Detail surfaces use InspectorSection (heading + divider), not a Card per data
-  source; a repeated evidence row is one line that expands on demand.
+- Data pages use PostureSection / PostureMeasure (heading + rule, one strip of
+  quiet measures); detail surfaces use InspectorSection. Never a Card per metric
+  or per data source; a repeated evidence row is one line that expands on demand.
+- Charts are hand-built SVG: one y-axis per plot (small multiples, never dual
+  axes), every value also reachable as a direct label or a table view, colours
+  from theme tokens checked with the dataviz palette validator.
 - Every count navigates to, or filters to, the rows it summarises. No inert stat cards.
 - Severity colours and badge variants come from src/utils/severity.ts.
 - Reuse the v4 primitives from src/components/ui/ instead of building inline.

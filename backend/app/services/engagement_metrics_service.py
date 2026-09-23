@@ -38,7 +38,7 @@ remediation dimension.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import and_, case, distinct, exists, func, literal, or_, select, union_all
@@ -114,6 +114,16 @@ class Window:
             conds.append(column < self.end)
         return and_(*conds) if conds else literal(True)
 
+    def naive_clause(self, column):
+        """For the timezone-less columns (``vulnerabilities.*`` times), which
+        are written as naive UTC."""
+        conds = []
+        if self.start is not None:
+            conds.append(column >= self.start.replace(tzinfo=None))
+        if self.end is not None:
+            conds.append(column < self.end.replace(tzinfo=None))
+        return and_(*conds) if conds else literal(True)
+
 
 @dataclass
 class PeriodActivity:
@@ -179,8 +189,16 @@ def tested_host_ids(tester_id: Optional[int] = None):
 
 def project_engagement(
     db: Session, project_ids: Iterable[int], tester_id: Optional[int] = None,
+    recorded_in: Optional[Window] = None,
 ) -> Dict[int, ProjectEngagement]:
-    """Current engagement counts for each project id (every id present)."""
+    """Current engagement counts for each project id (every id present).
+
+    ``recorded_in`` limits the severity figures (findings, affected targets,
+    observations and their judged split) to what was first RECORDED in that
+    window — findings by ``created_at``, observations by ``first_seen`` — while
+    the judged state stays the current one.  Targets, review and the defect
+    rate are always current.
+    """
     ids: List[int] = list(dict.fromkeys(project_ids))
     out: Dict[int, ProjectEngagement] = {pid: ProjectEngagement() for pid in ids}
     if not ids:
@@ -218,6 +236,8 @@ def project_engagement(
         out[pid].hosts_tested = n
 
     finding_filters = [Finding.project_id.in_(ids), Finding.severity.in_(SEVERITIES), finding_is_a_result()]
+    if recorded_in is not None:
+        finding_filters.append(recorded_in.clause(Finding.created_at))
     if scoped_hosts is not None:
         finding_filters.append(exists().where(
             FindingHost.finding_id == Finding.id,
@@ -240,10 +260,13 @@ def project_engagement(
     ]
     if scoped_hosts is not None:
         endpoint_filters.append(FindingHost.host_id.in_(scoped_hosts))
+    affected_filters = list(endpoint_filters)
+    if recorded_in is not None:
+        affected_filters.append(recorded_in.clause(Finding.created_at))
     for pid, n in (
         db.query(Finding.project_id, func.count(distinct(FindingHost.host_id)))
         .join(FindingHost, FindingHost.finding_id == Finding.id)
-        .filter(*endpoint_filters)
+        .filter(*affected_filters)
         .group_by(Finding.project_id)
         .all()
     ):
@@ -262,6 +285,9 @@ def project_engagement(
     obs_filters = [Host.project_id.in_(ids), Vulnerability.severity.in_(_VULN_SEVERITIES)]
     if scoped_hosts is not None:
         obs_filters.append(Vulnerability.host_id.in_(scoped_hosts))
+    if recorded_in is not None:
+        # vulnerabilities.first_seen is a naive UTC column.
+        obs_filters.append(recorded_in.naive_clause(Vulnerability.first_seen))
     for pid, severity, total, n_judged in (
         db.query(
             Host.project_id,
@@ -392,6 +418,103 @@ def period_activity(
         .filter(events.c.user_id.is_(None), in_window).scalar()
     ) or 0
     return out, int(total_contributors), int(unattributed)
+
+
+# ---------------------------------------------------------------------------
+# Growth over time
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GrowthBucket:
+    start: date
+    targets_added: int = 0
+    reviews_concluded: int = 0
+    cumulative_targets: int = 0
+
+
+def _bucket_unit(first: date, last: date) -> str:
+    span = (last - first).days + 1
+    if span <= 62:
+        return "day"
+    if span <= 366:
+        return "week"
+    return "month"
+
+
+def _truncate(d: date, unit: str) -> date:
+    if unit == "week":
+        return d - timedelta(days=d.weekday())      # ISO weeks, as Postgres
+    if unit == "month":
+        return d.replace(day=1)
+    return d
+
+
+def _next(d: date, unit: str) -> date:
+    if unit == "week":
+        return d + timedelta(days=7)
+    if unit == "month":
+        return (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return d + timedelta(days=1)
+
+
+def growth_series(
+    db: Session, project_ids: Iterable[int], window: Window, tester_id: Optional[int] = None,
+) -> Tuple[str, List[GrowthBucket]]:
+    """Targets first recorded and reviews concluded per UTC day / week /
+    month across ``window`` (open start = the cohort's first recorded host),
+    with the cumulative recorded-target total — the pre-window total carried
+    into the first bucket.  Counts surviving host rows ("recorded"), like the
+    Recorded targets figure.  Returns ``(unit, buckets)``; no hosts → no
+    buckets."""
+    ids: List[int] = list(dict.fromkeys(project_ids))
+    if not ids:
+        return "day", []
+    today = datetime.now(timezone.utc).date()
+    last = (window.end - timedelta(days=1)).date() if window.end else today
+    if window.start is not None:
+        first = window.start.date()
+    else:
+        earliest = db.query(func.min(Host.first_seen)).filter(Host.project_id.in_(ids)).scalar()
+        if earliest is None:
+            return "day", []
+        first = earliest.astimezone(timezone.utc).date() if earliest.tzinfo else earliest.date()
+    if first > last:
+        return "day", []
+    unit = _bucket_unit(first, last)
+    span = Window(
+        start=datetime.combine(first, time.min, tzinfo=timezone.utc),
+        end=datetime.combine(last + timedelta(days=1), time.min, tzinfo=timezone.utc),
+    )
+
+    def bucketed(col, *filters) -> Dict[date, int]:
+        key = func.date_trunc(unit, func.timezone("UTC", col))
+        rows = db.query(key, func.count()).filter(*filters, span.clause(col)).group_by(key).all()
+        return {(k.date() if isinstance(k, datetime) else k): int(n) for k, n in rows}
+
+    added = bucketed(Host.first_seen, Host.project_id.in_(ids))
+    review_filters = [
+        HostFollow.host_id.in_(select(Host.id).where(Host.project_id.in_(ids))),
+        HostFollow.status == FollowStatus.REVIEWED,
+        HostFollow.reviewed_at.isnot(None),
+    ]
+    if tester_id is not None:
+        review_filters.append(HostFollow.user_id == tester_id)
+    reviews = bucketed(HostFollow.reviewed_at, *review_filters)
+    running = (
+        db.query(func.count(Host.id))
+        .filter(Host.project_id.in_(ids), Host.first_seen < span.start).scalar()
+    ) or 0
+
+    buckets: List[GrowthBucket] = []
+    d = _truncate(first, unit)
+    while d <= last:
+        running += added.get(d, 0)
+        buckets.append(GrowthBucket(
+            start=d, targets_added=added.get(d, 0),
+            reviews_concluded=reviews.get(d, 0), cumulative_targets=int(running),
+        ))
+        d = _next(d, unit)
+    return unit, buckets
 
 
 # ---------------------------------------------------------------------------

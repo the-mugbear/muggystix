@@ -79,7 +79,7 @@ BlueStick has **two parallel authentication systems** because it serves two very
 
 Every data-bearing endpoint (upload, hosts, scans, scopes, test plans, etc.) is nested under `/api/v1/projects/{project_id}/...`. The `get_current_project` dependency loads the project, verifies the JWT user is a member, and enforces the required role. Cross-project reads/writes are blocked at the dependency layer; a second project's data is invisible unless the user is explicitly a member.
 
-Portfolio-level endpoints (`/api/v1/portfolio/dashboard`) are global — they return cross-project summaries for users who can see multiple projects.
+Portfolio-level endpoints (`/api/v1/portfolio/dashboard`) are global — they return cross-project summaries of the projects the caller belongs to (a global admin sees every non-archived one). Oversight (`/api/v1/oversight/dashboard`, v2.377.0) is the administrators' programme view of EVERY registered project, archived included; its router is mounted with `require_role(ADMIN)`, so members and project admins get 403. Both read the same counting services (§3, "Cross-project counts").
 
 ---
 
@@ -105,7 +105,8 @@ backend/app/
 │       ├── system_metrics.py # admin GET /system/queue-metrics (both job queues)
 │       ├── projects.py       # project CRUD + membership (add/remove/role)
 │       ├── notifications.py  # read/unread, mark-seen
-│       ├── portfolio.py      # cross-project dashboard
+│       ├── portfolio.py      # cross-project dashboard (members' projects)
+│       ├── oversight.py      # administrators' programme dashboard (global admins only)
 │       ├── llm_providers.py  # per-user LLM provider credentials
 │       ├── integrations.py   # per-user scanner tool credentials
 │       ├── feedback.py       # agent feedback ingest (API-key) + admin triage (JWT)
@@ -190,6 +191,9 @@ backend/app/
 │   ├── confidence_service.py
 │   ├── risk_insight_service.py
 │   ├── posture_service.py        # /posture composition (label + conclusion + heatmap + disposition)
+│   ├── engagement_metrics_service.py # cross-project counts: targets, tested, findings, judged / not-yet-judged
+│   │                             # observations, defect rate, period activity, contributors, testers, growth
+│   ├── project_signals_service.py # per-project approvals, runs, admins, last import, "quiet"
 │   ├── systemic_insight_service.py # cross-sectional pattern families + blind spots + monocultures
 │   ├── subnet_insight_service.py # per-subnet exposure/neglect/hygiene lens
 │   ├── pattern_families.py       # the program-level weakness taxonomy + classify()
@@ -240,11 +244,12 @@ Routers stay thin — business logic lives in `services/`. Parsers only normaliz
 - **Finding spine** — `db/models_findings.py` (`Finding`, `FindingHost`, `FindingStatusHistory`) is the canonical correlated-finding layer that de-duplicates raw vulnerabilities into one record per finding-across-hosts. Reports, the posture dashboard, and finding-comments all read this spine rather than raw `vulnerabilities`. Schemas in `schemas/findings.py`.
 - **Sites** — `Site` (`db/models.py`) is a project-scoped grouping of subnets/hosts with tiered weighting; managed via `endpoints/sites.py` and feeds per-site attention rollups.
 - **Posture hub** — the manager-facing analytics surface, four read-only lenses over the existing host/finding data, all composing (never re-collecting):
-  - **Posture** (`endpoints/posture.py` → `posture_service`) — the executive rollup: a deterministic security-condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`, evidence-gated so an unassessed estate never reads clear), a plain-language conclusion, the in-engagement remediation flow (from `FindingStatusHistory`), and the condition-family × site heatmap.
+  - **Posture** (`endpoints/posture.py` → `posture_service`) — the executive rollup: a deterministic security-condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`, evidence-gated so an unassessed estate never reads clear), a plain-language conclusion, and the condition-family × segment heatmap. There is no remediation flow (removed in v2.374; pinned absent): a project is one assessment window ending at the report.
   - **Patterns** (frontend `/posture/patterns` → `endpoints/insights.py` `/insights/systemic` → `systemic_insight_service`) — cross-sectional analysis: recurring weaknesses grouped into program-level **pattern families** (`pattern_families.py`: identity & auth, encryption & trust, lifecycle & patching, legacy & cleartext, lateral-movement, vulnerability & technology monocultures), classified `isolated` / `recurring` / `estate_wide`.
   - **Segments** (frontend `/posture/segments` → `endpoints/insights.py` `/insights/subnets` → `subnet_insight_service`) — the per-subnet exposure/neglect/hygiene lens plus a server-authoritative per-site rollup, behind a Site | Subnet toggle.
   - **Evidence** (`endpoints/posture.py` `/posture/evidence` → `evidence_service`) — per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) answering whether the conclusions are trustworthy.
   - The per-condition host sets live once in `host_condition_sets.py`, so a systemic count and its `has:<condition>` drill-down on the Hosts page resolve the identical hosts. Legacy frontend paths `/insights` and `/insights/systemic` redirect into the hub. (The backend `endpoints/insights.py` routes were **not** renamed — only the frontend page paths moved.)
+- **Cross-project counts** (v2.376.0–2.378.0) — Portfolio (members) and Oversight (global admins) never compute figures themselves: `engagement_metrics_service` owns targets, tested (in review or reviewed, each host once), findings (issues, false positives excluded), scanner observations split judged / not yet judged, the defect rate over tested targets, period activity, contributors (a union over records that already carry an author — not the auth-only `AuditLog`), per-tester rows and the growth series; `project_signals_service` owns approvals, runs, admins, last import and "quiet". "Judged" is the host inspector's `_vuln_coverage` rule as SQL over the stored `vulnerabilities.issue_key` (migration `f7b2d4e6a8c1`), pinned row by row by `tests/test_engagement_metrics.py`. Figures are labelled current, selected period or through-end; there is no remediation dimension. Design: `PORTFOLIO.md` (local).
 - **Webhooks** — `WebhookConfig` (`db/models_project.py`) + `endpoints/webhooks.py` manage per-project outbound notification hooks (egress goes through the SSRF-safe HTTP client).
 - **Annotations (notes) + attachments** — the note system is `Annotation` (+ `AnnotationStatusHistory`) in `db/models.py` with generalized targets (host, finding, etc. — see `finding_id`); file attachments live in `NoteAttachment` and are purged on note delete.
 
@@ -371,7 +376,7 @@ The frontend is a Vite-built React SPA. Material UI + Emotion were fully removed
 ```
 frontend/src/
 ├── pages/                   # route-level views — `ls frontend/src/pages` is the source; by hub:
-│   │ Operations · PortfolioDashboard
+│   │ Operations · PortfolioDashboard · Oversight (global admins)
 │   │ Inventory:  Hosts, HostDetail, Scans, ScanDetail, ScanDiff, Names, Findings,
 │   │             FindingDetail, Scopes, ParseErrors (Ingestion Results), NetworkTopology
 │   │ Posture:    SecurityPosture, Segments, Patterns, Evidence

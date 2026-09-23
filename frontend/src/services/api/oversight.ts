@@ -117,10 +117,23 @@ export interface OversightOption {
   status?: string | null;
 }
 
+export interface OversightGrowthPoint {
+  /** First UTC day of the bucket (YYYY-MM-DD). */
+  start: string;
+  targets_added: number;
+  reviews_concluded: number;
+  cumulative_targets: number;
+}
+
+export type SeverityBasis = 'current' | 'period';
+
 export interface OversightResponse {
   window: { start: string | null; end: string | null; timezone: string };
   generated_at: string;
+  /** current = latest state; period = first recorded inside the dates. */
+  severity_basis: SeverityBasis;
   summary: OversightSummary;
+  growth: { unit: 'day' | 'week' | 'month'; points: OversightGrowthPoint[] };
   attention: OversightAttention;
   accounts: { total: number; enabled: number; disabled: number; without_membership: number };
   projects: OversightProjectRow[];
@@ -137,6 +150,7 @@ export interface OversightQuery {
   status?: string[];
   tester_id?: number;
   window_overlap?: boolean;
+  severity_basis?: SeverityBasis;
 }
 
 export const getOversightDashboard = async (q: OversightQuery): Promise<OversightResponse> => {
@@ -147,6 +161,7 @@ export const getOversightDashboard = async (q: OversightQuery): Promise<Oversigh
   (q.status ?? []).forEach((s) => params.append('status', s));
   if (q.tester_id != null) params.set('tester_id', String(q.tester_id));
   if (q.window_overlap) params.set('window_overlap', 'true');
+  if (q.severity_basis === 'period') params.set('severity_basis', 'period');
   const response = await api.get('/oversight/dashboard', { params });
   return response.data;
 };

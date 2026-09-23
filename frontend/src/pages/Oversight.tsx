@@ -1,5 +1,8 @@
 /**
- * Oversight (5.258.0) — the global administrators' programme dashboard.
+ * Oversight (5.258.0; Posture layout + charts 5.259.0) — the global
+ * administrators' programme dashboard.  Laid out like the Posture Overview:
+ * a lead sentence, one strip of quiet measures, then sections over thin rules
+ * (PostureSection) — no cards.
  *
  * Every registered project, archived included, filtered by UTC dates, project,
  * status, tester and engagement window.  Portfolio stays the members' page;
@@ -23,13 +26,18 @@ import {
   OversightResponse,
   OversightSeverity,
   OversightTesterRow,
+  SeverityBasis,
 } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
+import { InfoTip } from '../components/ui/info-tip';
+import PostureSection from '../components/posture/PostureSection';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import GrowthCharts from '../components/oversight/GrowthCharts';
+import JudgmentBySeverity from '../components/oversight/JudgmentBySeverity';
 import { Input } from '../components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -69,10 +77,6 @@ const day = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
 // Small pieces
 // ---------------------------------------------------------------------------
 
-const Basis: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <span className="text-caption uppercase tracking-wide text-muted-foreground">{children}</span>
-);
-
 const SevCells: React.FC<{ s: OversightSeverity; only?: readonly Sev[] }> = ({ s, only = SEVS }) => (
   <span className="inline-flex flex-wrap gap-x-sm tabular-nums">
     {only.map((k) => (
@@ -83,79 +87,6 @@ const SevCells: React.FC<{ s: OversightSeverity; only?: readonly Sev[] }> = ({ s
     ))}
   </span>
 );
-
-const Stat: React.FC<{ label: string; value: string; lines: React.ReactNode[]; basis: string }> = ({ label, value, lines, basis }) => (
-  <Card className="min-w-0">
-    <CardContent className="flex flex-col gap-xxs p-md">
-      <span className="text-caption text-muted-foreground">{label}</span>
-      <span className="text-heading font-bold tabular-nums text-foreground">{value}</span>
-      {lines.map((l, i) => <span key={i} className="text-caption text-muted-foreground">{l}</span>)}
-      <Basis>{basis}</Basis>
-    </CardContent>
-  </Card>
-);
-
-// ---------------------------------------------------------------------------
-// Severity block
-// ---------------------------------------------------------------------------
-
-const SeverityBlock: React.FC<{ data: OversightResponse }> = ({ data }) => {
-  const s = data.summary.severity;
-  const rows: Array<{ label: string; hint: string; values: (k: Sev) => string; strong?: boolean; indent?: boolean }> = [
-    { label: 'Findings (issues)', hint: 'Distinct findings; one finding on many hosts counts once; false positives excluded',
-      values: (k) => n(s.findings[k]), strong: true },
-    { label: 'Scanner observations', hint: 'Scanner rows: one issue on one host',
-      values: (k) => n(s.observations[k]) },
-    { label: 'judged', hint: 'A finding covers the observation on its host (promoted, dismissed there, or accepted)',
-      values: (k) => n(s.observations_judged[k]), indent: true },
-    { label: 'not yet judged', hint: 'No finding covers the observation on its host yet',
-      values: (k) => n(s.observations_unjudged[k]), indent: true, strong: true },
-    { label: 'Defect rate (tested targets)', hint: `Share of the ${n(s.tested_targets)} tested targets with at least one finding at that severity`,
-      values: (k) => rate(s.defect_rate[k]) },
-  ];
-  return (
-    <Card>
-      <CardContent className="p-md">
-        <div className="mb-xs flex flex-wrap items-baseline justify-between gap-xs">
-          <h2 className="text-body font-semibold text-foreground">Severity</h2>
-          <Basis>Current · {n(s.finding_affected_targets)} affected targets</Basis>
-        </div>
-        <div className="overflow-x-auto">
-          <Table aria-label="Findings and scanner observations by severity">
-            <colgroup><col style={{ width: '34%' }} />{SEVS.map((k) => <col key={k} />)}</colgroup>
-            <TableHeader>
-              <TableRow>
-                <TableHead><span className="sr-only">Measure</span></TableHead>
-                {SEVS.map((k) => (
-                  <TableHead key={k} className="text-right">
-                    <span className="mr-xxs inline-block size-2 rounded-full align-middle" style={{ background: SEVERITY_HSL[k] }} aria-hidden />
-                    {SEV_LABEL[k]}
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.label}>
-                  <TableCell className={r.indent ? 'pl-lg text-muted-foreground' : 'font-medium'} title={r.hint}>
-                    <span className="block truncate">{r.indent ? `└ ${r.label}` : r.label}</span>
-                  </TableCell>
-                  {SEVS.map((k) => (
-                    <TableCell key={k} className={`text-right tabular-nums ${r.strong ? 'font-semibold' : ''}`}>{r.values(k)}</TableCell>
-                  ))}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-        <p className="mt-xs text-caption text-muted-foreground">
-          Findings are issues and observations are issue × host, so the rows are compared, never subtracted.
-          "Not yet judged" is scanner output still waiting for an analyst. Informational and unknown severities are left out.
-        </p>
-      </CardContent>
-    </Card>
-  );
-};
 
 // ---------------------------------------------------------------------------
 // Projects table
@@ -352,6 +283,7 @@ const Oversight: React.FC = () => {
   const testerFilter = params.get('tester') || ALL;
   const overlap = params.get('overlap') === '1';
   const attn = params.get('attention') || '';
+  const basis: SeverityBasis = params.get('basis') === 'period' ? 'period' : 'current';
 
   const range = useMemo(
     () => (preset === 'custom'
@@ -370,7 +302,8 @@ const Oversight: React.FC = () => {
     status: statusFilter !== ALL ? [statusFilter] : [],
     tester_id: testerFilter !== ALL ? Number(testerFilter) : undefined,
     window_overlap: overlap,
-  }), [range.start, range.end, projectFilter, statusFilter, testerFilter, overlap]);
+    severity_basis: basis,
+  }), [range.start, range.end, projectFilter, statusFilter, testerFilter, overlap, basis]);
 
   const [data, setData] = useState<OversightResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -439,23 +372,29 @@ const Oversight: React.FC = () => {
   const pages = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
 
   return (
-    <div className="space-y-md">
+    <div className="space-y-md p-md">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
-          <h1 className="text-heading font-bold text-foreground">Oversight</h1>
-          <p className="text-metadata text-muted-foreground">All registered projects · Administrator overview</p>
+          <h1 className="text-page-title">Oversight</h1>
+          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
+            Every registered project for administrators: what is in progress, how much has been tested, what testing found,
+            and who did the work. Every number is explained on its (i).
+          </p>
         </div>
-        <div className="flex items-center gap-xs text-caption text-muted-foreground">
-          {data && <span>Updated {formatRelativeTime(data.generated_at, { justNowBelowMs: 60_000 })}{error ? ' · stale' : ''}</span>}
+        <div className="flex flex-col items-end gap-xs">
           <Button size="sm" variant="outline" onClick={() => setNonce((x) => x + 1)} disabled={loading}>
-            <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
           </Button>
+          {data && (
+            <span className="text-caption text-muted-foreground">
+              Updated {formatRelativeTime(data.generated_at, { justNowBelowMs: 60_000 })}{error ? ' · showing the last figures that loaded' : ''}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Filters — one shared cohort for every section below. */}
-      <Card>
-        <CardContent className="flex flex-col gap-sm p-md">
+      {/* Filters — one row above everything they scope, no card around them. */}
+      <div className="flex flex-col gap-xs border-b border-border pb-sm">
           <div className="flex flex-wrap items-end gap-sm">
             <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
               Dates
@@ -527,10 +466,9 @@ const Oversight: React.FC = () => {
             Only projects whose engagement window overlaps these dates (projects without dates are then left out)
           </label>
           <p className="text-caption text-muted-foreground">
-            Period: {periodLabel}. Dates filter activity; figures marked Current show the latest state.
+            Period: {periodLabel}. Dates filter activity and growth; the other figures show the latest state unless they say otherwise.
           </p>
-        </CardContent>
-      </Card>
+      </div>
 
       {error && (
         <Alert variant="destructive">
@@ -551,65 +489,114 @@ const Oversight: React.FC = () => {
             <TabsTrigger value="testers">Testers ({n(data.testers.length)})</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="overview" className="space-y-md">
-            <div className="grid gap-sm sm:grid-cols-2 xl:grid-cols-4">
-              <Stat label="Projects" value={n(s.projects_total)} basis="Current"
-                lines={[`${n(s.projects_in_progress)} in progress`, `${n(s.projects_complete)} complete or archived`]} />
-              <Stat label="Recorded targets" value={n(s.targets_through_end)} basis={throughLabel}
-                lines={[`+${n(s.targets_added)} first recorded in the period`, 'Hosts; removed records are not included']} />
-              <Stat label="Targets tested" value={`${n(s.targets_tested)} of ${n(s.targets_current)}`} basis="Current"
-                lines={[`${pct(s.targets_tested, s.targets_current)} · ${n(s.targets_in_review)} in review`, `${n(s.reviews_concluded)} reviews concluded in the period`]} />
-              <Stat label="Contributors" value={n(s.contributors)} basis="Selected period"
-                lines={[`${n(s.imports)} scans imported`, s.unattributed_events ? `${n(s.unattributed_events)} actions with no recorded author` : 'Distinct people across projects']} />
+          <TabsContent value="overview" className="space-y-lg">
+            {/* The lead: one plain sentence of fact — no label, no score. */}
+            <div className="border-l-4 border-l-info py-xs pl-md">
+              <p className="break-words text-subheading font-semibold text-foreground">
+                {n(s.projects_in_progress)} project{s.projects_in_progress === 1 ? '' : 's'} in progress.{' '}
+                {n(s.targets_tested)} of {n(s.targets_current)} targets tested ({pct(s.targets_tested, s.targets_current)}).
+              </p>
+              <p className="mt-xxs break-words text-metadata text-foreground">
+                {n(s.severity.findings.critical + s.severity.findings.high)} critical and high findings;{' '}
+                {n(s.severity.observations_unjudged.critical + s.severity.observations_unjudged.high)} critical and high
+                scanner observations not yet judged.
+              </p>
             </div>
 
-            <SeverityBlock data={data} />
+            {/* Four quiet measures on one baseline (the Posture context strip). */}
+            <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
+              <PostureMeasure label="Projects" value={n(s.projects_total)}
+                info="Registered projects matching the filters, archived included. In progress = active or in progress; complete = completed or archived. Current, whatever the dates.">
+                <p className="truncate">{n(s.projects_in_progress)} in progress · {n(s.projects_complete)} complete</p>
+              </PostureMeasure>
+              <PostureMeasure label="Recorded targets" value={n(s.targets_through_end)}
+                info={`Hosts in these projects' inventories, first recorded ${throughLabel.toLowerCase()} — one per IP per project; ports, CIDR ranges and DNS names never add targets. A host removed with its scan is not counted, so this is "recorded", not a lifetime total.`}>
+                <p className="truncate">+{n(s.targets_added)} first recorded in the period</p>
+              </PostureMeasure>
+              <PostureMeasure label="Targets tested" value={`${n(s.targets_tested)} / ${n(s.targets_current)}`}
+                info="Current hosts in review or reviewed by anyone, each counted once. Watching is not testing.">
+                <p className="truncate">{pct(s.targets_tested, s.targets_current)} · {n(s.targets_in_review)} in review · {n(s.reviews_concluded)} reviews concluded in the period</p>
+              </PostureMeasure>
+              <PostureMeasure label="Contributors" value={n(s.contributors)}
+                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, approved or rejected a plan, or concluded a host review — counted once across projects. Page views never count.">
+                <p className="truncate">
+                  {n(s.imports)} scans imported
+                  {s.unattributed_events > 0 && ` · ${n(s.unattributed_events)} actions with no recorded author`}
+                </p>
+              </PostureMeasure>
+            </div>
 
-            <Card>
-              <CardContent className="flex flex-col gap-xs p-md">
-                <div className="flex flex-wrap items-baseline justify-between gap-xs">
-                  <h2 className="text-body font-semibold text-foreground">Needs attention now</h2>
-                  <Basis>Current · groups overlap, never summed</Basis>
-                </div>
-                <div className="flex flex-wrap gap-sm">
-                  {[
-                    { code: 'critical', label: 'With critical', value: data.attention.critical_projects, unit: 'projects' },
-                    { code: 'pending_review', label: 'Pending approvals', value: data.attention.pending_approval_plans, unit: 'plans' },
-                    { code: 'blocked_session', label: 'Blocked runs', value: data.attention.blocked_runs, unit: 'runs' },
-                    { code: 'no_admin', label: 'No project admin', value: data.attention.no_admin_projects, unit: 'projects' },
-                    { code: 'quiet', label: 'Active but quiet', value: data.attention.quiet_projects, unit: 'projects' },
-                    { code: 'no_data', label: 'No inventory', value: data.attention.no_inventory_projects, unit: 'projects' },
-                  ].map((a) => (
-                    <button key={a.code} type="button" onClick={() => setParam({ tab: 'projects', attention: a.code })}
-                      className="flex flex-col items-start rounded-control border border-border px-sm py-xs text-left hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                      <span className="text-body font-bold tabular-nums text-foreground">{n(a.value)}</span>
-                      <span className="text-caption text-muted-foreground">{a.label} · {a.unit}</span>
+            <PostureSection
+              title={<>Findings and scanner output <InfoTip text="Findings are analysts' conclusions, one per issue, false positives excluded. Scanner observations are what the tools reported, one per issue per host: judged when a finding covers the observation on its host (promoted, dismissed there, or accepted), otherwise not yet judged. The defect rate is the share of tested targets with a finding at that severity." /></>}
+              description={basis === 'period'
+                ? `Only findings and scanner observations first recorded ${periodLabel}; their judged state and the defect rate are today's.`
+                : 'The latest state of every finding and scanner observation in these projects.'}
+              actions={
+                <div className="inline-flex rounded-control border border-border p-[2px]" role="group" aria-label="Severity figures">
+                  {(['current', 'period'] as const).map((b) => (
+                    <button key={b} type="button" aria-pressed={basis === b}
+                      onClick={() => setParam({ basis: b === 'current' ? null : 'period' })}
+                      className={`rounded-sm px-xs py-[2px] ${basis === b ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+                      {b === 'current' ? 'Current' : 'First recorded in the period'}
                     </button>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
+              }
+            >
+              <JudgmentBySeverity severity={s.severity} />
+            </PostureSection>
 
-            <section className="space-y-xs">
-              <div className="flex flex-wrap items-baseline justify-between gap-xs">
-                <h2 className="text-body font-semibold text-foreground">Projects in progress</h2>
-                <Button size="sm" variant="link" onClick={() => setParam({ tab: 'projects', attention: null })}>View all projects →</Button>
-              </div>
+            <PostureSection
+              title="Target growth"
+              description={`${periodLabel}, by UTC ${data.growth.unit}. Three charts on one date axis — a running total and two per-${data.growth.unit} counts are different scales.`}
+            >
+              <GrowthCharts unit={data.growth.unit} points={data.growth.points} />
+            </PostureSection>
+
+            <PostureSection title="Needs attention now" description="Current. The groups overlap, so they are never added up. Each count opens the projects behind it.">
+              <ul className="flex flex-wrap gap-x-lg gap-y-xs text-metadata">
+                {[
+                  { code: 'critical', label: 'with a critical', value: data.attention.critical_projects, unit: 'projects' },
+                  { code: 'pending_review', label: 'awaiting approval', value: data.attention.pending_approval_plans, unit: 'plans' },
+                  { code: 'blocked_session', label: 'blocked', value: data.attention.blocked_runs, unit: 'runs' },
+                  { code: 'no_admin', label: 'without a project admin', value: data.attention.no_admin_projects, unit: 'projects' },
+                  { code: 'quiet', label: 'active but quiet for 14 days', value: data.attention.quiet_projects, unit: 'projects' },
+                  { code: 'no_data', label: 'with no inventory', value: data.attention.no_inventory_projects, unit: 'projects' },
+                ].map((a) => (
+                  <li key={a.code}>
+                    {a.value > 0 ? (
+                      <button type="button" onClick={() => setParam({ tab: 'projects', attention: a.code })}
+                        className="rounded text-left hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <span className="font-semibold tabular-nums text-foreground">{n(a.value)}</span> {a.unit} {a.label}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground"><span className="tabular-nums">0</span> {a.unit} {a.label}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </PostureSection>
+
+            <PostureSection
+              title="Projects in progress"
+              description="Worst first: critical, then high — findings or scanner output not yet judged."
+              actions={<button type="button" className="text-info hover:underline" onClick={() => setParam({ tab: 'projects', attention: null })}>All projects →</button>}
+            >
               {statusFilter === 'completed' || statusFilter === 'archived'
-                ? <p className="text-caption text-muted-foreground">The status filter excludes projects in progress. <Button size="sm" variant="link" onClick={() => setParam({ status: null })}>Clear it</Button></p>
+                ? <p className="text-caption text-muted-foreground">The status filter excludes projects in progress. <button type="button" className="text-info hover:underline" onClick={() => setParam({ status: null })}>Clear it</button></p>
                 : <ProjectsTable rows={inProgressPreview} onOpen={openProject} caption="Projects in progress, worst first" />}
-            </section>
+            </PostureSection>
 
-            <section className="space-y-xs">
-              <div className="flex flex-wrap items-baseline justify-between gap-xs">
-                <h2 className="text-body font-semibold text-foreground">Testers</h2>
-                <Button size="sm" variant="link" onClick={() => setParam({ tab: 'testers' })}>View all testers →</Button>
-              </div>
+            <PostureSection
+              title="Testers"
+              description="Most targets in review or reviewed first."
+              actions={<button type="button" className="text-info hover:underline" onClick={() => setParam({ tab: 'testers' })}>All testers →</button>}
+            >
               <TestersTable rows={testerPreview} caption="Most active testers" expandable={false} />
-            </section>
+            </PostureSection>
 
             <p className="text-caption text-muted-foreground">
-              Organisation accounts · Current · all projects: {n(data.accounts.total)} registered,{' '}
+              Organisation accounts, all projects, current: {n(data.accounts.total)} registered,{' '}
               {n(data.accounts.enabled)} enabled, {n(data.accounts.disabled)} disabled,{' '}
               {n(data.accounts.without_membership)} without a project.
             </p>

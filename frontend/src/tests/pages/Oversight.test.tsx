@@ -33,6 +33,15 @@ const project = (over: Record<string, unknown>) => ({
 const response = {
   window: { start: '2026-08-01', end: '2026-08-30', timezone: 'UTC' },
   generated_at: new Date().toISOString(),
+  severity_basis: 'current',
+  growth: {
+    unit: 'day',
+    points: [
+      { start: '2026-08-28', targets_added: 0, reviews_concluded: 1, cumulative_targets: 23 },
+      { start: '2026-08-29', targets_added: 4, reviews_concluded: 0, cumulative_targets: 27 },
+      { start: '2026-08-30', targets_added: 1, reviews_concluded: 2, cumulative_targets: 28 },
+    ],
+  },
   summary: {
     projects_total: 3, projects_in_progress: 2, projects_complete: 1,
     targets_current: 30, targets_through_end: 28, targets_added: 5,
@@ -80,13 +89,15 @@ describe('Oversight', () => {
     expect(q.start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(q.end).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
-    expect(screen.getByText('12 of 30')).toBeInTheDocument();          // targets tested
-    expect(screen.getByText('Selected period')).toBeInTheDocument();    // contributors basis
+    expect(screen.getByText('12 / 30')).toBeInTheDocument();           // targets tested
+    // No cards: the measures are one strip, the rest are sections.
+    expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
     const severity = screen.getByRole('table', { name: /by severity/ });
-    expect(within(severity).getByText('Findings (issues)')).toBeInTheDocument();
-    expect(within(severity).getByText('└ not yet judged')).toBeInTheDocument();
-    expect(within(severity).getByText('70')).toBeInTheDocument();       // high not yet judged
+    expect(within(severity).getByRole('img', { name: 'High: 20 judged, 70 not yet judged of 90 scanner observations' })).toBeInTheDocument();
     expect(within(severity).getByText('50%')).toBeInTheDocument();      // high defect rate
+    // Growth: the readout shows the latest bucket until the pointer moves.
+    expect(screen.getByText(/2026-08-30/, { selector: '#growth-readout span' })).toBeInTheDocument();
+    expect(screen.getAllByRole('img', { name: /^Recorded targets \(cumulative\): 28/ })).toHaveLength(1);
     expect(screen.getByText(/9 registered, 8 enabled, 1 disabled/)).toBeInTheDocument();
     // The in-progress preview excludes the completed project.
     const preview = screen.getByRole('table', { name: /in progress/ });
@@ -96,10 +107,30 @@ describe('Oversight', () => {
 
   it('an attention count opens the Projects tab filtered to it', async () => {
     await renderPage();
-    fireEvent.click(screen.getByText(/No project admin · projects/).closest('button')!);
+    fireEvent.click(screen.getByText(/without a project admin/).closest('button')!);
     const table = await screen.findByRole('table', { name: 'All projects in the cohort' });
     expect(within(table).getByText('Orphaned')).toBeInTheDocument();
     expect(within(table).queryByText('Closed')).not.toBeInTheDocument();
     expect(screen.getByText(/1 of 3 projects/)).toBeInTheDocument();
+  });
+});
+
+describe('Oversight — severity basis and growth keyboard', () => {
+  beforeEach(() => { dashboardMock.mockReset().mockResolvedValue(response); });
+
+  it('the basis toggle asks the server for figures first recorded in the period', async () => {
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'First recorded in the period' }));
+    await screen.findByText('Needs attention now');
+    const last = dashboardMock.mock.calls[dashboardMock.mock.calls.length - 1][0];
+    expect(last.severity_basis).toBe('period');
+  });
+
+  it('arrow keys move the growth readout between dates', async () => {
+    await renderPage();
+    const charts = screen.getByLabelText(/Target growth charts/);
+    fireEvent.keyDown(charts, { key: 'ArrowLeft' });
+    const readout = document.getElementById('growth-readout')!;
+    expect(readout.textContent).toMatch(/2026-08-29 · 27 recorded targets · \+4 first recorded · 0 reviews concluded/);
   });
 });

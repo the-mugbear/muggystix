@@ -20,7 +20,7 @@ every field below says which.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -32,8 +32,8 @@ from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
 from app.services.engagement_metrics_service import (
-    SEVERITIES, SeverityCounts, Window, organisation_accounts, period_activity,
-    project_engagement, projects_with_tester, tester_rows,
+    SEVERITIES, SeverityCounts, Window, growth_series, organisation_accounts,
+    period_activity, project_engagement, projects_with_tester, tester_rows,
 )
 from app.services.project_signals_service import IN_PROGRESS_STATUSES, project_signals
 
@@ -161,6 +161,18 @@ class AttentionCounts(BaseModel):
     no_inventory_projects: int = 0
 
 
+class GrowthPoint(BaseModel):
+    start: date                     # first UTC day of the bucket
+    targets_added: int = 0          # hosts first recorded in the bucket
+    reviews_concluded: int = 0      # hosts marked reviewed in the bucket
+    cumulative_targets: int = 0     # recorded targets through the bucket's end
+
+
+class Growth(BaseModel):
+    unit: str                       # day | week | month
+    points: List[GrowthPoint] = []
+
+
 class Option(BaseModel):
     id: int
     name: str
@@ -170,7 +182,12 @@ class Option(BaseModel):
 class OversightResponse(BaseModel):
     window: OversightWindow
     generated_at: datetime
+    # "current": severity figures are the latest state.  "period": only
+    # findings and observations first RECORDED inside the dates (their judged
+    # state is still today's); the defect rate stays current.
+    severity_basis: str = "current"
     summary: OversightSummary
+    growth: Growth
     attention: AttentionCounts
     accounts: Dict[str, int]
     projects: List[ProjectRow]
@@ -232,6 +249,9 @@ def get_oversight_dashboard(
     status: List[str] = Query([], description="Limit to these project statuses"),
     tester_id: Optional[int] = Query(None, description="Limit to one tester's work"),
     window_overlap: bool = Query(False, description="Only projects whose engagement window overlaps the dates"),
+    severity_basis: Literal["current", "period"] = Query(
+        "current", description="current = latest state; period = first recorded inside the dates",
+    ),
     db: Session = Depends(get_db),
 ):
     now = datetime.now(timezone.utc)
@@ -252,7 +272,14 @@ def get_oversight_dashboard(
         cohort = [p for p in cohort if p.id in theirs]
     ids = [p.id for p in cohort]
 
-    engagement = project_engagement(db, ids, tester_id=tester_id)
+    engagement = project_engagement(
+        db, ids, tester_id=tester_id,
+        recorded_in=window if severity_basis == "period" else None,
+    )
+    # The defect rate is a current measure in both bases.
+    defects = (
+        project_engagement(db, ids, tester_id=tester_id) if severity_basis == "period" else engagement
+    )
     activity, contributors, unattributed = period_activity(db, ids, window, tester_id=tester_id)
     signals = project_signals(db, cohort, now)
 
@@ -296,7 +323,7 @@ def get_oversight_dashboard(
             hosts_in_review=e.hosts_in_review, hosts_reviewed=e.hosts_reviewed,
             findings=_sev(e.findings), finding_affected_targets=e.finding_affected_targets,
             observations_unjudged=_sev(e.observations_unjudged),
-            defect_rate=_rate(e.defect_targets, e.hosts_tested),
+            defect_rate=_rate(defects[p.id].defect_targets, e.hosts_tested),
             last_scan_at=s.last_scan_at,
             pending_plan_reviews=s.pending_plan_reviews, blocked_sessions=s.blocked_sessions,
             targets_added=a.targets_added, reviews_concluded=a.reviews_concluded,
@@ -307,7 +334,7 @@ def get_oversight_dashboard(
         tot_obs.merge(e.observations)
         tot_judged.merge(e.observations_judged)
         tot_unjudged.merge(e.observations_unjudged)
-        tot_defect.merge(e.defect_targets)
+        tot_defect.merge(defects[p.id].defect_targets)
         tot["current"] += e.host_count
         tot["through_end"] += a.targets_through_end
         tot["added"] += a.targets_added
@@ -371,10 +398,17 @@ def get_oversight_dashboard(
         key=lambda o: o.name.lower(),
     )
 
+    unit, points = growth_series(db, ids, window, tester_id=tester_id)
     return OversightResponse(
         window=OversightWindow(start=start, end=end),
         generated_at=now,
+        severity_basis=severity_basis,
         summary=summary,
+        growth=Growth(unit=unit, points=[
+            GrowthPoint(start=b.start, targets_added=b.targets_added,
+                        reviews_concluded=b.reviews_concluded, cumulative_targets=b.cumulative_targets)
+            for b in points
+        ]),
         attention=attention,
         accounts=organisation_accounts(db),
         projects=rows,
