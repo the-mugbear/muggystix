@@ -84,6 +84,16 @@ def apply_hostname_candidate(host: models.Host, candidate: Optional[str], source
     candidate = (candidate or "").strip() or None
     if not candidate:
         return False
+    # An address is not a name.  A tool run against an IP reports that IP as
+    # its "host" (Nikto did), and once stored it blocked every real name of
+    # equal rank (review 2026-09-23 C6e) — refused here for every parser, not
+    # only the one that was caught.  An operator may still type anything.
+    if source != "operator":
+        try:
+            ipaddress.ip_address(candidate.strip("[]"))
+            return False
+        except ValueError:
+            pass
     rank = HOSTNAME_SOURCE_RANK[source]
     current_rank = HOSTNAME_SOURCE_RANK.get(host.hostname_source or "", LEGACY_SOURCE_RANK)
 

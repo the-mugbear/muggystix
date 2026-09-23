@@ -136,6 +136,25 @@ def test_openvas_gmp_first_cve_ref_is_the_cve(db_session, test_project, tmp_path
     assert "CVE-2023-38408" not in v.references
 
 
+def test_no_parser_can_store_an_address_as_a_host_name(db_session, test_project):
+    """The Nikto guard, made central: host creation and every later
+    candidate refuse an IP literal; an operator may still type one."""
+    from app.services.dns_name_service import apply_hostname_candidate
+    from app.services.host_deduplication_service import HostDeduplicationService
+
+    scan = models.Scan(project_id=test_project.id, filename="x.txt", scan_type="nikto", tool_name="nikto")
+    db_session.add(scan)
+    db_session.flush()
+    host = HostDeduplicationService(db_session).find_or_create_host(
+        "10.9.9.11", scan.id, {"state": "up", "hostname": "10.9.9.11"}, project_id=test_project.id)
+    assert host.hostname is None
+    assert apply_hostname_candidate(host, "10.9.9.11", "scanner") is False
+    assert apply_hostname_candidate(host, "[2001:db8::1]", "ptr") is False
+    assert host.hostname is None
+    assert apply_hostname_candidate(host, "web01.lab", "scanner") is True
+    assert apply_hostname_candidate(host, "10.9.9.11", "operator") is True
+
+
 def test_a_reobservation_without_a_score_keeps_the_stored_one(db_session, test_project):
     from datetime import datetime, timezone
 
