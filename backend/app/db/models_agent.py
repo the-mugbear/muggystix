@@ -440,6 +440,16 @@ class TestExecutionStatus(str, enum.Enum):
     NOT_APPLICABLE = "not_applicable"
 
 
+# A result that is done: completion (online and offline import) requires every
+# recorded row of an entry to be one of these.
+TERMINAL_RESULT_STATUSES = frozenset({
+    TestExecutionStatus.EXECUTED.value,
+    TestExecutionStatus.SKIPPED.value,
+    TestExecutionStatus.FAILED.value,
+    TestExecutionStatus.NOT_APPLICABLE.value,
+})
+
+
 # The severity vocabulary for a TestExecutionResult — DISTINCT from the Finding
 # spine's FindingSeverity (models_findings): an execution result can be
 # informational with NO severity ("none"), whereas a Finding always has one.

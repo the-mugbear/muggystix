@@ -18,6 +18,7 @@ from fastapi import (
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.db.session import get_db
 from app.db.models_auth import User
@@ -171,18 +172,25 @@ async def import_test_plan_results(
 
     from app.services.bundle_import_service import import_results_file, BundleImportError
 
-    try:
-        summary = import_results_file(
-            db,
-            plan_id=plan_id,
-            project_id=project.id,
-            file_bytes=file_bytes,
-            filename=file.filename,
-            imported_by_id=current_user.id,
-        )
-    except BundleImportError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc))
+    # The parse (up to 10 MB of JSON) and every DB write run in the thread
+    # pool: done inline in this coroutine they stalled every other request on
+    # the worker — /health included — for the whole import (2.374.4 review
+    # R3; the same fix scopes.py applies to its bulk upload).  Nothing
+    # awaits while the write is uncommitted.
+    def _import():
+        try:
+            summary = import_results_file(
+                db,
+                plan_id=plan_id,
+                project_id=project.id,
+                file_bytes=file_bytes,
+                filename=file.filename,
+                imported_by_id=current_user.id,
+            )
+        except BundleImportError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+        db.commit()
+        return summary
 
-    db.commit()
-    return ImportResultsResponse(**summary)
+    return ImportResultsResponse(**(await run_in_threadpool(_import)))

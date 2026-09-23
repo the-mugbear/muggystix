@@ -15,8 +15,18 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 1, name: 'P' } }),
 }));
+const toast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
+  useToast: () => toast,
+}));
+const navigateMock = vi.fn();
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
+  useNavigate: () => navigateMock,
+}));
+const stashMock = vi.fn();
+vi.mock('../../utils/planSelection', () => ({
+  stashPlanSelection: (...a: unknown[]) => stashMock(...a),
 }));
 
 import Evidence from '../../pages/Evidence';
@@ -95,6 +105,26 @@ describe('Evidence — domain × segment matrix', () => {
   // subnets → Run a vulnerability scan against these hosts" ranked second. In a
   // project with a declared scope that tells an analyst to scan hosts nobody
   // confirmed are authorized.
+  // 2.374.4 review H8: a failed hand-off navigated anyway, and the plan
+  // dialog then opened UNRESTRICTED — a plan over the whole project.
+  it('does not open the plan dialog when the hosts could not be handed over', async () => {
+    await renderPage();
+    const matrix = screen.getByText('Where the gaps are').closest('section')!;
+    fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS · Outside scoped subnets/ }));
+    await within(matrix).findByText('192.168.9.9');
+
+    stashMock.mockReturnValueOnce(false);
+    navigateMock.mockClear();
+    fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/browser storage unavailable/));
+
+    stashMock.mockReturnValueOnce(true);
+    fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
+    expect(navigateMock).toHaveBeenCalledWith('/test-plans?generate=1&source=selection');
+    expect(stashMock.mock.calls[1][0].host_ids).toEqual([7]);
+  });
+
   it('never recommends collecting against hosts outside the declared scope, and ranks them last', async () => {
     await renderPage();
     const list = screen.getByText('Largest gaps').closest('section')!;

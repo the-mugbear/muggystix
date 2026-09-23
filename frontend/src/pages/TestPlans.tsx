@@ -313,15 +313,20 @@ const TestPlans: React.FC = () => {
       const parsed = parseInt(sourceId, 10);
       if (!Number.isNaN(parsed)) setSourceReconSessionId(parsed);
     }
+    // Arriving for a SELECTION without one must not fall through to an
+    // unrestricted generate dialog: that would plan over the whole project,
+    // not the hosts the operator chose.
+    let open = true;
     if (searchParams.get('source') === 'selection') {
       const sel = takePlanSelection();
       if (sel) {
         setSourceSelection(sel);
       } else {
-        toast.warning('The host selection was not found; pick hosts again on the Hosts page.');
+        toast.warning('The host selection was not found; pick the hosts again.');
+        open = false;
       }
     }
-    openGenerateDialog();
+    if (open) openGenerateDialog();
     const params = new URLSearchParams(searchParams);
     params.delete('generate');
     params.delete('source_recon_session_id');

@@ -43,7 +43,7 @@ from app.db.models_agent import (
     ExecutionSession, ExecutionSessionStatus, ExecutionSessionMode,
     ExecutionResultSeverity, HostSanityCheck, ImportedResultFile,
     SanityCheckMethod, TestEntryStatus,
-    TestExecutionResult, TestExecutionStatus,
+    TestExecutionResult, TestExecutionStatus, TERMINAL_RESULT_STATUSES,
     TestPlan, TestPlanEntry,
 )
 
@@ -181,12 +181,17 @@ def _ingest_sanity_checks(
             errors.append(f"sanity_checks[{i}]: passed must be boolean, got {type(passed).__name__}")
             continue
 
-        # Idempotent upsert on (session_id, entry_id).
+        # Idempotent upsert on (session_id, entry_id, method) — the identity
+        # ``uq_sanity_check_session_entry_method`` defines and the online
+        # endpoint uses.  Keyed without the method, importing banner_grab
+        # after reverse_dns overwrote the reverse_dns evidence (2.374.4 review
+        # H4).
         existing = (
             db.query(HostSanityCheck)
             .filter(
                 HostSanityCheck.execution_session_id == session.id,
                 HostSanityCheck.entry_id == entry_id,
+                HostSanityCheck.method == method,
             )
             .first()
         )
@@ -211,8 +216,51 @@ def _ingest_sanity_checks(
                 host_id=entry.host_id,
                 **payload,
             ))
+            # autoflush is off: flush so a repeat of this identity later in
+            # the same file updates this row instead of inserting a second.
+            db.flush()
         ingested += 1
     return ingested
+
+
+# Free-text result fields: an agent-authored JSON value of any other type is a
+# row-level parse error, not a crash (``{}`` as raw_output raised
+# AttributeError inside _truncate_output and aborted the whole import —
+# 2.374.4 review H6).
+_RESULT_TEXT_FIELDS = ("command_run", "raw_output", "findings_summary")
+
+
+def _entry_coverage(db: Session, session_id: int) -> Dict[int, Tuple[set, bool]]:
+    """Per entry, from the PERSISTED results of this execution session: the
+    test indices with a terminal result, and whether any row is still
+    non-terminal.  Completion is decided from this, never from the rows of
+    one upload (2.374.4 review H3: duplicate rows counted twice, and an
+    upload split in two never completed)."""
+    coverage: Dict[int, Tuple[set, bool]] = {}
+    rows = (
+        db.query(TestExecutionResult.entry_id, TestExecutionResult.test_index, TestExecutionResult.status)
+        .filter(TestExecutionResult.execution_session_id == session_id)
+        .all()
+    )
+    for entry_id, test_index, status in rows:
+        done, pending = coverage.get(entry_id, (set(), False))
+        if status in TERMINAL_RESULT_STATUSES:
+            done.add(test_index)
+        else:
+            pending = True
+        coverage[entry_id] = (done, pending)
+    return coverage
+
+
+def _entry_covered(entry: TestPlanEntry, coverage: Dict[int, Tuple[set, bool]]) -> bool:
+    """The online completion gates: every proposed test has a result and none
+    is still pending.  An entry with no proposed tests is covered by any
+    terminal result (ad-hoc tests the operator approved)."""
+    done, pending = coverage.get(entry.id, (set(), False))
+    if pending:
+        return False
+    proposed = len(entry.proposed_tests or [])
+    return set(range(proposed)) <= done if proposed else bool(done)
 
 
 def _ingest_results(
@@ -222,15 +270,13 @@ def _ingest_results(
     entry_map: Dict[int, TestPlanEntry],
     items: List[Dict[str, Any]],
     errors: List[str],
-) -> Tuple[int, Dict[int, int]]:
+) -> Tuple[int, set]:
     """Ingest per-test results.
 
-    Returns (ingested_count, per_entry_completed_count) where the latter
-    is used to optionally mark entries as completed when all their tests
-    have a terminal status.
+    Returns (ingested_count, the entry ids this upload wrote results for).
     """
     ingested = 0
-    per_entry_completed: Dict[int, int] = {}
+    touched: set = set()
     for i, raw in enumerate(items):
         if not isinstance(raw, dict):
             errors.append(f"results[{i}]: expected object, got {type(raw).__name__}")
@@ -265,6 +311,13 @@ def _ingest_results(
             severity = None
         if severity not in ALLOWED_SEVERITIES:
             errors.append(f"results[{i}]: invalid severity {severity!r}")
+            continue
+        bad_text = [k for k in _RESULT_TEXT_FIELDS if raw.get(k) is not None and not isinstance(raw.get(k), str)]
+        if bad_text:
+            errors.append(
+                f"results[{i}]: {', '.join(bad_text)} must be a string, got "
+                f"{', '.join(type(raw.get(k)).__name__ for k in bad_text)}"
+            )
             continue
 
         executed_at_raw = raw.get("executed_at")
@@ -333,10 +386,9 @@ def _ingest_results(
         db.flush()
         sync_tested_binding(db, entry, row)
         ingested += 1
-        if status in ("executed", "skipped", "failed", "not_applicable"):
-            per_entry_completed[entry_id] = per_entry_completed.get(entry_id, 0) + 1
+        touched.add(entry_id)
 
-    return ingested, per_entry_completed
+    return ingested, touched
 
 
 def _ingest_feedback(
@@ -478,7 +530,7 @@ def import_results_file(
     if not isinstance(result_items, list):
         errors.append("results must be an array")
         result_items = []
-    result_count, per_entry_completed = _ingest_results(
+    result_count, touched = _ingest_results(
         db,
         session=session,
         entry_map=entry_map,
@@ -486,15 +538,15 @@ def import_results_file(
         errors=errors,
     )
 
-    # Optional: mark entries as completed once all proposed tests have
-    # terminal results.  This keeps the test-plan progress UI honest.
-    for entry_id, completed in per_entry_completed.items():
+    # Mark an entry completed once its PERSISTED results in this session
+    # cover every proposed test with a terminal status — the online gates.
+    # This keeps the test-plan progress UI honest.
+    db.flush()
+    coverage = _entry_coverage(db, session.id)
+    done_states = (TestEntryStatus.COMPLETED.value, TestEntryStatus.REJECTED.value)
+    for entry_id in touched:
         entry = entry_map[entry_id]
-        proposed = len(entry.proposed_tests or [])
-        if proposed and completed >= proposed and entry.status not in (
-            TestEntryStatus.COMPLETED.value,
-            TestEntryStatus.REJECTED.value,
-        ):
+        if entry.proposed_tests and entry.status not in done_states and _entry_covered(entry, coverage):
             entry.status = TestEntryStatus.COMPLETED.value
             entry.completed_at = datetime.now(timezone.utc)
 
@@ -529,19 +581,12 @@ def import_results_file(
                 f"re-submit, or set is_final=false for an interim import. "
                 f"First error: {errors[0]}"
             )
-        # Also refuse to finalize if any plan entry is still missing
-        # a terminal result (no row in results[] for the entry at all).
-        entries_with_any_result = {
-            r["entry_id"] if isinstance(r, dict) else None
-            for r in (data.get("results") or [])
-        }
+        # Also refuse to finalize while any plan entry lacks terminal
+        # results for its tests — judged from everything persisted in this
+        # session (earlier interim imports included), not from this file.
         missing = [
             e.id for e in entries
-            if e.id not in entries_with_any_result
-            and e.status not in (
-                TestEntryStatus.COMPLETED.value,
-                TestEntryStatus.REJECTED.value,
-            )
+            if e.status not in done_states and not _entry_covered(e, coverage)
         ]
         if missing:
             raise BundleImportError(

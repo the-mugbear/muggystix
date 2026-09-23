@@ -121,12 +121,18 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
 
   const planThese = () => {
     if (!gaps) return;
-    stashPlanSelection({
+    const ok = stashPlanSelection({
       host_ids: gaps.items.map((h) => h.host_id),
       rationale: `${gaps.label}: ${gaps.action.text}`,
       summary: `${gaps.items.length} hosts in ${where} with no ${gaps.label.toLowerCase()} evidence (Evidence page)`,
       taken_at: new Date().toISOString(),
     });
+    // Navigating without the selection opened an UNRESTRICTED generate
+    // dialog — a plan over the whole project instead of these hosts.
+    if (!ok) {
+      toast.error('Could not hand these hosts to the plan dialog (browser storage unavailable).');
+      return;
+    }
     navigate('/test-plans?generate=1&source=selection');
   };
 

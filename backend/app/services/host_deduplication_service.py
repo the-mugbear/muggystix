@@ -187,7 +187,12 @@ class HostDeduplicationService:
             new_host = self._create_new_host(ip_address, scan_id, host_data)
             if project_id is not None:
                 new_host.project_id = project_id
-            self.db.add(new_host)
+            # The savepoint opens BEFORE the add: begin_nested() flushes what
+            # is pending, and with the host already added that flush — the
+            # INSERT that loses a concurrent race — ran outside the try below,
+            # so the IntegrityError escaped and poisoned the parent
+            # transaction (2.374.4 review H2).
+            #
             # Use a savepoint so that a UniqueViolation only rolls back the
             # INSERT, not the entire transaction (which would destroy the
             # scan record and poison all subsequent operations).
@@ -202,6 +207,7 @@ class HostDeduplicationService:
             # contained malformed UTF-8 or an over-long string slipped
             # past upstream validation.
             nested = self.db.begin_nested()
+            self.db.add(new_host)
             try:
                 self.db.flush()  # Get the ID
                 nested.commit()
@@ -316,8 +322,9 @@ class HostDeduplicationService:
         else:
             # Create new port
             new_port = self._create_new_port(host_id, scan_id, port_data)
-            self.db.add(new_port)
+            # Savepoint first, then add — see find_or_create_host (H2).
             nested = self.db.begin_nested()
+            self.db.add(new_port)
             try:
                 self.db.flush()  # Get the ID
                 nested.commit()

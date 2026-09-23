@@ -85,10 +85,23 @@ from app.db import model_registry  # noqa: F401  (side-effect import; the
 # isolation, i.e. as noise that looked exactly like flakiness while being
 # capable of hiding a real regression.
 #
-# PID is the right discriminator: it is unique across concurrently *live*
-# processes (so two suites, or two xdist workers, can never collide), and
-# because the OS recycles PIDs the databases left behind by a hard-killed run
-# get reused rather than accumulating without bound.
+# The discriminator is host name + PID.  PID alone is unique only among the
+# live processes of ONE PID namespace, and every suite here runs in a one-off
+# container, where ``sh -c "… pytest"`` gives pytest the same small PID every
+# time — two concurrent runs (the main checkout and a worktree) picked the
+# same database and one dropped the other's schema (2.374.4 review H11).  A
+# container's host name is its id, distinct per container; on a bare host it
+# is constant and the PID still separates live runs.  A hard-killed run's
+# database is left behind (the end-of-session drop never ran).
+
+
+def _test_database_name(app_database: str) -> str:
+    """``<app-db>_test_<host>_<pid>``, within Postgres' 63-byte identifier limit."""
+    import re
+    import socket
+
+    host = re.sub(r"[^a-z0-9]", "", socket.gethostname().lower())[:16] or "host"
+    return f"{app_database}_test_{host}_{os.getpid()}"[:63]
 
 
 def _ensure_database(url) -> None:
@@ -174,7 +187,7 @@ def _resolve_test_engine():
 
     app_url = make_url(settings.DATABASE_URL)
     if app_url.get_backend_name().startswith("postgresql") and _postgres_reachable(app_url):
-        test_url = app_url.set(database=f"{app_url.database}_test_{os.getpid()}")
+        test_url = app_url.set(database=_test_database_name(app_url.database))
         _ensure_database(test_url)
         return create_engine(test_url, poolclass=NullPool), True
 

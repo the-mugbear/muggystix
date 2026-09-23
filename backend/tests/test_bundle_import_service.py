@@ -410,3 +410,104 @@ class TestIsFindingBoolStrict:
         ).first()
         assert row is not None
         assert row.is_finding is True
+
+
+# ---------------------------------------------------------------------------
+# 2.374.4 review H3 / H4 / H6 — completion from persisted rows, the sanity
+# check identity, and a malformed text field.
+# ---------------------------------------------------------------------------
+
+def _import(db_session, project, fixture, **kw):
+    return import_results_file(
+        db_session, plan_id=fixture["plan"].id, project_id=project.id,
+        file_bytes=_build_results_payload(fixture, **kw), filename="r.json", imported_by_id=None,
+    )
+
+
+def _result(entry_id, index, status="executed", **extra):
+    return {"entry_id": entry_id, "test_index": index, "status": status, **extra}
+
+
+class TestCompletionFromPersistedResults:
+    def test_a_duplicate_row_does_not_complete_an_entry(self, db_session, test_project, exported_session):
+        entry = exported_session["entry"]  # two proposed tests
+        _import(db_session, test_project, exported_session,
+                results=[_result(entry.id, 0), _result(entry.id, 0)])
+        assert entry.status != "completed"
+
+    def test_an_upload_split_in_two_completes_the_entry(self, db_session, test_project, exported_session):
+        entry = exported_session["entry"]
+        _import(db_session, test_project, exported_session, results=[_result(entry.id, 0)])
+        assert entry.status != "completed"
+        summary = _import(db_session, test_project, exported_session, is_final=True,
+                          results=[_result(entry.id, 1)])
+        assert entry.status == "completed"
+        assert summary["session_status"] == "completed"
+
+    def test_a_pending_result_blocks_completion_and_final(self, db_session, test_project, exported_session):
+        entry = exported_session["entry"]
+        with pytest.raises(BundleImportError, match="still missing results"):
+            _import(db_session, test_project, exported_session, is_final=True,
+                    results=[_result(entry.id, 0), _result(entry.id, 1, status="pending")])
+        assert entry.status != "completed"
+
+    def test_final_is_refused_when_one_row_covers_only_part_of_an_entry(
+        self, db_session, test_project, exported_session
+    ):
+        entry = exported_session["entry"]
+        with pytest.raises(BundleImportError, match="still missing results"):
+            _import(db_session, test_project, exported_session, is_final=True,
+                    results=[_result(entry.id, 0)])
+
+
+class TestSanityCheckIdentity:
+    def test_a_second_method_keeps_the_first_methods_evidence(self, db_session, test_project, exported_session):
+        from app.db.models_agent import HostSanityCheck
+        entry = exported_session["entry"]
+
+        def check(method, actual):
+            return {"entry_id": entry.id, "method": method, "target_ip": "10.0.0.5",
+                    "passed": True, "actual_value": actual}
+
+        _import(db_session, test_project, exported_session, extras={"sanity_checks": [check("reverse_dns", "a")]})
+        _import(db_session, test_project, exported_session, extras={"sanity_checks": [check("banner_grab", "b")]})
+        # Repeats — across files and within one — update, never duplicate.
+        _import(db_session, test_project, exported_session,
+                extras={"sanity_checks": [check("reverse_dns", "a2"), check("reverse_dns", "a3")]})
+        rows = {r.method: r.actual_value for r in db_session.query(HostSanityCheck).filter_by(
+            execution_session_id=exported_session["session"].id)}
+        assert rows == {"reverse_dns": "a3", "banner_grab": "b"}
+
+
+class TestImportEndpoint:
+    """The endpoint runs the import in the thread pool (2.374.4 review R3);
+    its behaviour — 200 with a summary, 400 on a bad file — is unchanged."""
+
+    def _post(self, client, project, fixture, body: bytes):
+        return client.post(
+            f"/api/v1/projects/{project.id}/test-plans/{fixture['plan'].id}/import-results",
+            files={"file": ("results.json", body, "application/json")},
+        )
+
+    def test_imports_and_commits(self, client, db_session, test_project, exported_session):
+        from app.db.models_agent import TestExecutionResult
+        entry = exported_session["entry"]
+        r = self._post(client, test_project, exported_session,
+                       _build_results_payload(exported_session, results=[_result(entry.id, 0)]))
+        assert r.status_code == 200, r.text
+        assert r.json()["results_imported"] == 1
+        db_session.expire_all()
+        assert db_session.query(TestExecutionResult).filter_by(entry_id=entry.id).count() == 1
+
+    def test_a_bad_file_is_a_400(self, client, test_project, exported_session):
+        r = self._post(client, test_project, exported_session, b'{"results": []}')
+        assert r.status_code == 400 and "bundle_id" in r.json()["detail"]
+
+
+class TestMalformedTextField:
+    def test_an_object_raw_output_is_a_row_error_not_a_crash(self, db_session, test_project, exported_session):
+        entry = exported_session["entry"]
+        summary = _import(db_session, test_project, exported_session,
+                          results=[_result(entry.id, 0), _result(entry.id, 1, raw_output={})])
+        assert summary["results_imported"] == 1
+        assert any("raw_output must be a string" in e for e in summary["parse_errors"])

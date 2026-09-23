@@ -297,22 +297,36 @@ def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int
     The job rows stay — they are the record; only the bytes go."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - retention_window()
-    removed = 0
-    finished = (
-        db.query(IngestionJob)
-        .filter(IngestionJob.status.in_(("completed", "failed")))
-        .filter(
+    expired = (
+        (IngestionJob.status.in_(("completed", "failed")))
+        & (
             (IngestionJob.completed_at < cutoff)
             | ((IngestionJob.completed_at.is_(None)) & (IngestionJob.created_at < cutoff))
         )
-        .all()
     )
-    for job in finished:
-        if not file_retained(job):
-            continue
-        shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
-        if not Path(job.storage_path).exists():
-            removed += 1
+    removed = 0
+    candidate_ids = [jid for (jid,) in db.query(IngestionJob.id).filter(expired).all()]
+    for job_id in candidate_ids:
+        # Each file goes while its row is LOCKED, with the predicate
+        # re-checked under the lock.  Deleting from a snapshot read raced a
+        # retry: the retry (which checks the file exists under this same row
+        # lock) was accepted, the job re-queued, and then this sweep removed
+        # its input — "retry accepted, file absent" (2.374.4 review H5).  Now
+        # either the retry wins (the job is 'queued', no longer matched) or
+        # the sweep does (the retry then reports file_missing).  SKIP LOCKED:
+        # a job being retried right now is simply left for the next sweep.
+        job = (
+            db.query(IngestionJob)
+            .filter(IngestionJob.id == job_id, expired)
+            .with_for_update(skip_locked=True)
+            .populate_existing()
+            .one_or_none()
+        )
+        if job is not None and file_retained(job):
+            shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
+            if not Path(job.storage_path).exists():
+                removed += 1
+        db.commit()  # release the row lock before the next job
     return removed
 
 

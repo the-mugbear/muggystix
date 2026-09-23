@@ -66,6 +66,37 @@ def test_retention_sweep_removes_old_finished_files_only(client, db_session, tes
     assert retained_until(old) is None
 
 
+def test_a_retry_accepted_after_the_sweep_read_keeps_its_file(client, db_session, test_project):
+    """2.374.4 review H5: the sweep deleted from a snapshot read, so a retry
+    accepted between its read and its delete was queued with no input file.
+    The retry's write is injected right after the sweep's first read."""
+    from sqlalchemy import event, update
+
+    job_id = _upload(client, test_project, NMAP_XML, "r.xml", stage=True).json()["job_id"]
+    job = _finish(db_session, job_id, "failed", datetime.now(timezone.utc) - timedelta(days=9))
+    path = Path(job.storage_path)
+    fired = []
+
+    def retry_lands_after_the_read(state):
+        if fired or not state.is_select:
+            return None
+        fired.append(True)
+        result = state.invoke_statement()
+        state.session.connection().execute(
+            update(models.IngestionJob).where(models.IngestionJob.id == job_id)
+            .values(status="queued", completed_at=None)
+        )
+        return result
+
+    event.listen(db_session, "do_orm_execute", retry_lands_after_the_read)
+    try:
+        expire_retained_files(db_session)
+    finally:
+        event.remove(db_session, "do_orm_execute", retry_lands_after_the_read)
+    assert fired
+    assert path.exists()
+
+
 def test_reprocess_makes_a_new_queued_job_over_a_copy(client, db_session, test_project):
     job_id = _upload(client, test_project, NMAP_XML, "a.xml", stage=True).json()["job_id"]
     src = _finish(db_session, job_id)

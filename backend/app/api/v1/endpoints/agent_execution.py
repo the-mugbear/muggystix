@@ -19,7 +19,7 @@ from app.db import models
 from app.db.models_agent import (
     Agent, TestPlan, TestPlanEntry,
     ExecutionSession, ExecutionSessionStatus,
-    TestExecutionResult, TestExecutionStatus,
+    TestExecutionResult, TestExecutionStatus, TERMINAL_RESULT_STATUSES,
     HostSanityCheck,
 )
 from app.core.config import settings as _settings
@@ -785,13 +785,8 @@ def complete_entry_execution(
     # Gate 2: a recorded result is still in a non-terminal state
     # (pending / pending_approval).  Completion freezes results_data into
     # the entry — non-terminal rows would freeze in-flight evidence.
-    _TERMINAL_RESULT_STATUSES = {
-        TestExecutionStatus.EXECUTED.value,
-        TestExecutionStatus.SKIPPED.value,
-        TestExecutionStatus.FAILED.value,
-        TestExecutionStatus.NOT_APPLICABLE.value,
-    }
-    non_terminal = [r for r in test_results if r.status not in _TERMINAL_RESULT_STATUSES]
+    # The same set the offline import's completion rule uses.
+    non_terminal = [r for r in test_results if r.status not in TERMINAL_RESULT_STATUSES]
     if non_terminal and not no_tests_reason:
         bad_statuses = sorted({r.status for r in non_terminal})
         raise HTTPException(
