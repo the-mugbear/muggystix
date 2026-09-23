@@ -57,7 +57,42 @@ FORMATS: Dict[str, tuple] = {
     "html": ("html", ".html", "text/html"),
     "docx": ("docx", ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
     "pdf": ("typst", ".pdf", "application/pdf"),
+    # The Quarto source itself: a zip of exactly what Quarto would render —
+    # the filled report.qmd, data.json, the filters, reference.docx, the
+    # evidence screenshots and the template's images — so the report can be
+    # re-rendered or reworked locally.  No Quarto run.
+    "qmd": (None, "-source.zip", "application/zip"),
 }
+
+# Template-author files that are not part of a filled report's source: the
+# Jinja partials are already included in report.qmd (and are Jinja, not
+# Quarto), and the sample data / Makefile drive the template, not the report.
+_BUNDLE_SKIP_TOP = {
+    "partials", "branding", "sample-data.json", "Makefile", "template.json", ".gitignore", ".luarc.json",
+}
+
+_BUNDLE_README = """\
+# {title} — Quarto source
+
+This folder is the report exactly as BlueStick rendered it.
+
+    quarto render report.qmd --to html
+    quarto render report.qmd --to docx && python3 scripts/fix-docx-report.py report.docx
+    quarto render report.qmd --to typst     # the PDF
+
+Needs Quarto {quarto} or later (and Python 3 for the Word post-processor,
+which frames the screenshots).
+
+- report.qmd       the report's structure and every short value.
+- data.json        the written text (descriptions, recommendations, the
+                   executive summary …).  It is NOT in report.qmd: the filter
+                   _bluestick/fields.lua inserts it while rendering, with raw
+                   HTML and shortcodes disabled, so text from findings can
+                   never run as Quarto source.  Edit the text here.
+- evidence/        the screenshots marked "In report".
+- reference.docx   the Word styles (fonts, captions, header/footer).
+"""
+
 
 FIELDS_FILTER = Path(__file__).with_name("quarto_fields.lua")
 
@@ -134,7 +169,10 @@ def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List
             raise TemplateAssetError(
                 f"Asset '{asset_id}': '{path}' is not an image ({', '.join(e[1:] for e in ASSET_EXTENSIONS)})."
             )
-        formats = [f for f in (entry.get("formats") or list(FORMATS)) if f in FORMATS]
+        # Where the file appears: the rendered formats (the source bundle
+        # carries every file anyway).
+        rendered = [f for f, spec in FORMATS.items() if spec[0] is not None]
+        formats = [f for f in (entry.get("formats") or rendered) if f in rendered]
         out.append({
             "id": asset_id,
             "path": path,
@@ -162,6 +200,32 @@ def _asset_parts(asset_id: str, path: str) -> List[str]:
             f"Asset '{asset_id}': '{path[:80]}' is not a relative path inside the template folder."
         )
     return parts
+
+
+def _bundle_files(work: Path) -> List[Path]:
+    """The prepared render folder's files that make up the report's source,
+    relative to it (see ``_BUNDLE_SKIP_TOP``)."""
+    files = []
+    for path in sorted(work.rglob("*")):
+        rel = path.relative_to(work)
+        if rel.parts[0] in _BUNDLE_SKIP_TOP or path.is_symlink() or not path.is_file():
+            continue
+        files.append(rel)
+    return files
+
+
+def _write_bundle(work: Path, files: List[Path], target: Path, dataset: dict) -> None:
+    """Zip ``files`` from ``work`` under one top-level folder, with a README
+    saying how to render it."""
+    import zipfile
+
+    folder = "report-source"
+    title = str(((dataset.get("report") or {}).get("title")) or "Report")
+    readme = _BUNDLE_README.format(title=title.replace("\n", " ")[:200], quarto=quarto_version() or "1.10")
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{folder}/README.md", readme)
+        for rel in files:
+            zf.write(work / rel, f"{folder}/{rel.as_posix()}")
 
 
 def _apply_replacements(template_dir: Path, work: Path) -> None:
@@ -483,6 +547,9 @@ def render(
         (work / source_name).write_text(render_source(template_dir, entry, dataset), encoding="utf-8")
         if entry != source_name and (work / entry).exists():
             (work / entry).unlink()
+        # What the source bundle holds — taken now, before any format adds
+        # its output (report.html, report_files/, .quarto/ …) to the folder.
+        source_files = _bundle_files(work)
 
         results: Dict[str, Path] = {}
         env = _clean_env(work)
@@ -491,6 +558,12 @@ def render(
             produced = work / f"report{suffix}"
             if produced.exists():
                 produced.unlink()
+            if to is None:
+                _write_bundle(work, source_files, produced, dataset)
+                target = out_dir / f"{basename}{suffix}"
+                shutil.copyfile(produced, target)
+                results[fmt] = target
+                continue
             try:
                 proc = subprocess.run(
                     [quarto, "render", source_name, "--to", to],

@@ -14,7 +14,7 @@ import React from 'react';
 import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
 import { Badge } from '../ui/badge';
 
-const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', pdf: 'PDF' };
+const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', pdf: 'PDF', qmd: 'QMD source' };
 
 /** The declared, required images whose file is not installed. */
 export const missingRequiredAssets = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>

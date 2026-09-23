@@ -55,7 +55,9 @@ import {
 import { Textarea } from '../components/ui/textarea';
 import { FileButtons, reportKindLabel } from './Reports';
 
-const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', pdf: 'PDF' };
+const FORMAT_LABEL: Record<ClientReportFormat, string> = {
+  html: 'HTML', docx: 'Word', pdf: 'PDF', qmd: 'QMD source (.zip)',
+};
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
 
 interface Form {

@@ -38,7 +38,7 @@ from app.services.client_report_service import ClientReportService
 
 logger = logging.getLogger(__name__)
 
-PREVIEW_FORMATS = {"report-html": "html", "report-docx": "docx", "report-pdf": "pdf"}
+PREVIEW_FORMATS = {"report-html": "html", "report-docx": "docx", "report-pdf": "pdf", "report-qmd": "qmd"}
 ISSUE_FORMAT = "report-issue"
 CLIENT_JOB_FORMATS = tuple(PREVIEW_FORMATS) + (ISSUE_FORMAT,)
 

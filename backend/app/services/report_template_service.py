@@ -43,7 +43,7 @@ from app.core.config import settings
 from app.services import quarto_render
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-FORMATS = ("html", "docx", "pdf")
+FORMATS = ("html", "docx", "pdf", "qmd")
 # Rendered output and editor state inside a template folder are not part of
 # the template.
 _SKIP_DIRS = {"_output", ".quarto", "__pycache__", ".git"}

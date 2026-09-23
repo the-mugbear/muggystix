@@ -45,7 +45,7 @@ ASYNC_REPORT_FORMATS = ("json", "agent-package", "markdown-bundle")
 # v2.381.0 — client reports (Quarto): draft previews and issued renders.
 # Mirrors client_report_render.CLIENT_JOB_FORMATS (kept literal so this module
 # does not import the renderer on the API side).
-CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-pdf", "report-issue")
+CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-pdf", "report-qmd", "report-issue")
 # Host exports that stream every matching host to the artifact file, uncapped
 # (review 2026-09-23 B-Ops-6).  The markdown bundle stays in memory and capped.
 STREAMED_REPORT_FORMATS = ("json", "agent-package")

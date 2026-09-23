@@ -152,4 +152,4 @@ class ReportUpdate(BaseModel):
 
 
 class PreviewRequest(BaseModel):
-    format: Literal["html", "docx", "pdf"] = "html"
+    format: Literal["html", "docx", "pdf", "qmd"] = "html"

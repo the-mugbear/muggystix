@@ -9,7 +9,8 @@ import type { ReportJob } from '../api';
 
 export type ClientReportKind = 'full' | 'addendum';
 export type ClientReportStatus = 'draft' | 'issued' | 'superseded';
-export type ClientReportFormat = 'html' | 'docx' | 'pdf';
+/** `qmd` is the Quarto source as a zip (report.qmd, data.json, filters, screenshots). */
+export type ClientReportFormat = 'html' | 'docx' | 'pdf' | 'qmd';
 
 export interface ReportTester {
   user_id?: number | null;
