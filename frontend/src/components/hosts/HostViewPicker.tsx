@@ -50,6 +50,12 @@ export interface HostViewPickerProps {
   /** The applied view arrived as the project default, not by the operator's choice. */
   projectDefaultApplied: boolean;
   canSetProjectDefault: boolean;
+  /** The project default view's name — offered on every visit, whoever saved
+   *  it (it is usually not in this user's saved list). Null when none. */
+  projectDefaultName?: string | null;
+  /** The project default is what is applied now, unmodified. */
+  projectDefaultActive?: boolean;
+  onApplyProjectDefault?: () => void;
   onAllHosts: () => void;
   onApplyBuiltIn: (view: BuiltInHostView) => void;
   onApplyView: (view: HostFilterView) => void;
@@ -70,6 +76,9 @@ export default function HostViewPicker({
   hasConditions,
   projectDefaultApplied,
   canSetProjectDefault,
+  projectDefaultName = null,
+  projectDefaultActive = false,
+  onApplyProjectDefault,
   onAllHosts,
   onApplyBuiltIn,
   onApplyView,
@@ -115,7 +124,17 @@ export default function HostViewPicker({
             <Check className={hasConditions ? 'size-4 opacity-0' : 'size-4'} aria-hidden />
             All hosts
           </DropdownMenuItem>
-          {onReset && baseViewName && (
+          {projectDefaultName && onApplyProjectDefault && (
+            <DropdownMenuItem onSelect={onApplyProjectDefault}>
+              <Check className={projectDefaultActive ? 'size-4 shrink-0' : 'size-4 shrink-0 opacity-0'} aria-hidden />
+              <span className="min-w-0 flex-1 truncate">{projectDefaultName}</span>
+              <span className="inline-flex shrink-0 items-center gap-xxs text-caption text-muted-foreground">
+                <Star className="size-3 fill-current text-warning" aria-hidden />
+                project default
+              </span>
+            </DropdownMenuItem>
+          )}
+          {onReset && baseViewName && !(projectDefaultName && baseViewName === projectDefaultName) && (
             <DropdownMenuItem onSelect={onReset}>
               <span className="size-4" aria-hidden />
               <span className="truncate">Reset to “{baseViewName}”</span>

@@ -20,7 +20,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } from '../utils/severity';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   ChevronDown,
@@ -492,7 +492,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           : hostOnly
             ? `Dismissed as false positive on this host only: ${finding.title}`
             : `Dismissed as false positive${span}: ${finding.title}`,
-        { autoHideMs: 3000 },
+        { autoHideMs: 6000, action: { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) } },
       );
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
       if (hostOnly) setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
@@ -520,7 +520,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         title: promoteTitle.trim() || undefined,
         owner_id: promoteOwnerId === 'none' ? null : promoteOwnerId,
       });
-      toast.success(`Promoted to finding: ${finding.title}`, { autoHideMs: 3000 });
+      toast.success(`Promoted to finding: ${finding.title}`, {
+        autoHideMs: 6000,
+        action: { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
+      });
       // Optimistically mark the note promoted so its badge appears + the
       // promote affordance hides without waiting for a host reload.
       setNotes((prev) => prev.map((n) => (n.id === promoteNoteId ? { ...n, finding_id: finding.id } : n)));
@@ -2110,11 +2113,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   {triagePreview.already_promoted && triagePreview.host_endpoint_status === 'false_positive' ? (
                     <>
                       <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already a false positive on
-                      finding #{triagePreview.finding_id}; nothing changes.
+                      <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">finding #{triagePreview.finding_id}</Link>; nothing changes.
                     </>
                   ) : triagePreview.already_promoted ? (
                     <>
-                      Finding #{triagePreview.finding_id} already covers this issue
+                      <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">Finding #{triagePreview.finding_id}</Link> already covers this issue
                       {triagePreview.host_endpoint_status
                         ? <> ({ENDPOINT_STATUS_LABEL[triagePreview.host_endpoint_status as FindingHostStatus] ?? triagePreview.host_endpoint_status})</>
                         : ' on other hosts'}
@@ -2137,13 +2140,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <span className="text-foreground">
                   {triagePreview.already_promoted && triagePreview.host_endpoint_status ? (
                     <>
-                      <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already on finding #{triagePreview.finding_id}{' '}
+                      <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already on <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">finding #{triagePreview.finding_id}</Link>{' '}
                       ({ENDPOINT_STATUS_LABEL[triagePreview.host_endpoint_status as FindingHostStatus] ?? triagePreview.host_endpoint_status});
                       this records this scanner&rsquo;s evidence on it.
                     </>
                   ) : triagePreview.already_promoted ? (
                     <>
-                      Finding #{triagePreview.finding_id} already covers this issue. This adds{' '}
+                      <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">Finding #{triagePreview.finding_id}</Link> already covers this issue. This adds{' '}
                       <strong>{triagePreview.host_ip ?? 'this host'}</strong> to it and records this
                       scanner&rsquo;s evidence; no other host is attached.
                     </>
@@ -2162,7 +2165,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   <>
                     <span className="text-foreground">
                       A finding for this issue already exists
-                      {triagePreview.finding_id != null ? ` (#${triagePreview.finding_id})` : ''}
+                      {triagePreview.finding_id != null && <> (<Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">#{triagePreview.finding_id}</Link>)</>}
                       {triagePreview.new_host_count > 0
                         ? ' — this attaches '
                         : ' — this re-dispositions it; no new hosts are attached.'}
