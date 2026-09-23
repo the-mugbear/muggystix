@@ -169,7 +169,10 @@ class FindingService:
             if hid is None:
                 continue
             pair = (hid, names_by_host.get(hid))
-            if pair not in seen and pair not in pairs:
+            # One set check: ``pair not in pairs`` scanned the list, which is
+            # quadratic in the hosts of a widespread issue (2.374.4 review R1).
+            if pair not in seen:
+                seen.add(pair)
                 pairs.append(pair)
         requested = sorted({hid for hid, _ in pairs})
         if not pairs:
@@ -196,7 +199,6 @@ class FindingService:
                 finding_id=finding.id, host_id=hid, name_id=name_id,
                 host_status=FindingHostStatus.OPEN.value,
             ))
-            seen.add((hid, name_id))
 
     def promote_annotation(
         self,

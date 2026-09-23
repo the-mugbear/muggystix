@@ -215,6 +215,14 @@ export interface EvidenceGapsResponse {
   total: number;
   items: EvidenceGapHost[];
   action: { kind: 'collect' | 'plan' | 'confirm_scope'; text: string };
+  /** Scope facts from the declared scope (subnets AND names), per host —
+   *  not from the matrix columns. */
+  project_has_scope?: boolean;
+  /** How many listed hosts are outside the declared scope. */
+  outside_scope?: number;
+  /** Set when SOME listed hosts are outside it (all of them: action is
+   *  `confirm_scope`). Travels into the plan's rationale. */
+  scope_caution?: string | null;
 }
 
 export const getEvidenceGaps = async (

@@ -190,6 +190,50 @@ def test_evidence_matrix_locates_the_gap_and_a_cell_opens_exactly_its_hosts(clie
     assert client.get(base, params={"segment": "subnet:999999"}).status_code == 404
 
 
+def test_scope_advice_comes_from_the_declared_scope_not_the_matrix_columns(db_session, test_project):
+    """2.374.4 review H7: the advice was read off the matrix — only the
+    "unmapped" column, only when other columns existed — so a domain-only
+    scope, a host reached through an in-scope name, or a whole-project list
+    got collection advice about hosts nobody confirmed are authorized."""
+    from app.services import dns_name_service
+
+    now = datetime.now(timezone.utc)
+    scope = models.Scope(project_id=test_project.id, name="s")
+    db_session.add(scope)
+    db_session.flush()
+    # Domain-only scope: no subnet at all, so the matrix has only "unmapped".
+    db_session.add(models.ScopeDomain(scope_id=scope.id, domain="example.com", include_subdomains=True))
+    db_session.flush()
+    _host(db_session, test_project.id, "203.0.113.10", now, ports=[(443, now)])   # via www.example.com
+    _host(db_session, test_project.id, "198.51.100.10", now, ports=[(443, now)])  # out of scope
+    dns_name_service.record_observation(
+        db_session, project_id=test_project.id, name="www.example.com", record_type="A", value="203.0.113.10",
+    )
+    db_session.commit()
+
+    # Whole project: one of the two is outside — collect advice, with the caution.
+    gap = evidence_gap_hosts(db_session, test_project.id, "web_tls")
+    assert (gap["project_has_scope"], gap["outside_scope"], gap["action"]["kind"]) == (True, 1, "collect")
+    assert gap["scope_caution"].startswith("1 of these 2 hosts are outside the declared scope")
+
+    # The unmapped column holds both: the name-scoped host is NOT out of scope,
+    # so the advice stays "collect" with the same caution — not "confirm" for all.
+    cell = evidence_gap_hosts(db_session, test_project.id, "web_tls", segment="unmapped")
+    assert (cell["outside_scope"], cell["action"]["kind"]) == (1, "collect")
+
+
+def test_every_listed_host_outside_the_scope_gets_no_collection_advice(db_session, test_project):
+    now = datetime.now(timezone.utc)
+    scope = models.Scope(project_id=test_project.id, name="s")
+    db_session.add(scope)
+    db_session.flush()
+    db_session.add(models.ScopeDomain(scope_id=scope.id, domain="example.com", include_subdomains=False))
+    _host(db_session, test_project.id, "198.51.100.11", now, ports=[(443, now)])
+    db_session.commit()
+    gap = evidence_gap_hosts(db_session, test_project.id, "web_tls")
+    assert gap["action"]["kind"] == "confirm_scope" and gap["scope_caution"] is None
+
+
 def test_a_clean_vulnerability_scan_is_an_assessment(db_session, test_project):
     """v2.372.0 — "assessed" used to mean "has a vulnerability row", so a host
     Nessus covered and found clean read as never assessed (and with severity-0

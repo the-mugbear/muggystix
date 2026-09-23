@@ -57,9 +57,6 @@ interface Selection {
   segmentLabel?: string;
   gap: number;
   eligible: number;
-  /** `all`: every listed host is outside the declared scope; `some`: a
-   *  whole-project list that mixes them in. Drives the panel's caution. */
-  outsideScope?: 'all' | 'some';
 }
 
 const UNMAPPED = 'unmapped';
@@ -123,7 +120,9 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
     if (!gaps) return;
     const ok = stashPlanSelection({
       host_ids: gaps.items.map((h) => h.host_id),
-      rationale: `${gaps.label}: ${gaps.action.text}`,
+      // The scope caution travels with the hosts: the plan's rationale is what
+      // the planner (human or agent) reads (2.374.4 review H7).
+      rationale: `${gaps.label}: ${gaps.action.text}${gaps.scope_caution ? ` ${gaps.scope_caution}` : ''}`,
       summary: `${gaps.items.length} hosts in ${where} with no ${gaps.label.toLowerCase()} evidence (Evidence page)`,
       taken_at: new Date().toISOString(),
     });
@@ -158,17 +157,15 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
           {/* The collection step is advice for IN-SCOPE hosts. Copy IPs and Plan
               these stay available — the analyst may know the hosts are in scope
               through a name — but never without saying what they are. */}
-          {selection.outsideScope === 'all' || gaps.action.kind === 'confirm_scope' ? (
-            <p className="mt-xs break-words text-caption text-warning" role="note">
-              {gaps.action.kind === 'confirm_scope' ? gaps.action.text : OUTSIDE_SCOPE_STEP}
-            </p>
+          {/* The server decides from the declared scope (subnets AND names),
+              host by host; the matrix column no longer does (review H7). */}
+          {gaps.action.kind === 'confirm_scope' ? (
+            <p className="mt-xs break-words text-caption text-warning" role="note">{gaps.action.text}</p>
           ) : (
             <p className="mt-xs break-words text-caption text-foreground">{gaps.action.text}</p>
           )}
-          {selection.outsideScope === 'some' && (
-            <p className="mt-xxs break-words text-caption text-warning" role="note">
-              This whole-project list includes hosts outside every scoped subnet. Select a subnet or site column to leave them out.
-            </p>
+          {gaps.scope_caution && (
+            <p className="mt-xxs break-words text-caption text-warning" role="note">{gaps.scope_caution}</p>
           )}
           <ul className="mt-xs grid gap-x-lg gap-y-xxs sm:grid-cols-2 xl:grid-cols-3" aria-label={`Hosts without ${gaps.label} evidence`}>
             {(showAll ? gaps.items : gaps.items.slice(0, GAP_PREVIEW)).map((h) => (
@@ -222,7 +219,6 @@ const CoverageMatrix: React.FC<{
   const hidden = matrix.segments.length - columns.length;
   const unit = matrix.group_by === 'subnet' ? 'subnet' : 'site';
   const totals = new Map(data.domains.map((d) => [d.key, d.coverage]));
-  const unscoped = isUnscoped(matrix);
   return (
     <div className="overflow-x-auto">
       {/* Sized to its columns, not stretched across the page. */}
@@ -266,7 +262,6 @@ const CoverageMatrix: React.FC<{
                       aria-label={`${row.label}, whole project: ${total.numerator} of ${total.denominator} eligible hosts assessed — show the ${totalGap} not assessed`}
                       onClick={() => onSelect({
                         domain: row.domain, domainLabel: row.label, gap: totalGap, eligible: total.denominator,
-                        outsideScope: row.cells.some((c) => unscoped(c.segment) && c.gap > 0) ? 'some' : undefined,
                       })}>
                       {total.numerator}/{total.denominator}
                     </button>
@@ -294,7 +289,6 @@ const CoverageMatrix: React.FC<{
                               domain: row.domain, domainLabel: row.label,
                               segment: cell.segment, segmentLabel: seg.label,
                               gap: cell.gap, eligible: cell.eligible,
-                              outsideScope: unscoped(cell.segment) ? 'all' : undefined,
                             })}>
                             {cell.assessed}/{cell.eligible}
                           </button>
@@ -467,7 +461,6 @@ const Evidence: React.FC = () => {
                             onClick={() => setSelection({
                               domain: row.domain, domainLabel: row.label, segment: cell.segment,
                               segmentLabel, gap: cell.gap, eligible: cell.eligible,
-                              outsideScope: outside ? 'all' : undefined,
                             })}>
                             {row.label}
                           </button>

@@ -21,7 +21,7 @@ the systemic surface can't run.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ from app.db.models_findings import Finding, FindingHost
 from app.db.models_confidence import NetexecResult
 from app.db.models_agent import TestPlanEntry, TestExecutionResult, TestExecutionStatus
 from app.schemas.metric import ratio_metric
+from app.services import scope_coverage
 
 # Ports that make a host *eligible* for a domain's assessment.
 _WEB_PORTS = {80, 443, 8080, 8443, 8000, 8888, 8081, 4443, 9443, 8008}
@@ -111,90 +112,117 @@ def _host_ids(db: Session, project_id: int, model, *filters) -> Set[int]:
     return {hid for (hid,) in q.distinct().all()}
 
 
-def eligible_host_ids(db: Session, project_id: int) -> Dict[str, Set[int]]:
+def _memo(fn):
+    """A zero-argument builder that runs once (two domains share a set)."""
+    box: List[Set[int]] = []
+
+    def get() -> Set[int]:
+        if not box:
+            box.append(fn())
+        return box[0]
+    return get
+
+
+def eligible_host_ids(
+    db: Session, project_id: int, domains: Optional[Iterable[str]] = None,
+) -> Dict[str, Set[int]]:
     """Per assessment domain: the hosts the domain is *applicable* to (the
     coverage denominator).  Shared by ``compute_evidence_coverage`` and the
-    condition heatmap so both read the same population."""
-    all_hosts = {
+    condition heatmap so both read the same population.  ``domains`` builds
+    only those keys — the gap list of ONE domain used to run every domain's
+    queries (2.374.4 review R2)."""
+    all_hosts = _memo(lambda: {
         hid for (hid,) in db.query(models.Host.id).filter(models.Host.project_id == project_id).all()
-    }
-    with_ports = _host_ids(db, project_id, models.Port)
+    })
+    with_ports = _memo(lambda: _host_ids(db, project_id, models.Port))
     web_port_filter = or_(
         models.Port.port_number.in_(_WEB_PORTS),
         models.Port.service_name.ilike("http%"),
     )
-    with_finding = {
-        hid for (hid,) in (
-            db.query(FindingHost.host_id)
-            .join(Finding, FindingHost.finding_id == Finding.id)
-            .filter(Finding.project_id == project_id, FindingHost.host_id.isnot(None))
-            .distinct().all()
-        )
-    }
-    return {
+    builders = {
         "port_discovery": all_hosts,
         "service_detection": with_ports,
         "os_detection": with_ports,
         "vuln_assessment": all_hosts,
-        "web_tls": _host_ids(db, project_id, models.Port, web_port_filter),
-        "auth_smb_ad": _host_ids(db, project_id, models.Port, models.Port.port_number.in_(_AUTH_PORTS)),
-        "validation": with_finding,
+        "web_tls": lambda: _host_ids(db, project_id, models.Port, web_port_filter),
+        "auth_smb_ad": lambda: _host_ids(db, project_id, models.Port, models.Port.port_number.in_(_AUTH_PORTS)),
+        "validation": lambda: {
+            hid for (hid,) in (
+                db.query(FindingHost.host_id)
+                .join(Finding, FindingHost.finding_id == Finding.id)
+                .filter(Finding.project_id == project_id, FindingHost.host_id.isnot(None))
+                .distinct().all()
+            )
+        },
     }
+    return {key: builders[key]() for key in (domains if domains is not None else builders)}
 
 
-def assessed_host_ids(db: Session, project_id: int) -> Dict[str, Set[int]]:
+def assessed_host_ids(
+    db: Session, project_id: int, domains: Optional[Iterable[str]] = None,
+) -> Dict[str, Set[int]]:
     """Per assessment domain: the hosts that actually carry evidence in that
     domain (the coverage numerator).  A host in this set has been *checked*
     for the domain — its absence from a weakness set then means "checked and
     clean", not "never looked".  The heatmap's assessed denominator is built
-    from these sets, restricted to each site's in-scope hosts."""
-    netexec_host_ids = db.query(NetexecResult.host_id)
-    with_auth = {
-        hid for (hid,) in (
-            db.query(models.Host.id)
-            .filter(
-                models.Host.project_id == project_id,
-                or_(models.Host.smb_signing.isnot(None), models.Host.id.in_(netexec_host_ids)),
-            ).all()
-        )
-    }
-    with_os = {
-        hid for (hid,) in (
-            db.query(models.Host.id)
-            .filter(models.Host.project_id == project_id,
-                    models.Host.os_name.isnot(None), models.Host.os_name != "")
-            .all()
-        )
-    }
-    with_web = {
-        hid for (hid,) in (
-            db.query(models.WebInterface.host_id)
-            .filter(models.WebInterface.project_id == project_id,
-                    models.WebInterface.host_id.isnot(None))
-            .distinct().all()
-        )
-    }
-    validated = {
-        hid for (hid,) in (
-            db.query(TestPlanEntry.host_id)
-            .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-            .join(models.Host, TestPlanEntry.host_id == models.Host.id)
-            .filter(models.Host.project_id == project_id,
-                    TestExecutionResult.status == TestExecutionStatus.EXECUTED.value)
-            .distinct().all()
-        )
-    }
-    return {
-        "port_discovery": _host_ids(db, project_id, models.Port),
-        "service_detection": _host_ids(db, project_id, models.Port, models.Port.service_name.isnot(None)),
+    from these sets, restricted to each site's in-scope hosts.  ``domains``
+    builds only those keys (see ``eligible_host_ids``)."""
+    def with_auth() -> Set[int]:
+        netexec_host_ids = db.query(NetexecResult.host_id)
+        return {
+            hid for (hid,) in (
+                db.query(models.Host.id)
+                .filter(
+                    models.Host.project_id == project_id,
+                    or_(models.Host.smb_signing.isnot(None), models.Host.id.in_(netexec_host_ids)),
+                ).all()
+            )
+        }
+
+    def with_os() -> Set[int]:
+        return {
+            hid for (hid,) in (
+                db.query(models.Host.id)
+                .filter(models.Host.project_id == project_id,
+                        models.Host.os_name.isnot(None), models.Host.os_name != "")
+                .all()
+            )
+        }
+
+    def with_web() -> Set[int]:
+        return {
+            hid for (hid,) in (
+                db.query(models.WebInterface.host_id)
+                .filter(models.WebInterface.project_id == project_id,
+                        models.WebInterface.host_id.isnot(None))
+                .distinct().all()
+            )
+        }
+
+    def validated() -> Set[int]:
+        return {
+            hid for (hid,) in (
+                db.query(TestPlanEntry.host_id)
+                .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
+                .join(models.Host, TestPlanEntry.host_id == models.Host.id)
+                .filter(models.Host.project_id == project_id,
+                        TestExecutionResult.status == TestExecutionStatus.EXECUTED.value)
+                .distinct().all()
+            )
+        }
+
+    builders = {
+        "port_discovery": lambda: _host_ids(db, project_id, models.Port),
+        "service_detection": lambda: _host_ids(db, project_id, models.Port, models.Port.service_name.isnot(None)),
         "os_detection": with_os,
         # A scanner's run over the host counts; so does any vulnerability row
         # (nikto / testssl / a manual import carry them without such a scan).
-        "vuln_assessment": _host_ids(db, project_id, Vulnerability) | _vuln_scanned_host_ids(db, project_id),
+        "vuln_assessment": lambda: _host_ids(db, project_id, Vulnerability) | _vuln_scanned_host_ids(db, project_id),
         "web_tls": with_web,
         "auth_smb_ad": with_auth,
         "validation": validated,
     }
+    return {key: builders[key]() for key in (domains if domains is not None else builders)}
 
 
 # What closes each domain's gap: a collection step (run a tool against the
@@ -291,8 +319,8 @@ def evidence_gap_hosts(
     """
     if domain not in DOMAIN_LABELS:
         return None
-    eligible = eligible_host_ids(db, project_id)[domain]
-    assessed = assessed_host_ids(db, project_id)[domain]
+    eligible = eligible_host_ids(db, project_id, [domain])[domain]
+    assessed = assessed_host_ids(db, project_id, [domain])[domain]
     segment_label: Optional[str] = None
     action = GAP_ACTIONS[domain]
     if segment is not None:
@@ -301,13 +329,34 @@ def evidence_gap_hosts(
             return None
         eligible = eligible & segments["hosts"][segment]
         segment_label = segments["labels"][segment]
-        # Hosts outside every scoped subnet, in a project that HAS scoped
-        # subnets: "run a scan against these hosts" is not advice this server
-        # gives about hosts nobody confirmed are authorized (v2.374.3).
-        if segment == UNMAPPED_SEGMENT and len(segments["keys"]) > 1:
-            action = OUTSIDE_SCOPE_ACTION
     gap_ids = sorted(eligible - assessed)
     total = len(gap_ids)
+
+    # Which of these hosts are outside the DECLARED scope — no scoped subnet
+    # and no in-scope name — decided from the scope itself.  It used to be
+    # read off the matrix: only the "unmapped" column, and only when other
+    # columns existed, so a domain-only scope, a host reached through an
+    # in-scope name, or a whole-project list got collection advice about
+    # hosts nobody confirmed are authorized (2.374.4 review H7).  The id set
+    # is one query, intersected here (no 80k-id IN list).
+    project_has_scope = scope_coverage.project_has_any_scope(db, project_id)
+    outside_scope = 0
+    if project_has_scope and gap_ids:
+        oos = {
+            hid for (hid,) in
+            scope_coverage._base_query(db, project_id).with_entities(models.Host.id).all()
+        }
+        outside_scope = sum(1 for hid in gap_ids if hid in oos)
+    scope_caution: Optional[str] = None
+    if outside_scope and outside_scope == total:
+        # "Run a scan against these hosts" is not advice this server gives
+        # about hosts nobody confirmed are authorized (v2.374.3).
+        action = OUTSIDE_SCOPE_ACTION
+    elif outside_scope:
+        scope_caution = (
+            f"{outside_scope} of these {total} hosts are outside the declared scope (no scoped "
+            "subnet and no in-scope name). Confirm them before collecting anything against them."
+        )
     chosen = gap_ids[:limit]
     hosts = (
         db.query(models.Host.id, models.Host.ip_address, models.Host.hostname)
@@ -346,6 +395,11 @@ def evidence_gap_hosts(
             for h in by_ip
         ],
         "action": action,
+        # The scope facts behind the advice, for the page and for the plan it
+        # hands the hosts to (the caution travels in the plan's rationale).
+        "project_has_scope": project_has_scope,
+        "outside_scope": outside_scope,
+        "scope_caution": scope_caution,
     }
 
 

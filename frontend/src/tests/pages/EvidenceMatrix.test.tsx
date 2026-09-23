@@ -136,17 +136,37 @@ describe('Evidence — domain × segment matrix', () => {
     expect(within(rows[2]).queryByText(/Collect Web/)).toBeNull();
   });
 
-  it('says so in the gap panel — for an out-of-scope cell, and for a whole-project list that mixes them in', async () => {
+  // 2.374.4 review H7: the SERVER decides, host by host, from the declared
+  // scope (subnets and names); the panel shows its advice and caution, and
+  // the caution travels into the plan's rationale.
+  it('shows the server\'s scope advice — all outside, or a caution for some — and hands the caution to the plan', async () => {
+    const confirm = 'Outside every scoped subnet. Confirm these hosts are in scope before collecting anything more against them.';
+    gapsMock.mockResolvedValueOnce({
+      domain: 'web_tls', label: 'Web / TLS', segment: 'unmapped', segment_label: 'Outside scoped subnets', total: 18,
+      items: [{ host_id: 7, ip_address: '192.168.9.9', hostname: null, ports: [443] }],
+      action: { kind: 'confirm_scope', text: confirm }, project_has_scope: true, outside_scope: 18, scope_caution: null,
+    });
     await renderPage();
     const matrix = screen.getByText('Where the gaps are').closest('section')!;
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS · Outside scoped subnets/ }));
-    expect(await within(matrix).findByText(/Outside every scoped subnet\. Confirm these hosts are in scope/)).toBeInTheDocument();
-    // The server's collection advice is NOT shown for them.
+    expect(await within(matrix).findByText(confirm)).toBeInTheDocument();
     expect(within(matrix).queryByText(/Probe these hosts with httpx/)).toBeNull();
 
+    const caution = '3 of these 30 hosts are outside the declared scope (no scoped subnet and no in-scope name). Confirm them before collecting anything against them.';
+    gapsMock.mockResolvedValueOnce({
+      domain: 'web_tls', label: 'Web / TLS', segment: null, segment_label: null, total: 30,
+      items: [{ host_id: 7, ip_address: '192.168.9.9', hostname: null, ports: [443] }],
+      action: { kind: 'collect', text: 'Probe these hosts with httpx and upload the JSON.' },
+      project_has_scope: true, outside_scope: 3, scope_caution: caution,
+    });
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project/ }));
-    expect(await within(matrix).findByText(/whole-project list includes hosts outside every scoped subnet/)).toBeInTheDocument();
+    expect(await within(matrix).findByText(caution)).toBeInTheDocument();
     expect(within(matrix).getByText(/Probe these hosts with httpx/)).toBeInTheDocument();
+
+    stashMock.mockReturnValueOnce(true);
+    fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
+    const calls = stashMock.mock.calls;
+    expect(calls[calls.length - 1][0].rationale).toContain(caution);
   });
 
   it('treats unmapped hosts as ordinary when the project declares no scope at all', async () => {
