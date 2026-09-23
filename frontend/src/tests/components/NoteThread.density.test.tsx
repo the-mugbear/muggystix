@@ -132,11 +132,11 @@ describe('NoteThread — row density', () => {
   });
 });
 
-// v5.264.0 — notes read like a text conversation: the viewer's on the left,
-// everyone else's on the right; replies in the order written, quoting what
-// they answer when it is not the thread's first note.
+// v5.264.0 — notes read like a text conversation: the viewer's on the right,
+// everyone else's on the left (the phone convention, v5.268.0); replies in the
+// order written, quoting what they answer when it is not the first note.
 describe('NoteThread — conversation layout', () => {
-  it("puts the viewer's notes on the left and others' on the right, in order", () => {
+  it("puts the viewer's notes on the right and others' on the left, in order", () => {
     const root = note({ id: 1, author_id: 7, author_name: 'Ada', body: 'Root.' } as Partial<Annotation>);
     const r1 = note({ id: 2, parent_id: 1, author_id: 9, author_name: 'Bo', body: 'First reply.', created_at: '2026-09-19T11:00:00Z' } as Partial<Annotation>);
     const r2 = note({ id: 3, parent_id: 2, author_id: 7, author_name: 'Ada', body: 'Answering Bo.', created_at: '2026-09-19T12:00:00Z' } as Partial<Annotation>);
@@ -155,8 +155,8 @@ describe('NoteThread — conversation layout', () => {
     );
     const sides = [...container.querySelectorAll('[data-side]')].map((el) => [el.id, el.getAttribute('data-side')]);
     expect(sides).toEqual([['note-1', 'mine'], ['note-2', 'theirs'], ['note-3', 'mine']]);
-    expect(container.querySelector('#note-1')).toHaveClass('items-start');
-    expect(container.querySelector('#note-2')).toHaveClass('items-end');
+    expect(container.querySelector('#note-1')).toHaveClass('items-end');
+    expect(container.querySelector('#note-2')).toHaveClass('items-start');
     // A reply to a reply quotes it; a reply to the first note does not.
     expect(screen.getByText(/Replying to/)).toHaveTextContent('Replying to Bo: First reply.');
     expect(screen.getAllByText(/Replying to/)).toHaveLength(1);

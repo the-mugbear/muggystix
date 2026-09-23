@@ -196,8 +196,8 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
   });
 });
 
-// v5.264.0 — a text-message conversation: the viewer's comments on the left,
-// others' on the right, oldest first, a reply quoting what it answers.
+// v5.264.0 — a text-message conversation: the viewer's comments on the right,
+// others' on the left (v5.268.0), oldest first, a reply quoting what it answers.
 describe('FindingCommentThread — conversation layout', () => {
   it('sides, order and reply quotes', async () => {
     mocked.getFindingNotes.mockResolvedValue([
@@ -209,6 +209,9 @@ describe('FindingCommentThread — conversation layout', () => {
     await screen.findByText('Thanks.');
     const sides = [...container.querySelectorAll('[data-side]')].map((el) => el.getAttribute('data-side'));
     expect(sides).toEqual(['mine', 'theirs', 'mine']);
+    const bubbles = container.querySelectorAll('[data-side]');
+    expect(bubbles[0]).toHaveClass('items-end');
+    expect(bubbles[1]).toHaveClass('items-start');
     expect(screen.getByText(/Replying to/)).toHaveTextContent('Replying to ana: Found it.');
     // The viewer's own messages read "You"; no Card wraps the thread.
     expect(screen.getAllByText('You')).toHaveLength(2);

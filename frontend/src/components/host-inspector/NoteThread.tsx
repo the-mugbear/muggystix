@@ -30,8 +30,8 @@ const LONG_NOTE_LINES = 5;
  * A host's notes as conversations (v5.264.0; extracted from HostInspector in
  * v2.43.0).  Each top-level note starts a thread — it carries the thread's
  * status, type, pin and promotion — and its replies follow it in the order
- * they were written, as message bubbles: the viewer's on the left, everyone
- * else's on the right (MessageBubble).  A reply to something other than the
+ * they were written, as message bubbles: the viewer's on the right, everyone
+ * else's on the left (MessageBubble).  A reply to something other than the
  * thread's first note quotes what it answers, instead of indenting.
  *
  * Owns no state beyond per-message view state — every interaction is a
@@ -85,7 +85,7 @@ export interface NoteThreadProps {
   canManageNotes: boolean;
   /** Reload the notes thread after an attachment upload/delete. */
   onAttachmentsChanged: () => void;
-  /** v5.264.0 — the viewer: their notes sit on the left. */
+  /** v5.264.0 — the viewer: their notes sit on the right. */
   currentUserId?: number | null;
 }
 

@@ -27,6 +27,7 @@ the server", which is itself the state to check.
 from __future__ import annotations
 
 import argparse
+import secrets
 import sys
 import tempfile
 import textwrap
@@ -42,7 +43,8 @@ from app.db.models_agent import AgentSession, ExecutionSession, TestPlan, TestPl
 from app.db.models_auth import User, UserRole  # noqa: E402
 from app.db.models_confidence import ConflictHistory, HostConfidence, NetexecResult  # noqa: E402
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus  # noqa: E402
-from app.db.models_project import Project  # noqa: E402
+from app.core.security import get_password_hash  # noqa: E402
+from app.db.models_project import Project, ProjectMembership, ProjectRole  # noqa: E402
 from app.db.models_vulnerability import (  # noqa: E402
     Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
 )
@@ -593,6 +595,104 @@ def s13_worth_a_look(c: Ctx, sc):
            "'Review' takes one into your In review list.")
 
 
+DISCUSSION_USERS = (("eval-ana", "Ana Ortiz"), ("eval-ben", "Ben Okafor"))
+
+
+def discussion_users(c: Ctx) -> dict[str, tuple[User, str]]:
+    """Two analysts to talk to, members of this project.  Accounts outlive a
+    --wipe (only the project is deleted), so they are reused; the password is
+    reset on every run and printed once in the guide so either can log in and
+    see the same conversation from the other side."""
+    out: dict[str, tuple[User, str]] = {}
+    for username, full_name in DISCUSSION_USERS:
+        password = secrets.token_urlsafe(12)
+        u = c.db.query(User).filter(User.username == username).first()
+        if u is None:
+            u = User(username=username, email=f"{username}@eval.test", full_name=full_name,
+                     role=UserRole.MEMBER, is_active=True, is_verified=True, created_by_id=c.owner.id,
+                     hashed_password=get_password_hash(password))
+            c.db.add(u)
+        else:
+            u.hashed_password = get_password_hash(password)
+            u.is_active = True
+        u.must_change_password = False
+        u.failed_login_attempts = 0
+        u.locked_until = None
+        c.db.flush()
+        c.db.add(ProjectMembership(project_id=c.pid, user_id=u.id, role=ProjectRole.ANALYST.value))
+        out[username] = (u, password)
+    c.db.flush()
+    return out
+
+
+def message(c: Ctx, author: User, body: str, *, created: datetime, parent=None, host=None, finding=None,
+            status=NoteStatus.OPEN, note_type=None):
+    """One message in a thread by ANY author — `annotation()` always writes as
+    the owner.  Exactly one target: a host or a finding.  A root is its own
+    thread root (what the API's create paths store)."""
+    a = models.Annotation(host_id=host.id if host else None, finding_id=finding.id if finding else None,
+                          user_id=author.id, body=body, status=status, note_type=note_type,
+                          parent_id=parent.id if parent else None)
+    a.created_at = created
+    c.db.add(a)
+    c.db.flush()
+    a.thread_root_id = (parent.thread_root_id or parent.id) if parent else a.id
+    c.db.flush()
+    return a
+
+
+def s14_discussions(c: Ctx, sc):
+    users = discussion_users(c)
+    ana, ana_pw = users["eval-ana"]
+    ben, ben_pw = users["eval-ben"]
+    me = c.owner
+
+    h = host(c, "s14", "10.77.2.14", "s14-discussion.eval.test", sc, os_name="Windows Server 2019",
+             os_family="Windows")
+    p = port(c, h, sc, 445, "microsoft-ds")
+    port(c, h, sc, 3389, "ms-wbt-server")
+    vuln(c, h, sc, "SMB signing not required", VulnerabilitySeverity.MEDIUM, port_obj=p, plugin_id="s14-smb")
+
+    # A host-note thread: a question, a back-and-forth, then consecutive
+    # messages from the same person, and a reply that quotes an earlier one.
+    q = message(c, ana, "Is SMB signing off on purpose here? The GPO says it should be required.",
+                created=ago(hours=30), host=h, note_type="question")
+    r1 = message(c, me, "Not on purpose as far as I know — this box was built before the GPO landed.",
+                 created=ago(hours=29), parent=q, host=h)
+    r2 = message(c, ben, "Confirmed with nxc: signing:False on 445. Relay to the file server works from the user VLAN.",
+                 created=ago(hours=26), parent=r1, host=h)
+    message(c, ben, "Screenshot of the relay is on the finding.", created=ago(hours=26, minutes=-2),
+            parent=r2, host=h)
+    message(c, me, "Thanks both. I'll raise it as a finding and tag the platform owner.",
+            created=ago(hours=3), parent=r1, host=h)
+    message(c, ana, "Long message to check wrapping: " + "the relay path goes through the print spooler, "
+            "then the file share, then the backup service account which is a domain admin — " * 3,
+            created=ago(hours=2), parent=q, host=h)
+
+    # A finding's comment thread.
+    f = Finding(project_id=c.pid, title="s14 — SMB signing not required on file servers",
+                severity="high", status="open", source="manual", owner_id=me.id, created_by_id=me.id)
+    c.db.add(f)
+    c.db.flush()
+    c.db.add(FindingHost(finding_id=f.id, host_id=h.id, host_status=FindingHostStatus.OPEN.value))
+    c1 = message(c, me, "Opening this from the s14 host thread. Ben, can you attach the relay evidence?",
+                 created=ago(hours=3), finding=f)
+    c2 = message(c, ben, "Attached in the host thread; the relay reached \\\\fs01\\finance as the backup account.",
+                 created=ago(hours=2, minutes=30), parent=c1, finding=f)
+    message(c, ana, "Severity: high, not critical — the account can't log on interactively.",
+            created=ago(hours=2), parent=c2, finding=f)
+    message(c, me, "Agreed, keeping it high.", created=ago(minutes=40), parent=c1, finding=f)
+
+    c.note("s14", "Discussions read like text messages",
+           f"/hosts/{h.id} → Notes: YOUR messages ('You') sit on the RIGHT in the tinted bubble; Ana's and "
+           "Ben's on the LEFT. Ben's two messages in a row; Ben's reply to your message quotes it "
+           "('Replying to …'); Ana's long message wraps inside its bubble.",
+           f"/findings/{f.id} → Comments: the same layout, oldest first.",
+           f"See it from the other side: log in as eval-ana / {ana_pw} or eval-ben / {ben_pw} "
+           "(project analysts; passwords are reset on every run; 2FA enrolment applies if REQUIRE_2FA is on). "
+           "Then THEIR messages are on the right.")
+
+
 # ---------------------------------------------------------------------------
 
 def seed(db, name: str, owner: User):
@@ -646,6 +746,7 @@ def seed(db, name: str, owner: User):
     s11_tests(c, scans["nmap"])
     s12_worst_case(c, scans["nmap"])
     s13_worth_a_look(c, scans["nmap"])
+    s14_discussions(c, scans["nmap"])
     c.host_count = len(c.hosts)
     db.commit()
 
