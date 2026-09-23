@@ -1,0 +1,10 @@
+[2026-09-23 05:18:34]> /usr/bin/netexec smb 172.30.77.10 -u guest -p  --shares --no-write-check -t 1 --timeout 10 --no-progress --log netexec.log
+
+2026-09-23 05:18:35 | smb.py:299 - INFO - SMB                      172.30.77.10    445    LABSMB           [*] Unix - Samba (name:LABSMB) (domain:LABSMB) (signing:False) (SMBv1:None) (Null Auth:True)
+2026-09-23 05:18:35 | smb.py:458 - INFO - SMB                      172.30.77.10    445    LABSMB           [+] LABSMB\guest: (Guest)
+2026-09-23 05:18:35 | smb.py:1487 - INFO - SMB                      172.30.77.10    445    LABSMB           [*] Enumerated shares
+2026-09-23 05:18:35 | smb.py:1488 - INFO - SMB                      172.30.77.10    445    LABSMB           Share           Permissions     Remark
+2026-09-23 05:18:35 | smb.py:1489 - INFO - SMB                      172.30.77.10    445    LABSMB           -----           -----------     ------
+2026-09-23 05:18:35 | smb.py:1497 - INFO - SMB                      172.30.77.10    445    LABSMB           public          READ            Parser lab read-only public share
+2026-09-23 05:18:35 | smb.py:1497 - INFO - SMB                      172.30.77.10    445    LABSMB           restricted                      Parser lab authenticated-only share
+2026-09-23 05:18:35 | smb.py:1497 - INFO - SMB                      172.30.77.10    445    LABSMB           IPC$                            IPC Service (Parser Lab Samba)

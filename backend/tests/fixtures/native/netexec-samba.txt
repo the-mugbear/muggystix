@@ -1,0 +1,31 @@
+[*] First time use detected
+[*] Creating home directory structure
+[*] Creating missing folder logs
+[*] Creating missing folder modules
+[*] Creating missing folder workspaces
+[*] Creating missing folder obfuscated_scripts
+[*] Creating missing folder screenshots
+[*] Creating missing folder logs/sam
+[*] Creating missing folder logs/lsa
+[*] Creating missing folder logs/ntds
+[*] Creating missing folder logs/dpapi
+[*] Creating default workspace
+[*] Initializing WINRM protocol database
+[*] Initializing SSH protocol database
+[*] Initializing LDAP protocol database
+[*] Initializing SMB protocol database
+[*] Initializing FTP protocol database
+[*] Initializing VNC protocol database
+[*] Initializing WMI protocol database
+[*] Initializing RDP protocol database
+[*] Initializing MSSQL protocol database
+[*] Initializing NFS protocol database
+[*] Copying default configuration file
+SMB                      172.30.77.10    445    LABSMB           [*] Unix - Samba (name:LABSMB) (domain:LABSMB) (signing:False) (SMBv1:None) (Null Auth:True)
+SMB                      172.30.77.10    445    LABSMB           [+] LABSMB\guest: (Guest)
+SMB                      172.30.77.10    445    LABSMB           [*] Enumerated shares
+SMB                      172.30.77.10    445    LABSMB           Share           Permissions     Remark
+SMB                      172.30.77.10    445    LABSMB           -----           -----------     ------
+SMB                      172.30.77.10    445    LABSMB           public          READ            Parser lab read-only public share
+SMB                      172.30.77.10    445    LABSMB           restricted                      Parser lab authenticated-only share
+SMB                      172.30.77.10    445    LABSMB           IPC$                            IPC Service (Parser Lab Samba)

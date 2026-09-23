@@ -184,27 +184,54 @@ class RdapParser:
         warnings: list[str] = []
 
         with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-            for lineno, line in enumerate(fh, start=1):
+            content = fh.read()
+
+        # v2.387.0 — a whole-file JSON document first: an RDAP response saved
+        # as the server sends it (``curl … > ip.json``, pretty-printed) or an
+        # array of them.  It used to be read one line at a time, so a
+        # pretty-printed response became 189 "invalid JSON" lines, no
+        # netblock, and a job that still said it succeeded.  One object per
+        # line (the helper script's NDJSON) is the fallback.
+        entries: list[tuple[str, Any]] = []
+        try:
+            whole = json.loads(content)
+        except json.JSONDecodeError:
+            whole = None
+        if isinstance(whole, dict):
+            entries = [("document", whole)]
+        elif isinstance(whole, list):
+            entries = [(f"item {i}", item) for i, item in enumerate(whole, start=1)]
+        else:
+            for lineno, line in enumerate(content.splitlines(), start=1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    record = json.loads(line)
+                    entries.append((f"line {lineno}", json.loads(line)))
                 except json.JSONDecodeError as exc:
                     skipped += 1
                     if len(warnings) < 5:
                         warnings.append(f"line {lineno}: invalid JSON ({exc})")
-                    continue
-                if not isinstance(record, dict):
-                    skipped += 1
-                    continue
-                if self._ingest(record, project_id, scan.id):
-                    written += 1
-                else:
-                    skipped += 1
-                    if len(warnings) < 5:
-                        q = record.get("query") or record.get("handle") or "?"
-                        warnings.append(f"line {lineno}: no usable network range for {q}")
+
+        for where, record in entries:
+            if not isinstance(record, dict):
+                skipped += 1
+                continue
+            if self._ingest(record, project_id, scan.id):
+                written += 1
+            else:
+                skipped += 1
+                if len(warnings) < 5:
+                    q = record.get("query") or record.get("handle") or "?"
+                    warnings.append(f"{where}: no usable network range for {q}")
+
+        if written == 0 and skipped:
+            # Nothing attributed and something rejected: a failure, not an
+            # empty success.
+            raise ValueError(
+                f"RDAP parser found no usable network range in {filename}: "
+                + ("; ".join(warnings) or "no RDAP records")
+            )
 
         self.db.commit()
 

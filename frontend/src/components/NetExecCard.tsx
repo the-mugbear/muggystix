@@ -63,19 +63,30 @@ const normalizeShares = (shares: unknown): ShareEntry[] => {
       if (s && typeof s === 'object') {
         const obj = s as Record<string, unknown>;
         const name = obj.name ?? obj.share ?? obj.Share;
+        // v5.274.0 — the --shares table is stored as {name, permissions,
+        // remark}: read as words ("READ · Parser lab share"), not as JSON.
+        if ('permissions' in obj || 'remark' in obj) {
+          const words = [obj.permissions || 'no access', obj.remark].filter(Boolean).map(String);
+          return { name: name != null ? String(name) : `Share ${i + 1}`, detail: words.join(' · ') };
+        }
         return {
           name: name != null ? String(name) : `Share ${i + 1}`,
-          detail: name != null ? describe(s) : describe(s),
+          detail: describe(s),
         };
       }
       return { name: String(s), detail: null };
     });
   }
   if (typeof shares === 'object') {
-    return Object.entries(shares as Record<string, unknown>).map(([k, v]) => ({
-      name: k,
-      detail: describe(v),
-    }));
+    return Object.entries(shares as Record<string, unknown>).map(([k, v]) => {
+      // spider_plus: {share: {path: {size, mtime…}}} — say how many files.
+      if (v && typeof v === 'object' && !Array.isArray(v)
+        && Object.values(v as Record<string, unknown>).every((f) => f && typeof f === 'object')) {
+        const n = Object.keys(v as Record<string, unknown>).length;
+        return { name: k, detail: `${n} file${n === 1 ? '' : 's'} listed` };
+      }
+      return { name: k, detail: describe(v) };
+    });
   }
   return [{ name: String(shares), detail: null }];
 };

@@ -1,0 +1,89 @@
+[
+   {
+      "end_time" : "2026-09-23 05:18:39 +0000",
+      "host" : "172.30.77.20",
+      "ip" : "172.30.77.20",
+      "port" : 8080,
+      "server_banner" : null,
+      "start_time" : "2026-09-23 05:18:35 +0000",
+      "vulnerabilities" : [
+         {
+            "id" : "999997",
+            "method" : "GET",
+            "msg" : "/robots.txt: Entry '/public/' is returned a non-forbidden or redirect HTTP code (200).",
+            "references" : "https://portswigger.net/kb/issues/00600600_robots-txt-file",
+            "url" : "/public/"
+         },
+         {
+            "id" : "999996",
+            "method" : "GET",
+            "msg" : "contains 1 entry which should be manually viewed.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Glossary/Robots.txt",
+            "url" : "/robots.txt"
+         },
+         {
+            "id" : "013587",
+            "method" : "GET",
+            "msg" : "Suggested security header missing: strict-transport-security.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security",
+            "url" : "/"
+         },
+         {
+            "id" : "013587",
+            "method" : "GET",
+            "msg" : "Suggested security header missing: referrer-policy.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy",
+            "url" : "/"
+         },
+         {
+            "id" : "013587",
+            "method" : "GET",
+            "msg" : "Suggested security header missing: permissions-policy.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy",
+            "url" : "/"
+         },
+         {
+            "id" : "013587",
+            "method" : "GET",
+            "msg" : "Suggested security header missing: content-security-policy.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP",
+            "url" : "/"
+         },
+         {
+            "id" : "013587",
+            "method" : "GET",
+            "msg" : "Suggested security header missing: x-content-type-options.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options",
+            "url" : "/"
+         },
+         {
+            "id" : "600720",
+            "method" : "HEAD",
+            "msg" : "SimpleHTTP/0.6 appears to be outdated (current is at least 1.2).",
+            "references" : "",
+            "url" : "/"
+         },
+         {
+            "id" : "001811",
+            "method" : "GET",
+            "msg" : "This might be interesting.",
+            "references" : "",
+            "url" : "/public/"
+         },
+         {
+            "id" : "007342",
+            "method" : "GET",
+            "msg" : "X-Frame-Options header is deprecated and was replaced with the Content-Security-Policy HTTP header with the frame-ancestors directive.",
+            "references" : "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/X-Frame-Options",
+            "url" : "/"
+         },
+         {
+            "id" : "007352",
+            "method" : "GET",
+            "msg" : "The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type.",
+            "references" : "https://www.netsparker.com/web-vulnerability-scanner/vulnerabilities/missing-content-type-header/",
+            "url" : "/"
+         }
+      ]
+   }
+]

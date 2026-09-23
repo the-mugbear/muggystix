@@ -1,0 +1,2 @@
+Protocol,Port,Domain,Request Status,Screenshot Path, Source Path
+https,443,192.168.7.245,Successful,/work/runs/20260923T005237Z-eyewitness-file-198cefd3/eyewitness/screens/https.192.168.7.245.png,/work/runs/20260923T005237Z-eyewitness-file-198cefd3/eyewitness/source/https.192.168.7.245.txt

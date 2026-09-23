@@ -1,0 +1,7 @@
+"Nikto - v2.6.1/"
+"192.168.7.222","192.168.7.222","80","","","",""
+"192.168.7.222","192.168.7.222","80","https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy","GET","/","Suggested security header missing: referrer-policy."
+"192.168.7.222","192.168.7.222","80","https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy","GET","/","Suggested security header missing: permissions-policy."
+"192.168.7.222","192.168.7.222","80","https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security","GET","/","Suggested security header missing: strict-transport-security."
+"192.168.7.222","192.168.7.222","80","https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP","GET","/","Suggested security header missing: content-security-policy."
+"192.168.7.222","192.168.7.222","80","https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options","GET","/","Suggested security header missing: x-content-type-options."

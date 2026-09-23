@@ -28,11 +28,16 @@ logger = logging.getLogger(__name__)
 # anchored, so the line is normalised to start at "PROTO IP PORT" first.
 _ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]')
 _LINE_HEAD = re.compile(r'(?<![\w.-])[A-Za-z][A-Za-z0-9]*\s+\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+\[')
+# v2.387.0 — a row of a table nxc prints under a "[*]" line (the --shares
+# table) has no "[" after the hostname, so it needs its own anchor.
+_TABLE_HEAD = re.compile(r'(?<![\w.-])[A-Z][A-Za-z0-9]*\s+\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+')
+# "SMB  172.30.77.10  445  LABSMB  public   READ   Parser lab read-only share"
+_TABLE_ROW = re.compile(r'^(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+(?!\[)(.*)$')
 
 
 def _normalise_line(line: str) -> str:
     line = _ANSI_ESCAPE.sub('', line).strip()
-    head = _LINE_HEAD.search(line)
+    head = _LINE_HEAD.search(line) or _TABLE_HEAD.search(line)
     return line[head.start():] if head else line
 
 
@@ -87,6 +92,7 @@ class NetexecParser:
         """Parse netexec output file"""
         self._project_id = kwargs.get("project_id")
         self._hosts_recorded = 0
+        self._filename = filename
         logger.info(f"Starting netexec parse of {filename}")
 
         # Create scan record
@@ -141,9 +147,11 @@ class NetexecParser:
             raise
 
     def _is_json_content(self, content: str) -> bool:
-        """Check if content is JSON format"""
+        """Check if content is JSON format.  A console capture can start with
+        "[*] First time use detected": that is a status marker, not an array
+        (it used to log "Failed to parse JSON" before falling back)."""
         content = content.strip()
-        return content.startswith('{') or content.startswith('[')
+        return content.startswith('{') or (content.startswith('[') and not re.match(r'\[[*+!-]\]', content))
 
     def _parse_json_output(self, content: str, scan_id: int):
         """Parse JSON output from netexec spider_plus or similar modules"""
@@ -161,6 +169,16 @@ class NetexecParser:
                         for ip_or_share, share_data in value.items():
                             if self._looks_like_ip(ip_or_share):
                                 self._process_json_host_data(ip_or_share, share_data, scan_id)
+                # v2.387.0 — spider_plus writes one file per host,
+                # "<ip>.json", holding {share: {path: {size, mtime…}}} with the
+                # address ONLY in the file name.  Nothing inside is an IP, so
+                # the file failed with "no host lines".
+                if not self._hosts_recorded:
+                    ip_match = re.search(r'(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?!\.?\d)', self._filename or '')
+                    if ip_match and self._looks_like_ip(ip_match.group(1)) and all(
+                        isinstance(v, dict) for v in data.values()
+                    ):
+                        self._process_json_host_data(ip_match.group(1), data, scan_id)
 
         except json.JSONDecodeError as e:
             logger.warning(
@@ -179,11 +197,38 @@ class NetexecParser:
         # auth success (the banner always comes first) and every service after
         # the first (SMB 445 recorded, WinRM 5985 lost).
         observations: Dict[str, List[Dict[str, Any]]] = {}
+        # v2.387.0 — the --shares table: "[*] Enumerated shares", a header
+        # ("Share  Permissions  Remark"), a rule, then one row per share, all
+        # prefixed "SMB ip port host".  Only the heading line matched a
+        # pattern, so the shares were dropped.  The columns are cut at the
+        # header's offsets: an empty Permissions cell is just spaces.
+        shares: Dict[str, List[Dict[str, Any]]] = {}
+        share_columns: Dict[str, Tuple[int, int]] = {}
 
         for line in lines:
             line = _normalise_line(line)
             if not line or line.startswith('#'):
                 continue
+
+            row = _TABLE_ROW.match(line)
+            if row:
+                ip, rest = row.group(2), row.group(4)
+                if rest.startswith('Share') and 'Permissions' in rest:
+                    share_columns[ip] = (rest.index('Permissions'), rest.index('Remark') if 'Remark' in rest else len(rest))
+                    shares.setdefault(ip, [])
+                    continue
+                if ip in share_columns:
+                    if set(rest.replace(' ', '')) <= {'-'}:
+                        continue
+                    perm_at, remark_at = share_columns[ip]
+                    name = rest[:perm_at].strip()
+                    if name:
+                        shares[ip].append({
+                            'name': name,
+                            'permissions': rest[perm_at:remark_at].strip() or None,
+                            'remark': rest[remark_at:].strip() or None,
+                        })
+                    continue
 
             # Try different patterns
             host_data = None
@@ -215,6 +260,8 @@ class NetexecParser:
             primary = next(
                 (o for o in ip_observations if o.get('os_name')), ip_observations[0]
             )
+            if shares.get(primary['ip_address']):
+                primary['shares'] = shares[primary['ip_address']]
             host = self._process_host_with_confidence(primary, scan_id, primary['raw_line'])
             seen_ports = {primary.get('port')}
             for observation in ip_observations:
@@ -342,6 +389,9 @@ class NetexecParser:
 
         host_data = {
             'ip_address': ip_address,
+            # spider_plus is an SMB module: the result is the host's SMB service.
+            'protocol': 'smb',
+            'port': 445,
             'shares': data if isinstance(data, dict) else {},
             'confidence_factors': {
                 'file_enumeration': True,

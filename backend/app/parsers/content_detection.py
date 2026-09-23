@@ -340,6 +340,11 @@ def looks_like_naabu(sample: bytes, filename: str) -> bool:
     # configurations and other variants.
     if "msg" in rec and "severity" in rec:
         return False
+    # v2.387.0 — testssl.sh's flat JSON ({id, ip, port, severity, finding})
+    # also has ip + port, so a real testssl file matched naabu as well and
+    # the review asked for a choice.  ``finding`` + ``severity`` is testssl's.
+    if "finding" in rec and "severity" in rec:
+        return False
     # Exclude httpx: its records carry web-fingerprint markers naabu
     # never emits.
     if _has_any(rec, ("url", "tech", "webserver", "title")):
@@ -603,15 +608,28 @@ def looks_like_gnmap(sample: bytes) -> bool:
             return True
     return host_lines >= 1
 
+_MASSCAN_LIST_ROW = re.compile(
+    r"^(?:open|closed)\s+(?:tcp|udp|sctp)\s+\d{1,5}\s+\d{1,3}(?:\.\d{1,3}){3}\s+\d+$"
+)
+
+
 def looks_like_masscan_list(sample: bytes) -> bool:
-    """Detect masscan list output (``Timestamp: … Host: … Ports: …``)."""
+    """Detect masscan list output.
+
+    ``-oL`` writes ``#masscan`` (no space) then ``open tcp 443 10.0.0.5
+    1790124714`` rows and ``# end``.  v2.387.0 — only ``# masscan`` (with a
+    space) and the greppable ``Timestamp: … Host: … Ports:`` shape were
+    recognised, so every real ``-oL`` file came back "not recognised".
+    """
     text = sample.decode("utf-8", errors="ignore")
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("Timestamp:") and "Host:" in stripped and "Ports:" in stripped:
             return True
         # Comment header unique to masscan output files
-        if stripped.startswith("# Masscan") or stripped.startswith("# masscan"):
+        if stripped.lower().startswith(("# masscan", "#masscan")):
+            return True
+        if _MASSCAN_LIST_ROW.match(stripped):
             return True
     return False
 

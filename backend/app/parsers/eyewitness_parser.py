@@ -95,6 +95,37 @@ def _safe_extract_zip_member(
     return written
 
 
+_DEFAULT_PORT = {"http": 80, "https": 443}
+
+
+def _from_requests_csv(record: Dict[str, Any]) -> Dict[str, Any]:
+    """A row of EyeWitness's own ``Requests.csv`` as the fields the writer reads.
+
+    EyeWitness (``-f``) writes ``Protocol,Port,Domain,Request Status,
+    Screenshot Path, Source Path`` — no URL column, and a space before
+    "Source Path".  v2.387.0: the writer needed a URL, skipped every row, and
+    the real file imported with nothing.  Rows that already carry a URL (the
+    JSON records, other CSV shapes) pass through unchanged.
+    """
+    clean = {str(k).strip(): v for k, v in record.items() if k is not None}
+    if clean.get("url") or clean.get("URL") or clean.get("remote_system"):
+        return record
+    domain = str(clean.get("Domain") or "").strip()
+    protocol = str(clean.get("Protocol") or "").strip().lower()
+    if not domain or protocol not in _DEFAULT_PORT:
+        return record
+    port = str(clean.get("Port") or "").strip()
+    netloc = domain if not port or port == str(_DEFAULT_PORT[protocol]) else f"{domain}:{port}"
+    return {
+        **clean,
+        "url": f"{protocol}://{netloc}",
+        "protocol": protocol,
+        "port": port or None,
+        "screenshot_path": clean.get("Screenshot Path") or None,
+        "request_status": clean.get("Request Status") or None,
+    }
+
+
 def _eyewitness_parse_stats(skipped: int) -> Dict[str, Any]:
     """Shared parse-stats shape for all three EyeWitness parse paths
     (json, zip bundle, csv).  Persisted onto the IngestionJob row by
@@ -174,6 +205,7 @@ class EyewitnessParser:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
 
         report_json_path: Optional[Path] = None
+        report_csv_path: Optional[Path] = None
         extracted_png_count = 0
 
         with zipfile.ZipFile(file_path) as zf:
@@ -224,6 +256,17 @@ class EyewitnessParser:
                         total_cap=_EYEWITNESS_MAX_TOTAL_UNCOMPRESSED,
                     )
                     report_json_path = dst
+                elif lower == "requests.csv":
+                    # v2.387.0 — what EyeWitness itself writes next to
+                    # screens/ and source/ (it has no JSON report).
+                    dst = screenshot_dir.parent / f"report-{scan.id}.csv"
+                    actual_total += _safe_extract_zip_member(
+                        zf, info, dst,
+                        per_file_cap=_EYEWITNESS_MAX_PER_FILE_UNCOMPRESSED,
+                        total_so_far=actual_total,
+                        total_cap=_EYEWITNESS_MAX_TOTAL_UNCOMPRESSED,
+                    )
+                    report_csv_path = dst
                 elif lower.endswith((".png", ".jpg", ".jpeg")):
                     dst = screenshot_dir / safe_name
                     actual_total += _safe_extract_zip_member(
@@ -234,12 +277,19 @@ class EyewitnessParser:
                     )
                     extracted_png_count += 1
 
-        if report_json_path is None:
-            raise ValueError("EyeWitness zip bundle contained no .json report")
-
-        written, skipped = self._load_and_write_json(
-            report_json_path, scan, screenshot_dir_rel=str(scan.id),
-        )
+        if report_json_path is not None:
+            written, skipped = self._load_and_write_json(
+                report_json_path, scan, screenshot_dir_rel=str(scan.id),
+            )
+        elif report_csv_path is not None:
+            written, skipped = self._load_and_write_csv(
+                report_csv_path, scan, screenshot_dir_rel=str(scan.id),
+            )
+        else:
+            raise ValueError(
+                "EyeWitness zip bundle contained no report: expected the Requests.csv "
+                "EyeWitness writes (or a .json report) beside the screenshots"
+            )
 
         self.db.commit()
         self._finalize(scan)
@@ -275,24 +325,7 @@ class EyewitnessParser:
         self.db.add(scan)
         self.db.flush()
 
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            reader = csv.DictReader(f)
-            written = 0
-            skipped = 0
-            for row in reader:
-                try:
-                    host_id = self._write_row(row, scan, screenshot_dir_rel=None, csv_mode=True)
-                    if host_id is None:
-                        skipped += 1
-                    else:
-                        written += 1
-                except Exception as exc:
-                    logger.warning("EyeWitness CSV row skipped: %s", exc)
-                    skipped += 1
-
-        # v2.12.2: write HostScanHistory rows so /agent/recon/summary
-        # counts EyeWitness ingests against the per-session host total.
-        record_hosts_in_scan(self.db, scan.id, self._observed)
+        written, skipped = self._load_and_write_csv(Path(file_path), scan, screenshot_dir_rel=None)
         self.db.commit()
         self._finalize(scan)
         logger.info("EyeWitness CSV %s: %d rows written, %d skipped", filename, written, skipped)
@@ -316,6 +349,30 @@ class EyewitnessParser:
             correlate_scan(self.db, scan.id)
         except Exception as exc:
             logger.warning("EyeWitness scan %s correlation failed: %s", scan.id, exc)
+
+    def _load_and_write_csv(
+        self, path: Path, scan: models.Scan, screenshot_dir_rel: Optional[str],
+    ) -> tuple[int, int]:
+        written = 0
+        skipped = 0
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for row in csv.DictReader(f):
+                try:
+                    host_id = self._write_row(
+                        row, scan, screenshot_dir_rel=screenshot_dir_rel,
+                        csv_mode=screenshot_dir_rel is None,
+                    )
+                    if host_id is None:
+                        skipped += 1
+                    else:
+                        written += 1
+                except Exception as exc:
+                    logger.warning("EyeWitness CSV row skipped: %s", exc)
+                    skipped += 1
+        # v2.12.2: write HostScanHistory rows so /agent/recon/summary
+        # counts EyeWitness ingests against the per-session host total.
+        record_hosts_in_scan(self.db, scan.id, self._observed)
+        return written, skipped
 
     def _load_and_write_json(
         self, path: Path, scan: models.Scan, screenshot_dir_rel: Optional[str],
@@ -363,6 +420,7 @@ class EyewitnessParser:
         Host row) — caller should count it as written but not as a
         history candidate.
         """
+        record = _from_requests_csv(record)
         url = record.get("url") or record.get("URL") or record.get("remote_system")
         if not url:
             return None
@@ -414,10 +472,12 @@ class EyewitnessParser:
         # What THIS record proves about the host: a response code means it
         # answered (up); a capture with no code is an attempt whose outcome is
         # unknown, and stays unknown rather than borrowing the inventory state.
+        # Requests.csv carries no code but says "Successful" for a capture.
+        answered = bool(response_code) or str(record.get("request_status") or "").lower() == "successful"
         self._observed.note(
             host_row,
             created=host_created,
-            state="up" if response_code else None,
+            state="up" if answered else None,
         )
 
         existing = (

@@ -56,6 +56,12 @@ def looks_like_testssl(sample: bytes, filename: str) -> bool:
     text = text.lstrip()
     # A JSON array of findings, or a single finding object.
     snippet = text[:20000]
+    # v2.387.0 — ``--jsonfile-pretty``: one document whose findings are
+    # nested under "scanResult"; the first complete object is the whole
+    # file, so the probe below never saw a finding.  Recognised by its
+    # top-level vocabulary.
+    if text.startswith("{") and '"scanResult"' in snippet and '"Invocation"' in snippet:
+        return True
     try:
         # Only need the first object; tolerate a leading '['.
         start = snippet.find("{")
@@ -83,6 +89,34 @@ def looks_like_testssl(sample: bytes, filename: str) -> bool:
         "protocols", "engine_problem", "service", "pre_128cipher",
     }
     return has_core and (testssl_id or "id" in keys and "ip" in keys and "finding" in keys and "url" not in keys)
+
+
+def _flatten_pretty(rec: Any):
+    """``--jsonfile-pretty`` nests the findings: ``{scanResult: [{targetHost,
+    ip, port, protocols: [...], serverDefaults: [...], …}]}``, each finding
+    ({id, severity, finding}) without the target, which sits on the parent.
+    Yield them in the flat form (``ip`` "host/1.2.3.4", ``port``) the rest of
+    the parser reads.  A flat record passes through.
+
+    v2.387.0 — the pretty file was read as one record with no ``ip``, and
+    imported as "0 TLS targets", reported as a success.
+    """
+    if not isinstance(rec, dict) or "targetHost" not in rec and "scanResult" not in rec:
+        yield rec
+        return
+    targets = rec.get("scanResult") if isinstance(rec.get("scanResult"), list) else [rec]
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        host = str(target.get("targetHost") or "").strip()
+        ip = str(target.get("ip") or "").strip()
+        where = f"{host}/{ip}" if host and ip and host != ip else (ip or host)
+        for section in target.values():
+            if not isinstance(section, list):
+                continue
+            for finding in section:
+                if isinstance(finding, dict) and "id" in finding:
+                    yield {**finding, "ip": where, "port": target.get("port")}
 
 
 def _split_ip(raw_ip: str) -> Tuple[str, Optional[str]]:
@@ -123,7 +157,8 @@ class TestsslParser:
         # Fold the flat finding array into per-(ip, port) targets.
         targets: Dict[Tuple[str, Optional[str], int], Dict[str, Any]] = {}
         record_count = 0
-        for rec in iter_json_records(file_path, tool_label="testssl JSON"):
+        records = iter_json_records(file_path, array_keys=("scanResult",), tool_label="testssl JSON")
+        for rec in (flat for target in records for flat in _flatten_pretty(target)):
             if not isinstance(rec, dict):
                 continue
             record_count += 1
@@ -157,6 +192,10 @@ class TestsslParser:
 
         if record_count == 0:
             raise ValueError("testssl file contained no parseable findings")
+        if not targets:
+            # Findings, but none naming a target: not a result to report as
+            # a clean import of nothing.
+            raise ValueError("testssl file contained findings but no target address")
 
         scan = models.Scan(
             filename=filename, scan_type="web_vulnerability_scan", tool_name="testssl",

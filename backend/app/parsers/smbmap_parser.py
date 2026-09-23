@@ -12,7 +12,10 @@ from app.parsers.streaming_json import iter_json_records
 from app.services.host_deduplication_service import HostDeduplicationService
 
 
-HOST_PATTERN = re.compile(r"^\[\+\]\s+((?:\d{1,3}\.){3}\d{1,3})", re.IGNORECASE)
+# "[+] 10.0.0.5:445  Name: …" (older) and, since 1.10,
+# "[+] IP: 172.30.77.10:445\tName: …\tStatus: NULL Session" (v2.387.0 — the
+# "IP:" label made every real SMBMap 1.10 report fail with "0 hosts").
+HOST_PATTERN = re.compile(r"^\[\+\]\s+(?:IP:\s*)?((?:\d{1,3}\.){3}\d{1,3})(?::(\d{1,5}))?", re.IGNORECASE)
 
 
 class SMBMapParser:
@@ -49,6 +52,8 @@ class SMBMapParser:
                     {"port_number": 445, "protocol": "tcp", "state": "open", "service_name": "smb"}
                 )
         else:
+            # Text mode splits on "\r" as well as "\n", so the progress spinner
+            # ("[\] Checking for open ports...\r\r\r") becomes separate lines.
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
                 for line in handle:
                     match = HOST_PATTERN.match(line.strip())
@@ -57,8 +62,9 @@ class SMBMapParser:
                     ip_address = extract_first_ip(match.group(1))
                     if not ip_address:
                         continue
+                    port = int(match.group(2)) if match.group(2) else 445
                     hosts.setdefault(ip_address, []).append(
-                        {"port_number": 445, "protocol": "tcp", "state": "open", "service_name": "smb"}
+                        {"port_number": port, "protocol": "tcp", "state": "open", "service_name": "smb"}
                     )
 
         # Fail closed on 0 records — pre-v2.55.0 this returned a

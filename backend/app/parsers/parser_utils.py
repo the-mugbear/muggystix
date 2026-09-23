@@ -474,7 +474,17 @@ def upsert_vulnerability(
     # source-agnostic `has:exploit` / `exploitport:` filters, add an
     # `exploitable: bool = False` param here, set it on the row below, and have
     # that parser compute it (à la nessus_parser._is_exploitable).
+    # v2.387.0 — the id names a CHECK that reports several distinct results
+    # (Nikto 2.6 gives every "Suggested security header missing: X" line the
+    # id 013587): the title is part of the identity, or the five headers
+    # collapse into one row that keeps the last one's name.
+    key_on_title: bool = False,
 ) -> Vulnerability:
+    # v2.387.0 — values are clipped to their columns.  A Nikto message longer
+    # than 200 characters (source_plugin_name is String(200)) raised
+    # StringDataRightTruncation and failed the whole file.
+    title = (title or "")[:500]
+    plugin_id = plugin_id[:50] if plugin_id else plugin_id
     query = db.query(Vulnerability).filter(
         Vulnerability.host_id == host_id,
         Vulnerability.source == source,
@@ -486,6 +496,8 @@ def upsert_vulnerability(
         # different name across rows (e.g. OpenVAS name vs the "OpenVAS
         # finding" fallback).  Matches the Nessus path, which keys on plugin_id.
         query = query.filter(Vulnerability.plugin_id == plugin_id)
+        if key_on_title:
+            query = query.filter(Vulnerability.title == title)
     else:
         # No stable id — fall back to the title as the discriminator.
         query = query.filter(Vulnerability.title == title)
@@ -527,7 +539,7 @@ def upsert_vulnerability(
         severity=severity,
         cvss_score=cvss_score,
         source=source,
-        source_plugin_name=title,
+        source_plugin_name=title[:200],
         host_id=host_id,
         port_id=port_id,
         name_id=name_id,

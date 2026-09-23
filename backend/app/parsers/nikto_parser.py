@@ -37,6 +37,23 @@ TIME_LINE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 HOSTS_TESTED_PATTERN = re.compile(r"^\+\s+\d+\s+host\(s\)\s+tested", re.IGNORECASE)
+# v2.387.0 — lines describing the run or the server, not a finding: they were
+# stored as LOW vulnerabilities ("Platform: Unknown", "Server: openresty",
+# "8234 requests: 4 errors and 11 items reported…").
+RUN_METADATA_PATTERN = re.compile(
+    r"^(?:server|platform|ssl info|message|root page / redirects to)\s*:"
+    r"|^no cgi directories found"
+    r"|^\d+\s+requests?:"
+    r"|^\d+\s+error\(s\)",
+    re.IGNORECASE,
+)
+BRACKET_ID_PATTERN = re.compile(r"^\[(\d+)\]\s+(.*)$")
+OSVDB_ID_PATTERN = re.compile(r"^(OSVDB-\d+):\s*(.*)$", re.IGNORECASE)
+
+
+def _target_of(host_entry: dict) -> dict:
+    """The target fields of a Nikto JSON host object, for its findings."""
+    return {k: host_entry[k] for k in ("ip", "host", "hostname", "port") if host_entry.get(k) is not None}
 
 
 class NiktoParser:
@@ -79,25 +96,51 @@ class NiktoParser:
             tool_label="Nikto JSON",
         )
         for entry in entries:
-            ip_address = extract_first_ip(str(entry.get("ip") or entry.get("targetip") or entry.get("host") or ""))
-            if not ip_address:
+            # v2.387.0 — Nikto's own ``-Format json`` is a list of HOST
+            # objects, each holding its findings under ``vulnerabilities``
+            # ({id, msg, url, method, references}) with the target on the
+            # parent.  The host object used to be recorded as one empty
+            # "Nikto finding" and every real finding was lost.
+            nested = entry.get("vulnerabilities")
+            if isinstance(nested, list):
+                for item in nested:
+                    if isinstance(item, dict):
+                        self._record_json_finding(scan, {**_target_of(entry), **item})
                 continue
-            hostname = entry.get("hostname") or entry.get("host")
-            port = self._coerce_port(entry.get("port")) or 80
-            self._record_finding(
-                scan=scan,
-                ip_address=ip_address,
-                hostname=hostname,
-                port=port,
-                title=str(entry.get("msg") or entry.get("id") or "Nikto finding"),
-                description=entry.get("description") or entry.get("msg"),
-                plugin_id=str(entry.get("id") or entry.get("osvdb") or "") or None,
-                cve_id=entry.get("cve"),
-                severity=map_text_severity(entry.get("severity")) if entry.get("severity") else map_text_severity("low"),
-            )
+            self._record_json_finding(scan, entry)
+
+    def _record_json_finding(self, scan: models.Scan, entry: dict) -> None:
+        ip_address = extract_first_ip(str(entry.get("ip") or entry.get("targetip") or entry.get("host") or ""))
+        if not ip_address:
+            return
+        msg = entry.get("msg")
+        if not msg and not entry.get("id"):
+            return  # a target with nothing reported
+        hostname = entry.get("hostname") or entry.get("host")
+        port = self._coerce_port(entry.get("port")) or 80
+        refs = entry.get("references")
+        description = entry.get("description") or msg
+        if refs and isinstance(refs, str) and description and refs not in description:
+            description = f"{description}\nSee: {refs}"
+        self._record_finding(
+            scan=scan,
+            ip_address=ip_address,
+            hostname=hostname,
+            port=port,
+            title=str(msg or entry.get("id")),
+            description=description,
+            plugin_id=str(entry.get("id") or entry.get("osvdb") or "") or None,
+            cve_id=entry.get("cve"),
+            severity=map_text_severity(entry.get("severity")) if entry.get("severity") else map_text_severity("low"),
+        )
 
     def _parse_csv(self, file_path: str, scan: models.Scan) -> None:
         with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as handle:
+            first = handle.readline()
+            handle.seek(0)
+            if first.lstrip('"').lower().startswith("nikto"):
+                self._parse_native_csv(handle, scan)
+                return
             reader = csv.DictReader(handle)
             for row in reader:
                 ip_address = extract_first_ip(str(row.get("ip") or row.get("targetip") or row.get("host") or ""))
@@ -115,6 +158,35 @@ class NiktoParser:
                     cve_id=row.get("cve"),
                     severity=map_text_severity(row.get("severity")) if row.get("severity") else map_text_severity("low"),
                 )
+
+    def _parse_native_csv(self, handle, scan: models.Scan) -> None:
+        """Nikto's own ``-Format csv``: a ``"Nikto - vX/"`` banner and NO
+        header row, then positional columns — hostname, ip, port, reference
+        (a URL in 2.6; ``OSVDB-n`` in older releases), method, uri, message.
+        A row with an empty message is the target line, not a finding.
+        v2.387.0: this was read as a headed CSV, every row found no ``ip``
+        column, and the file imported with nothing."""
+        for row in csv.reader(handle):
+            if len(row) < 7 or row[0].lower().startswith("nikto"):
+                continue
+            hostname, ip_raw, port_raw, ref, _method, uri, message = (c.strip() for c in row[:7])
+            ip_address = extract_first_ip(ip_raw) or extract_first_ip(hostname)
+            if not ip_address or not message:
+                continue
+            plugin_id = ref if ref and not ref.lower().startswith("http") else None
+            title = message if not uri or message.startswith(uri) else f"{uri}: {message}"
+            description = f"{title}\nSee: {ref}" if ref and plugin_id is None else title
+            self._record_finding(
+                scan=scan,
+                ip_address=ip_address,
+                hostname=hostname if hostname and hostname != ip_address else None,
+                port=self._coerce_port(port_raw) or 80,
+                title=title,
+                description=description,
+                plugin_id=plugin_id,
+                cve_id=None,
+                severity=map_text_severity("low"),
+            )
 
     def _observe_time_line(self, match: re.Match) -> None:
         try:
@@ -164,18 +236,29 @@ class NiktoParser:
                 finding_match = FINDING_PATTERN.match(line.strip())
                 if finding_match and current_ip:
                     message = finding_match.group(1).strip()
-                    if message.lower().startswith("target"):
+                    if message.lower().startswith("target") or RUN_METADATA_PATTERN.match(message):
                         continue
+                    # 2.6: "[013587] /: Suggested security header missing: x. See: <url>"
+                    # — the bracketed number is the check id.  Older releases:
+                    # "OSVDB-3092: /admin/: …".  Anything else has no id (the
+                    # text before the first colon used to be taken as one,
+                    # so "/admin/" became a plugin id).
                     plugin_id = None
-                    if ":" in message:
-                        plugin_id = message.split(":", 1)[0].strip()
+                    bracket = BRACKET_ID_PATTERN.match(message)
+                    if bracket:
+                        plugin_id, message = bracket.group(1), bracket.group(2).strip()
+                    else:
+                        osvdb = OSVDB_ID_PATTERN.match(message)
+                        if osvdb:
+                            plugin_id, message = osvdb.group(1), osvdb.group(2).strip()
+                    title, _, ref = message.partition(" See: ")
                     self._record_finding(
                         scan=scan,
                         ip_address=current_ip,
                         hostname=current_hostname,
                         port=current_port,
-                        title=message,
-                        description=message,
+                        title=title.strip(),
+                        description=f"{title.strip()}\nSee: {ref.strip()}" if ref else title.strip(),
                         plugin_id=plugin_id,
                         cve_id=None,
                         severity=map_text_severity("low"),
@@ -222,6 +305,9 @@ class NiktoParser:
             description=description,
             cve_id=cve_id,
             name_id=name_id,
+            # One Nikto id covers several distinct results (013587 = every
+            # missing security header).
+            key_on_title=True,
         )
 
     def _coerce_port(self, value: object) -> Optional[int]:

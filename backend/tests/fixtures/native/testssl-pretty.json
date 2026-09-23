@@ -1,0 +1,333 @@
+{
+          "clientProblem1" : [
+                            {
+                                "id"           : "engine_problem",
+                                "severity"     : "WARN",
+                                "finding"      : "No engine or GOST support via engine with your /usr/bin/openssl"
+                           }
+          ],
+          "Invocation"  : "testssl --quiet --warnings batch --nodns none --connect-timeout 5 --openssl-timeout 5 --protocols --server-defaults --headers --jsonfile-pretty testssl-pretty.json 192.168.7.245:443",
+          "at"          : "MacBookPro:/usr/bin/openssl",
+          "version"     : "3.2.4 ",
+          "openssl"     : "OpenSSL 3.6.3 from Sat Jun 13 17:00:51 2026",
+          "startTime"   : "1790124714",
+          "scanResult"  : [
+          {
+                    "targetHost"      : "192.168.7.245",
+                    "ip"              : "192.168.7.245",
+                    "port"            : "443",
+                    "rDNS"            : "(instructed to skip DNS queries)",
+                    "service"         : "HTTP",
+                    "pretest"           : [
+                            {
+                                "id"           : "pre_128cipher",
+                                "severity"     : "INFO",
+                                "finding"      : "No 128 cipher limit bug"
+                           }
+                    ],
+                    "protocols"         : [
+                            {
+                                "id"           : "SSLv2",
+                                "severity"     : "OK",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "SSLv3",
+                                "severity"     : "OK",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "TLS1",
+                                "severity"     : "INFO",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "TLS1_1",
+                                "severity"     : "INFO",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "TLS1_2",
+                                "severity"     : "OK",
+                                "finding"      : "offered"
+                           },{
+                                "id"           : "TLS1_3",
+                                "severity"     : "OK",
+                                "finding"      : "offered with final"
+                           },{
+                                "id"           : "NPN",
+                                "severity"     : "INFO",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "ALPN_HTTP2",
+                                "severity"     : "OK",
+                                "finding"      : "h2"
+                           },{
+                                "id"           : "ALPN",
+                                "severity"     : "INFO",
+                                "finding"      : "http/1.1"
+                           }
+                    ],
+                    "grease"            : [
+
+                    ],
+                    "ciphers"           : [
+
+                    ],
+                    "serverPreferences" : [
+
+                    ],
+                    "fs"                : [
+
+                    ],
+                    "serverDefaults"    : [
+                            {
+                                "id"           : "TLS_extensions",
+                                "severity"     : "INFO",
+                                "finding"      : "'max fragment length/#1' 'EC point formats/#11' 'application layer protocol negotiation/#16' 'encrypt-then-mac/#22' 'extended master secret/#23' 'supported versions/#43' 'key share/#51' 'renegotiation info/#65281'"
+                           },{
+                                "id"           : "TLS_session_ticket",
+                                "severity"     : "INFO",
+                                "finding"      : "no -- no lifetime advertised"
+                           },{
+                                "id"           : "SSL_sessionID_support",
+                                "severity"     : "INFO",
+                                "finding"      : "yes"
+                           },{
+                                "id"           : "sessionresumption_ticket",
+                                "severity"     : "INFO",
+                                "finding"      : "not supported"
+                           },{
+                                "id"           : "sessionresumption_ID",
+                                "severity"     : "INFO",
+                                "finding"      : "supported"
+                           },{
+                                "id"           : "TLS_timestamp",
+                                "severity"     : "INFO",
+                                "finding"      : "random"
+                           },{
+                                "id"           : "certificate_compression",
+                                "severity"     : "INFO",
+                                "finding"      : "none"
+                           },{
+                                "id"           : "clientAuth",
+                                "severity"     : "INFO",
+                                "finding"      : "none"
+                           },{
+                                "id"           : "cert_numbers",
+                                "severity"     : "INFO",
+                                "finding"      : "1"
+                           },{
+                                "id"           : "cert_signatureAlgorithm",
+                                "severity"     : "OK",
+                                "finding"      : "SHA256 with RSA"
+                           },{
+                                "id"           : "cert_keySize",
+                                "severity"     : "INFO",
+                                "finding"      : "RSA 2048 bits (exponent is 65537)"
+                           },{
+                                "id"           : "cert_keyUsage",
+                                "severity"     : "INFO",
+                                "finding"      : "No server key usage information"
+                           },{
+                                "id"           : "cert_extKeyUsage",
+                                "severity"     : "INFO",
+                                "finding"      : "No server extended key usage information"
+                           },{
+                                "id"           : "cert_serialNumber",
+                                "severity"     : "INFO",
+                                "finding"      : "17514DDCA53347479693EC26B2A9CB0B97463834"
+                           },{
+                                "id"           : "cert_serialNumberLen",
+                                "severity"     : "INFO",
+                                "finding"      : "20"
+                           },{
+                                "id"           : "cert_fingerprintSHA1",
+                                "severity"     : "INFO",
+                                "finding"      : "192C0B05AC0F8F697535134711D0081FA4C7D0DD"
+                           },{
+                                "id"           : "cert_fingerprintSHA256",
+                                "severity"     : "INFO",
+                                "finding"      : "5FE67FD1C3A96159C147339B752D233ADBC47AA958A7D761F3153439ADAE5687"
+                           },{
+                                "id"           : "cert",
+                                "severity"     : "INFO",
+                                "finding"      : "-----BEGIN CERTIFICATE-----\nMIIDrTCCApWgAwIBAgIUF1FN3KUzR0eWk+wmsqnLC5dGODQwDQYJKoZIhvcNAQELBQAwWDELMAkGA1UEBhMCVVMxDjAMBgNVBAgMBVN0YXRlMQ0wCwYDVQQHDARDaXR5MRYwFAYDVQQKDA1OZXR3b3JrTWFwcGVyMRIwEAYDVQQDDAkxMjcuMC4wLjEwHhcNMjYwNDA4MjAxOTQ3WhcNMjcwNDA4MjAxOTQ3WjBYMQswCQYDVQQGEwJVUzEOMAwGA1UECAwFU3RhdGUxDTALBgNVBAcMBENpdHkxFjAUBgNVBAoMDU5ldHdvcmtNYXBwZXIxEjAQBgNVBAMMCTEyNy4wLjAuMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAL0pKyzx+LBVPvTysjNx9jT+QDW+LiyiYlxmuO8Ge4WSj9SH0enQlqrOqXPGSnPelE9P53+YKFC8cT2/KOmWo/3rahGRn0x1C23cZmj8T/4ewb0PLo9kX7xi/I8TWZ3cGU5573shiLqTHlf6RAsHytyelffZci0z+Nro26zHSDWXyurDLqKDyoJxS3YFSODfJ0aiWyK3CmhketHLKjAg3R7+z4a+TBRBAjZ1yh7qcifT7NtNksiBAyPt11yGKapAXIONlwR55sbtrTKNCb9ETLCt7uQIba/GNekxWLZGcdG0cNNHqAiRVQnJAFTsfKZGdP8J/PVQUsWphq6RMG5WfSECAwEAAaNvMG0wHQYDVR0OBBYEFLSIKlsr6DN6pEkKft2O0LMHaDzWMB8GA1UdIwQYMBaAFLSIKlsr6DN6pEkKft2O0LMHaDzWMA8GA1UdEwEB/wQFMAMBAf8wGgYDVR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMA0GCSqGSIb3DQEBCwUAA4IBAQCBPw/TnPW1CgnNc9Y36OGnXjmyK+NjKZs8OccZLbVyenqbjx7CGhj1tCEuRIOqF1bK+wzI0nfhqdqFe8GLtJq+Zzg5R67qW+LHqyiDDnfPX2KdA2kasbPDcVBgxyNlO06eLbGYDtRP8zvu52e+MGSu+HR86RIbOavicO77PaSlqFGYBRUWKRpk4JKPc1aHv1qm9Kx/7LZX7b5Oc+7pATuYS6yyDiMloEGTh0CKNyUDuksJDLaFFlsm5piq9ACzACppILmkpqvvg8a5xay8WBPy3dSbLw9N7iKvi/2SIuX0lmfozjfjIDKcGu38p2sRbZjzYTaTeaB3aIyGvCwst2gI\n-----END CERTIFICATE-----"
+                           },{
+                                "id"           : "cert_commonName",
+                                "severity"     : "OK",
+                                "finding"      : "127.0.0.1"
+                           },{
+                                "id"           : "cert_commonName_wo_SNI",
+                                "severity"     : "INFO",
+                                "finding"      : "127.0.0.1"
+                           },{
+                                "id"           : "cert_subjectAltName",
+                                "severity"     : "INFO",
+                                "finding"      : "localhost 127.0.0.1"
+                           },{
+                                "id"           : "cert_trust",
+                                "severity"     : "HIGH",
+                                "finding"      : "certificate does not match supplied URI"
+                           },{
+                                "id"           : "cert_chain_of_trust",
+                                "severity"     : "CRITICAL",
+                                "finding"      : "failed (self signed)."
+                           },{
+                                "id"           : "cert_certificatePolicies_EV",
+                                "severity"     : "INFO",
+                                "finding"      : "no"
+                           },{
+                                "id"           : "cert_expirationStatus",
+                                "severity"     : "OK",
+                                "finding"      : "197 >= 60 days"
+                           },{
+                                "id"           : "cert_notBefore",
+                                "severity"     : "INFO",
+                                "finding"      : "2026-04-08 20:19"
+                           },{
+                                "id"           : "cert_notAfter",
+                                "severity"     : "OK",
+                                "finding"      : "2027-04-08 20:19"
+                           },{
+                                "id"           : "cert_extlifeSpan",
+                                "severity"     : "OK",
+                                "finding"      : "certificate has no extended life time according to browser forum"
+                           },{
+                                "id"           : "cert_eTLS",
+                                "severity"     : "INFO",
+                                "finding"      : "not present"
+                           },{
+                                "id"           : "cert_crlDistributionPoints",
+                                "severity"     : "INFO",
+                                "finding"      : "--"
+                           },{
+                                "id"           : "cert_ocspURL",
+                                "severity"     : "INFO",
+                                "finding"      : "--"
+                           },{
+                                "id"           : "cert_revocation",
+                                "severity"     : "HIGH",
+                                "finding"      : "Neither CRL nor OCSP URI provided"
+                           },{
+                                "id"           : "OCSP_stapling",
+                                "severity"     : "INFO",
+                                "finding"      : "not offered"
+                           },{
+                                "id"           : "cert_mustStapleExtension",
+                                "severity"     : "INFO",
+                                "finding"      : "--"
+                           },{
+                                "id"           : "DNS_CAArecord",
+                                "severity"     : "INFO",
+                                "finding"      : "check skipped as instructed"
+                           },{
+                                "id"           : "certificate_transparency",
+                                "severity"     : "INFO",
+                                "finding"      : "--"
+                           },{
+                                "id"           : "certs_countServer",
+                                "severity"     : "INFO",
+                                "finding"      : "1"
+                           },{
+                                "id"           : "certs_list_ordering_problem",
+                                "severity"     : "INFO",
+                                "finding"      : "no"
+                           },{
+                                "id"           : "cert_caIssuers",
+                                "severity"     : "INFO",
+                                "finding"      : "127.0.0.1 (NetworkMapper from US)"
+                           },{
+                                "id"           : "intermediate_cert_badOCSP",
+                                "severity"     : "OK",
+                                "finding"      : "intermediate certificate(s) is/are ok"
+                           }
+                    ],
+                    "headerResponse"    : [
+                            {
+                                "id"           : "HTTP_status_code",
+                                "severity"     : "INFO",
+                                "finding"      : "200 OK ('/')"
+                           },{
+                                "id"           : "HTTP_clock_skew",
+                                "severity"     : "INFO",
+                                "finding"      : "0 seconds from localtime"
+                           },{
+                                "id"           : "HTTP_headerTime",
+                                "severity"     : "INFO",
+                                "finding"      : "1790124721"
+                           },{
+                                "id"           : "HSTS_time",
+                                "severity"     : "OK",
+                                "finding"      : "730 days (=63072000 seconds) > 15552000 seconds"
+                           },{
+                                "id"           : "HSTS_subdomains",
+                                "severity"     : "OK",
+                                "finding"      : "includes subdomains"
+                           },{
+                                "id"           : "HSTS_preload",
+                                "severity"     : "OK",
+                                "finding"      : "domain IS marked for preloading"
+                           },{
+                                "id"           : "HPKP",
+                                "severity"     : "INFO",
+                                "finding"      : "No support for HTTP Public Key Pinning"
+                           },{
+                                "id"           : "banner_server",
+                                "severity"     : "INFO",
+                                "finding"      : "nginx"
+                           },{
+                                "id"           : "banner_application",
+                                "severity"     : "INFO",
+                                "finding"      : "No application banner found"
+                           },{
+                                "id"           : "cookie_count",
+                                "severity"     : "INFO",
+                                "finding"      : "0 at '/'"
+                           },{
+                                "id"           : "X-Frame-Options",
+                                "severity"     : "OK",
+                                "finding"      : "DENY"
+                           },{
+                                "id"           : "X-Content-Type-Options",
+                                "severity"     : "OK",
+                                "finding"      : "nosniff"
+                           },{
+                                "id"           : "Content-Security-Policy",
+                                "severity"     : "OK",
+                                "finding"      : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self';"
+                           },{
+                                "id"           : "X-XSS-Protection",
+                                "severity"     : "INFO",
+                                "finding"      : "1; mode=block"
+                           },{
+                                "id"           : "Referrer-Policy",
+                                "severity"     : "INFO",
+                                "finding"      : "strict-origin-when-cross-origin"
+                           },{
+                                "id"           : "Cache-Control",
+                                "severity"     : "INFO",
+                                "finding"      : "no-cache, no-store, must-revalidate"
+                           },{
+                                "id"           : "Pragma",
+                                "severity"     : "INFO",
+                                "finding"      : "no-cache"
+                           },{
+                                "id"           : "banner_reverseproxy",
+                                "severity"     : "INFO",
+                                "cwe"          : "CWE-200",
+                                "finding"      : "--"
+                           }
+                    ],
+                    "vulnerabilities"   : [
+
+                    ],
+                    "cipherTests"       : [
+
+                    ],
+                    "browserSimulations": [
+
+                    ],
+                    "rating"            : [
+
+                    ]
+          }
+          ],
+                    "scanTime"  : 7
+}
