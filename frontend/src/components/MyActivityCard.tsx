@@ -13,7 +13,7 @@ import {
 
 import { getMyActivity, type ActivityEvent, type ActivityEventKind } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
-import { Card, CardContent } from './ui/card';
+import { PostureSection } from './posture/PostureSection';
 import UpdatedAt from './UpdatedAt';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -137,15 +137,12 @@ export const MyActivityCard: React.FC<{
   }, [shown]);
 
   return (
-    <Card className="h-full">
-      <CardContent className="p-md">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
-          <p className="text-subheading font-semibold text-foreground">My recent activity</p>
-          <UpdatedAt at={loadedAt} stale={!!error} />
-        </div>
-        <p className="mb-sm text-caption text-muted-foreground">
-          What you’ve worked on — notes, findings, and reviews. Pick up where you left off.
-        </p>
+    // v5.267.0 — a section, not a card (UI_STYLE_GUIDE §7).
+    <PostureSection
+      title={<span>My recent activity</span>}
+      description="What you’ve worked on — notes, findings, and reviews."
+      actions={<UpdatedAt at={loadedAt} stale={!!error} />}
+    >
 
         {/* Recall filters (§27): narrow by type / recency / free text. */}
         <div className="mb-sm flex flex-wrap items-center gap-xs">
@@ -254,8 +251,7 @@ export const MyActivityCard: React.FC<{
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 

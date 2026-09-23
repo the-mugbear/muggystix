@@ -450,6 +450,45 @@ describe('Operations page', () => {
     });
   });
 
+  describe('layout (v5.267.0 — sections, not cards)', () => {
+    const wb = (extra: Record<string, unknown>) => ({
+      my_queue: { items: [], in_review_count: 2, watching_count: 0 },
+      my_tasks: { items: [], total_open: 0, reason_counts: { assigned: 0, in_review: 0, triage: 0 } },
+      my_notes: { items: [], total_open: 1, overdue_count: 1 },
+      my_findings: { items: [], total_open: 3 },
+      since_last_visit: { is_first_visit: true, as_of: null },
+      investigate: { items: [], queue_total: 4, untouched_total: 9, tiers: [] },
+      ...extra,
+    });
+
+    it('opens with one sentence of what is waiting, from the same workbench payload', async () => {
+      mockedApi.getWorkbench.mockResolvedValue(wb({}));
+      renderPage();
+      expect(await screen.findByText(
+        '1 plan awaiting your approval, 6 items in your queue (1 overdue) and 4 untouched hosts worth a look.',
+      )).toBeInTheDocument();
+    });
+
+    it('says nothing is waiting when nothing is, and never counts an unavailable queue', async () => {
+      mockedApi.getTestPlans.mockResolvedValue([]);
+      mockedApi.getWorkbench.mockResolvedValue(wb({
+        my_queue: { items: [], in_review_count: 0, watching_count: 0 },
+        my_notes: { items: [], total_open: 0, overdue_count: 0 },
+        my_findings: { items: [], total_open: 0 },
+        investigate_unavailable: true,
+      }));
+      renderPage();
+      expect(await screen.findByText('Nothing is waiting on you.')).toBeInTheDocument();
+    });
+
+    it('renders no card anywhere on the page', async () => {
+      renderPage();
+      await screen.findByText('Project state');
+      await screen.findByRole('heading', { name: /^Runs$/ });
+      expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
+    });
+  });
+
   it('page Refresh also refetches the self-fetching Runs and Recent activity panels', async () => {
     renderPage();
     await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(1));

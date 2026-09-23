@@ -44,7 +44,7 @@ import { followHost, updateTestPlanEntry } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
-import { Card, CardContent } from './ui/card';
+import { PostureSection } from './posture/PostureSection';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
@@ -57,14 +57,14 @@ type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'o
 
 type GroupKey = 'overdue' | 'handoff' | 'assigned' | 'findings' | 'in_review' | 'triage';
 
-const GROUP_META: Record<GroupKey, { label: string; rank: number; tone: BadgeTone }> = {
-  overdue: { label: 'Overdue', rank: 0, tone: 'destructive' },
-  handoff: { label: 'Handoffs', rank: 1, tone: 'info' },
-  assigned: { label: 'Assigned', rank: 2, tone: 'info' },
-  findings: { label: 'Findings I own', rank: 3, tone: 'info' },
-  in_review: { label: 'In review', rank: 4, tone: 'muted' },
+const GROUP_META: Record<GroupKey, { label: string; rank: number }> = {
+  overdue: { label: 'Overdue', rank: 0 },
+  handoff: { label: 'Handoffs', rank: 1 },
+  assigned: { label: 'Assigned', rank: 2 },
+  findings: { label: 'Findings I own', rank: 3 },
+  in_review: { label: 'In review', rank: 4 },
   // Shared, unowned work — kept last and out of the personal total.
-  triage: { label: 'Available to claim', rank: 5, tone: 'warning' },
+  triage: { label: 'Available to claim', rank: 5 },
 };
 const GROUP_ORDER = (Object.keys(GROUP_META) as GroupKey[]).sort(
   (a, b) => GROUP_META[a].rank - GROUP_META[b].rank,
@@ -222,6 +222,30 @@ function buildItems(
   return items;
 }
 
+/**
+ * Authoritative server totals (the merged list is capped at the per-source
+ * fetch limits, so it must NOT stand in for the totals).  §27: the personal
+ * total EXCLUDES unassigned triage (shared work isn't "mine") and INCLUDES
+ * owned findings.  Shared with the Operations lead sentence.
+ */
+export function personalWorkCounts(
+  queue: MyAttentionResponse | null,
+  tasks: MyTasksResponse | null,
+  notes: MyNotesResponse | null,
+  findings: MyFindingsResponse | null,
+): { total: number; overdue: number; available: number } {
+  const available = tasks?.reason_counts?.triage ?? 0;
+  return {
+    total:
+      (notes?.total_open ?? 0) +
+      (queue?.in_review_count ?? 0) +
+      Math.max(0, (tasks?.total_open ?? 0) - available) +
+      (findings?.total_open ?? 0),
+    overdue: notes?.overdue_count ?? 0,
+    available,
+  };
+}
+
 export interface MyWorkCardProps {
   queue: MyAttentionResponse | null;
   tasks: MyTasksResponse | null;
@@ -257,8 +281,7 @@ const FOLLOWUPS_PREVIEW = 5;
  * closed state, and a host that changed after its review has a conclusion
  * older than its evidence; both had left every queue.  The reviewer's own
  * come first.  Re-opening the review returns the host to the personal queue
- * and clears the stale conclusion.  Same stacked-row shape as "Worth a look":
- * the card is half the page wide.
+ * and clears the stale conclusion.  Same stacked-row shape as "Worth a look".
  */
 const FollowupsSection: React.FC<{
   data: ReviewFollowupsResponse;
@@ -284,16 +307,17 @@ const FollowupsSection: React.FC<{
   };
 
   return (
-    <div className="mt-md border-t border-border pt-sm">
-      <div className="mb-xs flex flex-wrap items-center gap-xs">
-        <p className="text-metadata font-semibold text-foreground">Needs another look</p>
-        <Badge variant="warning">{data.total}</Badge>
-        <span className="min-w-0 text-caption text-muted-foreground">
-          reviewed hosts with an open question, or that changed after the review
-          {data.total > data.mine_total ? ` — ${data.mine_total} yours` : ''}
-        </span>
-      </div>
-      <ul className="divide-y divide-border">
+    <PostureSection
+      title={<>
+        <span>Needs another look</span>
+        <span className="font-normal tabular-nums normal-case tracking-normal">{data.total.toLocaleString()}</span>
+      </>}
+      description={<>
+        Reviewed hosts with an open question, or that changed after the review
+        {data.total > data.mine_total ? ` — ${data.mine_total} yours` : ''}.
+      </>}
+    >
+      <ul className="divide-y divide-border/60">
         {rows.map((row) => (
           <li key={`${row.host_id}-${row.reviewer_id}`} className="flex items-start gap-sm py-xs">
             <div className="min-w-0 flex-1">
@@ -339,10 +363,12 @@ const FollowupsSection: React.FC<{
               )}
             </div>
             <div className="flex shrink-0 flex-col items-stretch gap-xxs">
+              {/* v5.267.0 — a quiet action: a bright button on every row
+                  made the whole queue shout. */}
               <Button
                 size="sm"
-                variant={row.mine ? 'default' : 'outline'}
-                className="h-7"
+                variant="ghost"
+                className="h-7 text-info"
                 disabled={busyId === row.host_id}
                 onClick={() => void reopen(row)}
                 title={row.mine
@@ -369,7 +395,7 @@ const FollowupsSection: React.FC<{
           Showing {data.items.length} of {data.total.toLocaleString()}.
         </p>
       )}
-    </div>
+    </PostureSection>
   );
 };
 
@@ -409,14 +435,13 @@ const InvestigateSection: React.FC<{
   };
 
   return (
-    <div className="mt-md border-t border-border pt-sm">
-      <div className="mb-xs flex flex-wrap items-center gap-xs">
-        <p className="text-metadata font-semibold text-foreground">Worth a look</p>
-        <Badge variant="warning">{data.queue_total}</Badge>
-        <span className="text-caption text-muted-foreground">
-          hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet
-        </span>
-      </div>
+    <PostureSection
+      title={<>
+        <span>Worth a look</span>
+        <span className="font-normal tabular-nums normal-case tracking-normal">{data.queue_total.toLocaleString()}</span>
+      </>}
+      description="Hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet."
+    >
       {data.items.length === 0 ? (
         <p className="text-caption text-muted-foreground">
           {data.untouched_total > 0
@@ -425,10 +450,9 @@ const InvestigateSection: React.FC<{
         </p>
       ) : (
         <>
-          {/* Stacked rows, not a table: this card is half the page wide, so four
-              columns left ~110px for the next step — the sentence wrapped to
-              many lines and "Upload evidence" spilled out of the card.  Text
-              takes the row's width; the actions are a fixed column on the right. */}
+          {/* Stacked rows, not a table: as four columns the next step got
+              ~110px and "Upload evidence" spilled out of the row.  Text takes
+              the row's width; the actions are a fixed column on the right. */}
           <ul className="divide-y divide-border">
             {rows.map((row) => (
               <li key={row.host_id} data-tier={row.tier} className="flex items-start gap-sm py-xs">
@@ -451,10 +475,12 @@ const InvestigateSection: React.FC<{
                         {row.hostname}
                       </span>
                     )}
+                    {/* The tier on the host's own line (v5.267.0): a line of
+                        its own made every row five lines tall. */}
+                    <span className="ml-auto min-w-0 shrink truncate text-caption font-medium text-warning" title={row.tier_label}>
+                      {row.tier_label}
+                    </span>
                   </div>
-                  <p className="truncate text-caption font-medium text-warning" title={row.tier_label}>
-                    {row.tier_label}
-                  </p>
                   <ul className="mt-xxs flex flex-col gap-xxs">
                     {row.reasons.map((r) => (
                       <li key={r.kind} className="line-clamp-2 break-words text-caption text-foreground" title={r.text}>
@@ -483,8 +509,8 @@ const InvestigateSection: React.FC<{
                 <div className="flex shrink-0 flex-col items-stretch gap-xxs">
                   <Button
                     size="sm"
-                    variant={row.next_action.kind === 'review' ? 'default' : 'outline'}
-                    className="h-7"
+                    variant="ghost"
+                    className="h-7 text-info"
                     disabled={takingId === row.host_id}
                     onClick={() => void take(row)}
                     title="Mark this host In Review under you. It leaves this queue and joins your personal one."
@@ -492,7 +518,7 @@ const InvestigateSection: React.FC<{
                     {takingId === row.host_id ? 'Taking…' : 'Review'}
                   </Button>
                   {row.next_action.kind === 'collect' && (
-                    <Button size="sm" variant="outline" className="h-7" onClick={() => navigate('/scans')}>
+                    <Button size="sm" variant="ghost" className="h-7" onClick={() => navigate('/scans')}>
                       Upload evidence
                     </Button>
                   )}
@@ -516,7 +542,7 @@ const InvestigateSection: React.FC<{
           </div>
         </>
       )}
-    </div>
+    </PostureSection>
   );
 };
 
@@ -567,17 +593,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
     }
   };
 
-  // Authoritative server totals (the merged list is capped at the per-source
-  // fetch limits, so it must NOT stand in for the totals).  §27: the personal
-  // total EXCLUDES unassigned triage (shared work isn't "mine") and INCLUDES
-  // owned findings.
-  const availableCount = tasks?.reason_counts?.triage ?? 0;
-  const totalCount =
-    (notes?.total_open ?? 0) +
-    (queue?.in_review_count ?? 0) +
-    Math.max(0, (tasks?.total_open ?? 0) - availableCount) +
-    (findings?.total_open ?? 0);
-  const overdue = notes?.overdue_count ?? 0;
+  const { total: totalCount, overdue, available: availableCount } =
+    personalWorkCounts(queue, tasks, notes, findings);
 
   // The server's count for a category, where one source owns it outright.
   // "Handoffs" and "Assigned" mix notes and plan steps whose totals the API
@@ -594,18 +611,28 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
     findings: { to: '/findings?owner=me', label: 'All findings I own' },
   };
 
-  return (
-    <Card className="h-full">
-      <CardContent className="p-md">
-        <div className="mb-sm flex flex-wrap items-center gap-xs">
-          <p className="text-subheading font-semibold text-foreground">My work</p>
-          {totalCount > 0 && <Badge variant="secondary">{totalCount}</Badge>}
-          {overdue > 0 && <Badge variant="destructive">{overdue} overdue</Badge>}
-          {availableCount > 0 && <Badge variant="outline">{availableCount} to claim</Badge>}
-          {/* v5.243.0 — when the workbench last loaded. */}
-          <div className="ml-auto">{updated}</div>
-        </div>
+  // v5.267.0 — three sections over thin rules, not one card holding three
+  // queues (UI_STYLE_GUIDE §7).  The counts are plain text in the heading row.
+  const summary = [
+    totalCount > 0 ? `${totalCount.toLocaleString()} yours` : null,
+    overdue > 0 ? `${overdue.toLocaleString()} overdue` : null,
+    availableCount > 0 ? `${availableCount.toLocaleString()} to claim` : null,
+  ].filter(Boolean).join(' · ');
 
+  return (
+    <div className="flex min-w-0 flex-col gap-lg">
+      <PostureSection
+        title={<>
+          <span>My work</span>
+          {summary && (
+            <span className={cn('font-normal normal-case tracking-normal', overdue > 0 ? 'text-destructive' : 'text-muted-foreground')}>
+              {summary}
+            </span>
+          )}
+        </>}
+        // v5.243.0 — when the workbench last loaded.
+        actions={updated}
+      >
         {loading ? (
           <div className="flex items-center gap-xs" role="status" aria-live="polite">
             <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
@@ -622,14 +649,12 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
             </AlertDescription>
           </Alert>
         ) : items.length === 0 ? (
-          <Alert variant="info">
-            <AlertDescription>
-              Nothing in your queue. Work shows here when you're <strong>assigned a note</strong>,
-              {' '}mark a host <strong>In Review</strong>, or a test-plan step is assigned to you.
-            </AlertDescription>
-          </Alert>
+          <p className="text-metadata text-muted-foreground">
+            Nothing in your queue. Work shows here when you're <strong className="text-foreground">assigned a note</strong>,
+            {' '}mark a host <strong className="text-foreground">In Review</strong>, or a test-plan step is assigned to you.
+          </p>
         ) : (
-          <div className="flex flex-col gap-sm">
+          <div className="flex flex-col gap-md">
             {groups.map((g) => {
               const open = expandedGroups.has(g.key);
               const rows = open ? g.rows : g.rows.slice(0, GROUP_PREVIEW);
@@ -638,11 +663,18 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
               const all = viewAll[g.key];
               return (
                 <section key={g.key} aria-label={GROUP_META[g.key].label}>
-                  <div className="mb-xxs flex flex-wrap items-center gap-xs">
-                    <Badge variant={GROUP_META[g.key].tone}>{GROUP_META[g.key].label}</Badge>
+                  <div className="mb-xxs flex flex-wrap items-baseline gap-xs">
+                    {/* A label, not a coloured chip per group: only Overdue
+                        is urgent, and only it takes a colour. */}
+                    <h3 className={cn(
+                      'text-metadata font-semibold',
+                      g.key === 'overdue' ? 'text-destructive' : 'text-foreground',
+                    )}>
+                      {GROUP_META[g.key].label}
+                    </h3>
                     {/* The full count where the server has one; never the
                         number of rows that happen to be on screen. */}
-                    <span className="text-caption text-muted-foreground">
+                    <span className="text-caption tabular-nums text-muted-foreground">
                       {(total ?? g.rows.length).toLocaleString()}
                     </span>
                     {all && (
@@ -699,7 +731,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                     </button>
                     {it.claim && (
                       <Button
-                        size="sm" variant="outline" className="h-7 shrink-0"
+                        size="sm" variant="ghost" className="h-7 shrink-0 text-info"
                         disabled={claimingId === it.claim.entryId}
                         onClick={() => handleClaim(it.claim!)}
                       >
@@ -743,40 +775,40 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
             })}
           </div>
         )}
+      </PostureSection>
 
-        {!loading && !error && followupsUnavailable && (
-          <div className="mt-md border-t border-border pt-sm">
-            <p className="text-metadata font-semibold text-foreground">Needs another look</p>
-            <div role="alert" className="mt-xxs flex flex-wrap items-center gap-xs text-caption text-warning">
-              <span className="min-w-0 flex-1">
-                Unavailable — reviewed hosts could not be checked for open questions or later changes.
-              </span>
-              <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>
-            </div>
-          </div>
-        )}
-        {!loading && !error && !followupsUnavailable && followups && followups.items.length > 0 && (
-          <FollowupsSection data={followups} navigate={navigate} onReopened={onRetry} />
-        )}
+      {!loading && !error && followupsUnavailable && (
+        <PostureSection title={<span>Needs another look</span>}>
+          <UnavailableLine onRetry={onRetry}>
+            Unavailable — reviewed hosts could not be checked for open questions or later changes.
+          </UnavailableLine>
+        </PostureSection>
+      )}
+      {!loading && !error && !followupsUnavailable && followups && followups.items.length > 0 && (
+        <FollowupsSection data={followups} navigate={navigate} onReopened={onRetry} />
+      )}
 
-        {!loading && !error && investigateUnavailable && (
-          <div className="mt-md border-t border-border pt-sm">
-            <p className="text-metadata font-semibold text-foreground">Worth a look</p>
-            <div role="alert" className="mt-xxs flex flex-wrap items-center gap-xs text-caption text-warning">
-              <span className="min-w-0 flex-1">
-                Unavailable — this queue could not be computed, so it says nothing about whether
-                hosts are waiting. Your own work above is unaffected.
-              </span>
-              <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>
-            </div>
-          </div>
-        )}
-        {!loading && !error && !investigateUnavailable && investigate && (
-          <InvestigateSection data={investigate} navigate={navigate} onTaken={onRetry} />
-        )}
-      </CardContent>
-    </Card>
+      {!loading && !error && investigateUnavailable && (
+        <PostureSection title={<span>Worth a look</span>}>
+          <UnavailableLine onRetry={onRetry}>
+            Unavailable — this queue could not be computed, so it says nothing about whether
+            hosts are waiting. Your own work above is unaffected.
+          </UnavailableLine>
+        </PostureSection>
+      )}
+      {!loading && !error && !investigateUnavailable && investigate && (
+        <InvestigateSection data={investigate} navigate={navigate} onTaken={onRetry} />
+      )}
+    </div>
   );
 };
+
+/** A queue the server could not compute: said, never shown as empty. */
+const UnavailableLine: React.FC<{ onRetry: () => void; children: React.ReactNode }> = ({ onRetry, children }) => (
+  <div role="alert" className="flex flex-wrap items-center gap-xs text-caption text-warning">
+    <span className="min-w-0 flex-1">{children}</span>
+    <Button size="sm" variant="ghost" className="h-7" onClick={onRetry}>Retry</Button>
+  </div>
+);
 
 export default MyWorkCard;

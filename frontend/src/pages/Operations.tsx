@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Info, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
+import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
@@ -22,14 +22,16 @@ import { useAuth } from '../contexts/AuthContext';
 import { useReconPlan } from '../hooks/useReconPlan';
 import { formatApiError } from '../utils/apiErrors';
 import StartReconDialog from '../components/StartReconDialog';
-import MyWorkCard from '../components/MyWorkCard';
+import MyWorkCard, { personalWorkCounts } from '../components/MyWorkCard';
 import MyActivityCard from '../components/MyActivityCard';
 import UpdatedAt from '../components/UpdatedAt';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { InfoTip } from '../components/ui/info-tip';
+import PostureSection from '../components/posture/PostureSection';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import SeverityBar from '../components/ui/SeverityBar';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { sinceChips } from '../utils/sinceLastVisit';
@@ -96,10 +98,11 @@ const kindLabel = (kind: string): string => {
 
 // RV-UI — "Security snapshot" (exposure/findings) and "Project coverage"
 // (pipeline progress) answered different questions but both described
-// overall project state and both led with a redundant Hosts tile.  Merged
-// into one "Project state" card with an Exposure row and a Coverage row;
-// Hosts now appears once (in Exposure).
-const ProjectStateCard: React.FC<{
+// overall project state, so they are one "Project state" section with an
+// Exposure line and a Coverage strip; Hosts appears once (in Exposure).
+// v5.267.0 — a section over a thin rule, the coverage counts one strip of
+// PostureMeasures (UI_STYLE_GUIDE §7), not a card of tile cards.
+const ProjectStateSection: React.FC<{
   stats: DashboardStats | null;
   statsLoading: boolean;
   coverage: ProjectCoverageResponse | null;
@@ -109,16 +112,11 @@ const ProjectStateCard: React.FC<{
 }> = ({ stats, statsLoading, coverage, coverageLoading, updated }) => {
   if ((statsLoading && !stats) || (coverageLoading && !coverage)) {
     return (
-      <Card className="mb-md" aria-busy="true">
-        <CardContent className="p-md" role="status" aria-live="polite">
-          <span className="sr-only">Loading project state…</span>
-          <div className="grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-6">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-20 rounded-panel bg-muted/40 animate-pulse" />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      <PostureSection title={<span>Project state</span>}>
+        <p role="status" aria-live="polite" className="flex items-center gap-xs text-metadata text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden /> Loading project state…
+        </p>
+      </PostureSection>
     );
   }
   if (!stats && !coverage) return null;
@@ -135,45 +133,28 @@ const ProjectStateCard: React.FC<{
   const busy = statsLoading || coverageLoading;
 
   return (
-    <Card className="mb-md" aria-busy={busy || undefined}>
-      <CardContent className="p-md">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
-          <h2 className="text-subheading font-semibold">Project state</h2>
-          {updated}
-        </div>
-        <p className="mb-sm text-caption text-muted-foreground">
-          Exposure (scanner observations, not yet judged) and assessment coverage
-          (pipeline progress) at a glance. Findings — the promoted, curated record,
-          under investigation or confirmed — live on the Findings page.
-        </p>
-
+    <PostureSection
+      title={<span>Project state</span>}
+      description={<>
+        Exposure (scanner observations, not yet judged) and assessment coverage. Findings — the
+        curated record — are on the <Link to="/findings" className="text-info hover:underline">Findings</Link> page;
+        the assessment itself on <Link to="/posture" className="text-info hover:underline">Posture</Link>.
+      </>}
+      actions={updated}
+    >
+      <div aria-busy={busy || undefined} className="flex flex-col gap-md">
         {stats && (
-          <div className="mb-md">
-            <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Exposure</h3>
-            {/* Compact inline counts (a passive total doesn't earn a big tile —
-                only the host count navigates). The severity bar below carries
-                the actionable per-severity drill-downs. Raw open-ports totals
-                were dropped as a vanity metric; the useful scoped form lives on
-                Hosts + Scan detail. */}
-            <div className="mb-md flex flex-wrap items-center gap-x-sm gap-y-xxs text-metadata">
+          <div>
+            <h3 className="mb-xs text-metadata font-semibold text-foreground">Exposure</h3>
+            {/* Compact inline counts (a passive total doesn't earn a big
+                number — only the host count navigates). The severity bar
+                carries the per-severity drill-downs. */}
+            <div className="mb-sm flex flex-wrap items-center gap-x-sm gap-y-xxs text-metadata">
               <Link to={buildHostsUrl({})}
                 className="font-semibold text-foreground hover:text-info hover:underline">
                 {stats.total_hosts.toLocaleString()} hosts
               </Link>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button type="button" aria-label="What does the host count include?"
-                    className="rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                    <Info className="size-3.5" aria-hidden />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-left">
-                  Total distinct hosts in the project. "marked up" counts only hosts a scanner
-                  explicitly tagged host-status "up"; hosts from masscan/naabu/DNS/subnet seeds are
-                  often left "unknown" even when reachable — so it's usually far lower than the total
-                  and is NOT a liveness count.
-                </TooltipContent>
-              </Tooltip>
+              <InfoTip text={'Total distinct hosts in the project. "marked up" counts only hosts a scanner explicitly tagged host-status "up"; hosts from masscan/naabu/DNS/subnet seeds are often left "unknown" even when reachable — so it\'s usually far lower than the total and is NOT a liveness count.'} />
               <span className="text-muted-foreground" aria-hidden>·</span>
               <span className="text-muted-foreground">{stats.up_hosts.toLocaleString()} marked up</span>
               <span className="text-muted-foreground" aria-hidden>·</span>
@@ -183,9 +164,9 @@ const ProjectStateCard: React.FC<{
             </div>
 
             {vuln && actionableTotal > 0 ? (
-              <div>
+              <div className="max-w-3xl">
                 <div className="mb-xs flex flex-wrap items-baseline justify-between gap-x-md gap-y-xxs">
-                  <span className="text-metadata font-medium text-foreground">
+                  <span className="text-caption text-muted-foreground">
                     Share of scanner-detected vulnerabilities
                   </span>
                   <span className="text-caption text-muted-foreground tabular-nums">
@@ -218,135 +199,74 @@ const ProjectStateCard: React.FC<{
 
         {coverage && (
           <div>
-            <h3 className="mb-xs text-metadata font-semibold text-muted-foreground">Coverage</h3>
-            <p className="mb-sm text-caption text-muted-foreground">
-              Hosts by pipeline stage — the gap counts surface what isn't planned or executed yet.
-            </p>
-            <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3">
-              <CoverageStatTile
+            <h3 className="mb-xs text-metadata font-semibold text-foreground">Coverage</h3>
+            {/* The gap lines are the point of this strip: each opens the
+                hosts it counts. */}
+            <div className="grid gap-y-md divide-border sm:grid-cols-3 sm:divide-x">
+              <PostureMeasure
                 label="With plan entries"
+                info="Hosts that appear in at least one test plan."
                 value={coverage.hosts_with_plan_entry.toLocaleString()}
-                href={
-                  coverage.hosts_with_plan_entry > 0
-                    ? buildHostsUrl({ q: 'has:planned' })
-                    : undefined
-                }
-                subtle={
-                  coverage.hosts_no_plan > 0
+                to={coverage.hosts_with_plan_entry > 0 ? buildHostsUrl({ q: 'has:planned' }) : undefined}
+                toLabel="With plan entries — view hosts"
+              >
+                <GapLine
+                  text={coverage.hosts_no_plan > 0
                     ? `${coverage.hosts_no_plan.toLocaleString()} not yet in any plan`
-                    : 'all hosts planned'
-                }
-                subtleHref={
-                  coverage.hosts_no_plan > 0
-                    ? buildHostsUrl({ q: 'NOT has:planned' })
-                    : undefined
-                }
-              />
-              <CoverageStatTile
+                    : 'all hosts planned'}
+                  to={coverage.hosts_no_plan > 0 ? buildHostsUrl({ q: 'NOT has:planned' }) : undefined}
+                />
+              </PostureMeasure>
+              <PostureMeasure
                 label="With execution results"
+                info="Hosts with at least one recorded test-plan execution result."
                 value={coverage.hosts_with_execution_result.toLocaleString()}
-                href={buildHostsUrl({ hasTestExecution: true })}
-                subtle={
-                  coverage.hosts_no_execution > 0
+                to={buildHostsUrl({ hasTestExecution: true })}
+                toLabel="With execution results — view hosts"
+              >
+                <GapLine
+                  text={coverage.hosts_no_execution > 0
                     ? `${coverage.hosts_no_execution.toLocaleString()} not yet tested`
-                    : 'all hosts tested'
-                }
-                subtleHref={
-                  coverage.hosts_no_execution > 0
-                    ? buildHostsUrl({ q: 'NOT has:tested' })
-                    : undefined
-                }
-              />
-              <CoverageStatTile
+                    : 'all hosts tested'}
+                  to={coverage.hosts_no_execution > 0 ? buildHostsUrl({ q: 'NOT has:tested' }) : undefined}
+                />
+              </PostureMeasure>
+              <PostureMeasure
                 label="Outside scope"
+                info="Hosts discovered at addresses no declared scope covers."
                 value={coverage.hosts_outside_scope.toLocaleString()}
-                href={coverage.hosts_outside_scope > 0 ? buildHostsUrl({ outOfScopeOnly: true }) : undefined}
-                subtle={
-                  coverage.total_scopes === 0
-                    ? 'no scopes declared'
-                    : 'discovered but unscoped'
-                }
-              />
+                to={coverage.hosts_outside_scope > 0 ? buildHostsUrl({ outOfScopeOnly: true }) : undefined}
+                toLabel="Outside scope — view hosts"
+              >
+                {coverage.total_scopes === 0 ? 'no scopes declared' : 'discovered but unscoped'}
+              </PostureMeasure>
             </div>
 
             {coverage.scopes.length > 0 && (
-              <div>
-                <h3 className="mb-xs text-metadata font-semibold">
+              <div className="mt-md">
+                <h3 className="mb-xs text-metadata font-semibold text-foreground">
                   Scope coverage ({coverage.total_scopes})
                 </h3>
-                {coverage.scopes.map((row) => (
-                  <ScopeCoverageRowDisplay key={row.scope_id} row={row} />
-                ))}
+                <ul className="divide-y divide-border/60">
+                  {coverage.scopes.map((row) => (
+                    <ScopeCoverageRowDisplay key={row.scope_id} row={row} />
+                  ))}
+                </ul>
               </div>
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PostureSection>
   );
 };
 
-// ---------------------------------------------------------------------------
-// Coverage section
-// ---------------------------------------------------------------------------
-
-const CoverageStatTile: React.FC<{
-  label: string;
-  value: number | string;
-  subtle?: string;
-  /** Optional explainer rendered behind an info icon next to the label. */
-  hint?: string;
-  /** Drill-down to the records this tile counts (§26) — makes the value a link. */
-  href?: string;
-  /** Drill-down for the GAP line. The section's own copy calls the gap counts
-      the point of this block, so leaving them as dead text was the one number
-      an operator couldn't act on. */
-  subtleHref?: string;
-}> = ({ label, value, subtle, hint, href, subtleHref }) => (
-  <Card>
-    <CardContent className="p-md text-center">
-      {href ? (
-        <Link to={href} aria-label={`${label} — view hosts`}
-          className="inline-block text-page-title font-semibold text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded">
-          {value}
-        </Link>
-      ) : (
-        <p className="text-page-title font-semibold">{value}</p>
-      )}
-      <p className="flex items-center justify-center gap-xxs text-metadata text-muted-foreground">
-        {label}
-        {hint && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="rounded-full text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label={`What does "${label}" count?`}
-              >
-                <Info className="size-3.5" aria-hidden />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs text-left">{hint}</TooltipContent>
-          </Tooltip>
-        )}
-      </p>
-      {subtle && (
-        <p className="mt-xxs text-caption text-muted-foreground">
-          {subtleHref ? (
-            <Link
-              to={subtleHref}
-              className="rounded text-warning hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {subtle}
-            </Link>
-          ) : (
-            subtle
-          )}
-        </p>
-      )}
-    </CardContent>
-  </Card>
-);
+/** A coverage gap: a link when it has hosts to open, plain text otherwise. */
+const GapLine: React.FC<{ text: string; to?: string }> = ({ text, to }) => (to ? (
+  <Link to={to} className="rounded text-warning hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    {text}
+  </Link>
+) : <>{text}</>);
 
 // v4.18.0 — scope coverage row no longer pretends to show "% scope
 // completion".  Pre-fix, the denominator was the raw /32 count for
@@ -371,7 +291,7 @@ function displayScopeName(rawName: string | null | undefined): string {
 
 const ScopeCoverageRowDisplay: React.FC<{ row: ScopeCoverageRow }> = ({ row }) => {
   return (
-    <div className="mb-xs flex flex-wrap items-baseline gap-x-sm gap-y-xxs">
+    <li className="flex flex-wrap items-baseline gap-x-sm gap-y-xxs py-xxs">
       <p className="min-w-0 flex-1 truncate text-metadata">
         <strong>{displayScopeName(row.scope_name)}</strong>{' '}
         <span className="text-caption text-muted-foreground">
@@ -383,7 +303,7 @@ const ScopeCoverageRowDisplay: React.FC<{ row: ScopeCoverageRow }> = ({ row }) =
         {row.discovered_in_scope.toLocaleString()} host
         {row.discovered_in_scope === 1 ? '' : 's'} discovered
       </span>
-    </div>
+    </li>
   );
 };
 
@@ -405,16 +325,9 @@ const NeedsAttentionSection: React.FC<{
 
   if (loading && !pendingPlans) {
     return (
-      <Card className="mb-md">
-        <CardContent className="p-md" role="status" aria-live="polite">
-          <span className="sr-only">Loading attention queue…</span>
-          <div className="flex flex-col gap-xs">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-12 rounded-control bg-muted/40 animate-pulse" />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      <p role="status" aria-live="polite" className="flex items-center gap-xs text-metadata text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden /> Loading approvals…
+      </p>
     );
   }
 
@@ -426,7 +339,7 @@ const NeedsAttentionSection: React.FC<{
   // section on this page: unavailable is said, not shown as empty.
   if (unavailable && !hasAny) {
     return (
-      <div className="mb-md flex min-w-0 flex-wrap items-baseline gap-x-sm px-md text-caption text-muted-foreground">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm text-caption text-muted-foreground">
         <h2 className="text-metadata font-semibold text-foreground">
           {canApprove ? 'Needs your approval' : 'Pending approvals'}
         </h2>
@@ -439,7 +352,7 @@ const NeedsAttentionSection: React.FC<{
   // The heading stays a heading so the section is still findable.
   if (!hasAny) {
     return (
-      <div className="mb-md flex min-w-0 flex-wrap items-baseline gap-x-sm px-md text-caption text-muted-foreground">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm text-caption text-muted-foreground">
         <h2 className="text-metadata font-semibold text-foreground">
           {canApprove ? 'Needs your approval' : 'Pending approvals'}
         </h2>
@@ -450,61 +363,47 @@ const NeedsAttentionSection: React.FC<{
   }
 
   return (
-    <Card className="mb-md">
-      <CardContent className="p-md">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-sm">
-          <h2 className="text-subheading font-semibold">
-            {canApprove ? 'Needs your approval' : 'Pending approvals'}
-          </h2>
-          {updated}
-        </div>
-        <p className="mb-sm text-caption text-muted-foreground">
-          {canApprove
-            ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide — independent of the Mine / All toggle.'
-            : 'Agent-drafted test plans awaiting an analyst’s approve/reject decision. Shown for visibility — approving needs the analyst role.'}
-        </p>
-
-        {pendingPlans && pendingPlans.length > 0 && (
-          <div>
-            <div className="mb-xs flex items-center gap-xs">
-              <Badge variant="warning">{pendingPlans.length} pending review</Badge>
-              <span className="text-metadata text-muted-foreground">
-                Plans the agent drafted; awaiting approval or rejection.
-              </span>
-            </div>
-            <ul className="flex flex-col gap-xxs">
-              {pendingPlans.slice(0, 5).map((plan) => (
-                <li
-                  key={plan.id}
-                  className="flex flex-wrap items-center gap-xs"
+    <PostureSection
+      title={<span>{canApprove ? 'Needs your approval' : 'Pending approvals'}</span>}
+      description={canApprove
+        ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide.'
+        : 'Agent-drafted test plans awaiting an analyst’s approve/reject decision. Shown for visibility — approving needs the analyst role.'}
+      actions={updated}
+    >
+      {pendingPlans && pendingPlans.length > 0 && (
+        <div>
+          <p className="mb-xs text-metadata font-semibold text-warning">
+            {pendingPlans.length} pending review
+          </p>
+          <ul className="divide-y divide-border/60">
+            {pendingPlans.slice(0, 5).map((plan) => (
+              <li key={plan.id} className="flex flex-wrap items-center gap-xs py-xxs">
+                <p className="min-w-0 flex-1 truncate text-metadata">
+                  <strong>#{plan.id}</strong> v{plan.version} · {plan.title || '—'}{' '}
+                  <span className="text-caption text-muted-foreground">
+                    · {plan.entry_count} entr{plan.entry_count === 1 ? 'y' : 'ies'}
+                    {plan.generated_by_model && ` · by ${plan.generated_by_model}`}
+                  </span>
+                </p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-info"
+                  onClick={() => navigate(`/test-plans/${plan.id}`)}
                 >
-                  <p className="min-w-0 flex-1 truncate text-metadata">
-                    <strong>#{plan.id}</strong> v{plan.version} · {plan.title || '—'}{' '}
-                    <span className="text-caption text-muted-foreground">
-                      · {plan.entry_count} entr{plan.entry_count === 1 ? 'y' : 'ies'}
-                      {plan.generated_by_model && ` · by ${plan.generated_by_model}`}
-                    </span>
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => navigate(`/test-plans/${plan.id}`)}
-                  >
-                    {canApprove ? 'Review' : 'View'}
-                    <SquareArrowOutUpRight className="size-3" aria-hidden />
-                  </Button>
-                </li>
-              ))}
-            </ul>
-            {pendingPlans.length > 5 && (
-              <p className="mt-xs text-caption text-muted-foreground">
-                + {pendingPlans.length - 5} more — see Test Plans page.
-              </p>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+                  {canApprove ? 'Review' : 'View'}
+                </Button>
+              </li>
+            ))}
+          </ul>
+          {pendingPlans.length > 5 && (
+            <p className="mt-xs text-caption text-muted-foreground">
+              + {pendingPlans.length - 5} more — see <Link to="/test-plans" className="text-info hover:underline">Test Plans</Link>.
+            </p>
+          )}
+        </div>
+      )}
+    </PostureSection>
   );
 };
 
@@ -569,9 +468,8 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
           {session.started_at && ` · ${fmtRelative(session.started_at)}`}
         </span>
       </p>
-      <Button size="sm" variant="ghost" onClick={handleOpen}>
+      <Button size="sm" variant="ghost" className="h-7 text-info" onClick={handleOpen}>
         Open
-        <SquareArrowOutUpRight className="size-3" aria-hidden />
       </Button>
     </div>
   );
@@ -643,14 +541,12 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   }, [statusFilter, userIdFilter, reloadNonce, refreshKey]);
 
   return (
-    <Card className="mb-md">
-      <CardContent className="p-md">
-        <div className="mb-xs flex flex-wrap items-center gap-xs">
-          <h2 className="text-subheading font-semibold">Runs</h2>
+    <PostureSection
+      title={<span>Runs</span>}
+      description="Agent sessions on this project — recon, plan generation, execution and assist."
+      actions={<>
           {/* A failed refetch keeps the previous rows under its error. */}
-          {/* The wrapper keeps pushing the controls right before the first load,
-              when UpdatedAt renders nothing. */}
-          <div className="min-w-0 flex-1"><UpdatedAt at={runsLoadedAt} stale={!!error} /></div>
+          <UpdatedAt at={runsLoadedAt} stale={!!error} />
           <div
             className="inline-flex overflow-hidden rounded-control border border-border"
             role="group"
@@ -681,11 +577,11 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
               Mine
             </button>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => navigate('/agent-activity')}>
+          <Button size="sm" variant="ghost" className="h-7 text-info" onClick={() => navigate('/agent-activity')}>
             Open Agent Runs
-            <SquareArrowOutUpRight className="size-3" aria-hidden />
           </Button>
-        </div>
+      </>}
+    >
         <div className="mb-sm flex flex-wrap items-center gap-xs" role="group" aria-label="Runs status filter">
           {RUNS_STATUS_OPTIONS.map((opt) => {
             const active = statusFilter === opt.value;
@@ -738,14 +634,15 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
               : `No ${statusFilter} runs.`}
           </p>
         ) : (
-          <div className="flex flex-col gap-xs">
+          <ul className="divide-y divide-border/60">
             {rows.map((row) => (
-              <SessionRowDisplay key={`${row.kind}-${row.id}`} session={row} />
+              <li key={`${row.kind}-${row.id}`} className="py-xxs">
+                <SessionRowDisplay session={row} />
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 
@@ -766,8 +663,8 @@ const SinceLastVisitBanner: React.FC<{
   if (since.is_first_visit || chips.length === 0) return null;
 
   return (
-    <Card className="mb-md border-info/40 bg-info/5">
-      <CardContent className="flex flex-wrap items-center gap-sm p-md">
+    // v5.267.0 — a left-rule callout, not a tinted card (UI_STYLE_GUIDE §7).
+    <div className="flex flex-wrap items-center gap-sm border-l-4 border-l-info py-xs pl-md">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-xs">
           <Sparkles className="size-4 shrink-0 text-info" aria-hidden />
           <span className="text-metadata font-semibold text-foreground">Since your last visit</span>
@@ -789,7 +686,7 @@ const SinceLastVisitBanner: React.FC<{
           {/* Acknowledging is what advances the cursor — until then these
               changes persist across visits (no silent loss on a glance).
               "Acknowledge", not "reviewed": dismissing a summary reviews no host. */}
-          <Button size="sm" variant="outline" onClick={onDismiss} disabled={saving}>
+          <Button size="sm" variant="ghost" className="h-7 text-info" onClick={onDismiss} disabled={saving}>
             {saving && <Loader2 className="size-3 animate-spin" aria-hidden />}
             Acknowledge updates
           </Button>
@@ -799,8 +696,7 @@ const SinceLastVisitBanner: React.FC<{
             {error}
           </p>
         )}
-      </CardContent>
-    </Card>
+    </div>
   );
 };
 
@@ -820,7 +716,7 @@ const BlockersStrip: React.FC<{
 
   if (unavailable) {
     return (
-      <p role="status" className="mb-md px-md text-caption text-muted-foreground">
+      <p role="status" className="text-caption text-muted-foreground">
         Blocked work (failed imports, interrupted runs) could not be checked — this is not a
         confirmation that nothing is blocked.
       </p>
@@ -841,8 +737,7 @@ const BlockersStrip: React.FC<{
   const moreRuns = blockers.interrupted_execution_count - blockers.executions.length;
 
   return (
-    <Card className="mb-md border-warning/40 bg-warning/5">
-      <CardContent className="space-y-xs p-md">
+    <div className="space-y-xs border-l-4 border-l-warning py-xs pl-md">
         <div className="flex items-center gap-xs">
           <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
           <h2 className="text-metadata font-semibold text-foreground">Blocked</h2>
@@ -867,7 +762,7 @@ const BlockersStrip: React.FC<{
             </span>
             {/* The filtered view, not every upload: `needs_attention` is the
                 same condition these counts were taken with. */}
-            <Button size="sm" variant="outline" className="shrink-0"
+            <Button size="sm" variant="ghost" className="h-7 shrink-0 text-info"
               onClick={() => navigate('/parse-errors?status=needs_attention')}>
               Inspect import errors
             </Button>
@@ -886,7 +781,7 @@ const BlockersStrip: React.FC<{
               {safeFallback(run.plan_title, `plan #${run.test_plan_id}`)} — the plan is locked to this
               run until it is resumed or abandoned
             </span>
-            <Button size="sm" variant="outline" className="shrink-0"
+            <Button size="sm" variant="ghost" className="h-7 shrink-0 text-info"
               onClick={() => navigate(`/executions/${run.session_id}`)}>
               Resume execution
             </Button>
@@ -897,8 +792,7 @@ const BlockersStrip: React.FC<{
             +{moreRuns} more interrupted run{moreRuns === 1 ? '' : 's'}
           </Button>
         )}
-      </CardContent>
-    </Card>
+    </div>
   );
 };
 
@@ -1196,54 +1090,49 @@ const Operations: React.FC = () => {
       )}
 
       {coverage && coverage.total_hosts === 0 && coverage.total_scopes === 0 && (
-        <Card className="mx-auto max-w-3xl">
-          <CardContent className="p-xl text-center">
-            <h2 className="mb-sm text-page-title font-semibold">
-              Welcome — let's set up this project
-            </h2>
-            <p className="mb-md text-metadata text-muted-foreground">
-              This project has no scopes or scans yet. Start by registering the network ranges
-              you're authorized to assess — everything else (coverage, triage, plans, agentic
-              recon) lights up once a scope exists.
-            </p>
-            <div className="flex flex-wrap justify-center gap-sm">
-              <Button onClick={() => navigate('/scopes')}>Register Your First Scope</Button>
-              <Button variant="outline" onClick={() => navigate('/scans')}>
-                Upload an Existing Scan
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <SetupBlock title="Welcome — let's set up this project">
+          This project has no scopes or scans yet. Start by registering the network ranges
+          you're authorized to assess — everything else (coverage, triage, plans, agentic
+          recon) lights up once a scope exists.
+          <div className="mt-sm flex flex-wrap gap-sm">
+            <Button size="sm" onClick={() => navigate('/scopes')}>Register Your First Scope</Button>
+            <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
+              Upload an Existing Scan
+            </Button>
+          </div>
+        </SetupBlock>
       )}
 
       {coverage && coverage.total_scopes > 0 && coverage.total_hosts === 0 && (
-        <Card className="mx-auto mb-md max-w-3xl">
-          <CardContent className="p-xl text-center">
-            <h2 className="mb-sm text-page-title font-semibold">
-              Scope is registered — time to discover hosts
-            </h2>
-            <p className="mb-md text-metadata text-muted-foreground">
-              No hosts have been discovered yet. The fastest way to get started is to run{' '}
-              <strong>Agentic Reconnaissance</strong> against your registered scope.
-            </p>
-            <div className="flex flex-wrap justify-center gap-sm">
-              {canStartRecon && (
-                <Button onClick={handleStartRecon}>
-                  <Rocket className="size-4" aria-hidden /> Start Agentic Recon
-                </Button>
-              )}
-              <Button variant="outline" onClick={() => navigate('/scans')}>
-                Upload an Existing Scan
+        <SetupBlock title="Scope is registered — time to discover hosts">
+          No hosts have been discovered yet. The fastest way to get started is to run{' '}
+          <strong className="text-foreground">Agentic Reconnaissance</strong> against your registered scope.
+          <div className="mt-sm flex flex-wrap gap-sm">
+            {canStartRecon && (
+              <Button size="sm" onClick={handleStartRecon}>
+                <Rocket className="size-4" aria-hidden /> Start Agentic Recon
               </Button>
-            </div>
-          </CardContent>
-        </Card>
+            )}
+            <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
+              Upload an Existing Scan
+            </Button>
+          </div>
+        </SetupBlock>
       )}
       {/* Opens when recon.scopeId becomes non-null via handleStartRecon. */}
       <StartReconDialog recon={recon} />
 
       {coverage && coverage.total_hosts > 0 && (
-        <>
+        // v5.267.0 — one column read top to bottom (UI_STYLE_GUIDE §7): a
+        // lead sentence, the callouts, then sections over thin rules. Five
+        // cards in a two-column grid made every queue the same weight.
+        <div className="flex min-w-0 flex-col gap-lg">
+          {workbench && !workbenchError && (
+            <OperationsLead
+              workbench={workbench}
+              pendingApprovals={canApprovePlans && !pendingError ? (pendingPlans?.length ?? 0) : 0}
+            />
+          )}
           {/* Since your last visit — what changed in this project while
               the operator was away (durable per-user cursor, P2). Leads
               the personal section: "what's new?" before "what's mine?". */}
@@ -1255,61 +1144,47 @@ const Operations: React.FC = () => {
               error={sinceError}
             />
           )}
-          {/* v5.241.0 — order follows what the page is FOR (design review
-              2026-09-19, the one item of it not yet shipped): what changed →
+          {/* v5.241.0 — order follows what the page is FOR: what changed →
               what is blocked on me → my work → runs → the project's state.
-              Project state + scan freshness used to lead, so the work an
-              analyst came to resume started below two cards of context. A
-              waiting approval is a blocker and leads; with nothing waiting the
-              same card keeps its empty state further down instead of pushing
-              My work off the top. */}
+              A waiting approval is a blocker and leads; with nothing waiting
+              the same block keeps its one-line empty state further down
+              instead of pushing My work off the top. */}
           <BlockersStrip
             blockers={workbench?.blockers ?? null}
             unavailable={workbench?.blockers_unavailable ?? false}
           />
           {approvalsWaiting && approvalsBlock}
-          {/* My Queue + My Tasks are personal by definition — the hosts
-              YOU marked In Review, the tasks assigned to YOU.  They
-              render unconditionally; the Mine/All toggle scopes only
-              the Runs section (a runs-view control), not your personal
-              widgets.  Pre-fix they were gated behind `scope === mine`,
-              so an operator viewing All runs lost sight of their own
-              review queue entirely.  Prop-driven from the single
-              /workbench fetch (P2). */}
-          {/* RV-DESIGN2 — ONE prioritised "My work" list merging host
-              investigations (In Review) and the test-plan steps the caller
-              owns, so there's a single queue to work rather than two cards
-              to reconcile.  Both arrays come from the single /workbench
-              fetch; the merge + ranking is in MyWorkCard. */}
           {/* Personal surface: the action queue (what needs doing) beside the
-              recent-notes strip (what I was just doing). Two distinct questions,
-              two cards — the prior single merged card tried to be both. */}
-          {/* min-w-0: a grid item's default min-width is its content, so one
-              unbreakable value in a card would widen the column past the page. */}
-          <div className="mb-md grid gap-md lg:grid-cols-2 [&>*]:min-w-0">
-            <MyWorkCard
-              queue={workbench?.my_queue ?? null}
-              tasks={workbench?.my_tasks ?? null}
-              notes={workbench?.my_notes ?? null}
-              findings={workbench?.my_findings ?? null}
-              investigate={workbench?.investigate ?? null}
-              investigateUnavailable={workbench?.investigate_unavailable ?? false}
-              followups={workbench?.followups ?? null}
-              followupsUnavailable={workbench?.followups_unavailable ?? false}
-              loading={workbenchLoading}
-              error={workbenchError}
-              onRetry={reload}
-              updated={<UpdatedAt at={loadedAt.workbench ?? null} />}
-            />
+              recent-activity feed (what I was just doing). My work, Needs
+              another look and Worth a look are personal/engagement queues
+              from the single /workbench fetch (P2); the Mine/All toggle
+              scopes only Runs. min-w-0: a grid item's default min-width is
+              its content, so one unbreakable value would widen the column. */}
+          <div className="grid gap-lg lg:grid-cols-3 [&>*]:min-w-0">
+            <div className="lg:col-span-2">
+              <MyWorkCard
+                queue={workbench?.my_queue ?? null}
+                tasks={workbench?.my_tasks ?? null}
+                notes={workbench?.my_notes ?? null}
+                findings={workbench?.my_findings ?? null}
+                investigate={workbench?.investigate ?? null}
+                investigateUnavailable={workbench?.investigate_unavailable ?? false}
+                followups={workbench?.followups ?? null}
+                followupsUnavailable={workbench?.followups_unavailable ?? false}
+                loading={workbenchLoading}
+                error={workbenchError}
+                onRetry={reload}
+                updated={<UpdatedAt at={loadedAt.workbench ?? null} />}
+              />
+            </div>
             <MyActivityCard refreshKey={refreshKey} />
           </div>
-          {/* Exposure + neglect analytics live on the Insights pages (per-subnet
-              hygiene + by-site rollup + cross-sectional hotspots) — reachable
-              from the nav, not duplicated here. */}
+          {/* Exposure + neglect analytics live on the Posture pages —
+              reachable from the nav, not duplicated here. */}
           {!approvalsWaiting && approvalsBlock}
           <RunsSection refreshKey={refreshKey} />
           {statsError && (
-            <Alert variant="warning" className="mb-md">
+            <Alert variant="warning">
               <AlertDescription className="flex items-center justify-between gap-md">
                 <span>{statsError}</span>
                 <Button variant="outline" size="sm" onClick={reload}>
@@ -1318,13 +1193,13 @@ const Operations: React.FC = () => {
               </AlertDescription>
             </Alert>
           )}
-          <ProjectStateCard
+          <ProjectStateSection
             stats={stats}
             statsLoading={statsLoading}
             coverage={coverage}
             coverageLoading={coverageLoading}
-            // Two sources feed this card: it is as old as the OLDER of them,
-            // and stale when either refresh failed over data it kept.
+            // Two sources feed this section: it is as old as the OLDER of
+            // them, and stale when either refresh failed over data it kept.
             updated={(
               <UpdatedAt
                 at={olderOf(loadedAt.stats, loadedAt.coverage)}
@@ -1332,9 +1207,63 @@ const Operations: React.FC = () => {
               />
             )}
           />
-        </>
+        </div>
       )}
     </div>
+  );
+};
+
+/** A setup step on a project with nothing in it yet: a left-rule block, not a
+ *  centred card (the page keeps its structure, §13). */
+const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <div className="max-w-3xl border-l-4 border-l-info py-xs pl-md">
+    <h2 className="text-subheading font-semibold text-foreground">{title}</h2>
+    <div className="mt-xxs text-metadata text-muted-foreground">{children}</div>
+  </div>
+);
+
+/**
+ * The page's lead (v5.267.0): one sentence saying what is waiting on the
+ * operator, from the same /workbench payload the sections below render — so
+ * the sentence and the sections cannot disagree.  Blocked work and overdue
+ * notes colour it; a queue alone does not (work is the page's normal state).
+ */
+const OperationsLead: React.FC<{ workbench: WorkbenchResponse; pendingApprovals: number }> = ({
+  workbench, pendingApprovals,
+}) => {
+  const { total, overdue } = personalWorkCounts(
+    workbench.my_queue, workbench.my_tasks, workbench.my_notes, workbench.my_findings,
+  );
+  const b = workbench.blockers;
+  const blocked = !workbench.blockers_unavailable && b
+    ? b.failed_import_count + b.partial_import_count + b.interrupted_execution_count
+    : 0;
+  const followups = workbench.followups_unavailable ? 0 : (workbench.followups?.total ?? 0);
+  const worth = workbench.investigate_unavailable ? 0 : (workbench.investigate?.queue_total ?? 0);
+  const n = (v: number) => v.toLocaleString();
+
+  const parts = [
+    blocked > 0 ? `${n(blocked)} blocked item${blocked === 1 ? '' : 's'} to unblock` : null,
+    pendingApprovals > 0 ? `${n(pendingApprovals)} plan${pendingApprovals === 1 ? '' : 's'} awaiting your approval` : null,
+    total > 0 ? `${n(total)} item${total === 1 ? '' : 's'} in your queue${overdue > 0 ? ` (${n(overdue)} overdue)` : ''}` : null,
+    followups > 0 ? `${n(followups)} reviewed host${followups === 1 ? '' : 's'} needing another look` : null,
+    worth > 0 ? `${n(worth)} untouched host${worth === 1 ? '' : 's'} worth a look` : null,
+  ].filter((p): p is string => !!p);
+
+  const tone: LeadTone = blocked > 0 || overdue > 0 ? 'critical' : pendingApprovals > 0 ? 'warning' : parts.length ? 'neutral' : 'clear';
+  const sentence = parts.length === 0
+    ? 'Nothing is waiting on you.'
+    : parts.length === 1
+      ? `${parts[0].charAt(0).toUpperCase()}${parts[0].slice(1)}.`
+      : `${parts.slice(0, -1).join(', ').replace(/^./, (c) => c.toUpperCase())} and ${parts[parts.length - 1]}.`;
+
+  return (
+    <PostureLead
+      tone={tone}
+      restsOn="Your queue is notes and plan steps assigned to you, hosts you have in review and findings you own. Needing another look and worth a look are engagement-wide."
+    >
+      {sentence}
+    </PostureLead>
   );
 };
 
