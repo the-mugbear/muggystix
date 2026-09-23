@@ -438,7 +438,11 @@ Important frontend contracts (enforced by `UI_STYLE_GUIDE.md`):
 
 ## 8. Observability, operations, and recovery
 
-- **Structured logs** — backend + workers log to stdout via `logging.basicConfig`. `scripts/collect-logs.sh` bundles backend/worker/db/nginx logs plus auth audit events for support cases.
+- **Structured logs** — backend + workers log to stdout via `logging.basicConfig`. `scripts/collect-logs.sh` produces an anonymised bundle, safe to share, covering the backend, worker, report-worker, nginx and db logs, the ingestion queue, and a per-format parser audit. The parser audit holds field-coverage counts only. `scripts/scrub_logs.py` rewrites every file:
+  - Values harvested from the database and `.env` become stable pseudonyms.
+  - So does anything shaped like an address, name, URL, account or secret.
+  - SQL error row data is removed.
+  - If scrubbing fails, no bundle is written.
 - **Audit trail** — `audit_logs` captures login/logout, password change, role change, session revoke, upload, scan delete, and other security-relevant events with user_id + IP + user agent.
 - **Health checks** — `/health` (backend), `/health.html` (frontend nginx), `pg_isready` (db), heartbeat-freshness checks (both workers — each rewrites its own heartbeat file every loop, so a wedged worker goes stale → unhealthy).
 - **Async report pipeline** — heavy report formats (PDF, JSON, zip bundles) are generated off the request path. The API enqueues a `report_jobs` row (`ReportJobService`), the **report-worker** claims it via `SELECT … FOR UPDATE SKIP LOCKED`, builds the artifact with `report_generator.py`, and writes it to the shared `uploads/report_artifacts` volume; the UI polls job status and downloads the finished file. Mirrors the ingestion pipeline (same `worker_loop.py`, same orphan-reaping semantics). See §1 for the container.
@@ -497,7 +501,7 @@ Single entry point: `./scripts/deploy.sh`. Options:
 
 Auxiliary scripts:
 
-- `scripts/collect-logs.sh` — bundle logs for support.
+- `scripts/collect-logs.sh` — anonymised diagnostics bundle (with `scripts/scrub_logs.py`).
 - `scripts/status.sh` — quick container status check.
 - `scripts/preflight.sh` — environment-probe helper for the agentic recon workflow.
 - `scripts/transfer-images.sh` — export/import container images for offline or air-gapped moves.

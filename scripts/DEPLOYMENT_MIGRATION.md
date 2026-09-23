@@ -82,7 +82,7 @@ Each deployment type offers cache control:
 
 The deployment system now includes:
 - **Comprehensive Auth Logging**: Frontend and backend authentication tracking
-- **Enhanced Log Collection**: `./scripts/collect-logs.sh` captures auth logs
+- **Log Collection**: `./scripts/collect-logs.sh` produces an anonymised diagnostics bundle
 - **Debug Tools**: Browser console commands for authentication debugging
 
 ### Working Test Credentials

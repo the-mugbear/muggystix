@@ -16,7 +16,7 @@ This directory contains utility scripts for deployment and maintenance.
 
 ### Maintenance Scripts
 
-- **`collect-logs.sh`** - Comprehensive log collection with authentication debugging
+- **`collect-logs.sh`** - Anonymised diagnostics bundle (container logs, ingestion queue, parser audit), safe to share. Scrubbed by `scrub_logs.py`, which needs `python3`. Options: `--since 72h` and `--terms FILE` (extra names to remove).
 - **`status.sh`** - Quick status check for all instances
 - **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so the Posture hub (Posture / Segments / Patterns / Evidence) and Findings are evaluable on a fresh install. Runs inside the backend container.
 - **`seed_named_assets.py`** - Layer the named-asset scenario onto that demo project (imported-but-unresolved FQDNs, domain scope, a load balancer with four vhosts, a rotated address, per-vhost findings, named plan entries and tested bindings). Goes through the real write paths. `--reset` removes only the rows a previous run created (tracked in a per-run manifest under the uploads dir) and re-seeds. Neither seed is run by `deploy.sh` — they are dev/demo-only and always manual.
