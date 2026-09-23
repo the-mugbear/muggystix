@@ -127,6 +127,8 @@ export const getScans = async (
     search?: string;
     tool?: string;
     createdAfter?: string;
+    /** Only files uploaded by this user id. */
+    uploadedBy?: number;
     sortBy?: 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'file_size' | 'duration_seconds' | 'total_hosts' | 'new_hosts';
     sortOrder?: 'asc' | 'desc';
     /** Only the files of this upload batch. */
@@ -138,12 +140,13 @@ export const getScans = async (
     signal?: AbortSignal;
   },
 ): Promise<Scan[]> => {
-  const { search, tool, createdAfter, sortBy, sortOrder, batchId, unbatched, ids, signal } = options ?? {};
+  const { search, tool, createdAfter, uploadedBy, sortBy, sortOrder, batchId, unbatched, ids, signal } = options ?? {};
   const params: Record<string, string | number | boolean> = { skip, limit };
   if (ids && ids.length) params.ids = ids.join(',');
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
+  if (uploadedBy != null) params.uploaded_by = uploadedBy;
   if (sortBy) params.sort_by = sortBy;
   if (sortOrder) params.sort_order = sortOrder;
   if (batchId != null) params.batch_id = batchId;
@@ -198,13 +201,17 @@ export interface ImportHistoryPage {
 }
 
 export const getImportHistory = async (
-  options?: { search?: string; tool?: string; createdAfter?: string; skip?: number; limit?: number; signal?: AbortSignal },
+  options?: {
+    search?: string; tool?: string; createdAfter?: string; uploadedBy?: number;
+    skip?: number; limit?: number; signal?: AbortSignal;
+  },
 ): Promise<ImportHistoryPage> => {
-  const { search, tool, createdAfter, skip, limit, signal } = options ?? {};
+  const { search, tool, createdAfter, uploadedBy, skip, limit, signal } = options ?? {};
   const params: Record<string, string | number> = {};
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
+  if (uploadedBy != null) params.uploaded_by = uploadedBy;
   if (skip) params.skip = skip;
   if (limit) params.limit = limit;
   const response = await api.get(`${p()}/scans/history`, { params, signal });
@@ -213,18 +220,19 @@ export const getImportHistory = async (
 
 export const getScanBatches = async (
   options?: {
-    search?: string; tool?: string; createdAfter?: string; skip?: number; limit?: number;
+    search?: string; tool?: string; createdAfter?: string; uploadedBy?: number; skip?: number; limit?: number;
     /** Only these batches (a history page's). */
     ids?: number[];
     signal?: AbortSignal;
   },
 ): Promise<ScanBatchSummary[]> => {
-  const { search, tool, createdAfter, skip, limit, ids, signal } = options ?? {};
+  const { search, tool, createdAfter, uploadedBy, skip, limit, ids, signal } = options ?? {};
   const params: Record<string, string | number> = {};
   if (ids) params.ids = ids.join(',');
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
+  if (uploadedBy != null) params.uploaded_by = uploadedBy;
   if (skip) params.skip = skip;
   if (limit) params.limit = limit;
   const response = await api.get(`${p()}/scans/batches`, { params, signal });
@@ -276,6 +284,15 @@ export interface ScanInventorySummary {
   // filters, batched files included, ignoring the tool filter.
   tool_counts?: Record<string, number>;
   total_files?: number;
+  /** v2.396.0 — who uploaded the matching files (not narrowed by the
+   *  uploader filter itself), most files first. */
+  uploaders?: ScanUploader[];
+}
+
+export interface ScanUploader {
+  user_id: number;
+  username: string;
+  files: number;
 }
 
 export const getScansSummary = async (
@@ -283,14 +300,16 @@ export const getScansSummary = async (
     search?: string;
     tool?: string;
     createdAfter?: string;
+    uploadedBy?: number;
     signal?: AbortSignal;
   },
 ): Promise<ScanInventorySummary> => {
-  const { search, tool, createdAfter, signal } = options ?? {};
-  const params: Record<string, string> = {};
+  const { search, tool, createdAfter, uploadedBy, signal } = options ?? {};
+  const params: Record<string, string | number> = {};
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
+  if (uploadedBy != null) params.uploaded_by = uploadedBy;
   const response = await api.get(`${p()}/scans/summary`, { params, signal });
   return response.data;
 };

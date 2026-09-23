@@ -69,4 +69,25 @@ describe('ScanBatchRow', () => {
     fireEvent.click(file);
     expect(onViewScan).toHaveBeenCalledWith(11);
   });
+
+  it('names the unit of every file figure, and gives no port count for a tool that reports none', async () => {
+    // "1 hosts · +0 · 0 open" read the +0 as ports, and "0 open" on a web
+    // tool as "found nothing".
+    const row = { scan_type: null, created_at: '2026-09-11T10:00:00Z', up_hosts: 1, updated_hosts: 1, total_ports: 0 };
+    (getScans as Mock).mockResolvedValue([
+      { ...row, id: 21, filename: 'sweep.xml', tool_name: 'nmap', total_hosts: 1, new_hosts: 0, open_ports: 0 },
+      { ...row, id: 22, filename: 'probe.jsonl', tool_name: 'httpx', total_hosts: 2, new_hosts: 1, open_ports: 0 },
+      { ...row, id: 23, filename: 'deep.xml', tool_name: 'nmap', total_hosts: 2, new_hosts: 2, open_ports: 1 },
+    ]);
+    renderRow({});
+    fireEvent.click(screen.getByRole('button', { name: /show the files of nmap-tcp-top1000/i }));
+    await screen.findByText('sweep.xml');
+
+    expect(screen.getByText('1 host · 0 new')).toBeInTheDocument();
+    expect(screen.getByText('0 open ports')).toBeInTheDocument();
+    expect(screen.getByText('2 hosts · 1 new')).toBeInTheDocument();
+    expect(screen.getByTitle('This tool does not report open ports')).toHaveTextContent('—');
+    expect(screen.getByText('1 open port')).toBeInTheDocument();
+    expect(screen.queryByText(/\+0/)).not.toBeInTheDocument();
+  });
 });

@@ -80,6 +80,12 @@ class CountResponse(BaseModel):
     total: int = Field(..., ge=0, description="Total count")
 
 
+class ScanUploader(BaseModel):
+    user_id: int
+    username: str
+    files: int
+
+
 class ScanInventorySummary(BaseModel):
     """Filter-aware totals for the /scans page headline cards.
 
@@ -97,6 +103,9 @@ class ScanInventorySummary(BaseModel):
     # filter), batched files included; drives the tool chips.
     tool_counts: Dict[str, int] = Field(default_factory=dict)
     total_files: int = Field(0, ge=0, description="Files matching the search/date filters, any tool")
+    # v2.396.0 — who uploaded the matching files (search/date/tool filters,
+    # NOT the uploader filter), most files first; drives the uploader chooser.
+    uploaders: List[ScanUploader] = Field(default_factory=list)
 
 
 class CommandArgument(BaseModel):
@@ -194,8 +203,8 @@ _ADMIN_RESPONSES = {
     403: {"description": "Insufficient permissions — admin role required"},
 }
 
-def _apply_scan_inventory_filters(query, *, search, tool, created_after):
-    """Apply the /scans page's search / tool / date-range filters.
+def _apply_scan_inventory_filters(query, *, search, tool, created_after, uploaded_by=None):
+    """Apply the /scans page's search / tool / date-range / uploader filters.
 
     Shared by the list endpoint and the summary endpoint so the headline
     totals can never drift from the rows the table shows.  Assumes
@@ -216,7 +225,15 @@ def _apply_scan_inventory_filters(query, *, search, tool, created_after):
         )
     if created_after is not None:
         query = query.filter(models.Scan.created_at >= created_after)
+    if uploaded_by is not None:
+        query = query.filter(models.Scan.uploaded_by_id == uploaded_by)
     return query
+
+
+_UPLOADED_BY = Query(
+    None, ge=1,
+    description="Only files uploaded by this user id (an agent's uploads count as its operator's).",
+)
 
 
 def _web_contribution(db: Session, project_id: int, scan_ids: List[int]) -> Dict[int, ScanWebSummary]:
@@ -416,6 +433,7 @@ def get_scans(
             "Drives the date-range chips on the /scans page (v2.83.0)."
         ),
     ),
+    uploaded_by: Optional[int] = _UPLOADED_BY,
     batch_id: Optional[int] = Query(
         None, description="Only the files of this upload batch (v2.335.0).",
     ),
@@ -485,7 +503,7 @@ def get_scans(
     # with the summary endpoint via _apply_scan_inventory_filters so the
     # headline totals can't drift from the rows shown here.
     scans_query = _apply_scan_inventory_filters(
-        scans_query, search=search, tool=tool, created_after=created_after
+        scans_query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
     )
     if ids:
         try:
@@ -791,6 +809,7 @@ def get_scans_summary(
     search: Optional[str] = Query(None, max_length=200),
     tool: Optional[str] = Query(None, max_length=64),
     created_after: Optional[datetime] = Query(None),
+    uploaded_by: Optional[int] = _UPLOADED_BY,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -815,7 +834,7 @@ def get_scans_summary(
         .filter(models.Scan.project_id == project.id)
     )
     host_agg = _apply_scan_inventory_filters(
-        host_agg, search=search, tool=tool, created_after=created_after
+        host_agg, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
     )
     host_row = host_agg.one()
 
@@ -834,7 +853,7 @@ def get_scans_summary(
         )
     )
     open_services_query = _apply_scan_inventory_filters(
-        open_services_query, search=search, tool=tool, created_after=created_after
+        open_services_query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
     )
     open_services = open_services_query.scalar() or 0
 
@@ -849,9 +868,24 @@ def get_scans_summary(
         .filter(models.Scan.project_id == project.id)
     )
     tool_counts_q = _apply_scan_inventory_filters(
-        tool_counts_q, search=search, tool=None, created_after=created_after
+        tool_counts_q, search=search, tool=None, created_after=created_after, uploaded_by=uploaded_by
     )
     tool_counts = {label: int(n) for label, n in tool_counts_q.group_by(tool_expr).all() if label}
+
+    # Who uploaded what matches the other filters — never narrowed by the
+    # uploader filter itself, so the chooser keeps offering everyone else.
+    uploaders_q = _apply_scan_inventory_filters(
+        db.query(User.id, User.username, func.count(models.Scan.id))
+        .select_from(models.Scan)
+        .join(User, User.id == models.Scan.uploaded_by_id)
+        .filter(models.Scan.project_id == project.id),
+        search=search, tool=tool, created_after=created_after,
+    )
+    uploaders = [
+        ScanUploader(user_id=uid, username=name, files=int(n))
+        for uid, name, n in uploaders_q.group_by(User.id, User.username)
+        .order_by(func.count(models.Scan.id).desc(), User.username).all()
+    ]
 
     return ScanInventorySummary(
         total_scans=host_row.total_scans or 0,
@@ -860,6 +894,7 @@ def get_scans_summary(
         open_services=open_services,
         tool_counts=tool_counts,
         total_files=sum(tool_counts.values()),
+        uploaders=uploaders,
     )
 
 
@@ -1028,6 +1063,7 @@ def get_import_history(
     search: Optional[str] = Query(None, max_length=200),
     tool: Optional[str] = Query(None, max_length=64),
     created_after: Optional[datetime] = Query(None),
+    uploaded_by: Optional[int] = _UPLOADED_BY,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -1046,7 +1082,7 @@ def get_import_history(
     whatever the page: batches, their matching-file dates, the unbatched
     scans down to the end of the requested page, and their count.
     """
-    filters_active = bool(search or tool or created_after)
+    filters_active = bool(search or tool or created_after or uploaded_by)
 
     def _aware(dt):
         if dt is None:
@@ -1068,7 +1104,7 @@ def get_import_history(
                 models.Scan.project_id == project.id,
                 models.Scan.batch_id.in_([b.id for b in batches]),
             ),
-            search=search, tool=tool, created_after=created_after,
+            search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
         )
         newest_match = {bid: when for bid, when in matching.group_by(models.Scan.batch_id).all()}
     batch_entries = [
@@ -1080,7 +1116,7 @@ def get_import_history(
     unbatched = _apply_scan_inventory_filters(
         db.query(models.Scan.id, models.Scan.created_at)
         .filter(models.Scan.project_id == project.id, models.Scan.batch_id.is_(None)),
-        search=search, tool=tool, created_after=created_after,
+        search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
     )
     scan_total = unbatched.with_entities(func.count(models.Scan.id)).scalar() or 0
     # Only the scans that can reach this page: the newest skip+limit of them.
@@ -1121,6 +1157,7 @@ def list_scan_batches(
     search: Optional[str] = Query(None, max_length=200),
     tool: Optional[str] = Query(None, max_length=64),
     created_after: Optional[datetime] = Query(None),
+    uploaded_by: Optional[int] = _UPLOADED_BY,
     ids: Optional[str] = Query(
         None, max_length=2000,
         description=(
@@ -1138,7 +1175,9 @@ def list_scan_batches(
     batch with ``GET /scans/?batch_id=…``."""
     def _matching(query):
         query = query.filter(models.Scan.project_id == project.id, models.Scan.batch_id.isnot(None))
-        return _apply_scan_inventory_filters(query, search=search, tool=tool, created_after=created_after)
+        return _apply_scan_inventory_filters(
+            query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
+        )
 
     wanted_ids: Optional[List[int]] = None
     if ids is not None:
@@ -1154,8 +1193,8 @@ def list_scan_batches(
     # queued, or all failed, has no scan row yet and was invisible exactly
     # when the operator needed it.  With no inventory filter every batch is
     # listed; with a filter, only batches holding a matching file.
-    filters_active = bool(search or tool or created_after)
-    batch_query = db.query(models.ScanBatch).filter(models.ScanBatch.project_id == project.id)
+    filters_active = bool(search or tool or created_after or uploaded_by)
+    batch_query =db.query(models.ScanBatch).filter(models.ScanBatch.project_id == project.id)
     if wanted_ids is not None:
         batch_query = batch_query.filter(models.ScanBatch.id.in_(wanted_ids))
     else:

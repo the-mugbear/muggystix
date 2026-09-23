@@ -390,6 +390,42 @@ def test_summary_tool_counts_cover_batched_files_and_ignore_the_tool_filter(clie
     assert filtered["total_scans"] == 1
 
 
+def test_scans_filter_by_who_uploaded_them(client, db_session, test_project, test_user):
+    """v2.396.0 — every /scans list (flat, history, batches, summary) takes
+    ``uploaded_by``; the summary names the uploaders for the chooser and is
+    not narrowed by that filter itself."""
+    from app.db.models_auth import User, UserRole
+
+    other = User(id=501, username="ben", email="ben@example.com", hashed_password="x", role=UserRole.MEMBER)
+    db_session.add(other)
+    db_session.commit()
+    f = _history_fixture(db_session, test_project)
+    # test_user uploaded s1 and batch B's masscan file; ben uploaded s3; the rest nobody recorded.
+    f["s1"].uploaded_by_id = f["b2"].uploaded_by_id = test_user.id
+    f["s3"].uploaded_by_id = other.id
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/scans"
+
+    mine = {"uploaded_by": test_user.id}
+    assert {r["id"] for r in client.get(f"{base}/", params=mine).json()} == {f["s1"].id, f["b2"].id}
+    history = client.get(f"{base}/history", params=mine).json()
+    assert [(e["kind"], e["id"]) for e in history["items"]] == [("batch", f["B"].id), ("scan", f["s1"].id)]
+    batches = client.get(f"{base}/batches", params=mine).json()
+    assert [(b["id"], b["files"], b["total_files"]) for b in batches] == [(f["B"].id, 1, 2)]
+
+    summary = client.get(f"{base}/summary", params=mine).json()
+    assert summary["total_scans"] == 2
+    assert summary["tool_counts"] == {"NMAP": 1, "MASSCAN": 1}
+    assert summary["uploaders"] == [
+        {"user_id": test_user.id, "username": test_user.username, "files": 2},
+        {"user_id": other.id, "username": "ben", "files": 1},
+    ]
+    # The chooser follows the other filters.
+    by_tool = client.get(f"{base}/summary", params={"tool": "masscan"}).json()
+    assert [u["username"] for u in by_tool["uploaders"]] == [test_user.username]
+    assert client.get(f"{base}/", params={"uploaded_by": 0}).status_code == 422
+
+
 def test_flat_list_can_leave_batch_files_out_or_show_one_batch(client, db_session, test_project):
     batch, s1, s2, loose = _seed_batch(db_session, test_project)
     base = f"/api/v1/projects/{test_project.id}/scans/"

@@ -14,6 +14,7 @@ export interface HistoryFilters {
   search?: string;
   tool?: string;
   createdAfter?: string;
+  uploadedBy?: number;
 }
 
 export interface HistoryApi {

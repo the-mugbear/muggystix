@@ -235,6 +235,11 @@ export default function Scans() {
     return raw === 'asc' ? 'asc' : 'desc';
   });
   const [showBatchFiles, setShowBatchFiles] = useState(() => urlParams.get('batch_files') === 'show');
+  // v5.281.0 — who uploaded the file (an agent's uploads are its operator's).
+  const [uploaderFilter, setUploaderFilter] = useState<number | null>(() => {
+    const parsed = parseInt(urlParams.get('uploaded_by') || '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  });
   // v5.215.0 — "Skip informational Nessus findings", the switch beside the
   // drop zone. Seeded from the project's effective setting (its own choice,
   // else the deployment default), written back to the project when flipped
@@ -270,11 +275,23 @@ export default function Scans() {
   // empty query string, which churns the browser history.
   const filtersInitialized = useRef(false);
 
-  const hasActiveFilters = toolFilter !== '' || debouncedSearchText.trim() !== '' || dateRangeDays !== null;
+  const hasActiveFilters = toolFilter !== '' || debouncedSearchText.trim() !== ''
+    || dateRangeDays !== null || uploaderFilter !== null;
   const createdAfterIso = useMemo(() => {
     if (dateRangeDays == null) return undefined;
     return new Date(Date.now() - dateRangeDays * 24 * 60 * 60 * 1000).toISOString();
   }, [dateRangeDays]);
+  // One filter object for every list, the summary and the batch rows, so
+  // they can never disagree about what "the current filters" are.
+  const listFilters = useMemo(
+    () => ({
+      search: debouncedSearchText.trim() || undefined,
+      tool: toolFilter || undefined,
+      createdAfter: createdAfterIso,
+      uploadedBy: uploaderFilter ?? undefined,
+    }),
+    [debouncedSearchText, toolFilter, createdAfterIso, uploaderFilter],
+  );
   const [expandedJobIds, setExpandedJobIds] = useState<Set<number>>(new Set());
   const [commandCache, setCommandCache] = useState<Record<number, CommandExplanation>>({});
 
@@ -323,11 +340,7 @@ export default function Scans() {
     // land last (review 2026-09-23 R11).
     const gen = ++fetchGenRef.current;
     const current = () => gen === fetchGenRef.current;
-    const filters = {
-      search: debouncedSearchText.trim() || undefined,
-      tool: toolFilter || undefined,
-      createdAfter: createdAfterIso,
-    };
+    const filters = listFilters;
     if (showBatchFiles) {
       // All files: one flat, sortable list of every imported file.
       try {
@@ -377,7 +390,7 @@ export default function Scans() {
     } catch (err) {
       console.error('Error fetching scan summary:', err);
     }
-  }, [toolFilter, debouncedSearchText, createdAfterIso, sortBy, sortOrder, showBatchFiles, hydrateHistory]);
+  }, [listFilters, sortBy, sortOrder, showBatchFiles, hydrateHistory]);
 
   const loadMoreScans = useCallback(async () => {
     if (loadingMore || !hasMoreScans) return;
@@ -385,11 +398,7 @@ export default function Scans() {
     const gen = fetchGenRef.current;
     setLoadingMore(true);
     try {
-      const filters = {
-        search: debouncedSearchText.trim() || undefined,
-        tool: toolFilter || undefined,
-        createdAfter: createdAfterIso,
-      };
+      const filters = listFilters;
       if (!showBatchFiles) {
         const page = await getImportHistory({ ...filters, skip: history.length, limit: HISTORY_PAGE });
         const rows = await hydrateHistory(page.items, filters);
@@ -417,9 +426,7 @@ export default function Scans() {
     }
   }, [
     scans.length,
-    toolFilter,
-    debouncedSearchText,
-    createdAfterIso,
+    listFilters,
     sortBy,
     sortOrder,
     showBatchFiles,
@@ -524,9 +531,11 @@ export default function Scans() {
     else next.delete('sort_order');
     if (showBatchFiles) next.set('batch_files', 'show');
     else next.delete('batch_files');
+    if (uploaderFilter != null) next.set('uploaded_by', String(uploaderFilter));
+    else next.delete('uploaded_by');
     setUrlParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText, toolFilter, dateRangeDays, sortBy, sortOrder, showBatchFiles]);
+  }, [debouncedSearchText, toolFilter, dateRangeDays, sortBy, sortOrder, showBatchFiles, uploaderFilter]);
 
   useEffect(() => {
     fetchScans();
@@ -1656,6 +1665,34 @@ export default function Scans() {
                 ))}
               </SelectContent>
             </Select>
+            {/* Who uploaded it — offered once there is more than one uploader
+                (or a link arrived with one chosen). The counts follow the
+                other filters, never this one, so everyone stays listed. */}
+            {((inventorySummary?.uploaders?.length ?? 0) > 1 || uploaderFilter != null) && (
+              <Select
+                value={uploaderFilter == null ? 'anyone' : String(uploaderFilter)}
+                onValueChange={(v) => setUploaderFilter(v === 'anyone' ? null : parseInt(v, 10))}
+              >
+                <SelectTrigger className="h-8 w-44 min-w-0 text-metadata" aria-label="Filter scans by uploader">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="anyone">Uploaded by anyone</SelectItem>
+                  {(inventorySummary?.uploaders ?? []).map((u) => (
+                    <SelectItem key={u.user_id} value={String(u.user_id)}>
+                      <span className="block max-w-56 truncate" title={u.username}>
+                        {u.username} ({u.files.toLocaleString()})
+                      </span>
+                    </SelectItem>
+                  ))}
+                  {/* Chosen, but none of their files match the other filters. */}
+                  {uploaderFilter != null
+                    && !(inventorySummary?.uploaders ?? []).some((u) => u.user_id === uploaderFilter) && (
+                    <SelectItem value={String(uploaderFilter)}>User #{uploaderFilter} (0)</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+            )}
             {/* v5.239.0 — one history, two ways to read it. */}
             <div
               className="inline-flex overflow-hidden rounded-control border border-border"
@@ -1714,7 +1751,7 @@ export default function Scans() {
                   <AlertCircle className="size-4 text-muted-foreground" aria-hidden /> No scans match these filters
                 </p>
                 <p className="max-w-md text-metadata text-muted-foreground">
-                  Adjust the search, tool, or date range above — or clear them to see every scan
+                  Adjust the search, tool, date range or uploader above — or clear them to see every scan
                   in this project.
                 </p>
                 <Button
@@ -1724,6 +1761,7 @@ export default function Scans() {
                     setSearchText('');
                     setToolFilter('');
                     setDateRangeDays(null);
+                    setUploaderFilter(null);
                   }}
                 >
                   Clear filters
@@ -1794,11 +1832,7 @@ export default function Scans() {
                           batch={row.batch}
                           stagedJobs={stagedByBatch.get(row.batch.id)}
                           onReviewStaged={openReview}
-                          filters={{
-                            search: debouncedSearchText.trim() || undefined,
-                            tool: toolFilter || undefined,
-                            createdAfter: createdAfterIso,
-                          }}
+                          filters={listFilters}
                           onViewScan={handleViewScan}
                           colSpan={5}
                         />

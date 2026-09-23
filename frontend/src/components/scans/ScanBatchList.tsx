@@ -5,6 +5,7 @@ import type { IngestionJob, Scan, ScanBatchSummary } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { TableCell, TableRow } from '../ui/table';
+import { toolFamily } from './ScanContribution';
 
 // A batch's files load when it is expanded. A sweep of a few hundred files
 // fits one request; past that the operator narrows with the page's search.
@@ -13,7 +14,7 @@ const FILES_PER_BATCH = 500;
 interface ScanBatchRowProps {
   batch: ScanBatchSummary;
   /** The page's filters — an expanded batch lists only its matching files. */
-  filters: { search?: string; tool?: string; createdAfter?: string };
+  filters: { search?: string; tool?: string; createdAfter?: string; uploadedBy?: number };
   onViewScan: (scanId: number) => void;
   /** Columns of the table this row sits in. */
   colSpan: number;
@@ -26,6 +27,17 @@ interface ScanBatchRowProps {
 }
 
 const formatWhen = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
+
+const count = (n: number, one: string, many = `${one}s`) =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/** A file row's port figure.  Every figure names its unit: the old
+ *  "1 hosts · +0 · 0 open" read the +0 as ports, and "0 open" on a web or
+ *  vulnerability tool as "found nothing" when the tool reports no ports. */
+const portsLabel = (s: Scan): string | null => {
+  if (s.open_ports > 0) return count(s.open_ports, 'open port');
+  return toolFamily(s.tool_name) === 'port' ? '0 open ports' : null;
+};
 
 /**
  * One upload batch as a group row of the import history (v5.239.0).
@@ -231,12 +243,22 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                     <span className="w-24 shrink-0 truncate text-muted-foreground">
                       {s.tool_name || s.scan_type || '—'}
                     </span>
-                    <span className="w-36 shrink-0 text-right tabular-nums">
-                      {s.total_hosts.toLocaleString()} hosts · +{s.new_hosts.toLocaleString()}
+                    <span
+                      className="w-36 shrink-0 truncate text-right tabular-nums"
+                      title="Hosts this file observed, and how many of them were new to the project"
+                    >
+                      {count(s.total_hosts, 'host')} · {s.new_hosts.toLocaleString()} new
                     </span>
-                    <span className="w-24 shrink-0 text-right tabular-nums">
-                      {s.open_ports.toLocaleString()} open
-                    </span>
+                    {portsLabel(s) ? (
+                      <span className="w-28 shrink-0 truncate text-right tabular-nums">{portsLabel(s)}</span>
+                    ) : (
+                      <span
+                        className="w-28 shrink-0 truncate text-right text-muted-foreground"
+                        title="This tool does not report open ports"
+                      >
+                        —
+                      </span>
+                    )}
                   </li>
                 ))}
                 {state.length === FILES_PER_BATCH && (

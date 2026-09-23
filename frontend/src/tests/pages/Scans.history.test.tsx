@@ -47,9 +47,9 @@ const batch = (id: number, label: string) => ({
   pending_files: 0, failed_files: 0,
 });
 
-const renderPage = () =>
+const renderPage = (path = '/scans') =>
   render(
-    <MemoryRouter initialEntries={['/scans']}>
+    <MemoryRouter initialEntries={[path]}>
       <TooltipProvider><Scans /></TooltipProvider>
     </MemoryRouter>,
   );
@@ -71,6 +71,41 @@ beforeEach(() => {
   // Each endpoint answers in its own order; the page must not use it.
   api.getScans.mockResolvedValue([scan(3, 'older.xml'), scan(9, 'newest.xml')]);
   api.getScanBatches.mockResolvedValue([batch(4, 'DMZ sweep')]);
+});
+
+describe('Scans — filter by uploader (v5.281.0)', () => {
+  const summary = (uploaders: { user_id: number; username: string; files: number }[]) => ({
+    total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 }, uploaders,
+  });
+
+  it('offers the uploader filter only when there is more than one uploader', async () => {
+    api.getScansSummary.mockResolvedValue(summary([{ user_id: 1, username: 'ana', files: 3 }]));
+    const { unmount } = renderPage();
+    await screen.findByText('newest.xml');
+    expect(screen.queryByRole('combobox', { name: /filter scans by uploader/i })).not.toBeInTheDocument();
+    unmount();
+
+    api.getScansSummary.mockResolvedValue(summary([
+      { user_id: 1, username: 'ana', files: 2 },
+      { user_id: 7, username: 'ben', files: 1 },
+    ]));
+    renderPage();
+    expect(await screen.findByRole('combobox', { name: /filter scans by uploader/i })).toHaveTextContent('Uploaded by anyone');
+  });
+
+  it('a link with an uploader filters the history, its rows and the totals', async () => {
+    api.getScansSummary.mockResolvedValue(summary([
+      { user_id: 1, username: 'ana', files: 2 },
+      { user_id: 7, username: 'ben', files: 1 },
+    ]));
+    renderPage('/scans?uploaded_by=7');
+    expect(await screen.findByRole('combobox', { name: /filter scans by uploader/i })).toHaveTextContent('ben (1)');
+    await waitFor(() => {
+      expect(api.getImportHistory).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
+      expect(api.getScansSummary).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
+      expect(api.getScanBatches).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
+    });
+  });
 });
 
 describe('Scans — import history', () => {
