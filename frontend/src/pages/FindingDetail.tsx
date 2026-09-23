@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '../utils/severity';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 
 import {
   Finding,
@@ -37,6 +37,7 @@ import MessageBubble from '../components/MessageBubble';
 import FindingReportTextCard from '../components/FindingReportTextCard';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
+import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
@@ -106,6 +107,7 @@ const FindingDetail: React.FC = () => {
   // The note thread this finding was promoted from — body + image evidence,
   // shown inline (the page previously only linked out to it).
   const [evidenceThread, setEvidenceThread] = useState<Annotation[]>([]);
+  const [addHostsOpen, setAddHostsOpen] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -373,6 +375,18 @@ const FindingDetail: React.FC = () => {
     }
   };
 
+  // Added hosts: say how many were new — the server skips any already on
+  // the finding (e.g. added by someone else since the dialog opened).
+  const handleHostsAdded = (updated: Finding, requested: number[]) => {
+    const before = new Set(finding?.hosts.map((h) => h.host_id) ?? []);
+    const added = new Set(updated.hosts.map((h) => h.host_id).filter((id) => !before.has(id)));
+    const skipped = requested.filter((id) => !added.has(id)).length;
+    setFinding(updated);
+    void loadHistory();
+    const addedText = `Added ${added.size} host${added.size === 1 ? '' : 's'}`;
+    toast.success(skipped ? `${addedText} · ${skipped} already affected` : `${addedText}.`);
+  };
+
   if (loading && !finding) return <DetailSkeleton />;
   if (error || !finding) {
     return (
@@ -582,7 +596,14 @@ const FindingDetail: React.FC = () => {
 
       <Card className="mb-md">
         <CardHeader>
-          <CardTitle>Affected hosts ({finding.host_count})</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-sm">
+            <CardTitle>Affected hosts ({finding.host_count})</CardTitle>
+            {canManage && (
+              <Button variant="outline" size="sm" onClick={() => setAddHostsOpen(true)}>
+                <Plus className="size-4" aria-hidden /> Add hosts
+              </Button>
+            )}
+          </div>
           {/* v5.225.0 — the finding's status is the issue's; each endpoint
               keeps its own, so "Confirmed" here never means every host. */}
           <p className="text-caption text-muted-foreground">
@@ -743,6 +764,14 @@ const FindingDetail: React.FC = () => {
         </DialogContent>
       </Dialog>
       {confirmDialog}
+      {canManage && (
+        <AddFindingHostsDialog
+          open={addHostsOpen}
+          onOpenChange={setAddHostsOpen}
+          finding={finding}
+          onAdded={handleHostsAdded}
+        />
+      )}
     </div>
   );
 };

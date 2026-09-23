@@ -19,6 +19,7 @@ vi.mock('../../services/api', () => ({
   deleteFinding: vi.fn(),
   removeFindingEndpoint: vi.fn(),
   addFindingHosts: vi.fn(),
+  getHosts: vi.fn(),
   getHostNotes: vi.fn(),
   listProjectMembers: vi.fn(),
   getFindingNotes: vi.fn(),
@@ -246,5 +247,63 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('A CVSS score is a number from 0.0 to 10.0.')).toBeInTheDocument();
     expect(mocked.updateFinding).not.toHaveBeenCalled();
+  });
+});
+
+describe('FindingDetail — add affected hosts', () => {
+  const attached = {
+    id: 90, host_id: 11, ip_address: '10.0.0.11', hostname: 'dc01', host_status: 'open', name_id: null, fqdn: null,
+  };
+  const hostRow = (id: number, ip: string, hostname: string | null = null) => ({ id, ip_address: ip, hostname });
+
+  it('searches, picks several hosts across searches, and adds them in one request', async () => {
+    const user = userEvent.setup();
+    mocked.getFinding.mockResolvedValue(finding({ host_count: 1, hosts: [attached] }));
+    mocked.getHosts.mockImplementation(async ({ search }: { search?: string }) => ({
+      items: search === 'web'
+        ? [hostRow(13, '10.0.0.13', 'web01.' + 'x'.repeat(200))]
+        : [hostRow(11, '10.0.0.11', 'dc01'), hostRow(12, '10.0.0.12', 'dc02')],
+      total: null,
+    }));
+    mocked.addFindingHosts.mockResolvedValue(finding({
+      host_count: 3,
+      hosts: [
+        attached,
+        { ...attached, id: 91, host_id: 12, ip_address: '10.0.0.12' },
+        { ...attached, id: 92, host_id: 13, ip_address: '10.0.0.13' },
+      ],
+    }));
+
+    renderAt('/findings/7');
+    await user.click(await screen.findByRole('button', { name: /Add hosts/ }));
+
+    // The host already on the finding is shown but cannot be picked.
+    const dc01 = await screen.findByRole('checkbox', { name: 'Add 10.0.0.11' });
+    expect(dc01).toBeDisabled();
+    expect(screen.getByText('already affected')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Add 10.0.0.12' }));
+    // A second search keeps the first pick.
+    await user.type(screen.getByLabelText('Search hosts'), 'web');
+    await user.click(await screen.findByRole('checkbox', { name: 'Add 10.0.0.13' }));
+    expect(screen.getByLabelText('Selected hosts')).toHaveTextContent('10.0.0.12');
+
+    await user.click(screen.getByRole('button', { name: 'Add 2 hosts' }));
+    await waitFor(() => expect(mocked.addFindingHosts).toHaveBeenCalledWith(7, [12, 13]));
+    expect(await screen.findByText('Affected hosts (3)')).toBeInTheDocument();
+    expect(toastMock.success).toHaveBeenCalledWith('Added 2 hosts.');
+    expect(mocked.getFindingHistory).toHaveBeenCalledTimes(2); // refreshed after the add
+  });
+
+  it('keeps the dialog open with the reason when the add fails', async () => {
+    const user = userEvent.setup();
+    mocked.getHosts.mockResolvedValue({ items: [hostRow(12, '10.0.0.12')], total: null });
+    mocked.addFindingHosts.mockRejectedValue(new Error('Hosts [12] are not in this project.'));
+    renderAt('/findings/7');
+    await user.click(await screen.findByRole('button', { name: /Add hosts/ }));
+    await user.click(await screen.findByRole('checkbox', { name: 'Add 10.0.0.12' }));
+    await user.click(screen.getByRole('button', { name: 'Add 1 host' }));
+    expect(await screen.findByText(/not in this project|could not be added/)).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });

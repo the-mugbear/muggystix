@@ -195,6 +195,6 @@ class FindingEndpointRef(BaseModel):
 
 class FindingHostsRequest(BaseModel):
     # Plain hosts (unnamed, host-level associations) …
-    host_ids: List[int] = []
+    host_ids: List[int] = Field(default_factory=list, max_length=500)
     # … and/or explicit endpoints (v2.325.0).  Either may be empty.
-    endpoints: List[FindingEndpointRef] = []
+    endpoints: List[FindingEndpointRef] = Field(default_factory=list, max_length=500)
