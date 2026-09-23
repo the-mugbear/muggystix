@@ -4,10 +4,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../services/api', () => ({
   getFindingNotes: vi.fn(),
   createFindingNote: vi.fn(),
+  updateFindingNote: vi.fn(),
+  deleteFindingNote: vi.fn(),
   uploadFindingNoteAttachment: vi.fn(),
 }));
 const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1, username: 'ana' } }) }));
+const confirmMock = vi.fn();
+vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
 // Attachment thumbnails fetch blobs; not under test here.
 vi.mock('../../components/host-inspector/NoteAttachments', () => ({ default: () => null }));
 
@@ -139,5 +144,54 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
     // A's completion must not touch B.
     await waitFor(() => expect(api.uploadFindingNoteAttachment).toHaveBeenCalledTimes(3));
     expect(screen.getByText('B.png')).toBeInTheDocument();
+  });
+});
+
+describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => {
+  const others = (id: number, body: string) => ({ ...note(id, body), author_id: 2, author_name: 'bo' });
+
+  it('offers Edit and Delete on my comments only', async () => {
+    mocked.getFindingNotes.mockResolvedValue([note(1, 'mine'), others(2, 'theirs')]);
+    renderThread();
+    await screen.findByText('theirs');
+    expect(screen.getAllByRole('button', { name: /Edit/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /Delete comment/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /Reply/ })).toHaveLength(2);
+  });
+
+  it('edits in place and marks the comment edited', async () => {
+    mocked.getFindingNotes.mockResolvedValue([note(1, 'frist draft')]);
+    mocked.updateFindingNote.mockResolvedValue({
+      ...note(1, 'first draft'), updated_at: '2026-08-01T01:00:00Z',
+    });
+    renderThread();
+    await screen.findByText('frist draft');
+    fireEvent.click(screen.getByRole('button', { name: /Edit/ }));
+    fireEvent.change(screen.getByLabelText('Edit comment'), { target: { value: ' first draft ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateFindingNote).toHaveBeenCalledWith(7, 1, 'first draft'));
+    expect(await screen.findByText('first draft')).toBeInTheDocument();
+    expect(screen.getByText(/edited/)).toBeInTheDocument();
+  });
+
+  it('deletes after confirmation', async () => {
+    mocked.getFindingNotes.mockResolvedValue([note(1, 'mine')]);
+    mocked.deleteFindingNote.mockResolvedValue(undefined);
+    confirmMock.mockResolvedValueOnce(true);
+    renderThread();
+    await screen.findByText('mine');
+    fireEvent.click(screen.getByRole('button', { name: /Delete comment/ }));
+    await waitFor(() => expect(mocked.deleteFindingNote).toHaveBeenCalledWith(7, 1));
+    await waitFor(() => expect(screen.queryByText('mine')).toBeNull());
+  });
+
+  it('a comment with replies is not deleted — it says why instead of asking', async () => {
+    mocked.getFindingNotes.mockResolvedValue([note(1, 'root'), { ...others(2, 'reply'), parent_id: 1 }]);
+    renderThread();
+    await screen.findByText('reply');
+    fireEvent.click(screen.getByRole('button', { name: /Delete comment/ }));
+    expect(toastMock.info).toHaveBeenCalledWith(expect.stringMatching(/has replies/));
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(mocked.deleteFindingNote).not.toHaveBeenCalled();
   });
 });

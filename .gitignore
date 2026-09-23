@@ -230,6 +230,7 @@ artifacts/
 CLAUDE.md
 notes.txt
 troubleshooting_*
+temp_artifacts/
 
 # Internal docs kept local-only — not published to the public repo.
 # CLAUDE.md (architecture/ops guidance) and CHANGELOG.md (detailed dev
@@ -260,6 +261,7 @@ all_container_logs.txt
 # Oneoff planning docs
 suggestions.md
 CODEREVIEW.txt
+/comprehensivereview.txt
 /HOSTDESIGN.md
 
 # deploy.sh rollback snapshot state (B2-1) — operator-local, per-deploy

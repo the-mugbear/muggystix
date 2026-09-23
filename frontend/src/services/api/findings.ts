@@ -50,6 +50,11 @@ export interface Finding {
   hosts: FindingHostInfo[];
   /** v5.225.0 — {open, remediated, retest} over the endpoint rows. */
   endpoint_status_counts?: Partial<Record<FindingHostStatus, number>>;
+  /** v5.256.0 — who recorded it, and whether the caller may rename or delete
+   *  it (its author or a project admin). Triage is not gated by this. */
+  created_by_id?: number | null;
+  created_by_name?: string | null;
+  can_modify?: boolean;
   created_at: string;
   updated_at: string | null;
 }
@@ -131,6 +136,13 @@ export const updateFinding = async (
 ): Promise<Finding> => {
   const response = await api.patch<Finding>(`${p()}/findings/${findingId}`, payload);
   return response.data;
+};
+
+/** v5.256.0 — delete a finding recorded in error (its author or a project
+ *  admin). Its comments and history go with it; the evidence it pointed at
+ *  (source note, scanner rows) stays. */
+export const deleteFinding = async (findingId: number): Promise<void> => {
+  await api.delete(`${p()}/findings/${findingId}`);
 };
 
 export const setFindingStatus = async (
@@ -222,6 +234,21 @@ export const createFindingNote = async (
     parent_id: parentId ?? null,
   });
   return response.data;
+};
+
+/** v5.256.0 — the comment's author only. */
+export const updateFindingNote = async (
+  findingId: number,
+  noteId: number,
+  body: string,
+): Promise<Annotation> => {
+  const response = await api.patch<Annotation>(`${p()}/findings/${findingId}/notes/${noteId}`, { body });
+  return response.data;
+};
+
+/** v5.256.0 — the comment's author only; 409 while it has replies. */
+export const deleteFindingNote = async (findingId: number, noteId: number): Promise<void> => {
+  await api.delete(`${p()}/findings/${findingId}/notes/${noteId}`);
 };
 
 export const uploadFindingNoteAttachment = async (

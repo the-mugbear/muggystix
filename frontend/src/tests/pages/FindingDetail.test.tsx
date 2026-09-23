@@ -16,6 +16,7 @@ vi.mock('../../services/api', () => ({
   setFindingStatus: vi.fn(),
   setFindingEndpointStatus: vi.fn(),
   updateFinding: vi.fn(),
+  deleteFinding: vi.fn(),
   removeFindingEndpoint: vi.fn(),
   addFindingHosts: vi.fn(),
   getHostNotes: vi.fn(),
@@ -164,5 +165,45 @@ describe('FindingDetail — M1: return to the queue it came from', () => {
     await screen.findByText('Weak TLS on portal');
     fireEvent.click(screen.getByRole('button', { name: /Findings/ }));
     expect(navigateSpy).toHaveBeenCalledWith('/findings');
+  });
+});
+
+describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
+  it('offers neither to someone who may not modify it', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: false, created_by_name: 'Alice' }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Rename/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Delete/ })).toBeNull();
+  });
+
+  it('renames in place', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    mocked.updateFinding.mockResolvedValue(finding({ can_modify: true, title: 'TLS 1.0 on portal' }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    fireEvent.click(screen.getByRole('button', { name: /Rename/ }));
+    fireEvent.change(screen.getByLabelText('Finding title'), { target: { value: '  TLS 1.0 on portal ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(7, { title: 'TLS 1.0 on portal' }));
+    expect(await screen.findByText('TLS 1.0 on portal')).toBeInTheDocument();
+  });
+
+  it('deletes only after confirmation, then returns to the list', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    mocked.deleteFinding.mockResolvedValue(undefined);
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(screen.getByRole('button', { name: /Delete/ }));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(mocked.deleteFinding).not.toHaveBeenCalled();
+
+    confirmMock.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole('button', { name: /Delete/ }));
+    await waitFor(() => expect(mocked.deleteFinding).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/findings'));
   });
 });

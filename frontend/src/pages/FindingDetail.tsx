@@ -10,7 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '../utils/severity';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 
 import {
   Finding,
@@ -25,6 +25,7 @@ import {
   setFindingEndpointStatus,
   setFindingStatus,
   updateFinding,
+  deleteFinding,
   FindingHostInfo,
   removeFindingEndpoint,
   addFindingHosts,
@@ -48,6 +49,7 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog';
+import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -269,6 +271,64 @@ const FindingDetail: React.FC = () => {
     }
   };
 
+  // v5.256.0 — authored content: the finding's author (or a project admin)
+  // renames or deletes it; the server decides and says so in `can_modify`.
+  // Severity, owner and status above stay open to any analyst (triage).
+  const canModify = canManage && !!finding?.can_modify;
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const [titleSaving, setTitleSaving] = useState(false);
+
+  const saveTitle = async () => {
+    if (!finding || titleDraft === null) return;
+    const title = titleDraft.trim();
+    if (!title) return;
+    if (title === finding.title) { setTitleDraft(null); return; }
+    setTitleSaving(true);
+    try {
+      setFinding(await updateFinding(finding.id, { title }));
+      setTitleDraft(null);
+      toast.success('Finding renamed.');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to rename the finding.'));
+    } finally {
+      setTitleSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!finding) return;
+    const survives =
+      finding.source === 'note'
+        ? 'The host note it was promoted from stays, and can be promoted again.'
+        : finding.source === 'scanner'
+          ? 'The scanner observations stay, untriaged again.'
+          : 'What it was recorded from stays.';
+    const ok = await confirm({
+      title: 'Delete finding?',
+      body: (
+        <>
+          <p>
+            &quot;{finding.title}&quot; is removed with its comments, screenshots and status history,
+            and leaves every report. {survives}
+          </p>
+          <p className="mt-xs">
+            If the issue does not apply, set the status to False positive instead — that keeps the record.
+          </p>
+        </>
+      ),
+      severity: 'danger',
+      confirmLabel: 'Delete finding',
+    });
+    if (!ok) return;
+    try {
+      await deleteFinding(finding.id);
+      toast.success('Finding deleted.');
+      navigate(returnTo);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to delete the finding.'));
+    }
+  };
+
   // v5.195.0 — a host may carry several affected-endpoint rows (one per named
   // endpoint).  Detach addresses the ROW, so a vhost's siblings survive, and
   // Undo restores that row's name and per-endpoint status, not a bare host.
@@ -330,7 +390,43 @@ const FindingDetail: React.FC = () => {
         <Badge variant={SEVERITY_VARIANT[finding.severity] as never}>
           {finding.severity[0].toUpperCase() + finding.severity.slice(1)}
         </Badge>
-        <h1 className="min-w-0 flex-1 break-words text-page-title font-semibold">{finding.title}</h1>
+        {titleDraft !== null ? (
+          <form
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-xs"
+            onSubmit={(e) => { e.preventDefault(); void saveTitle(); }}
+          >
+            <Input
+              autoFocus
+              value={titleDraft}
+              maxLength={500}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') setTitleDraft(null); }}
+              aria-label="Finding title"
+              className="min-w-0 flex-1"
+              disabled={titleSaving}
+            />
+            <Button type="submit" size="sm" disabled={titleSaving || !titleDraft.trim()}>
+              {titleSaving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setTitleDraft(null)} disabled={titleSaving}>
+              Cancel
+            </Button>
+          </form>
+        ) : (
+          <>
+            <h1 className="min-w-0 flex-1 break-words text-page-title font-semibold">{finding.title}</h1>
+            {canModify && (
+              <div className="flex shrink-0 items-center gap-xs">
+                <Button variant="ghost" size="sm" onClick={() => setTitleDraft(finding.title)}>
+                  <Pencil className="size-4" aria-hidden /> Rename
+                </Button>
+                <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void handleDelete()}>
+                  <Trash2 className="size-4" aria-hidden /> Delete
+                </Button>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div className="mb-md flex flex-wrap items-center gap-md text-metadata">
@@ -409,6 +505,11 @@ const FindingDetail: React.FC = () => {
           )}
         </div>
         <span><span className="text-muted-foreground">Source</span> {finding.source}</span>
+        {finding.created_by_name && (
+          <span className="min-w-0 max-w-[16rem] truncate" title={finding.created_by_name}>
+            <span className="text-muted-foreground">Recorded by</span> {finding.created_by_name}
+          </span>
+        )}
         {evidenceHref && (
           <Link to={evidenceHref} className="inline-flex items-center gap-xxs text-info hover:underline">
             Evidence thread <ExternalLink className="size-3" aria-hidden />

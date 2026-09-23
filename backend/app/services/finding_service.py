@@ -822,6 +822,28 @@ class FindingService:
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
+    def delete_finding(self, *, finding: Finding) -> List[int]:
+        """Delete a finding and everything that is only ITS (v2.375.0): the
+        endpoint rows, scanner-evidence links, status history (ORM cascades)
+        and its own comment thread (``annotations.finding_id`` cascades in the
+        DB).  What it references survives: the source host note becomes
+        promotable again and the scanner rows go back to being untriaged
+        observations.  Does not commit.  Returns the comment ids so the caller
+        can purge their attachment files once the delete has committed."""
+        note_ids = [
+            nid for (nid,) in self.db.query(Annotation.id).filter(Annotation.finding_id == finding.id)
+        ]
+        if note_ids:
+            # Explicit, rather than trusting the DB cascade alone: the session
+            # may hold these rows, and the test schema (SQLite) does not
+            # enforce ON DELETE.
+            self.db.query(Annotation).filter(Annotation.id.in_(note_ids)).delete(
+                synchronize_session=False,
+            )
+        self.db.delete(finding)
+        self.db.flush()
+        return note_ids
+
     def list_findings(
         self, *, project_id: int,
         status: Optional[str] = None, severity: Optional[str] = None,
@@ -838,7 +860,7 @@ class FindingService:
             self.db.query(Finding)
             .options(
                 selectinload(Finding.hosts).selectinload(FindingHost.host),
-                selectinload(Finding.owner),
+                selectinload(Finding.owner), selectinload(Finding.created_by),
             )
             .filter(Finding.project_id == project_id)
         )
@@ -935,3 +957,11 @@ class FindingService:
         self.db.refresh(note)
         self.db.refresh(note, attribute_names=["author"])
         return note
+
+    def get_finding_note(self, *, finding_id: int, note_id: int) -> Optional[Annotation]:
+        """A comment, only if it belongs to THIS finding (the path's scope)."""
+        return (
+            self.db.query(Annotation)
+            .filter(Annotation.id == note_id, Annotation.finding_id == finding_id)
+            .first()
+        )

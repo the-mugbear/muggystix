@@ -41,6 +41,13 @@ class FindingResponse(BaseModel):
     # The finding's ``status`` is the issue's; this says how each endpoint
     # stands, so confirmation on one is never read as confirmation on all.
     endpoint_status_counts: Dict[str, int] = {}
+    # v2.375.0 — who recorded the finding (the promoter / creator), and whether
+    # the CALLER may rename or delete it: its author, a project admin, or a
+    # global admin.  Severity, owner and status stay open to any analyst — they
+    # are triage, not authored content.
+    created_by_id: Optional[int] = None
+    created_by_name: Optional[str] = None
+    can_modify: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
@@ -137,6 +144,11 @@ class FindingUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=500)
     severity: Optional[str] = None
     owner_id: Optional[int] = None
+
+
+class FindingNoteUpdate(BaseModel):
+    """Body for PATCH /findings/{id}/notes/{note_id} — the author's own text."""
+    body: str = Field(..., min_length=1, max_length=16384)
 
 
 class FindingStatusUpdateRequest(BaseModel):

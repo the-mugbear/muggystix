@@ -6,18 +6,22 @@
  * screenshots paste or upload straight onto a comment and ride into the report.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Send, CornerDownRight, RefreshCw, X } from 'lucide-react';
+import { Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 
 import {
   Annotation,
   getFindingNotes,
   createFindingNote,
+  updateFindingNote,
+  deleteFindingNote,
   uploadFindingNoteAttachment,
 } from '../services/api';
 import NoteAttachments from './host-inspector/NoteAttachments';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Textarea } from './ui/textarea';
+import { useAuth } from '../contexts/AuthContext';
+import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
@@ -62,8 +66,19 @@ interface PendingFile {
   noteId?: number;
 }
 
+/** Creation stamps the thread root in a second write, so `updated_at` is set
+ *  on every comment; only a later change counts as an edit. */
+const wasEdited = (note: Annotation): boolean =>
+  !!note.updated_at &&
+  new Date(note.updated_at).getTime() - new Date(note.created_at).getTime() > 5000;
+
 const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage }) => {
   const toast = useToast();
+  const { user } = useAuth();
+  const [confirmDialog, confirm] = useConfirm();
+  // v5.256.0 — a comment is its author's: only they edit or delete it.
+  const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
+  const [noteBusy, setNoteBusy] = useState<number | null>(null);
   // `notes === null` = never loaded successfully; distinct from "loaded, and
   // there are none" so a failed fetch is never presented as an empty record
   // (UX review H1).
@@ -170,8 +185,53 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     }
   };
 
+  const saveEdit = async () => {
+    if (!editing || noteBusy !== null) return;
+    const text = editing.text.trim();
+    if (!text) return;
+    setNoteBusy(editing.id);
+    try {
+      const updated = await updateFindingNote(findingId, editing.id, text);
+      setNotes((prev) => (prev ? prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)) : prev));
+      setEditing(null);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not save the comment.'));
+    } finally {
+      setNoteBusy(null);
+    }
+  };
+
+  const removeNote = async (note: Annotation, hasReplies: boolean) => {
+    if (hasReplies) {
+      // The server refuses too (409); say why before asking.
+      toast.info('This comment has replies, so it stays to keep them in context. Edit its text instead.');
+      return;
+    }
+    const preview = note.body ? note.body.slice(0, 140) : 'This comment';
+    const ok = await confirm({
+      title: 'Delete comment?',
+      body: `"${preview}${note.body && note.body.length > 140 ? '…' : ''}" and its screenshots will be removed.`,
+      severity: 'danger',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
+    setNoteBusy(note.id);
+    try {
+      await deleteFindingNote(findingId, note.id);
+      setNotes((prev) => (prev ? prev.filter((n) => n.id !== note.id) : prev));
+      if (replyTo?.id === note.id) setReplyTo(null);
+      toast.success('Comment deleted.');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not delete the comment.'));
+    } finally {
+      setNoteBusy(null);
+    }
+  };
+
   const renderNode = (node: ThreadNode, depth: number): React.ReactNode => {
     const { note } = node;
+    const isMine = canManage && user?.id != null && note.author_id === user.id;
+    const isEditing = editing?.id === note.id;
     return (
       <div key={note.id} className={depth > 0 ? 'border-l-2 border-border pl-sm' : ''}>
         <div className="mb-xxs flex flex-wrap items-center gap-xs">
@@ -181,9 +241,34 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           <AgentAuthorBadge actorType={note.actor_type} />
           <span className="text-caption text-muted-foreground">
             {new Date(note.created_at).toLocaleString()}
+            {wasEdited(note) && (
+              <span title={`Edited ${new Date(note.updated_at as string).toLocaleString()}`}> · edited</span>
+            )}
           </span>
         </div>
-        {note.body && <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>}
+        {isEditing ? (
+          <div className="space-y-xs">
+            <Textarea
+              autoFocus
+              rows={3}
+              value={editing.text}
+              onChange={(e) => setEditing({ id: note.id, text: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Escape') setEditing(null); }}
+              aria-label="Edit comment"
+              disabled={noteBusy === note.id}
+            />
+            <div className="flex justify-end gap-xs">
+              <Button variant="ghost" size="sm" onClick={() => setEditing(null)} disabled={noteBusy === note.id}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={() => void saveEdit()} disabled={noteBusy === note.id || !editing.text.trim()}>
+                {noteBusy === note.id && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
+              </Button>
+            </div>
+          </div>
+        ) : (
+          note.body && <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>
+        )}
         <NoteAttachments
           noteId={note.id}
           attachments={note.attachments ?? []}
@@ -191,15 +276,40 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           uploadFn={(file) => uploadFindingNoteAttachment(findingId, note.id, file)}
           onChanged={() => void load()}
         />
-        {canManage && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mt-xxs h-6 text-caption text-muted-foreground"
-            onClick={() => startReply(note)}
-          >
-            <CornerDownRight className="size-3" aria-hidden /> Reply
-          </Button>
+        {canManage && !isEditing && (
+          <div className="mt-xxs flex flex-wrap items-center gap-xxs">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-caption text-muted-foreground"
+              onClick={() => startReply(note)}
+            >
+              <CornerDownRight className="size-3" aria-hidden /> Reply
+            </Button>
+            {isMine && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-caption text-muted-foreground"
+                  onClick={() => setEditing({ id: note.id, text: note.body ?? '' })}
+                  disabled={noteBusy !== null}
+                >
+                  <Pencil className="size-3" aria-hidden /> Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-caption text-muted-foreground hover:text-destructive"
+                  onClick={() => void removeNote(note, node.children.length > 0)}
+                  disabled={noteBusy !== null}
+                  aria-label="Delete comment"
+                >
+                  {noteBusy === note.id ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <Trash2 className="size-3" aria-hidden />} Delete
+                </Button>
+              </>
+            )}
+          </div>
         )}
         {node.children.length > 0 && (
           <div className="mt-sm space-y-md">
@@ -334,6 +444,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           </div>
         )}
       </CardContent>
+      {confirmDialog}
     </Card>
   );
 };
