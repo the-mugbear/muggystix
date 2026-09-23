@@ -263,7 +263,9 @@ const ReportDetail: React.FC = () => {
   } else if (report.kind === 'addendum' && s.delta) {
     lead = <>Compared with report #{report.baseline?.number}: <strong>{s.delta.new_findings}</strong> new finding{s.delta.new_findings === 1 ? '' : 's'}, <strong>{s.delta.findings_with_new_endpoints}</strong> reported finding{s.delta.findings_with_new_endpoints === 1 ? '' : 's'} on further systems, <strong>{s.delta.withdrawn}</strong> withdrawal{s.delta.withdrawn === 1 ? '' : 's'}.</>;
   } else {
-    lead = <>{isDraft ? 'Covers' : 'Covered'} <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'}{isDraft ? ' as the findings stand now' : ''}.</>;
+    lead = isDraft
+      ? <>Covers <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'}, as they stand now.</>
+      : <>Covered <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'} when issued.</>;
   }
 
   return (
@@ -305,6 +307,11 @@ const ReportDetail: React.FC = () => {
               <Button variant="outline" onClick={() => void revise()} disabled={busy !== null}>
                 {busy === 'revise' && <Loader2 className="size-4 animate-spin" aria-hidden />} Revise
               </Button>
+            )}
+            {isDraft && dirty && (
+              <p className="w-full text-right text-caption text-muted-foreground">
+                Save your changes below before issuing.
+              </p>
             )}
           </div>
         </header>
@@ -348,6 +355,11 @@ const ReportDetail: React.FC = () => {
 
       {isDraft ? (
         <PostureSection title="Preview" description="Rendered from the live findings on the report worker. Previews expire after a day.">
+          {dirty && (
+            <p className="mb-xs text-caption text-muted-foreground">
+              The report details below have unsaved changes — save them to preview them.
+            </p>
+          )}
           <div className="flex flex-wrap gap-sm">
             {formats.map((fmt) => {
               const job = previews[fmt];

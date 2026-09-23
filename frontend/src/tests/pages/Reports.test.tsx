@@ -201,3 +201,15 @@ describe('Report detail — issued', () => {
 
 // Keep React referenced for the JSX transform in older setups.
 void React;
+
+describe('Report detail — unsaved changes (v5.261.1)', () => {
+  it('says why preview and issue are unavailable, where they are', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    fireEvent.change(await screen.findByLabelText('Client'), { target: { value: 'Other Corp' } });
+    expect(screen.getByText('Save your changes below before issuing.')).toBeInTheDocument();
+    expect(screen.getByText(/save them to preview them/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview PDF' })).toBeDisabled();
+    expect(screen.getByText(/no members to pick from/)).toBeInTheDocument();
+  });
+});

@@ -85,6 +85,11 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, d
           </div>
         ))}
         <div className="flex flex-wrap items-center gap-xs">
+          {members.length === 0 && !disabled && (
+            <span className="text-caption text-muted-foreground">
+              This project has no members to pick from — add people by name.
+            </span>
+          )}
           {available.length > 0 && (
             <Select value="" disabled={disabled}
               onValueChange={(v) => {
