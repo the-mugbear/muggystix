@@ -22,7 +22,7 @@ import ipaddress
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, noload
 
 from app.db import models
 from app.services.host_query_common import escape_like
@@ -53,10 +53,29 @@ def _base_query(db: Session, project_id: int):
     )
     return (
         db.query(models.Host)
+        # The callers read scalar columns only.  Host's relationships are
+        # lazy="selectin": unsuppressed, the whole-project export loaded every
+        # port and scanner row (with its plugin output) of every listed host —
+        # in a project with no scope, all of them (review 2026-09-23 R1).
+        .options(
+            noload(models.Host.ports), noload(models.Host.vulnerabilities),
+            noload(models.Host.notes), noload(models.Host.tag_assignments),
+        )
         .filter(models.Host.project_id == project_id)
         .filter(~mapped.exists())
         .filter(~host_reachable_via_in_scope_name_condition(project_id))
     )
+
+
+def out_of_scope_count(db: Session, project_id: int) -> int:
+    """How many hosts ``out_of_scope_hosts`` lists — the ONE count.  0 while
+    the project declares no scope (nothing to be outside of).  Operations
+    counted "no subnet mapping" on its own, which included hosts reached
+    through an in-scope NAME, so its number was larger than the list it
+    opened (review 2026-09-23 R7)."""
+    if not project_has_any_scope(db, project_id):
+        return 0
+    return _base_query(db, project_id).with_entities(func.count(models.Host.id)).scalar() or 0
 
 
 def out_of_scope_hosts(

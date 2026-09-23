@@ -208,6 +208,16 @@ def finding_active_on_host():
     return FindingHost.host_status.notin_(tuple(INACTIVE_ENDPOINT_STATES))
 
 
+# A finding still being worked: under investigation or confirmed.  The ONE
+# tuple (review 2026-09-23 B-Debt-3 — five copies had drifted apart in which
+# endpoint states they also honoured).  Per HOST, pair it with
+# ``finding_active_on_host()``; per ISSUE, with
+# ``engagement_metrics_service.finding_is_a_result()``.
+ACTIVE_FINDING_STATUSES = (
+    FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value, FindingStatus.RETEST.value,
+)
+
+
 class FindingVulnerability(Base):
     """A scanner vulnerability that evidences a finding (v2.236.0).
 

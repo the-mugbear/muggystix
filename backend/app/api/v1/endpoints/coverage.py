@@ -54,6 +54,7 @@ from app.db.models_agent import (
 from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
+from app.services import scope_coverage
 
 
 router = APIRouter()
@@ -269,24 +270,12 @@ def get_project_coverage(
         )
 
     # --- Hosts outside any declared scope ----------------------------
-    # A host is "outside scope" if it has no HostSubnetMapping row.
-    # When the project has zero scopes declared the answer is 0 (no
-    # scopes to be outside of) — this matches user expectation: "I
-    # haven't declared scope, nothing is technically out-of-scope".
-    if scope_objs:
-        hosts_outside_scope = (
-            db.query(func.count(Host.id))
-            .filter(
-                Host.project_id == project.id,
-                ~db.query(HostSubnetMapping.id)
-                .filter(HostSubnetMapping.host_id == Host.id)
-                .exists(),
-            )
-            .scalar()
-            or 0
-        )
-    else:
-        hosts_outside_scope = 0
+    # The same derivation as the list this count links to
+    # (/hosts?out_of_scope_only=true, GET /scans/out-of-scope): no subnet
+    # mapping AND not reached through an in-scope name; 0 while the project
+    # declares no scope.  Counted here on its own it included the name-scoped
+    # hosts and read higher than its list (review 2026-09-23 R7).
+    hosts_outside_scope = scope_coverage.out_of_scope_count(db, project.id)
 
     return ProjectCoverageResponse(
         project_id=project.id,

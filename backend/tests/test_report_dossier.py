@@ -116,6 +116,39 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
     assert summary["vulns_by_severity"]["high"] == 1
 
 
+def test_a_row_judged_through_its_issue_is_not_untriaged(db_session, test_project, test_user):
+    """Review 2026-09-23 R7: the exports subtracted only ``Finding.vuln_id``
+    (host A's row), so host B's row of the same promoted issue read
+    "Untriaged" here while every other surface called it judged."""
+    a = models.Host(project_id=test_project.id, ip_address="10.56.0.1", state="up")
+    b = models.Host(project_id=test_project.id, ip_address="10.56.0.2", state="up")
+    scan = models.Scan(project_id=test_project.id, filename="n.nessus")
+    db_session.add_all([a, b, scan])
+    db_session.flush()
+    rows = {}
+    for host in (a, b):
+        rows[host.ip_address] = Vulnerability(
+            host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NESSUS,
+            severity=VulnerabilitySeverity.MEDIUM, title="SMB Signing not required",
+        )
+        db_session.add(rows[host.ip_address])
+    db_session.flush()
+    key = rows["10.56.0.1"].issue_key
+    assert key and key == rows["10.56.0.2"].issue_key
+    finding = Finding(project_id=test_project.id, title="SMB signing", severity="medium", status="confirmed",
+                      source="scanner", vuln_id=rows["10.56.0.1"].id, dedup_key=key)
+    db_session.add(finding)
+    db_session.flush()
+    for host in (a, b):
+        db_session.add(FindingHost(finding_id=finding.id, host_id=host.id, host_status="open"))
+    db_session.commit()
+
+    gen = _gen(db_session, test_project.id, test_user.id)
+    ctx = gen._build_export_context([a, b])
+    assert gen._build_host_export_record(b, ctx, {})["untriaged_vulnerabilities"] == []
+    assert gen._inventory_finding_counts([b.id])[b.id]["promoted_vuln_ids"] == {rows["10.56.0.2"].id}
+
+
 def test_inmemory_cap_is_wired_and_not_above_the_streamed_cap():
     """The in-memory cap must be a real, applied limit — not dead config.
 

@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from app.db import models
-from app.db.models_findings import Finding
+from app.db.models_findings import ACTIVE_FINDING_STATUSES, Finding
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import (
     TestPlan, TestPlanStatus, TestPlanEntry,
@@ -43,8 +43,9 @@ from app.services.attention_service import (
 )
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.evidence_service import has_minimum_assessment
+from app.services.engagement_metrics_service import finding_is_a_result
 
-_ACTIVE = ("open", "confirmed", "retest")
+_ACTIVE = ACTIVE_FINDING_STATUSES
 # Review-coverage floor below which the estate reads as under-assessed.
 _REVIEW_FLOOR = 0.5
 # Site criticality tiers that escalate a critical finding to "action required".
@@ -276,6 +277,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
             .filter(
                 Finding.project_id == project_id,
                 Finding.status.in_(_ACTIVE),
+                finding_is_a_result(),
                 Finding.owner_id.is_(None),
             )
             .group_by(Finding.severity)

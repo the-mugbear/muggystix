@@ -228,3 +228,27 @@ def test_netexec_upload_correlates_its_hosts(db_session, test_project, tmp_path)
         .all()
     )
     assert [m.subnet_id for m in mapped] == [s.id]
+
+
+def test_the_operations_count_is_the_out_of_scope_list(client, db_session, test_project):
+    """Review 2026-09-23 R7: Operations counted "no subnet mapping", so a
+    host reached through an in-scope NAME was counted out of scope while the
+    list the count opens (correctly) left it out."""
+    from app.services import scope_coverage
+
+    scope = _scope(db_session, test_project.id)
+    subnet = _subnet(db_session, scope, "10.20.0.0/24")
+    db_session.add(models.ScopeDomain(scope_id=scope.id, domain="example.com", include_subdomains=True))
+    db_session.flush()
+    _map(db_session, _host(db_session, test_project.id, "10.20.0.5"), subnet)
+    _host(db_session, test_project.id, "203.0.113.50")   # reached through www.example.com
+    _host(db_session, test_project.id, "198.51.100.7")   # out of scope
+    dns_name_service.record_observation(
+        db_session, project_id=test_project.id, name="www.example.com", record_type="A", value="203.0.113.50",
+    )
+    db_session.commit()
+
+    hosts, total = scope_coverage.out_of_scope_hosts(db_session, test_project.id)
+    assert [h.ip_address for h in hosts] == ["198.51.100.7"] and total == 1
+    body = client.get(f"/api/v1/projects/{test_project.id}/coverage").json()
+    assert body["hosts_outside_scope"] == total

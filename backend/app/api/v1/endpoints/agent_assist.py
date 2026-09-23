@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import case, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased, joinedload, Query as SAQuery
 
 from app.db.session import get_db
@@ -52,7 +52,7 @@ from app.api.v1.endpoints.agent_schemas import (
     ScopeBrief,
     VulnCounts,
 )
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, severity_rank
 from app.api.v1.endpoints.agent_common import (
     _apply_agent_host_filters,
     _batch_host_enrichment,
@@ -800,14 +800,7 @@ def get_assist_host(
     )
 
 
-_SEVERITY_RANK = case(
-    (Vulnerability.severity == VulnerabilitySeverity.CRITICAL, 0),
-    (Vulnerability.severity == VulnerabilitySeverity.HIGH, 1),
-    (Vulnerability.severity == VulnerabilitySeverity.MEDIUM, 2),
-    (Vulnerability.severity == VulnerabilitySeverity.LOW, 3),
-    (Vulnerability.severity == VulnerabilitySeverity.INFO, 4),
-    else_=5,
-)
+_SEVERITY_RANK = severity_rank(Vulnerability.severity)
 # Keep evidence/description bounded so a single finding can't blow the response.
 _EVIDENCE_CAP = 2000
 _DESC_CAP = 2000

@@ -35,10 +35,9 @@ from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project
 from app.services.vulnerability_service import VulnerabilityService
 
-# Findings still demanding work — excludes the terminal dispositions
-# (false_positive / accepted_risk / remediated).  Mirrors the host
-# finding_count badge so the two surfaces agree on "active".
-ACTIVE_FINDING_STATUSES = ("open", "confirmed", "retest")
+# Findings still demanding work — the one definition, in models_findings
+# (re-exported here for existing importers).
+from app.db.models_findings import ACTIVE_FINDING_STATUSES  # noqa: E402,F401
 
 logger = logging.getLogger(__name__)
 
@@ -1167,14 +1166,8 @@ def compute_my_findings(
     """Return the caller's owned, active findings in this project, severity-
     ranked.  One representative affected host + host_count are resolved in a
     single grouped query (no per-finding N+1)."""
-    severity_rank = case(
-        (Finding.severity == "critical", 0),
-        (Finding.severity == "high", 1),
-        (Finding.severity == "medium", 2),
-        (Finding.severity == "low", 3),
-        (Finding.severity == "info", 4),
-        else_=5,
-    )
+    from app.db.models_vulnerability import severity_rank as _severity_rank
+    severity_rank = _severity_rank(Finding.severity)
     base_filters = (
         Finding.project_id == project.id,
         Finding.owner_id == current_user.id,

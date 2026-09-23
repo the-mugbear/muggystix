@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host, Scope, NoteStatus
 from app.db.models_findings import (
-    Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
+    ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
 )
+from app.db.models_vulnerability import severity_rank
 from app.services.host_query_common import escape_like
 from app.services.report_text import clip as clip_report_text, seed_report_text_from_vuln
 from app.services.status_history_service import record_status_transition
@@ -39,11 +40,7 @@ _TERMINAL_STATUSES = {
 # `status` filter value (status="active"/"resolved"); a real status filters
 # exactly. Kept here so posture's active counts and the Findings list it links
 # to share one definition.
-_ACTIVE_STATUSES = {
-    FindingStatus.OPEN.value,
-    FindingStatus.CONFIRMED.value,
-    FindingStatus.RETEST.value,
-}
+_ACTIVE_STATUSES = set(ACTIVE_FINDING_STATUSES)
 _STATUS_GROUPS = {"active": _ACTIVE_STATUSES, "resolved": _TERMINAL_STATUSES}
 
 
@@ -79,11 +76,7 @@ def _validate_status(status: str) -> str:
 # Severity/status sort by their meaningful rank (critical-first, open-first),
 # not alphabetically. host_count is the per-finding blast radius via a
 # correlated subquery (no extra join/group on the main query).
-_SEVERITY_SORT = case(
-    (Finding.severity == "critical", 0), (Finding.severity == "high", 1),
-    (Finding.severity == "medium", 2), (Finding.severity == "low", 3),
-    (Finding.severity == "info", 4), else_=5,
-)
+_SEVERITY_SORT = severity_rank(Finding.severity)
 _STATUS_SORT = case(
     (Finding.status == "open", 0), (Finding.status == "confirmed", 1),
     (Finding.status == "retest", 2), (Finding.status == "remediated", 3),

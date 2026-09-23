@@ -262,6 +262,27 @@ class ReportGenerator:
         'Tags', 'Notes', 'Last Seen', 'Scan File', 'Scan Date',
     ]
 
+    def _judged_vuln_ids(self, host_ids: List[int]) -> Dict[int, set]:
+        """``host_id -> ids of its scanner rows a finding covers ON THAT HOST``
+        — the app's one "judged" rule (``observation_judged_on_host``: the
+        promoted row itself OR the same issue key).  The exports subtracted
+        only ``Finding.vuln_id``, one row of one host, so host B's row of an
+        issue promoted from host A read "Untriaged scanner observation" here
+        while the inspector, Oversight and the scanner-observations view
+        called it judged (review 2026-09-23 R7)."""
+        from app.services.engagement_metrics_service import observation_judged_on_host
+
+        out: Dict[int, set] = {}
+        for chunk in _id_chunks(host_ids):
+            for host_id, vuln_id in (
+                self.db.query(Vulnerability.host_id, Vulnerability.id)
+                .join(models.Host, models.Host.id == Vulnerability.host_id)
+                .filter(Vulnerability.host_id.in_(chunk), observation_judged_on_host())
+                .all()
+            ):
+                out.setdefault(host_id, set()).add(vuln_id)
+        return out
+
     def _inventory_finding_counts(self, host_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """``host_id -> {active, critical, exec, promoted_vuln_ids}`` via batched
         GROUP-BY queries — the counts the streaming inventory CSV needs without
@@ -286,10 +307,13 @@ class ReportGenerator:
                 d = _slot(host_id)
                 if host_status not in _INACTIVE_ENDPOINT_STATES:
                     d["active"] += 1
-                if severity == "critical":
-                    d["critical"] += 1
-                if source == "scanner" and vuln_id:
-                    d["promoted_vuln_ids"].add(vuln_id)
+                    # Beside "Active Findings", on the same rule: a critical
+                    # dismissed or remediated on this host is not one of its
+                    # critical findings.
+                    if severity == "critical":
+                        d["critical"] += 1
+            for host_id, vuln_ids in self._judged_vuln_ids(chunk).items():
+                _slot(host_id)["promoted_vuln_ids"] |= vuln_ids
             for host_id, count in (
                 self.db.query(TestPlanEntry.host_id, func.count(TestExecutionResult.id))
                 .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
@@ -1230,8 +1254,8 @@ class ReportGenerator:
             rec = dict(base[fh.finding_id])
             rec["host_status"] = fh.host_status
             by_host.setdefault(fh.host_id, []).append(rec)
-            if fh.finding.source == "scanner" and fh.finding.vuln_id:
-                promoted_vuln_ids.setdefault(fh.host_id, set()).add(fh.finding.vuln_id)
+        # The app's judged rule, not just each finding's own vuln_id.
+        promoted_vuln_ids.update(self._judged_vuln_ids(host_ids))
         for recs in by_host.values():
             recs.sort(key=lambda r: self.SEVERITY_ORDER.get(r["severity"], 5))
         return by_host, promoted_vuln_ids, promoted_exec_ids

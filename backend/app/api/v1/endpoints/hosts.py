@@ -674,18 +674,23 @@ def get_hosts_v2(
 
     # Batch lookup: count of ACTIVE findings per host (foundation 6d).  Drives
     # the Hosts-list finding badge so triage state is visible without opening
-    # each host.  "Active" = not yet closed (excludes false_positive /
-    # accepted_risk / remediated).  One grouped query for the page — not N+1.
+    # each host.  "Active" = the finding is still being worked AND this host's
+    # own endpoint is live: a host dismissed as a false positive (or recorded
+    # remediated) on a finding kept counting it (review 2026-09-23 R7).  One
+    # grouped query for the page — not N+1.
     finding_count_map: Dict[int, int] = {}
     if host_ids:
-        from app.db.models_findings import Finding, FindingHost, FindingStatus
-        _active = [
-            FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value, FindingStatus.RETEST.value,
-        ]
+        from app.db.models_findings import (
+            ACTIVE_FINDING_STATUSES, Finding, FindingHost, finding_active_on_host,
+        )
         for hid, cnt in (
             db.query(FindingHost.host_id, func.count(func.distinct(Finding.id)))
             .join(Finding, Finding.id == FindingHost.finding_id)
-            .filter(FindingHost.host_id.in_(host_ids), Finding.status.in_(_active))
+            .filter(
+                FindingHost.host_id.in_(host_ids),
+                Finding.status.in_(ACTIVE_FINDING_STATUSES),
+                finding_active_on_host(),
+            )
             .group_by(FindingHost.host_id)
             .all()
         ):
