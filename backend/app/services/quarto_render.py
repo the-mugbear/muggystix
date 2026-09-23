@@ -73,6 +73,10 @@ _SKIP = {"_output", ".quarto", "__pycache__", ".git"}
 _ASSET_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _ASSET_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$")
 ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")
+# An asset may instead REPLACE one of the template's own files when installed
+# (``"replaces": "reference.docx"`` — an operator's Word styles over the
+# shipped ones).  Only these kinds of file can be replaced.
+REPLACEABLE_EXTENSIONS = ASSET_EXTENSIONS + (".docx",)
 
 
 class RenderError(RuntimeError):
@@ -89,9 +93,14 @@ def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List
     folder and would be copied into the render (a regular file, no symlink on
     the way — ``_copy_template`` skips symlinks).
 
+    An asset with ``replaces`` names another file of the template (e.g.
+    ``reference.docx``): when the asset is installed, the render uses it in
+    that file's place (``_apply_replacements``); when not, the shipped file.
+
     Raises ``TemplateAssetError`` for a declaration that is not a plain
     relative image path inside the folder (absolute, ``..``, a skipped folder,
-    another extension) or a duplicate id."""
+    another extension), a ``replaces`` of a different kind of file, or a
+    duplicate id."""
     if manifest is None:
         manifest = json.loads((template_dir / "template.json").read_text(encoding="utf-8"))
     raw = manifest.get("assets") or []
@@ -109,16 +118,19 @@ def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List
         if asset_id in seen:
             raise TemplateAssetError(f"Asset id '{asset_id}' is declared twice.")
         seen.add(asset_id)
-        parts = path.split("/")
-        if (
-            not _ASSET_PATH.match(path)
-            or any(p in ("", ".", "..") for p in parts)
-            or any(p in _SKIP or p.endswith("_files") for p in parts)
-        ):
-            raise TemplateAssetError(
-                f"Asset '{asset_id}': '{path[:80]}' is not a relative path inside the template folder."
-            )
-        if not path.lower().endswith(ASSET_EXTENSIONS):
+        parts = _asset_parts(asset_id, path)
+        replaces = str(entry.get("replaces") or "")
+        if replaces:
+            _asset_parts(asset_id, replaces)
+            ext = Path(replaces).suffix.lower()
+            if ext not in REPLACEABLE_EXTENSIONS or Path(path).suffix.lower() != ext:
+                raise TemplateAssetError(
+                    f"Asset '{asset_id}': '{path}' cannot replace '{replaces}' "
+                    f"(both must be the same kind of file: {', '.join(e[1:] for e in REPLACEABLE_EXTENSIONS)})."
+                )
+            if replaces == path:
+                raise TemplateAssetError(f"Asset '{asset_id}' replaces itself.")
+        elif not path.lower().endswith(ASSET_EXTENSIONS):
             raise TemplateAssetError(
                 f"Asset '{asset_id}': '{path}' is not an image ({', '.join(e[1:] for e in ASSET_EXTENSIONS)})."
             )
@@ -131,9 +143,38 @@ def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List
             "note": str(entry.get("note") or ""),
             "required": bool(entry.get("required", False)),
             "formats": formats,
+            "replaces": replaces or None,
             "present": _asset_present(template_dir, parts),
         })
     return out
+
+
+def _asset_parts(asset_id: str, path: str) -> List[str]:
+    """``path`` split into its parts, when it is a plain relative path inside
+    the template folder (no absolute path, ``..``, or skipped folder)."""
+    parts = path.split("/")
+    if (
+        not _ASSET_PATH.match(path)
+        or any(p in ("", ".", "..") for p in parts)
+        or any(p in _SKIP or p.endswith("_files") for p in parts)
+    ):
+        raise TemplateAssetError(
+            f"Asset '{asset_id}': '{path[:80]}' is not a relative path inside the template folder."
+        )
+    return parts
+
+
+def _apply_replacements(template_dir: Path, work: Path) -> None:
+    """In the render's copy of the template, put each INSTALLED replacing
+    asset in the place of the file it replaces (an operator's reference.docx
+    over the shipped one).  An asset that is not installed changes nothing."""
+    if not (template_dir / "template.json").is_file():
+        return
+    for a in template_assets(template_dir):
+        if a["replaces"] and a["present"]:
+            target = work / a["replaces"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(work / a["path"], target)
 
 
 def _asset_present(template_dir: Path, parts: List[str]) -> bool:
@@ -427,6 +468,7 @@ def render(
         work = Path(tmp) / "work"
         work.mkdir()
         _copy_template(template_dir, work)
+        _apply_replacements(template_dir, work)
         (work / "_bluestick").mkdir(exist_ok=True)
         shutil.copyfile(FIELDS_FILTER, work / "_bluestick" / "fields.lua")
         missing = _place_evidence(dataset, work, resolve_evidence or (lambda _item: None))

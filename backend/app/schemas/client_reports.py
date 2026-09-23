@@ -67,6 +67,8 @@ class ReportTemplateAssetOut(BaseModel):
     note: str = ""
     required: bool = False
     formats: List[str] = []
+    # When installed, used in place of this template file (e.g. reference.docx).
+    replaces: Optional[str] = None
     present: bool = False
 
 

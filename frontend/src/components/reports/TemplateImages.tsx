@@ -20,16 +20,23 @@ const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: '
 export const missingRequiredAssets = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>
   (template?.assets ?? []).filter((a) => a.required && !a.present);
 
+/** How many declared files are gaps: not installed, and not a replacement that
+ *  simply falls back to the template's shipped file. */
+export const missingAssetCount = (template: ReportTemplate | undefined): number =>
+  (template?.assets ?? []).filter((a) => !a.present && !a.replaces).length;
+
 /** One sentence naming what blocks a render, for a disabled button's title. */
 export const missingAssetsReason = (template: ReportTemplate | undefined): string | undefined => {
   const missing = missingRequiredAssets(template);
   if (!missing.length || !template) return undefined;
-  return `The template needs ${missing.map((a) => a.label).join(', ')} — see Template images`;
+  return `The template needs ${missing.map((a) => a.label).join(', ')} — see Template files`;
 };
 
 const status = (a: ReportTemplateAsset) => {
   if (a.present) return <Badge variant="success">Installed</Badge>;
   if (a.required) return <Badge variant="destructive">Missing · required</Badge>;
+  // A replacing file that is absent is not a gap: the shipped one is used.
+  if (a.replaces) return <Badge variant="outline">Not installed · shipped used</Badge>;
   return <Badge variant="outline">Missing · optional</Badge>;
 };
 
@@ -73,6 +80,12 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName 
                   {folder}{a.path}
                 </span>
               </div>
+              {a.replaces && (
+                <p className="break-words text-caption text-muted-foreground">
+                  {a.present ? 'Used' : 'When installed, used'} in place of the template&apos;s own{' '}
+                  <span className="font-mono">{a.replaces}</span>.
+                </p>
+              )}
               {a.description && <p className="break-words text-caption text-muted-foreground">{a.description}</p>}
               {a.note && <p className="break-words text-caption text-muted-foreground">{a.note}</p>}
               {a.formats.length > 0 && (
@@ -86,7 +99,8 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName 
       </ul>
       <p className="max-w-3xl text-caption text-muted-foreground">
         Put each file at its path on the server. The template folder is mounted read-only into the backend and the report
-        worker, so no rebuild is needed — reload this page to check again. A missing optional image is left out of the layout.
+        worker, so no rebuild is needed — reload this page to check again. A missing optional image is left out of the layout;
+        a file that replaces one of the template&apos;s own falls back to the shipped one.
       </p>
     </div>
   );

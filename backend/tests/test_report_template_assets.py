@@ -139,7 +139,8 @@ def test_the_template_list_says_which_images_are_installed(client, root, test_pr
     assets = {a["id"]: a for a in r.json()[0]["assets"]}
     assert assets["logo"] == {
         "id": "logo", "path": "img/logo.png", "label": "Company logo", "description": "Top of page one",
-        "note": "Word header: reference.docx", "required": False, "formats": ["html", "pdf"], "present": True,
+        "note": "Word header: reference.docx", "required": False, "formats": ["html", "pdf"],
+        "replaces": None, "present": True,
     }
     assert assets["cover"]["present"] is False and assets["cover"]["required"] is True
 
@@ -163,3 +164,61 @@ def test_a_missing_required_image_blocks_preview_and_issue_and_names_the_file(cl
     (folder / "img" / "logo.png").write_bytes(PNG)
     r = client.post(f"{_base(test_project)}/{rid}/preview", json={"format": "html"})
     assert r.status_code == 202, r.text
+
+
+# --- a file that replaces one of the template's own (reference.docx) --------------
+
+DOCX = b"PK\x03\x04"  # enough for a presence check
+
+
+def test_a_replacing_asset_must_be_the_same_kind_of_file_inside_the_folder(tmp_path):
+    ok = _template(tmp_path / "ok", [
+        {"id": "reference-docx", "path": "branding/reference.docx", "replaces": "reference.docx"},
+    ])
+    [a] = template_assets(ok)
+    assert a["replaces"] == "reference.docx" and a["present"] is False
+    for bad, match in (
+        ({"path": "branding/reference.png", "replaces": "reference.docx"}, "same kind"),
+        ({"path": "branding/report.qmd", "replaces": "report.qmd"}, "same kind"),
+        ({"path": "branding/reference.docx", "replaces": "../reference.docx"}, "relative path"),
+        ({"path": "reference.docx", "replaces": "reference.docx"}, "itself"),
+    ):
+        folder = _template(tmp_path / match.replace(" ", ""), [{"id": "reference-docx", **bad}])
+        with pytest.raises(TemplateAssetError, match=match):
+            template_assets(folder)
+
+
+def test_an_installed_replacing_asset_takes_the_shipped_files_place_in_the_render(tmp_path):
+    folder = _template(tmp_path / "t", [
+        {"id": "reference-docx", "path": "branding/reference.docx", "replaces": "reference.docx"},
+    ])
+    (folder / "reference.docx").write_bytes(DOCX + b"shipped")
+    work = tmp_path / "work"
+
+    quarto_render._copy_template(folder, work)
+    quarto_render._apply_replacements(folder, work)
+    assert (work / "reference.docx").read_bytes() == DOCX + b"shipped"  # not installed: unchanged
+
+    (folder / "branding").mkdir()
+    (folder / "branding" / "reference.docx").write_bytes(DOCX + b"operator")
+    quarto_render._copy_template(folder, work)
+    quarto_render._apply_replacements(folder, work)
+    assert (work / "reference.docx").read_bytes() == DOCX + b"operator"
+    assert (folder / "reference.docx").read_bytes() == DOCX + b"shipped"  # the template itself untouched
+
+
+def test_a_missing_replacing_asset_never_blocks(tmp_path):
+    folder = _template(tmp_path / "t", [
+        {"id": "reference-docx", "path": "branding/reference.docx", "replaces": "reference.docx"},
+    ])
+    assert quarto_render.missing_required_assets(folder) == []
+
+
+def test_the_shipped_pentest_template_declares_its_word_styles_as_replaceable():
+    from pathlib import Path
+    root = Path(settings.REPORT_TEMPLATES_DIR) / "pentest"
+    if not (root / "template.json").is_file():
+        pytest.skip("report-templates is not mounted in this container")
+    by_id = {a["id"]: a for a in template_assets(root)}
+    assert by_id["reference-docx"]["replaces"] == "reference.docx"
+    assert by_id["reference-docx"]["required"] is False

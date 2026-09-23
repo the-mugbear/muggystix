@@ -56,6 +56,8 @@ export interface ReportTemplateAsset {
   /** A missing required image blocks preview, issue and render. */
   required: boolean;
   formats: ClientReportFormat[];
+  /** When installed, used in place of this template file (e.g. `reference.docx`). */
+  replaces?: string | null;
   /** The file is installed where the manifest says. */
   present: boolean;
 }

@@ -303,7 +303,21 @@ describe('Template images', () => {
     expect(previewPdf).toBeDisabled();
     expect(previewPdf).toHaveAttribute('title', expect.stringContaining('Cover art'));
     expect(screen.getByRole('button', { name: /Issue report/ })).toBeDisabled();
-    expect(screen.getByText(/A required template image is not installed/)).toBeInTheDocument();
+    expect(screen.getByText(/A required template file is not installed/)).toBeInTheDocument();
+  });
+
+  it('a Word styles file that replaces the shipped one is never a gap', async () => {
+    withAssets([asset({
+      id: 'reference-docx', path: 'branding/reference.docx', label: 'Word styles (reference.docx)',
+      replaces: 'reference.docx', formats: ['docx'],
+    })]);
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    expect(await screen.findByText('Not installed · shipped used')).toBeInTheDocument();
+    expect(screen.getByText(/When installed, used in place of the template/)).toBeInTheDocument();
+    const heading = screen.getByText('Template files').closest('h1,h2,h3,h4') ?? screen.getByText('Template files');
+    expect(heading.textContent).not.toMatch(/missing/);
+    expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled();
   });
 
   it('an optional image that is missing never blocks', async () => {

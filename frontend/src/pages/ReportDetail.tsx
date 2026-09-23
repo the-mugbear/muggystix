@@ -40,7 +40,9 @@ import { safeFallback } from '../utils/uiStyles';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
-import TemplateImages, { missingAssetsReason, missingRequiredAssets } from '../components/reports/TemplateImages';
+import TemplateImages, {
+  missingAssetCount, missingAssetsReason, missingRequiredAssets,
+} from '../components/reports/TemplateImages';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
@@ -269,7 +271,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // server refuses too); say so on the buttons instead of failing a job.
   const assetsBlock = missingAssetsReason(template);
   const assetsTemplate = templates.find((t) => t.name === form.template);
-  const assetsMissing = (assetsTemplate?.assets ?? []).filter((a) => !a.present).length;
+  const assetsMissing = missingAssetCount(assetsTemplate);
 
   let lead: React.ReactNode;
   if (s.error) {
@@ -332,7 +334,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             )}
             {isDraft && !dirty && assetsBlock && (
               <p className="w-full text-right text-caption text-destructive">
-                {missingRequiredAssets(template).length === 1 ? 'A required template image is' : 'Required template images are'} not installed — see Template images.
+                {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Template files.
               </p>
             )}
           </div>
@@ -388,8 +390,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
       {isDraft && (
         <PostureSection
-          title={<>Template images{assetsMissing > 0 && <SectionCount>{assetsMissing} missing</SectionCount>}</>}
-          description="The logo and other images the template itself places, besides the findings' evidence.">
+          title={<>Template files{assetsMissing > 0 && <SectionCount>{assetsMissing} missing</SectionCount>}</>}
+          description="The logo, Word styles and other files the template itself uses, besides the findings' evidence.">
           <TemplateImages template={assetsTemplate} templateName={form.template} />
         </PostureSection>
       )}
