@@ -117,6 +117,9 @@ class NoteAttachmentOut(BaseModel):
     content_type: str
     size_bytes: int
     created_at: datetime
+    include_in_report: bool = False
+    # Who attached it — the report opt-in is theirs (or a project admin's).
+    uploaded_by_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

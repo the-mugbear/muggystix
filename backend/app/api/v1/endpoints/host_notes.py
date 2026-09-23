@@ -12,7 +12,10 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, desc
 from sqlalchemy.orm import Session, selectinload
 
+from pydantic import BaseModel
+
 from app.core.config import settings
+from app.core.security import check_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -813,3 +816,45 @@ def delete_note_attachment(
     db.delete(att)
     db.commit()
     return Response(status_code=204)
+
+
+class AttachmentReportFlag(BaseModel):
+    include_in_report: bool
+
+
+@router.patch(
+    "/notes/attachments/{attachment_id:int}",
+    response_model=NoteAttachmentOut,
+    summary="Mark an image for the client report (uploader or project admin)",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def set_note_attachment_report_flag(
+    attachment_id: int,
+    body: AttachmentReportFlag,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """v2.379.0 — images are opt-in for the client report: a screenshot often
+    shows more than a client should see, so nothing goes in unless someone
+    marks it.  The person who attached it decides, or a project admin (the
+    same people who may delete it)."""
+    att = _resolve_attachment(db, attachment_id, project)
+    if att.uploaded_by_id not in (None, current_user.id) and current_user.role != UserRole.ADMIN:
+        role = (
+            db.query(ProjectMembership.role)
+            .filter(
+                ProjectMembership.project_id == project.id,
+                ProjectMembership.user_id == current_user.id,
+            )
+            .scalar()
+        )
+        if not role or not check_permissions(role, ProjectRole.ADMIN.value):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the person who attached this image or a project admin can choose whether it goes in the report.",
+            )
+    att.include_in_report = body.include_in_report
+    db.commit()
+    db.refresh(att)
+    return att

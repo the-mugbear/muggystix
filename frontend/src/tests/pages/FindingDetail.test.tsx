@@ -207,3 +207,44 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/findings'));
   });
 });
+
+describe('FindingDetail — report text (v5.260.0)', () => {
+  const reportText = (over: Record<string, unknown> = {}) => ({
+    description: 'TLS 1.0 is enabled.', impact: null, recommendation: null, references: null,
+    steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false, ...over,
+  });
+
+  it('shows the text as written and names what is still empty', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ report_text: reportText() }));
+    renderAt('/findings/7');
+    expect(await screen.findByText('TLS 1.0 is enabled.')).toBeInTheDocument();
+    expect(screen.getByText('impact, recommendation')).toBeInTheDocument();
+    // Not the author and not an admin: no editor.
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument();
+  });
+
+  it('saves only the fields that changed', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, report_text: reportText() }));
+    mocked.updateFinding.mockResolvedValue(
+      finding({ can_modify: true, report_text: reportText({ impact: 'Traffic can be read.' }) }),
+    );
+    renderAt('/findings/7');
+    await screen.findByText('TLS 1.0 is enabled.');
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Traffic can be read.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(7, { impact: 'Traffic can be read.' }));
+    expect(await screen.findByText('Traffic can be read.')).toBeInTheDocument();
+  });
+
+  it('refuses an out-of-range score before sending', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, report_text: reportText() }));
+    renderAt('/findings/7');
+    await screen.findByText('TLS 1.0 is enabled.');
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText('Score'), { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('A CVSS score is a number from 0.0 to 10.0.')).toBeInTheDocument();
+    expect(mocked.updateFinding).not.toHaveBeenCalled();
+  });
+});

@@ -21,7 +21,7 @@ are the canonical value sets, enforced in application code.
 import enum
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Integer, String, Text,
+    Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text,
     UniqueConstraint, Index,
 )
 from sqlalchemy.orm import relationship
@@ -103,6 +103,22 @@ class Finding(Base):
     # forking two. Deliberately excludes the scanner, which is provenance
     # rather than identity.
     dedup_key = Column(String(255), nullable=True, index=True)
+
+    # v2.379.0 — the finding's REPORT TEXT: what the client report says about
+    # the issue.  Authored content (same rule as the title: its author, a
+    # project admin or a global admin edits it), Markdown, seeded once at
+    # promotion from the scanner row / source note and owned by people after
+    # that — a later corroborating scanner never overwrites it.  Typed columns,
+    # not a blob: the report page counts findings still missing text.
+    description = Column(Text, nullable=True)
+    impact = Column(Text, nullable=True)
+    recommendation = Column(Text, nullable=True)
+    references = Column(Text, nullable=True)          # Markdown (usually a list of links)
+    steps_to_reproduce = Column(Text, nullable=True)
+    # A 3.x / 2.0 vector determines the score (cvss_service); a 4.0 vector's
+    # score is entered, since its scoring table is not reimplemented here.
+    cvss_vector = Column(String(200), nullable=True)
+    cvss_score = Column(Float, nullable=True)
 
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

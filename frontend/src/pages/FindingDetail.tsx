@@ -31,8 +31,10 @@ import {
   addFindingHosts,
   getHostNotes,
   listProjectMembers,
+  NoteAttachment,
 } from '../services/api';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
+import FindingReportTextCard from '../components/FindingReportTextCard';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
 import { useToast } from '../contexts/ToastContext';
@@ -275,6 +277,12 @@ const FindingDetail: React.FC = () => {
   // renames or deletes it; the server decides and says so in `can_modify`.
   // Severity, owner and status above stay open to any analyst (triage).
   const canModify = canManage && !!finding?.can_modify;
+  // v5.260.0 — images are opt-in for the client report: the uploader marks
+  // theirs, a project admin any (the server enforces the same rule).
+  const reportMarking = useMemo(() => ({
+    canMark: (att: NoteAttachment) =>
+      canManage && (!!finding?.viewer_is_project_admin || (user?.id != null && att.uploaded_by_id === user.id)),
+  }), [canManage, finding?.viewer_is_project_admin, user?.id]);
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [titleSaving, setTitleSaving] = useState(false);
 
@@ -517,6 +525,8 @@ const FindingDetail: React.FC = () => {
         )}
       </div>
 
+      <FindingReportTextCard finding={finding} canEdit={canModify} onSaved={setFinding} />
+
       {evidenceError && (
         <Card className="mb-md">
           <CardHeader><CardTitle>Evidence note</CardTitle></CardHeader>
@@ -551,6 +561,7 @@ const FindingDetail: React.FC = () => {
                     attachments={note.attachments}
                     canManage={false}
                     onChanged={() => {}}
+                    reportMarking={reportMarking}
                   />
                 )}
               </div>
@@ -559,7 +570,7 @@ const FindingDetail: React.FC = () => {
         </Card>
       )}
 
-      <FindingCommentThread findingId={finding.id} canManage={canManage} />
+      <FindingCommentThread findingId={finding.id} canManage={canManage} reportMarking={reportMarking} />
 
       <Card className="mb-md">
         <CardHeader>

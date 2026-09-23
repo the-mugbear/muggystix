@@ -5,8 +5,10 @@ import {
   uploadNoteAttachment,
   deleteNoteAttachment,
   getNoteAttachmentObjectUrl,
+  setNoteAttachmentInReport,
 } from '../../services/api';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/checkbox';
 import ScreenshotLightbox from '../ScreenshotLightbox';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
@@ -36,6 +38,13 @@ interface NoteAttachmentsProps {
   /** Tells the owner of an external trigger that an upload is in flight, so
    *  its control can disable itself the way the built-in one does. */
   onBusyChange?: (busy: boolean) => void;
+  /**
+   * v5.260.0 — show each image's "In report" mark (images are opt-in for the
+   * client report). `canMark` says whether THIS viewer may change it for an
+   * image (its uploader or a project admin — the server decides the same).
+   * Omit on surfaces that are not a finding's evidence.
+   */
+  reportMarking?: { canMark: (attachment: NoteAttachment) => boolean };
 }
 
 export interface NoteAttachmentsHandle {
@@ -53,6 +62,7 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  */
 const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(({
   hostId, noteId, attachments, canManage, onChanged, uploadFn, externalTrigger = false, onBusyChange,
+  reportMarking,
 }, ref) => {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -129,6 +139,23 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     }
   };
 
+  // Optimistic: the mark flips at once and the thread reloads behind it.
+  const [reportOverride, setReportOverride] = useState<Record<number, boolean>>({});
+  const onMark = async (att: NoteAttachment, include: boolean) => {
+    setReportOverride((m) => ({ ...m, [att.id]: include }));
+    try {
+      await setNoteAttachmentInReport(att.id, include);
+      onChanged();
+    } catch (err) {
+      setReportOverride((m) => {
+        const next = { ...m };
+        delete next[att.id];
+        return next;
+      });
+      toast.error(formatApiError(err, 'Could not change whether the image goes in the report.'));
+    }
+  };
+
   const onDelete = async (id: number) => {
     try {
       await deleteNoteAttachment(id);
@@ -175,6 +202,21 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                     <Trash2 className="size-3" aria-hidden />
                   </button>
                 )}
+                {reportMarking && (() => {
+                  const inReport = reportOverride[att.id] ?? !!att.include_in_report;
+                  return reportMarking.canMark(att) ? (
+                    <label className="mt-xxs flex w-20 cursor-pointer items-center gap-xxs text-caption text-muted-foreground">
+                      <Checkbox
+                        checked={inReport}
+                        onCheckedChange={(v) => void onMark(att, v === true)}
+                        aria-label={`Include ${att.filename} in the report`}
+                      />
+                      In report
+                    </label>
+                  ) : inReport ? (
+                    <p className="mt-xxs w-20 text-caption text-muted-foreground">In report</p>
+                  ) : null;
+                })()}
               </div>
             );
           })}

@@ -23,6 +23,21 @@ class FindingHostInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class FindingReportText(BaseModel):
+    """v2.379.0 — what the client report says about the finding (Markdown).
+    Returned on single-finding responses only; the list leaves it out."""
+    description: Optional[str] = None
+    impact: Optional[str] = None
+    recommendation: Optional[str] = None
+    references: Optional[str] = None
+    steps_to_reproduce: Optional[str] = None
+    cvss_vector: Optional[str] = None
+    cvss_score: Optional[float] = None
+    # True when the vector decides the score (3.x / 2.0) — the editor then
+    # shows the score read-only.
+    cvss_score_from_vector: bool = False
+
+
 class FindingResponse(BaseModel):
     id: int
     project_id: int
@@ -48,6 +63,10 @@ class FindingResponse(BaseModel):
     created_by_id: Optional[int] = None
     created_by_name: Optional[str] = None
     can_modify: bool = False
+    # v2.379.0 — the caller is a project (or global) admin: may mark ANY
+    # evidence image for the report, not only their own uploads.
+    viewer_is_project_admin: bool = False
+    report_text: Optional[FindingReportText] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
@@ -144,6 +163,16 @@ class FindingUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=500)
     severity: Optional[str] = None
     owner_id: Optional[int] = None
+    # v2.379.0 — report text (authored content: author / project admin /
+    # global admin).  Send a field to set it, ``null`` or "" to clear it;
+    # omitted fields are untouched.
+    description: Optional[str] = Field(None, max_length=32768)
+    impact: Optional[str] = Field(None, max_length=32768)
+    recommendation: Optional[str] = Field(None, max_length=32768)
+    references: Optional[str] = Field(None, max_length=32768)
+    steps_to_reproduce: Optional[str] = Field(None, max_length=32768)
+    cvss_vector: Optional[str] = Field(None, max_length=200)
+    cvss_score: Optional[float] = None
 
 
 class FindingNoteUpdate(BaseModel):

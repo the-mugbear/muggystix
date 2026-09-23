@@ -55,9 +55,34 @@ export interface Finding {
   created_by_id?: number | null;
   created_by_name?: string | null;
   can_modify?: boolean;
+  /** v5.260.0 — what the client report says (Markdown). Single-finding
+   *  responses only; the list sends null. Edited under `can_modify`. */
+  report_text?: FindingReportText | null;
+  /** v5.260.0 — the caller is a project admin: may mark any evidence image
+   *  for the report, not only their own uploads. */
+  viewer_is_project_admin?: boolean;
   created_at: string;
   updated_at: string | null;
 }
+
+export interface FindingReportText {
+  description: string | null;
+  impact: string | null;
+  recommendation: string | null;
+  references: string | null;
+  steps_to_reproduce: string | null;
+  cvss_vector: string | null;
+  cvss_score: number | null;
+  /** A 3.x / 2.0 vector decides the score; the editor shows it read-only. */
+  cvss_score_from_vector: boolean;
+}
+
+export type FindingReportTextField =
+  'description' | 'impact' | 'recommendation' | 'references' | 'steps_to_reproduce';
+
+export type FindingReportTextUpdate = Partial<
+  Record<FindingReportTextField | 'cvss_vector', string | null> & { cvss_score: number | null }
+>;
 
 export interface FindingListResponse {
   items: Finding[];
@@ -132,7 +157,7 @@ export interface FindingCreatePayload {
 }
 export const updateFinding = async (
   findingId: number,
-  payload: { title?: string; severity?: FindingSeverity; owner_id?: number | null },
+  payload: { title?: string; severity?: FindingSeverity; owner_id?: number | null } & FindingReportTextUpdate,
 ): Promise<Finding> => {
   const response = await api.patch<Finding>(`${p()}/findings/${findingId}`, payload);
   return response.data;

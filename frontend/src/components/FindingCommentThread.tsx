@@ -10,6 +10,7 @@ import { Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X } from 'lu
 
 import {
   Annotation,
+  NoteAttachment,
   getFindingNotes,
   createFindingNote,
   updateFindingNote,
@@ -31,6 +32,8 @@ interface FindingCommentThreadProps {
   findingId: number;
   /** Analyst+ — gates the compose/reply/attach affordances. */
   canManage: boolean;
+  /** v5.260.0 — the images' "In report" mark (see NoteAttachments). */
+  reportMarking?: { canMark: (attachment: NoteAttachment) => boolean };
 }
 
 interface ThreadNode {
@@ -72,7 +75,7 @@ const wasEdited = (note: Annotation): boolean =>
   !!note.updated_at &&
   new Date(note.updated_at).getTime() - new Date(note.created_at).getTime() > 5000;
 
-const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage }) => {
+const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking }) => {
   const toast = useToast();
   const { user } = useAuth();
   const [confirmDialog, confirm] = useConfirm();
@@ -275,6 +278,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           canManage={canManage}
           uploadFn={(file) => uploadFindingNoteAttachment(findingId, note.id, file)}
           onChanged={() => void load()}
+          reportMarking={reportMarking}
         />
         {canManage && !isEditing && (
           <div className="mt-xxs flex flex-wrap items-center gap-xxs">

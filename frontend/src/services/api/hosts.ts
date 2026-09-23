@@ -313,6 +313,10 @@ export interface NoteAttachment {
   content_type: string;
   size_bytes: number;
   created_at: string;
+  /** v5.260.0 — marked for the client report (opt-in). */
+  include_in_report?: boolean;
+  /** Who attached it — the report opt-in is theirs or a project admin's. */
+  uploaded_by_id?: number | null;
 }
 
 export interface HostDiscovery {
@@ -571,6 +575,19 @@ export const uploadNoteAttachment = async (
 
 export const deleteNoteAttachment = async (attachmentId: number): Promise<void> => {
   await api.delete(`${p()}/hosts/notes/attachments/${attachmentId}`);
+};
+
+/** v5.260.0 — images are opt-in for the client report (the uploader or a
+ *  project admin decides). */
+export const setNoteAttachmentInReport = async (
+  attachmentId: number,
+  includeInReport: boolean,
+): Promise<NoteAttachment> => {
+  const response = await api.patch<NoteAttachment>(
+    `${p()}/hosts/notes/attachments/${attachmentId}`,
+    { include_in_report: includeInReport },
+  );
+  return response.data;
 };
 
 /** Fetch an attachment's bytes (authenticated) as an object URL for <img src>. */

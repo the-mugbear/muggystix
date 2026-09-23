@@ -22,7 +22,9 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
 from app.core.security import check_permissions, log_audit_event
+from app.services.cvss_service import CvssError, normalize_cvss, score_vector
 from app.services.finding_service import FindingService, validate_severity
+from app.services.report_text import REPORT_TEXT_FIELDS
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
 from app.services.note_attachment_service import purge_note_files, store_image_attachment
@@ -31,7 +33,7 @@ from app.schemas.schemas import (
 )
 from app.schemas.findings import (
     EndpointStatusUpdate,
-    FindingResponse, FindingHostInfo, FindingListResponse,
+    FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
     PromoteAnnotationRequest, PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNoteUpdate,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
@@ -83,7 +85,23 @@ def _require_modify(viewer: _Viewer, finding: Finding, what: str) -> None:
         )
 
 
-def _serialize(finding: Finding, viewer: Optional[_Viewer] = None) -> FindingResponse:
+def _report_text(finding: Finding) -> FindingReportText:
+    from_vector = False
+    if finding.cvss_vector:
+        try:
+            from_vector = score_vector(finding.cvss_vector)[1] is not None
+        except CvssError:
+            from_vector = False
+    return FindingReportText(
+        **{f: getattr(finding, f) for f in REPORT_TEXT_FIELDS},
+        cvss_vector=finding.cvss_vector, cvss_score=finding.cvss_score,
+        cvss_score_from_vector=from_vector,
+    )
+
+
+def _serialize(
+    finding: Finding, viewer: Optional[_Viewer] = None, *, with_report_text: bool = True,
+) -> FindingResponse:
     hosts = [
         FindingHostInfo(
             id=fh.id,
@@ -116,6 +134,8 @@ def _serialize(finding: Finding, viewer: Optional[_Viewer] = None) -> FindingRes
             if finding.created_by else None
         ),
         can_modify=viewer.may_modify(finding) if viewer is not None else False,
+        viewer_is_project_admin=viewer.is_project_admin if viewer is not None else False,
+        report_text=_report_text(finding) if with_report_text else None,
         created_at=finding.created_at, updated_at=finding.updated_at,
     )
 
@@ -167,7 +187,9 @@ def list_findings(
         unowned=unowned, source=source, host_id=host_id, search=search,
     )
     return FindingListResponse(
-        items=[_serialize(f, viewer) for f in rows], total=total, severity_counts=sev_counts,
+        # Report text stays off the list: up to five 32 KB fields per row.
+        items=[_serialize(f, viewer, with_report_text=False) for f in rows],
+        total=total, severity_counts=sev_counts,
     )
 
 
@@ -360,6 +382,31 @@ def update_finding(
     # being silently ignored. A non-null owner must be a valid project assignee.
     if "owner_id" in body.model_fields_set:
         finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
+    # v2.379.0 — report text is authored content too: same rule as the title.
+    # Only a field whose value actually changes needs the right, so a client
+    # resending the whole form after a triage edit is not refused.
+    sent = body.model_fields_set
+    changes = {}
+    for field in REPORT_TEXT_FIELDS:
+        if field in sent:
+            value = (getattr(body, field) or "").strip() or None
+            if value != getattr(finding, field):
+                changes[field] = value
+    if "cvss_vector" in sent or "cvss_score" in sent:
+        vector = body.cvss_vector if "cvss_vector" in sent else finding.cvss_vector
+        score = body.cvss_score if "cvss_score" in sent else finding.cvss_score
+        try:
+            vector, score = normalize_cvss(vector, score)
+        except CvssError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if vector != finding.cvss_vector:
+            changes["cvss_vector"] = vector
+        if score != finding.cvss_score:
+            changes["cvss_score"] = score
+    if changes:
+        _require_modify(viewer, finding, "edit its report text")
+        for field, value in changes.items():
+            setattr(finding, field, value)
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 

@@ -1359,6 +1359,10 @@ class NoteAttachment(Base):
     storage_path = Column(String, nullable=False)       # relative under uploads/note_attachments/
     uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # v2.379.0 — opt-in: only an image marked here goes into the client
+    # report (screenshots often show more than a client should see).  Set by
+    # the uploader or a project admin.
+    include_in_report = Column(Boolean, nullable=False, default=False, server_default="false")
 
     annotation = relationship("Annotation", back_populates="attachments")
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])

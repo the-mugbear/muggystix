@@ -17,6 +17,7 @@ from app.db.models_findings import (
     Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
 )
+from app.services.report_text import clip as clip_report_text, seed_report_text_from_vuln
 from app.services.status_history_service import record_status_transition
 from app.services.vuln_identity import issue_key_for
 
@@ -257,6 +258,9 @@ class FindingService:
             owner_id=effective_owner,
             evidence_annotation_id=evidence_id,
             created_by_id=actor_id,
+            # v2.379.0 — the note is the analyst's own account of the issue:
+            # it seeds the report description, which they then edit.
+            description=clip_report_text(annotation.body),
         )
         self.db.add(finding)
         self.db.flush()
@@ -368,6 +372,7 @@ class FindingService:
             dedup_key=key,
             created_by_id=actor_id,
         )
+        seed_report_text_from_vuln(finding, vuln)
         self.db.add(finding)
         self.db.flush()
         self.attach_vulnerability(finding=finding, vuln=vuln)
@@ -444,6 +449,7 @@ class FindingService:
                 dedup_key=key,
                 created_by_id=actor_id,
             )
+            seed_report_text_from_vuln(finding, vuln)
             self.db.add(finding)
             self.db.flush()
         self.attach_vulnerability(finding=finding, vuln=vuln)
