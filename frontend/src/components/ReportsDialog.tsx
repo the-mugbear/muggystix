@@ -9,7 +9,6 @@ import {
   Globe,
   Loader2,
   ServerCog,
-  Sparkles,
   Table as TableIcon,
 } from 'lucide-react';
 import {
@@ -46,7 +45,7 @@ import {
 import { cn } from '../utils/cn';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
-import AiDraftReportDialog from './AiDraftReportDialog';
+import { Link } from 'react-router-dom';
 
 interface ReportsDialogProps {
   open: boolean;
@@ -62,9 +61,9 @@ type StructuredFormat = 'markdown-bundle' | 'agent-package';
 const REPORT_TYPES: Array<{ value: ReportType; label: string; description: string }> = [
   {
     value: 'comprehensive',
-    label: 'Comprehensive Security Report',
+    label: 'Host dossiers',
     description:
-      'Everything per host — findings, vulnerabilities, services, site context — plus project hotspots. The security review hand-off.',
+      'Everything per host — findings, vulnerabilities, services, site context — plus project hotspots. For reviewing the filtered hosts; the client report is on the Reports page.',
   },
   {
     value: 'inventory',
@@ -130,9 +129,6 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // Recent async report jobs — so navigating away / reopening doesn't strand a
   // long-running or completed export; you can re-download from here.
   const [recentJobs, setRecentJobs] = useState<ReportJob[]>([]);
-  // "Draft with AI (beta)" — opens a separate dialog that asks a configured LLM
-  // to draft a narrative report from the project's promoted findings.
-  const [aiDraftOpen, setAiDraftOpen] = useState(false);
   // Effective per-format host caps for this deployment (GET /reports/limits).
   // null until loaded — the over-cap warning stays hidden rather than showing
   // a number the server won't honour.
@@ -311,7 +307,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <FileDown className="size-5" aria-hidden />
-            Export Host Report
+            Export hosts
           </DialogTitle>
         </DialogHeader>
 
@@ -510,32 +506,17 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
           </div>
         </div>
 
-        {/* Draft with AI — narrative report drafted by a configured LLM from the
-            project's promoted findings, then edited by the operator. Separate
-            dialog so this export dialog stays focused on file exports. */}
+        {/* v5.261.0 — the client report (findings-first, with history and
+            addenda, and the AI-drafted summary) lives on the Reports page;
+            this dialog exports the filtered hosts. */}
         <div className="mt-xs border-t border-border pt-sm">
-          <button
-            type="button"
-            onClick={() => setAiDraftOpen(true)}
-            disabled={isBusy}
-            className={cn(
-              'flex w-full items-start gap-xs rounded-control border border-border p-xs text-left',
-              'hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              'disabled:opacity-60',
-            )}
-          >
-            <Sparkles className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="min-w-0">
-              <span className="flex items-center gap-xs">
-                <span className="text-metadata font-medium text-foreground">Draft with AI</span>
-                <Badge variant="outline">beta</Badge>
-              </span>
-              <span className="block text-caption text-muted-foreground">
-                Have a configured LLM draft a narrative report from this project&apos;s promoted
-                findings — then edit it before sharing.
-              </span>
+          <p className="flex items-start gap-xs text-caption text-muted-foreground">
+            <FileText className="mt-xxs size-4 shrink-0" aria-hidden />
+            <span>
+              The client report — built from findings, with its history and addenda — is on the{' '}
+              <Link to="/reports" className="text-info hover:underline" onClick={onClose}>Reports page</Link>.
             </span>
-          </button>
+          </p>
         </div>
 
         {/* Recent reports — async jobs persist on the worker, so navigating away
@@ -650,7 +631,6 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
         )}
       </DialogContent>
 
-      <AiDraftReportDialog open={aiDraftOpen} onClose={() => setAiDraftOpen(false)} />
     </Dialog>
   );
 };

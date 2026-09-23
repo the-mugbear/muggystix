@@ -142,6 +142,8 @@ const TestPlanCompare = lazy(() => import('./pages/TestPlanCompare'));
 const Operations = lazy(() => import('./pages/Operations'));
 const Findings = lazy(() => import('./pages/Findings'));
 const FindingDetail = lazy(() => import('./pages/FindingDetail'));
+const Reports = lazy(() => import('./pages/Reports'));
+const ReportDetail = lazy(() => import('./pages/ReportDetail'));
 const ReconRunDetail = lazy(() => import('./pages/ReconRunDetail'));
 const ReconRunsList = lazy(() => import('./pages/ReconRunsList'));
 const ReconCompare = lazy(() => import('./pages/ReconCompare'));
@@ -389,6 +391,22 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <FindingDetail />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reports"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <Reports />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reports/:reportId"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <ReportDetail />
                           </ProtectedRoute>
                         }
                       />

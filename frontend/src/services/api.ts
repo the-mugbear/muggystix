@@ -35,6 +35,7 @@ export * from './api/agent-sessions';
 // lifecycle, so nothing in the UI called it. The /agents/ endpoints remain
 // server-side for scripts.
 export * from './api/assist';
+export * from './api/client-reports';
 export * from './api/coverage';
 export * from './api/dashboard';
 export * from './api/execution-sessions';

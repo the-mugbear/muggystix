@@ -1,5 +1,10 @@
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
+import type { ReactElement } from 'react';
+
+// The dialog links to the Reports page, so it renders inside a router.
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter });
 
 // Real polling hook here on purpose: the unit suite mocks it, so it could not
 // see that a swallowed refresh failure defeats the hook's backoff.

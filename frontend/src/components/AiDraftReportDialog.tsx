@@ -43,6 +43,10 @@ import { Textarea } from './ui/textarea';
 interface AiDraftReportDialogProps {
   open: boolean;
   onClose: () => void;
+  /** v5.261.0 — hand the (edited) draft to the caller, e.g. a report's
+   *  executive summary, which the person then edits and saves. */
+  onUse?: (markdown: string) => void;
+  useLabel?: string;
 }
 
 /**
@@ -64,7 +68,7 @@ const ElapsedSeconds: React.FC<{ startedAt: number }> = ({ startedAt }) => {
  * the operator in an editable textarea. The AI drafts; the human owns the final
  * text (copy / download .md).
  */
-const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose }) => {
+const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose, onUse, useLabel }) => {
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -337,6 +341,11 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
                         <Download className="size-3.5" aria-hidden />
                         Download .md
                       </Button>
+                      {onUse && (
+                        <Button size="sm" onClick={() => { onUse(draft); onClose(); }} disabled={!draft.trim()}>
+                          {useLabel ?? 'Use this text'}
+                        </Button>
+                      )}
                     </div>
                   </div>
                   <Label htmlFor="ai-draft-content" className="sr-only">

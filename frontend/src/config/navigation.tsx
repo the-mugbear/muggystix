@@ -19,6 +19,7 @@ import {
   BookOpen,
   Bot,
   Compass,
+  FileText,
   Folder,
   Gauge,
   Globe,
@@ -178,6 +179,11 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'findings', path: '/findings', label: 'Findings', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: AlertHexIcon, keywords: ['finding', 'vuln', 'triage', 'result'], order: 4 },
+  },
+  {
+    // v5.261.0 — the client report (Quarto): drafts, issued history, addenda.
+    id: 'reports', path: '/reports', label: 'Reports', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: FileText, keywords: ['report', 'deliverable', 'addendum', 'client', 'docx', 'pdf'], order: 4.5 },
   },
   {
     id: 'scopes', path: '/scopes', label: 'Scopes', requiredRole: 'analyst', hub: 'inventory',

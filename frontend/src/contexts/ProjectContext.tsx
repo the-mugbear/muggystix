@@ -24,6 +24,7 @@ const PROJECT_SCOPED_RESOURCE_ROUTES: RegExp[] = [
   /^\/recon\/runs\/[^/]+/,
   /^\/executions\/[^/]+/,
   /^\/findings\/[^/]+/,
+  /^\/reports\/[^/]+/,
   /^\/assist-sessions\/[^/]+/,
 ];
 

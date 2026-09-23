@@ -1282,7 +1282,7 @@ export default function Hosts() {
             disabled={loading || totalHosts === 0 || showingStaleResults}
           >
             <Download className="size-4" aria-hidden />
-            Export Report
+            Export hosts
           </Button>
         </div>
       </div>
