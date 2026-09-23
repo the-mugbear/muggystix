@@ -199,6 +199,52 @@ def observation_judged_on_host():
     )
 
 
+def join_judged(query, project_ids):
+    """The SAME rule as ``observation_judged_on_host``, as two LEFT JOINs.
+
+    Returns ``(query, judged)`` — ``query`` (over ``Vulnerability`` joined to
+    ``Host``, filtered to ``project_ids``) outer-joined to the covered
+    (host, issue key) and (host, promoted row) pairs, and ``judged``, the
+    boolean expression to aggregate.
+
+    The correlated EXISTS is right for a handful of rows but, aggregated over
+    a project's scanner rows, it runs once per row per place it appears: the
+    scanner-observations list evaluated it three times over 400k rows (4.3 s
+    at 80k hosts; review 2026-09-23 perf pass).  The pairs are computed once
+    and hash-joined.  ``tests/test_engagement_metrics.py`` pins the two forms
+    to the same answer row by row.
+    """
+    ids = list(project_ids)
+    by_key = (
+        select(FindingHost.host_id.label("host_id"), Finding.project_id.label("project_id"),
+               Finding.dedup_key.label("key"))
+        .join(Finding, Finding.id == FindingHost.finding_id)
+        .where(Finding.project_id.in_(ids), Finding.source == FindingSource.SCANNER.value,
+               Finding.dedup_key.isnot(None))
+        .distinct()
+        .subquery("judged_by_key")
+    )
+    by_row = (
+        select(FindingHost.host_id.label("host_id"), Finding.project_id.label("project_id"),
+               Finding.vuln_id.label("vuln_id"))
+        .join(Finding, Finding.id == FindingHost.finding_id)
+        .where(Finding.project_id.in_(ids), Finding.source == FindingSource.SCANNER.value,
+               Finding.vuln_id.isnot(None))
+        .distinct()
+        .subquery("judged_by_row")
+    )
+    query = (
+        query
+        .outerjoin(by_key, and_(by_key.c.host_id == Vulnerability.host_id,
+                                by_key.c.project_id == Host.project_id,
+                                by_key.c.key == Vulnerability.issue_key))
+        .outerjoin(by_row, and_(by_row.c.host_id == Vulnerability.host_id,
+                                by_row.c.project_id == Host.project_id,
+                                by_row.c.vuln_id == Vulnerability.id))
+    )
+    return query, or_(by_key.c.host_id.isnot(None), by_row.c.host_id.isnot(None))
+
+
 def finding_is_a_result():
     """SQL condition on ``Finding``: not dismissed as a false positive —
     neither by its own status nor on every one of its endpoints."""
@@ -342,22 +388,25 @@ def project_engagement(
     ):
         out[pid].defect_targets.add(severity, n)
 
-    judged = observation_judged_on_host()
     obs_filters = [Host.project_id.in_(ids), Vulnerability.severity.in_(_VULN_SEVERITIES)]
     if scoped_hosts is not None:
         obs_filters.append(Vulnerability.host_id.in_(scoped_hosts))
     if recorded_in is not None:
         # vulnerabilities.first_seen is a naive UTC column.
         obs_filters.append(recorded_in.naive_clause(Vulnerability.first_seen))
-    for pid, severity, total, n_judged in (
+    # The judged rule as joins (join_judged), not a per-row EXISTS.
+    obs_query, judged = join_judged(
         db.query(
             Host.project_id,
             Vulnerability.severity,
             func.count(Vulnerability.id),
-            func.sum(case((judged, 1), else_=0)),
         )
         .select_from(Vulnerability)
-        .join(Host, Host.id == Vulnerability.host_id)
+        .join(Host, Host.id == Vulnerability.host_id),
+        ids,
+    )
+    for pid, severity, total, n_judged in (
+        obs_query.add_columns(func.sum(case((judged, 1), else_=0)))
         .filter(*obs_filters)
         .group_by(Host.project_id, Vulnerability.severity)
         .all()

@@ -68,26 +68,30 @@ class Host(Base):
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))  # Track which scan last updated this host
 
-    # Relationships.  Hot read paths (host list, serializers, reports) touch
-    # ports + vulnerabilities + attributes on every host, so they default to
-    # selectin to make N+1 the explicit choice (opt-out via noload()) instead
-    # of the silent default.  Audit-trail relationships (scan_history,
-    # host_scripts) stay lazy='select' — drill-down only, not worth the join.
+    # Relationships.  All plain lazy since v2.393.0 (review 2026-09-23
+    # B-Debt-1): they were lazy="selectin", so EVERY whole-entity Host query —
+    # a finding's endpoint, an export row, an agent brief — also loaded the
+    # host's ports, scanner rows (with their plugin output), notes and tags,
+    # whether or not anything read them; 7+ call sites patched it back with
+    # noload() one at a time and the client-report build, the out-of-scope
+    # export and the findings list did not.  A path that DOES read them
+    # names it: ``selectinload(Host.ports)`` etc. — the load is the
+    # caller's choice, not the mapper's.
     project = relationship("Project", foreign_keys=[project_id])
-    ports = relationship("Port", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
+    ports = relationship("Port", back_populates="host", cascade="all, delete-orphan")
     host_scripts = relationship("HostScript", back_populates="host", cascade="all, delete-orphan")
     scan_history = relationship("HostScanHistory", back_populates="host", cascade="all, delete-orphan")
     last_updated_scan = relationship("Scan", foreign_keys=[last_updated_scan_id])
 
     # New vulnerability and attribute relationships
-    vulnerabilities = relationship("Vulnerability", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
+    vulnerabilities = relationship("Vulnerability", back_populates="host", cascade="all, delete-orphan")
     # v2.390.0 — plain lazy: nothing renders the attribute history (the one
     # value with no other home, the NetBIOS name, is now netbios_name), so
     # selectin-loading it on every Host load was pure cost.
     attributes = relationship("HostAttribute", back_populates="host", cascade="all, delete-orphan")
     follows = relationship("HostFollow", back_populates="host", cascade="all, delete-orphan")
-    notes = relationship("Annotation", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
-    tag_assignments = relationship("HostTagAssignment", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
+    notes = relationship("Annotation", back_populates="host", cascade="all, delete-orphan")
+    tag_assignments = relationship("HostTagAssignment", back_populates="host", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index('idx_host_ip_address', 'ip_address'),

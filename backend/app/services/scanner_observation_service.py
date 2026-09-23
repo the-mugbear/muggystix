@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Host, Port
 from app.db.models_findings import Finding, FindingHost, FindingSource, FindingStatus
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.services.engagement_metrics_service import observation_judged_on_host
+from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
 
 # Most issues one promotion call may name, and most hosts one issue may list.
@@ -131,9 +131,11 @@ def list_issues(
     key = _key()
     rank = func.max(_rank())
     hosts = func.count(distinct(Vulnerability.host_id))
-    judged = func.count(distinct(case((observation_judged_on_host(), Vulnerability.host_id))))
-    query = _project_rows(
-        db, project_id,
+    # The judged rule as joins: the per-row EXISTS ran once for the SELECT,
+    # the HAVING and the ORDER BY each — 4.3 s over 400k rows at 80k hosts.
+    base, judged_row = join_judged(_project_rows(db, project_id), [project_id])
+    judged = func.count(distinct(case((judged_row, Vulnerability.host_id))))
+    query = base.with_entities(
         key.label("issue_key"), rank.label("rank"), hosts.label("hosts"), judged.label("judged"),
         func.min(Vulnerability.title).label("title"), func.max(Vulnerability.cve_id).label("cve_id"),
     )
@@ -151,13 +153,17 @@ def list_issues(
     if min_hosts > 1:
         query = query.having(hosts >= min_hosts)
 
-    total = query.order_by(None).count()
+    # The total rides on the page as a window over the groups: counting in a
+    # second query ran the whole aggregation twice.  A page past the end has
+    # no rows to carry it, so only then is it counted on its own.
     rows = (
-        query.order_by(rank.desc(), (hosts - judged).desc(), hosts.desc(), func.min(Vulnerability.title))
+        query.add_columns(func.count().over().label("total_groups"))
+        .order_by(rank.desc(), (hosts - judged).desc(), hosts.desc(), func.min(Vulnerability.title))
         .offset(skip)
         .limit(limit)
         .all()
     )
+    total = rows[0].total_groups if rows else (query.order_by(None).count() if skip else 0)
     keys = [r.issue_key for r in rows]
     sources: Dict[str, List[str]] = {}
     if keys:

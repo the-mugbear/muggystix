@@ -84,20 +84,28 @@ def vuln_scanned_filter():
     return func.lower(models.Scan.tool_name).in_(VULN_SCANNER_TOOLS)
 
 
+def _ids(db: Session, query) -> Set[int]:
+    """A single-column query's values as a set, read through Core.
+
+    These sets hold up to every host of the project, several times over; read
+    as ORM rows (``{hid for (hid,) in q.all()}``) the per-row objects were
+    most of the Evidence page's 2.3 s at 80k hosts (review 2026-09-23 perf
+    pass), not Postgres."""
+    return set(db.connection().execute(query.statement).scalars())
+
+
 def _vuln_scanned_host_ids(db: Session, project_id: int) -> Set[int]:
     """Hosts a vulnerability scanner observed — assessed even with no rows.
 
     Before this, "assessed" meant "has a vulnerability row", so a host the
     scanner covered and found clean read as never assessed — and with
     severity-0 plugins skipped at ingest, a clean host has no rows at all."""
-    return {
-        hid for (hid,) in (
-            db.query(models.HostScanHistory.host_id)
-            .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
-            .filter(models.Scan.project_id == project_id, vuln_scanned_filter())
-            .distinct().all()
-        )
-    }
+    return _ids(db, (
+        db.query(models.HostScanHistory.host_id)
+        .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
+        .filter(models.Scan.project_id == project_id, vuln_scanned_filter())
+        .distinct()
+    ))
 
 
 def _host_ids(db: Session, project_id: int, model, *filters) -> Set[int]:
@@ -109,7 +117,7 @@ def _host_ids(db: Session, project_id: int, model, *filters) -> Set[int]:
     )
     for f in filters:
         q = q.filter(f)
-    return {hid for (hid,) in q.distinct().all()}
+    return _ids(db, q.distinct())
 
 
 def _memo(fn):
@@ -131,9 +139,7 @@ def eligible_host_ids(
     condition heatmap so both read the same population.  ``domains`` builds
     only those keys — the gap list of ONE domain used to run every domain's
     queries (2.374.4 review R2)."""
-    all_hosts = _memo(lambda: {
-        hid for (hid,) in db.query(models.Host.id).filter(models.Host.project_id == project_id).all()
-    })
+    all_hosts = _memo(lambda: _ids(db, db.query(models.Host.id).filter(models.Host.project_id == project_id)))
     with_ports = _memo(lambda: _host_ids(db, project_id, models.Port))
     web_port_filter = or_(
         models.Port.port_number.in_(_WEB_PORTS),
@@ -146,14 +152,12 @@ def eligible_host_ids(
         "vuln_assessment": all_hosts,
         "web_tls": lambda: _host_ids(db, project_id, models.Port, web_port_filter),
         "auth_smb_ad": lambda: _host_ids(db, project_id, models.Port, models.Port.port_number.in_(_AUTH_PORTS)),
-        "validation": lambda: {
-            hid for (hid,) in (
-                db.query(FindingHost.host_id)
-                .join(Finding, FindingHost.finding_id == Finding.id)
-                .filter(Finding.project_id == project_id, FindingHost.host_id.isnot(None))
-                .distinct().all()
-            )
-        },
+        "validation": lambda: _ids(db, (
+            db.query(FindingHost.host_id)
+            .join(Finding, FindingHost.finding_id == Finding.id)
+            .filter(Finding.project_id == project_id, FindingHost.host_id.isnot(None))
+            .distinct()
+        )),
     }
     return {key: builders[key]() for key in (domains if domains is not None else builders)}
 
@@ -169,47 +173,38 @@ def assessed_host_ids(
     builds only those keys (see ``eligible_host_ids``)."""
     def with_auth() -> Set[int]:
         netexec_host_ids = db.query(NetexecResult.host_id)
-        return {
-            hid for (hid,) in (
-                db.query(models.Host.id)
-                .filter(
-                    models.Host.project_id == project_id,
-                    or_(models.Host.smb_signing.isnot(None), models.Host.id.in_(netexec_host_ids)),
-                ).all()
+        return _ids(db, (
+            db.query(models.Host.id)
+            .filter(
+                models.Host.project_id == project_id,
+                or_(models.Host.smb_signing.isnot(None), models.Host.id.in_(netexec_host_ids)),
             )
-        }
+        ))
 
     def with_os() -> Set[int]:
-        return {
-            hid for (hid,) in (
-                db.query(models.Host.id)
-                .filter(models.Host.project_id == project_id,
-                        models.Host.os_name.isnot(None), models.Host.os_name != "")
-                .all()
-            )
-        }
+        return _ids(db, (
+            db.query(models.Host.id)
+            .filter(models.Host.project_id == project_id,
+                    models.Host.os_name.isnot(None), models.Host.os_name != "")
+        ))
 
     def with_web() -> Set[int]:
-        return {
-            hid for (hid,) in (
-                db.query(models.WebInterface.host_id)
-                .filter(models.WebInterface.project_id == project_id,
-                        models.WebInterface.host_id.isnot(None))
-                .distinct().all()
-            )
-        }
+        return _ids(db, (
+            db.query(models.WebInterface.host_id)
+            .filter(models.WebInterface.project_id == project_id,
+                    models.WebInterface.host_id.isnot(None))
+            .distinct()
+        ))
 
     def validated() -> Set[int]:
-        return {
-            hid for (hid,) in (
-                db.query(TestPlanEntry.host_id)
-                .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-                .join(models.Host, TestPlanEntry.host_id == models.Host.id)
-                .filter(models.Host.project_id == project_id,
-                        TestExecutionResult.status == TestExecutionStatus.EXECUTED.value)
-                .distinct().all()
-            )
-        }
+        return _ids(db, (
+            db.query(TestPlanEntry.host_id)
+            .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
+            .join(models.Host, TestPlanEntry.host_id == models.Host.id)
+            .filter(models.Host.project_id == project_id,
+                    TestExecutionResult.status == TestExecutionStatus.EXECUTED.value)
+            .distinct()
+        ))
 
     builders = {
         "port_discovery": lambda: _host_ids(db, project_id, models.Port),
@@ -260,9 +255,7 @@ def evidence_segments(db: Session, project_id: int) -> Dict[str, Any]:
         group_hosts_into_segments, resolve_host_locations,
     )
 
-    all_hosts = {
-        hid for (hid,) in db.query(models.Host.id).filter(models.Host.project_id == project_id).all()
-    }
+    all_hosts = _ids(db, db.query(models.Host.id).filter(models.Host.project_id == project_id))
     locations = resolve_host_locations(db, project_id)
     grouping = group_hosts_into_segments(locations)
     hosts: Dict[str, Set[int]] = {k: set(v) for k, v in grouping["hosts"].items()}
@@ -342,10 +335,7 @@ def evidence_gap_hosts(
     project_has_scope = scope_coverage.project_has_any_scope(db, project_id)
     outside_scope = 0
     if project_has_scope and gap_ids:
-        oos = {
-            hid for (hid,) in
-            scope_coverage._base_query(db, project_id).with_entities(models.Host.id).all()
-        }
+        oos = _ids(db, scope_coverage._base_query(db, project_id).with_entities(models.Host.id))
         outside_scope = sum(1 for hid in gap_ids if hid in oos)
     scope_caution: Optional[str] = None
     if outside_scope and outside_scope == total:

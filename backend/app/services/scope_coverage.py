@@ -22,7 +22,7 @@ import ipaddress
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session, aliased, noload
+from sqlalchemy.orm import Session, aliased
 
 from app.db import models
 from app.services.host_query_common import escape_like
@@ -52,14 +52,12 @@ def _base_query(db: Session, project_id: int):
         models.HostSubnetMapping.host_id == models.Host.id
     )
     return (
-        db.query(models.Host)
-        # The callers read scalar columns only.  Host's relationships are
-        # lazy="selectin": unsuppressed, the whole-project export loaded every
-        # port and scanner row (with its plugin output) of every listed host —
-        # in a project with no scope, all of them (review 2026-09-23 R1).
-        .options(
-            noload(models.Host.ports), noload(models.Host.vulnerabilities),
-            noload(models.Host.notes), noload(models.Host.tag_assignments),
+        # The five columns the callers read, not Host entities: the
+        # whole-project export built 80k ORM objects (2.5 s at 80k hosts;
+        # review 2026-09-23 R1).  Rows keep the attribute names.
+        db.query(
+            models.Host.id, models.Host.ip_address, models.Host.hostname,
+            models.Host.state, models.Host.last_seen,
         )
         .filter(models.Host.project_id == project_id)
         .filter(~mapped.exists())
@@ -85,7 +83,7 @@ def out_of_scope_hosts(
     search: Optional[str] = None,
     skip: Optional[int] = None,
     limit: Optional[int] = None,
-) -> Tuple[List[models.Host], int]:
+) -> Tuple[List[Any], int]:
     """Return ``(hosts, total)`` for hosts with no scope mapping.
 
     ``total`` reflects the search filter, so narrowing the search narrows both

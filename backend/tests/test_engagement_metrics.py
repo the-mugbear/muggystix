@@ -18,7 +18,7 @@ from app.db.models_vulnerability import (
     Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
 )
 from app.services.engagement_metrics_service import (
-    observation_judged_on_host, project_engagement,
+    join_judged, observation_judged_on_host, project_engagement,
 )
 from app.services.host_serialization import _vuln_coverage, issue_coverage_map
 
@@ -128,6 +128,19 @@ def test_judged_matches_the_host_inspector_row_by_row(client, db_session, test_p
         .filter(models.Host.project_id == pid)
         .all()
     )
+    # The join form the aggregates use (join_judged) — the same answer.
+    joined_query, judged_expr = join_judged(
+        db_session.query(Vulnerability.id)
+        .select_from(Vulnerability)
+        .join(models.Host, models.Host.id == Vulnerability.host_id),
+        [pid],
+    )
+    judged_join = dict(
+        joined_query.add_columns(case((judged_expr, True), else_=False))
+        .filter(models.Host.project_id == pid)
+        .all()
+    )
+    assert judged_join == judged_sql
     checked = 0
     for host in hosts:
         vulns = db_session.query(Vulnerability).filter(Vulnerability.host_id == host.id).all()

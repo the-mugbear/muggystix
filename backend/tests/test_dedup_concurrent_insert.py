@@ -67,8 +67,12 @@ def test_a_host_inserted_concurrently_is_resolved_and_the_transaction_survives(d
 
 def test_a_port_inserted_concurrently_is_resolved_and_the_transaction_survives(db_session, test_project):
     scan = _scan(db_session, test_project)
+    # The host exists from an EARLIER import: a host this parse created is
+    # invisible to other writers until commit, so only a known host can race.
+    host = HostDeduplicationService(db_session).find_or_create_host(
+        "10.77.0.2", scan.id, {"state": "up"}, project_id=test_project.id)
+    db_session.commit()
     service = HostDeduplicationService(db_session)
-    host = service.find_or_create_host("10.77.0.2", scan.id, {"state": "up"}, project_id=test_project.id)
     fired, done = _other_writer_after_first_lookup(
         db_session, models.Port,
         lambda conn: conn.execute(insert(models.Port).values(

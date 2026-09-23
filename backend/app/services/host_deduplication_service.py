@@ -86,6 +86,15 @@ class HostDeduplicationService:
         # the name→address bookkeeping costs one lookup per distinct name.
         from app.services.dns_name_service import ObservationCache
         self._name_cache = ObservationCache()
+        # Per-host working set (see _load_host_working_set).
+        self._ws_host_id: Optional[int] = None
+        self._ws_scan_id: Optional[int] = None
+        self._ws_ports: Dict[Tuple[int, str], Port] = {}
+        self._ws_scripts: Dict[Tuple[int, str], Script] = {}
+        self._ws_fresh_port_ids: set = set()
+        self._ws_history_checked: set = set()
+        # Hosts created in this parse: they have no ports, scripts or history.
+        self._fresh_host_ids: set = set()
 
     def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
         """
@@ -303,6 +312,7 @@ class HostDeduplicationService:
                     )
                 raise
 
+            self._fresh_host_ids.add(new_host.id)
             # Record initial scan history
             self._record_host_scan_history(new_host.id, scan_id, host_data, is_new=True)
             return new_host
@@ -314,14 +324,12 @@ class HostDeduplicationService:
         """
         port_number = port_data.get('port_number')
         protocol = port_data.get('protocol', 'tcp')
-        
-        # Try to find existing port
-        existing_port = self.db.query(Port).filter(
-            Port.host_id == host_id,
-            Port.port_number == port_number,
-            Port.protocol == protocol
-        ).first()
-        
+
+        # The host's ports come from the per-host working set (one query for
+        # all of them), not one SELECT per port.
+        self._load_host_working_set(host_id, scan_id)
+        existing_port = self._ws_ports.get((port_number, protocol))
+
         if existing_port:
             # Update existing port
             updated_port = self._update_existing_port(existing_port, scan_id, port_data)
@@ -356,6 +364,7 @@ class HostDeduplicationService:
                         updated_port = self._update_existing_port(existing_port, scan_id, port_data)
                         self._record_port_scan_history(updated_port.id, scan_id, port_data)
                         fallback_nested.commit()
+                        self._ws_ports[(port_number, protocol)] = updated_port
                         return updated_port
                     fallback_nested.rollback()
                     raise RuntimeError(
@@ -386,21 +395,74 @@ class HostDeduplicationService:
                     )
                 raise
 
+            # A port created in this parse has no history or scripts in the DB.
+            self._ws_ports[(port_number, protocol)] = new_port
+            self._ws_fresh_port_ids.add(new_port.id)
             # Record initial port scan history
             self._record_port_scan_history(new_port.id, scan_id, port_data, is_new=True)
             return new_port
+
+    # ------------------------------------------------------------------
+    # Per-host working set (v2.393.0; review 2026-09-23 R5)
+    # ------------------------------------------------------------------
+    def _load_host_working_set(self, host_id: int, scan_id: int) -> None:
+        """Load the host's ports, their scripts and their history rows for
+        ``scan_id`` in three queries, the first time a port of this host is
+        touched.  An nmap import spent a SELECT per port on each (94
+        statements per host; ~21 minutes for an 80k-host file).
+
+        Held for ONE host at a time: parsers walk a host's ports together, so
+        this bounds memory, and it is dropped when the objects left the
+        session (a parser that commits + expunges between hosts) — a
+        detached object's changes would be lost silently."""
+        if (
+            self._ws_host_id == host_id and self._ws_scan_id == scan_id
+            and all(obj in self.db for obj in list(self._ws_ports.values())[:1])
+        ):
+            return
+        self._ws_host_id, self._ws_scan_id = host_id, scan_id
+        self._ws_scripts = {}
+        self._ws_fresh_port_ids = set()
+        if host_id in self._fresh_host_ids:
+            self._ws_ports = {}  # created in this parse: nothing to load
+            return
+        ports = self.db.query(Port).filter(Port.host_id == host_id).all()
+        self._ws_ports = {(p.port_number, p.protocol): p for p in ports}
+        port_ids = [p.id for p in ports]
+        if not port_ids:
+            return
+        for script in self.db.query(Script).filter(Script.port_id.in_(port_ids)).all():
+            self._ws_scripts[(script.port_id, script.script_id)] = script
+        for history in (
+            self.db.query(PortScanHistory)
+            .filter(PortScanHistory.port_id.in_(port_ids), PortScanHistory.scan_id == scan_id)
+            .all()
+        ):
+            self._pending_port_history.setdefault((history.port_id, scan_id), history)
+        # Every other (port, scan) of this host is known to have no history row.
+        self._ws_history_checked.update((pid, scan_id) for pid in port_ids)
+
+    def _ws_knows_port(self, port_id: int) -> bool:
+        """Whether the working set holds everything the DB has for this port."""
+        return port_id in self._ws_fresh_port_ids or any(
+            p.id == port_id for p in self._ws_ports.values()
+        )
 
     def add_or_update_script(self, port_id: int, scan_id: int, script_data: Dict[str, Any]) -> Script:
         """Add or update a script for a port"""
         script_id = script_data.get('script_id')
         output = script_data.get('output', '')
-        
-        # Try to find existing script
-        existing_script = self.db.query(Script).filter(
-            Script.port_id == port_id,
-            Script.script_id == script_id
-        ).first()
-        
+
+        # From the per-host working set when it covers this port; a query
+        # otherwise (a caller that did not go through find_or_create_port).
+        if self._ws_knows_port(port_id):
+            existing_script = self._ws_scripts.get((port_id, script_id))
+        else:
+            existing_script = self.db.query(Script).filter(
+                Script.port_id == port_id,
+                Script.script_id == script_id
+            ).first()
+
         if existing_script:
             # Update existing script
             existing_script.output = output
@@ -421,6 +483,8 @@ class HostDeduplicationService:
             # finds the row above instead of inserting a second one that would
             # detonate uq_port_script at the next commit.
             self.db.flush()
+            if self._ws_knows_port(port_id):
+                self._ws_scripts[(port_id, script_id)] = new_script
             return new_script
     
     def add_or_update_host_script(self, host_id: int, scan_id: int, script_data: Dict[str, Any]) -> HostScript:
@@ -700,9 +764,12 @@ class HostDeduplicationService:
         """Record port state at time of this scan"""
         key = (port_id, scan_id)
         # Pending row added earlier in THIS parse (O(1)); else a row from a
-        # prior flush, found by the uq_port_scan index.
+        # prior flush, found by the uq_port_scan index — unless the working
+        # set already knows there is none (a port created in this parse, or
+        # a host whose history for this scan was prefetched).
         existing_history = self._pending_port_history.get(key)
-        if existing_history is None:
+        known_absent = port_id in self._ws_fresh_port_ids or key in self._ws_history_checked
+        if existing_history is None and not known_absent:
             existing_history = self.db.query(PortScanHistory).filter(
                 PortScanHistory.port_id == port_id,
                 PortScanHistory.scan_id == scan_id
