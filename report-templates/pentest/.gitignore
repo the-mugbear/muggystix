@@ -1,0 +1,5 @@
+# Rendered reports and Quarto's intermediate files (see Makefile)
+_output/
+*_files/
+.quarto/
+.luarc.json
