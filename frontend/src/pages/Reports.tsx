@@ -29,6 +29,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection from '../components/posture/PostureSection';
+import PostureLead from '../components/posture/PostureLead';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -109,7 +110,8 @@ const Reports: React.FC = () => {
   const issued = data?.items.filter((r) => r.status !== 'draft') ?? [];
   const latest = issued.find((r) => r.id === data?.latest_issued_id) ?? null;
 
-  let lead: React.ReactNode = 'Loading…';
+  // A failed load is said: the lead read "Loading…" forever.
+  let lead: React.ReactNode = error && !data ? 'The report list could not be loaded.' : 'Loading…';
   if (data) {
     const current = issued.filter((r) => r.status === 'issued').length;
     lead = latest
@@ -122,7 +124,7 @@ const Reports: React.FC = () => {
       <header className="flex flex-wrap items-start justify-between gap-md">
         <div className="min-w-0">
           <h1 className="text-page-title">Reports</h1>
-          <p className="mt-xxs max-w-3xl text-body text-muted-foreground">{lead}</p>
+          <PostureLead tone="info" className="mt-xs max-w-3xl">{lead}</PostureLead>
         </div>
         {data?.can_create && (
           <div className="flex shrink-0 flex-wrap gap-xs">

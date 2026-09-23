@@ -73,6 +73,9 @@ export interface UploadOptions {
   /** v5.228.0 — store the file as a STAGED job instead of queuing it; review
    *  getJobDetection, then startIngestionJob. Expires after 24h unstarted. */
   stage?: boolean;
+  /** Aborts the upload (the request is cancelled; the promise rejects with
+   *  an error named `AbortError`). */
+  signal?: AbortSignal;
 }
 
 /** v5.228.0 — what the worker would make of a staged file, and why. */
@@ -258,8 +261,17 @@ export const uploadFile = async (
       reject(new Error('Network error during upload'));
     };
     xhr.onabort = () => {
-      reject(new Error('Upload aborted'));
+      const err = new Error('Upload cancelled');
+      err.name = 'AbortError';
+      reject(err);
     };
+    if (options.signal) {
+      if (options.signal.aborted) {
+        xhr.abort();
+        return;
+      }
+      options.signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
 
     xhr.send(formData);
   });

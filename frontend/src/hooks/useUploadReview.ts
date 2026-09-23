@@ -196,20 +196,31 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     [api, patch, ensureFormats],
   );
 
+  // One controller per upload in flight, so a 1–2 GB file can be cancelled:
+  // the dialog could not be closed while anything uploaded, and nothing
+  // could stop it (review 2026-09-23 B-UI-4).
+  const uploadsRef = useRef<Map<string, AbortController>>(new Map());
+
   /** Stages a dropped file; true when the server kept it. */
   const stageOne = useCallback(
     async (row: ReviewRow, options: UploadOptions): Promise<boolean> => {
       if (!row.file) return false;
+      const controller = new AbortController();
+      uploadsRef.current.set(row.key, controller);
       try {
         const res = await api.uploadFile(
           row.file,
           (percent) => patch(row.key, { percent }),
-          { ...options, stage: true, skipInformational },
+          { ...options, stage: true, skipInformational, signal: controller.signal },
         );
+        uploadsRef.current.delete(row.key);
         patch(row.key, { percent: 100, jobId: res.job_id });
         await detectOne(row.key, res.job_id);
         return true;
       } catch (err) {
+        uploadsRef.current.delete(row.key);
+        // Cancelled: the row was already removed by cancelUpload.
+        if (controller.signal.aborted) return false;
         const duplicate = duplicateUploadOf(err);
         patch(row.key, {
           phase: duplicate ? 'duplicate' : 'error',
@@ -373,6 +384,17 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     [rows, api, patch],
   );
 
+  /** Stop an upload in flight and drop its row.  Nothing was staged for it
+   *  (a request cut off in the last instant may still have been stored; an
+   *  unstarted staged job expires after 24 h). */
+  const cancelUpload = useCallback((key: string) => {
+    const controller = uploadsRef.current.get(key);
+    if (!controller) return;
+    controller.abort();
+    uploadsRef.current.delete(key);
+    setRows((prev) => prev.filter((r) => r.key !== key));
+  }, []);
+
   // Started rows are the banner's now.  Left in place they kept `allStarted`
   // true, so the dialog closed itself the moment it was reopened.
   const clearStarted = useCallback(
@@ -431,6 +453,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     setSourceTool,
     retryDetection,
     remove,
+    cancelUpload,
     clearStarted,
     formats,
     batch,

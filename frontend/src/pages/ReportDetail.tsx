@@ -33,6 +33,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
@@ -68,9 +69,7 @@ const toForm = (r: ClientReport): Form => ({
   settings: r.settings,
 });
 
-const ReportDetail: React.FC = () => {
-  const { reportId } = useParams<{ reportId: string }>();
-  const id = Number(reportId);
+const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const toast = useToast();
   const navigate = useNavigate();
   const [confirmDialog, confirm] = useConfirm();
@@ -129,6 +128,12 @@ const ReportDetail: React.FC = () => {
     if (!report || !form) return false;
     return JSON.stringify(toForm(report)) !== JSON.stringify(form);
   }, [report, form]);
+  // The Back button and a tab close used to discard an unsaved narrative
+  // without asking, although `dirty` was right here (review B-UI-7).
+  const { confirmLeave, confirmEl: leaveDialog } = useDiscardGuard(
+    () => dirty,
+    'This draft has unsaved changes — the summary, details or engagement fields you edited. Leave anyway?',
+  );
 
   const save = async () => {
     if (!report || !form) return;
@@ -274,7 +279,10 @@ const ReportDetail: React.FC = () => {
   return (
     <div className="space-y-lg p-md md:p-lg">
       <div>
-        <Button variant="ghost" size="sm" onClick={() => navigate('/reports')} className="mb-sm">
+        <Button
+          variant="ghost" size="sm" className="mb-sm"
+          onClick={async () => { if (await confirmLeave()) navigate('/reports'); }}
+        >
           <ArrowLeft className="size-4" aria-hidden /> Reports
         </Button>
         <header className="flex flex-wrap items-start justify-between gap-md">
@@ -487,8 +495,17 @@ const ReportDetail: React.FC = () => {
         useLabel="Use as the summary"
         onUse={(text) => setForm((f) => (f ? { ...f, executive_summary: text } : f))} />
       {confirmDialog}
+      {leaveDialog}
     </div>
   );
+};
+
+/** Keyed on the report: "Revise" navigates to the new draft's id, and the
+ *  same component instance kept the previous report's previews, AI dialog
+ *  and form until the new one loaded (review 2026-09-23). */
+const ReportDetail: React.FC = () => {
+  const { reportId } = useParams<{ reportId: string }>();
+  return <ReportDetailView key={reportId} id={Number(reportId)} />;
 };
 
 export default ReportDetail;

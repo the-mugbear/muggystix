@@ -8,7 +8,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const apiMock = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 const updateProjectMock = vi.hoisted(() => vi.fn());
-vi.mock('../../services/api', () => ({ default: apiMock, updateProject: updateProjectMock }));
+// The barrel's typed wrappers, each over the same raw mock so the URL
+// assertions below still say which endpoint was called.
+vi.mock('../../services/api', () => ({
+  updateProject: updateProjectMock,
+  getProjectMembers: (pid: number) => apiMock.get(`/projects/${pid}/members`).then((r: { data: unknown }) => r.data),
+  getUserDirectory: () => apiMock.get('/users/directory').then((r: { data: unknown }) => r.data),
+  addProjectMember: (pid: number, uid: number, role: string) =>
+    apiMock.post(`/projects/${pid}/members`, { user_id: uid, role }).then((r: { data: unknown }) => r.data),
+  updateProjectMemberRole: (pid: number, uid: number, role: string) =>
+    apiMock.put(`/projects/${pid}/members/${uid}`, { role }).then((r: { data: unknown }) => r.data),
+  removeProjectMember: (pid: number, uid: number) => apiMock.delete(`/projects/${pid}/members/${uid}`),
+  deleteProject: (pid: number) => apiMock.delete(`/projects/${pid}`),
+}));
 vi.mock('../../components/TagManagement', () => ({ default: () => null }));
 vi.mock('../../components/WebhookSettings', () => ({ default: () => null }));
 vi.mock('../../components/WebhookDeliveries', () => ({ default: () => null }));

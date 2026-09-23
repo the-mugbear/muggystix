@@ -8,7 +8,7 @@ import React from 'react';
 
 import { cn } from '../../utils/cn';
 
-export type LeadTone = 'critical' | 'warning' | 'clear' | 'neutral';
+export type LeadTone = 'critical' | 'warning' | 'clear' | 'neutral' | 'info';
 
 const TONE_BORDER: Record<LeadTone, string> = {
   // Same classes as the Overview's conclusion (postureTheme LABEL_TONE).
@@ -16,6 +16,9 @@ const TONE_BORDER: Record<LeadTone, string> = {
   warning: 'border-l-warning',
   clear: 'border-l-success',
   neutral: 'border-l-muted-foreground',
+  // A statement of fact with no judgment in it (Oversight, Reports) — it
+  // used to be copied by hand wherever this tone was needed.
+  info: 'border-l-info',
 };
 
 export interface PostureLeadProps {

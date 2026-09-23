@@ -14,7 +14,7 @@ import { getHosts } from '../services/api';
 import { Button } from '../components/ui/button';
 import HostInspector from '../components/HostInspector';
 import { useToast } from '../contexts/ToastContext';
-import { useConfirm } from '../hooks/useConfirm';
+import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { formatApiError } from '../utils/apiErrors';
 
 export default function HostDetail() {
@@ -90,25 +90,10 @@ export default function HostDetail() {
   // the guard covers this page's own chrome plus the browser's unload; a
   // click on the global nav is not interceptable here.
   const dirtyRef = React.useRef(false);
-  const [confirmEl, confirm] = useConfirm();
-  const confirmDiscardDraft = async (): Promise<boolean> => {
-    if (!dirtyRef.current) return true;
-    return confirm({
-      title: 'Discard unsaved work?',
-      body: 'What you started on this host — a note, pasted screenshots, a reply or a test summary — has not been saved. Leave anyway?',
-      severity: 'warning',
-      confirmLabel: 'Discard',
-    });
-  };
-  useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (!dirtyRef.current) return;
-      e.preventDefault();
-      e.returnValue = '';
-    };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, []);
+  const { confirmLeave: confirmDiscardDraft, confirmEl } = useDiscardGuard(
+    () => dirtyRef.current,
+    'What you started on this host — a note, pasted screenshots, a reply or a test summary — has not been saved. Leave anyway?',
+  );
 
   const handleBackToHosts = async () => {
     if (!(await confirmDiscardDraft())) return;

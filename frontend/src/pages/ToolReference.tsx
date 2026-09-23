@@ -34,7 +34,7 @@ import {
   ToolReadinessResponse,
   ToolReadinessStatus,
   ToolRegistryEntry,
-} from '../services/api/references';
+} from '../services/api';
 import { cn } from '../utils/cn';
 import { safeHttpHref } from '../utils/safeHref';
 

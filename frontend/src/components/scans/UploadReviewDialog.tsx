@@ -215,6 +215,7 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
                       onImportAgain={() => review.importAgain(row.key)}
                       onReviewWaitingCopy={() => review.reviewWaitingCopy(row.key)}
                       onRemove={() => void review.remove(row.key)}
+                      onCancelUpload={() => review.cancelUpload(row.key)}
                       onViewScan={onViewScan}
                     />
                   ))}
@@ -319,10 +320,11 @@ const ReviewRowView: React.FC<{
   onImportAgain: () => void;
   onReviewWaitingCopy: () => void;
   onRemove: () => void;
+  onCancelUpload: () => void;
   onViewScan: (scanId: number) => void;
 }> = ({
   row, previewOpen, onTogglePreview, formats, onChoose, onConfirmSuggestion, onRetryDetection,
-  onSourceTool, onImport, onImportAgain, onReviewWaitingCopy, onRemove, onViewScan,
+  onSourceTool, onImport, onImportAgain, onReviewWaitingCopy, onRemove, onCancelUpload, onViewScan,
 }) => {
   const d = row.detection;
   const primary = d?.candidates[0];
@@ -432,7 +434,15 @@ const ReviewRowView: React.FC<{
         )}
       </TableCell>
       <TableCell className="min-w-0">
-        {row.phase === 'uploading' && <span className="text-caption text-muted-foreground">{row.percent}%</span>}
+        {row.phase === 'uploading' && (
+          <span className="inline-flex items-center gap-xs">
+            <span className="text-caption text-muted-foreground">{row.percent}%</span>
+            <Button size="sm" variant="ghost" className="h-7" onClick={onCancelUpload}
+              aria-label={`Cancel the upload of ${row.filename}`}>
+              Cancel
+            </Button>
+          </span>
+        )}
         {row.phase === 'detecting' && (
           <span className="inline-flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" aria-hidden /> Inspecting

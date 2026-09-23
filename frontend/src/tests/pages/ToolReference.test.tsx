@@ -19,7 +19,7 @@ import type { ToolRegistryEntry } from '../../services/api/references';
 const getToolRegistry = vi.fn();
 const getToolReadiness = vi.fn();
 const updateToolRegistryEntry = vi.fn();
-vi.mock('../../services/api/references', () => ({
+vi.mock('../../services/api', () => ({
   getToolRegistry: () => getToolRegistry(),
   getToolReadiness: () => getToolReadiness(),
   updateToolRegistryEntry: (...args: unknown[]) => updateToolRegistryEntry(...args),

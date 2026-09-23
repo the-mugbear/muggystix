@@ -22,7 +22,7 @@ import {
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
-import { downloadSystemicReport, gridCellHostsHref } from '../services/api/insights';
+import { downloadSystemicReport, gridCellHostsHref } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';

@@ -20,8 +20,10 @@ import { Loader2, Trash2, UserPlus } from 'lucide-react';
 
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
-import { updateProject } from '../services/api';
-import api from '../services/api';
+import {
+  addProjectMember, deleteProject as deleteProjectRequest, getProjectMembers, getUserDirectory,
+  removeProjectMember, updateProject, updateProjectMemberRole,
+} from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
@@ -136,8 +138,7 @@ const ProjectSettings: React.FC = () => {
   const loadMembers = useCallback(async () => {
     if (!projectId) return;
     try {
-      const res = await api.get(`/projects/${projectId}/members`);
-      setMembers(res.data);
+      setMembers((await getProjectMembers(projectId)) as unknown as Member[]);
       setMembersError(null);
     } catch (err) {
       setMembersError(formatApiError(err, 'Could not load the members.'));
@@ -157,7 +158,7 @@ const ProjectSettings: React.FC = () => {
     setAddOpen(true);
     setDirectoryFailed(false);
     try {
-      setDirectory((await api.get('/users/directory')).data);
+      setDirectory((await getUserDirectory()).map((u) => ({ id: u.id, username: u.username, full_name: u.full_name ?? null })));
     } catch {
       // Said as a failure: an empty list read "Everyone is already a member".
       setDirectory([]);
@@ -172,7 +173,7 @@ const ProjectSettings: React.FC = () => {
     if (!currentProject || !newUser) return;
     setAdding(true);
     try {
-      await api.post(`/projects/${currentProject.id}/members`, { user_id: Number(newUser), role: newRole });
+      await addProjectMember(currentProject.id, Number(newUser), newRole);
       setAddOpen(false);
       await loadMembers();
       await refreshProjects();
@@ -201,7 +202,7 @@ const ProjectSettings: React.FC = () => {
       if (!ok) return;
     }
     try {
-      await api.put(`/projects/${currentProject.id}/members/${m.user_id}`, { role });
+      await updateProjectMemberRole(currentProject.id, m.user_id, role);
       setMembers((prev) => (prev ?? []).map((x) => (x.user_id === m.user_id ? { ...x, role } : x)));
       if (self) await refreshProjects();
       toast.success(`${memberName(m)} is now ${roleLabel(role)}.`);
@@ -220,7 +221,7 @@ const ProjectSettings: React.FC = () => {
     });
     if (!ok) return;
     try {
-      await api.delete(`/projects/${currentProject.id}/members/${m.user_id}`);
+      await removeProjectMember(currentProject.id, m.user_id);
       setMembers((prev) => (prev ?? []).filter((x) => x.user_id !== m.user_id));
       await refreshProjects();
       toast.success('Member removed.');
@@ -250,7 +251,7 @@ const ProjectSettings: React.FC = () => {
     });
     if (!ok) return;
     try {
-      await api.delete(`/projects/${currentProject.id}`);
+      await deleteProjectRequest(currentProject.id);
       await refreshProjects();
       toast.success(`Project "${currentProject.name}" deleted.`);
       navigate('/operations');

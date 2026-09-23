@@ -14,7 +14,15 @@ vi.mock('../../services/api/client', () => ({
   getCurrentProjectId: () => 1,
 }));
 const getPostureMock = vi.fn();
-vi.mock('../../services/api', () => ({ getPosture: (...a: unknown[]) => getPostureMock(...a) }));
+// The barrel, as the page imports it; the link builder is the real one.
+vi.mock('../../services/api', async () => {
+  const insights = await vi.importActual<typeof import('../../services/api/insights')>('../../services/api/insights');
+  return {
+    getPosture: (...a: unknown[]) => getPostureMock(...a),
+    gridCellHostsHref: insights.gridCellHostsHref,
+    downloadSystemicReport: vi.fn(),
+  };
+});
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 1, name: 'P' } }),
 }));

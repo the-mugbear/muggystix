@@ -143,6 +143,25 @@ describe('Report detail — draft', () => {
     expect(mocked.downloadReportJob).toHaveBeenCalledWith(70);
   });
 
+  // Review 2026-09-23 B-UI-7: Back discarded an unsaved narrative silently.
+  it('asks before leaving with unsaved changes, and not otherwise', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    const back = await screen.findByRole('button', { name: /Reports/ });
+
+    navigateSpy.mockClear(); confirmMock.mockClear();
+    fireEvent.click(back);
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/reports'));
+    expect(confirmMock).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Executive summary'), { target: { value: 'Unsaved words.' } });
+    navigateSpy.mockClear();
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(back);
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+    expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
   it('saves the details and will not issue with unsaved changes', async () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.updateClientReport.mockResolvedValue(report({ executive_summary: 'Two criticals.' }));

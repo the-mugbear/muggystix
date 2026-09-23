@@ -40,7 +40,7 @@ import { formatApiError } from '../utils/apiErrors';
 import {
   updateToolRegistryEntry,
   type ToolRegistryEntry,
-} from '../services/api/references';
+} from '../services/api';
 
 interface Props {
   tool: ToolRegistryEntry | null;

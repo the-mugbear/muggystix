@@ -806,7 +806,15 @@ const Names: React.FC = () => {
                       aria-selected={selectedId === row.id}
                     >
                       <TableCell className="truncate font-mono" title={row.fqdn}>
-                        {row.fqdn}
+                        {/* The row's keyboard path (data-table convention): a
+                            real button in the primary cell. */}
+                        <button
+                          type="button"
+                          className="max-w-full truncate rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={(e) => { e.stopPropagation(); setSelectedId(row.id); }}
+                        >
+                          {row.fqdn}
+                        </button>
                         {row.kind === 'wildcard' && (
                           <Badge variant="muted" className="ml-xs">
                             pattern

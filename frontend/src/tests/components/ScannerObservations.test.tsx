@@ -118,6 +118,19 @@ describe('ScannerObservations', () => {
     );
   });
 
+  // Review 2026-09-23 B-UI-3: filters were component state, not shareable.
+  it('reads its filters from the URL', async () => {
+    render(
+      <MemoryRouter initialEntries={['/findings?view=observations&obs_severity=critical&obs_min=5&obs_judged=1&obs_search=ssh']}>
+        <ScannerObservations canManage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('SMB Signing not required');
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: 'critical', minHosts: 5, includeJudged: true, search: 'ssh' }),
+    );
+  });
+
   it('a viewer can read the list but not select or promote', async () => {
     renderIt(false);
     await screen.findByText('SMB Signing not required');

@@ -383,6 +383,34 @@ describe('useUploadReview', () => {
     expect(peak).toBeGreaterThan(1); // bounded, not serialised
     expect(result.current.rows.filter((r) => r.phase === 'ready')).toHaveLength(12);
   });
+
+  it('cancels an upload in flight: aborts the request and drops the row', async () => {
+    const deps = makeDeps();
+    let seenSignal: AbortSignal | undefined;
+    deps.uploadFile.mockImplementation((_f: File, _p?: (n: number) => void, options?: UploadOptions) =>
+      new Promise((_resolve, reject) => {
+        seenSignal = options?.signal;
+        options?.signal?.addEventListener('abort', () => {
+          const err = new Error('cancelled');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }));
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+
+    let adding: Promise<void> | undefined;
+    act(() => { adding = result.current.addFiles([file('big.xml')]); });
+    await waitFor(() => expect(result.current.rows.map((r) => r.phase)).toEqual(['uploading']));
+    expect(seenSignal?.aborted).toBe(false);
+
+    await act(async () => {
+      result.current.cancelUpload(result.current.rows[0].key);
+      await adding;
+    });
+    expect(seenSignal?.aborted).toBe(true);
+    expect(result.current.rows).toEqual([]);
+    expect(deps.getJobDetection).not.toHaveBeenCalled();
+  });
 });
 
 describe('overrideFor', () => {

@@ -11,7 +11,7 @@
  * An issue that already has a finding joins it, its status untouched.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react';
 
 import {
@@ -54,11 +54,26 @@ interface Props {
 const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const toast = useToast();
   const run = useLatestRequest();
-  const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
-  const [severity, setSeverity] = useState<string>('all');
-  const [minHosts, setMinHosts] = useState<number>(2);
-  const [includeJudged, setIncludeJudged] = useState(false);
+  // The filters live in the URL (review 2026-09-23 B-UI-3), as the Findings
+  // list's do: "critical issues on 5+ hosts" can be bookmarked and shared.
+  // Own keys, so switching views never mixes the two lists' filters.
+  const [params, setParams] = useSearchParams();
+  const search = params.get('obs_search') ?? '';
+  const severity = params.get('obs_severity') ?? 'all';
+  const minHosts = Number(params.get('obs_min') ?? 2) || 2;
+  const includeJudged = params.get('obs_judged') === '1';
+  const setParam = useCallback((key: string, value: string, fallback: string) => {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value === fallback) next.delete(key);
+      else next.set(key, value);
+      return next;
+    }, { replace: true });
+  }, [setParams]);
+  const setSeverity = (v: string) => setParam('obs_severity', v, 'all');
+  const setMinHosts = (v: number) => setParam('obs_min', String(v), '2');
+  const setIncludeJudged = (v: boolean) => setParam('obs_judged', v ? '1' : '0', '0');
+  const [searchInput, setSearchInput] = useState(search);
   const [issues, setIssues] = useState<ObservationIssue[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -75,9 +90,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const [promoting, setPromoting] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setSearch(searchInput.trim()), 300);
+    const t = setTimeout(() => setParam('obs_search', searchInput.trim(), ''), 300);
     return () => clearTimeout(t);
-  }, [searchInput]);
+  }, [searchInput, setParam]);
 
   const filters = useMemo(
     () => ({ search, severity: severity === 'all' ? undefined : severity, minHosts, includeJudged }),

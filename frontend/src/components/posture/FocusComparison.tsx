@@ -14,7 +14,7 @@ import { Link } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 
 import type { PostureHeatmap } from '../../services/api/posture';
-import { gridCellHostsHref } from '../../services/api/insights';
+import { gridCellHostsHref } from '../../services/api';
 import {
   rankConcentration, leadingFamily, describeConcentration,
   LIMITED_MIN_ASSESSED, LIMITED_MIN_COVERAGE, type ConcentrationRow,

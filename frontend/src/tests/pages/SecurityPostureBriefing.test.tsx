@@ -16,8 +16,6 @@ vi.mock('../../services/api/client', () => ({
 }));
 vi.mock('../../services/api', () => ({
   getPosture: vi.fn().mockRejectedValue(new Error('offline')),
-}));
-vi.mock('../../services/api/insights', () => ({
   downloadSystemicReport: (...a: unknown[]) => downloadMock(...a),
   gridCellHostsHref: () => '/hosts',
 }));

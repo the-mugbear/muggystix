@@ -36,6 +36,7 @@ import { Checkbox } from '../components/ui/checkbox';
 import { InfoTip } from '../components/ui/info-tip';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureLead from '../components/posture/PostureLead';
 import GrowthCharts from '../components/oversight/GrowthCharts';
 import JudgmentBySeverity from '../components/oversight/JudgmentBySeverity';
 import ShareSummaryDialog from '../components/oversight/ShareSummaryDialog';
@@ -591,17 +592,17 @@ const Oversight: React.FC = () => {
 
           <TabsContent value="overview" className="space-y-lg">
             {/* The lead: one plain sentence of fact — no label, no score. */}
-            <div className="border-l-4 border-l-info py-xs pl-md">
-              <p className="break-words text-subheading font-semibold text-foreground">
-                {n(s.projects_in_progress)} project{s.projects_in_progress === 1 ? '' : 's'} in progress.{' '}
-                {n(s.targets_tested)} of {n(s.targets_current)} targets tested ({pct(s.targets_tested, s.targets_current)}).
-              </p>
-              <p className="mt-xxs break-words text-metadata text-foreground">
+            <PostureLead
+              tone="info"
+              restsOn={<>
                 {n(s.severity.findings.critical + s.severity.findings.high)} critical and high findings;{' '}
                 {n(s.severity.observations_unjudged.critical + s.severity.observations_unjudged.high)} critical and high
                 scanner observations not yet judged.
-              </p>
-            </div>
+              </>}
+            >
+              {n(s.projects_in_progress)} project{s.projects_in_progress === 1 ? '' : 's'} in progress.{' '}
+              {n(s.targets_tested)} of {n(s.targets_current)} targets tested ({pct(s.targets_tested, s.targets_current)}).
+            </PostureLead>
 
             {/* Four quiet measures on one baseline (the Posture context strip). */}
             <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
