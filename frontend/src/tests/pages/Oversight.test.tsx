@@ -195,4 +195,41 @@ describe('Oversight — severity basis and growth keyboard', () => {
     const readout = document.getElementById('growth-readout')!;
     expect(readout.textContent).toMatch(/2026-08-29 · 27 recorded targets · \+4 first recorded · 0 reviews concluded/);
   });
+
+  // v5.273.0 — the notebook's metrics, copied for an email or a chat.
+  it('copies a summary of the figures on the page', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    await renderPage();
+    fireEvent.click(screen.getByRole('button', { name: /Copy summary/ }));
+    const dialog = await screen.findByRole('dialog');
+    const text = (within(dialog).getByLabelText('Summary to copy') as HTMLTextAreaElement).value;
+    expect(text).toMatch(/Projects: 3 \(2 in progress, 1 complete\)/);
+    expect(text).toMatch(/Targets: 30 recorded; 12 tested \(40%\) — 2 in review, 10 reviewed/);
+    expect(text).toMatch(/Findings: 8 \(critical 2, high 5, medium 1, low 0\) on 7 targets/);
+    expect(text).toMatch(/2 false positives not counted/);
+    expect(text).toMatch(/Defect rate \(tested targets with a finding, of 12 tested\): critical 25%, high 50%, medium 8.3%, low 0%/);
+    expect(text).toMatch(/Scanner observations not yet judged: critical 10, high 70 \(of 143 observations\)/);
+    // In-progress projects first; the completed one last.
+    expect(text.indexOf('Orphaned (in progress)')).toBeLessThan(text.indexOf('Closed (complete)'));
+    expect(text).toMatch(/Ana Tester: 6 targets tested, 5 reviewed \(2 in the period\) across 2 projects/);
+
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Per tester/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }));
+    await within(dialog).findByRole('button', { name: 'Copied' });
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).not.toMatch(/Per tester/);
+    expect(copied).toMatch(/Per project \(3\)/);
+  });
+
+  it('Markdown puts the per-project figures in a table that a name cannot break', async () => {
+    const { buildOversightSummary } = await import('../../utils/oversightSummary');
+    const data = { ...response, projects: [project({ name: 'A | B', findings: sev(1, 2, 3, 4) })] };
+    const md = buildOversightSummary(data as never, {
+      format: 'markdown', includeProjects: true, includeTesters: false, periodLabel: 'all time', filterLabels: ['Tester: Ana'],
+    });
+    expect(md).toMatch(/^\*\*Security testing update — all time\*\*/);
+    expect(md).toMatch(/Tester: Ana · figures as of/);
+    expect(md).toContain('| A \\| B | in progress | 4 of 10 (40%) | C 1 / H 2 / M 3 / L 4 | 0% / 0% |');
+  });
 });

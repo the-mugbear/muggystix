@@ -17,7 +17,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, RefreshCw } from 'lucide-react';
 
 import {
   getOversightDashboard,
@@ -38,6 +38,7 @@ import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import GrowthCharts from '../components/oversight/GrowthCharts';
 import JudgmentBySeverity from '../components/oversight/JudgmentBySeverity';
+import ShareSummaryDialog from '../components/oversight/ShareSummaryDialog';
 import { Input } from '../components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -389,6 +390,7 @@ const Oversight: React.FC = () => {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<ProjectSort>('critical');
   const [page, setPage] = useState(0);
+  const [shareOpen, setShareOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -442,6 +444,20 @@ const Oversight: React.FC = () => {
     ? `${range.start ?? 'the beginning'} – ${range.end ?? 'today'} (UTC)`
     : 'all time';
   const throughLabel = range.end ? `Through ${range.end}` : 'Through today';
+  // The filters in words, for the copied summary (a pasted figure travels
+  // without the page's filter row).
+  const filterLabels = useMemo(() => {
+    const out: string[] = [];
+    if (projectFilter !== ALL) {
+      out.push(`Project: ${data?.project_options.find((o) => String(o.id) === projectFilter)?.name ?? `#${projectFilter}`}`);
+    }
+    if (statusFilter !== ALL) out.push(`Status: ${formatStatusLabel(statusFilter)}`);
+    if (testerFilter !== ALL) {
+      out.push(`Tester: ${data?.tester_options.find((o) => String(o.id) === testerFilter)?.name ?? `#${testerFilter}`}`);
+    }
+    if (overlap) out.push('Engagement window overlaps the period');
+    return out;
+  }, [data, projectFilter, statusFilter, testerFilter, overlap]);
   const activeFilters = projectFilter !== ALL || statusFilter !== ALL || testerFilter !== ALL || overlap || preset !== DEFAULT_PRESET || !!attn;
 
   const s = data?.summary;
@@ -459,9 +475,16 @@ const Oversight: React.FC = () => {
           </p>
         </div>
         <div className="flex flex-col items-end gap-xs">
-          <Button size="sm" variant="outline" onClick={() => setNonce((x) => x + 1)} disabled={loading}>
-            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-          </Button>
+          <div className="flex flex-wrap justify-end gap-xs">
+            {/* v5.273.0 — the notebook's figures for these filters, to paste
+                into an email or a chat. */}
+            <Button size="sm" variant="outline" onClick={() => setShareOpen(true)} disabled={!data}>
+              <Copy className="size-3.5" aria-hidden /> Copy summary
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setNonce((x) => x + 1)} disabled={loading}>
+              <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+            </Button>
+          </div>
           {data && (
             <span className="text-caption text-muted-foreground">
               Updated {formatRelativeTime(data.generated_at, { justNowBelowMs: 60_000 })}{error ? ' · showing the last figures that loaded' : ''}
@@ -722,6 +745,15 @@ const Oversight: React.FC = () => {
             <TestersTable rows={sortedTesters} caption="Testers" />
           </TabsContent>
         </Tabs>
+      )}
+      {data && (
+        <ShareSummaryDialog
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          data={data}
+          periodLabel={periodLabel}
+          filterLabels={filterLabels}
+        />
       )}
     </div>
   );
