@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_findings import Finding
+from app.db.models_vulnerability import Vulnerability
 from app.services.report_generator import ReportGenerator
 from app.services.llm_provider_service import (
     LLMProviderService,
@@ -263,3 +264,152 @@ class ReportDraftService:
             "severity_counts": context["severity_counts"],
             "usage": usage,
         }
+
+    # -- one finding's report text (review 2026-09-23 B-Ops-5) ---------------
+
+    def _provider(self, provider_id: Optional[int]):
+        svc = LLMProviderService(self.db)
+        provider = (
+            svc.get(provider_id, self.current_user.id)
+            if provider_id is not None
+            else svc.get_default(self.current_user.id)
+        )
+        if provider is None:
+            raise ValueError(
+                "No LLM provider is configured. Add one on the LLM Providers "
+                "page (or pass a provider_id) before drafting."
+            )
+        return provider
+
+    def build_finding_text_context(self, finding: Finding) -> Dict[str, Any]:
+        """What is known about ONE finding: its identity, the hosts it is on,
+        the analyst's notes (the source thread and the finding's comments),
+        the scanner's description and solution when it was promoted from a
+        scanner row, the report text already written, and figure captions."""
+        notes: List[str] = []
+        root = finding.evidence_annotation_id
+        if root:
+            notes += [
+                body for (body,) in self.db.query(models.Annotation.body)
+                .filter(or_(models.Annotation.id == root, models.Annotation.thread_root_id == root))
+                .order_by(models.Annotation.created_at.asc(), models.Annotation.id.asc())
+                .all() if body
+            ]
+        notes += [
+            body for (body,) in self.db.query(models.Annotation.body)
+            .filter(models.Annotation.finding_id == finding.id)
+            .order_by(models.Annotation.created_at.asc(), models.Annotation.id.asc())
+            .all() if body
+        ]
+        scanner = None
+        if finding.vuln_id:
+            vuln = self.db.get(Vulnerability, finding.vuln_id)
+            if vuln is not None:
+                scanner = {
+                    "title": vuln.title, "cve_id": vuln.cve_id,
+                    "description": (vuln.description or "")[:4000] or None,
+                    "solution": (vuln.solution or "")[:2000] or None,
+                    "evidence": (vuln.plugin_output or "")[:2000] or None,
+                }
+        hosts = [fh.host.ip_address for fh in finding.hosts if fh.host][:50]
+        written = {
+            k: getattr(finding, k) for k in FINDING_TEXT_FIELDS if (getattr(finding, k) or "").strip()
+        }
+        captions = self._evidence_image_captions(
+            [{"id": finding.id, "evidence_annotation_id": root}]
+        ).get(finding.id, [])
+        return {
+            "title": finding.title,
+            "severity": finding.severity,
+            "status": finding.status,
+            "host_count": len(finding.hosts),
+            "affected_hosts": hosts,
+            "analyst_notes": notes[:40],
+            "scanner": scanner,
+            "already_written": written,
+            "evidence_figures": captions,
+        }
+
+    def draft_finding_text(
+        self,
+        finding: Finding,
+        fields: List[str],
+        *,
+        provider_id: Optional[int] = None,
+        max_tokens: int = 2048,
+    ) -> Dict[str, Any]:
+        """Suggest Markdown for ``fields`` of one finding's report text.
+
+        Returns suggestions only: nothing is written.  The author accepts
+        (and edits) them through the ordinary finding update, so the
+        authored-content rule is unchanged.  Raises ``ValueError`` for a
+        user-fixable problem and ``RuntimeError`` when the provider fails or
+        its answer cannot be read as the requested fields."""
+        provider = self._provider(provider_id)
+        context = self.build_finding_text_context(finding)
+        user_message = (
+            "Write these sections of this finding's write-up: "
+            f"{', '.join(fields)}.  Return ONLY a JSON object whose keys are exactly "
+            f"{json.dumps(fields)} and whose values are Markdown strings.  "
+            "Use only the data below; where it is too thin for a section, say what "
+            "is missing instead of inventing it.  Keep the text already written "
+            "consistent with yours.\n\n"
+            f"```json\n{json.dumps(context, ensure_ascii=False, default=str)}\n```"
+        )
+        result = chat_completion(
+            provider,
+            system=sanitize_for_llm(_FINDING_TEXT_PROMPT),
+            messages=[{"role": "user", "content": sanitize_for_llm(user_message)}],
+            max_tokens=max_tokens,
+            temperature=0.3,
+        )
+        suggestions = parse_finding_text_suggestions(result.get("content", ""), fields)
+        if not suggestions:
+            raise RuntimeError("The provider's answer could not be read as the requested sections.")
+        raw = result.get("raw") or {}
+        return {
+            "suggestions": suggestions,
+            "provider_id": provider.id,
+            "provider_type": provider.provider_type,
+            "model_id": provider.model_id,
+            "usage": raw.get("usage") if isinstance(raw.get("usage"), dict) else None,
+        }
+
+
+# The finding's report-text fields a draft may fill (cvss is a measurement,
+# never drafted).
+FINDING_TEXT_FIELDS = ("description", "impact", "recommendation", "steps_to_reproduce", "references")
+
+_FINDING_TEXT_PROMPT = (
+    "You are a senior penetration-test report writer drafting ONE finding's "
+    "write-up for a client report: description (what the issue is, in the "
+    "client's terms), impact (what an attacker gains on this network), "
+    "recommendation (what to change to fix it), steps to reproduce, and "
+    "references (advisories and vendor guidance, one per line).\n\n"
+    "Rules:\n"
+    "- Ground every statement in the supplied data. Do NOT invent hosts, CVEs, "
+    "versions or results that are not present.\n"
+    "- Plain, factual Markdown; no headings (the report supplies them).\n"
+    "- This is a DRAFT a human reviews and edits before it is used.\n"
+    "- Answer with the JSON object requested and nothing else.\n"
+)
+
+
+def parse_finding_text_suggestions(content: str, fields: List[str]) -> Dict[str, str]:
+    """The requested fields from a provider's answer: a JSON object, possibly
+    inside a code fence or surrounded by prose.  Unknown keys, non-strings
+    and empty values are dropped."""
+    text = (content or "").strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        k: data[k].strip() for k in fields
+        if isinstance(data.get(k), str) and data[k].strip()
+    }

@@ -19,7 +19,7 @@ vi.mock('../../services/api', () => ({
   getReportLimits: vi.fn().mockResolvedValue({
     in_memory_host_cap: 2000,
     streamed_host_cap: 50000,
-    per_format: { csv: null, html: 50000, json: 2000, 'markdown-bundle': 2000, 'agent-package': 2000 },
+    per_format: { csv: null, html: 50000, json: null, 'markdown-bundle': 2000, 'agent-package': null },
   }),
   dismissReportJob: vi.fn(),
   retryReportJob: vi.fn(),
@@ -38,8 +38,9 @@ describe('ReportsDialog — async report jobs', () => {
     await waitFor(() => expect(api.getReportLimits).toHaveBeenCalled());
     // Default selection is comprehensive/HTML: 3,000 < 50,000 → no warning …
     await waitFor(() => expect(screen.queryByText(/includes the first/)).toBeNull());
-    // … but the zip bundles are over their in-memory cap, so the note shows.
-    expect(screen.getByText(/\.zip bundles below include the first 2,000/)).toBeInTheDocument();
+    // … but the Markdown bundle is over its in-memory cap, so the note shows;
+    // the agent dataset streams every host.
+    expect(screen.getByText(/Markdown bundle below stops at the first 2,000 of 3,000 matching hosts; the agent dataset includes them all/)).toBeInTheDocument();
   });
 
   it('shows no cap number until limits have loaded', async () => {

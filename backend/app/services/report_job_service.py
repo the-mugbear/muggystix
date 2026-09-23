@@ -14,7 +14,6 @@ backend's download endpoint can stream the file the worker produced.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -47,6 +46,9 @@ ASYNC_REPORT_FORMATS = ("json", "agent-package", "markdown-bundle")
 # Mirrors client_report_render.CLIENT_JOB_FORMATS (kept literal so this module
 # does not import the renderer on the API side).
 CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-pdf", "report-issue")
+# Host exports that stream every matching host to the artifact file, uncapped
+# (review 2026-09-23 B-Ops-6).  The markdown bundle stays in memory and capped.
+STREAMED_REPORT_FORMATS = ("json", "agent-package")
 
 _REAP_MAX_RETRIES = 2
 
@@ -269,6 +271,8 @@ class ReportJobService:
                         db.commit()
                         return
                     data, media_type, filename = rendered
+                    job_dir, artifact = self._new_artifact(filename)
+                    artifact.write_bytes(data)
                 else:
                     # Run as the requesting user so "assigned to me" / follow filters
                     # resolve the same way they did in the dialog (None if the user
@@ -277,26 +281,39 @@ class ReportJobService:
                     gen = ReportGenerator(db, user, project_id=job.project_id)
                     filters = job.filters or {}
                     report_type = job.report_type or "comprehensive"
-                    # These formats build the whole document in memory, so they are
-                    # bounded by the in-memory cap rather than the streaming one.
-                    # It defaults to REPORT_MAX_HOSTS (the worker isn't memory-
-                    # constrained the way the API thread was), but is a real lever
-                    # again: lower REPORT_MAX_INMEMORY_HOSTS if this worker OOMs
-                    # against REPORT_WORKER_MEM_LIMIT.  The lease-renewal thread keeps
-                    # the reaper off this row for the duration.
-                    hosts = gen.get_hosts_for_report(
-                        filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
-                    )
-                    data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
-                    truncated = bool(gen.report_truncated)
                     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                    filename = f"hosts_{report_type}_{ts}.{ext}"
-
-                job_dir = self._storage_root / uuid.uuid4().hex
-                job_dir.mkdir(parents=True, exist_ok=True)
-                os.chmod(job_dir, 0o700)
-                artifact = job_dir / filename
-                artifact.write_bytes(data)
+                    if job.format in STREAMED_REPORT_FORMATS:
+                        # Every matching host, streamed in chunks straight to
+                        # the artifact (review 2026-09-23 B-Ops-6) — never
+                        # truncated, memory ~one chunk.
+                        ext = "json" if job.format == "json" else "zip"
+                        media_type = "application/json" if ext == "json" else "application/zip"
+                        filename = f"hosts_{report_type}_{ts}.{ext}"
+                        job_dir, artifact = self._new_artifact(filename)
+                        try:
+                            if job.format == "json":
+                                with open(artifact, "wb") as out:
+                                    gen.write_json_report(filters, report_type, out)
+                            else:
+                                gen.write_agent_package(filters, artifact)
+                        except BaseException:
+                            shutil.rmtree(job_dir, ignore_errors=True)
+                            raise
+                    else:
+                        # The markdown bundle still builds the whole document in
+                        # memory, so it is bounded by the in-memory cap (lower
+                        # REPORT_MAX_INMEMORY_HOSTS if this worker OOMs against
+                        # REPORT_WORKER_MEM_LIMIT).  The lease-renewal thread
+                        # keeps the reaper off this row for the duration.
+                        hosts = gen.get_hosts_for_report(
+                            filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
+                        )
+                        data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
+                        truncated = bool(gen.report_truncated)
+                        filename = f"hosts_{report_type}_{ts}.{ext}"
+                        job_dir, artifact = self._new_artifact(filename)
+                        artifact.write_bytes(data)
+                file_size = artifact.stat().st_size
 
                 now = datetime.now(timezone.utc)
                 # Fenced completion: publish ONLY if we still own the lease. If
@@ -310,7 +327,7 @@ class ReportJobService:
                     result_path=str(artifact),
                     result_filename=filename,
                     media_type=media_type,
-                    file_size=len(data),
+                    file_size=file_size,
                     truncated=truncated,
                     message=f"Generated {filename}" + (" (truncated)" if truncated else ""),
                     expires_at=now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
@@ -326,7 +343,7 @@ class ReportJobService:
                     return
                 logger.info(
                     "Report job %s completed: %s (%d bytes, truncated=%s)",
-                    job_id, filename, len(data), truncated,
+                    job_id, filename, file_size, truncated,
                 )
                 self._notify_finished(db, job_id)
             except Exception as exc:
@@ -369,17 +386,18 @@ class ReportJobService:
             logger.warning("Report job %s: completion notification failed", job_id, exc_info=True)
             db.rollback()
 
+    def _new_artifact(self, filename: str) -> Tuple[Path, Path]:
+        """A fresh private job directory and the artifact path inside it."""
+        job_dir = self._storage_root / uuid.uuid4().hex
+        job_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(job_dir, 0o700)
+        return job_dir, job_dir / filename
+
     def _render(
         self, gen, fmt: str, hosts, filters: Dict[str, Any], report_type: str,
     ) -> Tuple[bytes, str, str]:
-        """Generate one format → (bytes, media_type, file extension)."""
-        if fmt == "json":
-            payload = gen.generate_json_report(hosts, report_type)
-            return json.dumps(payload, indent=2).encode("utf-8"), "application/json", "json"
-
-        if fmt == "agent-package":
-            return gen.generate_agent_package(hosts, filters), "application/zip", "zip"
-
+        """Generate one in-memory format → (bytes, media_type, file extension).
+        JSON and the agent package are streamed instead (``STREAMED_REPORT_FORMATS``)."""
         if fmt == "markdown-bundle":
             return gen.generate_markdown_bundle(hosts, filters), "application/zip", "zip"
 

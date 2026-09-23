@@ -8,10 +8,11 @@
  * Shown as written (there is no Markdown renderer in the app); the Reports
  * page's preview is where it is seen rendered.
  */
-import React, { useState } from 'react';
-import { Loader2, Pencil } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Loader2, Pencil, Sparkles } from 'lucide-react';
 
 import {
+  draftFindingText,
   Finding,
   FindingReportText,
   FindingReportTextField,
@@ -53,21 +54,63 @@ export const missingReportText = (t: FindingReportText | null | undefined): stri
     .filter((f) => !(t?.[f.key] ?? '').trim())
     .map((f) => f.label.toLowerCase());
 
+/** The sections a report needs — the ones an AI draft may fill. */
+const DRAFTABLE: FindingReportTextField[] = ['description', 'impact', 'recommendation'];
+
 interface Props {
   finding: Finding;
   /** Analyst+ AND the server's can_modify (author / project admin). */
   canEdit: boolean;
   onSaved: (finding: Finding) => void;
+  /** Open in the editor (the Reports page's "missing report text" links). */
+  startEditing?: boolean;
 }
 
-const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved }) => {
+const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, startEditing = false }) => {
   const toast = useToast();
   const text = finding.report_text;
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(() => (startEditing && canEdit ? toDraft(text) : null));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Sections filled by an AI suggestion and not yet saved — marked until then.
+  const [aiFilled, setAiFilled] = useState<Set<FindingReportTextField>>(new Set());
+  const [drafting, setDrafting] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (startEditing) cardRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [startEditing]);
 
   const missing = missingReportText(text);
+
+  // Suggest text for the required sections still empty in the editor.  The
+  // suggestion only fills those boxes; nothing is saved until Save.
+  const draftEmpty = async (base: Draft) => {
+    const empty = DRAFTABLE.filter((k) => !base[k].trim());
+    if (empty.length === 0) return;
+    setDrafting(true);
+    setError(null);
+    try {
+      const { suggestions } = await draftFindingText(finding.id, empty);
+      const filled = empty.filter((k) => suggestions[k]);
+      setDraft((current) => {
+        const next = { ...(current ?? base) };
+        for (const k of filled) if (!next[k].trim()) next[k] = suggestions[k] as string;
+        return next;
+      });
+      setAiFilled((prev) => new Set([...prev, ...filled]));
+    } catch (err) {
+      setError(formatApiError(err, 'Could not draft the report text.'));
+    } finally {
+      setDrafting(false);
+    }
+  };
+  const startDraft = () => {
+    const base = draft ?? toDraft(text);
+    if (!draft) setDraft(base);
+    void draftEmpty(base);
+  };
+  const emptyInEditor = draft ? DRAFTABLE.filter((k) => !draft[k].trim()).length : 0;
 
   const save = async () => {
     if (!draft) return;
@@ -93,6 +136,7 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved }) =
       const updated = await updateFinding(finding.id, payload);
       onSaved(updated);
       setDraft(null);
+      setAiFilled(new Set());
       toast.success('Report text saved.');
     } catch (err) {
       setError(formatApiError(err, 'Could not save the report text.'));
@@ -106,7 +150,7 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved }) =
     : null;
 
   return (
-    <Card className="mb-md">
+    <Card className="mb-md" ref={cardRef}>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-sm">
           <div className="min-w-0">
@@ -118,10 +162,21 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved }) =
               )}
             </p>
           </div>
-          {canEdit && !draft && (
-            <Button variant="ghost" size="sm" onClick={() => { setDraft(toDraft(text)); setError(null); }}>
-              <Pencil className="size-4" aria-hidden /> Edit
-            </Button>
+          {canEdit && (
+            <div className="flex flex-wrap gap-xs">
+              {((!draft && missing.length > 0) || emptyInEditor > 0) && (
+                <Button variant="ghost" size="sm" onClick={startDraft} disabled={drafting || saving}
+                  title="Suggest text for the empty sections with your LLM provider; nothing is saved until you save">
+                  {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
+                  Draft empty sections
+                </Button>
+              )}
+              {!draft && (
+                <Button variant="ghost" size="sm" onClick={() => { setDraft(toDraft(text)); setError(null); }}>
+                  <Pencil className="size-4" aria-hidden /> Edit
+                </Button>
+              )}
+            </div>
           )}
         </div>
       </CardHeader>
@@ -132,6 +187,11 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved }) =
               <div key={f.key} className="space-y-xxs">
                 <Label htmlFor={`rt-${f.key}`}>{f.label}</Label>
                 <p className="text-caption text-muted-foreground">{f.hint}</p>
+                {aiFilled.has(f.key) && (
+                  <p className="text-caption text-warning">
+                    Drafted by AI from this finding&apos;s data — check every statement before you save.
+                  </p>
+                )}
                 <Textarea
                   id={`rt-${f.key}`}
                   rows={f.rows}
@@ -174,7 +234,7 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved }) =
               <Button type="submit" size="sm" disabled={saving}>
                 {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
               </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)} disabled={saving}>
+              <Button type="button" variant="ghost" size="sm" onClick={() => { setDraft(null); setAiFilled(new Set()); }} disabled={saving}>
                 Cancel
               </Button>
             </div>

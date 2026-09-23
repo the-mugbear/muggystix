@@ -126,7 +126,8 @@ describe('Report detail — draft', () => {
     mocked.getClientReport.mockResolvedValue(report());
     renderDetail();
     expect(await screen.findByText('Before issuing')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Weak TLS' })).toHaveAttribute('href', '/findings/42');
+    // Opens the finding's report text in the editor, where it can be drafted.
+    expect(screen.getByRole('link', { name: 'Weak TLS' })).toHaveAttribute('href', '/findings/42?edit=report-text');
     expect(screen.getByText('missing impact, recommendation')).toBeInTheDocument();
     expect(screen.getByText('Still under investigation')).toBeInTheDocument();
   });

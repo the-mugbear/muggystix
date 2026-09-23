@@ -525,7 +525,10 @@ const FindingDetail: React.FC = () => {
         )}
       </div>
 
-      <FindingReportTextCard finding={finding} canEdit={canModify} onSaved={setFinding} />
+      <FindingReportTextCard
+        finding={finding} canEdit={canModify} onSaved={setFinding}
+        startEditing={searchParams.get('edit') === 'report-text'}
+      />
 
       {evidenceError && (
         <Card className="mb-md">

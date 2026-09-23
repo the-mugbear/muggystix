@@ -366,7 +366,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {(s.missing_text ?? []).map((m) => (
               <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
                 <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                <Link to={`/findings/${m.id}`} className="min-w-0 truncate text-info hover:underline" title={m.title}>{m.title}</Link>
+                <Link to={`/findings/${m.id}?edit=report-text`} className="min-w-0 truncate text-info hover:underline"
+                  title={`${m.title} — open its report text to write or draft it`}>{m.title}</Link>
                 <span className="text-caption text-muted-foreground">missing {m.missing.join(', ')}</span>
               </li>
             ))}

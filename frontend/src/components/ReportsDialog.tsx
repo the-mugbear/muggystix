@@ -278,8 +278,9 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   const selectedCap: number | null = limits ? limits.per_format[format] ?? null : null;
   const overCap = selectedCap != null && totalHosts > selectedCap;
   const formatLabel = allowedFormats.find((f) => f.value === format)?.label ?? format.toUpperCase();
-  // The .zip bundles share the in-memory cap; warn on them too when it applies.
-  const bundleCap = limits?.in_memory_host_cap ?? null;
+  // The Markdown bundle is built in memory and capped; JSON and the agent
+  // dataset stream every host (backend 2.394.0).  Read the cap per format.
+  const bundleCap = limits ? limits.per_format['markdown-bundle'] ?? null : null;
   const bundlesOverCap = bundleCap != null && totalHosts > bundleCap;
   const isBusy = busy !== null;
 
@@ -389,8 +390,8 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
           )}
           {!overCap && bundlesOverCap && bundleCap != null && (
             <p className="text-caption text-muted-foreground">
-              The .zip bundles below include the first {bundleCap.toLocaleString()} of{' '}
-              {totalHosts.toLocaleString()} matching hosts.
+              The Markdown bundle below stops at the first {bundleCap.toLocaleString()} of{' '}
+              {totalHosts.toLocaleString()} matching hosts; the agent dataset includes them all.
             </p>
           )}
           <p className="text-caption text-muted-foreground">

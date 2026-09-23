@@ -15,7 +15,7 @@ from app.db.models import ReportJob
 # endpoints (and existing test imports of `from ...reports import ReportGenerator`)
 # keep working.
 from app.services.report_generator import ReportGenerator, _id_chunks
-from app.services.report_job_service import ReportJobService
+from app.services.report_job_service import STREAMED_REPORT_FORMATS, ReportJobService
 from app.schemas.schemas import ReportJobSchema
 from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row  # noqa: F401
 import json
@@ -183,17 +183,20 @@ class ReportLimits(BaseModel):
 
 # Formats the worker builds whole-in-memory (bounded by the in-memory cap).
 # Mirrors ReportJobService._render; a new async format must be listed here.
-_IN_MEMORY_FORMATS = ("json", "markdown-bundle", "agent-package")
+_IN_MEMORY_FORMATS = ("markdown-bundle",)
 
 
 @router.get("/limits", response_model=ReportLimits)
 def report_limits():
-    """Per-format host caps.  csv streams unbounded; html streams up to the
-    streamed cap; every async format is capped at the in-memory cap."""
+    """Per-format host caps.  csv, json and the agent package stream every
+    matching host; html streams up to the streamed cap; the markdown bundle
+    is capped at the in-memory cap."""
     per_format: Dict[str, Optional[int]] = {
         "csv": None,
         "html": ReportGenerator.MAX_REPORT_HOSTS,
     }
+    for fmt in STREAMED_REPORT_FORMATS:
+        per_format[fmt] = None
     for fmt in _IN_MEMORY_FORMATS:
         per_format[fmt] = ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
     return ReportLimits(

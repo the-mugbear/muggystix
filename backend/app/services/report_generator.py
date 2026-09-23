@@ -9,28 +9,30 @@ hosts router.
 """
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import or_, and_, case, distinct, func
+from sqlalchemy import or_, case, func
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
-from app.schemas.schemas import Host
 from app.core.config import settings
 from app.services.report_templates import ReportTemplates
 from app.services.subnet_insight_service import resolve_host_locations, compute_subnet_insights
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.attention_service import compute_site_attention
-from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options
+from app.services.host_serialization import (
+    _serialize_follow, _serialize_note, note_load_options, vulnerability_sort_key,
+)
 from app.services.host_query import build_filtered_host_query as _build_filtered_host_query
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
 from app.db.models_findings import Finding, FindingHost, INACTIVE_ENDPOINT_STATES
 from app.db.models_agent import TestPlan, TestPlanEntry, TestExecutionResult
-from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row
+from app.services.csv_utils import safe_csv_row as _safe_csv_row
 import base64
 import io
 import csv
-import ipaddress
 import json
 import logging
+import shutil
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -514,8 +516,20 @@ class ReportGenerator:
         (``expunge_all`` after each), so a tens-of-thousands-host project streams
         in bounded memory. The caller downloads it to disk, never into context.
         """
-        chunk_size = chunk_size or settings.REPORT_STREAM_CHUNK
         host_ids = [row[0] for row in host_id_query.order_by(models.Host.id).all()]
+        for records, _scans, _artifacts in self.iter_host_record_chunks(host_ids, chunk_size):
+            yield from records
+
+    def iter_host_record_chunks(
+        self, host_ids: List[int], chunk_size: int = None, with_artifacts: bool = False,
+    ):
+        """Yield ``(records, scans, artifacts)`` per chunk of ``host_ids`` (in
+        the order given): the chunk's dossier records, the scans they
+        reference (``str(scan_id)`` → summary, to merge across chunks) and —
+        with ``with_artifacts`` — the chunk's script-output files (path →
+        text).  One chunk is hydrated at a time and released after the caller
+        resumes, so a whole-engagement export stays at ~one chunk of memory."""
+        chunk_size = chunk_size or settings.REPORT_STREAM_CHUNK
         for start in range(0, len(host_ids), chunk_size):
             chunk_ids = host_ids[start:start + chunk_size]
             hosts = (
@@ -527,10 +541,97 @@ class ReportGenerator:
             order = {hid: i for i, hid in enumerate(chunk_ids)}
             hosts.sort(key=lambda h: order.get(h.id, 0))
             context = self._build_export_context(hosts)
-            for host in hosts:
-                yield self._build_host_export_record(host, context, {})
+            artifacts: Dict[str, str] = {}
+            records = [
+                self._build_host_export_record(host, context, artifacts if with_artifacts else {})
+                for host in hosts
+            ]
+            yield records, context["scans"], artifacts
             # Release the chunk's ORM objects so peak memory stays ~one chunk.
             self.db.expunge_all()
+
+    # --- Whole-engagement exports, written to a file (review 2026-09-23
+    # B-Ops-6).  JSON and the agent package used to be built in memory and
+    # capped at REPORT_MAX_INMEMORY_HOSTS (2,000 by default), so an 80k-host
+    # project could not be exported whole in either.  They now stream every
+    # matching host in chunks straight to the artifact; nothing is capped.
+
+    def _matching_host_ids(self, filters: Dict[str, Any]) -> List[int]:
+        return [row[0] for row in self._filtered_host_id_query(filters).order_by(models.Host.id).all()]
+
+    def write_json_report(self, filters: Dict[str, Any], report_type: str, out) -> int:
+        """Write the JSON report for every matching host to the binary file
+        ``out``; returns the host count.  Same content as
+        ``generate_json_report`` — records one per line inside ``hosts``, and
+        ``summary`` after them because it is counted while they stream."""
+        is_comprehensive = report_type != "inventory"
+        host_ids = self._matching_host_ids(filters)
+        write = lambda text: out.write(text.encode("utf-8"))  # noqa: E731
+        write("{\n")
+        write(f'  "generated_at": {json.dumps(datetime.now().isoformat())},\n')
+        write(f'  "report_type": {json.dumps("comprehensive" if is_comprehensive else "inventory")},\n')
+        write('  "hosts": [')
+        up = down = open_ports = count = 0
+        for records, _scans, _artifacts in self.iter_host_record_chunks(host_ids):
+            for record in records:
+                write(("\n    " if count == 0 else ",\n    ") + json.dumps(record, default=str))
+                count += 1
+                state = (record.get("identity") or {}).get("state")
+                up += state == "up"
+                down += state == "down"
+                open_ports += sum(1 for p in record.get("ports") or [] if p.get("state") == "open")
+        write("\n  ],\n" if count else "],\n")
+        summary = {
+            "total_hosts": count, "hosts_up": up, "hosts_down": down, "total_open_ports": open_ports,
+            # Kept for readers of the capped format: nothing is capped now.
+            "truncated": False, "host_cap": None,
+        }
+        tail: Dict[str, Any] = {"summary": summary}
+        if is_comprehensive:
+            tail["findings"] = self._findings_for_report_ids(host_ids)
+            tail["hotspots"] = self._build_hotspots()
+            tail["systemic"] = self._build_systemic()
+        body = json.dumps(tail, indent=2, default=str)
+        write(body[1:].lstrip("\n"))  # the tail's keys continue the open object
+        return count
+
+    def write_agent_package(self, filters: Dict[str, Any], path) -> int:
+        """Write the agent package for every matching host to the zip at
+        ``path``; returns the host count.  ``hosts.ndjson`` is spooled to a
+        temporary file while each chunk's script outputs go straight into the
+        archive (a zip takes one open entry at a time)."""
+        host_ids = self._matching_host_ids(filters)
+        scans: Dict[str, Any] = {}
+        count = up = open_ports = vulns = 0
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as bundle, \
+                tempfile.TemporaryFile() as ndjson:
+            for records, chunk_scans, artifacts in self.iter_host_record_chunks(host_ids, with_artifacts=True):
+                for record in records:
+                    ndjson.write((json.dumps(record, separators=(",", ":"), default=str) + "\n").encode("utf-8"))
+                    count += 1
+                    up += (record.get("identity") or {}).get("state") == "up"
+                    open_ports += sum(1 for p in record.get("ports") or [] if p.get("state") == "open")
+                    vulns += len(record.get("vulnerabilities") or [])
+                scans.update(chunk_scans)
+                for artifact_path, content in artifacts.items():
+                    bundle.writestr(artifact_path, content)
+            findings = self._findings_for_report_ids(host_ids)
+            manifest = self._export_manifest(filters, {
+                "hosts": count, "hosts_up": up, "open_ports": open_ports,
+                "vulnerabilities": vulns, "findings": len(findings),
+            }, truncated=False, host_cap=None)
+            bundle.writestr("manifest.json", json.dumps(manifest, indent=2))
+            bundle.writestr("schema.json", json.dumps(self._build_schema_reference(), indent=2))
+            bundle.writestr("scans.json", json.dumps(scans, indent=2))
+            bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
+            bundle.writestr("systemic.json", json.dumps(self._build_systemic(), indent=2, default=str))
+            bundle.writestr("findings.json", json.dumps(findings, indent=2, default=str))
+            ndjson.seek(0)
+            # ZIP64: a whole engagement's hosts.ndjson passes 2 GB (80k hosts
+            # ≈ 2.3 GB), which an entry opened for writing may not without it.
+            with bundle.open("hosts.ndjson", "w", force_zip64=True) as dst:
+                shutil.copyfileobj(ndjson, dst)
+        return count
 
     def _stats_from_records(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Summary aggregates for the non-streaming HTML path, from the records
@@ -2035,23 +2136,36 @@ class ReportGenerator:
         )
         findings = self._findings_for_report(hosts)
 
-        manifest = {
+        manifest = self._export_manifest(filters, {
+            "hosts": len(records),
+            "hosts_up": len([record for record in records if record["identity"].get("state") == "up"]),
+            "open_ports": total_open_ports,
+            "vulnerabilities": total_vulnerabilities,
+            "findings": len(findings),
+        }, truncated=self.report_truncated, host_cap=self.applied_host_cap or self.MAX_REPORT_HOSTS)
+
+        return {
+            "manifest": manifest,
+            "findings": findings,
+            "hosts": records,
+            "scans": context["scans"],
+        }, artifacts
+
+    def _export_manifest(
+        self, filters: Dict[str, Any], counts: Dict[str, int], *, truncated: bool, host_cap: Optional[int],
+    ) -> Dict[str, Any]:
+        return {
             "export_type": "host_report_package",
             "schema_version": self.SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source": "BlueStick",
             "filters": filters,
-            "counts": {
-                "hosts": len(records),
-                "hosts_up": len([record for record in records if record["identity"].get("state") == "up"]),
-                "open_ports": total_open_ports,
-                "vulnerabilities": total_vulnerabilities,
-                "findings": len(findings),
-            },
+            "counts": counts,
             # True when the filter matched more than the host cap and this
             # bundle was truncated (use the streaming CSV for the full set).
-            "truncated": self.report_truncated,
-            "host_cap": self.applied_host_cap or self.MAX_REPORT_HOSTS,
+            # The streamed agent package is never truncated (host_cap None).
+            "truncated": truncated,
+            "host_cap": host_cap,
             "included_sections": [
                 "identity",
                 "scope",
@@ -2064,13 +2178,6 @@ class ReportGenerator:
                 "confidence",
             ],
         }
-
-        return {
-            "manifest": manifest,
-            "findings": findings,
-            "hosts": records,
-            "scans": context["scans"],
-        }, artifacts
 
     def _build_export_context(self, hosts: List[models.Host]) -> Dict[str, Any]:
         host_ids = [host.id for host in hosts]
@@ -2262,10 +2369,11 @@ class ReportGenerator:
         ]
         vulnerabilities = [
             self._serialize_vulnerability_for_export(vuln)
-            for vuln in sorted(list(host.vulnerabilities or []), key=self._vulnerability_sort_key)
+            for vuln in sorted(list(host.vulnerabilities or []), key=vulnerability_sort_key)
         ]
         subnet_entries = context["subnet_map"].get(host.id, [])
-        primary_site = self._primary_site(subnet_entries)
+        # The one host→site rule (nearest site-bearing subnet).
+        primary_site = self._host_site(host.id) or None
         follow_record = context["follow_map"].get(host.id)
 
         # Dossier correlation for this host (defaults make the record valid even
@@ -2534,12 +2642,6 @@ class ReportGenerator:
             if severity in summary:
                 summary[severity] += 1
         return summary
-
-    def _vulnerability_sort_key(self, vuln: Vulnerability) -> Tuple[int, float, int]:
-        severity = enum_value(vuln.severity) or "unknown"
-        severity_rank = self.SEVERITY_ORDER.get(severity, self.SEVERITY_ORDER["unknown"])
-        last_seen_dt = vuln.last_seen or vuln.first_seen or datetime.utcfromtimestamp(0)
-        return (severity_rank, -last_seen_dt.timestamp(), vuln.id)
 
     def _generate_markdown_report(self, dataset: Dict[str, Any]) -> str:
         manifest = dataset["manifest"]
@@ -2859,26 +2961,6 @@ class ReportGenerator:
         if not suggestions:
             suggestions.append("Service enumeration and banner validation")
         return suggestions
-
-    @staticmethod
-    def _primary_site(subnet_entries: List[Dict[str, Optional[str]]]) -> Optional[str]:
-        """Pick the site of the most-specific (longest-prefix) subnet a host
-        belongs to — matches the host→site rule used everywhere else so the
-        bundle agrees with the dashboard on which site owns a host."""
-        best_prefix = -1
-        best_site: Optional[str] = None
-        for entry in subnet_entries:
-            site = entry.get("site")
-            if not site:
-                continue
-            try:
-                prefixlen = ipaddress.ip_network(entry.get("cidr"), strict=False).prefixlen
-            except (ValueError, TypeError):
-                prefixlen = 0
-            if prefixlen > best_prefix:
-                best_prefix = prefixlen
-                best_site = site
-        return best_site
 
     @staticmethod
     def _iso(value: Optional[datetime]) -> Optional[str]:

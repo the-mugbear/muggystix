@@ -138,6 +138,9 @@ class Settings:
     # visible banner on huge exports rather than lost data, while the previous
     # value cost an OOM.  Raise it deliberately alongside
     # REPORT_WORKER_MEM_LIMIT, not by accident.
+    #
+    # v2.394.0 — JSON and the agent package now stream to disk and ignore this
+    # cap; it bounds only the markdown bundle.
     REPORT_MAX_INMEMORY_HOSTS: int = int(
         os.getenv("REPORT_MAX_INMEMORY_HOSTS", "2000")
     )

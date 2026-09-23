@@ -6,18 +6,23 @@ stays separate from the deterministic export renderers — a genuine seam, not a
 line-count split. Mounted under the same ``/reports`` prefix, so the path is
 ``POST /projects/{project_id}/reports/draft``.
 """
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
+from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
 from app.api.v1.endpoints.auth import get_current_user
+from app.api.v1.endpoints.findings import get_finding_viewer
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import ProjectRole
+from app.services.client_report_service import REQUIRED_TEXT
 from app.services.report_draft_service import ReportDraftService
+
+FindingTextField = Literal["description", "impact", "recommendation", "steps_to_reproduce", "references"]
 import logging
 
 logger = logging.getLogger(__name__)
@@ -100,3 +105,76 @@ def draft_report(
             ),
         )
     return ReportDraftResponse(**result)
+
+
+class FindingTextDraftRequest(BaseModel):
+    finding_id: int
+    # The same names as report_draft_service.FINDING_TEXT_FIELDS (pinned by
+    # test_report_drafts).
+    fields: Optional[List[FindingTextField]] = Field(
+        None, description="Sections to draft; omit for the empty ones a report requires "
+                          "(description, impact, recommendation).",
+    )
+    provider_id: Optional[int] = Field(None, description="LLM provider; omit for your default.")
+
+
+class FindingTextDraftResponse(BaseModel):
+    suggestions: Dict[str, str]
+    provider_id: int
+    provider_type: str
+    model_id: Optional[str] = None
+    usage: Optional[dict] = None
+
+
+@router.post(
+    "/draft/finding-text",
+    response_model=FindingTextDraftResponse,
+    summary="Suggest report text for one finding's empty sections via the LLM",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def draft_finding_text(
+    body: FindingTextDraftRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+    viewer=Depends(get_finding_viewer),
+):
+    """Suggestions for the finding's report text — the report's "missing
+    text" to-do list, drafted (review 2026-09-23 B-Ops-5).  Nothing is
+    written: the author reviews and saves them through the finding update,
+    so only someone who may edit that text (its author or a project admin)
+    may ask for a draft."""
+    finding = (
+        db.query(Finding)
+        .options(selectinload(Finding.hosts).selectinload(FindingHost.host))
+        .filter(Finding.id == body.finding_id, Finding.project_id == project.id)
+        .first()
+    )
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    if not viewer.may_modify(finding):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the finding's author or a project admin can write its report text.",
+        )
+    fields = list(dict.fromkeys(body.fields)) if body.fields else [
+        k for k in REQUIRED_TEXT if not (getattr(finding, k) or "").strip()
+    ]
+    if not fields:
+        raise HTTPException(status_code=400, detail="Every section a report needs is already written.")
+    try:
+        result = ReportDraftService(db, current_user).draft_finding_text(
+            finding, fields, provider_id=body.provider_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError:
+        logger.exception("Finding text draft failed", extra={"project_id": project.id, "finding_id": finding.id})
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The LLM provider failed or its answer could not be read. "
+                "Check the provider on the LLM Providers page and try again."
+            ),
+        )
+    return FindingTextDraftResponse(**result)

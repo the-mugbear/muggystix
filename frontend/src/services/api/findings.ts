@@ -84,6 +84,30 @@ export type FindingReportTextUpdate = Partial<
   Record<FindingReportTextField | 'cvss_vector', string | null> & { cvss_score: number | null }
 >;
 
+/** AI suggestions for a finding's report text (backend 2.394.0).  Nothing is
+ *  saved: the author reviews them in the editor and saves as usual.
+ *  Errors: 400 (no provider / nothing empty), 403 (not the author or a
+ *  project admin), 502 (provider failed or answered unreadably). */
+export interface FindingTextDraft {
+  suggestions: Partial<Record<FindingReportTextField, string>>;
+  provider_id: number;
+  provider_type: string;
+  model_id: string | null;
+}
+
+export const draftFindingText = async (
+  findingId: number,
+  fields?: FindingReportTextField[],
+  opts?: { signal?: AbortSignal },
+): Promise<FindingTextDraft> => {
+  const response = await api.post<FindingTextDraft>(
+    `${p()}/reports/draft/finding-text`,
+    { finding_id: findingId, ...(fields ? { fields } : {}) },
+    { signal: opts?.signal },
+  );
+  return response.data;
+};
+
 export interface FindingListResponse {
   items: Finding[];
   total: number;

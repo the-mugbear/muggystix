@@ -76,7 +76,9 @@ def test_report_job_failure_sets_last_error(db_session, test_project, test_user,
     def _boom(*a, **k):
         raise RuntimeError("render exploded")
 
-    monkeypatch.setattr(ReportJobService, "_render", _boom, raising=True)
+    from app.services.report_generator import ReportGenerator
+    monkeypatch.setattr(ReportGenerator, "write_json_report", _boom, raising=True)
+    before = set(service._storage_root.iterdir()) if service._storage_root.exists() else set()
     assert service.poll_and_run_one() is True
 
     failed = db_session.get(ReportJob, job.id)
@@ -84,6 +86,72 @@ def test_report_job_failure_sets_last_error(db_session, test_project, test_user,
     assert failed.status == "failed"
     assert "render exploded" in (failed.last_error or "")
     assert "render exploded" in (failed.error_message or "")
+    # The half-written streamed artifact's directory is removed.
+    assert set(service._storage_root.iterdir()) == before
+
+
+def test_streamed_exports_cover_every_host_across_chunks(db_session, test_project, test_user, monkeypatch):
+    """Review 2026-09-23 B-Ops-6 — JSON and the agent package stopped at
+    REPORT_MAX_INMEMORY_HOSTS (2,000), so a whole engagement could not be
+    exported.  They now stream every matching host, chunk by chunk, and
+    are never truncated; the markdown bundle keeps the in-memory cap."""
+    from app.core.config import settings
+    from app.services.report_generator import ReportGenerator
+
+    monkeypatch.setattr(ReportGenerator, "MAX_INMEMORY_REPORT_HOSTS", 2)
+    monkeypatch.setattr(settings, "REPORT_STREAM_CHUNK", 2)
+    for i in range(5):
+        host = _make_host(db_session, test_project.id, ip=f"10.0.1.{i + 1}")
+    scan = models.Scan(project_id=test_project.id, filename="smb.xml", scan_type="nmap", tool_name="nmap")
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(models.HostScript(
+        host_id=host.id, scan_id=scan.id, script_id="smb-os-discovery", output="Windows 10",
+    ))
+    db_session.commit()
+
+    service = ReportJobService()
+
+    def run(fmt):
+        job = service.create_job(
+            db_session, project_id=test_project.id, requested_by_id=test_user.id,
+            format=fmt, report_type="comprehensive", filters={},
+        )
+        assert service.poll_and_run_one() is True
+        done = db_session.get(ReportJob, job.id)
+        db_session.refresh(done)
+        assert done.status == "completed", done.error_message
+        return done
+
+    done = run("json")
+    assert done.truncated is False
+    payload = json.loads(Path(done.result_path).read_bytes())
+    assert [h["identity"]["ip_address"] for h in payload["hosts"]] == [f"10.0.1.{i}" for i in range(1, 6)]
+    assert payload["summary"]["total_hosts"] == 5
+    assert payload["summary"]["total_open_ports"] == 5
+    assert payload["summary"]["truncated"] is False
+    assert {"findings", "hotspots", "systemic"} <= set(payload)
+    # Same records and findings the in-memory path builds for these hosts.
+    gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
+    old = gen.generate_json_report(gen.get_hosts_for_report({}, cap=10))
+    roundtrip = lambda v: json.loads(json.dumps(v, default=str))  # noqa: E731
+    assert payload["hosts"] == roundtrip(sorted(old["hosts"], key=lambda h: h["identity"]["ip_address"]))
+    assert payload["findings"] == roundtrip(old["findings"])
+    service._remove_artifact(done)
+
+    done = run("agent-package")
+    assert done.truncated is False
+    bundle = zipfile.ZipFile(Path(done.result_path))
+    lines = bundle.read("hosts.ndjson").decode().splitlines()
+    assert len(lines) == 5
+    manifest = json.loads(bundle.read("manifest.json"))
+    assert manifest["counts"]["hosts"] == 5 and manifest["truncated"] is False
+    assert f"artifacts/hosts/{host.id}/host_scripts/smb-os-discovery.txt" in bundle.namelist()
+    service._remove_artifact(done)
+
+    done = run("markdown-bundle")
+    assert done.truncated is True
+    service._remove_artifact(done)
 
 
 def test_report_reaper_requeues_stalled_job(db_session, test_project):
@@ -230,10 +298,13 @@ def test_report_limits_reflect_generator_caps(client, test_project):
     pf = body["per_format"]
     assert pf["csv"] is None
     assert pf["html"] == ReportGenerator.MAX_REPORT_HOSTS
-    # Every format the worker can render is listed at the in-memory cap.
-    for fmt in ("json", "markdown-bundle", "agent-package"):
-        assert pf[fmt] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
-        ReportJobService._render  # the renderer these map onto exists
+    # The streamed async formats are uncapped; the markdown bundle is built in
+    # memory and listed at the in-memory cap.
+    from app.services.report_job_service import STREAMED_REPORT_FORMATS
+    for fmt in STREAMED_REPORT_FORMATS:
+        assert pf[fmt] is None
+    assert pf["markdown-bundle"] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
+    ReportJobService._render  # the renderer it maps onto exists
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +373,8 @@ def test_failure_notifies_the_requester(db_session, test_project, test_user, mon
     def _boom(*a, **k):
         raise RuntimeError("render exploded")
 
-    monkeypatch.setattr(ReportJobService, "_render", _boom, raising=True)
+    from app.services.report_generator import ReportGenerator
+    monkeypatch.setattr(ReportGenerator, "write_json_report", _boom, raising=True)
     assert service.poll_and_run_one() is True
 
     rows = _report_notifications(db_session, job.id)

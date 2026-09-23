@@ -381,6 +381,8 @@ Since v2.196.0 the heavy report formats (PDF, JSON, ZIP bundles, large host-cent
 | GET | `/reports/jobs/{job_id}` | Job detail (status, progress, error). |
 | GET | `/reports/jobs/{job_id}/download` | Stream the finished artifact (only once `status=complete`). |
 | POST | `/reports/jobs/{job_id}/dismiss` | Hide a finished/failed job from the report-jobs tray. |
+| GET | `/reports/limits` | Host cap per format (`null` = every matching host). JSON and the agent package stream every host (v2.394.0); the markdown bundle is capped at `REPORT_MAX_INMEMORY_HOSTS`. |
+| POST | `/reports/draft/finding-text` | `{finding_id, fields?, provider_id?}` → `{suggestions}`: the operator's LLM provider suggests Markdown for one finding's empty report sections (default: the empty ones of description / impact / recommendation). Writes nothing — the author saves through the finding update. Author or project admin only (403); 400 no provider / nothing empty; 502 provider failed or answered unreadably. |
 
 ### 4.8 DNS
 
