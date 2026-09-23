@@ -28,19 +28,28 @@ def should_replace_service(
     """Canonical port service-info merge rule: should the NEW scan's service
     info replace what's already stored?
 
-    True when we have nothing yet, the new scan is more confident, or the new
-    name is non-empty and more specific (longer).  This is the single source of
-    truth for service-name conflict resolution.
+    True when we have nothing yet, the new scan is more confident, or — among
+    observations of EQUAL confidence — the new name is non-empty and more
+    specific (longer).  This is the single source of truth for service-name
+    conflict resolution.
+
+    "Longer wins" used to apply regardless of confidence, so an enumeration
+    tool that sends a name without one (NetExec ``winrm``, SMBMap, Nikto,
+    dirbuster) replaced an nmap ``-sV`` identification and wiped its product,
+    version and TLS tunnel (review 2026-09-23 C6c).  A name with no confidence
+    behind it now only fills a blank or improves another unconfident name.
 
     The masscan bulk-SQL path (``masscan_parser._upsert_ports_chunk``) carries
     only a service name (no confidence), so it mirrors the reduced form of this
-    rule — empty-or-longer-wins — in a CASE expression.  Keep the two in
-    lockstep; ``test_masscan_service_merge`` pins masscan's SQL to this rule.
+    rule — empty, or longer than an unconfident name — in a CASE expression.
+    Keep the two in lockstep; ``test_masscan_service_merge`` pins masscan's SQL
+    to this rule.
     """
+    existing_c, new_c = existing_conf or 0, new_conf or 0
     return (
         not existing_name
-        or (new_conf or 0) > (existing_conf or 0)
-        or (bool(new_name) and len(new_name) > len(existing_name or ""))
+        or new_c > existing_c
+        or (new_c == existing_c and bool(new_name) and len(new_name) > len(existing_name or ""))
     )
 
 
@@ -585,8 +594,14 @@ class HostDeduplicationService:
         # Update state (most recent wins)
         new_state = port_data.get('state')
         if new_state:
+            # The reason belongs to the observation that set the state.  A tool
+            # that reports no reason (Nikto, NetExec, SMBMap…) keeps nmap's
+            # ``syn-ack`` while the state is unchanged; a CHANGED state drops
+            # a reason that described the old one.
+            new_reason = port_data.get('reason')
+            if new_reason or new_state != port.state:
+                port.reason = new_reason
             port.state = new_state
-            port.reason = port_data.get('reason')
             port.is_active = (new_state in ['open', 'filtered'])
         
         # Update service info if new scan has better information — the single

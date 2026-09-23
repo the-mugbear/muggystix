@@ -527,7 +527,10 @@ def upsert_vulnerability(
         # Title can change across scans for the same plugin_id — keep latest.
         if title:
             existing.title = title
-        existing.cvss_score = cvss_score
+        # A re-observation without a score keeps the stored one, like the
+        # fields below (it used to blank it).
+        if cvss_score is not None:
+            existing.cvss_score = cvss_score
         existing.description = description or existing.description
         existing.cve_id = cve_id or existing.cve_id
         existing.solution = solution or existing.solution

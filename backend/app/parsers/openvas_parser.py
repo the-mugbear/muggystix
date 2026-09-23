@@ -188,7 +188,14 @@ class OpenVASParser:
                 if not ref_id:
                     continue
                 if kind == "cve":
-                    if ref_id.upper() != (cve_id or "").upper():
+                    # Modern GMP reports carry no <cve> element: the first
+                    # CVE ref IS the CVE.  Without this every one landed in
+                    # the "Also:" string and cve_id stayed None, so CVE
+                    # search and correlation missed every modern OpenVAS
+                    # result (review 2026-09-23 C6f; R12 of 09-21).
+                    if cve_id is None:
+                        cve_id = ref_id.upper()
+                    elif ref_id.upper() != cve_id.upper():
                         extra_cves.append(ref_id.upper())
                 elif kind in ("url", "cert-bund", "dfn-cert"):
                     references.append(ref_id)

@@ -34,7 +34,12 @@ _LINE_HEAD = re.compile(r'(?<![\w.-])[A-Za-z][A-Za-z0-9]*\s+\d+\.\d+\.\d+\.\d+\s
 # table) has no "[" after the hostname, so it needs its own anchor.
 _TABLE_HEAD = re.compile(r'(?<![\w.-])[A-Z][A-Za-z0-9]*\s+\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+')
 # "SMB  172.30.77.10  445  LABSMB  public   READ   Parser lab read-only share"
-_TABLE_ROW = re.compile(r'^(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+(?!\[)(.*)$')
+# ``(?![\s\[])``, not ``(?!\[)``: with the bare form ``\s+`` backtracked one
+# space so the lookahead saw a space, and every status line ("[+] Brute
+# forcing RIDs") matched as a table row too.
+_TABLE_ROW = re.compile(r'^(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+(?![\s\[])(.*)$')
+# A status line ("[*] …", "[+] …") for an IP: it ends that IP's share table.
+_STATUS_ROW = re.compile(r'^(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[')
 
 
 def _normalise_line(line: str) -> str:
@@ -231,6 +236,14 @@ class NetexecParser:
                             'remark': rest[remark_at:].strip() or None,
                         })
                     continue
+            else:
+                # The table ends at the IP's next status line.  Left open, every
+                # later bracket-less row for the IP — --rid-brute, --users,
+                # --pass-pol, a second run appended to the log — was stored as a
+                # share ("500: LAB\Adminis", review 2026-09-23 C6d).
+                status = _STATUS_ROW.match(line)
+                if status:
+                    share_columns.pop(status.group(2), None)
 
             # Try different patterns
             host_data = None
@@ -632,12 +645,18 @@ class NetexecParser:
         observation, so a later upload of the same file is a new scan and a
         new row BY DESIGN (that is the per-scan evidence trail).  Within one
         scan, the same line appearing twice used to insert twice (v2.332.0).
+
+        A repeat for the same identity UPGRADES the row rather than being
+        dropped: in a spray, ``[-] alice:Winter LOGON_FAILURE`` followed by
+        ``[+] alice:Summer (Pwn3d!)`` kept only the failure, losing the valid
+        credential and the local-admin flag (review 2026-09-23 C6b).  A
+        success outranks a failure, local admin is OR'd, and blanks fill.
         """
         protocol = host_data.get('protocol', 'unknown')
         port = host_data.get('port')
         username = host_data.get('username')
         duplicate = (
-            self.db.query(NetexecResult.id)
+            self.db.query(NetexecResult)
             .filter(
                 NetexecResult.scan_id == scan_id,
                 NetexecResult.host_id == host_id,
@@ -648,6 +667,20 @@ class NetexecParser:
             .first()
         )
         if duplicate is not None:
+            new_success = host_data.get('auth_success')
+            if new_success is True and duplicate.auth_success is not True:
+                duplicate.auth_success = True
+                # The evidence line is the one that proved the login.
+                duplicate.raw_output = raw_output[:10000]
+            elif duplicate.auth_success is None and new_success is not None:
+                duplicate.auth_success = new_success
+            if host_data.get('local_admin'):
+                duplicate.local_admin = True
+            for column, key in (('smbv1', 'smbv1'), ('shares', 'shares'),
+                                ('hostname', 'hostname'), ('domain_name', 'domain')):
+                if getattr(duplicate, column) is None and host_data.get(key) is not None:
+                    setattr(duplicate, column, host_data.get(key))
+            self.db.flush()
             return
 
         result = NetexecResult(

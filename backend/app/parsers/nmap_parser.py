@@ -450,6 +450,16 @@ class NmapXMLParser:
         ciphers = scripts.get('ssl-enum-ciphers')
         if cert is None and ciphers is None:
             return
+        # Only a web service becomes a web interface.  ssl-cert also runs on
+        # RDP 3389, LDAPS, SMTPS, IMAPS and MSSQL: each became an
+        # ``https://ip:3389`` row — ``has:web``, "web-TLS assessed" and, RDP
+        # certificates being self-signed by default, ``has:cert_issue`` on
+        # nearly every Windows host (review 2026-09-23 C6a).  The script
+        # output itself is still kept with the port's scripts.
+        service_elem = port_elem.find('service')
+        service_name = ((service_elem.get('name') if service_elem is not None else None) or '').lower()
+        if not service_name.startswith('http'):
+            return
 
         def _table(el, key):
             t = el.find(f"table[@key='{key}']") if el is not None else None
@@ -473,7 +483,8 @@ class NmapXMLParser:
         host = self.db.get(models.Host, host_id)
         if host is None:
             return
-        url = f"https://{host.ip_address}:{port.port_number}"
+        address = f"[{host.ip_address}]" if ':' in host.ip_address else host.ip_address
+        url = f"https://{address}:{port.port_number}"
         row = (
             self.db.query(models.WebInterface)
             .filter(models.WebInterface.scan_id == scan_id, models.WebInterface.url == url,

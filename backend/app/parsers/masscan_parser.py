@@ -561,11 +561,12 @@ class MasscanParser:
 
         # service_name merge MIRRORS the canonical rule in
         # host_deduplication_service.should_replace_service.  Masscan's bulk path
-        # carries only a name (no confidence), so the rule reduces to
-        # empty-or-longer-wins: take the new name only when we have nothing yet,
-        # or it's non-empty and more specific (longer).  The old
-        # COALESCE(NULLIF(...)) was last-non-empty-wins, which let a masscan
-        # re-scan clobber a longer/better nmap service name. Keep in lockstep.
+        # carries only a name (no confidence), so the rule reduces to: take the
+        # new name only when we have nothing yet, or it's non-empty and longer
+        # than a name that is itself unconfident — never over an nmap -sV
+        # identification (service_conf > 0).  The old COALESCE(NULLIF(...)) was
+        # last-non-empty-wins, which let a masscan re-scan clobber a
+        # longer/better nmap service name. Keep in lockstep.
         sql = (
             "INSERT INTO ports_v2 "
             "(host_id, port_number, protocol, state, service_name, "
@@ -578,6 +579,7 @@ class MasscanParser:
             "service_name = CASE "
             "WHEN COALESCE(ports_v2.service_name, '') = '' THEN EXCLUDED.service_name "
             "WHEN NULLIF(EXCLUDED.service_name, '') IS NOT NULL "
+            "AND COALESCE(ports_v2.service_conf, 0) = 0 "
             "AND length(EXCLUDED.service_name) > length(ports_v2.service_name) "
             "THEN EXCLUDED.service_name "
             "ELSE ports_v2.service_name END "

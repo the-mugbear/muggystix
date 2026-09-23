@@ -311,7 +311,7 @@ class TestsslParser:
                 # specific IP endpoint, and a hostname resolving to several IPs
                 # would otherwise collapse to one URL (and collide on the unique
                 # (scan_id, url, source) constraint across its distinct hosts).
-                url = f"https://{ip}:{port}"
+                url = f"https://[{ip}]:{port}" if ":" in ip else f"https://{ip}:{port}"
                 # Phase 2 — testssl knows the NAME it probed (SNI) even though
                 # the URL is keyed by IP; bind it + record the HTTP observation.
                 name_id = bind_hostname(

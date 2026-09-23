@@ -37,6 +37,18 @@ def test_should_replace_service_by_confidence():
     assert should_replace_service("http", 9, "smtp", 5) is False
 
 
+@pytest.mark.parametrize("existing_conf,new_conf", [(10, None), (10, 0), (3, None), (10, 3)])
+def test_a_longer_name_never_beats_a_more_confident_one(existing_conf, new_conf):
+    """Review 2026-09-23 C6c: NetExec's ``winrm`` (no confidence) replaced
+    nmap's -sV ``http`` because it is longer, wiping product/version/tunnel."""
+    assert should_replace_service("http", existing_conf, "winrm", new_conf) is False
+
+
+def test_longer_still_wins_among_equal_confidence():
+    assert should_replace_service("http", 10, "http-proxy", 10) is True
+    assert should_replace_service("http", None, "winrm", None) is True
+
+
 # --- Masscan bulk SQL mirrors the rule (Postgres-only) ----------------------
 
 @pytest.mark.skipif(
@@ -77,6 +89,16 @@ def test_masscan_merge_keeps_longer_name(db_session, test_project):
     # An empty name never clobbers.
     upsert(s1.id, "")
     assert svc_name() == "http-proxy-alt"
+
+    # A name an nmap -sV probe identified (service_conf > 0) is never replaced
+    # by masscan's unconfident one, however long.
+    port = db_session.query(models.Port).filter(
+        models.Port.host_id == hid, models.Port.port_number == 8080,
+    ).first()
+    port.service_name, port.service_conf = "http", 10
+    db_session.flush()
+    upsert(s2.id, "http-proxy-alt")
+    assert svc_name() == "http"
 
 
 # --- Memory backstop: collection flushes without losing data (review A-4) ----

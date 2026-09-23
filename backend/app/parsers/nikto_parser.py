@@ -17,6 +17,7 @@ from app.parsers.parser_utils import (
     ensure_scan,
     extract_first_ip,
     map_text_severity,
+    normalize_ip,
     persist_host_observation,
     upsert_vulnerability,
 )
@@ -283,6 +284,13 @@ class NiktoParser:
         references: Optional[list] = None,
         request: Optional[str] = None,
     ) -> None:
+        # Nikto run against an address reports that address as its "host"
+        # (JSON ``host``, text ``Target Hostname:``).  Stored as the host's
+        # name, it then blocked real names from later imports, since an
+        # equal-rank name is never replaced (review 2026-09-23 C6e).  One
+        # guard for the JSON, text and CSV paths.
+        if hostname and normalize_ip(hostname):
+            hostname = None
         host, port_map = persist_host_observation(
             dedup_service=self.dedup_service,
             scan_id=scan.id,
