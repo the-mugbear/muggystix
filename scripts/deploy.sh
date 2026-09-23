@@ -501,12 +501,21 @@ predeploy_db_backup() {
     # path for anything schema-touching. Continuing without one means the
     # operator discovers recovery is impossible only after a bad migration,
     # which is the worst possible moment to find out. Fail closed instead.
+    # Only a dump written by THIS run counts.  Taking the newest file in the
+    # folder recorded an earlier deploy's dump whenever this run produced a
+    # volume snapshot instead (db container down), and a rollback would then
+    # have restored days-old data without saying so.
+    local backup_dir dump marker
+    backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
+    marker="$(mktemp)"
     if ./scripts/backup-db.sh; then
-        local backup_dir dump
-        backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
-        dump="$(ls -t "$backup_dir"/nm-pgdump-*.dump 2>/dev/null | head -1)"
+        dump="$(find "$backup_dir" -maxdepth 1 -name 'nm-pgdump-*.dump' -newer "$marker" -size +0 2>/dev/null \
+            | xargs -r ls -t 2>/dev/null | head -1)"
+        rm -f "$marker"
         if [[ -z "$dump" ]]; then
-            print_error "backup-db.sh reported success but no dump was found in $backup_dir."
+            print_error "backup-db.sh did not write a new database dump in $backup_dir"
+            print_error "(it takes a volume snapshot instead when the db container is not running,"
+            print_error " and a rollback can only restore a dump). Start the stack, then deploy again."
             print_error "Refusing to deploy without a restorable backup."
             print_info  "Override for a disposable environment: DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
             [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]] || return 1
@@ -518,6 +527,7 @@ predeploy_db_backup() {
         print_info "Pre-deploy DB backup: $dump"
         return 0
     fi
+    rm -f "$marker"
 
     print_error "Pre-deploy database backup FAILED."
     print_error "Rollback would not be able to restore the database, so this deploy is aborting."
@@ -660,8 +670,11 @@ case $DEPLOY_CHOICE in
         # no prior image) can be rolled back via option 7.
         snapshot_images_for_rollback
         if ! predeploy_db_backup; then
+            # `exit`, not `return`: this is the script's top level, where
+            # bash refuses `return` (it only stopped the deploy because
+            # set -e caught that error).
             print_error "Aborting deploy — no restorable pre-deploy backup."
-            return 1
+            exit 1
         fi
 
         # CACHE_BUST forces the frontend builder to re-run npm run build
