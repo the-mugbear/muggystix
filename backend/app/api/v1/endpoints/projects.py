@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.session import get_db
 from app.db.models_project import Project, ProjectMembership
@@ -23,20 +23,42 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # --- Schemas ---
 
+_STATUS_HELP = (
+    "Project status: active (the assessment is under way), completed, archived "
+    "(hidden from project selection). 'in_progress' is accepted as the old name for active."
+)
+
+
+def _normalise_status(value: Optional[str]) -> Optional[str]:
+    # v2.398.x — 'in_progress' was a second name for 'active' (every reader
+    # treated the two alike); an older client may still send it.
+    return "active" if value == "in_progress" else value
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Project name (must be unique)")
     description: Optional[str] = None
-    status: str = Field("active", description="Project status: active, in_progress, completed, archived")
+    status: str = Field("active", description=_STATUS_HELP)
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value):
+        return _normalise_status(value)
 
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
-    status: Optional[str] = Field(None, description="Project status: active, in_progress, completed, archived")
+    status: Optional[str] = Field(None, description=_STATUS_HELP)
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value):
+        return _normalise_status(value)
 
 
 class ProjectIngestSettingsUpdate(BaseModel):
@@ -53,7 +75,7 @@ class ProjectIngestSettingsUpdate(BaseModel):
     )
 
 
-_VALID_STATUSES = {"active", "in_progress", "completed", "archived"}
+_VALID_STATUSES = ("active", "completed", "archived")
 
 
 class ProjectResponse(BaseModel):

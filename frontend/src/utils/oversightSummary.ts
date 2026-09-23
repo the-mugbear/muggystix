@@ -38,7 +38,7 @@ const bySeverity = (s: OversightSeverity) => SEVS.map((k) => `${k} ${n(s[k])}`).
 const compact = (s: OversightSeverity) => `C ${n(s.critical)} / H ${n(s.high)} / M ${n(s.medium)} / L ${n(s.low)}`;
 const rates = (r: OversightSeverityRate) => SEVS.map((k) => `${k} ${rate(r[k])}`).join(', ');
 const personName = (t: OversightTesterRow) => t.full_name || t.username;
-const inProgress = (status: string) => status === 'active' || status === 'in_progress';
+const inProgress = (status: string) => status === 'active';
 const statusWord = (status: string) =>
   (inProgress(status) ? 'in progress' : status === 'completed' ? 'complete' : status.replace(/_/g, ' '));
 /** A cell value that cannot break a Markdown table. */

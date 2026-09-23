@@ -62,6 +62,20 @@ def test_create_archived_project_sets_is_archived(client, db_session):
     assert "rv3-archived-proj" not in names
 
 
+def test_in_progress_is_the_old_name_for_active(client, db_session):
+    """v2.398.0 — 'in_progress' duplicated 'active' (every reader treated them
+    alike) and was merged into it; an older client sending it gets 'active'."""
+    r = client.post("/api/v1/projects/", json={"name": "status-alias", "status": "in_progress"})
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "active"
+    pid = r.json()["id"]
+    r = client.put(f"/api/v1/projects/{pid}", json={"status": "completed"})
+    assert r.status_code == 200 and r.json()["status"] == "completed"
+    r = client.put(f"/api/v1/projects/{pid}", json={"status": "in_progress"})
+    assert r.status_code == 200 and r.json()["status"] == "active"
+    assert client.put(f"/api/v1/projects/{pid}", json={"status": "paused"}).status_code == 400
+
+
 def test_list_projects_member_counts_batched(client, db_session, test_project):
     """RV-11 — member_count is correct from the single grouped query."""
     u1 = _make_user(db_session, "rv11-a")

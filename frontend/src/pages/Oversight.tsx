@@ -61,7 +61,7 @@ import { SEVERITY_HSL } from '../utils/severity';
 const SEVS = ['critical', 'high', 'medium', 'low'] as const;
 type Sev = typeof SEVS[number];
 const SEV_LABEL: Record<Sev, string> = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
-const STATUSES = ['active', 'in_progress', 'completed', 'archived'];
+const STATUSES = ['active', 'completed', 'archived'];
 const ALL = '__all__';
 const PAGE_SIZE = 25;
 
@@ -433,7 +433,7 @@ const Oversight: React.FC = () => {
   }, [data, search, attn, sort]);
 
   const inProgressPreview = useMemo(
-    () => sortProjects((data?.projects ?? []).filter((r) => r.status === 'active' || r.status === 'in_progress'), 'critical').slice(0, 5),
+    () => sortProjects((data?.projects ?? []).filter((r) => r.status === 'active'), 'critical').slice(0, 5),
     [data],
   );
   const testerPreview = useMemo(
@@ -621,7 +621,7 @@ const Oversight: React.FC = () => {
             {/* Four quiet measures on one baseline (the Posture context strip). */}
             <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
               <PostureMeasure label="Projects" value={n(s.projects_total)}
-                info="Registered projects matching the filters, archived included. In progress = active or in progress; complete = completed or archived. Current, whatever the dates.">
+                info="Registered projects matching the filters, archived included. In progress = active; complete = completed or archived. Current, whatever the dates.">
                 <p className="truncate">{n(s.projects_in_progress)} in progress · {n(s.projects_complete)} complete</p>
               </PostureMeasure>
               <PostureMeasure label="Recorded targets" value={n(s.targets_through_end)}

@@ -70,7 +70,6 @@ const roleLabel = (r: string) => PROJECT_ROLES.find((x) => x.value === r)?.label
 
 export const PROJECT_STATUSES = [
   { value: 'active', label: 'Active' },
-  { value: 'in_progress', label: 'In progress' },
   { value: 'completed', label: 'Completed' },
   { value: 'archived', label: 'Archived' },
 ];

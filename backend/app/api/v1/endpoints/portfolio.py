@@ -255,7 +255,7 @@ def get_portfolio_dashboard(
         else:
             health = "healthy"
 
-        if p.status in ("active", "in_progress"):
+        if p.status == "active":
             active_projects += 1
 
         pending_reviews = s.pending_plan_reviews

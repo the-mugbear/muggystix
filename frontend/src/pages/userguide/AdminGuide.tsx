@@ -41,10 +41,14 @@ const sections: GuideSection[] = [
         </Para>
         <Subhead>Lifecycle</Subhead>
         <div className="mb-sm flex flex-wrap gap-xs">
-          {['active', 'in_progress', 'completed', 'archived'].map((s) => (
-            <Badge key={s} variant="outline">{s.replace('_', ' ')}</Badge>
+          {['active', 'completed', 'archived'].map((s) => (
+            <Badge key={s} variant="outline">{s}</Badge>
           ))}
         </div>
+        <Para>
+          <strong>Active</strong> while the assessment is under way; <strong>completed</strong> when it is done
+          (still listed); <strong>archived</strong> to take it out of the project selector.
+        </Para>
         <Subhead>Per-project roles</Subhead>
         <Para>
           Users are assigned a role <em>per project</em> through project memberships, so someone can

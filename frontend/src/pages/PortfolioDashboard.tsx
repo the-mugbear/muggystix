@@ -408,7 +408,7 @@ const PortfolioDashboard: React.FC = () => {
 
               <div className="grid gap-md border-b border-border pb-md sm:grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-border">
                 <PostureMeasure label="Projects in progress" value={n(s.active_projects)}
-                  info="Projects whose status is active or in progress. Quiet = still marked active with nothing imported for a fortnight — a question for the manager, not a verdict on the evidence.">
+                  info="Projects whose status is active. Quiet = still marked active with nothing imported for a fortnight — a question for the manager, not a verdict on the evidence.">
                   {plural(s.total_projects, 'project')} in total
                   {s.stale_projects > 0 && (
                     <> · <button type="button" className="text-info hover:underline" onClick={() => setParam('show', 'stale')}>{n(s.stale_projects)} active but quiet</button></>

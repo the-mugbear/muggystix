@@ -26,7 +26,9 @@ from app.db.models_project import Project, ProjectMembership
 from app.services.agent_session_metrics import blocked_exec_session_counts
 
 QUIET_AFTER_DAYS = 14
-IN_PROGRESS_STATUSES = ("active", "in_progress")
+# v2.398.x — one status for a project under way ('in_progress' was merged
+# into 'active' by migration d9f1b3c5e7a2).
+IN_PROGRESS_STATUSES = ("active",)
 
 
 @dataclass

@@ -304,7 +304,8 @@ def get_oversight_dashboard(
         wanted = set(project_id)
         cohort = [p for p in cohort if p.id in wanted]
     if status:
-        wanted_status = set(status)
+        # 'in_progress' is the old name for 'active' (a saved link may carry it).
+        wanted_status = {"active" if s == "in_progress" else s for s in status}
         cohort = [p for p in cohort if p.status in wanted_status]
     if window_overlap and (window.start or window.end):
         cohort = [p for p in cohort if _overlaps(p, window)]

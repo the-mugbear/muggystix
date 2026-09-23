@@ -99,7 +99,7 @@ def test_members_and_project_admins_are_refused(client, db_session, test_project
 # ---------------------------------------------------------------------------
 
 def test_every_registered_project_including_archived(client, db_session, test_project):
-    for name, status in (("Ongoing", "in_progress"), ("Done", "completed"), ("Kept", "archived")):
+    for name, status in (("Ongoing", "active"), ("Done", "completed"), ("Kept", "archived")):
         _project(db_session, name, status)
     db_session.commit()
     body = client.get(URL).json()
@@ -107,9 +107,12 @@ def test_every_registered_project_including_archived(client, db_session, test_pr
     assert s["projects_total"] == 4  # test_project is active
     assert s["projects_in_progress"] == 2
     assert s["projects_complete"] == 2
-    assert {r["status"] for r in body["projects"]} == {"active", "in_progress", "completed", "archived"}
+    assert {r["status"] for r in body["projects"]} == {"active", "completed", "archived"}
     only_done = client.get(URL, params={"status": ["completed", "archived"]}).json()
     assert only_done["summary"]["projects_total"] == 2
+    # A saved link with the old status name still means active.
+    old = client.get(URL, params={"status": ["in_progress"]}).json()
+    assert old["summary"]["projects_total"] == 2
 
 
 def test_testing_findings_and_defect_rate(client, db_session, test_project):
@@ -360,7 +363,7 @@ def _seed_three(db):
     tester work — so a wrong subset cannot add up by accident."""
     ana, ben = _user(db, "subset-ana"), _user(db, "subset-ben")
     a, b, c = (_project(db, n, s) for n, s in
-               (("Subset A", "active"), ("Subset B", "in_progress"), ("Subset C", "completed")))
+               (("Subset A", "active"), ("Subset B", "active"), ("Subset C", "completed")))
     ha = [_host(db, a, f"10.60.0.{i}", first_seen=NOW) for i in range(1, 4)]
     hb = [_host(db, b, f"10.61.0.{i}", first_seen=NOW) for i in range(1, 6)]
     hc = [_host(db, c, f"10.62.0.{i}", first_seen=NOW) for i in range(1, 3)]

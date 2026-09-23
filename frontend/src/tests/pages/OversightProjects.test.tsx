@@ -22,7 +22,7 @@ const sev = () => ({ critical: 0, high: 0, medium: 0, low: 0 });
 const LONG = 'a-project-with-a-very-long-engagement-name-'.repeat(5);
 const OPTIONS = [
   { id: 1, name: 'Alpha', status: 'active' },
-  { id: 2, name: 'Bravo', status: 'in_progress' },
+  { id: 2, name: 'Bravo', status: 'active' },
   { id: 3, name: LONG, status: 'completed' },
   { id: 4, name: 'Delta', status: 'active' },
 ];
