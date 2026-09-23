@@ -292,6 +292,72 @@ describe('useUploadReview', () => {
     expect(deps.uploadFile.mock.calls[1][2]).toMatchObject({ stage: true, allowDuplicate: true });
   });
 
+  // v5.271.0 — a closed review left 26 files staged, and the page could only
+  // review them one per dialog, with the 26th out of the queue's reach.
+  it('resumes staged files: inspected again, imported, and never added twice', async () => {
+    const deps = makeDeps();
+    deps.getJobDetection.mockImplementation(async (jobId: number) =>
+      (jobId === 41 ? { ...ready, job_id: 41 } : { ...filenameOnly, job_id: jobId }));
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const jobs = [
+      { id: 41, original_filename: 'nmap.xml', file_size: 76_000, batch_id: 7 },
+      { id: 42, original_filename: 'naabu.txt', file_size: 300, batch_id: 7 },
+    ];
+
+    await act(async () => {
+      await result.current.addStaged(jobs);
+    });
+    expect(deps.uploadFile).not.toHaveBeenCalled(); // the files are already on the server
+    expect(result.current.rows.map((r) => [r.jobId, r.phase])).toEqual([[41, 'ready'], [42, 'choose']]);
+    expect(result.current.rows[1].suggested).toBe('naabu_output'); // still only a suggestion
+
+    await act(async () => {
+      await result.current.addStaged(jobs);
+    });
+    expect(result.current.rows).toHaveLength(2);
+
+    await act(async () => {
+      await result.current.importReady();
+    });
+    expect(deps.startIngestionJob).toHaveBeenCalledTimes(1);
+    expect(deps.startIngestionJob).toHaveBeenCalledWith(41, { formatOverride: null, sourceTool: null });
+  });
+
+  it('a drop the server refused entirely leaves no batch to name', async () => {
+    const deps = makeDeps();
+    deps.uploadFile.mockRejectedValue({
+      response: { status: 409, data: { detail: { code: 'duplicate_scan', job_id: 3, job_status: 'staged', message: 'waiting' } } },
+    });
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml'), file('results.txt')]);
+    });
+    expect(deps.createScanBatch).toHaveBeenCalledTimes(1);
+    expect(result.current.rows.every((r) => r.phase === 'duplicate')).toBe(true);
+    expect(result.current.batch).toBeNull();
+  });
+
+  it('a duplicate of a staged file reviews that waiting copy instead', async () => {
+    const deps = makeDeps();
+    deps.uploadFile.mockRejectedValueOnce({
+      response: { status: 409, data: { detail: { code: 'duplicate_scan', job_id: 9, job_status: 'staged', message: 'waiting' } } },
+    });
+    deps.getJobDetection.mockImplementation(async (jobId: number) => ({ ...ready, job_id: jobId }));
+    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml')]);
+    });
+    expect(result.current.rows[0].duplicate).toMatchObject({ jobId: 9, jobStatus: 'staged' });
+
+    await act(async () => {
+      result.current.reviewWaitingCopy(result.current.rows[0].key);
+    });
+    await waitFor(() => expect(result.current.rows[0].phase).toBe('ready'));
+    expect(result.current.rows[0].jobId).toBe(9);
+    expect(deps.getJobDetection).toHaveBeenLastCalledWith(9);
+    expect(deps.uploadFile).toHaveBeenCalledTimes(1); // not uploaded a second time
+  });
+
   // v5.248.0 — code review finding 10. Every selected file used to start
   // uploading at once; over HTTP/2 nothing in the browser caps that.
   it('stages a large selection a few files at a time, and still stages them all', async () => {

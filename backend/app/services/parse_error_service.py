@@ -53,13 +53,15 @@ def log_parse_error(
     file_size = None
     if file_content:
         file_size = len(file_content)
-        try:
-            # Try to decode as UTF-8 first
-            preview_text = file_content[:1000].decode('utf-8', errors='replace')
-            file_preview = preview_text
-        except Exception:
-            # If decode fails, use hex representation
+        head = file_content[:1000]
+        # v2.385.0 — NUL is valid UTF-8, so ``errors='replace'`` kept it, and
+        # Postgres refuses NUL in text: recording the failure of any binary
+        # upload (a zip) raised, and the job lost its real reason.  A sample
+        # holding NUL is binary; it is previewed as hex.
+        if b"\x00" in head:
             file_preview = f"Binary data: {file_content[:100].hex()}"
+        else:
+            file_preview = head.decode('utf-8', errors='replace')
     
     # Generate user-friendly message
     user_message = _generate_user_message(error, error_type, file_type, filename)

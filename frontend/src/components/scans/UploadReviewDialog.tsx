@@ -3,7 +3,9 @@ import { useDropzone } from 'react-dropzone';
 import { Loader2, Trash2, Upload } from 'lucide-react';
 
 import { ACCEPTED_EXTENSIONS, ACCEPTED_EXTENSION_LIST, SUPPORTED_FORMATS } from '../../data/uploadFormats';
-import { BASIS_LABEL, useUploadReview, isImportable, type ReviewRow, type StartedUpload } from '../../hooks/useUploadReview';
+import {
+  BASIS_LABEL, useUploadReview, isImportable, type ReviewRow, type StagedJobRef, type StartedUpload,
+} from '../../hooks/useUploadReview';
 import type { FormatOption } from '../../services/api';
 import { cn } from '../../utils/cn';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion';
@@ -52,6 +54,10 @@ export interface UploadReviewDialogProps {
   /** A file the operator started: the page adds it to the results banner. */
   onStarted: (started: StartedUpload) => void;
   onViewScan: (scanId: number) => void;
+  /** Staged files to bring back into the review (the queue's "Review N
+   *  waiting").  A new object each time it is asked for, so the same list can
+   *  be resumed twice; jobs already in the review are not added again. */
+  resume?: { jobs: StagedJobRef[] } | null;
 }
 
 const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
@@ -63,9 +69,13 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
   onSkipInformationalChange,
   onStarted,
   onViewScan,
+  resume,
 }) => {
   const review = useUploadReview({ skipInformational, onStarted });
-  const { rows } = review;
+  const { rows, addStaged } = review;
+  useEffect(() => {
+    if (open && resume && resume.jobs.length > 0) void addStaged(resume.jobs);
+  }, [open, resume, addStaged]);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [batchName, setBatchName] = useState('');
   const { nameBatch } = review;
@@ -193,6 +203,7 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
                       onSourceTool={(v) => review.setSourceTool(row.key, v)}
                       onImport={() => void review.importOne(row)}
                       onImportAgain={() => review.importAgain(row.key)}
+                      onReviewWaitingCopy={() => review.reviewWaitingCopy(row.key)}
                       onRemove={() => void review.remove(row.key)}
                       onViewScan={onViewScan}
                     />
@@ -277,11 +288,12 @@ const ReviewRowView: React.FC<{
   onSourceTool: (value: string) => void;
   onImport: () => void;
   onImportAgain: () => void;
+  onReviewWaitingCopy: () => void;
   onRemove: () => void;
   onViewScan: (scanId: number) => void;
 }> = ({
   row, previewOpen, onTogglePreview, formats, onChoose, onConfirmSuggestion, onRetryDetection,
-  onSourceTool, onImport, onImportAgain, onRemove, onViewScan,
+  onSourceTool, onImport, onImportAgain, onReviewWaitingCopy, onRemove, onViewScan,
 }) => {
   const d = row.detection;
   const primary = d?.candidates[0];
@@ -434,9 +446,18 @@ const ReviewRowView: React.FC<{
                   View scan #{row.duplicate.scanId}
                 </Button>
               )}
-              <Button size="sm" variant="ghost" className="h-7" onClick={onImportAgain} title="Import this file again anyway">
-                Import again
-              </Button>
+              {/* v5.271.0 — the same file already waits for its review: take
+                  that copy over here.  "Import again" would only be refused
+                  by the same guard. */}
+              {row.duplicate.jobStatus === 'staged' && row.duplicate.jobId != null ? (
+                <Button size="sm" variant="outline" className="h-7" onClick={onReviewWaitingCopy}>
+                  Review the waiting copy
+                </Button>
+              ) : (
+                <Button size="sm" variant="ghost" className="h-7" onClick={onImportAgain} title="Import this file again anyway">
+                  Import again
+                </Button>
+              )}
             </div>
           </div>
         )}

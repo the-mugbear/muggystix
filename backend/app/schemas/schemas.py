@@ -897,6 +897,9 @@ class IngestionJobSchema(BaseModel):
     format_override: Optional[str] = None
     final_file_type: Optional[str] = None
     source_tool: Optional[str] = None
+    # v2.385.0 — the upload batch the file arrived in, so a batch row on
+    # /scans can list and review its files still waiting for review.
+    batch_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -323,6 +323,8 @@ def test_an_identical_staged_file_is_a_duplicate(client, db_session, test_projec
     assert detail["job_id"] == first.json()["job_id"]
     # It is not "still processing" — nothing is parsing it.
     assert "format review" in detail["message"]
+    # v2.385.0 — the dialog offers the waiting copy's review on this status.
+    assert detail["job_status"] == "staged"
 
 
 def test_start_rechecks_for_a_duplicate(client, db_session, test_project):

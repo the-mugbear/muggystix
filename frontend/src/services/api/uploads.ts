@@ -30,6 +30,8 @@ export interface IngestionJob {
   scan_id?: number | null;
   parse_error_id?: number | null;
   created_at: string;
+  /** v5.271.0 — the upload batch the file arrived in, if any. */
+  batch_id?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
   // Final import-count summary set at completion (e.g. "6 DNS records").
@@ -287,6 +289,27 @@ export const getIngestionJobsByIds = async (jobIds: number[]): Promise<Ingestion
 export const getRecentIngestionJobs = async (limit = 5): Promise<IngestionJob[]> => {
   const response = await api.get(`${p()}/upload/jobs?limit=${limit}`);
   return response.data;
+};
+
+/**
+ * EVERY staged job the caller may see, newest first (v5.271.0).  The queue
+ * reads the 25 most recent jobs, so a drop of 26 files left the oldest one
+ * out of the queue, its "Review" and its "Discard".  Paged by the server's
+ * 100-row cap; staged jobs expire after a day, so a few pages at most.
+ */
+export const getStagedIngestionJobs = async (): Promise<IngestionJob[]> => {
+  const PAGE = 100;
+  const MAX_PAGES = 20;
+  const jobs: IngestionJob[] = [];
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const response = await api.get(`${p()}/upload/jobs`, {
+      params: { status: 'staged', limit: PAGE, skip: page * PAGE },
+    });
+    const rows = response.data as IngestionJob[];
+    jobs.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return jobs;
 };
 
 // v2.86.2 — dismiss a failed ingestion job so it drops out of the

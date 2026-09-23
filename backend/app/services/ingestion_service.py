@@ -68,6 +68,9 @@ class DuplicateUploadError(Exception):
             "message": str(self),
             "scan_id": self.scan_id,
             "job_id": self.job_id,
+            # v2.385.0 — "staged" lets the upload dialog offer the waiting
+            # copy's format review instead of a dead end.
+            "job_status": self.job_status,
         }
 
 

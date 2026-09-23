@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight, Layers, Loader2 } from 'lucide-react';
 import { getScans } from '../../services/api';
-import type { Scan, ScanBatchSummary } from '../../services/api';
+import type { IngestionJob, Scan, ScanBatchSummary } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { TableCell, TableRow } from '../ui/table';
@@ -17,6 +17,12 @@ interface ScanBatchRowProps {
   onViewScan: (scanId: number) => void;
   /** Columns of the table this row sits in. */
   colSpan: number;
+  /** This batch's files still waiting for their format review (v5.271.0):
+   *  listed when the batch is expanded, which used to say only "No files in
+   *  this batch match the current filters" for a batch of staged files. */
+  stagedJobs?: IngestionJob[];
+  /** Brings staged files back into the upload review. */
+  onReviewStaged?: (jobs: IngestionJob[]) => void;
 }
 
 const formatWhen = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
@@ -32,7 +38,9 @@ const formatWhen = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(
  * a full-width row whose figures carry their own labels, because a batch has
  * no single "ran" time or contribution line to put under those headers.
  */
-export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({ batch: b, filters, onViewScan, colSpan }) => {
+export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
+  batch: b, filters, onViewScan, colSpan, stagedJobs = [], onReviewStaged,
+}) => {
   const [state, setState] = useState<Scan[] | 'loading' | 'error' | null>(null);
 
   const toggle = async () => {
@@ -105,7 +113,24 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({ batch: b, filters, o
                 )}
               </p>
               {processing > 0 && <p className="text-caption text-muted-foreground">{processing} processing</p>}
-              {staged > 0 && <p className="text-caption text-warning">{staged} waiting for review</p>}
+              {staged > 0 && (
+                <p className="text-caption text-warning">
+                  {staged} waiting for review
+                  {onReviewStaged && stagedJobs.length > 0 && (
+                    <>
+                      {' · '}
+                      <button
+                        type="button"
+                        onClick={() => onReviewStaged(stagedJobs)}
+                        className="rounded text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`Review the ${stagedJobs.length} waiting file${stagedJobs.length === 1 ? '' : 's'} of ${b.label}`}
+                      >
+                        Review
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
               {b.failed_files > 0 && <p className="text-caption text-destructive">{b.failed_files} failed</p>}
               {discarded > 0 && <p className="text-caption text-muted-foreground">{discarded} discarded</p>}
               {total === 0 && processing === 0 && b.failed_files === 0 && staged === 0 && discarded === 0 && (
@@ -168,12 +193,31 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({ batch: b, filters, o
               <p className="text-metadata text-destructive">
                 Couldn&apos;t load this batch&apos;s files. Collapse it and try again.
               </p>
-            ) : state.length === 0 ? (
+            ) : state.length === 0 && stagedJobs.length === 0 ? (
               <p className="text-metadata text-muted-foreground">
                 No files in this batch match the current filters.
               </p>
             ) : (
               <ul className="divide-y divide-border">
+                {stagedJobs.map((job) => (
+                  <li key={`staged-${job.id}`} className="flex min-w-0 items-center gap-sm py-xxs text-metadata">
+                    <span className="min-w-0 flex-1 truncate font-mono" title={job.original_filename}>
+                      {job.original_filename}
+                    </span>
+                    <span className="w-60 shrink-0 truncate text-caption text-warning">Waiting for review — not imported</span>
+                    {onReviewStaged && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 shrink-0"
+                        onClick={() => onReviewStaged([job])}
+                        aria-label={`Review format and import ${job.original_filename}`}
+                      >
+                        Review
+                      </Button>
+                    )}
+                  </li>
+                ))}
                 {state.map((s) => (
                   <li key={s.id} className="flex min-w-0 items-center gap-sm py-xxs text-metadata">
                     <button

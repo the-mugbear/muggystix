@@ -28,8 +28,19 @@ describe('duplicate upload', () => {
     expect(duplicateUploadOf(refused)).toEqual({
       scanId: 42,
       jobId: null,
+      jobStatus: null,
       message: refused.response.data.detail.message,
     });
+  });
+
+  it('carries the waiting copy\'s status when the same file is staged', () => {
+    const staged = {
+      response: {
+        status: 409,
+        data: { detail: { code: 'duplicate_scan', message: 'waiting', scan_id: null, job_id: 7, job_status: 'staged' } },
+      },
+    };
+    expect(duplicateUploadOf(staged)).toMatchObject({ jobId: 7, jobStatus: 'staged' });
   });
 
   it('ignores other conflicts and plain errors', () => {

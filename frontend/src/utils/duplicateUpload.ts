@@ -6,6 +6,9 @@
 export interface DuplicateUpload {
   scanId: number | null;
   jobId: number | null;
+  /** The existing job's status; "staged" = that copy waits for its format
+   *  review, which the upload dialog can take over (v5.271.0). */
+  jobStatus: string | null;
   message: string;
 }
 
@@ -13,12 +16,13 @@ export interface DuplicateUpload {
 export function duplicateUploadOf(err: unknown): DuplicateUpload | null {
   const e = err as { response?: { status?: number; data?: { detail?: unknown } } } | null;
   const detail = e?.response?.data?.detail as
-    | { code?: unknown; scan_id?: unknown; job_id?: unknown; message?: unknown }
+    | { code?: unknown; scan_id?: unknown; job_id?: unknown; job_status?: unknown; message?: unknown }
     | undefined;
   if (e?.response?.status !== 409 || !detail || detail.code !== 'duplicate_scan') return null;
   return {
     scanId: typeof detail.scan_id === 'number' ? detail.scan_id : null,
     jobId: typeof detail.job_id === 'number' ? detail.job_id : null,
+    jobStatus: typeof detail.job_status === 'string' ? detail.job_status : null,
     message: typeof detail.message === 'string' ? detail.message : 'This exact file is already imported.',
   };
 }

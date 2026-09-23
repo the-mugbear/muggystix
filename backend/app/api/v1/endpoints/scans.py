@@ -935,6 +935,20 @@ class ScanInventoryMarker(BaseModel):
     latest_id: Optional[int] = None
 
 
+def _batch_holds_a_file():
+    """A batch with at least one file: a scan, or a job in any state.
+
+    v2.385.0 — the Scans page creates the batch before its files upload, so
+    a drop the server refused entirely (every file a duplicate) left an empty
+    batch reading "N files · nothing imported" with no reason.  Such a batch
+    has nothing to show or expand, so the history and the batch list skip it.
+    """
+    return or_(
+        exists().where(models.Scan.batch_id == models.ScanBatch.id),
+        exists().where(models.IngestionJob.batch_id == models.ScanBatch.id),
+    )
+
+
 @router.post(
     "/batches",
     response_model=ScanBatchRef,
@@ -1044,7 +1058,7 @@ def get_import_history(
 
     batches = (
         db.query(models.ScanBatch.id, models.ScanBatch.created_at)
-        .filter(models.ScanBatch.project_id == project.id)
+        .filter(models.ScanBatch.project_id == project.id, _batch_holds_a_file())
         .order_by(models.ScanBatch.created_at.desc(), models.ScanBatch.id.desc())
         .limit(500)
         .all()
@@ -1147,6 +1161,8 @@ def list_scan_batches(
     batch_query = db.query(models.ScanBatch).filter(models.ScanBatch.project_id == project.id)
     if wanted_ids is not None:
         batch_query = batch_query.filter(models.ScanBatch.id.in_(wanted_ids))
+    else:
+        batch_query = batch_query.filter(_batch_holds_a_file())
     all_batches = (
         batch_query
         .order_by(models.ScanBatch.created_at.desc(), models.ScanBatch.id.desc())

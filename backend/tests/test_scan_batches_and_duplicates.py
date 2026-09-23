@@ -207,6 +207,29 @@ def test_batch_with_no_imported_file_yet_is_still_listed(client, db_session, tes
     assert client.get(f"/api/v1/projects/{test_project.id}/scans/batches?tool=nmap").json() == []
 
 
+def test_a_batch_every_file_of_which_was_refused_is_not_listed(client, db_session, test_project):
+    """v2.385.0 — the page creates the batch before its files upload; when
+    every file came back a duplicate, an empty "N files · nothing imported"
+    row was left in the history with no reason."""
+    empty = models.ScanBatch(project_id=test_project.id, label="26 files · refused")
+    kept = models.ScanBatch(project_id=test_project.id, label="one staged")
+    db_session.add_all([empty, kept])
+    db_session.commit()
+    db_session.add(models.IngestionJob(
+        project_id=test_project.id, filename="f.xml", original_filename="f.xml",
+        storage_path="/x", status="staged", batch_id=kept.id,
+    ))
+    db_session.commit()
+
+    base = f"/api/v1/projects/{test_project.id}/scans"
+    assert [r["id"] for r in client.get(f"{base}/batches").json()] == [kept.id]
+    history = client.get(f"{base}/history").json()
+    assert [(e["kind"], e["id"]) for e in history["items"]] == [("batch", kept.id)]
+    assert history["batch_total"] == 1
+    # Asked for by id it is still answered: the caller named it.
+    assert [r["id"] for r in client.get(f"{base}/batches", params={"ids": str(empty.id)}).json()] == [empty.id]
+
+
 def _history_fixture(db, project):
     """Newest first: single s3 (t-1h) · batch B (newest file t-2h) · single s2
     (t-3h) · batch A (t-4h) · single s1 (t-5h) · batch Q (no file yet, t-6h)."""

@@ -104,3 +104,21 @@ def test_the_two_ids_are_not_interchangeable(
         )
     else:
         assert wrong.status_code == 404
+
+
+def test_a_binary_upload_failure_is_recorded(db_session, test_project):
+    """v2.385.0 — a zip's bytes hold NUL, which survived the UTF-8 preview
+    and which Postgres refuses in text: recording the failure raised, so the
+    job read "Processing failed unexpectedly" instead of its real reason."""
+    from app.services.parse_error_service import log_parse_error
+
+    zipped = b"PK\x03\x04\x14\x00\x00\x00\x08\x00Requests.csv" + b"\x00" * 40
+    error = log_parse_error(
+        db_session, filename="eyewitness.zip", file_content=zipped,
+        error=ValueError("EyeWitness zip bundle contained no .json report"),
+        file_type="eyewitness_zip", project_id=test_project.id,
+    )
+    assert error.id is not None
+    assert error.error_message == "EyeWitness zip bundle contained no .json report"
+    assert "\x00" not in error.file_preview
+    assert error.file_preview.startswith("Binary data: 504b0304")

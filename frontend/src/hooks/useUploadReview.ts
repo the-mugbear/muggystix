@@ -41,7 +41,9 @@ export type ReviewPhase =
 
 export interface ReviewRow {
   key: string;
-  file: File;
+  /** The dropped file.  Absent on a row resumed from the queue: that file is
+   *  already staged on the server, and only its job is known. */
+  file?: File;
   filename: string;
   size: number;
   phase: ReviewPhase;
@@ -85,6 +87,14 @@ const DEFAULT_DEPS: UploadReviewDeps = {
   uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats,
   renameScanBatch,
 };
+
+/** A staged job to resume in the review (v5.271.0): what the queue knows. */
+export interface StagedJobRef {
+  id: number;
+  original_filename: string;
+  file_size?: number | null;
+  batch_id?: number | null;
+}
 
 /** The upload batch the latest multi-file drop formed. */
 export interface ReviewBatch {
@@ -130,6 +140,9 @@ export const isImportable = (row: ReviewRow): boolean =>
 export function useUploadReview({ skipInformational, onStarted, deps }: UseUploadReviewOptions) {
   const api = useMemo<UploadReviewDeps>(() => ({ ...DEFAULT_DEPS, ...(deps ?? {}) }), [deps]);
   const [rows, setRows] = useState<ReviewRow[]>([]);
+  // The rows as last rendered, for a resume that must not add a job twice.
+  const rowsRef = useRef<ReviewRow[]>(rows);
+  rowsRef.current = rows;
   const startedAtRef = useRef<number>(Date.now());
   // The batch is created with a generated label the moment files are dropped
   // (its id has to travel with each upload), so naming it is a rename.
@@ -183,8 +196,10 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
     [api, patch, ensureFormats],
   );
 
+  /** Stages a dropped file; true when the server kept it. */
   const stageOne = useCallback(
-    async (row: ReviewRow, options: UploadOptions) => {
+    async (row: ReviewRow, options: UploadOptions): Promise<boolean> => {
+      if (!row.file) return false;
       try {
         const res = await api.uploadFile(
           row.file,
@@ -193,6 +208,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         );
         patch(row.key, { percent: 100, jobId: res.job_id });
         await detectOne(row.key, res.job_id);
+        return true;
       } catch (err) {
         const duplicate = duplicateUploadOf(err);
         patch(row.key, {
@@ -200,6 +216,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
           duplicate: duplicate ?? undefined,
           error: duplicate ? undefined : formatApiError(err, 'Upload failed'),
         });
+        return false;
       }
     },
     [api, patch, skipInformational, detectOne],
@@ -236,9 +253,59 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       if (batchId != null) setRows((prev) => prev.map((r) => (fresh.some((f) => f.key === r.key) ? { ...r, batchId } : r)));
       // Bounded: every file at once was 200 simultaneous uploads for a
       // 200-file drop. Rows wait at "Uploading 0%" until a slot frees.
-      await runLimited(fresh, STAGE_CONCURRENCY, (row) => stageOne({ ...row, batchId }, { batchId }));
+      const staged = await runLimited(fresh, STAGE_CONCURRENCY, (row) => stageOne({ ...row, batchId }, { batchId }));
+      // Every file refused (all duplicates): the batch holds nothing, so
+      // there is nothing to name.  The history skips an empty batch too.
+      if (batchId != null && !staged.some((r) => r.status === 'fulfilled' && r.value)) {
+        setBatch((current) => (current?.id === batchId ? null : current));
+      }
     },
     [api, stageOne],
+  );
+
+  // v5.271.0 — files already staged on the server (closed review, a refused
+  // re-drop) come back into the review: detection is fetched again, and the
+  // row is imported or discarded like a freshly dropped one.
+  const addStaged = useCallback(
+    async (jobs: StagedJobRef[]) => {
+      const known = new Set(rowsRef.current.map((r) => r.jobId).filter((id): id is number => id != null));
+      const fresh: ReviewRow[] = jobs
+        .filter((job) => !known.has(job.id))
+        .map((job) => ({
+          key: `staged-${job.id}`,
+          filename: job.original_filename,
+          size: job.file_size ?? 0,
+          phase: 'detecting',
+          percent: 100,
+          jobId: job.id,
+          batchId: job.batch_id ?? undefined,
+          chosen: null,
+          sourceTool: '',
+        }));
+      if (fresh.length === 0) return;
+      startedAtRef.current = Date.now();
+      setRows((prev) => [...prev, ...fresh]);
+      await runLimited(fresh, STAGE_CONCURRENCY, (row) => detectOne(row.key, row.jobId!));
+    },
+    [detectOne],
+  );
+
+  // A dropped file refused because the same file waits staged: review that
+  // copy here instead of leaving a dead end (or a second upload).
+  const reviewWaitingCopy = useCallback(
+    (key: string) => {
+      const row = rows.find((r) => r.key === key);
+      const jobId = row?.duplicate?.jobStatus === 'staged' ? row.duplicate.jobId : null;
+      if (!row || jobId == null) return;
+      if (rows.some((r) => r.key !== key && r.jobId === jobId)) {
+        // Already a row of this review (dropped twice): keep that one.
+        setRows((prev) => prev.filter((r) => r.key !== key));
+        return;
+      }
+      patch(key, { jobId, duplicate: undefined, batchId: undefined, percent: 100 });
+      void detectOne(key, jobId);
+    },
+    [rows, patch, detectOne],
   );
 
   const nameBatch = useCallback(
@@ -261,7 +328,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
   const importAgain = useCallback(
     (key: string) => {
       const row = rows.find((r) => r.key === key);
-      if (!row) return;
+      if (!row?.file) return;
       patch(key, { phase: 'uploading', percent: 0, duplicate: undefined, error: undefined });
       void stageOne(row, { batchId: row.batchId, allowDuplicate: true });
     },
@@ -354,6 +421,8 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
   return {
     rows,
     addFiles,
+    addStaged,
+    reviewWaitingCopy,
     importAgain,
     importOne,
     importReady,

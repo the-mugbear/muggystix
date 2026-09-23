@@ -57,6 +57,7 @@ const renderPage = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   api.getRecentIngestionJobs.mockResolvedValue([]);
+  api.getStagedIngestionJobs.mockResolvedValue([]);
   api.getScansSummary.mockResolvedValue({ total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 } });
   api.getScanInventoryMarker.mockResolvedValue({ count: 3, latest_id: 9 });
   api.getImportHistory.mockResolvedValue({
@@ -132,6 +133,37 @@ describe('Scans — layout', () => {
     const link = await screen.findByRole('link', { name: /1 failed import needs attention/ });
     expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
     expect(screen.getByTestId('ingestion-queue')).toHaveTextContent('1 failed');
+  });
+
+  // v5.271.0 — a closed review of 26 files: the queue read the 25 most recent
+  // jobs, so the oldest file had no Review and no Discard, and the only
+  // visible action on the strip was "Discard 25 staged".
+  it('reviews and discards every staged file, not just those among the recent jobs', async () => {
+    const staged = (id: number) => ({
+      id, status: 'staged', original_filename: `file-${id}.txt`, file_size: 300, batch_id: 4,
+      created_at: `2026-09-19T10:0${id}:00Z`,
+    });
+    api.getRecentIngestionJobs.mockResolvedValue([staged(3), staged(2)]);
+    api.getStagedIngestionJobs.mockResolvedValue([staged(3), staged(2), staged(1)]);
+    api.getJobDetection.mockImplementation(async (jobId: number) => ({
+      job_id: jobId, filename: `file-${jobId}.txt`,
+      candidates: [{ file_type: 'naabu_output', label: 'Naabu host:port text', basis: 'structure', rank: 0 }],
+      primary: 'naabu_output', needs_choice: false, reason: null,
+      preview: { raw: '', sample: [] }, formats: [],
+    }));
+    renderPage();
+
+    const queue = await screen.findByTestId('ingestion-queue');
+    expect(queue).toHaveTextContent('3 waiting for review');
+    expect(within(queue).getByRole('button', { name: 'Discard 3 staged' })).toBeInTheDocument();
+
+    fireEvent.click(within(queue).getByRole('button', { name: 'Review 3 waiting' }));
+    const dialog = await screen.findByRole('dialog');
+    // The oldest file — the one outside the recent list — is in the review.
+    expect(await within(dialog).findByText('file-1.txt')).toBeInTheDocument();
+    await waitFor(() => expect(api.getJobDetection).toHaveBeenCalledTimes(3));
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(await within(dialog).findByRole('button', { name: 'Import 3 ready files' })).toBeEnabled();
   });
 
   it('has no queue box when nothing is queued, waiting or failed', async () => {

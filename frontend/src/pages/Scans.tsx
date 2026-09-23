@@ -28,6 +28,7 @@ import {
   getScanDeletionImpact,
   getIngestionJobsByIds,
   getRecentIngestionJobs,
+  getStagedIngestionJobs,
   dismissIngestionJob,
   cancelIngestionJob,
   discardIngestionJob,
@@ -72,7 +73,6 @@ import { formatRelativeTime } from '../utils/relativeTime';
 import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
-import FormatRetryDialog from '../components/scans/FormatRetryDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
 import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
 import { ScanWhenCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
@@ -95,6 +95,15 @@ import {
 } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { cn } from '../utils/cn';
+
+/** A queue row's status, in words beside its icon. */
+const JOB_STATUS_LABEL: Record<string, string> = {
+  staged: 'Needs review',
+  queued: 'Queued',
+  processing: 'Processing',
+  failed: 'Failed',
+  completed: 'Completed',
+};
 
 export default function Scans() {
   const navigate = useNavigate();
@@ -149,10 +158,15 @@ export default function Scans() {
   const resultRequestedRef = useRef<Set<string>>(new Set());
 
   const [activeJobIds, setActiveJobIds] = useState<number[]>([]);
-  // v5.232.0 — a staged job picked from the queue for "Review and import".
-  const [stagedReviewJob, setStagedReviewJob] = useState<IngestionJob | null>(null);
+  // v5.271.0 — staged files handed back to the upload review ("Review N
+  // waiting", a queue row's Review, a batch's Review).  It replaced the
+  // one-file FormatRetryDialog, which made a 26-file drop 26 dialogs.
+  const [reviewResume, setReviewResume] = useState<{ jobs: IngestionJob[] } | null>(null);
   const [activeJobs, setActiveJobs] = useState<Record<number, IngestionJob>>({});
   const [recentJobs, setRecentJobs] = useState<IngestionJob[]>([]);
+  // v5.271.0 — every staged job, not just those among the 25 recent: the
+  // 26th file of a drop was missing from the queue, its Review and its Discard.
+  const [stagedJobs, setStagedJobs] = useState<IngestionJob[]>([]);
   const [recentJobsFetched, setRecentJobsFetched] = useState<Date | null>(null);
   const [recentJobsLoading, setRecentJobsLoading] = useState(false);
   // v5.270.0 — the queue could not be read: said, never shown as "nothing failed".
@@ -274,8 +288,17 @@ export default function Scans() {
   const fetchRecentJobs = useCallback(async () => {
     setRecentJobsLoading(true);
     try {
-      const jobs = await getRecentIngestionJobs(25);
+      const [jobs, staged] = await Promise.all([
+        getRecentIngestionJobs(25),
+        // The staged list is a completion of the recent one; if it cannot
+        // be read, the queue still shows the staged jobs among the recent.
+        getStagedIngestionJobs().catch((err) => {
+          console.error('Error fetching staged ingestion jobs:', err);
+          return null;
+        }),
+      ]);
       setRecentJobs(jobs);
+      setStagedJobs(staged ?? jobs.filter((j) => j.status === 'staged'));
       setRecentJobsFetched(new Date());
       setRecentJobsError(false);
     } catch (err) {
@@ -698,10 +721,26 @@ export default function Scans() {
   // and made the queue look perpetually busy.  Keep `queued`,
   // `processing`, `failed` so the queue is useful for its actual
   // intent: "what's still in flight or needs my attention?".
-  const pendingJobs = useMemo(
-    () => recentJobs.filter((j) => j.status !== 'completed'),
-    [recentJobs],
-  );
+  // v5.271.0 — plus every staged job, which the 25 recent may not reach.
+  const pendingJobs = useMemo(() => {
+    const recent = recentJobs.filter((j) => j.status !== 'completed' && j.status !== 'staged');
+    return [...recent, ...stagedJobs].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
+    );
+  }, [recentJobs, stagedJobs]);
+  const stagedByBatch = useMemo(() => {
+    const byBatch = new Map<number, IngestionJob[]>();
+    for (const job of stagedJobs) {
+      if (job.batch_id == null) continue;
+      byBatch.set(job.batch_id, [...(byBatch.get(job.batch_id) ?? []), job]);
+    }
+    return byBatch;
+  }, [stagedJobs]);
+  const openReview = useCallback((jobs: IngestionJob[]) => {
+    if (jobs.length === 0) return;
+    setReviewResume({ jobs });
+    setUploadDialogOpen(true);
+  }, []);
   // v5.239.0 — the queue is a compact strip: its counts are always shown and
   // the table opens on request.  Whether it is open is a per-browser
   // convenience; the page works the same if storage is unavailable.
@@ -1076,25 +1115,34 @@ export default function Scans() {
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-xs">
+                {/* v5.271.0 — files left waiting (a closed review dialog, a
+                    failed inspection) go back into the review, all at once.
+                    Before, the only visible action here was Discard; the
+                    review was one file per dialog behind "Show jobs". */}
+                {stagedJobs.length > 0 && (
+                  <Button size="sm" onClick={() => openReview(stagedJobs)}>
+                    Review {stagedJobs.length} waiting
+                  </Button>
+                )}
                 {/* v5.232.0 — staged files nobody will start (a closed review
                     dialog, a failed inspection) can be cleared in one go. */}
-                {recentJobs.some((j) => j.status === 'staged') && (
+                {stagedJobs.length > 0 && (
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={async () => {
                       // The ids are captured BEFORE the confirmation and are
                       // exactly what is sent: the endpoint used to discard
-                      // every staged job the caller could see, which is more
-                      // than this list of recent jobs shows (and, for an
-                      // admin, other people's files).
-                      const ids = recentJobs.filter((j) => j.status === 'staged').map((j) => j.id);
+                      // every staged job the caller could see, whether or
+                      // not this page had listed it (for an admin, other
+                      // people's files too).
+                      const ids = stagedJobs.map((j) => j.id);
                       const n = ids.length;
                       const ok = await confirm({
                         title: 'Discard staged uploads',
                         body:
                           `Remove the ${n} staged file${n === 1 ? '' : 's'} listed in this queue? Nothing was imported from them. `
-                          + 'They stay listed in Ingestion Results as discarded. Staged files not shown here are left alone.',
+                          + 'They stay listed in Ingestion Results as discarded.',
                         resourceName: `${n} staged upload${n === 1 ? '' : 's'}`,
                         severity: 'warning',
                         confirmLabel: `Discard ${n}`,
@@ -1113,7 +1161,7 @@ export default function Scans() {
                       }
                     }}
                   >
-                    Discard {recentJobs.filter((j) => j.status === 'staged').length} staged
+                    Discard {stagedJobs.length} staged
                   </Button>
                 )}
                 <LastUpdated
@@ -1127,7 +1175,10 @@ export default function Scans() {
             </div>
             {queueOpen && (
             <div id="ingestion-queue-table" className="overflow-x-auto">
-              <Table>
+              {/* v5.271.0 — fixed layout with an Actions column wide enough
+                  for its buttons: at w-24 a staged row's "Review and import"
+                  was cut to "Review and ir". */}
+              <Table className="min-w-[60rem] table-fixed">
                 <TableHeader>
                   <TableRow>
                     {/* w-12 (48px) — the expand chevron is a 40px icon
@@ -1135,14 +1186,14 @@ export default function Scans() {
                         old w-10 (40px) column clipped it and let it
                         bleed into the Status column. */}
                     <TableHead className="w-12" />
-                    <TableHead className="w-32">Status</TableHead>
+                    <TableHead className="w-36">Status</TableHead>
                     <TableHead className="w-1/5">File</TableHead>
                     <TableHead className="w-24">Tool</TableHead>
                     <TableHead className="w-20 text-right">Size</TableHead>
                     <TableHead>Message</TableHead>
-                    <TableHead className="w-36">Submitted</TableHead>
+                    <TableHead className="w-32">Submitted</TableHead>
                     <TableHead className="w-24">Duration</TableHead>
-                    <TableHead className="w-24 text-right">Actions</TableHead>
+                    <TableHead className="w-44 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1162,18 +1213,23 @@ export default function Scans() {
                       return '-';
                     })();
 
+                    // v5.271.0 — under 1 KB in bytes: "0 KB" read as an empty file.
                     const fileSize = job.file_size
                       ? job.file_size > 1048576
                         ? `${(job.file_size / 1048576).toFixed(1)} MB`
-                        : `${(job.file_size / 1024).toFixed(0)} KB`
+                        : job.file_size < 1024
+                          ? `${job.file_size} B`
+                          : `${(job.file_size / 1024).toFixed(0)} KB`
                       : '-';
 
                     const displayMessage = isFailure
                       ? job.error_message || job.message || 'Unknown error'
-                      // Prefer the import-count summary ("6 DNS records") over
-                      // the generic "<tool> processed successfully" so the row
-                      // actually shows how much was ingested.
-                      : job.progress || job.message || '-';
+                      : job.status === 'staged'
+                        ? 'Stored, not imported. Review its format to import it.'
+                        // Prefer the import-count summary ("6 DNS records") over
+                        // the generic "<tool> processed successfully" so the row
+                        // actually shows how much was ingested.
+                        : job.progress || job.message || '-';
 
                     // Dead-letter / liveness signals (backend already returns
                     // these). A job that bounced before settling carries a
@@ -1224,16 +1280,12 @@ export default function Scans() {
                             )}
                           </TableCell>
                           <TableCell>
-                            {/* Status is encoded by icon + colour alone —
-                                the previous "icon + Badge with the status
-                                word" rendered the same dimension twice.
-                                The sr-only span keeps the value reachable
-                                for screen readers without the visual
-                                redundancy. */}
-                            <span
-                              className="inline-flex items-center"
-                              aria-label={`Status: ${job.status}`}
-                            >
+                            {/* v5.271.0 — icon plus the word.  Icon and colour
+                                alone left a staged row as a grey circle
+                                nobody could read; the word is plain text,
+                                not the badge that once repeated the icon. */}
+                            <span className="inline-flex min-w-0 items-center gap-xxs">
+
                               {job.status === 'completed' && (
                                 <CheckCircle2 className="size-4 text-success" aria-hidden />
                               )}
@@ -1251,7 +1303,9 @@ export default function Scans() {
                               {job.status === 'staged' && (
                                 <PauseCircle className="size-4 text-muted-foreground" aria-hidden />
                               )}
-                              <span className="sr-only">{job.status}</span>
+                              <span className="truncate text-caption">
+                                {JOB_STATUS_LABEL[job.status] ?? job.status}
+                              </span>
                             </span>
                             {isStalled && (
                               <Badge
@@ -1357,14 +1411,14 @@ export default function Scans() {
                                 action at all here: import it after a format
                                 review, or discard it. */}
                             {job.status === 'staged' && (
-                              <>
+                              <div className="flex flex-wrap justify-end gap-xxs">
                                 <Button
                                   size="sm"
-                                  variant="ghost"
-                                  onClick={() => setStagedReviewJob(job)}
+                                  variant="outline"
+                                  onClick={() => openReview([job])}
                                   aria-label={`Review format and import ${job.original_filename}`}
                                 >
-                                  Review and import
+                                  Review
                                 </Button>
                                 <Button
                                   size="sm"
@@ -1383,7 +1437,7 @@ export default function Scans() {
                                 >
                                   Discard
                                 </Button>
-                              </>
+                              </div>
                             )}
                             {(job.status === 'queued' || job.status === 'processing') && (
                               <Button
@@ -1697,6 +1751,8 @@ export default function Scans() {
                         <ScanBatchRow
                           key={row.key}
                           batch={row.batch}
+                          stagedJobs={stagedByBatch.get(row.batch.id)}
+                          onReviewStaged={openReview}
                           filters={{
                             search: debouncedSearchText.trim() || undefined,
                             tool: toolFilter || undefined,
@@ -1875,34 +1931,20 @@ export default function Scans() {
 
       {/* Upload dialog — v5.229.0: choose → review formats → import → results
           (staged-import plan, phase C). The dialog stages and inspects each
-          file; a started file is handed to the banner above by job id. */}
-      {stagedReviewJob && (
-        <FormatRetryDialog
-          open
-          onOpenChange={(v) => { if (!v) setStagedReviewJob(null); }}
-          jobId={stagedReviewJob.id}
-          filename={stagedReviewJob.original_filename}
-          mode="start"
-          onDone={() => {
-            // Hand the started job to the results banner, like the dialog does.
-            const started = stagedReviewJob;
-            setUploadProgress((prev) => ({
-              ...prev,
-              [`queue-${started.id}`]: {
-                filename: started.original_filename,
-                status: 'received',
-                startedAt: Date.now(),
-                jobId: started.id,
-              },
-            }));
-            setActiveJobIds((prev) => (prev.includes(started.id) ? prev : [...prev, started.id]));
-            void fetchRecentJobs();
-          }}
-        />
-      )}
+          file; a started file is handed to the banner above by job id.
+          v5.271.0 — also where staged files come back to (`resume`). */}
       <UploadReviewDialog
         open={uploadDialogOpen}
-        onOpenChange={setUploadDialogOpen}
+        onOpenChange={(next) => {
+          setUploadDialogOpen(next);
+          if (!next) {
+            // Cleared on close: left set, the next "Upload scans" would bring
+            // back files discarded in this review.
+            setReviewResume(null);
+            void fetchRecentJobs();
+          }
+        }}
+        resume={reviewResume}
         projectName={currentProject?.name}
         skipInformational={skipInformational}
         savingSkipInformational={savingSkipInformational}
