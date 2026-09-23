@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Flag, ImagePlus, Loader2, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
 import type { Annotation, NoteStatus } from '../../services/api';
-import MessageBubble from '../MessageBubble';
+import MessageBubble, { wasEdited } from '../MessageBubble';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import {
@@ -232,8 +232,11 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
         author={authorLabel}
         actorType={note.actor_type}
         createdAt={note.created_at}
-        edited={!!note.updated_at}
-        replyingTo={quoted ? { author: quoted.author_name || 'Unknown analyst', excerpt: quoted.body ?? '' } : null}
+        edited={wasEdited(note)}
+        replyingTo={quoted ? {
+          author: currentUserId != null && quoted.author_id === currentUserId ? 'you' : quoted.author_name || 'Unknown analyst',
+          excerpt: quoted.body ?? '',
+        } : null}
         meta={meta}
         metaControls={statusControl}
         actions={actions}

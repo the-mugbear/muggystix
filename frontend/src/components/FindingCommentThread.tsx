@@ -6,7 +6,7 @@
  * screenshots paste or upload straight onto a comment and ride into the report.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
+import { ImagePlus, Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 
 import {
   Annotation,
@@ -17,7 +17,7 @@ import {
   deleteFindingNote,
   uploadFindingNoteAttachment,
 } from '../services/api';
-import NoteAttachments from './host-inspector/NoteAttachments';
+import NoteAttachments, { type NoteAttachmentsHandle } from './host-inspector/NoteAttachments';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,7 +25,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
-import MessageBubble from './MessageBubble';
+import MessageBubble, { wasEdited } from './MessageBubble';
 
 interface FindingCommentThreadProps {
   findingId: number;
@@ -47,12 +47,6 @@ interface PendingFile {
   /** The saved comment this file belongs to once the comment itself posted. */
   noteId?: number;
 }
-
-/** Creation stamps the thread root in a second write, so `updated_at` is set
- *  on every comment; only a later change counts as an edit. */
-const wasEdited = (note: Annotation): boolean =>
-  !!note.updated_at &&
-  new Date(note.updated_at).getTime() - new Date(note.created_at).getTime() > 5000;
 
 const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking }) => {
   const toast = useToast();
@@ -218,6 +212,11 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     if (n.parent_id != null) replyCount.set(n.parent_id, (replyCount.get(n.parent_id) ?? 0) + 1);
   });
 
+  // "Attach image" lives in each message's action row (v5.268.1), not inside
+  // the bubble: a button in every bubble read as part of the message.
+  const attachRefs = useRef(new Map<number, NoteAttachmentsHandle>());
+  const [attachBusyId, setAttachBusyId] = useState<number | null>(null);
+
   const renderMessage = (note: Annotation): React.ReactNode => {
     const authored = user?.id != null && note.author_id === user.id;
     const isMine = canManage && authored;
@@ -233,7 +232,11 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
         createdAt={note.created_at}
         edited={wasEdited(note)}
         editedAt={note.updated_at}
-        replyingTo={parent ? { author: safeFallback(parent.author_name, 'a comment'), excerpt: parent.body ?? '' } : null}
+        replyingTo={parent ? {
+          // The viewer is "You" on their own bubble, so a quote of it says "you" too.
+          author: user?.id != null && parent.author_id === user.id ? 'you' : safeFallback(parent.author_name, 'a comment'),
+          excerpt: parent.body ?? '',
+        } : null}
         actions={canManage && !isEditing ? (
           <>
             <Button
@@ -243,6 +246,17 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
               onClick={() => startReply(note)}
             >
               <CornerDownRight className="size-3" aria-hidden /> Reply
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-caption text-muted-foreground"
+              onClick={() => attachRefs.current.get(note.id)?.openPicker()}
+              disabled={attachBusyId === note.id}
+            >
+              {attachBusyId === note.id
+                ? <Loader2 className="size-3 animate-spin" aria-hidden />
+                : <ImagePlus className="size-3" aria-hidden />} Attach image
             </Button>
             {isMine && (
               <>
@@ -294,6 +308,9 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           note.body && <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>
         )}
         <NoteAttachments
+          ref={(h) => { if (h) attachRefs.current.set(note.id, h); else attachRefs.current.delete(note.id); }}
+          externalTrigger
+          onBusyChange={(busy) => setAttachBusyId(busy ? note.id : null)}
           noteId={note.id}
           attachments={note.attachments ?? []}
           canManage={canManage}

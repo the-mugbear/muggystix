@@ -637,6 +637,9 @@ def message(c: Ctx, author: User, body: str, *, created: datetime, parent=None, 
     c.db.add(a)
     c.db.flush()
     a.thread_root_id = (parent.thread_root_id or parent.id) if parent else a.id
+    # Stamping the root is an UPDATE, whose onupdate would date the message
+    # "now" — hours after it was written, which reads as "edited".
+    a.updated_at = created
     c.db.flush()
     return a
 

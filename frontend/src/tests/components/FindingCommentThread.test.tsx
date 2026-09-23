@@ -201,7 +201,7 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
 describe('FindingCommentThread — conversation layout', () => {
   it('sides, order and reply quotes', async () => {
     mocked.getFindingNotes.mockResolvedValue([
-      { ...note(1, 'Found it.'), created_at: '2026-08-01T00:00:00Z' },
+      { ...note(1, 'Found it.'), created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:01Z' },
       { ...note(2, 'Confirmed on my side.'), author_id: 2, author_name: 'ben', parent_id: 1, created_at: '2026-08-01T01:00:00Z' },
       { ...note(3, 'Thanks.'), created_at: '2026-08-01T02:00:00Z' },
     ]);
@@ -212,7 +212,10 @@ describe('FindingCommentThread — conversation layout', () => {
     const bubbles = container.querySelectorAll('[data-side]');
     expect(bubbles[0]).toHaveClass('items-end');
     expect(bubbles[1]).toHaveClass('items-start');
-    expect(screen.getByText(/Replying to/)).toHaveTextContent('Replying to ana: Found it.');
+    // The quoted comment is the viewer's own, so the quote says "you" (5.268.1).
+    expect(screen.getByText(/Replying to/)).toHaveTextContent('Replying to you: Found it.');
+    // Not "edited": the thread root is stamped in a second write at creation.
+    expect(screen.queryByText(/edited/)).not.toBeInTheDocument();
     // The viewer's own messages read "You"; no Card wraps the thread.
     expect(screen.getAllByText('You')).toHaveLength(2);
     expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();

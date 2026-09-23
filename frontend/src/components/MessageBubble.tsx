@@ -38,6 +38,15 @@ export interface MessageBubbleProps {
   children: React.ReactNode;
 }
 
+/**
+ * A message was edited when it changed well after it was written.  Creating a
+ * note stamps its thread root in a second write, and a status change touches
+ * the row too, so "has an updated_at" is not "was edited" (every message read
+ * "· edited").  Five seconds absorbs the create path.
+ */
+export const wasEdited = (m: { created_at: string; updated_at?: string | null }): boolean =>
+  !!m.updated_at && new Date(m.updated_at).getTime() - new Date(m.created_at).getTime() > 5000;
+
 const excerptOf = (text: string, max = 90) => {
   const one = text.replace(/\s+/g, ' ').trim();
   return one.length > max ? `${one.slice(0, max)}…` : one;
@@ -68,8 +77,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       className={cn(
         'min-w-0 max-w-[85%] rounded-2xl px-sm py-xs text-left',
         mine
-          ? 'rounded-tr-sm bg-primary/10 text-foreground'
-          : 'rounded-tl-sm bg-muted text-foreground',
+          // Two tints that stay visible in every theme: `bg-muted` is the
+          // hover token, which is invisible on the dark palettes.
+          ? 'rounded-tr-sm bg-primary/15 text-foreground'
+          : 'rounded-tl-sm bg-foreground/[0.07] text-foreground',
       )}
     >
       {replyingTo && (
