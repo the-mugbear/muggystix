@@ -1,23 +1,26 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, FolderOpen, RefreshCw, SquareArrowOutUpRight, Users } from 'lucide-react';
+import { FolderOpen, RefreshCw, Search, Users } from 'lucide-react';
 import ProjectMembersSheet from '../components/ProjectMembersSheet';
 import PortfolioTeam from '../components/PortfolioTeam';
 import {
   getPortfolioDashboard,
   PortfolioDashboardResponse,
-  PortfolioSummary,
   ProjectCard,
 } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
-import { CardListSkeleton } from '../components/PageSkeleton';
 import { formatStatusLabel } from '../utils/statusMeta';
+import { formatRelativeTime } from '../utils/relativeTime';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
-import SeverityBar from '../components/ui/SeverityBar';
+import { InfoTip } from '../components/ui/info-tip';
+import { Input } from '../components/ui/input';
+import PostureLead from '../components/posture/PostureLead';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import PostureEmpty from '../components/posture/PostureEmpty';
 import {
   Select,
   SelectContent,
@@ -25,326 +28,191 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '../components/ui/table';
 import { cn } from '../utils/cn';
 import { formatApiError } from '../utils/apiErrors';
 
-// Worst-first severity rank for the default ordering — the most damning
-// projects float to the top without any filtering (focus, not a to-do list).
+/**
+ * Portfolio (v5.275.0) — the members' cross-project view, on the Posture
+ * layout (UI_STYLE_GUIDE §7) like Oversight: a filter row, a lead sentence,
+ * four measures, and the projects as a table, worst first.
+ *
+ * It was a card of eight bordered number tiles over a grid of ~450 px project
+ * tiles.  Most tiles repeated each other ("6 need attention" = every project;
+ * "3 with critical" = the health bar above), the health reason sat on hover
+ * only, and each tile stated review three ways that did not add up ("64 of
+ * 416 tested · 387 unreviewed" beside "7%").  Review is now one vocabulary:
+ * reviewed · in review · not started, of all hosts.
+ */
+
+// Worst-first rank for the default ordering.
 const HEALTH_RANK: Record<string, number> = { critical: 0, warning: 1, stale: 2, healthy: 3, unknown: 4 };
 
-type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'muted' | 'secondary' | 'outline';
-
-// Health is a backend-derived rollup (critical findings > exposure/low-review
-// > quiet > healthy). Surfacing it gives the "is this project OK at a
-// glance?" answer the per-column numbers don't.
-// `stale` is the API's code for QUIET (5.255.1): a project still marked active
-// with no import for a fortnight. It is a question for the manager — finished?
-// mark it completed — and never a verdict on the evidence; a completed or
-// archived project kept for posterity is never flagged.
-const HEALTH_META: Record<string, { tone: Tone; label: string }> = {
-  critical: { tone: 'destructive', label: 'Critical' },
-  warning: { tone: 'warning', label: 'Warning' },
-  stale: { tone: 'muted', label: 'Quiet' },
-  healthy: { tone: 'success', label: 'Healthy' },
-  // Fail NEUTRAL, not reassuring: a null/malformed/unrecognized health value
-  // must NOT render as green "Healthy" on a security dashboard.
-  unknown: { tone: 'muted', label: 'Health unavailable' },
+// v5.275.0 — the label follows what testing FOUND (v2.389.0 dropped review
+// coverage from it): critical, high, or neither.  `stale` is the API's code
+// for QUIET — still marked active, nothing imported for a fortnight: a
+// question for the manager (finished? mark it completed), never a verdict.
+const HEALTH_LABEL: Record<string, string> = {
+  critical: 'Critical', warning: 'High', stale: 'Quiet', healthy: 'No critical or high', unknown: 'Unavailable',
+};
+const HEALTH_TEXT: Record<string, string> = {
+  critical: 'text-destructive', warning: 'text-warning', stale: 'text-muted-foreground',
+  healthy: 'text-muted-foreground', unknown: 'text-muted-foreground',
 };
 
-const healthMeta = (health: string | null | undefined): { tone: Tone; label: string } =>
-  HEALTH_META[health ?? 'unknown'] ?? HEALTH_META.unknown;
+const n = (v: number) => v.toLocaleString();
+const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 ? one : many}`;
+const SEVS = ['critical', 'high', 'medium', 'low'] as const;
 
-// One-line explanation of WHAT drove the (single, worst-signal) health
-// rollup — surfaced as the Health badge's tooltip so "Critical" isn't an
-// unexplained label.  Mirrors the backend derivation order.
-// A critical/high signal is a finding at that severity OR scanner output at
-// that severity nobody has judged yet — name whichever applies.
+/** Which representation drove a critical/high label, in words. */
 const severityWhy = (card: ProjectCard, sev: 'critical' | 'high'): string => {
   const f = card.findings[sev];
   const u = card.unjudged_observations[sev];
   const parts: string[] = [];
-  if (f > 0) parts.push(`${f} ${sev} finding${f === 1 ? '' : 's'}`);
-  if (u > 0) parts.push(`${u} ${sev} scanner observation${u === 1 ? '' : 's'} not yet judged`);
+  if (f > 0) parts.push(`${plural(f, `${sev} finding`)}`);
+  if (u > 0) parts.push(`${plural(u, `${sev} scanner observation`)} not yet judged`);
   return parts.join(' · ');
 };
-const hasSeverity = (card: ProjectCard, sev: 'critical' | 'high'): boolean =>
-  card.findings[sev] > 0 || card.unjudged_observations[sev] > 0;
 
 const healthWhy = (card: ProjectCard): string => {
   switch (card.health) {
     case 'critical':
       return severityWhy(card, 'critical');
     case 'warning':
-      return hasSeverity(card, 'high')
-        ? severityWhy(card, 'high')
-        : `${Math.round(card.review_progress_pct)}% of hosts reviewed`;
+      return severityWhy(card, 'high');
     case 'stale':
       return card.days_since_last_scan != null
-        ? `Still marked active, but nothing imported for ${card.days_since_last_scan} days — if the engagement is finished, mark it completed`
-        : 'No scans yet';
+        ? `Still marked active; nothing imported for ${card.days_since_last_scan} days. Finished? Mark it completed.`
+        : 'Still marked active; nothing imported yet.';
     case 'healthy':
-      return 'No outstanding risk signals';
+      return card.host_count === 0 ? 'No hosts imported yet.' : 'Nothing critical or high found or waiting to be judged.';
     default:
-      // Null / malformed / unrecognized health — don't claim "no risk".
-      return 'Health data unavailable';
+      // Null / malformed health must not read as "no risk".
+      return 'Health data unavailable.';
   }
 };
 
-// Health tone → theme colour, for the health rail + per-card accent.
-const TONE_HSL: Record<string, string> = {
-  destructive: 'hsl(var(--destructive))',
-  warning: 'hsl(var(--warning))',
-  success: 'hsl(var(--success))',
-  muted: 'hsl(var(--muted-foreground))',
-  info: 'hsl(var(--info))',
-};
-const healthHsl = (health: string | null | undefined): string =>
-  TONE_HSL[healthMeta(health).tone] ?? TONE_HSL.muted;
+const hasSeverity = (card: ProjectCard, sev: 'critical' | 'high'): boolean =>
+  card.findings[sev] > 0 || card.unjudged_observations[sev] > 0;
 
-const HEALTH_ORDER = ['critical', 'warning', 'stale', 'healthy', 'unknown'] as const;
-const HEALTH_LABEL: Record<string, string> = {
-  critical: 'Critical', warning: 'Warning', stale: 'Quiet', healthy: 'Healthy', unknown: 'Unknown',
-};
+// The "Show" filter.  Each option's count and its rows use the SAME predicate.
+const SHOW_OPTIONS: { key: string; label: string; pred: (p: ProjectCard) => boolean }[] = [
+  { key: 'critical', label: 'With critical', pred: (p) => hasSeverity(p, 'critical') },
+  { key: 'high', label: 'With critical or high', pred: (p) => hasSeverity(p, 'critical') || hasSeverity(p, 'high') },
+  { key: 'pending', label: 'Plans awaiting approval', pred: (p) => p.pending_plan_reviews > 0 },
+  { key: 'blocked', label: 'Blocked runs', pred: (p) => p.blocked_sessions > 0 },
+  { key: 'stale', label: 'Active but quiet', pred: (p) => p.is_stale },
+  { key: 'no_data', label: 'No hosts yet', pred: (p) => p.host_count === 0 },
+];
 
-const freshness = (card: ProjectCard): string =>
-  card.days_since_last_scan == null
-    ? 'No scans'
-    : card.days_since_last_scan === 0 ? 'Scanned today' : `Scanned ${card.days_since_last_scan}d ago`;
+const notStarted = (p: ProjectCard) => Math.max(0, p.host_count - p.hosts_reviewed - p.hosts_in_review);
 
-// ---------------------------------------------------------------------------
-// Portfolio health band — the "how is my whole portfolio?" hero. A health
-// distribution rail + aggregate scale + clickable attention rollups.
-// ---------------------------------------------------------------------------
-// §26 — per-card predicates behind each attention rollup. The displayed count
-// and the filtered grid use the SAME condition so they reconcile.
-const ATTN_PREDICATE: Record<string, (p: ProjectCard) => boolean> = {
-  critical: (p) => hasSeverity(p, 'critical'),
-  stale: (p) => p.is_stale,
-  no_data: (p) => p.host_count === 0,
-  pending: (p) => p.pending_plan_reviews > 0,
-  blocked: (p) => p.blocked_sessions > 0,
-};
-const ATTN_FILTER_LABEL: Record<string, string> = {
-  critical: 'with critical', stale: 'active but quiet', no_data: 'no data',
-  pending: 'pending approvals', blocked: 'blocked runs',
+const findingsLine = (p: ProjectCard): string => {
+  const total = SEVS.reduce((acc, s) => acc + p.findings[s], 0);
+  if (total === 0) return 'No findings';
+  return `${plural(total, 'finding')}: ${SEVS.filter((s) => p.findings[s] > 0).map((s) => `${n(p.findings[s])} ${s}`).join(' · ')}`;
 };
 
-const AttnTile: React.FC<{
-  label: string; value: number; tone: string; onClick?: () => void; selected?: boolean;
-}> = ({ label, value, tone, onClick, selected }) => {
-  const active = value > 0;
-  const color = active ? TONE_HSL[tone] ?? TONE_HSL.muted : undefined;
-  const inner = (
-    <>
-      <span className="text-body font-bold tabular-nums" style={{ color }}>{value.toLocaleString()}</span>
-      <span className="text-caption text-muted-foreground">{label}</span>
-    </>
-  );
-  const cls = 'flex min-w-24 flex-1 flex-col rounded-control border border-border px-sm py-xs text-left';
-  return onClick && active
-    ? (
-      <button type="button" onClick={onClick} aria-pressed={selected}
-        className={cn(cls, 'transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          selected && 'border-primary bg-accent')}>
-        {inner}
-      </button>
-    )
-    : <div className={cn(cls, !active && 'opacity-60')}>{inner}</div>;
+const unjudgedLine = (p: ProjectCard): string | null => {
+  const parts = SEVS.filter((s) => p.unjudged_observations[s] > 0).map((s) => `${n(p.unjudged_observations[s])} ${s}`);
+  return parts.length ? `Not yet judged: ${parts.join(' · ')} scanner observations` : null;
 };
 
-const PortfolioHero: React.FC<{
-  summary: PortfolioSummary;
-  projects: ProjectCard[];
-  onNeedsAttention: () => void;
-  attnFilter: string | null;
-  onAttn: (key: string) => void;
-  attentionOnly: boolean;
-}> = ({ summary, projects, onNeedsAttention, attnFilter, onAttn, attentionOnly }) => {
-  const counts = useMemo(() => {
-    const c: Record<string, number> = {};
-    for (const p of projects) c[p.health] = (c[p.health] ?? 0) + 1;
-    return c;
-  }, [projects]);
-  const present = HEALTH_ORDER.filter((h) => counts[h]);
-  const total = projects.length;
-
-  return (
-    <Card>
-      <CardContent className="space-y-md p-md">
-        <div className="grid gap-md lg:grid-cols-[1.6fr_1fr]">
-          {/* Health distribution rail */}
-          <div>
-            <div className="mb-xs flex items-baseline justify-between gap-xs">
-              <span className="text-caption text-muted-foreground">Project health</span>
-              <span className="text-caption text-muted-foreground tabular-nums">{total} project{total === 1 ? '' : 's'}</span>
-            </div>
-            <div className="flex h-6 w-full overflow-hidden rounded-full bg-muted" role="img"
-              aria-label={present.map((h) => `${counts[h]} ${HEALTH_LABEL[h]}`).join(', ') || 'no projects'}>
-              {present.map((h, i) => (
-                <div key={h} title={`${HEALTH_LABEL[h]}: ${counts[h]}`}
-                  className={cn('flex items-center justify-center', i > 0 && 'border-l border-background')}
-                  style={{ width: `${(counts[h] / total) * 100}%`, background: TONE_HSL[healthMeta(h).tone] }}>
-                  {counts[h] / total > 0.1 && (
-                    <span className="text-[0.7rem] font-semibold text-white" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
-                      {counts[h]}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="mt-sm flex flex-wrap gap-x-md gap-y-xs">
-              {HEALTH_ORDER.filter((h) => counts[h]).map((h) => (
-                <span key={h} className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
-                  <span className="size-2.5 rounded-full" style={{ background: TONE_HSL[healthMeta(h).tone] }} aria-hidden />
-                  <span className="font-medium text-foreground">{counts[h]}</span> {HEALTH_LABEL[h]}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Aggregate scale — Hosts (scale) + Unreviewed (work to do). A raw
-              open-ports total is a vanity metric (no decision rides on it), so
-              it's dropped. */}
-          <div className="grid grid-cols-2 gap-sm">
-            {[
-              { label: 'Hosts', value: summary.total_hosts },
-              { label: 'Unreviewed', value: summary.total_unreviewed },
-            ].map((s) => (
-              <div key={s.label} className="flex flex-col justify-center rounded-control border border-border px-sm py-xs">
-                <span className="text-subheading font-bold tabular-nums text-foreground">{s.value.toLocaleString()}</span>
-                <span className="text-caption text-muted-foreground">{s.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Attention rollups — each filters the project grid (§26). */}
-        <div className="flex flex-wrap gap-sm">
-          <AttnTile label="Need attention" value={summary.projects_requiring_attention} tone="warning"
-            onClick={onNeedsAttention} selected={attentionOnly} />
-          <AttnTile label="With critical" value={summary.projects_with_critical} tone="destructive"
-            onClick={() => onAttn('critical')} selected={attnFilter === 'critical'} />
-          <AttnTile label="Active but quiet" value={summary.stale_projects} tone="muted"
-            onClick={() => onAttn('stale')} selected={attnFilter === 'stale'} />
-          <AttnTile label="No data" value={summary.projects_no_data} tone="muted"
-            onClick={() => onAttn('no_data')} selected={attnFilter === 'no_data'} />
-          <AttnTile label="Pending approvals" value={summary.pending_approvals_total} tone="info"
-            onClick={() => onAttn('pending')} selected={attnFilter === 'pending'} />
-          <AttnTile label="Blocked runs" value={summary.blocked_sessions_total} tone="destructive"
-            onClick={() => onAttn('blocked')} selected={attnFilter === 'blocked'} />
-        </div>
-      </CardContent>
-    </Card>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Project tile — a rich, visual replacement for the old table row.
-// ---------------------------------------------------------------------------
-const ProjectTile: React.FC<{
-  card: ProjectCard;
-  onOpen: () => void;
-  onMembers: () => void;
-}> = ({ card, onOpen, onMembers }) => {
-  const hm = healthMeta(card.health);
-  const color = healthHsl(card.health);
-  const f = card.findings;
-  const findingTotal = f.critical + f.high + f.medium + f.low;
-  const u = card.unjudged_observations;
-  const unjudgedTotal = u.critical + u.high + u.medium + u.low;
-  const pct = Math.round(card.review_progress_pct);
-  return (
-    <Card className="flex flex-col overflow-hidden border-l-4" style={{ borderLeftColor: color }}>
-      <CardContent className="flex flex-1 flex-col gap-sm p-md">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-xs">
-          <div className="min-w-0">
-            <button onClick={onOpen}
-              className="block max-w-full truncate text-left text-body font-semibold text-foreground hover:text-info focus:outline-none focus-visible:underline">
-              {card.name}
-            </button>
-            <div className="mt-xxs flex flex-wrap items-center gap-xs">
-              <span className="inline-flex items-center gap-xxs text-caption font-medium" style={{ color }} title={healthWhy(card)}>
-                <span className="size-2 rounded-full" style={{ background: color }} aria-hidden />
-                {hm.label}
-              </span>
-              <Badge variant="outline">{formatStatusLabel(card.status)}</Badge>
-            </div>
-          </div>
-          <button type="button" onClick={onMembers} title="View members"
-            className="inline-flex shrink-0 items-center gap-xxs rounded-control border border-border px-xs py-xxs text-caption text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <Users className="size-3.5" aria-hidden /> {card.member_count}
-          </button>
-        </div>
-
-        {/* Findings (issues) + the scanner output still waiting for a
-            judgment. Different units — shown side by side, never subtracted. */}
-        <div>
-          <div className="mb-xxs flex items-baseline justify-between gap-xs">
-            <span className="text-caption text-muted-foreground">Findings</span>
-            <span className="text-caption tabular-nums text-muted-foreground">
-              {findingTotal.toLocaleString()} issue{findingTotal === 1 ? '' : 's'}
+const ProjectsTable: React.FC<{
+  rows: ProjectCard[];
+  onOpen: (p: ProjectCard) => void;
+  onMembers: (p: ProjectCard) => void;
+}> = ({ rows, onOpen, onMembers }) => (
+  <div className="overflow-x-auto border-t border-border">
+    <Table aria-label="Your projects, worst first" className="min-w-[960px]" style={{ tableLayout: 'fixed' }}>
+      <colgroup>
+        <col style={{ width: '22%' }} /><col style={{ width: '33%' }} /><col style={{ width: '17%' }} />
+        <col style={{ width: '12%' }} /><col style={{ width: '16%' }} />
+      </colgroup>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Project</TableHead>
+          <TableHead>
+            <span className="inline-flex items-center gap-xxs">
+              What testing found
+              <InfoTip text="Critical or High when a finding at that severity exists, or scanner output at that severity nobody has judged yet (the reason is spelled out). Findings are issues — one finding on many hosts counts once; false positives are left out. Scanner observations are issue × host rows no finding covers on their host." />
             </span>
-          </div>
-          {findingTotal > 0
-            ? <SeverityBar counts={f} variant="inline" />
-            : <p className="text-caption text-muted-foreground">No findings recorded.</p>}
-          {unjudgedTotal > 0 && (
-            <p className="mt-xxs text-caption text-muted-foreground"
-              title="Scanner observations (issue × host) that no finding covers on their host yet">
-              Not yet judged:{' '}
-              {(['critical', 'high', 'medium', 'low'] as const)
-                .filter((s) => u[s] > 0)
-                .map((s) => `${u[s].toLocaleString()} ${s}`)
-                .join(' · ')}{' '}
-              scanner observation{unjudgedTotal === 1 ? '' : 's'}
-            </p>
-          )}
-        </div>
-
-        {/* Review coverage */}
-        <div>
-          <div className="mb-xxs flex items-baseline justify-between gap-xs">
-            <span className="text-caption text-muted-foreground">Review coverage</span>
-            <span className="text-caption tabular-nums text-foreground">{pct}%</span>
-          </div>
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`${pct}% reviewed`}>
-            <div className="h-full rounded-full"
-              style={{ width: `${pct}%`, background: pct < 50 ? 'hsl(var(--warning))' : 'hsl(var(--info))' }} />
-          </div>
-          {card.host_count > 0 && (
-            <p className="mt-xxs text-caption text-muted-foreground"
-              title="Tested = hosts in review or reviewed, each counted once">
-              {card.hosts_tested.toLocaleString()} of {card.host_count.toLocaleString()} tested
-              {card.unreviewed_hosts > 0 && <> · {card.unreviewed_hosts.toLocaleString()} unreviewed</>}
-            </p>
-          )}
-        </div>
-
-        {/* Scale + freshness */}
-        <div className="flex flex-wrap gap-x-md gap-y-xxs text-caption text-muted-foreground">
-          <span>{card.host_count.toLocaleString()} hosts <span className="opacity-70">({card.up_host_count.toLocaleString()} up)</span></span>
-          <span className={card.is_stale ? 'text-warning' : ''}>{freshness(card)}</span>
-        </div>
-
-        {/* Signal chips */}
-        {(card.pending_plan_reviews > 0 || card.open_tasks > 0 || card.active_sessions > 0
-          || card.blocked_sessions > 0) && (
-          <div className="flex flex-wrap gap-xxs">
-            {card.pending_plan_reviews > 0 && <Badge variant="warning">{card.pending_plan_reviews} pending review</Badge>}
-            {card.blocked_sessions > 0 && <Badge variant="destructive">{card.blocked_sessions} blocked</Badge>}
-            {card.active_sessions > 0 && <Badge variant="info">{card.active_sessions} active run{card.active_sessions === 1 ? '' : 's'}</Badge>}
-            {card.open_tasks > 0 && <Badge variant="muted">{card.open_tasks} open task{card.open_tasks === 1 ? '' : 's'}</Badge>}
-          </div>
-        )}
-
-        <Button size="sm" variant="outline" className="mt-auto w-full" onClick={onOpen}>
-          Open project <SquareArrowOutUpRight className="size-3.5" aria-hidden />
-        </Button>
-      </CardContent>
-    </Card>
-  );
-};
+          </TableHead>
+          <TableHead>
+            <span className="inline-flex items-center gap-xxs">
+              Review
+              <InfoTip text="Hosts reviewed, in review, and not started, out of every host in the project. Each host counts once." />
+            </span>
+          </TableHead>
+          <TableHead>Hosts</TableHead>
+          <TableHead>Waiting · last import</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((p) => {
+          const unjudged = unjudgedLine(p);
+          return (
+            <TableRow key={p.id} className="align-top" data-project-id={p.id}>
+              <TableCell>
+                <button type="button" onClick={() => onOpen(p)} title={`Open ${p.name}`}
+                  className="block max-w-full truncate text-left font-medium text-foreground hover:text-info focus:outline-none focus-visible:underline">
+                  {p.name}
+                </button>
+                <span className="mt-xxs flex flex-wrap items-center gap-x-xs text-caption text-muted-foreground">
+                  <span>{formatStatusLabel(p.status)}</span>
+                  <button type="button" onClick={() => onMembers(p)}
+                    className="inline-flex items-center gap-xxs rounded hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={`Members of ${p.name}`}>
+                    <Users className="size-3" aria-hidden /> {plural(p.member_count, 'member')}
+                  </button>
+                </span>
+              </TableCell>
+              <TableCell className="min-w-0">
+                <p className={cn('break-words text-metadata', HEALTH_TEXT[p.health] ?? HEALTH_TEXT.unknown)}>
+                  <span className="font-semibold">{HEALTH_LABEL[p.health] ?? HEALTH_LABEL.unknown}</span>
+                  {(p.health === 'critical' || p.health === 'warning') && <> — {healthWhy(p)}</>}
+                </p>
+                {p.health !== 'critical' && p.health !== 'warning' && (
+                  <p className="break-words text-caption text-muted-foreground">{healthWhy(p)}</p>
+                )}
+                <p className="break-words text-caption text-muted-foreground">{findingsLine(p)}</p>
+                {unjudged && <p className="break-words text-caption text-muted-foreground">{unjudged}</p>}
+              </TableCell>
+              <TableCell className="text-caption tabular-nums">
+                {p.host_count === 0 ? (
+                  <span className="text-muted-foreground">No hosts</span>
+                ) : (
+                  <>
+                    <p className="text-metadata text-foreground">{n(p.hosts_reviewed)} of {n(p.host_count)} reviewed</p>
+                    <p className="text-muted-foreground">{n(p.hosts_in_review)} in review · {n(notStarted(p))} not started</p>
+                  </>
+                )}
+              </TableCell>
+              <TableCell className="text-caption tabular-nums">
+                <p className="text-metadata text-foreground">{n(p.host_count)}</p>
+                <p className="text-muted-foreground">{n(p.up_host_count)} up</p>
+              </TableCell>
+              <TableCell className="text-caption">
+                <span className="flex flex-wrap gap-xxs">
+                  {p.pending_plan_reviews > 0 && <Badge variant="warning">{plural(p.pending_plan_reviews, 'plan')} to approve</Badge>}
+                  {p.blocked_sessions > 0 && <Badge variant="destructive">{plural(p.blocked_sessions, 'blocked run')}</Badge>}
+                  {p.active_sessions > 0 && <Badge variant="info">{plural(p.active_sessions, 'active run')}</Badge>}
+                  {p.open_tasks > 0 && <Badge variant="muted">{plural(p.open_tasks, 'open task')}</Badge>}
+                </span>
+                {/* Provenance, not a judgment: an import date is never coloured. */}
+                <p className="mt-xxs text-muted-foreground">
+                  {p.last_scan_at ? `Last import ${formatRelativeTime(p.last_scan_at, { absoluteAfterDays: 30 })}` : 'No imports'}
+                </p>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  </div>
+);
 
 const PortfolioDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -352,93 +220,66 @@ const PortfolioDashboard: React.FC = () => {
   const { hasRole } = useAuth();
 
   const [data, setData] = useState<PortfolioDashboardResponse | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState('');
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [search, setSearch] = useState('');
   // SOC-P1/P2 — project whose members sheet is open.
   const [membersCard, setMembersCard] = useState<ProjectCard | null>(null);
-  // P4 — "needs attention" filter, URL-synced (?attention=1) so a
-  // triage view is shareable/bookmarkable.
   const [searchParams, setSearchParams] = useSearchParams();
-  const attentionOnly = searchParams.get('attention') === '1';
-  const setAttentionOnly = (on: boolean) => {
-    const params = new URLSearchParams(searchParams);
-    if (on) params.set('attention', '1');
-    else params.delete('attention');
-    setSearchParams(params, { replace: true });
-  };
-  // SOC-P4 — Projects | Team view toggle (URL-synced ?view=team).
+  // URL-synced so a triage view is shareable: ?view=team, ?status=, ?show=.
   const view = searchParams.get('view') === 'team' ? 'team' : 'projects';
-  const setView = (v: 'projects' | 'team') => {
+  const statusFilter = searchParams.get('status') ?? '';
+  const show = searchParams.get('show') ?? '';
+  const setParam = (key: string, value: string) => {
     const params = new URLSearchParams(searchParams);
-    if (v === 'team') params.set('view', 'team');
-    else params.delete('view');
-    setSearchParams(params, { replace: true });
-  };
-  // §26 — attention rollups filter the PORTFOLIO grid (cross-project totals
-  // must not silently land in one project's /hosts). Single-select toggle,
-  // URL-synced (?attn=critical|stale|no_data|pending|blocked) so a triage
-  // view is shareable.
-  const attnFilter = searchParams.get('attn');
-  const setAttnFilter = (key: string) => {
-    const params = new URLSearchParams(searchParams);
-    if (attnFilter === key) params.delete('attn');
-    else params.set('attn', key);
+    if (value) params.set(key, value);
+    else params.delete(key);
     setSearchParams(params, { replace: true });
   };
 
-  const reload = () => setReloadNonce((n) => n + 1);
+  const reload = () => setReloadNonce((x) => x + 1);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     getPortfolioDashboard()
-      .then(setData)
+      .then((d) => { setData(d); setFetchedAt(new Date().toISOString()); })
       .catch((err) => setError(formatApiError(err, 'Failed to load portfolio.')))
       .finally(() => setLoading(false));
   }, [reloadNonce]);
 
-  // P4 — row actions must switch the active project BEFORE navigating so
-  // the destination opens scoped to the right project.
-  const switchAndGo = (card: ProjectCard, to: string) => {
+  // Row actions switch the active project BEFORE navigating so the
+  // destination opens scoped to it.
+  const openProject = (card: ProjectCard) => {
     const proj = projects.find((p) => p.id === card.id);
     if (proj) selectProject(proj);
-    navigate(to);
+    navigate('/operations');
   };
 
-  const handleProjectClick = (card: ProjectCard) => switchAndGo(card, '/operations');
-
-  const filteredProjects = useMemo(() => {
+  const showPred = SHOW_OPTIONS.find((o) => o.key === show)?.pred;
+  const rows = useMemo(() => {
     if (!data) return [];
+    const q = search.trim().toLowerCase();
     let list = data.projects;
     if (statusFilter) list = list.filter((p) => p.status === statusFilter);
-    if (attentionOnly) list = list.filter((p) => p.attention_reasons.length > 0);
-    const attnPred = attnFilter ? ATTN_PREDICATE[attnFilter] : undefined;
-    if (attnPred) list = list.filter(attnPred);
-    // Always worst-first — health severity, then critical findings, then the
-    // number of attention signals, then name. The visual grid leads with the
-    // most damning projects (focus, not a sortable to-do list).
-    return [...list].sort((a, b) => {
-      const hr = (HEALTH_RANK[a.health] ?? 9) - (HEALTH_RANK[b.health] ?? 9);
-      if (hr !== 0) return hr;
-      const crit = (p: ProjectCard) => p.findings.critical + p.unjudged_observations.critical;
-      const cr = crit(b) - crit(a);
-      if (cr !== 0) return cr;
-      const ar = b.attention_reasons.length - a.attention_reasons.length;
-      if (ar !== 0) return ar;
-      return a.name.localeCompare(b.name);
-    });
-  }, [data, statusFilter, attentionOnly, attnFilter]);
+    if (showPred) list = list.filter(showPred);
+    if (q) list = list.filter((p) => p.name.toLowerCase().includes(q));
+    // Worst first: health, then critical signal, then high, then name.
+    const crit = (p: ProjectCard) => p.findings.critical + p.unjudged_observations.critical;
+    const high = (p: ProjectCard) => p.findings.high + p.unjudged_observations.high;
+    return [...list].sort((a, b) =>
+      (HEALTH_RANK[a.health] ?? 9) - (HEALTH_RANK[b.health] ?? 9)
+      || crit(b) - crit(a) || high(b) - high(a) || a.name.localeCompare(b.name));
+  }, [data, statusFilter, showPred, search]);
 
   const statusCounts = useMemo(() => {
-    if (!data) return {};
     const counts: Record<string, number> = {};
-    for (const p of data.projects) counts[p.status] = (counts[p.status] || 0) + 1;
+    for (const p of data?.projects ?? []) counts[p.status] = (counts[p.status] || 0) + 1;
     return counts;
   }, [data]);
 
-  // SOC-P4 — Projects | Team segmented toggle, shared across views.
   const viewTabs = (
     <div className="inline-flex overflow-hidden rounded-control border border-border" role="group" aria-label="Portfolio view">
       {(['projects', 'team'] as const).map((v) => (
@@ -446,7 +287,7 @@ const PortfolioDashboard: React.FC = () => {
           key={v}
           type="button"
           aria-pressed={view === v}
-          onClick={() => setView(v)}
+          onClick={() => setParam('view', v === 'team' ? 'team' : '')}
           className={cn(
             'px-sm py-xxs text-metadata capitalize transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             v === 'team' && 'border-l border-border',
@@ -459,8 +300,7 @@ const PortfolioDashboard: React.FC = () => {
     </div>
   );
 
-  // Team view is self-contained (PortfolioTeam fetches its own data), so it
-  // renders independently of the project-dashboard load state.
+  // Team view is self-contained (PortfolioTeam fetches its own data).
   if (view === 'team') {
     return (
       <div className="p-md md:p-lg">
@@ -473,138 +313,150 @@ const PortfolioDashboard: React.FC = () => {
     );
   }
 
-  if (loading) {
-    return (
-      <div className="p-md md:p-lg">
-        {/* Reserve the sticky-filter-card badge row height while data
-            loads so the page doesn't visibly shift when summary
-            badges resolve (audit PRF·H1). */}
-        <Card className="mb-md">
-          <CardContent className="flex flex-col gap-sm p-md lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-xs">
-              {[0, 1, 2, 3].map((i) => (
-                <div key={i} className="h-5 w-24 animate-pulse rounded bg-muted" />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-        <CardListSkeleton count={4} cardHeight={180} />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-md md:p-lg">
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
-            <span>{error}</span>
-            <Button size="sm" variant="outline" onClick={reload}>
-              <RefreshCw className="size-4" aria-hidden />
-              Retry
-            </Button>
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
-
-  if (!data) return null;
-
-  const { summary } = data;
+  const s = data?.summary;
+  const all = data?.projects ?? [];
+  const withCritical = all.filter((p) => hasSeverity(p, 'critical')).length;
+  const withHighOnly = all.filter((p) => !hasSeverity(p, 'critical') && hasSeverity(p, 'high')).length;
+  const leadTone = withCritical > 0 ? 'critical' : withHighOnly > 0 ? 'warning' : all.length ? 'clear' : 'neutral';
+  const notStartedTotal = s ? Math.max(0, s.total_hosts - s.total_reviewed - s.total_in_review) : 0;
+  const filtered = !!(statusFilter || show || search.trim());
 
   return (
     <div className="space-y-md p-md md:p-lg">
-      <div className="flex flex-col gap-xs lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title font-semibold">Portfolio</h1>
           <p className="mt-xxs text-metadata text-muted-foreground">
-            Cross-project overview, worst-first — health, exposure, coverage and ownership at a glance.
+            Your projects: what testing has found, how far review has got, and what is waiting on someone.
           </p>
         </div>
-        <div className="flex items-center gap-sm">
-          {viewTabs}
-          <Button size="sm" variant="outline" onClick={reload}>
-            <RefreshCw className="size-4" aria-hidden /> Refresh
-          </Button>
-        </div>
-      </div>
-
-      <PortfolioHero
-        summary={summary}
-        projects={data.projects}
-        onNeedsAttention={() => setAttentionOnly(!attentionOnly)}
-        attnFilter={attnFilter}
-        onAttn={setAttnFilter}
-        attentionOnly={attentionOnly}
-      />
-
-      <div className="flex flex-wrap items-center justify-between gap-sm">
-        <p className="text-metadata text-muted-foreground">
-          {filteredProjects.length} project{filteredProjects.length === 1 ? '' : 's'}
-          {statusFilter ? ` · status "${statusFilter.replace('_', ' ')}"` : ''}
-          {attentionOnly ? ' · needs attention' : ''}
-          {attnFilter ? ` · ${ATTN_FILTER_LABEL[attnFilter] ?? attnFilter}` : ''}
-        </p>
-        <div className="flex flex-wrap items-center gap-sm">
-          <Button size="sm" variant={attentionOnly ? 'default' : 'outline'}
-            aria-pressed={attentionOnly} onClick={() => setAttentionOnly(!attentionOnly)}>
-            <AlertTriangle className="size-4" aria-hidden /> Needs attention
-          </Button>
-          <div className="min-w-40">
-            <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
-              <SelectTrigger aria-label="Filter projects by status">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All ({summary.total_projects})</SelectItem>
-                {Object.entries(statusCounts).map(([status, count]) => (
-                  <SelectItem key={status} value={status}>
-                    {status.replace('_', ' ')} ({count})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <div className="flex flex-col items-end gap-xs">
+          <div className="flex items-center gap-sm">
+            {viewTabs}
+            <Button size="sm" variant="outline" onClick={reload} disabled={loading}>
+              <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden /> Refresh
+            </Button>
           </div>
+          {fetchedAt && (
+            <span className="text-caption text-muted-foreground">
+              Updated {formatRelativeTime(fetchedAt, { justNowBelowMs: 60_000 })}
+            </span>
+          )}
         </div>
       </div>
 
-      {filteredProjects.length === 0 ? (
-        <Card>
-          <CardContent className="p-xl text-center">
-            <FolderOpen className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
-            <p className="text-metadata text-muted-foreground">
-              {attentionOnly ? 'No projects currently need attention.'
-                : attnFilter ? `No projects are ${ATTN_FILTER_LABEL[attnFilter] ?? attnFilter}.`
-                : statusFilter ? 'No projects match the selected filter.'
-                : 'No projects available.'}
-            </p>
-            <div className="mt-sm flex justify-center gap-xs">
-              {attentionOnly ? (
-                <Button size="sm" variant="outline" onClick={() => setAttentionOnly(false)}>Show all projects</Button>
-              ) : attnFilter ? (
-                <Button size="sm" variant="outline" onClick={() => setAttnFilter(attnFilter)}>Show all projects</Button>
-              ) : statusFilter ? (
-                <Button size="sm" variant="outline" onClick={() => setStatusFilter('')}>Show all projects</Button>
-              ) : (
-                summary.total_projects === 0 && hasRole('admin') && (
-                  <Button size="sm" onClick={() => navigate('/system-settings')}>Create your first project</Button>
-                )
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-md sm:grid-cols-2 xl:grid-cols-3">
-          {filteredProjects.map((card) => (
-            <ProjectTile
-              key={card.id}
-              card={card}
-              onOpen={() => handleProjectClick(card)}
-              onMembers={() => setMembersCard(card)}
-            />
-          ))}
+      {/* Filters: one row above everything they scope, closed by a rule. */}
+      <div className="flex flex-wrap items-end gap-sm border-b border-border pb-sm">
+        <div className="relative min-w-56 flex-1">
+          <Search className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input type="search" aria-label="Search projects" placeholder="Search projects…" value={search}
+            onChange={(e) => setSearch(e.target.value)} className="pl-xl" />
         </div>
+        <Select value={show || 'all'} onValueChange={(v) => setParam('show', v === 'all' ? '' : v)}>
+          <SelectTrigger className="w-56" aria-label="Show projects"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All projects ({all.length})</SelectItem>
+            {SHOW_OPTIONS.map((o) => (
+              <SelectItem key={o.key} value={o.key}>{o.label} ({all.filter(o.pred).length})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter || 'all'} onValueChange={(v) => setParam('status', v === 'all' ? '' : v)}>
+          <SelectTrigger className="w-44" aria-label="Filter projects by status"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any status</SelectItem>
+            {Object.entries(statusCounts).map(([status, count]) => (
+              <SelectItem key={status} value={status}>{formatStatusLabel(status)} ({count})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {filtered && (
+          <Button size="sm" variant="ghost" onClick={() => { setSearch(''); setSearchParams(new URLSearchParams(), { replace: true }); }}>
+            Reset
+          </Button>
+        )}
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
+            <span>{error}{data ? ' Showing the last figures that loaded.' : ''}</span>
+            <Button size="sm" variant="outline" onClick={reload}><RefreshCw className="size-4" aria-hidden /> Retry</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!data && loading && <p role="status" className="text-metadata text-muted-foreground">Loading your projects…</p>}
+
+      {data && s && (
+        <>
+          {all.length === 0 ? (
+            <PostureEmpty Icon={FolderOpen} title="No projects yet"
+              action={hasRole('admin') ? { to: '/system-settings', label: 'Create a project' } : undefined}>
+              You are not a member of any project yet. An administrator adds you to one.
+            </PostureEmpty>
+          ) : (
+            <>
+              <PostureLead tone={leadTone}
+                restsOn={`${n(s.total_reviewed)} of ${n(s.total_hosts)} hosts reviewed and ${n(s.total_in_review)} in review, across ${plural(all.length, 'project')}.`}>
+                {withCritical > 0
+                  ? `${n(withCritical)} of ${plural(all.length, 'project')} ${withCritical === 1 ? 'has' : 'have'} a critical finding or critical scanner output nobody has judged yet.`
+                  : withHighOnly > 0
+                    ? `No critical signal; ${n(withHighOnly)} of ${plural(all.length, 'project')} ${withHighOnly === 1 ? 'has' : 'have'} high findings or high scanner output not yet judged.`
+                    : `Nothing critical or high has been found, or is waiting to be judged, in your ${plural(all.length, 'project')}.`}
+              </PostureLead>
+
+              <div className="grid gap-md border-b border-border pb-md sm:grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-border">
+                <PostureMeasure label="Projects in progress" value={n(s.active_projects)}
+                  info="Projects whose status is active or in progress. Quiet = still marked active with nothing imported for a fortnight — a question for the manager, not a verdict on the evidence.">
+                  {plural(s.total_projects, 'project')} in total
+                  {s.stale_projects > 0 && (
+                    <> · <button type="button" className="text-info hover:underline" onClick={() => setParam('show', 'stale')}>{n(s.stale_projects)} active but quiet</button></>
+                  )}
+                </PostureMeasure>
+                <PostureMeasure label="Hosts reviewed" value={<>{n(s.total_reviewed)} <span className="text-metadata font-normal text-muted-foreground">of {n(s.total_hosts)}</span></>}
+                  info="Hosts whose review is concluded, out of every host in your projects. In review = someone has started; not started = nobody has.">
+                  {n(s.total_in_review)} in review · {n(notStartedTotal)} not started
+                </PostureMeasure>
+                <PostureMeasure label="Critical and high findings"
+                  value={n(s.findings.critical + s.findings.high)}
+                  info="Findings are judged issues: one finding on many hosts counts once; false positives are left out. Beside them, the critical and high scanner observations (issue × host) no finding covers yet — different units, never added together.">
+                  {n(s.findings.critical)} critical · {n(s.findings.high)} high
+                  <br />
+                  {n(s.unjudged_observations.critical + s.unjudged_observations.high)} critical/high scanner observations not yet judged
+                </PostureMeasure>
+                <PostureMeasure label="Waiting on someone" value={n(s.pending_approvals_total + s.blocked_sessions_total)}
+                  info="Agent test plans awaiting a human approval, and execution runs that are paused or failed.">
+                  <button type="button" className="text-info hover:underline disabled:text-muted-foreground disabled:no-underline"
+                    disabled={s.pending_approvals_total === 0} onClick={() => setParam('show', 'pending')}>
+                    {plural(s.pending_approvals_total, 'plan')} to approve
+                  </button>
+                  {' · '}
+                  <button type="button" className="text-info hover:underline disabled:text-muted-foreground disabled:no-underline"
+                    disabled={s.blocked_sessions_total === 0} onClick={() => setParam('show', 'blocked')}>
+                    {plural(s.blocked_sessions_total, 'blocked run')}
+                  </button>
+                </PostureMeasure>
+              </div>
+
+              <PostureSection
+                title={<>Projects <SectionCount>{filtered ? `${n(rows.length)} of ${n(all.length)}` : n(all.length)}</SectionCount></>}
+                description="Worst first: critical, then high, then by name. Open a project from its name.">
+                {rows.length === 0 ? (
+                  <p className="py-sm text-metadata text-muted-foreground">
+                    No project matches these filters.{' '}
+                    <button type="button" className="text-info hover:underline"
+                      onClick={() => { setSearch(''); setSearchParams(new URLSearchParams(), { replace: true }); }}>
+                      Show all projects
+                    </button>
+                  </p>
+                ) : (
+                  <ProjectsTable rows={rows} onOpen={openProject} onMembers={setMembersCard} />
+                )}
+              </PostureSection>
+            </>
+          )}
+        </>
       )}
 
       <ProjectMembersSheet

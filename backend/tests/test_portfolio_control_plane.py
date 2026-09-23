@@ -38,6 +38,30 @@ def _make_user(db_session, username):
     return u
 
 
+def test_review_states_add_up_and_coverage_does_not_set_health(
+    client, db_session, test_project, test_user,
+):
+    """v2.389.0 — the card said "64 of 416 tested · 387 unreviewed · 7%":
+    three definitions that did not add up.  And any project under 50%
+    reviewed was "warning" and "needs attention", so every new project was."""
+    hosts = [models.Host(project_id=test_project.id, ip_address=f"10.7.9.{i}", state="up") for i in range(1, 6)]
+    db_session.add_all(hosts)
+    db_session.flush()
+    db_session.add_all([
+        models.HostFollow(host_id=hosts[0].id, user_id=test_user.id, status=models.FollowStatus.REVIEWED),
+        models.HostFollow(host_id=hosts[1].id, user_id=test_user.id, status=models.FollowStatus.IN_REVIEW),
+    ])
+    db_session.flush()
+
+    body = client.get(PORTFOLIO_URL).json()
+    card = _card_for(body, test_project.id)
+    assert (card["host_count"], card["hosts_reviewed"], card["hosts_in_review"]) == (5, 1, 1)
+    # 20% reviewed, nothing critical or high found: not a warning, no reason.
+    assert card["health"] == "healthy"
+    assert "unreviewed" not in card["attention_reasons"]
+    assert body["summary"]["total_reviewed"] >= 1 and body["summary"]["total_in_review"] >= 1
+
+
 def test_portfolio_surfaces_critical_and_pending_review(
     client, db_session, test_project,
 ):

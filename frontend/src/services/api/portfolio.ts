@@ -36,6 +36,10 @@ export interface ProjectCard {
   unreviewed_hosts: number;
   /** Hosts in review or reviewed, each once. */
   hosts_tested: number;
+  /** v5.275.0 — the review states on their own; not started = host_count
+   *  − reviewed − in review. */
+  hosts_in_review: number;
+  hosts_reviewed: number;
   /** Findings = ISSUES (one finding on many hosts counts once; false
    *  positives excluded). Unjudged observations = scanner rows (issue × host)
    *  no finding covers on their host. Different units: never subtract. */
@@ -60,6 +64,11 @@ export interface PortfolioSummary {
   total_open_ports: number;
   total_scans: number;
   total_unreviewed: number;
+  /** v5.275.0 — for the lead and measures. */
+  total_reviewed: number;
+  total_in_review: number;
+  findings: SeverityBrief;
+  unjudged_observations: SeverityBrief;
   // P4 attention rollups.
   projects_requiring_attention: number;
   projects_with_critical: number;

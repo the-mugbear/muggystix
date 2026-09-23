@@ -54,6 +54,12 @@ class ProjectCard(BaseModel):
     is_stale: bool = False
     review_progress_pct: float = 0.0
     unreviewed_hosts: int = 0
+    # v2.389.0 — the review states on their own, so the page states ONE
+    # definition ("12 reviewed · 3 in review · 40 not started") instead of
+    # "tested" (in review OR reviewed), "unreviewed" (everything not reviewed,
+    # in-review included) and a percentage of reviewed — which did not add up.
+    hosts_in_review: int = 0
+    hosts_reviewed: int = 0
     # v2.376.0 — targets tested = hosts in review or reviewed (each once).
     hosts_tested: int = 0
     # Two severity representations (engagement_metrics_service): findings are
@@ -85,6 +91,12 @@ class PortfolioSummary(BaseModel):
     total_open_ports: int = 0
     total_scans: int = 0
     total_unreviewed: int = 0
+    # v2.389.0 — the lead and measures: review states and the two severity
+    # representations, summed over the caller's projects.
+    total_reviewed: int = 0
+    total_in_review: int = 0
+    findings: SeverityBrief = SeverityBrief()
+    unjudged_observations: SeverityBrief = SeverityBrief()
     # P4 attention rollups across the visible portfolio.
     projects_requiring_attention: int = 0
     projects_with_critical: int = 0
@@ -194,6 +206,10 @@ def get_portfolio_dashboard(
     total_open_ports = 0
     total_scans = 0
     total_unreviewed = 0
+    total_reviewed = 0
+    total_in_review = 0
+    total_findings = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    total_unjudged = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     active_projects = 0
     projects_requiring_attention = 0
     projects_with_critical = 0
@@ -226,10 +242,13 @@ def get_portfolio_dashboard(
         # fortnight — a question about the project, never about its evidence.
         is_stale = s.is_quiet
 
-        # Health indicator
+        # Health indicator — v2.389.0: follows what testing FOUND (the Posture
+        # rule).  Review coverage under 50% also made a project "warning", so
+        # every project that had just started read Warning and "needs
+        # attention"; coverage is shown as its own column instead.
         if has_critical:
             health = "critical"
-        elif has_high or (hc > 0 and review_pct < 50):
+        elif has_high:
             health = "warning"
         elif is_stale:
             health = "stale"
@@ -266,13 +285,16 @@ def get_portfolio_dashboard(
             reasons.append("stale")
         if hc == 0:
             reasons.append("no_data")
-        elif review_pct < 50:
-            reasons.append("unreviewed")
 
         total_hosts += hc
         total_open_ports += opc
         total_scans += sc
         total_unreviewed += unreviewed
+        total_reviewed += rc
+        total_in_review += e.hosts_in_review
+        for sev in ("critical", "high", "medium", "low"):
+            total_findings[sev] += getattr(findings, sev)
+            total_unjudged[sev] += getattr(unjudged, sev)
         if reasons:
             projects_requiring_attention += 1
         if has_critical:
@@ -300,6 +322,8 @@ def get_portfolio_dashboard(
             review_progress_pct=review_pct,
             unreviewed_hosts=unreviewed,
             hosts_tested=e.hosts_tested,
+            hosts_in_review=e.hosts_in_review,
+            hosts_reviewed=rc,
             findings=findings,
             unjudged_observations=unjudged,
             health=health,
@@ -320,6 +344,10 @@ def get_portfolio_dashboard(
             total_open_ports=total_open_ports,
             total_scans=total_scans,
             total_unreviewed=total_unreviewed,
+            total_reviewed=total_reviewed,
+            total_in_review=total_in_review,
+            findings=SeverityBrief(**total_findings),
+            unjudged_observations=SeverityBrief(**total_unjudged),
             projects_requiring_attention=projects_requiring_attention,
             projects_with_critical=projects_with_critical,
             stale_projects=stale_projects,
