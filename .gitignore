@@ -231,6 +231,7 @@ CLAUDE.md
 notes.txt
 troubleshooting_*
 temp_artifacts/
+review_artifacts/
 
 # Internal docs kept local-only — not published to the public repo.
 # CLAUDE.md (architecture/ops guidance) and CHANGELOG.md (detailed dev
