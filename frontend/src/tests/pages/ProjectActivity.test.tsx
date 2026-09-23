@@ -434,4 +434,100 @@ describe('ProjectActivity', () => {
 
     await screen.findByText(/No agent sessions match the current filters\./);
   });
+
+  // v5.267.0 — the Posture layout: a lead sentence, one strip of four
+  // measures, sections over thin rules, no card anywhere.
+  describe('Posture layout', () => {
+    const hygieneSummary = (overrides: Record<string, unknown> = {}) => ({
+      window_days: 14,
+      total_calls: 0,
+      distinct_agents: 0,
+      first_call_at: null,
+      last_call_at: null,
+      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
+      by_workflow: [],
+      daily: [],
+      busiest_sessions: [],
+      session_hygiene: {
+        sessions_started: 3,
+        sessions_active: 1,
+        sessions_ended: 2,
+        ended_by_agent: 1,
+        ended_by_operator: 0,
+        lapsed: 1,
+        sessions_with_feedback: 1,
+      },
+      ...overrides,
+    });
+
+    it('leads with the session facts and renders no cards', async () => {
+      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+      mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+      mockedApi.getAgentActivitySummary.mockResolvedValue(hygieneSummary());
+
+      const { container } = renderPage();
+      await screen.findByText(/Plan #17/);
+      expect(
+        screen.getByText('3 sessions started in the last 14 days; 1 still active; 1 lapsed without ending.'),
+      ).toBeInTheDocument();
+      expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
+      // One strip of four measures — the fifth box (ended by operator) is gone.
+      for (const label of ['Sessions started', 'Ended by the agent', 'Lapsed (never ended)', 'Filed feedback']) {
+        expect(screen.getByText(label)).toBeInTheDocument();
+      }
+      expect(screen.queryByText('Ended by operator')).not.toBeInTheDocument();
+      // The filters are one row inside the Runs section; user · agent share a line.
+      expect(screen.getByTestId('runs-filters')).toHaveClass('border-b');
+      expect(screen.getByText('alice').closest('p')).toHaveTextContent("alice · alice's-agent");
+    });
+
+    it('replaces an empty call chart with one caption line', async () => {
+      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+      mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+      mockedApi.getAgentActivitySummary.mockResolvedValue(hygieneSummary());
+
+      renderPage();
+      await screen.findByText('No agent API calls recorded in the last 14 days.');
+      expect(screen.queryByText('API calls')).not.toBeInTheDocument();
+      expect(screen.queryByText('Calls per day')).not.toBeInTheDocument();
+    });
+
+    it('renders the API-call section with its day bars and busiest sessions when there were calls', async () => {
+      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+      mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+      mockedApi.getAgentActivitySummary.mockResolvedValue(hygieneSummary({
+        total_calls: 30,
+        distinct_agents: 2,
+        status_breakdown: { success: 27, client_error: 2, server_error: 1, other: 0 },
+        by_workflow: [{ workflow: 'recon', calls: 30 }],
+        daily: [{ day: '2026-09-20', calls: 10, errors: 0 }, { day: '2026-09-21', calls: 20, errors: 3 }],
+        busiest_sessions: [{ workflow: 'recon', session_id: 3, calls: 30 }],
+      }));
+
+      renderPage();
+      await screen.findByText('API calls');
+      expect(screen.getByTestId('api-call-line')).toHaveTextContent('30 calls from 2 agents · 27 2xx · 2 4xx · 1 5xx');
+      expect(screen.getByLabelText('2026-09-21: 20 calls, 3 errors')).toBeInTheDocument();
+      expect(screen.getByText('Busiest sessions')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Open$/ })).toBeInTheDocument();
+    });
+
+    it('shows a one-line note instead of the model table when no model or tool was reported', async () => {
+      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
+      mockedApi.getAgentSessionSummary.mockResolvedValue({
+        project_id: 1,
+        summary: [{
+          generated_by_model: null, generated_by_tool: null,
+          project: 5, recon: 0, plan_generation: 0, execution: 0, assist: 0, total: 5,
+        }],
+      });
+
+      renderPage();
+      await screen.findByText(/No agent has reported its model or tool yet/);
+      expect(screen.queryByText('Activity by agent / model')).not.toBeInTheDocument();
+      expect(screen.queryByText('(not reported)')).not.toBeInTheDocument();
+      // No hygiene from this backend: the lead falls back to the unfiltered rollup.
+      expect(screen.getByText('5 agent sessions on record for this project.')).toBeInTheDocument();
+    });
+  });
 });

@@ -4,6 +4,12 @@
  *
  * v3.0.0 — the one surface that aggregates the three workflows in time
  * order with model/tool/user attribution.
+ *
+ * v5.267.0 — the Posture layout (UI_STYLE_GUIDE §7): a lead sentence, one
+ * strip of session-hygiene measures, then sections over thin rules. The five
+ * hygiene boxes, the call tiles and the card around every block are gone; the
+ * call chart renders only when there were calls, and the model breakdown only
+ * when an agent reported its model or tool.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -24,7 +30,9 @@ import {
 } from '../services/api';
 import { safeFallback } from '../utils/uiStyles';
 import { formatApiError } from '../utils/apiErrors';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PostureLead, { LeadTone } from '../components/posture/PostureLead';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureSection from '../components/posture/PostureSection';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -106,78 +114,67 @@ function fmtTime(iso?: string | null): string {
 const fmtRelative = (iso?: string | null): string =>
   formatRelativeTime(iso, { withSeconds: true });
 
-const ModelRollupCard: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ rows }) => {
-  if (!rows) {
+const plural = (n: number, one: string, many = `${one}s`) =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/** v5.267.0 — the per-(model, tool) breakdown, as a section and only when an
+ *  agent actually reported its model or tool: a table whose every row read
+ *  "(not reported)" compared nothing. */
+const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ rows }) => {
+  if (!rows || rows.length === 0) return null;
+  const reported = rows.some((r) => r.generated_by_model || r.generated_by_tool);
+  if (!reported) {
     return (
-      <Card className="mb-md">
-        <CardContent className="flex items-center gap-xs p-md">
-          <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
-          <p className="text-metadata text-muted-foreground">Loading model rollup…</p>
-        </CardContent>
-      </Card>
-    );
-  }
-  if (rows.length === 0) {
-    return (
-      <Card className="mb-md">
-        <CardHeader><CardTitle>Activity by agent / model</CardTitle></CardHeader>
-        <CardContent>
-          <p className="text-metadata text-muted-foreground">No agent sessions recorded for this project yet.</p>
-        </CardContent>
-      </Card>
+      <p className="text-caption text-muted-foreground">
+        No agent has reported its model or tool yet, so there is no breakdown by model — it appears
+        here once one does.
+      </p>
     );
   }
   return (
-    <Card className="mb-md">
-      <CardHeader>
-        <CardTitle>Activity by agent / model</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="mb-sm text-caption text-muted-foreground">
-          Counts of sessions for each agent identity — unified project sessions, plus the
-          legacy recon / plan-generation / execution / assist rows from before the
-          consolidation. Use this to compare models running against the same project.
-        </p>
-        <div className="overflow-x-auto rounded-panel border border-border">
-          <Table className="min-w-[600px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead>Model</TableHead>
-                <TableHead>Tool / harness</TableHead>
-                <TableHead className="w-20 text-right">Sessions</TableHead>
-                <TableHead className="w-20 text-right">Recon</TableHead>
-                <TableHead className="w-24 text-right">Plan-gen</TableHead>
-                <TableHead className="w-24 text-right">Execution</TableHead>
-                <TableHead className="w-20 text-right">Assist</TableHead>
-                <TableHead className="w-20 text-right">Total</TableHead>
+    <PostureSection
+      title="Activity by agent / model"
+      description="Sessions per agent identity — unified project sessions, plus the legacy recon / plan-generation / execution / assist rows from before the consolidation. Compares models running against the same project."
+    >
+      <div className="overflow-x-auto">
+        <Table className="min-w-[600px]">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Model</TableHead>
+              <TableHead>Tool / harness</TableHead>
+              <TableHead className="w-20 text-right">Sessions</TableHead>
+              <TableHead className="w-16 text-right">Recon</TableHead>
+              <TableHead className="w-20 text-right">Plan-gen</TableHead>
+              <TableHead className="w-20 text-right">Execution</TableHead>
+              <TableHead className="w-16 text-right">Assist</TableHead>
+              <TableHead className="w-16 text-right">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r, idx) => (
+              <TableRow key={`${r.generated_by_model ?? 'unknown'}-${r.generated_by_tool ?? 'unknown'}-${idx}`}>
+                <TableCell className="truncate" title={r.generated_by_model ?? undefined}>
+                  {r.generated_by_model ? (
+                    <code className="font-mono text-caption">{r.generated_by_model}</code>
+                  ) : (
+                    <span className="text-caption text-muted-foreground">(not reported)</span>
+                  )}
+                </TableCell>
+                <TableCell className="truncate" title={r.generated_by_tool ?? undefined}>
+                  {r.generated_by_tool || <span className="text-caption text-muted-foreground">—</span>}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{r.project ?? 0}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.recon}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.plan_generation}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.execution}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.assist}</TableCell>
+                <TableCell className="text-right font-semibold tabular-nums">{r.total}</TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r, idx) => (
-                <TableRow key={`${r.generated_by_model ?? 'unknown'}-${r.generated_by_tool ?? 'unknown'}-${idx}`}>
-                  <TableCell>
-                    {r.generated_by_model ? (
-                      <code className="font-mono text-caption">{r.generated_by_model}</code>
-                    ) : (
-                      <span className="text-caption text-muted-foreground">(not reported)</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {r.generated_by_tool || <span className="text-caption text-muted-foreground">—</span>}
-                  </TableCell>
-                  <TableCell className="text-right">{r.project ?? 0}</TableCell>
-                  <TableCell className="text-right">{r.recon}</TableCell>
-                  <TableCell className="text-right">{r.plan_generation}</TableCell>
-                  <TableCell className="text-right">{r.execution}</TableCell>
-                  <TableCell className="text-right">{r.assist}</TableCell>
-                  <TableCell className="text-right font-semibold">{r.total}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </CardContent>
-    </Card>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </PostureSection>
   );
 };
 
@@ -211,61 +208,103 @@ const endedState = (row: AgentSessionRow): { text: string; tone: 'ok' | 'warn' |
   }
 };
 
-/** v5.219.0 — session hygiene: are sessions exiting cleanly, and are they
- *  telling us anything on the way out? The feedback loop depends on both, and
- *  until now neither was measured. Counted over sessions STARTED in the
- *  window, independent of call volume — a session whose agent never connected
- *  made no calls and is exactly what this shows. Renders nothing on a backend
- *  without the field or a window with no sessions. */
-const HygieneStrip: React.FC<{ hygiene: AgentActivitySummary['session_hygiene'] }> = ({ hygiene }) => {
-  if (!hygiene || hygiene.sessions_started === 0) return null;
-  const h = hygiene;
-  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
+type Hygiene = NonNullable<AgentActivitySummary['session_hygiene']>;
+
+/** v5.267.0 — the lead sentence: the facts about sessions, from the hygiene
+ *  counts when the backend sent them (sessions STARTED in the window), else
+ *  from the model rollup's total — unfiltered, unlike the timeline's. */
+const RunsLead: React.FC<{
+  hygiene: Hygiene | null;
+  windowDays: number | null;
+  total: number | null;
+}> = ({ hygiene, windowDays, total: recorded }) => {
+  if (recorded == null && !hygiene) return null;
+  const total = recorded ?? 0;
+  let tone: LeadTone = 'neutral';
+  let sentence: string;
+  if (hygiene && hygiene.sessions_started > 0) {
+    sentence = `${plural(hygiene.sessions_started, 'session')} started in the last ${windowDays ?? 14} days; `
+      + `${hygiene.sessions_active.toLocaleString()} still active; `
+      + `${hygiene.lapsed.toLocaleString()} lapsed without ending.`;
+    if (hygiene.lapsed > 0) tone = 'warning';
+  } else if (total > 0) {
+    sentence = hygiene
+      ? `No agent sessions started in the last ${windowDays ?? 14} days; ${plural(total, 'session')} on record.`
+      : `${plural(total, 'agent session')} on record for this project.`;
+  } else {
+    sentence = 'No agent has run against this project yet.';
+  }
   return (
-    <div className="mb-sm">
-      <p className="mb-xxs text-metadata font-semibold">Session hygiene</p>
-      <div className="grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-5">
-        <ApiTile label="Sessions started" value={h.sessions_started.toLocaleString()} />
-        <ApiTile
-          label="Ended by the agent"
-          value={`${h.ended_by_agent.toLocaleString()} · ${pct(h.ended_by_agent, h.sessions_ended)}`}
-          cls={h.sessions_ended > 0 && h.ended_by_agent < h.sessions_ended ? 'text-warning' : undefined}
-        />
-        <ApiTile label="Ended by operator" value={h.ended_by_operator.toLocaleString()} />
-        <ApiTile
-          label="Lapsed (never ended)"
-          value={h.lapsed.toLocaleString()}
-          cls={h.lapsed > 0 ? 'text-warning' : undefined}
-        />
-        <ApiTile
-          label="Filed feedback"
-          value={`${h.sessions_with_feedback.toLocaleString()} · ${pct(h.sessions_with_feedback, h.sessions_started)}`}
-          cls={h.sessions_with_feedback < h.sessions_started ? 'text-warning' : undefined}
-        />
-      </div>
-      <p className="mt-xxs text-caption text-muted-foreground">
-        Percentages are of sessions ended (agent exits) and of sessions started (feedback).
-        An agent that ends its own session filed feedback on the way; one that lapsed or was
-        ended from here usually did not.
-      </p>
-    </div>
+    <PostureLead
+      tone={tone}
+      restsOn="Counts are of sessions started in the window. A session that lapsed never called end, so it filed no wrap-up and its key simply ran out."
+    >
+      {sentence}
+    </PostureLead>
   );
 };
 
-const ApiTile: React.FC<{ label: string; value: number | string; cls?: string }> = ({
-  label,
-  value,
-  cls,
-}) => (
-  <Card>
-    <CardContent className="p-sm text-center">
-      <p className={cn('text-subheading font-semibold', cls)}>{value}</p>
-      <p className="text-caption text-muted-foreground">{label}</p>
-    </CardContent>
-  </Card>
-);
+/** v5.219.0 — session hygiene: are sessions exiting cleanly, and are they
+ *  telling us anything on the way out? Counted over sessions STARTED in the
+ *  window, independent of call volume — a session whose agent never connected
+ *  made no calls and is exactly what this shows. v5.267.0 — one strip of four
+ *  measures (ended-by-operator folds into the first); the percentage
+ *  explanations live on each (i). Renders nothing without the field or with
+ *  no sessions in the window. */
+const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
+  if (!hygiene || hygiene.sessions_started === 0) return null;
+  const h = hygiene;
+  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
+  const warn = (on: boolean, text: string) => (
+    <span className={on ? 'text-warning' : undefined}>{text}</span>
+  );
+  return (
+    <PostureSection title="Session hygiene">
+      <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
+        <PostureMeasure
+          label="Sessions started"
+          info="Agent sessions started in the window, whatever they did afterwards — including ones whose agent never connected and made no calls."
+          value={h.sessions_started.toLocaleString()}
+        >
+          {h.sessions_active.toLocaleString()} active · {h.sessions_ended.toLocaleString()} ended
+          {h.ended_by_operator > 0 && ` · ${h.ended_by_operator.toLocaleString()} by an operator`}
+        </PostureMeasure>
+        <PostureMeasure
+          label="Ended by the agent"
+          info="Sessions the agent closed itself (end_reason: agent), as a percentage of sessions ENDED. An agent that ends its own session files feedback on the way; one that lapsed or was ended from here usually did not."
+          value={warn(
+            h.sessions_ended > 0 && h.ended_by_agent < h.sessions_ended,
+            `${h.ended_by_agent.toLocaleString()} · ${pct(h.ended_by_agent, h.sessions_ended)}`,
+          )}
+        >
+          the clean exit, of {plural(h.sessions_ended, 'ended session')}
+        </PostureMeasure>
+        <PostureMeasure
+          label="Lapsed (never ended)"
+          info="Sessions nobody ended: the agent never called end and no operator did, so the key ran out. These are the sessions with no wrap-up."
+          value={warn(h.lapsed > 0, h.lapsed.toLocaleString())}
+        >
+          key ran out with no end call
+        </PostureMeasure>
+        <PostureMeasure
+          label="Filed feedback"
+          info="Sessions that filed at least one feedback item, as a percentage of sessions STARTED. The feedback loop depends on agents saying where they retried, guessed or worked around something."
+          value={warn(
+            h.sessions_with_feedback < h.sessions_started,
+            `${h.sessions_with_feedback.toLocaleString()} · ${pct(h.sessions_with_feedback, h.sessions_started)}`,
+          )}
+        >
+          of {plural(h.sessions_started, 'session')} started
+        </PostureMeasure>
+      </div>
+    </PostureSection>
+  );
+};
 
-const ApiCallSummaryCard: React.FC<{
+/** API-call analytics from the per-call audit log. v5.267.0 — a section only
+ *  when there were calls; an empty 14-day chart is one caption line. Loading
+ *  and failure are plain lines (the failure keeps its Retry). */
+const ApiCallSection: React.FC<{
   summary: AgentActivitySummary | null;
   error?: boolean;
   onRetry?: () => void;
@@ -276,42 +315,29 @@ const ApiCallSummaryCard: React.FC<{
     // forever (the error was swallowed to null), indistinguishable from a
     // slow load and with no way to retry.
     return (
-      <Card className="mb-md">
-        <CardContent className="flex flex-wrap items-center justify-between gap-xs p-md">
-          <p className="text-metadata text-muted-foreground">API-call analytics are currently unavailable.</p>
-          {onRetry && (
-            <Button size="sm" variant="outline" onClick={onRetry}>
-              <RefreshCw className="size-3.5" aria-hidden /> Retry
-            </Button>
-          )}
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap items-center gap-xs">
+        <p className="text-caption text-muted-foreground">API-call analytics are currently unavailable.</p>
+        {onRetry && (
+          <Button size="sm" variant="outline" onClick={onRetry}>
+            <RefreshCw className="size-3.5" aria-hidden /> Retry
+          </Button>
+        )}
+      </div>
     );
   }
   if (!summary) {
     return (
-      <Card className="mb-md">
-        <CardContent className="flex items-center gap-xs p-md" role="status" aria-live="polite">
-          <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
-          <p className="text-metadata text-muted-foreground">Loading API-call analytics…</p>
-        </CardContent>
-      </Card>
+      <p className="flex items-center gap-xs text-caption text-muted-foreground" role="status" aria-live="polite">
+        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        Loading API-call analytics…
+      </p>
     );
   }
   if (summary.total_calls === 0) {
-    // Session hygiene is counted over sessions STARTED, not calls made, so it
-    // renders here too: a session whose agent never connected is exactly the
-    // abandonment this strip exists to show, and it makes no calls.
     return (
-      <Card className="mb-md">
-        <CardHeader><CardTitle>API-call analytics</CardTitle></CardHeader>
-        <CardContent>
-          <HygieneStrip hygiene={summary.session_hygiene} />
-          <p className="text-metadata text-muted-foreground">
-            No agent API calls recorded in the last {summary.window_days} days.
-          </p>
-        </CardContent>
-      </Card>
+      <p className="text-caption text-muted-foreground">
+        No agent API calls recorded in the last {summary.window_days} days.
+      </p>
     );
   }
 
@@ -324,96 +350,86 @@ const ApiCallSummaryCard: React.FC<{
   };
 
   return (
-    <Card className="mb-md">
-      <CardHeader><CardTitle>API-call analytics</CardTitle></CardHeader>
-      <CardContent>
-        <p className="mb-sm text-caption text-muted-foreground">
-          Every agent → BlueStick request over the last {summary.window_days} days, from the
-          per-call audit log.
-        </p>
-
-        {/* v5.219.0 — rendered before the call volume because it is the
-            actionable number here; also rendered in the zero-calls branch above. */}
-        <HygieneStrip hygiene={summary.session_hygiene} />
-
-        <div className="mb-sm grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-5">
-          <ApiTile label="Total calls" value={summary.total_calls.toLocaleString()} />
-          <ApiTile label="Agents" value={summary.distinct_agents.toLocaleString()} />
-          <ApiTile label="2xx" value={sb.success.toLocaleString()} cls="text-success" />
-          <ApiTile label="4xx" value={sb.client_error.toLocaleString()} cls="text-warning" />
-          <ApiTile label="5xx" value={sb.server_error.toLocaleString()} cls="text-destructive" />
-        </div>
-
-        {summary.daily.length > 0 && (
-          <div className="mb-sm">
-            <p className="mb-xxs text-caption font-medium text-muted-foreground">Calls per day</p>
-            <div className="flex h-16 items-end gap-[2px]">
-              {summary.daily.map((d) => (
-                <Tooltip key={d.day}>
-                  <TooltipTrigger asChild>
-                    {/* Focusable button (not a bare div) so keyboard + screen
-                        readers can reach the daily value via aria-label; the
-                        tooltip also opens on focus. */}
-                    <button
-                      type="button"
-                      aria-label={`${d.day}: ${d.calls.toLocaleString()} call${d.calls === 1 ? '' : 's'}${d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}`}
-                      className={cn(
-                        'min-w-[3px] flex-1 rounded-sm border-0 p-0',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        d.errors > 0 ? 'bg-destructive' : 'bg-info',
-                      )}
-                      style={{ height: `${Math.max(4, (d.calls / maxDay) * 100)}%` }}
-                    />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {d.day}: {d.calls.toLocaleString()} call{d.calls === 1 ? '' : 's'}
-                    {d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}
-                  </TooltipContent>
-                </Tooltip>
-              ))}
-            </div>
-          </div>
-        )}
-
+    <PostureSection
+      title="API calls"
+      description={`Every agent → BlueStick request over the last ${summary.window_days} days, from the per-call audit log.`}
+    >
+      <p className="text-metadata" data-testid="api-call-line">
+        <strong>{plural(summary.total_calls, 'call')}</strong>
+        {' '}from {plural(summary.distinct_agents, 'agent')}
+        <span className="text-muted-foreground"> · </span>
+        <span className="text-success">{sb.success.toLocaleString()} 2xx</span>
+        <span className="text-muted-foreground"> · </span>
+        <span className={sb.client_error > 0 ? 'text-warning' : 'text-muted-foreground'}>
+          {sb.client_error.toLocaleString()} 4xx
+        </span>
+        <span className="text-muted-foreground"> · </span>
+        <span className={sb.server_error > 0 ? 'text-destructive' : 'text-muted-foreground'}>
+          {sb.server_error.toLocaleString()} 5xx
+        </span>
         {summary.by_workflow.length > 0 && (
-          <div className="mb-sm flex flex-wrap gap-xs">
-            {summary.by_workflow.map((w) => (
-              <Badge key={w.workflow} variant="outline">
-                {w.workflow}: {w.calls.toLocaleString()}
-              </Badge>
+          <span className="text-caption text-muted-foreground">
+            {' '}— by workflow: {summary.by_workflow.map((w) => `${w.workflow} ${w.calls.toLocaleString()}`).join(' · ')}
+          </span>
+        )}
+      </p>
+
+      {summary.daily.length > 0 && (
+        <div className="mt-sm">
+          <p className="mb-xxs text-caption text-muted-foreground">Calls per day</p>
+          <div className="flex h-16 items-end gap-[2px]">
+            {summary.daily.map((d) => (
+              <Tooltip key={d.day}>
+                <TooltipTrigger asChild>
+                  {/* Focusable button (not a bare div) so keyboard + screen
+                      readers can reach the daily value via aria-label; the
+                      tooltip also opens on focus. */}
+                  <button
+                    type="button"
+                    aria-label={`${d.day}: ${d.calls.toLocaleString()} call${d.calls === 1 ? '' : 's'}${d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}`}
+                    className={cn(
+                      'min-w-[3px] flex-1 rounded-sm border-0 p-0',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      d.errors > 0 ? 'bg-destructive' : 'bg-info',
+                    )}
+                    style={{ height: `${Math.max(4, (d.calls / maxDay) * 100)}%` }}
+                  />
+                </TooltipTrigger>
+                <TooltipContent>
+                  {d.day}: {d.calls.toLocaleString()} call{d.calls === 1 ? '' : 's'}
+                  {d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}
+                </TooltipContent>
+              </Tooltip>
             ))}
           </div>
-        )}
+        </div>
+      )}
 
-        {summary.busiest_sessions.length > 0 && (
-          <div>
-            <p className="mb-xxs text-caption font-medium text-muted-foreground">
-              Busiest sessions
-            </p>
-            <ul className="flex flex-col gap-xxs">
-              {summary.busiest_sessions.slice(0, 5).map((s) => {
-                const linkable = s.workflow === 'recon' || s.workflow === 'execution' || s.workflow === 'plan';
-                return (
-                  <li key={`${s.workflow}-${s.session_id}`} className="flex flex-wrap items-center gap-xs">
-                    <Badge variant="muted">{s.workflow}</Badge>
-                    <span className="text-metadata">
-                      #{s.session_id} · <strong>{s.calls.toLocaleString()}</strong> call
-                      {s.calls === 1 ? '' : 's'}
-                    </span>
-                    {linkable && (
-                      <Button size="sm" variant="ghost" onClick={() => openSession(s)}>
-                        Open
-                        <ExternalLink className="ml-xxs size-3" aria-hidden />
-                      </Button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      {summary.busiest_sessions.length > 0 && (
+        <div className="mt-sm">
+          <p className="mb-xxs text-caption text-muted-foreground">Busiest sessions</p>
+          <ul className="flex flex-col">
+            {summary.busiest_sessions.slice(0, 5).map((s) => {
+              const linkable = s.workflow === 'recon' || s.workflow === 'execution' || s.workflow === 'plan';
+              return (
+                <li key={`${s.workflow}-${s.session_id}`} className="flex min-w-0 items-center gap-xs text-metadata">
+                  <span className="min-w-0 truncate">
+                    <span className="text-muted-foreground">{s.workflow}</span> #{s.session_id} ·{' '}
+                    <strong>{s.calls.toLocaleString()}</strong> call{s.calls === 1 ? '' : 's'}
+                  </span>
+                  {linkable && (
+                    <Button size="sm" variant="ghost" className="h-6 px-xs" onClick={() => openSession(s)}>
+                      Open
+                      <ExternalLink className="ml-xxs size-3" aria-hidden />
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </PostureSection>
   );
 };
 
@@ -463,8 +479,8 @@ const ProjectActivity: React.FC = () => {
       if (modelFilter) filters.model = modelFilter;
       if (toolFilter) filters.tool = toolFilter;
       // API-call analytics is best-effort — its failure must not blank
-      // the session timeline; record the error so the card shows an
-      // "unavailable + Retry" state instead of an endless spinner.
+      // the session timeline; record the error so the section shows an
+      // "unavailable + Retry" line instead of an endless spinner.
       const [list, sum, apiSum] = await Promise.all([
         listAgentSessions(filters),
         getAgentSessionSummary(),
@@ -591,20 +607,21 @@ const ProjectActivity: React.FC = () => {
     }
   };
 
+  const hygiene = apiSummary?.session_hygiene ?? null;
+
   return (
-    <div className="p-md md:p-lg">
+    <div className="flex flex-col gap-lg p-md md:p-lg">
       {confirmEl}
       <ResumeAgentSessionDialog
         session={resumeRow}
         onOpenChange={(next) => { if (!next) setResumeRow(null); }}
         onResumed={() => setRefreshNonce((n) => n + 1)}
       />
-      <div className="mb-md flex items-start justify-between gap-sm">
+      <div className="flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Runs</h1>
-          <p className="mt-xxs text-metadata text-muted-foreground">
-            Every agent session against this project — recon, plan generation, and execution — in
-            time order, with model + tool + user attribution.
+          <p className="mt-xxs truncate text-metadata text-muted-foreground">
+            Every agent session against this project, in time order, with model, tool and user.
           </p>
         </div>
         <Tooltip>
@@ -623,16 +640,43 @@ const ProjectActivity: React.FC = () => {
         </Tooltip>
       </div>
 
-      <ApiCallSummaryCard
+      <RunsLead
+        hygiene={hygiene}
+        windowDays={apiSummary?.window_days ?? null}
+        total={summary ? summary.reduce((n, r) => n + r.total, 0) : null}
+      />
+
+      <HygieneStrip hygiene={hygiene} />
+
+      <ApiCallSection
         summary={apiSummary}
         error={apiSummaryError}
         onRetry={() => setRefreshNonce((n) => n + 1)}
       />
 
-      <ModelRollupCard rows={summary} />
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-      <Card className="mb-md">
-        <CardContent className="flex flex-wrap items-end gap-sm p-md">
+      <PostureSection
+        title="Runs"
+        actions={(
+          <>
+            {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+            <span className="text-muted-foreground">
+              {rows.length} of {total} shown
+            </span>
+            {rows.length < total && !loading && (
+              <Button size="sm" variant="outline" onClick={() => setLimit((l) => l + 200)}>
+                Load older runs
+              </Button>
+            )}
+          </>
+        )}
+      >
+        <div className="flex flex-wrap items-end gap-sm border-b border-border pb-sm" data-testid="runs-filters">
           <div className="w-48">
             <Label htmlFor="pa-kind">Workflow</Label>
             <Select
@@ -681,51 +725,30 @@ const ProjectActivity: React.FC = () => {
               </SelectContent>
             </Select>
           </div>
-          <div className="ml-auto flex items-center gap-xs">
-            {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
-            <p className="text-caption text-muted-foreground">
-              {rows.length} of {total} shown
-            </p>
-            {rows.length < total && !loading && (
-              <Button size="sm" variant="outline" onClick={() => setLimit((l) => l + 200)}>
-                Load older runs
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      {error && (
-        <Alert variant="destructive" className="mb-md">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table className="min-w-[1000px]">
-              <TableHeader>
-                <TableRow>
-                  {/* v2.43.2 — widened Status to w-32 because the widest
-                      badge ("in_progress") overflowed w-24's 96px and
-                      visually punched into the Started column.  Other
-                      widths unchanged. */}
-                  <TableHead className="w-36">Workflow</TableHead>
-                  <TableHead className="w-32">Status</TableHead>
-                  <TableHead className="w-40">Started</TableHead>
-                  <TableHead className="w-52">Model · Tool</TableHead>
-                  <TableHead className="w-36">User · Agent</TableHead>
-                  <TableHead>Subject</TableHead>
-                  {/* v5.214.0 — two icon buttons (Resume + End) on a project row. */}
-                  <TableHead className="w-24" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((r) => (
-                  <TableRow key={`${r.kind}-${r.id}`}>
+        <div className="overflow-x-auto">
+          <Table className="min-w-[1000px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-28">Workflow</TableHead>
+                {/* Status carries the key / ended line under its chip. */}
+                <TableHead className="w-52">Status</TableHead>
+                <TableHead className="w-28">Started</TableHead>
+                <TableHead className="w-52">Model · Tool</TableHead>
+                <TableHead className="w-44">User · Agent</TableHead>
+                <TableHead>Subject</TableHead>
+                {/* v5.214.0 — two icon buttons (Resume + End) on a project row. */}
+                <TableHead className="w-24" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((r) => {
+                const ks = keyState(r) ?? endedState(r);
+                return (
+                  <TableRow key={`${r.kind}-${r.id}`} data-testid="run-row">
                     <TableCell>
-                      <Badge variant={kindBadgeVariant(r.kind)}>
+                      <Badge variant={kindBadgeVariant(r.kind)} className="whitespace-nowrap">
                         {r.kind === 'plan_generation' ? 'plan-gen' : r.kind === 'project' ? 'session' : r.kind}
                       </Badge>
                     </TableCell>
@@ -737,20 +760,17 @@ const ProjectActivity: React.FC = () => {
                       </Badge>
                       {/* v5.214.0 — "active" alone cannot tell a live agent
                           from one that died a day ago; the key's state can. */}
-                      {(() => {
-                        const ks = keyState(r) ?? endedState(r);
-                        return ks ? (
-                          <p
-                            className={cn(
-                              'mt-xxs max-w-full truncate text-caption',
-                              ks.tone === 'warn' ? 'text-warning' : 'text-muted-foreground',
-                            )}
-                            title={ks.text}
-                          >
-                            {ks.text}
-                          </p>
-                        ) : null;
-                      })()}
+                      {ks && (
+                        <p
+                          className={cn(
+                            'mt-xxs max-w-full truncate text-caption',
+                            ks.tone === 'warn' ? 'text-warning' : 'text-muted-foreground',
+                          )}
+                          title={ks.text}
+                        >
+                          {ks.text}
+                        </p>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Tooltip>
@@ -764,50 +784,57 @@ const ProjectActivity: React.FC = () => {
                     </TableCell>
                     <TableCell>
                       {r.generated_by_model ? (
-                        <div className="flex flex-wrap gap-xxs">
-                          <Badge variant="outline">{r.generated_by_model}</Badge>
+                        <p
+                          className="truncate text-caption"
+                          title={[r.generated_by_model, r.generated_by_tool].filter(Boolean).join(' · ')}
+                        >
+                          <code className="font-mono">{r.generated_by_model}</code>
                           {r.generated_by_tool && (
-                            <Badge variant="outline">{r.generated_by_tool}</Badge>
+                            <span className="text-muted-foreground"> · {r.generated_by_tool}</span>
                           )}
-                        </div>
+                        </p>
                       ) : (
                         <span className="text-caption text-muted-foreground">(not reported)</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      <p className="text-metadata">{safeFallback(r.user_username, '—')}</p>
-                      {r.agent_name && (
-                        <p className="text-caption text-muted-foreground">{r.agent_name}</p>
-                      )}
+                      <p
+                        className="truncate text-caption"
+                        title={[r.user_username, r.agent_name].filter(Boolean).join(' · ')}
+                      >
+                        <span className="text-foreground">{safeFallback(r.user_username, '—')}</span>
+                        {r.agent_name && (
+                          <span className="text-muted-foreground"> · {r.agent_name}</span>
+                        )}
+                      </p>
                     </TableCell>
                     <TableCell>
                       {/* v5.187.0 — the declared target in words where we have
                           it; ids are the fallback. A colleague scanning this
-                          list needs the ranges, not "Scope #3". */}
-                      {r.target_label ? (
-                        <span className="block max-w-full truncate" title={r.target_label}>
-                          {r.target_label}
-                        </span>
-                      ) : (
-                        <>
-                          {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
-                          {(r.kind === 'plan_generation' || r.kind === 'execution') &&
-                            r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
-                          {(r.kind === 'assist' || r.kind === 'project') && (
-                            <span className="text-caption text-muted-foreground">
-                              Project session
-                            </span>
-                          )}
-                        </>
-                      )}
-                      {r.kind === 'project' && r.purpose && (
-                        <p
-                          className="mt-xxs max-w-full truncate text-caption text-muted-foreground"
-                          title={r.purpose}
-                        >
-                          {r.purpose}
-                        </p>
-                      )}
+                          list needs the ranges, not "Scope #3". v5.267.0 — the
+                          purpose follows on the same truncated line. */}
+                      <p
+                        className="truncate"
+                        title={[r.target_label, r.kind === 'project' ? r.purpose : null].filter(Boolean).join(' · ') || undefined}
+                      >
+                        {r.target_label ? (
+                          <span>{r.target_label}</span>
+                        ) : (
+                          <>
+                            {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
+                            {(r.kind === 'plan_generation' || r.kind === 'execution') &&
+                              r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
+                            {(r.kind === 'assist' || r.kind === 'project') && (
+                              <span className="text-caption text-muted-foreground">
+                                Project session
+                              </span>
+                            )}
+                          </>
+                        )}
+                        {r.kind === 'project' && r.purpose && (
+                          <span className="text-caption text-muted-foreground"> · {r.purpose}</span>
+                        )}
+                      </p>
                     </TableCell>
                     <TableCell>
                       {r.kind === 'project' ? (
@@ -876,36 +903,38 @@ const ProjectActivity: React.FC = () => {
                       )}
                     </TableCell>
                   </TableRow>
-                ))}
-                {!loading && rows.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="py-xl text-center">
-                      <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />
-                      <p className="text-metadata text-muted-foreground">
-                        No agent sessions match the current filters.
-                      </p>
-                      {(kindFilter || modelFilter || toolFilter) && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setKindFilter('');
-                            setModelFilter('');
-                            setToolFilter('');
-                          }}
-                          className="mt-xs"
-                        >
-                          Clear filters
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
+                );
+              })}
+              {!loading && rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-xl text-center">
+                    <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />
+                    <p className="text-metadata text-muted-foreground">
+                      No agent sessions match the current filters.
+                    </p>
+                    {(kindFilter || modelFilter || toolFilter) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setKindFilter('');
+                          setModelFilter('');
+                          setToolFilter('');
+                        }}
+                        className="mt-xs"
+                      >
+                        Clear filters
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </PostureSection>
+
+      <ModelRollupSection rows={summary} />
     </div>
   );
 };
