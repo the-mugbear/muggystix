@@ -322,6 +322,69 @@ export const previewPromoteVulnerability = async (
   return response.data;
 };
 
+// v5.272.0 — scanner observations grouped by ISSUE across the project's hosts,
+// and their bulk promotion (the Findings page's "Scanner observations" view).
+export interface ObservationIssue {
+  issue_key: string;
+  title: string;
+  severity: string;
+  cve_id: string | null;
+  sources: string[];
+  host_count: number;
+  /** Hosts a finding already covers for this issue. */
+  judged_host_count: number;
+  finding_id: number | null;
+  finding_status: string | null;
+}
+
+export interface ObservationIssueHost {
+  host_id: number;
+  ip_address: string;
+  hostname: string | null;
+  severity: string;
+  ports: number[];
+  judged: boolean;
+  endpoint_status: string | null;
+}
+
+export interface ObservationIssueFilters {
+  search?: string;
+  severity?: string;
+  includeJudged?: boolean;
+  minHosts?: number;
+  skip?: number;
+  limit?: number;
+}
+
+export const getObservationIssues = async (
+  filters: ObservationIssueFilters = {},
+): Promise<{ items: ObservationIssue[]; total: number }> => {
+  const response = await api.get(`${p()}/scanner-observations`, {
+    params: {
+      search: filters.search || undefined,
+      severity: filters.severity || undefined,
+      include_judged: filters.includeJudged || undefined,
+      min_hosts: filters.minHosts && filters.minHosts > 1 ? filters.minHosts : undefined,
+      skip: filters.skip || undefined,
+      limit: filters.limit ?? 50,
+    },
+  });
+  return response.data;
+};
+
+export const getObservationIssueHosts = async (issueKey: string): Promise<ObservationIssueHost[]> => {
+  const response = await api.get(`${p()}/scanner-observations/hosts`, { params: { issue_key: issueKey } });
+  return response.data;
+};
+
+/** Each issue becomes (or joins) its finding; `host_ids` omitted = every host carrying it. */
+export const promoteObservationIssues = async (
+  items: { issue_key: string; host_ids?: number[] }[],
+): Promise<{ results: { issue_key: string; finding_id: number; created: boolean; host_count: number }[] }> => {
+  const response = await api.post(`${p()}/scanner-observations/promote`, { items });
+  return response.data;
+};
+
 // Promote (or dismiss) a scanner vulnerability as a finding. Severity defaults
 // to the vuln's own; a terminal status (false_positive/accepted_risk)
 // dismisses it. Idempotent per vuln.

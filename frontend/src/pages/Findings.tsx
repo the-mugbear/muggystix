@@ -65,6 +65,8 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
+import { cn } from '../utils/cn';
+import ScannerObservations from '../components/findings/ScannerObservations';
 import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
@@ -95,7 +97,63 @@ type SummaryPrompt =
 type StatusFilterValue = FindingStatusQuery | 'all';
 type OwnerFilterValue = 'any' | 'me' | 'unowned';
 
+/**
+ * v5.272.0 — two views of one page: the findings (the judged record) and the
+ * scanner observations still waiting for a judgment, grouped by issue across
+ * hosts so a common one can be promoted on many hosts at once.  The view is a
+ * URL param so a link can land on either.
+ */
 const Findings: React.FC = () => {
+  const { hasPermission } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view = searchParams.get('view') === 'observations' ? 'observations' : 'findings';
+  const setView = (next: 'findings' | 'observations') => {
+    setSearchParams(next === 'observations' ? { view: 'observations' } : {}, { replace: true });
+  };
+  return (
+    <div className="p-md md:p-lg">
+      <div className="mb-md">
+        <h1 className="text-page-title font-semibold">Findings</h1>
+        {/* v5.267.0 — one line; the vocabulary (v5.225.0, the three
+            populations named the same way everywhere) sits on the (i). */}
+        <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
+          The issues triaged in this project — the record reports are built from.
+          <InfoTip
+            label="What the statuses mean"
+            text={
+              <>
+                Scanner observations are what the scanners reported, not yet judged; promote one to make it a
+                finding. Open and Retest are under investigation; Confirmed is validated; False positive, Accepted
+                risk and Remediated are closed. A finding&apos;s status is the issue&apos;s; each affected host keeps
+                its own state on the finding page.
+              </>
+            }
+          />
+        </p>
+        <div role="tablist" aria-label="Findings view" className="mt-sm inline-flex rounded-control border border-border p-[2px]">
+          {([['findings', 'Findings'], ['observations', 'Scanner observations']] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={view === value}
+              onClick={() => setView(value)}
+              className={cn(
+                'rounded-control px-sm py-xxs text-metadata focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                view === value ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-accent',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {view === 'observations' ? <ScannerObservations canManage={hasPermission('analyst')} /> : <FindingsList />}
+    </div>
+  );
+};
+
+const FindingsList: React.FC = () => {
   const toast = useToast();
   const { hasPermission, user } = useAuth();
   // Viewers may read findings but not dispose/select; analyst+ may triage.
@@ -413,26 +471,7 @@ const Findings: React.FC = () => {
   };
 
   return (
-    <div className="p-md md:p-lg">
-      <div className="mb-md">
-        <h1 className="text-page-title font-semibold">Findings</h1>
-        {/* v5.267.0 — one line; the vocabulary (v5.225.0, the three
-            populations named the same way everywhere) sits on the (i). */}
-        <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
-          The issues triaged in this project — the record reports are built from.
-          <InfoTip
-            label="What the statuses mean"
-            text={
-              <>
-                Not the raw scanner observations — those stay on each host until promoted. Open and Retest are
-                under investigation; Confirmed is validated; False positive, Accepted risk and Remediated are closed.
-                A finding&apos;s status is the issue&apos;s; each affected host keeps its own state on the finding page.
-              </>
-            }
-          />
-        </p>
-      </div>
-
+    <div>
       {/* Filters: one row closed by a rule (UI_STYLE_GUIDE §7). */}
       <div className="mb-md flex flex-wrap items-end gap-sm border-b border-border pb-sm">
         <div className="min-w-56 flex-1">

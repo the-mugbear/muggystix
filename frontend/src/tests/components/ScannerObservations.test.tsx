@@ -1,0 +1,90 @@
+/**
+ * Scanner observations by issue, with bulk promotion (v5.272.0): an issue
+ * common to many hosts is promoted once, on every host or on the hosts ticked.
+ */
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../services/api', () => ({
+  getObservationIssues: vi.fn(),
+  getObservationIssueHosts: vi.fn(),
+  promoteObservationIssues: vi.fn(),
+}));
+const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() };
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
+
+import * as api from '../../services/api';
+import ScannerObservations from '../../components/findings/ScannerObservations';
+
+const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
+const issue = (key: string, title: string, hosts: number, over: Record<string, unknown> = {}) => ({
+  issue_key: key, title, severity: 'medium', cve_id: null, sources: ['nessus'],
+  host_count: hosts, judged_host_count: 0, finding_id: null, finding_status: null, ...over,
+});
+const SMB = issue('title:smb signing not required', 'SMB Signing not required', 3);
+const TLS = issue('title:tls 1.0', 'TLS Version 1.0 Protocol Detection', 2, { finding_id: 12, finding_status: 'confirmed', judged_host_count: 1 });
+
+const renderIt = (canManage = true) =>
+  render(<MemoryRouter><ScannerObservations canManage={canManage} /></MemoryRouter>);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocked.getObservationIssues.mockResolvedValue({ items: [SMB, TLS], total: 2 });
+  mocked.getObservationIssueHosts.mockResolvedValue([
+    { host_id: 1, ip_address: '10.9.0.1', hostname: null, severity: 'medium', ports: [445], judged: false, endpoint_status: null },
+    { host_id: 2, ip_address: '10.9.0.2', hostname: 'fs2', severity: 'medium', ports: [445], judged: false, endpoint_status: null },
+    { host_id: 3, ip_address: '10.9.0.3', hostname: null, severity: 'medium', ports: [], judged: false, endpoint_status: null },
+  ]);
+  mocked.promoteObservationIssues.mockResolvedValue({
+    results: [
+      { issue_key: SMB.issue_key, finding_id: 30, created: true, host_count: 2 },
+      { issue_key: TLS.issue_key, finding_id: 12, created: false, host_count: 2 },
+    ],
+  });
+});
+
+describe('ScannerObservations', () => {
+  it('lists each issue once with its hosts and what is already covered', async () => {
+    renderIt();
+    expect(await screen.findByText('SMB Signing not required')).toBeInTheDocument();
+    expect(screen.getByText('3 hosts')).toBeInTheDocument();
+    expect(screen.getByText('1 covered · 1 not yet judged')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Finding #12/ })).toHaveAttribute('href', '/findings/12');
+    // Defaults to issues carried by 2+ hosts, still waiting.
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(expect.objectContaining({ minHosts: 2, includeJudged: false }));
+  });
+
+  it('promotes several issues at once, one on the hosts ticked and one on all of them', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+
+    // Narrow SMB to two of its three hosts: that selects the issue.
+    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Include 10.9.0.3' }));
+    expect(screen.getByText('2 of 3 ticked')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLS Version 1.0 Protocol Detection' }));
+
+    expect(screen.getByText(/selected · 4 hosts/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Promote to findings' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('2 of 3 hosts')).toBeInTheDocument();
+    expect(within(dialog).getByText(/all 2 hosts · joins finding #12/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 2 issues' }));
+
+    await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith([
+      { issue_key: SMB.issue_key, host_ids: [1, 2] },
+      { issue_key: TLS.issue_key },
+    ]));
+    expect(toastMock.success).toHaveBeenCalledWith('Promoted 2 issues: 1 new finding, 1 joined an existing finding');
+    await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenCalledTimes(2)); // refreshed
+  });
+
+  it('a viewer can read the list but not select or promote', async () => {
+    renderIt(false);
+    await screen.findByText('SMB Signing not required');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Promote to findings' })).not.toBeInTheDocument();
+  });
+});

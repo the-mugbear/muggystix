@@ -291,6 +291,7 @@ class FindingService:
         owner_id: Optional[int] = None,
         summary: Optional[str] = None,
         only_this_host: bool = False,
+        host_ids: Optional[Sequence[int]] = None,
     ) -> Finding:
         """Promote a scanner vulnerability into a Finding (references, never
         copies — Finding.vuln_id).  Severity defaults to the vuln's own
@@ -306,8 +307,14 @@ class FindingService:
         claim: "confirmed" is recorded for the host that was looked at, not for
         hosts nobody has verified.  The others stay untriaged scanner
         observations that say "Finding #N covers other hosts only".
+
+        ``host_ids`` (v2.386.0): exactly these hosts — the bulk promotion from
+        the Scanner observations list, where the operator ticked the hosts
+        they verified.  The caller checks they carry the issue.
         """
         def _hosts_for(v, k):
+            if host_ids is not None:
+                return list(host_ids)
             if only_this_host:
                 return [v.host_id] if v.host_id else []
             return self._issue_host_ids(v, project_id, k)
