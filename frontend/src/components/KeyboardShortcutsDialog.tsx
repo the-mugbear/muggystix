@@ -38,6 +38,10 @@ const buildShortcuts = (): ShortcutRow[] => [
     label: 'Hosts: move the row cursor (↑/↓ too); steps prev/next host when the inspector is open',
   },
   { keys: ['Enter'], label: 'Hosts: open the cursor row in the inspector' },
+  {
+    keys: ['j', 'k'],
+    label: 'Findings, Scanner observations, Names, Collaboration: move the row cursor (↑/↓ too); Enter opens the row',
+  },
 ];
 
 export interface KeyboardShortcutsDialogProps {

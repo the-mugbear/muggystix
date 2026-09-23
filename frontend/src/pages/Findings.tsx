@@ -8,7 +8,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
 
@@ -32,6 +32,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
+import { useListCursor } from '../hooks/useListCursor';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import SeverityBar from '../components/ui/SeverityBar';
@@ -155,6 +156,7 @@ const Findings: React.FC = () => {
 
 const FindingsList: React.FC = () => {
   const toast = useToast();
+  const navigate = useNavigate();
   const { hasPermission, user } = useAuth();
   // Viewers may read findings but not dispose/select; analyst+ may triage.
   const canManage = hasPermission('analyst');
@@ -470,6 +472,13 @@ const FindingsList: React.FC = () => {
     }
   };
 
+  // j/k (↓/↑) move a row cursor, Enter opens the finding — as on Hosts.
+  const { cursorRowProps } = useListCursor(
+    loading || error ? 0 : findings.length,
+    (i) => navigate(findingDetailHref(findings[i].id, searchParams.toString())),
+    { resetKey: searchParams.toString() },
+  );
+
   return (
     <div>
       {/* Filters: one row closed by a rule (UI_STYLE_GUIDE §7). */}
@@ -673,8 +682,8 @@ const FindingsList: React.FC = () => {
                   </TableCell>
                 </TableRow>
               )}
-              {!loading && !error && findings.map((f) => (
-                <TableRow key={f.id} data-state={selected.has(f.id) ? 'selected' : undefined}>
+              {!loading && !error && findings.map((f, i) => (
+                <TableRow key={f.id} data-state={selected.has(f.id) ? 'selected' : undefined} {...cursorRowProps(i)}>
                   <TableCell>
                     {canManage && (
                       <Checkbox

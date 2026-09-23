@@ -22,6 +22,7 @@ import {
 import type { ObservationIssue, ObservationIssueHost } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useLatestRequest } from '../../hooks/useLatestRequest';
+import { useListCursor } from '../../hooks/useListCursor';
 import { formatApiError } from '../../utils/apiErrors';
 import { SEVERITY_BADGE_VARIANT } from '../../utils/severity';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
@@ -235,6 +236,13 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
 
   const waiting = (i: ObservationIssue) => i.host_count - i.judged_host_count;
 
+  // j/k (↓/↑) move a row cursor, Enter shows or hides the issue's hosts.
+  const { cursorRowProps } = useListCursor(
+    loading || error ? 0 : issues.length,
+    (i) => void toggleExpanded(issues[i]),
+    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}` },
+  );
+
   return (
     <div>
       <p className="mb-sm text-metadata text-muted-foreground">
@@ -340,14 +348,14 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {issues.map((issue) => {
+                {issues.map((issue, index) => {
                   const key = issue.issue_key;
                   const isOpen = expanded.has(key);
                   const hosts = hostsByKey[key];
                   const narrowed = hostChoice.get(key);
                   return (
                     <React.Fragment key={key}>
-                      <TableRow className="align-top" data-issue-key={key}>
+                      <TableRow {...cursorRowProps(index, 'align-top')} data-issue-key={key}>
                         {canManage && (
                           <TableCell>
                             <Checkbox

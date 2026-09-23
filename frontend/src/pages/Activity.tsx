@@ -35,6 +35,7 @@ import { Label } from '../components/ui/label';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { formatApiError } from '../utils/apiErrors';
+import { useListCursor } from '../hooks/useListCursor';
 import {
   Select,
   SelectContent,
@@ -292,6 +293,15 @@ const Activity: React.FC = () => {
   const hostCount = useMemo(() => new Set(notes.map((n) => n.host_id)).size, [notes]);
   const filtered = Boolean(statusFilter || authorFilter || debouncedSearch);
 
+  // j/k (↓/↑) move a row cursor through the threads (days in order), Enter
+  // opens the thread on its host — as on Hosts.
+  const threadIndex = useMemo(() => new Map(threadGroups.map((t, i) => [t.key, i])), [threadGroups]);
+  const { cursorRowProps } = useListCursor(
+    loading ? 0 : threadGroups.length,
+    (i) => navigate(threadHref(threadGroups[i])),
+    { resetKey: `${statusFilter}|${authorFilter}|${debouncedSearch}` },
+  );
+
   return (
     <div className="space-y-md p-md md:p-lg">
       <header className="flex flex-wrap items-start justify-between gap-sm">
@@ -492,7 +502,7 @@ const Activity: React.FC = () => {
               </h2>
               <ul className="divide-y divide-border/60">
                 {day.threads.map((thread) => (
-                  <li key={thread.key}>
+                  <li key={thread.key} {...cursorRowProps(threadIndex.get(thread.key) ?? -1)}>
                     <ThreadRow thread={thread} />
                   </li>
                 ))}
@@ -518,6 +528,8 @@ const Activity: React.FC = () => {
   );
 };
 
+const threadHref = (thread: NoteThreadGroup) => `/hosts/${thread.hostId}#note-${thread.threadRootId}`;
+
 /** One thread, one row: host, status, the latest message once, the count —
  *  and the whole row opens the thread on the host. */
 const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
@@ -526,7 +538,7 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
   const host = thread.ipAddress || 'Unknown host';
   return (
     <Link
-      to={`/hosts/${thread.hostId}#note-${thread.threadRootId}`}
+      to={threadHref(thread)}
       data-thread={thread.key}
       aria-label={`Open the thread on ${host}${thread.hostname ? ` (${thread.hostname})` : ''}`}
       className="group grid min-w-0 grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-start gap-x-md py-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

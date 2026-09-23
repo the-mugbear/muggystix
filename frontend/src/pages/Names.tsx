@@ -21,6 +21,7 @@ import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useListCursor } from '../hooks/useListCursor';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -669,6 +670,13 @@ const Names: React.FC = () => {
   const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const to = Math.min(total, (page + 1) * PAGE_SIZE);
 
+  // j/k (↓/↑) move a row cursor, Enter opens the name — as on Hosts.
+  const { cursorRowProps } = useListCursor(
+    loading || error ? 0 : rows.length,
+    (i) => setSelectedId(rows[i].id),
+    { resetKey: `${page}|${state}|${debouncedSearch}` },
+  );
+
   return (
     <div className="p-md md:p-lg">
       <div className="mb-md flex flex-wrap items-center gap-sm">
@@ -798,10 +806,10 @@ const Names: React.FC = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((row) => (
+                  {rows.map((row, i) => (
                     <TableRow
                       key={row.id}
-                      className="cursor-pointer hover:bg-accent/40"
+                      {...cursorRowProps(i, 'cursor-pointer hover:bg-accent/40')}
                       onClick={() => setSelectedId(row.id)}
                       aria-selected={selectedId === row.id}
                     >
