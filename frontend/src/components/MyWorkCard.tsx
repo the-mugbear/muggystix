@@ -44,6 +44,7 @@ import { followHost, updateTestPlanEntry } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
+import { STATUS_LABEL } from '../utils/findingStatus';
 import { PostureSection, SectionCount } from './posture/PostureSection';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -178,7 +179,7 @@ function buildItems(
       primary: `#${f.finding_id}`,
       primaryMono: false,
       chip: { label: f.severity, tone: sevTone(f.severity) },
-      meta: `${f.title} · ${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${f.status.replace(/_/g, ' ')}`,
+      meta: `${f.title} · ${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${(STATUS_LABEL as Record<string, string>)[f.status] ?? f.status}`,
       right: { label: fmtAgo(tsOf(f.updated_at)), tone: null },
       priorityRank: PRIORITY_RANK[f.severity] ?? 5,
       tsEpoch: tsOf(f.updated_at),

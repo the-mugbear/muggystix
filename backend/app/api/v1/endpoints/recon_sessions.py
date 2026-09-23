@@ -49,6 +49,7 @@ from app.db.models_agent import (
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
+from app.services.host_query_common import escape_like
 from app.services.recon_summary_service import (
     recon_session_diff_ips,
     recon_session_host_breakdown,
@@ -423,7 +424,7 @@ def list_recon_sessions(
     if scope_id is not None:
         q = q.filter(ReconSession.scope_id == scope_id)
     if search:
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like(search)
         like = f"%{escaped}%"
         q = q.filter(
             or_(

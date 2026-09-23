@@ -372,8 +372,9 @@ export const getObservationIssues = async (
   return response.data;
 };
 
-export const getObservationIssueHosts = async (issueKey: string): Promise<ObservationIssueHost[]> => {
-  const response = await api.get(`${p()}/scanner-observations/hosts`, { params: { issue_key: issueKey } });
+/** The first `limit` hosts by address (omitted = all). */
+export const getObservationIssueHosts = async (issueKey: string, limit?: number): Promise<ObservationIssueHost[]> => {
+  const response = await api.get(`${p()}/scanner-observations/hosts`, { params: { issue_key: issueKey, limit } });
   return response.data;
 };
 

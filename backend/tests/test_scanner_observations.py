@@ -118,6 +118,12 @@ def test_promoting_again_joins_and_never_changes_status(client, db_session, test
     assert {fh.host_id for fh in db_session.query(FindingHost).filter_by(finding_id=fid)} == {h1.id, h2.id}
 
 
+def test_the_hosts_of_an_issue_can_be_limited(client, test_project, estate):
+    hosts = client.get(_url(test_project, "/hosts"),
+                       params={"issue_key": "title:smb signing not required", "limit": 2}).json()
+    assert [h["ip_address"] for h in hosts] == ["10.9.0.1", "10.9.0.2"]
+
+
 def test_a_long_title_keyed_issue_can_be_promoted(client, db_session, test_project, estate):
     """Review 2026-09-23 C5: ``findings.dedup_key`` was 255 wide while the
     issue key it must equal is 600, so a Nikto-style title (URI + message)
@@ -150,3 +156,13 @@ def test_a_bad_item_changes_nothing(client, db_session, test_project, estate):
     assert db_session.query(Finding).filter_by(project_id=test_project.id).count() == 0
     unknown = client.post(_url(test_project, "/promote"), json={"items": [{"issue_key": "title:nope"}]})
     assert unknown.status_code == 422
+
+
+def test_the_issue_filter_lists_exactly_its_hosts(client, test_project, estate):
+    """The "all N hosts" link of an issue too long to list under its row."""
+    r = client.get(f"/api/v1/projects/{test_project.id}/hosts/",
+                   params={"q": 'issue:"title:tls version 1.0 protocol detection"'})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    items = body["items"] if isinstance(body, dict) else body
+    assert sorted(h["ip_address"] for h in items) == ["10.9.0.1", "10.9.0.2"]

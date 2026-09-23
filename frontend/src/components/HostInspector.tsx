@@ -70,7 +70,9 @@ import type {
   HostTestPlanEntry,
   ProposedTestObject,
   HostFollowerEntry,
+  FindingHostStatus,
   FindingSeverity,
+  FindingStatus,
   HostVulnerability,
   PromoteVulnerabilityPreview,
   ProjectMember,
@@ -136,6 +138,9 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Textarea } from './ui/textarea';
+import {
+  ENDPOINT_STATUS_LABEL, STATUS_LABEL as FINDING_STATUS_LABEL,
+} from '../utils/findingStatus';
 
 // §9 review-completion outcomes — what "reviewed" actually concluded, recorded
 // when a reviewer marks a host done. Order = how they're offered in the dialog.
@@ -2100,12 +2105,21 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </span>
               ) : triagePreview && triageVuln?.intent === 'false_positive' && triageScope === 'host' ? (
                 <span className="text-foreground">
-                  {triagePreview.already_promoted ? (
+                  {triagePreview.already_promoted && triagePreview.host_endpoint_status === 'false_positive' ? (
                     <>
-                      Finding #{triagePreview.finding_id} already covers this issue. This marks{' '}
-                      <strong>{triagePreview.host_ip ?? 'this host'}</strong> a false positive on it; the
-                      finding stays <strong>{(triagePreview.finding_status ?? 'open').replace(/_/g, ' ')}</strong> for
-                      its other hosts.
+                      <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already a false positive on
+                      finding #{triagePreview.finding_id}; nothing changes.
+                    </>
+                  ) : triagePreview.already_promoted ? (
+                    <>
+                      Finding #{triagePreview.finding_id} already covers this issue
+                      {triagePreview.host_endpoint_status
+                        ? <> ({ENDPOINT_STATUS_LABEL[triagePreview.host_endpoint_status as FindingHostStatus] ?? triagePreview.host_endpoint_status})</>
+                        : ' on other hosts'}
+                      . This marks <strong>{triagePreview.host_ip ?? 'this host'}</strong> a false positive on it; the
+                      finding stays{' '}
+                      <strong>{FINDING_STATUS_LABEL[(triagePreview.finding_status ?? 'open') as FindingStatus] ?? triagePreview.finding_status}</strong>{' '}
+                      for its other hosts.
                     </>
                   ) : (
                     <>
@@ -2119,7 +2133,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 </span>
               ) : triagePreview && triageVuln?.intent === 'confirmed' && triageScope === 'host' ? (
                 <span className="text-foreground">
-                  {triagePreview.already_promoted ? (
+                  {triagePreview.already_promoted && triagePreview.host_endpoint_status ? (
+                    <>
+                      <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already on finding #{triagePreview.finding_id}{' '}
+                      ({ENDPOINT_STATUS_LABEL[triagePreview.host_endpoint_status as FindingHostStatus] ?? triagePreview.host_endpoint_status});
+                      this records this scanner&rsquo;s evidence on it.
+                    </>
+                  ) : triagePreview.already_promoted ? (
                     <>
                       Finding #{triagePreview.finding_id} already covers this issue. This adds{' '}
                       <strong>{triagePreview.host_ip ?? 'this host'}</strong> to it and records this

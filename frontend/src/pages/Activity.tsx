@@ -127,6 +127,7 @@ const Activity: React.FC = () => {
   // Unread notifications, snapshot pre-mark-read so they stay visible until
   // dismissed or opened, even after the bell badge has been zeroed out.
   const [unreadNotifications, setUnreadNotifications] = useState<NotificationItem[]>([]);
+  const [notificationsFailed, setNotificationsFailed] = useState(false);
   const [mentionsDismissed, setMentionsDismissed] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -138,8 +139,14 @@ const Activity: React.FC = () => {
   // Page through notes rather than capping at one 100-note fetch (which made
   // the thread/host counts and the feed silently miss everything past 100).
   const PAGE_SIZE = 100;
+  // Only the latest request applies: a slower response for an older filter
+  // used to overwrite the newer one, and a "Load more" page that landed after
+  // a filter change was appended to the new list (review 2026-09-23 R11).
+  const fetchGenRef = useRef(0);
   const fetchActivity = useCallback(async (skip = 0) => {
     const append = skip > 0;
+    const gen = append ? fetchGenRef.current : ++fetchGenRef.current;
+    const current = () => gen === fetchGenRef.current;
     try {
       if (append) setLoadingMore(true); else setLoading(true);
       setFetchError(null);
@@ -148,14 +155,18 @@ const Activity: React.FC = () => {
       if (authorFilter) params.author_id = Number(authorFilter);
       if (debouncedSearch) params.search = debouncedSearch;
       const data = await getNoteActivity(params);
+      if (!current()) return;
       setNotes((prev) => (append ? [...prev, ...data.notes] : data.notes));
       setStatusCounts(data.status_counts);
       setTotalNotes(data.total_notes);
       if (data.authors) setAuthors(data.authors);
     } catch (err) {
+      if (!current()) return;
       setFetchError(formatApiError(err, 'Failed to load activity.'));
     } finally {
-      if (append) setLoadingMore(false); else setLoading(false);
+      if (current()) {
+        if (append) setLoadingMore(false); else setLoading(false);
+      }
     }
   }, [statusFilter, authorFilter, debouncedSearch]);
 
@@ -186,7 +197,11 @@ const Activity: React.FC = () => {
       getNotifications(true, 50).catch(() => null),
     ])
       .then(([, res]) => {
-        if (cancelled || !res) return;
+        if (cancelled) return;
+        if (!res) {
+          setNotificationsFailed(true);
+          return;
+        }
         setUnreadNotifications(res.notifications);
       })
       .catch((err) => console.error('Activity initial-load handler threw:', err));
@@ -290,6 +305,13 @@ const Activity: React.FC = () => {
           {' · '}{threadGroups.length} thread{threadGroups.length === 1 ? '' : 's'} on {hostCount} host{hostCount === 1 ? '' : 's'} in view
         </p>
       </header>
+
+      {/* A failed load is said, not shown as "no notifications". */}
+      {notificationsFailed && (
+        <p role="status" className="text-metadata text-muted-foreground">
+          Your notifications could not be loaded; the bell in the top bar still lists them.
+        </p>
+      )}
 
       {/* Unread notifications — above the feed so mentions and status pings
           are not buried in it.  A left rule, not a filled panel. */}

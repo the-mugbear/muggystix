@@ -23,6 +23,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     Agent, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
     AssistSession, ExecutionSession, ReconSession, TestPlan,
@@ -319,7 +320,7 @@ def list_feedback(
     if test_plan_id is not None:
         q = q.filter(AgentFeedback.test_plan_id == test_plan_id)
     if search:
-        q = q.filter(AgentFeedback.friction_notes.ilike(f"%{search}%"))
+        q = q.filter(AgentFeedback.friction_notes.ilike(f"%{escape_like(search)}%", escape="\\"))
     # JSON array non-empty filters.  SQLAlchemy's JSON type doesn't give
     # us a portable length check, but ``!= []`` + ``is not None`` gets
     # us close on both postgres and sqlite for the triage use case.

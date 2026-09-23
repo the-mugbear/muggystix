@@ -25,6 +25,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.db import models
+from app.services.host_query_common import escape_like
 
 # Constant, because the derivation admits exactly one reason. It's carried on
 # every row so a consumer (an agent especially) can tell *why* a host is
@@ -75,7 +76,7 @@ def out_of_scope_hosts(
     q = _base_query(db, project_id)
 
     if search:
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like(search)
         like = f"%{escaped}%"
         q = q.filter(
             or_(

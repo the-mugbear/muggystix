@@ -25,6 +25,7 @@ from app.schemas.schemas import (
 from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
 from app.services.format_registry import format_label
+from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_auth import UserRole, User
@@ -2184,7 +2185,7 @@ def get_scan_host_snapshots(
     if state:
         base = base.filter(models.HostScanHistory.state_at_scan == state)
     if search:
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like(search)
         like = f"%{escaped}%"
         base = base.filter(
             or_(

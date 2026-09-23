@@ -24,6 +24,7 @@ from app.services.note_attachment_service import (
 )
 from app.db.session import get_db
 from app.db import models
+from app.services.host_query_common import escape_like
 from app.db.models import Annotation as AnnotationModel, NoteStatus, ActivityCursor
 from app.db.models_auth import User, UserRole
 from app.api.v1.endpoints.auth import get_current_user
@@ -145,8 +146,7 @@ def get_note_activity(
         query = query.filter(AnnotationModel.user_id == author_id)
 
     if search:
-        from app.api.v1.endpoints.hosts import _escape_like
-        escaped = _escape_like(search)
+        escaped = escape_like(search)
         query = query.filter(
             (models.Host.ip_address.ilike(f"%{escaped}%"))
             | (models.Host.hostname.ilike(f"%{escaped}%"))

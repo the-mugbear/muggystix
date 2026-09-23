@@ -16,6 +16,7 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { InspectorSection } from './host-inspector/InspectorSection';
+import { safeHttpHref } from '../utils/safeHref';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 interface WebInterfacesCardProps {
@@ -304,7 +305,7 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
             <Unlock className="size-4 text-muted-foreground" aria-hidden />
           )}
           <a
-            href={row.url}
+            href={safeHttpHref(row.url)}
             target="_blank"
             rel="noopener noreferrer"
             className="min-w-0 flex-1 truncate font-mono text-body text-primary underline-offset-4 hover:underline"
@@ -312,16 +313,18 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
           >
             {row.url}
           </a>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button asChild variant="ghost" size="icon" className="size-7 shrink-0" aria-label={`Open ${row.url} in new tab`}>
-                <a href={row.url} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="size-3.5" aria-hidden />
-                </a>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Open in new tab</TooltipContent>
-          </Tooltip>
+          {safeHttpHref(row.url) && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button asChild variant="ghost" size="icon" className="size-7 shrink-0" aria-label={`Open ${row.url} in new tab`}>
+                  <a href={safeHttpHref(row.url)} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="size-3.5" aria-hidden />
+                  </a>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Open in new tab</TooltipContent>
+            </Tooltip>
+          )}
         </div>
         <div className="mb-xxs flex flex-wrap items-center gap-xs">
           {row.status_code != null && (

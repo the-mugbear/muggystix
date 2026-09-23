@@ -45,6 +45,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_project, require_project_role, is_project_admin
 from app.api.v1.endpoints.auth import get_current_user
+from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     ExecutionSession,
     ExecutionSessionStatus,
@@ -336,7 +337,7 @@ def list_execution_sessions(
     if user_id is not None:
         q = q.filter(ExecutionSession.started_by_id == user_id)
     if search:
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like(search)
         like = f"%{escaped}%"
         q = q.filter(
             or_(

@@ -81,6 +81,43 @@ describe('ScannerObservations', () => {
     await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenCalledTimes(2)); // refreshed
   });
 
+  // Review 2026-09-23 R11: unticking every host left an EMPTY narrowing that
+  // re-selecting kept, so promote sent host_ids: [] and the server refused
+  // the whole batch.
+  it('never sends an empty host list after every host was unticked and the issue re-selected', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    for (const ip of ['10.9.0.1', '10.9.0.2', '10.9.0.3']) {
+      fireEvent.click(await screen.findByRole('checkbox', { name: `Include ${ip}` }));
+    }
+    expect(screen.queryByRole('button', { name: 'Promote to findings' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select SMB Signing not required' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Promote to findings' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Promote 1 issue' }));
+    await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith([{ issue_key: SMB.issue_key }]));
+  });
+
+  it('a host list longer than it shows cannot be narrowed, and links to all of them', async () => {
+    const many = Array.from({ length: 101 }, (_, i) => ({
+      host_id: i + 1, ip_address: `10.8.${Math.floor(i / 250)}.${(i % 250) + 1}`, hostname: null,
+      severity: 'medium', ports: [], judged: false, endpoint_status: null,
+    }));
+    mocked.getObservationIssueHosts.mockResolvedValue(many);
+    mocked.getObservationIssues.mockResolvedValue({ items: [{ ...SMB, host_count: 4000 }], total: 1 });
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    const note = await screen.findByTestId('observation-hosts-cut');
+    expect(note).toHaveTextContent('The first 100 of 4,000 hosts');
+    expect(mocked.getObservationIssueHosts).toHaveBeenCalledWith(SMB.issue_key, 101);
+    expect(screen.queryByRole('checkbox', { name: /^Include / })).not.toBeInTheDocument();
+    expect(within(note).getByRole('link')).toHaveAttribute(
+      'href', `/hosts?q=${encodeURIComponent('issue:"title:smb signing not required"')}`,
+    );
+  });
+
   it('a viewer can read the list but not select or promote', async () => {
     renderIt(false);
     await screen.findByText('SMB Signing not required');

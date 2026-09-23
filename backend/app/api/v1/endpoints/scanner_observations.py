@@ -96,10 +96,11 @@ def list_scanner_observation_issues(
 @router.get("/scanner-observations/hosts", response_model=List[IssueHostOut], summary="The hosts carrying one issue")
 def list_scanner_observation_hosts(
     issue_key: str = Query(..., min_length=1, max_length=600),
+    limit: Optional[int] = Query(None, ge=1, le=5000, description="The first N hosts by address; omitted = all"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    return [IssueHostOut(**vars(h)) for h in svc.issue_hosts(db, project.id, issue_key)]
+    return [IssueHostOut(**vars(h)) for h in svc.issue_hosts(db, project.id, issue_key, limit=limit)]
 
 
 @router.post(

@@ -197,11 +197,14 @@ class IssueHost:
     endpoint_status: Optional[str]
 
 
-def issue_hosts(db: Session, project_id: int, issue_key: str) -> List[IssueHost]:
-    """Every host carrying the issue, with whether a finding covers it there."""
+def issue_hosts(db: Session, project_id: int, issue_key: str, limit: Optional[int] = None) -> List[IssueHost]:
+    """The hosts carrying the issue (the first ``limit`` by address, or all),
+    with whether a finding covers it there.  The Findings view asks for one
+    more than it shows, so it knows when the list is cut — an issue on 10k
+    hosts rendered 10k rows (review 2026-09-23 R11)."""
     key = _key()
     judged = func.max(case((observation_judged_on_host(), 1), else_=0))
-    rows = (
+    query = (
         _project_rows(
             db, project_id, Host.id, Host.ip_address, Host.hostname, func.max(_rank()).label("rank"),
             judged.label("judged"),
@@ -209,8 +212,8 @@ def issue_hosts(db: Session, project_id: int, issue_key: str) -> List[IssueHost]
         .filter(key == issue_key)
         .group_by(Host.id, Host.ip_address, Host.hostname)
         .order_by(Host.ip_address)
-        .all()
     )
+    rows = (query.limit(limit) if limit else query).all()
     if not rows:
         return []
     host_ids = [r.id for r in rows]
@@ -218,7 +221,7 @@ def issue_hosts(db: Session, project_id: int, issue_key: str) -> List[IssueHost]
     for hid, number in (
         _project_rows(db, project_id, Vulnerability.host_id, Port.port_number)
         .join(Port, Port.id == Vulnerability.port_id)
-        .filter(key == issue_key)
+        .filter(key == issue_key, Vulnerability.host_id.in_(host_ids))
         .distinct()
         .all()
     ):

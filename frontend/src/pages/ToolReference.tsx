@@ -36,6 +36,7 @@ import {
   ToolRegistryEntry,
 } from '../services/api/references';
 import { cn } from '../utils/cn';
+import { safeHttpHref } from '../utils/safeHref';
 
 // ---------------------------------------------------------------------------
 // Tool catalogue
@@ -655,9 +656,9 @@ const ToolReference: React.FC = () => {
                         <TableRow key={tool.name} id={`tool-row-${tool.name}`}>
                           <TableCell>
                             <div className="flex min-w-0 flex-col items-start gap-xxs">
-                              {tool.url ? (
+                              {safeHttpHref(tool.url) ? (
                                 <a
-                                  href={tool.url}
+                                  href={safeHttpHref(tool.url)}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="inline-flex max-w-full items-center gap-xxs font-semibold text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"

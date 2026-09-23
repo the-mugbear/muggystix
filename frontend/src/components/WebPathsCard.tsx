@@ -3,6 +3,7 @@ import { FolderSearch, Loader2 } from 'lucide-react';
 
 import { WebPath, getHostWebPaths } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { safeHttpHref } from '../utils/safeHref';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { InspectorSection } from './host-inspector/InspectorSection';
@@ -76,7 +77,7 @@ const WebPathsCard: React.FC<{ hostId: number; count: number }> = ({ hostId, cou
               <Badge variant={statusVariant(r.status_code) as never} className="w-12 shrink-0 justify-center tabular-nums">
                 {r.status_code ?? '—'}
               </Badge>
-              <a href={r.url} target="_blank" rel="noopener noreferrer" title={r.url}
+              <a href={safeHttpHref(r.url)} target="_blank" rel="noopener noreferrer" title={r.url}
                 className="min-w-0 flex-1 truncate font-mono text-primary hover:underline">
                 {r.port != null ? `:${r.port} ` : ''}{r.path}
               </a>

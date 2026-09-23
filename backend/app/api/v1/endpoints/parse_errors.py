@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.db.session import get_db
 from app.db import models
 from app.services.format_registry import format_label
+from app.services.host_query_common import escape_like
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import file_retained, retained_until
 from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
@@ -195,7 +196,7 @@ def get_ingestion_results(
     if tool:
         base = base.filter(func.lower(models.IngestionJob.tool_name) == tool.lower())
     if search:
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like(search)
         like = f"%{escaped}%"
         base = base.filter(
             or_(
@@ -496,7 +497,7 @@ def get_parse_errors(
     if search:
         # Escape SQL LIKE metacharacters in user input so a literal "%"
         # in a filename matches its literal form, not "any prefix".
-        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = escape_like(search)
         like = f"%{escaped}%"
         query = query.filter(
             or_(

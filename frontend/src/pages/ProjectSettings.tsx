@@ -147,6 +147,7 @@ const ProjectSettings: React.FC = () => {
 
   const [addOpen, setAddOpen] = useState(false);
   const [directory, setDirectory] = useState<DirectoryEntry[] | null>(null);
+  const [directoryFailed, setDirectoryFailed] = useState(false);
   const [newUser, setNewUser] = useState<string | null>(null);
   const [newRole, setNewRole] = useState('analyst');
   const [adding, setAdding] = useState(false);
@@ -154,10 +155,13 @@ const ProjectSettings: React.FC = () => {
     setNewUser(null);
     setNewRole('analyst');
     setAddOpen(true);
+    setDirectoryFailed(false);
     try {
       setDirectory((await api.get('/users/directory')).data);
     } catch {
+      // Said as a failure: an empty list read "Everyone is already a member".
       setDirectory([]);
+      setDirectoryFailed(true);
     }
   };
   const candidates = useMemo(
@@ -434,7 +438,11 @@ const ProjectSettings: React.FC = () => {
                 }))}
                 value={newUser}
                 onChange={setNewUser}
-                placeholder={directory === null ? 'Loading people…' : candidates.length ? 'Search people…' : 'Everyone is already a member'}
+                placeholder={
+                  directory === null ? 'Loading people…'
+                    : directoryFailed ? 'Could not load the user directory — close and try again'
+                      : candidates.length ? 'Search people…' : 'Everyone is already a member'
+                }
                 searchPlaceholder="Name or username"
                 disabled={directory === null || candidates.length === 0}
               />

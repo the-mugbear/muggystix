@@ -661,6 +661,10 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="A finding’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
     FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True,
               description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
+    FieldSpec("issue", lambda c, v: P.issue_predicate(c.db, v, c.project_id),
+              description="Exactly one scanner-observation issue, by the key the Findings page "
+                          "groups observations by (quote it: `issue:\"title:smb signing not "
+                          "required\"`). Exact match, unlike vuln:."),
     FieldSpec("exploitport", _b_exploitport, value_source="port",
               description="A port carrying a finding flagged exploitable by a vulnerability "
                           "scanner (currently Nessus) — the exploit is on THIS port (same-row)."),

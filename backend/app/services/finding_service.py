@@ -17,6 +17,7 @@ from app.db.models_findings import (
     Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
 )
+from app.services.host_query_common import escape_like
 from app.services.report_text import clip as clip_report_text, seed_report_text_from_vuln
 from app.services.status_history_service import record_status_transition
 from app.services.vuln_identity import issue_key_for
@@ -889,7 +890,7 @@ class FindingService:
         if host_id is not None:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
         if search and search.strip():
-            q = q.filter(Finding.title.ilike(f"%{search.strip()}%"))
+            q = q.filter(Finding.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
         total = q.count()
         q = q.order_by(*_finding_order(sort, sort_dir))
         rows = q.offset(offset).limit(limit).all()
@@ -919,7 +920,7 @@ class FindingService:
         if host_id is not None:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
         if search and search.strip():
-            q = q.filter(Finding.title.ilike(f"%{search.strip()}%"))
+            q = q.filter(Finding.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
         return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
 
     # ------------------------------------------------------------------

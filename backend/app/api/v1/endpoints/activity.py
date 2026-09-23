@@ -56,6 +56,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.db import models
+from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     ExecutionSession,
     HostSanityCheck,
@@ -255,10 +256,7 @@ def _parse_tool(raw: Optional[str]) -> Optional[str]:
 def _contains(column, needle: str):
     """Case-insensitive substring match with the LIKE metacharacters in
     ``needle`` escaped, so ``nmap_`` means a literal underscore."""
-    escaped = (
-        needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    )
-    return column.ilike(f"%{escaped}%", escape="\\")
+    return column.ilike(f"%{escape_like(needle)}%", escape="\\")
 
 
 def _parse_kinds(raw: Optional[str]) -> Set[str]:

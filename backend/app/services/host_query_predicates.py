@@ -181,11 +181,13 @@ def version_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     joined = func.concat(
         func.coalesce(models.Port.service_product, ""), " ", func.coalesce(models.Port.service_version, ""),
     )
+    # LIKE wildcards in the value are literal, as in service: (review
+    # 2026-09-23 R12 — `path:/admin_x` matched `/adminYx`).
     conds = [
         or_(
-            models.Port.service_product.ilike(f"%{v}%"),
-            models.Port.service_version.ilike(f"%{v}%"),
-            joined.ilike(f"%{v}%"),
+            models.Port.service_product.ilike(f"%{escape_like(v)}%", escape="\\"),
+            models.Port.service_version.ilike(f"%{escape_like(v)}%", escape="\\"),
+            joined.ilike(f"%{escape_like(v)}%", escape="\\"),
         )
         for v in values if v
     ]
@@ -198,10 +200,27 @@ def version_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Host has a path content discovery found that ILIKE-matches a value
     (v2.390.0 — the paths were an unqueryable string before)."""
-    conds = [models.WebPath.path.ilike(f"%{v}%") for v in values if v]
+    conds = [models.WebPath.path.ilike(f"%{escape_like(v)}%", escape="\\") for v in values if v]
     if not conds:
         return false()
     return models.Host.id.in_(db.query(models.WebPath.host_id).filter(or_(*conds)))
+
+
+def issue_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
+    """Host carries a scanner observation of exactly this issue
+    (``Vulnerability.issue_key`` — the key the Findings page's scanner
+    observations group by).  Exact, not a substring: it is the "all N hosts"
+    link of an issue whose host list is too long to show there."""
+    keys = [v for v in values if v]
+    if not keys:
+        return false()
+    _H = aliased(models.Host)
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, Vulnerability.issue_key.in_(keys))
+    )
+    return models.Host.id.in_(sub)
 
 
 def portstate_predicate(db: Session, values: Sequence[str]) -> ColumnElement:

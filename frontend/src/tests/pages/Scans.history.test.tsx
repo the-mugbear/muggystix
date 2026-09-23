@@ -195,3 +195,18 @@ describe('Scans — layout', () => {
     expect(api.deleteScan).not.toHaveBeenCalled();
   });
 });
+
+// Review 2026-09-23 R11: a failed load read "No scans uploaded yet".
+describe('Scans — a failed load', () => {
+  it('says the load failed, not that the project is empty, and retries', async () => {
+    api.getImportHistory.mockRejectedValueOnce(new Error('boom'));
+    renderPage();
+    const alert = await screen.findByTestId('history-error');
+    expect(alert).toHaveTextContent(/Could not load the import history/);
+    expect(screen.queryByText('No scans uploaded yet')).not.toBeInTheDocument();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('newest.xml')).toBeInTheDocument();
+    expect(screen.queryByTestId('history-error')).not.toBeInTheDocument();
+  });
+});

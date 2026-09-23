@@ -5,6 +5,7 @@
  */
 import type { PostureLabel } from '../../services/api';
 import type { Severity } from '../../utils/severity';
+import { STATUS_LABEL as FINDING_STATUS_LABEL } from '../../utils/findingStatus';
 
 // Severity vocabulary is canonical in utils/severity — re-exported here so
 // existing posture imports keep working off the one source of truth.
@@ -74,10 +75,8 @@ export const STATUS_HSL: Record<string, string> = {
   accepted_risk: 'hsl(var(--muted-foreground) / 0.55)',
 };
 
-export const STATUS_LABEL: Record<string, string> = {
-  open: 'Open', confirmed: 'Confirmed', retest: 'Retest',
-  remediated: 'Remediated', false_positive: 'False positive', accepted_risk: 'Accepted risk',
-};
+/** The app's one finding vocabulary, indexable by any status string. */
+export const STATUS_LABEL: Record<string, string> = FINDING_STATUS_LABEL;
 
 /**
  * The pipeline's groups, in the app's one finding vocabulary

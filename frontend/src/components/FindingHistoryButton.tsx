@@ -6,6 +6,7 @@
  */
 import React from 'react';
 import { History, Loader2 } from 'lucide-react';
+import { STATUS_LABEL } from '../utils/findingStatus';
 
 import {
   getFindingHistory,
@@ -17,15 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { safeFallback } from '../utils/uiStyles';
 
-const STATUS_LABEL: Record<string, string> = {
-  open: 'Open',
-  confirmed: 'Confirmed',
-  retest: 'Retest',
-  false_positive: 'False positive',
-  accepted_risk: 'Accepted risk',
-  remediated: 'Remediated',
-};
-const label = (s: string | null) => (s ? STATUS_LABEL[s] ?? s : '—');
+const label = (s: string | null) => (s ? (STATUS_LABEL as Record<string, string>)[s] ?? s : '—');
 
 export const FindingHistoryButton: React.FC<{ findingId: number }> = ({ findingId }) => {
   const [open, setOpen] = React.useState(false);

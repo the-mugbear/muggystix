@@ -10,7 +10,7 @@
  * recorded only where the operator means it (the host-scoped promotion rule).
  * An issue that already has a finding joins it, its status untouched.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react';
 
@@ -24,8 +24,9 @@ import { useToast } from '../../contexts/ToastContext';
 import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { formatApiError } from '../../utils/apiErrors';
 import { SEVERITY_BADGE_VARIANT } from '../../utils/severity';
-import { STATUS_LABEL } from '../../utils/findingStatus';
-import type { FindingStatus } from '../../services/api';
+import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
+import { stickyBelowChrome } from '../../utils/uiStyles';
+import type { FindingHostStatus, FindingStatus } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
@@ -39,6 +40,8 @@ import { Switch } from '../ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 
 const PAGE = 50;
+/** Hosts listed under an issue; one more is requested to know the list is cut. */
+export const HOST_CAP = 100;
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
@@ -80,6 +83,10 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     () => ({ search, severity: severity === 'all' ? undefined : severity, minHosts, includeJudged }),
     [search, severity, minHosts, includeJudged],
   );
+  // The filters a "Load more" response belongs to: a page that lands after the
+  // filters changed is dropped, not appended to the new list.
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,10 +107,15 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   }, [load]);
 
   const loadMore = async () => {
+    const asked = filters;
     setLoadingMore(true);
     try {
-      const page = await getObservationIssues({ ...filters, skip: issues.length, limit: PAGE });
-      setIssues((prev) => [...prev, ...page.items.filter((i) => !prev.some((p) => p.issue_key === i.issue_key))]);
+      const page = await getObservationIssues({ ...asked, skip: issues.length, limit: PAGE });
+      if (filtersRef.current !== asked) return;
+      setIssues((prev) => {
+        const seen = new Set(prev.map((p) => p.issue_key));
+        return [...prev, ...page.items.filter((i) => !seen.has(i.issue_key))];
+      });
       setTotal(page.total);
     } catch (err) {
       toast.error(formatApiError(err, 'Could not load more issues'));
@@ -124,13 +136,17 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     if (open || Array.isArray(hostsByKey[key])) return;
     setHostsByKey((prev) => ({ ...prev, [key]: 'loading' }));
     try {
-      const hosts = await getObservationIssueHosts(key);
+      const hosts = await getObservationIssueHosts(key, HOST_CAP + 1);
       setHostsByKey((prev) => ({ ...prev, [key]: hosts }));
     } catch {
       setHostsByKey((prev) => ({ ...prev, [key]: 'error' }));
     }
   };
 
+  // Selecting or deselecting an issue drops any host narrowing: re-selecting
+  // means "every host".  A narrowing left behind at zero hosts was sent as
+  // ``host_ids: []`` and the server refused the WHOLE batch (review 2026-09-23
+  // R11).
   const toggleIssue = (issue: ObservationIssue, on: boolean) => {
     setSelected((prev) => {
       const next = new Map(prev);
@@ -138,23 +154,35 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       else next.delete(issue.issue_key);
       return next;
     });
+    setHostChoice((prev) => {
+      if (!prev.has(issue.issue_key)) return prev;
+      const map = new Map(prev);
+      map.delete(issue.issue_key);
+      return map;
+    });
   };
 
-  // Ticking hosts under a row narrows it and selects the issue; ticking them
-  // all again goes back to "every host".
+  // Every host starts ticked.  Unticking narrows the issue and selects it;
+  // ticking them all again goes back to "every host"; unticking the LAST one
+  // deselects the issue and drops the narrowing, so no empty host list can
+  // reach the server.
   const toggleHost = (issue: ObservationIssue, hosts: ObservationIssueHost[], hostId: number, on: boolean) => {
     const key = issue.issue_key;
     const current = hostChoice.get(key) ?? new Set(hosts.map((h) => h.host_id));
     const next = new Set(current);
     if (on) next.add(hostId);
     else next.delete(hostId);
+    if (next.size === 0) {
+      toggleIssue(issue, false);
+      return;
+    }
+    setSelected((prev) => (prev.has(key) ? prev : new Map(prev).set(key, issue)));
     setHostChoice((prev) => {
       const map = new Map(prev);
       if (next.size === hosts.length) map.delete(key);
       else map.set(key, next);
       return map;
     });
-    toggleIssue(issue, next.size > 0);
   };
 
   const hostCountFor = (issue: ObservationIssue) => hostChoice.get(issue.issue_key)?.size ?? issue.host_count;
@@ -246,7 +274,10 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       </div>
 
       {canManage && chosen.length > 0 && (
-        <div className="sticky top-0 z-10 mb-sm flex flex-wrap items-center gap-sm border-b border-border bg-background py-xs">
+        <div
+          className="sticky z-10 mb-sm flex flex-wrap items-center gap-sm border-b border-border bg-background py-xs"
+          style={stickyBelowChrome}
+        >
           <span className="text-metadata">
             <strong>{plural(chosen.length, 'issue')}</strong> selected · {plural(chosenHosts, 'host')}
           </span>
@@ -364,19 +395,36 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                               </p>
                             ) : hosts === 'error' ? (
                               <p className="text-caption text-destructive">Couldn&apos;t load the hosts. Collapse the row and try again.</p>
-                            ) : (
+                            ) : (() => {
+                              // A cut list cannot be narrowed: unticking one of the
+                              // first HOST_CAP would promote those, not the rest.
+                              const cut = hosts.length > HOST_CAP;
+                              const shown = cut ? hosts.slice(0, HOST_CAP) : hosts;
+                              return (
                               <>
-                                {canManage && (
+                                {canManage && !cut && (
                                   <p className="mb-xxs text-caption text-muted-foreground">
                                     Untick the hosts you have not verified; the finding is recorded on the ticked ones.
                                   </p>
                                 )}
+                                {cut && (
+                                  <p className="mb-xxs text-caption text-muted-foreground" data-testid="observation-hosts-cut">
+                                    The first {HOST_CAP} of {plural(issue.host_count, 'host')}.{' '}
+                                    {canManage && 'Promoting records it on every one; to narrow, open them on Hosts. '}
+                                    <Link
+                                      to={`/hosts?q=${encodeURIComponent(`issue:"${key.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)}`}
+                                      className="text-primary hover:underline"
+                                    >
+                                      All {plural(issue.host_count, 'host')} on Hosts
+                                    </Link>
+                                  </p>
+                                )}
                                 <ul className="divide-y divide-border">
-                                  {hosts.map((h) => {
+                                  {shown.map((h) => {
                                     const ticked = narrowed ? narrowed.has(h.host_id) : true;
                                     return (
                                       <li key={h.host_id} className="flex min-w-0 items-center gap-sm py-xxs text-metadata">
-                                        {canManage && (
+                                        {canManage && !cut && (
                                           <Checkbox
                                             aria-label={`Include ${h.ip_address}`}
                                             checked={ticked}
@@ -394,7 +442,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                                         </span>
                                         <span className="w-40 shrink-0 truncate text-caption">
                                           {h.judged
-                                            ? `on the finding · ${(h.endpoint_status ?? 'open').replace(/_/g, ' ')}`
+                                            ? `On the finding · ${ENDPOINT_STATUS_LABEL[(h.endpoint_status ?? 'open') as FindingHostStatus] ?? h.endpoint_status}`
                                             : <span className="text-muted-foreground">not yet judged</span>}
                                         </span>
                                       </li>
@@ -402,7 +450,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                                   })}
                                 </ul>
                               </>
-                            )}
+                              );
+                            })()}
                           </TableCell>
                         </TableRow>
                       )}

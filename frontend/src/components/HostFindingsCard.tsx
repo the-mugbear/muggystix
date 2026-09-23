@@ -19,7 +19,7 @@ import {
   setFindingEndpointStatus,
   setFindingStatus,
 } from '../services/api';
-import { ENDPOINT_STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
+import { ENDPOINT_STATUS_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -35,15 +35,6 @@ import {
 } from './ui/select';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
-
-const STATUS_LABEL: Record<FindingStatus, string> = {
-  open: 'Open',
-  confirmed: 'Confirmed',
-  false_positive: 'False positive',
-  accepted_risk: 'Accepted risk',
-  remediated: 'Remediated',
-  retest: 'Retest',
-};
 
 interface HostFindingsCardProps {
   hostId: number;

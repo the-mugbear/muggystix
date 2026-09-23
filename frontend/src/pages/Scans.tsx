@@ -114,6 +114,8 @@ export default function Scans() {
   // reflect every matching scan, not just the loaded (paginated) page.
   const [inventorySummary, setInventorySummary] = useState<ScanInventorySummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const fetchGenRef = useRef(0);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [scanToDelete, setScanToDelete] = useState<Scan | null>(null);
@@ -316,6 +318,11 @@ export default function Scans() {
   );
 
   const fetchScans = useCallback(async () => {
+    // Only the latest call applies its result: filters, the job poll and the
+    // inventory marker all call this, and an older, slower response used to
+    // land last (review 2026-09-23 R11).
+    const gen = ++fetchGenRef.current;
+    const current = () => gen === fetchGenRef.current;
     const filters = {
       search: debouncedSearchText.trim() || undefined,
       tool: toolFilter || undefined,
@@ -325,10 +332,14 @@ export default function Scans() {
       // All files: one flat, sortable list of every imported file.
       try {
         const data = await getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder, unbatched: false });
+        if (!current()) return;
         setScans(data);
         setHasMoreScans(data.length === SCAN_LIMIT);
+        setHistoryError(null);
       } catch (err) {
+        if (!current()) return;
         console.error('Error fetching scans:', err);
+        setHistoryError(formatApiError(err, 'Could not load the imported scans.'));
       }
       setBatches([]);
       setHistory([]);
@@ -341,21 +352,28 @@ export default function Scans() {
       try {
         const page = await getImportHistory({ ...filters, limit: HISTORY_PAGE });
         const rows = await hydrateHistory(page.items, filters);
+        if (!current()) return;
         setHistory(page.items);
         setHistoryTotal(typeof page.total === 'number' ? page.total : null);
         setScans(rows.scans);
         setBatches(rows.batches);
         setHistoryPartial(rows.partial);
         setHasMoreScans(page.has_more);
+        setHistoryError(null);
       } catch (err) {
+        if (!current()) return;
+        // A failure is said as one; it used to read "No scans uploaded yet"
+        // on a first load, and leave the previous filter's rows on a change.
         console.error('Error fetching import history:', err);
+        setHistoryError(formatApiError(err, 'Could not load the import history.'));
       }
     }
     setLoading(false);
     // Headline totals are filter-aware and independent of pagination, so a
     // failure here must not block the table from rendering — fetch separately.
     try {
-      setInventorySummary(await getScansSummary(filters));
+      const summary = await getScansSummary(filters);
+      if (current()) setInventorySummary(summary);
     } catch (err) {
       console.error('Error fetching scan summary:', err);
     }
@@ -363,6 +381,8 @@ export default function Scans() {
 
   const loadMoreScans = useCallback(async () => {
     if (loadingMore || !hasMoreScans) return;
+    // A page that lands after the filters changed belongs to the old list.
+    const gen = fetchGenRef.current;
     setLoadingMore(true);
     try {
       const filters = {
@@ -373,6 +393,7 @@ export default function Scans() {
       if (!showBatchFiles) {
         const page = await getImportHistory({ ...filters, skip: history.length, limit: HISTORY_PAGE });
         const rows = await hydrateHistory(page.items, filters);
+        if (gen !== fetchGenRef.current) return;
         setHistory((prev) => [...prev, ...page.items]);
         setScans((prev) => [...prev, ...rows.scans]);
         setBatches((prev) => [...prev, ...rows.batches]);
@@ -386,6 +407,7 @@ export default function Scans() {
         sortOrder,
         unbatched: false,
       });
+      if (gen !== fetchGenRef.current) return;
       setScans((prev) => [...prev, ...data]);
       setHasMoreScans(data.length === SCAN_LIMIT);
     } catch (err) {
@@ -1559,7 +1581,18 @@ export default function Scans() {
           sessions to the same axis.  Per-project scan inventory still
           lives here in tabular form below. */}
 
-      {!hasActiveFilters && scans.length === 0 && batches.length === 0 ? (
+      {historyError && (
+        <Alert variant="destructive" className="mb-sm" data-testid="history-error">
+          <AlertDescription className="flex flex-wrap items-center gap-sm">
+            <span className="min-w-0 flex-1 break-words">
+              {historyError}
+              {(scans.length > 0 || batches.length > 0) && ' The rows below are from the last successful load.'}
+            </span>
+            <Button size="sm" variant="outline" onClick={() => void fetchScans()}>Retry</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {historyError && scans.length === 0 && batches.length === 0 ? null : !hasActiveFilters && scans.length === 0 && batches.length === 0 ? (
         <div className="py-xl text-center">
           <Upload className="mx-auto mb-sm size-16 text-muted-foreground" aria-hidden />
           <p className="text-subheading text-muted-foreground">No scans uploaded yet</p>

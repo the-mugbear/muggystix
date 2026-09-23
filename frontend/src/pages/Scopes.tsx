@@ -146,6 +146,8 @@ const Scopes: React.FC = () => {
   // request per keystroke; the result resets the list to page 0.
   const [subnetSearch, setSubnetSearch] = useState('');
   const debouncedSubnetSearch = useDebouncedValue(subnetSearch, 300);
+  const searchRef = useRef(debouncedSubnetSearch);
+  searchRef.current = debouncedSubnetSearch;
 
   // v2.86.0 — subnet-label state.  The project-wide label catalogue
   // is fetched on mount and refreshed whenever the manager dialog
@@ -216,7 +218,10 @@ const Scopes: React.FC = () => {
       setScope(scopeData);
       setCoverage(coverageData);
     } catch (err) {
+      // Said, not only logged: the page otherwise kept showing the state
+      // from before the change the operator just made.
       console.error('Error refreshing scope:', err);
+      toast.error('The change was saved, but the scope could not be reloaded — refresh the page.');
     }
   };
 
@@ -247,9 +252,13 @@ const Scopes: React.FC = () => {
 
   const loadMoreSubnets = async () => {
     if (!scope || loadingMore) return;
+    // A page asked for under one search is dropped if the search changed
+    // while it loaded, instead of being appended to the new result.
+    const askedFor = debouncedSubnetSearch;
     setLoadingMore(true);
     try {
       const next = await fetchScopePage(scope.subnets.length, SUBNET_PAGE_SIZE);
+      if (askedFor !== searchRef.current) return;
       setScope((prev) =>
         prev
           ? {
