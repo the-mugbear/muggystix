@@ -195,3 +195,23 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
     expect(mocked.deleteFindingNote).not.toHaveBeenCalled();
   });
 });
+
+// v5.264.0 — a text-message conversation: the viewer's comments on the left,
+// others' on the right, oldest first, a reply quoting what it answers.
+describe('FindingCommentThread — conversation layout', () => {
+  it('sides, order and reply quotes', async () => {
+    mocked.getFindingNotes.mockResolvedValue([
+      { ...note(1, 'Found it.'), created_at: '2026-08-01T00:00:00Z' },
+      { ...note(2, 'Confirmed on my side.'), author_id: 2, author_name: 'ben', parent_id: 1, created_at: '2026-08-01T01:00:00Z' },
+      { ...note(3, 'Thanks.'), created_at: '2026-08-01T02:00:00Z' },
+    ]);
+    const { container } = renderThread();
+    await screen.findByText('Thanks.');
+    const sides = [...container.querySelectorAll('[data-side]')].map((el) => el.getAttribute('data-side'));
+    expect(sides).toEqual(['mine', 'theirs', 'mine']);
+    expect(screen.getByText(/Replying to/)).toHaveTextContent('Replying to ana: Found it.');
+    // The viewer's own messages read "You"; no Card wraps the thread.
+    expect(screen.getAllByText('You')).toHaveLength(2);
+    expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
+  });
+});

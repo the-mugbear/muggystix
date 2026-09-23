@@ -33,7 +33,7 @@ import {
   listProjectMembers,
   NoteAttachment,
 } from '../services/api';
-import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
+import MessageBubble from '../components/MessageBubble';
 import FindingReportTextCard from '../components/FindingReportTextCard';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
@@ -539,35 +539,40 @@ const FindingDetail: React.FC = () => {
         </Card>
       )}
       {evidenceThread.length > 0 && (
-        <Card className="mb-md">
-          <CardHeader><CardTitle>Evidence note</CardTitle></CardHeader>
-          <CardContent className="space-y-md">
-            {evidenceThread.map((note) => (
-              <div key={note.id} className={note.parent_id ? 'border-l-2 border-border pl-sm' : ''}>
-                <div className="mb-xxs flex flex-wrap items-center gap-xs">
-                  <span className="text-metadata font-semibold text-foreground">
-                    {note.author_name || 'Unknown analyst'}
-                  </span>
-                  <AgentAuthorBadge actorType={note.actor_type} />
-                  <span className="text-caption text-muted-foreground">
-                    {new Date(note.created_at).toLocaleString()}
-                  </span>
-                </div>
-                <p className="whitespace-pre-wrap text-body">{note.body}</p>
-                {note.attachments && note.attachments.length > 0 && evidenceHostId && (
-                  <NoteAttachments
-                    hostId={evidenceHostId}
-                    noteId={note.id}
-                    attachments={note.attachments}
-                    canManage={false}
-                    onChanged={() => {}}
-                    reportMarking={reportMarking}
-                  />
-                )}
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+        // v5.264.0 — the source note's thread as a conversation, not a card.
+        <section className="mb-md min-w-0" aria-label="Evidence note">
+          <div className="border-b border-border pb-xs">
+            <h2 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">Evidence note</h2>
+          </div>
+          <div className="space-y-md pt-sm">
+            {evidenceThread.map((note) => {
+              const parent = note.parent_id != null && note.parent_id !== evidenceThread[0]?.id
+                ? evidenceThread.find((n) => n.id === note.parent_id) : undefined;
+              return (
+                <MessageBubble
+                  key={note.id}
+                  mine={user?.id != null && note.author_id === user.id}
+                  author={note.author_name || 'Unknown analyst'}
+                  actorType={note.actor_type}
+                  createdAt={note.created_at}
+                  replyingTo={parent ? { author: parent.author_name || 'Unknown analyst', excerpt: parent.body ?? '' } : null}
+                >
+                  <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>
+                  {note.attachments && note.attachments.length > 0 && evidenceHostId && (
+                    <NoteAttachments
+                      hostId={evidenceHostId}
+                      noteId={note.id}
+                      attachments={note.attachments}
+                      canManage={false}
+                      onChanged={() => {}}
+                      reportMarking={reportMarking}
+                    />
+                  )}
+                </MessageBubble>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       <FindingCommentThread findingId={finding.id} canManage={canManage} reportMarking={reportMarking} />

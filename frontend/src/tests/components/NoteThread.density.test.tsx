@@ -131,3 +131,36 @@ describe('NoteThread — row density', () => {
     expect(screen.getByText('Resolved')).toBeInTheDocument();
   });
 });
+
+// v5.264.0 — notes read like a text conversation: the viewer's on the left,
+// everyone else's on the right; replies in the order written, quoting what
+// they answer when it is not the thread's first note.
+describe('NoteThread — conversation layout', () => {
+  it("puts the viewer's notes on the left and others' on the right, in order", () => {
+    const root = note({ id: 1, author_id: 7, author_name: 'Ada', body: 'Root.' } as Partial<Annotation>);
+    const r1 = note({ id: 2, parent_id: 1, author_id: 9, author_name: 'Bo', body: 'First reply.', created_at: '2026-09-19T11:00:00Z' } as Partial<Annotation>);
+    const r2 = note({ id: 3, parent_id: 2, author_id: 7, author_name: 'Ada', body: 'Answering Bo.', created_at: '2026-09-19T12:00:00Z' } as Partial<Annotation>);
+    const { container } = render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <NoteThread
+            topLevel={[root]} repliesByParent={{ 1: [r1], 2: [r2] }} noteStatusMeta={META as never}
+            replyTo={null} replyBody="" onReplyToChange={vi.fn()} onReplyBodyChange={vi.fn()}
+            onSubmitReply={vi.fn()} noteSubmitting={false} noteActionId={null}
+            onUpdateNoteStatus={vi.fn()} onDeleteNote={vi.fn()} hostId={1} canManageNotes
+            onAttachmentsChanged={vi.fn()} currentUserId={7}
+          />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    const sides = [...container.querySelectorAll('[data-side]')].map((el) => [el.id, el.getAttribute('data-side')]);
+    expect(sides).toEqual([['note-1', 'mine'], ['note-2', 'theirs'], ['note-3', 'mine']]);
+    expect(container.querySelector('#note-1')).toHaveClass('items-start');
+    expect(container.querySelector('#note-2')).toHaveClass('items-end');
+    // A reply to a reply quotes it; a reply to the first note does not.
+    expect(screen.getByText(/Replying to/)).toHaveTextContent('Replying to Bo: First reply.');
+    expect(screen.getAllByText(/Replying to/)).toHaveLength(1);
+    // No reply is indented.
+    expect(container.querySelector('.border-l-2.ml-sm, .ml-md, .ml-lg')).toBeNull();
+  });
+});

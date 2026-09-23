@@ -19,14 +19,13 @@ import {
 } from '../services/api';
 import NoteAttachments from './host-inspector/NoteAttachments';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Textarea } from './ui/textarea';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
-import { AgentAuthorBadge } from './AgentAuthorBadge';
+import MessageBubble from './MessageBubble';
 
 interface FindingCommentThreadProps {
   findingId: number;
@@ -35,26 +34,6 @@ interface FindingCommentThreadProps {
   /** v5.260.0 — the images' "In report" mark (see NoteAttachments). */
   reportMarking?: { canMark: (attachment: NoteAttachment) => boolean };
 }
-
-interface ThreadNode {
-  note: Annotation;
-  children: ThreadNode[];
-}
-
-/** Build a parent→children tree, each level oldest-first (the list arrives
- *  oldest-first; roots are notes whose parent isn't in this finding). */
-const buildTree = (notes: Annotation[]): ThreadNode[] => {
-  const byId = new Map<number, ThreadNode>();
-  notes.forEach((n) => byId.set(n.id, { note: n, children: [] }));
-  const roots: ThreadNode[] = [];
-  notes.forEach((n) => {
-    const node = byId.get(n.id)!;
-    const parent = n.parent_id != null ? byId.get(n.parent_id) : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  });
-  return roots;
-};
 
 /** A file waiting to be attached. `error` is set when its upload against
  *  `noteId` failed — the file is KEPT so it can be retried or removed; a
@@ -231,24 +210,66 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     }
   };
 
-  const renderNode = (node: ThreadNode, depth: number): React.ReactNode => {
-    const { note } = node;
-    const isMine = canManage && user?.id != null && note.author_id === user.id;
+  // v5.264.0 — a conversation, oldest first: the viewer's comments on the
+  // left, everyone else's on the right; a reply quotes what it answers.
+  const byId = new Map((notes ?? []).map((n) => [n.id, n]));
+  const replyCount = new Map<number, number>();
+  (notes ?? []).forEach((n) => {
+    if (n.parent_id != null) replyCount.set(n.parent_id, (replyCount.get(n.parent_id) ?? 0) + 1);
+  });
+
+  const renderMessage = (note: Annotation): React.ReactNode => {
+    const authored = user?.id != null && note.author_id === user.id;
+    const isMine = canManage && authored;
     const isEditing = editing?.id === note.id;
+    const parent = note.parent_id != null ? byId.get(note.parent_id) : undefined;
+    const hasReplies = (replyCount.get(note.id) ?? 0) > 0;
     return (
-      <div key={note.id} className={depth > 0 ? 'border-l-2 border-border pl-sm' : ''}>
-        <div className="mb-xxs flex flex-wrap items-center gap-xs">
-          <span className="text-metadata font-semibold text-foreground">
-            {safeFallback(note.author_name, 'Unknown analyst')}
-          </span>
-          <AgentAuthorBadge actorType={note.actor_type} />
-          <span className="text-caption text-muted-foreground">
-            {new Date(note.created_at).toLocaleString()}
-            {wasEdited(note) && (
-              <span title={`Edited ${new Date(note.updated_at as string).toLocaleString()}`}> · edited</span>
+      <MessageBubble
+        key={note.id}
+        mine={authored}
+        author={safeFallback(note.author_name, 'Unknown analyst')}
+        actorType={note.actor_type}
+        createdAt={note.created_at}
+        edited={wasEdited(note)}
+        editedAt={note.updated_at}
+        replyingTo={parent ? { author: safeFallback(parent.author_name, 'a comment'), excerpt: parent.body ?? '' } : null}
+        actions={canManage && !isEditing ? (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-caption text-muted-foreground"
+              onClick={() => startReply(note)}
+            >
+              <CornerDownRight className="size-3" aria-hidden /> Reply
+            </Button>
+            {isMine && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-caption text-muted-foreground"
+                  onClick={() => setEditing({ id: note.id, text: note.body ?? '' })}
+                  disabled={noteBusy !== null}
+                >
+                  <Pencil className="size-3" aria-hidden /> Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-caption text-muted-foreground hover:text-destructive"
+                  onClick={() => void removeNote(note, hasReplies)}
+                  disabled={noteBusy !== null}
+                  aria-label="Delete comment"
+                >
+                  {noteBusy === note.id ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <Trash2 className="size-3" aria-hidden />} Delete
+                </Button>
+              </>
             )}
-          </span>
-        </div>
+          </>
+        ) : undefined}
+      >
         {isEditing ? (
           <div className="space-y-xs">
             <Textarea
@@ -280,60 +301,25 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           onChanged={() => void load()}
           reportMarking={reportMarking}
         />
-        {canManage && !isEditing && (
-          <div className="mt-xxs flex flex-wrap items-center gap-xxs">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-caption text-muted-foreground"
-              onClick={() => startReply(note)}
-            >
-              <CornerDownRight className="size-3" aria-hidden /> Reply
-            </Button>
-            {isMine && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 text-caption text-muted-foreground"
-                  onClick={() => setEditing({ id: note.id, text: note.body ?? '' })}
-                  disabled={noteBusy !== null}
-                >
-                  <Pencil className="size-3" aria-hidden /> Edit
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 text-caption text-muted-foreground hover:text-destructive"
-                  onClick={() => void removeNote(note, node.children.length > 0)}
-                  disabled={noteBusy !== null}
-                  aria-label="Delete comment"
-                >
-                  {noteBusy === note.id ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <Trash2 className="size-3" aria-hidden />} Delete
-                </Button>
-              </>
-            )}
-          </div>
-        )}
-        {node.children.length > 0 && (
-          <div className="mt-sm space-y-md">
-            {node.children.map((c) => renderNode(c, depth + 1))}
-          </div>
-        )}
-      </div>
+      </MessageBubble>
     );
   };
 
-  const tree = buildTree(notes ?? []);
+  // Oldest first, as the conversation happened (the API returns that order).
+  const conversation = [...(notes ?? [])].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.id - b.id,
+  );
   const failedCount = pending.filter((e) => e.error).length;
   const freshCount = pending.length - failedCount;
 
   return (
-    <Card className="mb-md">
-      <CardHeader>
-        <CardTitle>Comments &amp; evidence{notes && notes.length > 0 ? ` (${notes.length})` : ''}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-md">
+    <section className="mb-md min-w-0" aria-label="Comments and evidence">
+      <div className="border-b border-border pb-xs">
+        <h2 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">
+          Comments &amp; evidence{notes && notes.length > 0 ? ` (${notes.length})` : ''}
+        </h2>
+      </div>
+      <div className="space-y-md pt-sm">
         {loading && notes === null ? (
           <div className="flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden /> Loading comments…
@@ -356,12 +342,12 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
                 </Button>
               </div>
             )}
-            {tree.length === 0 ? (
+            {conversation.length === 0 ? (
               <p className="text-caption text-muted-foreground">
                 No comments yet. Add repro steps, rationale, or screenshots to evidence this finding.
               </p>
             ) : (
-              <div className="space-y-md">{tree.map((n) => renderNode(n, 0))}</div>
+              <div className="space-y-md">{conversation.map(renderMessage)}</div>
             )}
           </>
         )}
@@ -447,9 +433,9 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
             </div>
           </div>
         )}
-      </CardContent>
+      </div>
       {confirmDialog}
-    </Card>
+    </section>
   );
 };
 

@@ -1932,6 +1932,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 setPromoteNoteId(noteId);
               }}
               onEditDetails={openNoteDetails}
+              currentUserId={user?.id ?? null}
               hostId={hostId}
               canManageNotes={canManageEntries}
               onAttachmentsChanged={() => setRetryNonce((n) => n + 1)}
