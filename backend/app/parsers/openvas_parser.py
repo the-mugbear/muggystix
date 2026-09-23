@@ -175,6 +175,36 @@ class OpenVASParser:
         cve_value = self._find_text(result, ".//cve")
         cve_id = None if not cve_value or cve_value.lower() in {"n/a", "none"} else cve_value.split(",")[0].strip()
 
+        # v2.390.0 — what was dropped.  The NVT's refs (URLs, and every CVE
+        # past the first) go to `references`; its tags (summary / insight /
+        # impact — the write-up) become the description; the result's own
+        # <description> is the detection output for THIS host, so it is the
+        # per-host scanner output, with the quality of detection.
+        references: list = []
+        extra_cves: list = []
+        if nvt is not None:
+            for ref in nvt.findall(".//refs/ref"):
+                kind, ref_id = (ref.get("type") or "").lower(), (ref.get("id") or "").strip()
+                if not ref_id:
+                    continue
+                if kind == "cve":
+                    if ref_id.upper() != (cve_id or "").upper():
+                        extra_cves.append(ref_id.upper())
+                elif kind in ("url", "cert-bund", "dfn-cert"):
+                    references.append(ref_id)
+        references = [f"Also: {', '.join(extra_cves)}"] + references if extra_cves else references
+        tags = dict(
+            part.split("=", 1) for part in (self._find_text(result, ".//nvt/tags") or "").split("|") if "=" in part
+        )
+        writeup = "\n\n".join(
+            f"{label}: {tags[key].strip()}" for key, label in
+            (("summary", "Summary"), ("insight", "Insight"), ("impact", "Impact"), ("affected", "Affected"))
+            if tags.get(key, "").strip()
+        )
+        detection = self._find_text(result, "description")
+        qod = self._find_text(result, ".//qod/value")
+        evidence = "\n".join(p for p in (detection, f"Quality of detection: {qod}%" if qod else None) if p) or None
+
         upsert_vulnerability(
             db=self.db,
             host_id=host.id,
@@ -184,10 +214,12 @@ class OpenVASParser:
             severity=severity,
             plugin_id=plugin_id,
             port_id=port_id,
-            description=self._find_text(result, "description"),
+            description=writeup or detection,
             cvss_score=cvss_score,
             cve_id=cve_id,
             solution=self._find_text(result, ".//solution"),
+            references=references or None,
+            plugin_output=evidence,
         )
 
     def _find_text(self, element, path: str) -> Optional[str]:

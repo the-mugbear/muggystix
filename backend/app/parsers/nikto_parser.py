@@ -132,6 +132,10 @@ class NiktoParser:
             plugin_id=str(entry.get("id") or entry.get("osvdb") or "") or None,
             cve_id=entry.get("cve"),
             severity=map_text_severity(entry.get("severity")) if entry.get("severity") else map_text_severity("low"),
+            # v2.390.0 — the reference link in the references column (it went
+            # into the description only), and the request that found it.
+            references=[str(refs)] if refs and isinstance(refs, str) else None,
+            request=" ".join(p for p in (entry.get("method"), entry.get("url")) if p) or None,
         )
 
     def _parse_csv(self, file_path: str, scan: models.Scan) -> None:
@@ -276,6 +280,8 @@ class NiktoParser:
         plugin_id: Optional[str],
         cve_id: Optional[str],
         severity,
+        references: Optional[list] = None,
+        request: Optional[str] = None,
     ) -> None:
         host, port_map = persist_host_observation(
             dedup_service=self.dedup_service,
@@ -308,6 +314,8 @@ class NiktoParser:
             # One Nikto id covers several distinct results (013587 = every
             # missing security header).
             key_on_title=True,
+            references=references,
+            plugin_output=request,
         )
 
     def _coerce_port(self, value: object) -> Optional[int]:

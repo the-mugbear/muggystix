@@ -2240,6 +2240,8 @@ class WebInterfaceResponse(BaseModel):
     cert_subject_org: Optional[str] = None
     tls_weak_protocol: Optional[bool] = None
     has_screenshot: bool = False
+    # v2.390.0 — the page text EyeWitness captured (stored, never served).
+    page_text: Optional[str] = None
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     scan_id: int
@@ -2389,6 +2391,7 @@ def list_host_web_interfaces(
             content_length=r.content_length,
             technologies=r.technologies or [],
             favicon_hash=r.favicon_hash,
+            page_text=(r.page_text or None) and r.page_text[:2000],
             tls_info=r.tls_info,
             cert_not_after=r.cert_not_after,
             cert_self_signed=r.cert_self_signed,

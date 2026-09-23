@@ -316,6 +316,14 @@ class NmapXMLParser:
         if signing:
             host.smb_signing = signing
 
+        # v2.390.0 — the MAC address (and vendor) nmap reports for a host on
+        # the local segment; it was read past and dropped.
+        mac_elem = host_elem.find('address[@addrtype="mac"]')
+        if mac_elem is not None and mac_elem.get('addr'):
+            host.mac_address = mac_elem.get('addr')[:64]
+            if mac_elem.get('vendor'):
+                host.mac_vendor = mac_elem.get('vendor')[:128]
+
     def _find_primary_address(self, host_elem: etree.Element) -> Optional[etree.Element]:
         address_elem = host_elem.find('address[@addrtype="ipv4"]')
         if address_elem is None:

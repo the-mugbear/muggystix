@@ -479,6 +479,9 @@ def upsert_vulnerability(
     # id 013587): the title is part of the identity, or the five headers
     # collapse into one row that keeps the last one's name.
     key_on_title: bool = False,
+    # v2.390.0 — per-host evidence (what was requested / seen on THIS host),
+    # shown in the inspector as "Scanner output on this host".
+    plugin_output: Optional[str] = None,
 ) -> Vulnerability:
     # v2.387.0 — values are clipped to their columns.  A Nikto message longer
     # than 200 characters (source_plugin_name is String(200)) raised
@@ -530,6 +533,8 @@ def upsert_vulnerability(
         existing.solution = solution or existing.solution
         if references:
             existing.references = json.dumps(references)
+        if plugin_output:
+            existing.plugin_output = plugin_output
         return existing
 
     vulnerability = Vulnerability(
@@ -547,6 +552,7 @@ def upsert_vulnerability(
         cve_id=cve_id,
         solution=solution,
         references=json.dumps(references) if references else None,
+        plugin_output=plugin_output,
         last_seen_scan_id=scan_id,
     )
     db.add(vulnerability)

@@ -201,6 +201,10 @@ def serialize_host_base(
         # making the analyst read raw NSE text.  'disabled' | 'enabled' |
         # 'required' | None.
         "smb_signing": host.smb_signing,
+        # v2.390.0 — MAC / vendor (nmap, Nessus) and NetBIOS name (Nessus).
+        "mac_address": host.mac_address,
+        "mac_vendor": host.mac_vendor,
+        "netbios_name": host.netbios_name,
         "last_updated_scan_id": host.last_updated_scan_id,
         "first_seen": host.first_seen,
         "last_seen": host.last_seen,

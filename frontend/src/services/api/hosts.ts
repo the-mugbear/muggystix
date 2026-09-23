@@ -143,6 +143,12 @@ export interface Host {
   // 'required' is enforced; 'not_required' (on but not required) and
   // 'disabled' are relay-exposable. Null when not observed.
   smb_signing?: 'disabled' | 'not_required' | 'required' | string | null;
+  /** operator | ptr | scanner | forward — where `hostname` came from. */
+  hostname_source?: string | null;
+  /** v5.276.0 — MAC / vendor (nmap, Nessus) and NetBIOS name (Nessus). */
+  mac_address?: string | null;
+  mac_vendor?: string | null;
+  netbios_name?: string | null;
   ports: Port[];
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];
@@ -973,6 +979,8 @@ export interface WebInterface {
   content_length?: number | null;
   technologies?: string[] | null;  // flattened ["Nginx 1.18.0", "React", ...]
   favicon_hash?: string | null;
+  /** v5.276.0 — page text EyeWitness captured (first 2,000 characters). */
+  page_text?: string | null;
   tls_info?: Record<string, unknown> | null;
   // Typed cert / TLS promotions (surfaced per-port in the host inspector).
   cert_not_after?: string | null;

@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional, Tuple
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.config import settings
 
@@ -48,6 +48,10 @@ class NessusVulnerability:
     exploitable: bool
     patch_publication_date: Optional[datetime]
     vuln_publication_date: Optional[datetime]
+    # v2.390.0 — read and dropped before: the plugin's see-also links and
+    # which exploit frameworks carry a module (not just "exploitable").
+    see_also: List[str] = field(default_factory=list)
+    exploit_frameworks: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -366,7 +370,17 @@ class NessusParser:
             service_name=service_name,
             exploitable=exploitable,
             patch_publication_date=patch_publication_date,
-            vuln_publication_date=vuln_publication_date
+            vuln_publication_date=vuln_publication_date,
+            see_also=[
+                line.strip() for line in (self._get_text_or_none(report_item, 'see_also') or '').splitlines()
+                if line.strip()
+            ],
+            exploit_frameworks=[
+                f"{label}: {name}" for label, tag in (
+                    ("Metasploit", "metasploit_name"), ("Core Impact", "core_impact_name"),
+                    ("CANVAS", "canvas_package"),
+                ) if (name := self._get_text_or_none(report_item, tag))
+            ],
         )
 
     def _extract_os_info(self, host_properties: Dict[str, str]) -> Optional[str]:

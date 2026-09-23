@@ -377,6 +377,13 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
             </button>
           )}
         </div>
+        {/* v5.276.0 — what the page said (EyeWitness's captured text),
+            two lines; the full text is on hover. */}
+        {row.page_text && row.page_text.trim() && (
+          <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.page_text.slice(0, 2000)}>
+            {row.page_text.trim()}
+          </p>
+        )}
         {row.technologies && row.technologies.length > 0 && (
           <div className="flex flex-wrap gap-xxs">
             {row.technologies.map((tech, i) => (

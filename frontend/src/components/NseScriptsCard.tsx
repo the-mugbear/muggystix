@@ -59,6 +59,13 @@ const NSE_FRIENDLY_NAMES: Record<string, string> = {
   'ms-sql-info': 'MS SQL Server Info',
   banner: 'Service Banner',
   vulners: 'Vulners CVE Lookup',
+  // v5.276.0 — masscan --banners, stored beside nmap's script output.
+  'masscan-http.server': 'Server banner (masscan)',
+  'masscan-title': 'Page title (masscan)',
+  'masscan-http': 'HTTP response (masscan)',
+  'masscan-ssh': 'SSH banner (masscan)',
+  'masscan-ssl': 'TLS banner (masscan)',
+  'masscan-X509': 'Certificate (masscan)',
 };
 
 const titleCase = (raw: string): string =>
@@ -168,7 +175,7 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
     <InspectorSection
       id="host-detail-nse"
       title="NSE script output"
-      titleHint="Free-form results from the Nmap Scripting Engine (-sC / --script). Expand a row to read the raw output."
+      titleHint="Free-form results from the Nmap Scripting Engine (-sC / --script), and banners masscan grabbed (--banners). Expand a row to read the raw output."
       icon={<ScrollText className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
       count={totalScripts}
     >

@@ -49,6 +49,8 @@ class MasscanParser:
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Dispatch to format-specific parsers based on file extension."""
         self._project_id = kwargs.get("project_id")
+        # v2.390.0 — `--banners` output: (ip, port, proto, kind, banner).
+        self._banners: List[Tuple[str, int, str, str, str]] = []
         start = time.time()
         scan = self._create_scan_record(filename)
         # JSON records and list lines carry per-record epoch timestamps; the
@@ -87,6 +89,7 @@ class MasscanParser:
 
             _flush(residual)
             self._clock.apply(scan)
+            self._store_banners(scan.id)
 
             if counters["hosts"] == 0:
                 # Fail closed — pre-v2.55.0 this path committed an
@@ -231,6 +234,9 @@ class MasscanParser:
                 state = port_info.get("status", "open")
                 if state != "open":
                     continue
+                service = port_info.get("service")
+                if isinstance(service, dict) and service.get("banner"):
+                    self._note_banner(ip_address, port_number, protocol, service.get("name"), service.get("banner"))
                 host_ports[ip_address].append({
                     "port_number": port_number,
                     "protocol": protocol,
@@ -279,6 +285,10 @@ class MasscanParser:
                 if len(parts) < 4:
                     continue
                 state, protocol, port_str, ip_address = parts[:4]
+                # `--banners`: "banner tcp 80 10.0.0.1 <epoch> <kind> <text…>"
+                if state == "banner" and len(parts) >= 7 and port_str.isdigit():
+                    self._note_banner(ip_address, int(port_str), protocol, parts[5], line.split(None, 6)[6])
+                    continue
                 if state != "open":
                     continue
                 try:
@@ -668,6 +678,42 @@ class MasscanParser:
         self._created_scan_id = scan.id
         return scan
 
+    def _note_banner(self, ip: str, port: int, protocol: Optional[str], kind: Optional[str], banner: str) -> None:
+        # XML carries the bytes escaped ("\x0d\x0a"); JSON already decoded them.
+        text = re.sub(r"\\x0d\\x0a|\\x0a", "\n", str(banner)).replace("\\x0d", "").replace("\r", "").strip()
+        if text and hasattr(self, "_banners"):
+            self._banners.append((ip, port, protocol or "tcp", (kind or "banner").strip() or "banner", text[:20000]))
+
+    def _store_banners(self, scan_id: int) -> None:
+        """v2.390.0 — `--banners` output as script output on its port
+        (``masscan-<kind>``: http.server, title, http, ssh …), shown in the
+        inspector beside nmap's.  It was read past and dropped in all three
+        formats.  Runs after the ports are persisted; a port the bulk insert
+        did not create (not open) is skipped."""
+        if not self._banners:
+            return
+        latest: Dict[Tuple[str, int, str, str], str] = {}
+        for ip, port, proto, kind, text in self._banners:
+            latest[(ip, port, proto, kind)] = text
+        from app.services.host_deduplication_service import HostDeduplicationService
+
+        dedup = HostDeduplicationService(self.db)
+        port_ids: Dict[Tuple[str, int, str], Optional[int]] = {}
+        for (ip, port, proto, kind), text in latest.items():
+            key = (ip, port, proto)
+            if key not in port_ids:
+                row = (
+                    self.db.query(models.Port.id)
+                    .join(models.Host, models.Host.id == models.Port.host_id)
+                    .filter(models.Host.project_id == self._project_id, models.Host.ip_address == ip,
+                            models.Port.port_number == port, models.Port.protocol == proto)
+                    .first()
+                )
+                port_ids[key] = row[0] if row else None
+            if port_ids[key] is not None:
+                dedup.add_or_update_script(port_ids[key], scan_id, {"script_id": f"masscan-{kind}", "output": text})
+        self.db.flush()
+
     def _extract_xml_host(self, host_elem: etree._Element) -> Optional[Dict[str, Any]]:
         address_elem = host_elem.find("address")
         if address_elem is None:
@@ -689,6 +735,9 @@ class MasscanParser:
                 state = state_elem.get("state") if state_elem is not None else "open"
                 if state != "open":
                     continue
+                service_elem = port_elem.find("service")
+                if service_elem is not None and service_elem.get("banner"):
+                    self._note_banner(ip_address, port_number, protocol, service_elem.get("name"), service_elem.get("banner"))
                 ports.append({
                     "port_number": port_number,
                     "protocol": protocol,

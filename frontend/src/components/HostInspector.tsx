@@ -152,6 +152,14 @@ const REVIEW_CONCLUSION_LABEL: Record<ReviewConclusion, string> = {
 
 // One line per issue since v5.240.0, so the preview can afford most hosts'
 // whole list (the largest host here carries 26).
+/** Where a host's display name came from (Host.hostname_source). */
+const HOSTNAME_SOURCE_LABEL: Record<string, string> = {
+  operator: 'set by an operator',
+  ptr: 'from a reverse-DNS (PTR) record',
+  scanner: 'reported by a scanner',
+  forward: 'from a forward DNS record',
+};
+
 const VULNERABILITY_PREVIEW_LIMIT = 25;
 const NOTE_THREAD_PREVIEW_LIMIT = 3;
 
@@ -1436,7 +1444,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           )}
         </h1>
         {host.hostname && (
-          <span className="min-w-0 max-w-[24rem] truncate text-metadata text-muted-foreground" title={host.hostname}>
+          <span className="min-w-0 max-w-[24rem] truncate text-metadata text-muted-foreground"
+            // v5.276.0 — where the display name came from (served since
+            // v2.322.0, never shown): the names inventory lists the others.
+            title={`${host.hostname}${HOSTNAME_SOURCE_LABEL[host.hostname_source ?? ''] ? ` — ${HOSTNAME_SOURCE_LABEL[host.hostname_source ?? '']}` : ''}`}>
             {host.hostname}
           </span>
         )}
@@ -1619,6 +1630,24 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   ) : <span className="text-muted-foreground">—</span>}
                 </dd>
               </div>
+              {/* v5.276.0 — identity scanners report that was dropped:
+                  NetBIOS name (Nessus) and MAC + vendor (nmap, Nessus). */}
+              {(host.netbios_name || host.mac_address) && (
+                <div className="flex gap-sm">
+                  <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Identity</dt>
+                  <dd className="min-w-0 truncate text-metadata text-foreground"
+                    title={[host.netbios_name && `NetBIOS ${host.netbios_name}`, host.mac_address && `MAC ${host.mac_address}${host.mac_vendor ? ` (${host.mac_vendor})` : ''}`].filter(Boolean).join(' · ')}>
+                    {host.netbios_name && <span>NetBIOS <span className="font-mono">{host.netbios_name}</span></span>}
+                    {host.netbios_name && host.mac_address && <span className="text-muted-foreground"> · </span>}
+                    {host.mac_address && (
+                      <span>
+                        <span className="font-mono">{host.mac_address}</span>
+                        {host.mac_vendor && <span className="text-caption text-muted-foreground"> {host.mac_vendor}</span>}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              )}
               <div className="flex gap-sm">
                 <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Assignee</dt>
                 <dd className="min-w-0 truncate text-metadata">

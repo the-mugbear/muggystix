@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!-- masscan v1.0 scan -->
+<nmaprun scanner="masscan" start="1790141251" version="1.0-BETA"  xmloutputversion="1.03">
+<scaninfo type="syn" protocol="tcp" />
+<host endtime="1790141236"><address addr="172.30.77.20" addrtype="ipv4"/><ports><port protocol="tcp" portid="8080"><state state="open" reason="syn-ack" reason_ttl="64"/></port></ports></host>
+<host endtime="1790141251"><address addr="172.30.77.20" addrtype="ipv4"/><ports><port protocol="tcp" portid="8080"><state state="open" reason="response" reason_ttl="64" /><service name="http.server" banner="SimpleHTTP/0.6 Python/3.14.7"></service></port></ports></host>
+<host endtime="1790141251"><address addr="172.30.77.20" addrtype="ipv4"/><ports><port protocol="tcp" portid="8080"><state state="open" reason="response" reason_ttl="64" /><service name="title" banner="Parser Lab HTTP Target"></service></port></ports></host>
+<host endtime="1790141251"><address addr="172.30.77.20" addrtype="ipv4"/><ports><port protocol="tcp" portid="8080"><state state="open" reason="response" reason_ttl="64" /><service name="http" banner="HTTP/1.0 200 OK\x0d\x0aServer: SimpleHTTP/0.6 Python/3.14.7\x0d\x0aDate: Wed, 23 Sep 2026 05:27:18 GMT\x0d\x0aContent-type: text/html\x0d\x0aContent-Length: 218\x0d\x0aLast-Modified: Wed, 23 Sep 2026 05:18:17 GMT\x0d\x0a\x0d"></service></port></ports></host>
+<runstats>
+<finished time="1790141251" timestr="2026-09-23 05:27:31" elapsed="0" />
+<hosts up="1" down="0" total="1" />
+</runstats>
+</nmaprun>

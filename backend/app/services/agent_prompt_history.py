@@ -21,6 +21,16 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.8.2",
+        "app_version": "2.390.0",
+        "summary": (
+            "Two host-filter fields in the assist hosts row of AGENTS.md: "
+            "`version:` (service product or version on an open port — "
+            "`service:` matched the name only) and `path:` (a path content "
+            "discovery found; the paths are rows now, not a string on the port)."
+        ),
+    },
+    {
         "version": "2.8.1",
         "app_version": "2.373.0",
         "summary": (

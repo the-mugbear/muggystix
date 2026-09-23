@@ -77,6 +77,10 @@ class HostBase(BaseModel):
     # | 'enabled' | 'required' | None.  Declared here so the response_model
     # doesn't strip it out of the host list/detail payloads.
     smb_signing: Optional[str] = None
+    # v2.390.0 — scanner-reported identity that was dropped.
+    mac_address: Optional[str] = None
+    mac_vendor: Optional[str] = None
+    netbios_name: Optional[str] = None
 
 
 class FollowStatus(str, Enum):

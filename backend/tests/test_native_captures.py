@@ -247,6 +247,107 @@ def test_smb_signing_agrees_across_tools_and_counts_as_relayable(db_session, tes
     assert NmapXMLParser._detect_smb_signing(hostscript) == host.smb_signing
 
 
+# --- identity and banners ----------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["masscan-banners.json", "masscan-banners.xml"])
+def test_masscan_banners_become_script_output(name, db_session, test_project):
+    """v2.390.0 — `--banners` output was read past and dropped."""
+    from app.parsers.masscan_parser import MasscanParser
+
+    scan = MasscanParser(db_session).parse_file(str(NATIVE / name), name, project_id=test_project.id)
+    port = (
+        db_session.query(models.Port).join(models.Host)
+        .filter(models.Host.ip_address == "172.30.77.20", models.Port.port_number == 8080).one()
+    )
+    scripts = {s.script_id: s.output for s in db_session.query(models.Script).filter_by(port_id=port.id)}
+    assert scripts["masscan-http.server"] == "SimpleHTTP/0.6 Python/3.14.7"
+    assert scripts["masscan-title"] == "Parser Lab HTTP Target"
+    assert scripts["masscan-http"].startswith("HTTP/1.0 200 OK\nServer: SimpleHTTP/0.6")
+    assert "\\x0d" not in scripts["masscan-http"] and "\r" not in scripts["masscan-http"]
+    # The pseudo-service names never became the port's service name.
+    assert port.service_name in (None, "")
+
+
+def test_nmap_mac_address_and_nessus_netbios(db_session, test_project, tmp_path):
+    """v2.390.0 — nmap's MAC + vendor and Nessus's NetBIOS name were dropped."""
+    from app.parsers.nmap_parser import NmapXMLParser
+
+    xml = tmp_path / "arp.xml"
+    xml.write_text(
+        '<?xml version="1.0"?><nmaprun scanner="nmap" args="nmap -sn" start="1790000000">'
+        '<host><status state="up"/><address addr="10.9.9.9" addrtype="ipv4"/>'
+        '<address addr="AA:BB:CC:00:11:22" addrtype="mac" vendor="Example Networks"/>'
+        '<ports><port protocol="tcp" portid="22"><state state="open"/></port></ports></host>'
+        '<runstats><finished time="1790000100"/></runstats></nmaprun>'
+    )
+    NmapXMLParser(db_session).parse_file(str(xml), "arp.xml", project_id=test_project.id)
+    host = db_session.query(models.Host).filter_by(ip_address="10.9.9.9").one()
+    assert (host.mac_address, host.mac_vendor) == ("AA:BB:CC:00:11:22", "Example Networks")
+
+
+def test_nessus_keeps_netbios_mac_see_also_and_exploit_frameworks(db_session, test_project, tmp_path):
+    """v2.390.0 — read by the parser, dropped before the database."""
+    import json
+    from app.services.nessus_integration_service import NessusIntegrationService
+
+    f = tmp_path / "n.nessus"
+    f.write_text("""<?xml version="1.0" ?>
+<NessusClientData_v2><Report name="r" xmlns:cm="http://www.nessus.org/cm">
+<ReportHost name="10.9.6.1"><HostProperties>
+  <tag name="host-ip">10.9.6.1</tag><tag name="netbios-name">FILE01</tag>
+  <tag name="mac-address">00:11:22:33:44:55
+00:11:22:33:44:66</tag>
+</HostProperties>
+<ReportItem port="445" svc_name="cifs" protocol="tcp" severity="3" pluginID="97833" pluginName="MS17-010" pluginFamily="Windows">
+  <risk_factor>High</risk_factor><description>d</description><solution>s</solution><synopsis>syn</synopsis>
+  <see_also>https://example.test/ms17-010
+https://example.test/eternalblue</see_also>
+  <metasploit_name>MS17-010 EternalBlue SMB Remote Windows Kernel Pool Corruption</metasploit_name>
+  <plugin_output>SMBv1 accepted; MS17-010 missing</plugin_output>
+</ReportItem>
+</ReportHost></Report></NessusClientData_v2>""")
+    NessusIntegrationService(db_session).process_nessus_file(str(f), project_id=test_project.id)
+    host = db_session.query(models.Host).filter_by(ip_address="10.9.6.1").one()
+    assert (host.netbios_name, host.mac_address) == ("FILE01", "00:11:22:33:44:55")
+    from app.db.models_vulnerability import Vulnerability as V
+
+    vuln = db_session.query(V).filter_by(host_id=host.id).one()
+    refs = json.loads(vuln.references)
+    assert "https://example.test/eternalblue" in refs
+    assert "Metasploit: MS17-010 EternalBlue SMB Remote Windows Kernel Pool Corruption" in refs
+    assert vuln.plugin_output == "SMBv1 accepted; MS17-010 missing"
+
+
+def test_openvas_writeup_evidence_and_refs(db_session, test_project, tmp_path):
+    """v2.390.0 — OpenVAS tags (the write-up), refs and QoD were dropped, and
+    the per-host detection output stood in for the description."""
+    import json
+    from app.parsers.openvas_parser import OpenVASParser
+
+    f = tmp_path / "o.xml"
+    f.write_text("""<?xml version="1.0"?>
+<report id="r"><report><results>
+<result><host>10.9.6.2</host><port>443/tcp</port><name>Weak cipher suites</name>
+  <nvt oid="1.3.6.1.4.1.25623.1.0.103440"><cvss_base>5.0</cvss_base>
+    <tags>summary=Weak ciphers are offered.|insight=RC4 is broken.|impact=Traffic may be decrypted.</tags>
+    <refs><ref type="cve" id="CVE-2013-2566"/><ref type="cve" id="CVE-2015-2808"/><ref type="url" id="https://example.test/rc4"/></refs>
+  </nvt>
+  <threat>Medium</threat><severity>5.0</severity><qod><value>98</value></qod>
+  <description>Offered: TLS_RSA_WITH_RC4_128_SHA</description>
+  <cve>CVE-2013-2566, CVE-2015-2808</cve>
+</result>
+</results></report></report>""")
+    OpenVASParser(db_session).parse_file(str(f), "o.xml", project_id=test_project.id)
+    from app.db.models_vulnerability import Vulnerability as V
+
+    vuln = db_session.query(V).one()
+    assert vuln.description.startswith("Summary: Weak ciphers are offered.")
+    assert "Impact: Traffic may be decrypted." in vuln.description
+    assert vuln.plugin_output == "Offered: TLS_RSA_WITH_RC4_128_SHA\nQuality of detection: 98%"
+    refs = json.loads(vuln.references)
+    assert refs[0] == "Also: CVE-2015-2808" and "https://example.test/rc4" in refs
+
+
 # --- nmap TLS scripts -----------------------------------------------------------
 
 def test_nmap_ssl_scripts_feed_the_cert_and_tls_conditions(db_session, test_project):

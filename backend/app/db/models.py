@@ -47,6 +47,14 @@ class Host(Base):
     # (on but not required), 'required', or NULL when not observed.  Powers the
     # systemic "SMB signing disabled estate-wide" blind-spot lens.
     smb_signing = Column(String)
+    # v2.390.0 (migration c6e8a0b2d4f5) — identity the scanners report that was
+    # dropped: the MAC address and its vendor (nmap <address addrtype="mac">,
+    # Nessus mac-address) and the NetBIOS name (Nessus; it lived only in the
+    # unread host_attributes).  Latest observation wins; never cleared by a
+    # scan that did not report it.
+    mac_address = Column(String(64))
+    mac_vendor = Column(String(128))
+    netbios_name = Column(String(64))
 
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
@@ -73,7 +81,10 @@ class Host(Base):
 
     # New vulnerability and attribute relationships
     vulnerabilities = relationship("Vulnerability", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
-    attributes = relationship("HostAttribute", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
+    # v2.390.0 — plain lazy: nothing renders the attribute history (the one
+    # value with no other home, the NetBIOS name, is now netbios_name), so
+    # selectin-loading it on every Host load was pure cost.
+    attributes = relationship("HostAttribute", back_populates="host", cascade="all, delete-orphan")
     follows = relationship("HostFollow", back_populates="host", cascade="all, delete-orphan")
     notes = relationship("Annotation", back_populates="host", cascade="all, delete-orphan", lazy="selectin")
     tag_assignments = relationship("HostTagAssignment", back_populates="host", cascade="all, delete-orphan", lazy="selectin")

@@ -174,6 +174,36 @@ def service_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     return models.Host.id.in_(port_match_subquery(db, services=list(values)))
 
 
+def version_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Host has an open port whose service product or version (or the two
+    together, "OpenSSH 7.4") ILIKE-matches a value (v2.390.0 — `service:`
+    matched the name only, so "which hosts run OpenSSH 7.x" had no filter)."""
+    joined = func.concat(
+        func.coalesce(models.Port.service_product, ""), " ", func.coalesce(models.Port.service_version, ""),
+    )
+    conds = [
+        or_(
+            models.Port.service_product.ilike(f"%{v}%"),
+            models.Port.service_version.ilike(f"%{v}%"),
+            joined.ilike(f"%{v}%"),
+        )
+        for v in values if v
+    ]
+    if not conds:
+        return false()
+    sub = db.query(models.Port.host_id).filter(models.Port.state == "open", or_(*conds))
+    return models.Host.id.in_(sub)
+
+
+def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Host has a path content discovery found that ILIKE-matches a value
+    (v2.390.0 — the paths were an unqueryable string before)."""
+    conds = [models.WebPath.path.ilike(f"%{v}%") for v in values if v]
+    if not conds:
+        return false()
+    return models.Host.id.in_(db.query(models.WebPath.host_id).filter(or_(*conds)))
+
+
 def portstate_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Host has at least one port in any of the given states."""
     return models.Host.id.in_(port_match_subquery(db, port_states=list(values)))
