@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-  Check,
   ChevronLeft,
   ChevronRight,
   Code,
@@ -60,6 +59,7 @@ import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
 import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
+import { exposureChips } from '../utils/portsOfInterest';
 import { useConfirm } from '../hooks/useConfirm';
 import { hostConditionChips } from '../utils/hostConditionChips';
 import {
@@ -69,7 +69,6 @@ import {
 } from '../utils/hostFiltersFromUrl';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -1234,39 +1233,15 @@ export default function Hosts() {
   // Render
   // ---------------------------------------------------------------------------
 
-  const renderFollowChip = (label: string, value: 'all' | 'none' | FollowStatus, badgeClass?: string) => {
-    const active = followFilter === value;
-    return (
-      <button
-        key={value}
-        type="button"
-        onClick={() => {
-          setFollowFilter(value);
-          setPage(0);
-        }}
-        aria-pressed={active}
-        className={cn(
-          'inline-flex items-center gap-xxs rounded-chip border px-sm py-px text-caption font-medium transition-colors',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-          active
-            ? badgeClass
-              ? cn(badgeClass, 'ring-1 ring-inset ring-foreground/30')
-              : 'border-transparent bg-primary text-primary-foreground ring-1 ring-inset ring-primary-foreground/30'
-            : 'border-border bg-card text-foreground hover:bg-accent',
-        )}
-      >
-        {active && <Check className="size-3" aria-hidden />}
-        {label}
-      </button>
-    );
-  };
+  // Whether any row on this page shows a port-guessed service ("SSH?").
+  const hasGuessedServices = hosts.some((h) => exposureChips(h.ports).some((c) => !c.detected));
 
   return (
     <div className="space-y-md">
       {/* Page header */}
       <div className="flex flex-col gap-md lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="text-page-title">Discovered Hosts</h1>
+          <h1 className="text-page-title">Hosts</h1>
         </div>
         <div className="flex flex-col gap-xs sm:flex-row sm:items-center">
           <Button
@@ -1378,6 +1353,33 @@ export default function Hosts() {
             optionsLoading={filterDataLoading}
             optionsError={filterDataError !== null}
           />
+          {/* v5.270.0 — team review status, the one filter used often enough
+              to stay out of the catalog: a compact select in the toolbar
+              (was its own row of chips). */}
+          <Select
+            value={followFilter}
+            onValueChange={(value) => {
+              setFollowFilter(value as 'all' | 'none' | FollowStatus);
+              setPage(0);
+            }}
+          >
+            <SelectTrigger
+              className={cn('h-8 w-auto gap-xs text-caption', followFilter !== 'all' && 'border-primary text-foreground')}
+              aria-label="Review status filter"
+            >
+              <span className="text-muted-foreground">Review:</span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any</SelectItem>
+              {/* Nobody on the team has this host In Review or Reviewed
+                  (team-shared, follow:none). */}
+              <SelectItem value="none">Not started</SelectItem>
+              {FOLLOW_STATUS_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {/* The one result count: the listing's own total, so it always agrees
               with the table and the exports. */}
           <p className="ml-auto shrink-0 text-metadata text-muted-foreground" aria-live="polite">
@@ -1410,31 +1412,19 @@ export default function Hosts() {
           </div>
         </div>
 
-        {/* Team review status — the one filter used often enough to stay out
-            of the panel. */}
-        <div className="flex flex-wrap items-center gap-xs" role="group" aria-label="Review status filter">
-          <span className="text-caption text-muted-foreground">Review:</span>
-          {renderFollowChip('Any', 'all')}
-          {/* Nobody on the team has this host In Review or Reviewed
-              (team-shared, follow:none). */}
-          {renderFollowChip('Not started', 'none')}
-          {FOLLOW_STATUS_OPTIONS.map((option) =>
-            renderFollowChip(option.label, option.value, option.badgeClass),
-          )}
-          {/* A default the operator did not choose must never hide hosts
-              silently; the way out is one click. */}
-          {appliedProjectDefault && (
-            <span className="ml-auto inline-flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
-              <Star className="size-3.5 shrink-0 fill-current text-warning" aria-hidden />
-              <span className="truncate">
-                Project default view applied: <strong className="text-foreground">{appliedProjectDefault}</strong>
-              </span>
-              <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
-                Show all hosts
-              </Button>
+        {/* A default the operator did not choose must never hide hosts
+            silently; the way out is one click. */}
+        {appliedProjectDefault && (
+          <div className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
+            <Star className="size-3.5 shrink-0 fill-current text-warning" aria-hidden />
+            <span className="truncate">
+              Project default view applied: <strong className="text-foreground">{appliedProjectDefault}</strong>
             </span>
-          )}
-        </div>
+            <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
+              Show all hosts
+            </Button>
+          </div>
+        )}
 
         {/* Applied conditions.  Capped while the strip is sticky — an unbounded
             chip list would grow the pinned area over the table. */}
@@ -1584,6 +1574,13 @@ export default function Hosts() {
               scroll handles narrow widths, no separate mobile card view).
               Dimmed (not interaction-blocked) while stale: drill-down into a
               single host is harmless + refetches, only bulk/export are paused. */}
+          {/* v5.270.0 — the "?" on a service chip, said once for the page. */}
+          {hasGuessedServices && (
+            <p className="text-caption text-muted-foreground">
+              <span className="rounded-chip border border-dashed border-border px-xs py-px text-foreground">SSH?</span>{' '}
+              a service with “?” was guessed from its port number; no scanner probed it.
+            </p>
+          )}
           <div
             className={cn(showingStaleResults && 'opacity-60 transition-opacity')}
             aria-busy={showingStaleResults || undefined}
@@ -1597,32 +1594,17 @@ export default function Hosts() {
               // most of its content already appeared in the collapsed columns,
               // and everything unique to it (web links, discovery chips, the
               // latest note) lives in the inspector in richer form.
-              // Left-border accent by test-workflow state, hover title explains:
-              //  • executed (test_execution_count > 0) → info (blue), "Tested"
-              //  • planned but not executed (has plan entries, zero results) →
-              //    warning (amber), "Planned · not yet executed" — surfaces
-              //    approved work that never ran, a real triage gap the API
-              //    already reported (test_plan_entry_count) but the UI ignored.
-              // Executed wins over planned. The keyboard cursor row (1c) also
+              // v5.270.0 — the test-workflow state is a word beside the IP
+              // (useHostColumns.testWorkState), not a coloured left border
+              // explained only by a hover title.  The keyboard cursor row (1c)
               // gets a highlight + a `host-cursor-row` marker class the
               // scroll-into-view effect keys off.
-              getRowClassName={(row) => {
-                const executed = (row.original.test_execution_count ?? 0) > 0;
-                const planned = !executed && (row.original.test_plan_entry_count ?? 0) > 0;
-                return cn(
-                  executed && 'border-l-4 border-l-info',
-                  planned && 'border-l-4 border-l-warning',
-                  row.index === cursorIndex &&
-                    'host-cursor-row bg-accent ring-1 ring-inset ring-ring',
-                ) || undefined;
-              }}
-              getRowTitle={(row) => {
-                const n = row.original.test_execution_count ?? 0;
-                if (n > 0) return `Tested · ${n} agentic test result${n === 1 ? '' : 's'} recorded`;
-                const p = row.original.test_plan_entry_count ?? 0;
-                if (p > 0) return `Planned · ${p} test${p === 1 ? '' : 's'} approved but not yet executed`;
-                return undefined;
-              }}
+              getRowClassName={(row) => (
+                row.index === cursorIndex
+                  ? 'host-cursor-row bg-accent ring-1 ring-inset ring-ring'
+                  : undefined
+              )}
+              bare
               // The four sized columns take 790px; the floor keeps the Host
               // column (the only unsized one) at ~270px in a narrowed window,
               // where the wrapper scrolls sideways instead of crushing it.
@@ -1630,20 +1612,18 @@ export default function Hosts() {
             />
           </div>
 
-          <Card>
-            <CardContent className="py-xs">
-              <DataTablePagination<Host>
-                pageIndex={page}
-                pageSize={rowsPerPage}
-                totalCount={totalHosts}
-                onPageChange={setPage}
-                onPageSizeChange={(size) => {
-                  setRowsPerPage(size);
-                  setPage(0);
-                }}
-              />
-            </CardContent>
-          </Card>
+          <div className="border-t border-border pt-xs">
+            <DataTablePagination<Host>
+              pageIndex={page}
+              pageSize={rowsPerPage}
+              totalCount={totalHosts}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setRowsPerPage(size);
+                setPage(0);
+              }}
+            />
+          </div>
         </>
       )}
 

@@ -7,7 +7,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Users,
 } from 'lucide-react';
 
 import type { Host, FollowStatus, HostDiscovery, Port } from '../../services/api';
@@ -178,13 +177,6 @@ export const isNewHost = (iso?: string | null): boolean => {
   return !Number.isNaN(diff) && diff >= 0 && diff < 7 * 86_400_000;
 };
 
-/** A host whose latest observation is > 30 days old reads as "stale". */
-const isStaleHost = (iso?: string | null): boolean => {
-  if (!iso) return false;
-  const diff = Date.now() - new Date(iso).getTime();
-  return !Number.isNaN(diff) && diff > 30 * 86_400_000;
-};
-
 /**
  * What the Host column says under a host that no subnet contains.  Mirrors
  * the detail card's three states (v5.220.0) — before, every such host read
@@ -302,10 +294,52 @@ export const computeAttention = (
       detail: `${findings} promoted finding${findings === 1 ? '' : 's'} recorded on this host — triage has produced results here.`,
     });
   }
-  if (isStaleHost(host.last_seen)) {
-    reasons.push({ label: 'Stale', tone: 'muted', detail: 'Not seen in a scan for over 30 days — data may be out of date.' });
-  }
+  // v5.270.0 — no "Stale" reason: a project is one assessment window, and a
+  // scan's age is provenance, never an attention signal (CLAUDE.md /posture).
   return { primary: reasons[0] ?? null, others: reasons.slice(1) };
+};
+
+/** The dot before an Attention line — the tone of its reason. */
+const ATTENTION_DOT: Record<AttentionReason['tone'], string> = {
+  // Same tokens as the severity badges (ui/badge.tsx).
+  'severity-critical': 'bg-destructive',
+  'severity-high': 'bg-warning',
+  destructive: 'bg-destructive',
+  warning: 'bg-warning',
+  info: 'bg-info',
+  muted: 'bg-muted-foreground',
+};
+
+/** Where a host's team review stands, as the Review column states it. */
+export const reviewStateText = (
+  host: Pick<Host, 'follow' | 'other_reviewers' | 'reviewed_by'>,
+): { kind: 'none' | 'in_review' | 'reviewed'; label: string } => {
+  const status = host.follow?.status ?? null;
+  if (status === 'in_review') return { kind: 'in_review', label: 'In review' };
+  if (status === 'reviewed') return { kind: 'reviewed', label: 'Reviewed' };
+  // Someone else's review counts: the column is the team's state.
+  if ((host.other_reviewers?.length ?? 0) > 0) return { kind: 'in_review', label: 'In review' };
+  if ((host.reviewed_by?.length ?? 0) > 0) return { kind: 'reviewed', label: 'Reviewed' };
+  return { kind: 'none', label: 'Not started' };
+};
+
+/**
+ * The test-workflow state of a host, as a word beside its IP (v5.270.0 — was
+ * a coloured left border on the row, explained only by a hover title).
+ * Executed wins over planned.
+ */
+export const testWorkState = (
+  host: Pick<Host, 'test_execution_count' | 'test_plan_entry_count'>,
+): { kind: 'tested' | 'planned'; label: string; title: string } | null => {
+  const n = host.test_execution_count ?? 0;
+  if (n > 0) {
+    return { kind: 'tested', label: 'Tested', title: `${n} agentic test result${n === 1 ? '' : 's'} recorded` };
+  }
+  const p = host.test_plan_entry_count ?? 0;
+  if (p > 0) {
+    return { kind: 'planned', label: 'Planned', title: `${p} test${p === 1 ? '' : 's'} approved but not yet executed` };
+  }
+  return null;
 };
 
 // --- FollowMenu -----------------------------------------------------------
@@ -326,9 +360,6 @@ export interface FollowMenuProps {
  */
 export const FollowMenu: React.FC<FollowMenuProps> = ({ host, updating, onChange }) => {
   const status = host.follow?.status ?? null;
-  const followOption = status
-    ? FOLLOW_STATUS_OPTIONS.find((option) => option.value === status) ?? null
-    : null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -336,22 +367,19 @@ export const FollowMenu: React.FC<FollowMenuProps> = ({ host, updating, onChange
           type="button"
           onClick={(event) => event.stopPropagation()}
           disabled={updating}
+          aria-label={`Change review for ${host.ip_address}`}
           className={cn(
-            'inline-flex items-center gap-xxs rounded-chip border px-xs py-px text-micro font-semibold uppercase tracking-wider transition-colors',
-            'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
-            followOption
-              ? followOption.badgeClass + ' border-transparent'
-              : 'border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            'inline-flex shrink-0 items-center gap-xxs rounded-control px-xxs text-caption text-info transition-opacity',
+            'hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            // Revealed on row hover, on keyboard focus, and while its menu is
+            // open (v5.270.0).
+            'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100',
             updating && 'opacity-60',
           )}
           aria-haspopup="menu"
         >
-          {followOption ? (
-            <Bookmark className="size-3" aria-hidden />
-          ) : (
-            <BookmarkPlus className="size-3" aria-hidden />
-          )}
-          {followOption?.label ?? 'Review'}
+          {status ? <Bookmark className="size-3" aria-hidden /> : <BookmarkPlus className="size-3" aria-hidden />}
+          {status ? 'Change' : 'Review'}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
@@ -468,16 +496,9 @@ export function useHostColumns({
                   because the whole row opens the inspector.  Without it the
                   identity looked like inert text and operators didn't know
                   it was the way in. */}
-              <div className="break-words font-medium text-foreground underline-offset-2 group-hover:underline">
+              <div className="truncate font-medium text-foreground underline-offset-2 group-hover:underline" title={host.ip_address}>
                 {host.ip_address}
               </div>
-              {host.hostname ? (
-                <div className="line-clamp-2 text-caption text-foreground/80">
-                  {host.hostname}
-                </div>
-              ) : (
-                <div className="text-caption text-muted-foreground">No hostname</div>
-              )}
             </div>
           );
           // An <a> rather than a <button> so cmd/ctrl/middle-click open the
@@ -496,43 +517,67 @@ export function useHostColumns({
                 onOpen(host.id);
               }}
               aria-label={`Open host inspector for ${host.ip_address}${host.hostname ? ` (${host.hostname})` : ''}`}
-              className="block min-w-0 flex-1 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="block min-w-0 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {identity}
             </Link>
           ) : (
-            <div className="min-w-0 flex-1">{identity}</div>
+            <div className="min-w-0">{identity}</div>
           );
+          const work = testWorkState(host);
           return (
             <div className="min-w-0">
-              <div className="flex min-w-0 items-start gap-xs">
+              <div className="flex min-w-0 items-center gap-xs">
                 <StateDot state={host.state} />
                 {opener}
-                <div className="flex shrink-0 items-center gap-xxs pt-px">
+                {/* v5.270.0 — the test-workflow state is a word, not an
+                    unexplained coloured left border on the row. */}
+                {work && (
+                  <span
+                    className={cn(
+                      'shrink-0 text-caption font-medium',
+                      work.kind === 'tested' ? 'text-info' : 'text-warning',
+                    )}
+                    title={work.title}
+                  >
+                    {work.label}
+                  </span>
+                )}
+                {/* Copy / open show on row hover or keyboard focus only — two
+                    icons on every row were noise. */}
+                <div className="ml-auto flex shrink-0 items-center gap-xxs opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                   <CopyIpButton ip={host.ip_address} />
-                  {/* Decorative, but now reacts to row hover so it reads as
-                      "this row goes somewhere" rather than as a dead icon. */}
                   <ChevronRight
                     className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
                     aria-hidden
                   />
                 </div>
               </div>
-              {host.os_name && (
-                <PivotValue
-                  onPivot={onAddFilter ? () => onAddFilter({ kind: 'os', value: host.os_name! }) : undefined}
-                  title={
-                    host.os_accuracy != null
-                      ? `Filter to hosts running ${host.os_name} (OS confidence ${host.os_accuracy}%)`
-                      : `Filter to hosts running ${host.os_name}`
-                  }
-                  className="mt-xxs block max-w-full truncate text-caption text-muted-foreground"
-                >
-                  {host.os_name}
-                </PivotValue>
-              )}
+              {/* Hostname and OS share the second line (was three lines). */}
+              <div className="flex min-w-0 items-baseline gap-xs pl-sm text-caption">
+                {host.hostname ? (
+                  <span className="min-w-0 truncate text-foreground/80" title={host.hostname}>
+                    {host.hostname}
+                  </span>
+                ) : (
+                  <span className="shrink-0 text-muted-foreground">No hostname</span>
+                )}
+                {host.os_name && (
+                  <PivotValue
+                    onPivot={onAddFilter ? () => onAddFilter({ kind: 'os', value: host.os_name! }) : undefined}
+                    title={
+                      host.os_accuracy != null
+                        ? `Filter to hosts running ${host.os_name} (OS confidence ${host.os_accuracy}%)`
+                        : `Filter to hosts running ${host.os_name}`
+                    }
+                    className="min-w-0 max-w-[45%] shrink-0 truncate text-muted-foreground"
+                  >
+                    {host.os_name}
+                  </PivotValue>
+                )}
+              </div>
               {host.tags && host.tags.length > 0 && (
-                <div className="mt-xxs flex flex-wrap gap-xxs">
+                <div className="mt-xxs flex flex-wrap gap-xxs pl-sm">
                   {host.tags.slice(0, 3).map((tag) => (
                     <PivotValue
                       key={tag.id}
@@ -567,8 +612,12 @@ export function useHostColumns({
         cell: ({ row }) => {
           const host = row.original;
           const lastSeenAge = relativeAge(host.last_seen);
+          // v5.270.0 — "seen 1d ago" on every row was provenance repeated
+          // down the page; it is on hover now.  NEW (first seen this week)
+          // stays visible: that one sets a host apart.
+          const seenTitle = lastSeenAge ? `Last seen ${lastSeenAge} ago (${host.last_seen})` : undefined;
           return (
-            <div className="flex w-full min-w-0 flex-col gap-xxs text-caption text-muted-foreground">
+            <div className="flex w-full min-w-0 flex-col gap-xxs text-caption text-muted-foreground" title={seenTitle}>
               {host.primary_subnet ? (
                 <span className="truncate font-mono text-foreground" title={host.primary_subnet}>
                   {host.primary_subnet}
@@ -578,13 +627,14 @@ export function useHostColumns({
                   <ScopeCoverageLabel host={host} />
                 </span>
               )}
-              {host.primary_site && (
-                <span className="truncate" title={host.primary_site}>{host.primary_site}</span>
+              {(host.primary_site || isNewHost(host.first_seen)) && (
+                <span className="flex min-w-0 items-center gap-xs">
+                  {host.primary_site && (
+                    <span className="min-w-0 truncate" title={host.primary_site}>{host.primary_site}</span>
+                  )}
+                  {isNewHost(host.first_seen) && <Badge variant="info" className="shrink-0">New</Badge>}
+                </span>
               )}
-              <span className="flex min-w-0 flex-wrap items-center gap-xs">
-                {lastSeenAge && <span title={host.last_seen ?? undefined}>seen {lastSeenAge} ago</span>}
-                {isNewHost(host.first_seen) && <Badge variant="info">New</Badge>}
-              </span>
             </div>
           );
         },
@@ -604,9 +654,10 @@ export function useHostColumns({
           const chips = exposureChips(host.ports);
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
+              {/* "40 open ports", not "40 open / 45": the total counted
+                  closed and filtered sightings, which nobody reads here. */}
               <div className="text-caption text-muted-foreground">
-                <strong className="text-foreground">{openCount}</strong> open
-                {host.ports ? ` / ${host.ports.length}` : ''}
+                <strong className="text-foreground">{openCount}</strong> open port{openCount === 1 ? '' : 's'}
               </div>
               {chips.length > 0 ? (
                 <div className="flex flex-wrap gap-xxs">
@@ -635,9 +686,7 @@ export function useHostColumns({
                 </div>
               ) : openCount > 0 ? (
                 <span className="text-caption text-muted-foreground">services not probed</span>
-              ) : (
-                <span className="text-caption text-muted-foreground">no open ports</span>
-              )}
+              ) : null}
             </div>
           );
         },
@@ -645,28 +694,27 @@ export function useHostColumns({
       {
         id: 'attention',
         header: 'Attention',
-        size: 180,
+        size: 200,
         cell: ({ row }) => {
-          // The single most-important reason this host needs a human, with a
-          // "+N" for any others (full list in the tooltip).  Replaces the
-          // badge pile: one prioritized signal answers "why this host?".
+          // v5.270.0 — one sentence-case line for the most important reason,
+          // then the others spelled out in quiet text ("1 high · 1 finding"),
+          // not a bright capital pill and an unexplained "+N".
           const { primary, others } = computeAttention(row.original);
           if (!primary) {
             return <span className="text-caption text-muted-foreground">—</span>;
           }
           return (
-            <div className="flex w-full min-w-0 flex-wrap items-center gap-xxs">
-              <Badge variant={primary.tone as never} className="max-w-full overflow-hidden" title={primary.detail}>
+            <div className="flex w-full min-w-0 flex-col gap-xxs">
+              <span className="flex min-w-0 items-center gap-xs text-metadata font-medium text-foreground" title={primary.detail}>
+                <span className={cn('size-2 shrink-0 rounded-full', ATTENTION_DOT[primary.tone])} aria-hidden />
                 <span className="truncate">{primary.label}</span>
-              </Badge>
+              </span>
               {others.length > 0 && (
                 <span
-                  className="cursor-default rounded text-caption text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  tabIndex={0}
+                  className="line-clamp-2 pl-md text-caption text-muted-foreground"
                   title={others.map((o) => `${o.label} — ${o.detail}`).join('\n')}
-                  aria-label={`Also: ${others.map((o) => `${o.label} (${o.detail})`).join(', ')}`}
                 >
-                  +{others.length}
+                  {others.map((o) => o.label).join(' · ')}
                 </span>
               )}
             </div>
@@ -678,64 +726,56 @@ export function useHostColumns({
         header: 'Review',
         size: 190,
         cell: ({ row }) => {
-          // Team review state + owner + a compact action, with notes as plain
-          // muted text.  Plan / web / execution counts and the conflict badge
-          // moved out of this column (to the inspector / the Attention column)
-          // so it stops being an overloaded badge pile.
+          // v5.270.0 — the column states where the review stands, in quiet
+          // text; the action to change it appears on row hover or keyboard
+          // focus.  A "REVIEW" button on every unreviewed row read like a
+          // status and made the whole column shout.
           const host = row.original;
           const noteCount = host.note_count ?? host.notes?.length ?? 0;
           const otherReviewerCount = host.other_reviewers?.length ?? 0;
           const reviewedCount = host.reviewed_by?.length ?? 0;
           const owner = host.assignees?.[0]?.name;
+          const state = reviewStateText(host);
+          const detail = [
+            owner ? `Assigned: ${owner}${(host.assignees?.length ?? 0) > 1 ? ` +${host.assignees!.length - 1}` : ''}` : null,
+            otherReviewerCount > 0
+              ? `${host.other_reviewers![0].name}${otherReviewerCount > 1 ? ` +${otherReviewerCount - 1}` : ''} reviewing`
+              : null,
+            reviewedCount > 0 && state.kind !== 'reviewed'
+              ? `Reviewed by ${host.reviewed_by![0].name}${reviewedCount > 1 ? ` +${reviewedCount - 1}` : ''}`
+              : null,
+            // A count is shown when it says something; "0 notes" was noise.
+            noteCount > 0 ? `${noteCount} note${noteCount === 1 ? '' : 's'}` : null,
+          ].filter(Boolean).join(' · ');
+          const titles = [
+            host.assignees?.length ? `Assigned: ${host.assignees.map((a) => a.name).join(', ')}` : null,
+            otherReviewerCount > 0 ? `Reviewing: ${host.other_reviewers!.map((r) => r.name).join(', ')}` : null,
+            reviewedCount > 0 ? `Reviewed by: ${host.reviewed_by!.map((r) => r.name).join(', ')}` : null,
+          ].filter(Boolean).join('\n');
           return (
-            <div className="flex w-full min-w-0 flex-col items-start gap-xxs">
-              <FollowMenu
-                host={host}
-                updating={updatingHostId === host.id}
-                onChange={(status) => onFollowChange(host.id, status)}
-              />
-              {otherReviewerCount > 0 && (
-                <Badge
-                  variant="warning"
-                  className="max-w-full overflow-hidden"
-                  title={`Reviewing: ${host.other_reviewers!.map((r) => r.name).join(', ')}`}
-                >
-                  <Users className="size-3 shrink-0" aria-hidden />
-                  <span className="truncate">
-                    {host.other_reviewers![0].name}
-                    {otherReviewerCount > 1 && ` +${otherReviewerCount - 1}`} reviewing
-                  </span>
-                </Badge>
-              )}
-              {reviewedCount > 0 && (
-                <Badge
-                  variant="success"
-                  className="max-w-full overflow-hidden"
-                  title={`Reviewed by: ${host.reviewed_by!.map((r) => r.name).join(', ')}`}
-                >
-                  <Check className="size-3 shrink-0" aria-hidden />
-                  <span className="truncate">
-                    Reviewed · {host.reviewed_by![0].name}
-                    {reviewedCount > 1 && ` +${reviewedCount - 1}`}
-                  </span>
-                </Badge>
-              )}
-              {owner && (
+            <div className="flex w-full min-w-0 flex-col gap-xxs">
+              <div className="flex min-w-0 items-center gap-xs">
                 <span
-                  className="line-clamp-1 max-w-full text-caption text-muted-foreground"
-                  title={`Assigned: ${host.assignees!.map((a) => a.name).join(', ')}`}
+                  data-review-state={state.kind}
+                  className={cn(
+                    'min-w-0 truncate text-metadata',
+                    state.kind === 'in_review' && 'font-medium text-warning',
+                    state.kind === 'reviewed' && 'font-medium text-success',
+                    state.kind === 'none' && 'text-muted-foreground',
+                  )}
                 >
-                  {/* "Assigned", not "Owner": this is who is assessing the host,
-                      not who owns or runs it. */}
-                  Assigned: <span className="text-foreground">{owner}</span>
-                  {(host.assignees?.length ?? 0) > 1 ? ` +${host.assignees!.length - 1}` : ''}
+                  {state.kind === 'reviewed' && <Check className="mr-xxs inline size-3" aria-hidden />}
+                  {state.label}
                 </span>
-              )}
-              {/* A count is shown when it says something; "0 notes" on nearly
-                  every row was noise. */}
-              {noteCount > 0 && (
-                <span className="text-caption text-muted-foreground">
-                  {noteCount} note{noteCount === 1 ? '' : 's'}
+                <FollowMenu
+                  host={host}
+                  updating={updatingHostId === host.id}
+                  onChange={(status) => onFollowChange(host.id, status)}
+                />
+              </div>
+              {detail && (
+                <span className="line-clamp-2 text-caption text-muted-foreground" title={titles || undefined}>
+                  {detail}
                 </span>
               )}
             </div>

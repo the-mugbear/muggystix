@@ -233,7 +233,7 @@ describe('Hosts', () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
 
-    await screen.findByText('Discovered Hosts');
+    await screen.findByRole('heading', { level: 1, name: 'Hosts' });
     await user.click(screen.getByRole('button', { name: /Add filter/i }));
     await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
     const callsBefore = mockedApi.getHosts.mock.calls.length;
@@ -261,7 +261,7 @@ describe('Hosts', () => {
     routerState.search = '?ports=8080';
     renderHosts();
 
-    await screen.findByText('Discovered Hosts');
+    await screen.findByRole('heading', { level: 1, name: 'Hosts' });
     await user.click(await screen.findByRole('button', { name: /^View: Custom filters/ }));
     await user.click(await screen.findByRole('menuitem', { name: /Critical observations/ }));
 
@@ -278,7 +278,7 @@ describe('Hosts', () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
 
-    await screen.findByText('Discovered Hosts');
+    await screen.findByRole('heading', { level: 1, name: 'Hosts' });
     await user.type(screen.getByLabelText('Host query'), 'port:443');
 
     await waitFor(
@@ -356,7 +356,7 @@ describe('Hosts', () => {
     // data reaches it.
     renderHosts();
 
-    await screen.findByText('Discovered Hosts');
+    await screen.findByRole('heading', { level: 1, name: 'Hosts' });
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.getAllByText('10.0.0.20').length).toBeGreaterThan(0);
   });
@@ -369,7 +369,7 @@ describe('Hosts', () => {
     // open-inspector assertions elsewhere in this file.
     renderHosts();
 
-    await screen.findByText('Discovered Hosts');
+    await screen.findByRole('heading', { level: 1, name: 'Hosts' });
     const opener = screen.getAllByRole('link', { name: /Open host inspector for 10\.0\.0\.20/ })[0];
     expect(opener).toHaveAttribute('href', expect.stringContaining('/hosts/'));
   });
@@ -380,7 +380,7 @@ describe('Hosts', () => {
     // third competing affordance.  Guard against it creeping back.
     renderHosts();
 
-    await screen.findByText('Discovered Hosts');
+    await screen.findByRole('heading', { level: 1, name: 'Hosts' });
     expect(screen.queryByRole('button', { name: /Expand host details/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /Collapse host details/i })).toBeNull();
   });
@@ -452,5 +452,78 @@ describe('Hosts', () => {
         expect.anything(),
       ),
     );
+  });
+});
+
+// v5.270.0 — the table states things quietly: review state as text (the
+// action on hover), the test-workflow state as a word, one attention line with
+// the other reasons spelled out, "N open ports", and no card chrome.
+describe('Hosts — streamlined table', () => {
+  const rows = [
+    makeHost(41, {
+      ip_address: '10.9.0.41',
+      follow: { status: 'in_review' },
+      test_plan_entry_count: 2,
+      conflict_count: 1,
+      vulnerability_summary: { total_vulnerabilities: 3, critical: 2, high: 1, medium: 0, low: 0, info: 0 },
+    }),
+    makeHost(42, {
+      ip_address: '10.9.0.42',
+      follow: { status: 'reviewed' },
+      test_execution_count: 3,
+      vulnerability_summary: { total_vulnerabilities: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+    }),
+    makeHost(43, {
+      ip_address: '10.9.0.43',
+      ports: [{ id: 431, port_number: 445, protocol: 'tcp', state: 'open', service_name: null }],
+      vulnerability_summary: { total_vulnerabilities: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+    }),
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedApi.getHosts.mockResolvedValue({ items: rows, total: 3, skip: 0, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc' });
+    mockedApi.getHostFilterData.mockResolvedValue({ common_ports: [], services: [], operating_systems: [], subnets: [], scans: [] });
+    mockedApi.listHostFilterViews.mockResolvedValue([]);
+    mockedApi.getProjectDefaultView.mockResolvedValue(null);
+    mockedApi.getHostQuerySchema.mockResolvedValue({ fields: [], examples: [] });
+    mockedApi.validateHostQuery.mockResolvedValue({ valid: true, match_count: 3, leaf_count: 1 });
+    mockedApi.listHostQueryHistory.mockResolvedValue([]);
+    sessionStorage.clear();
+    routerState.search = '';
+  });
+
+  it('states review as text, with the change action as a quiet control', async () => {
+    const { container } = renderHosts();
+    await screen.findByText('10.9.0.41');
+    const states = [...container.querySelectorAll('[data-review-state]')].map((el) => el.textContent);
+    expect(states).toEqual(['In review', 'Reviewed', 'Not started']);
+    // No filled "Review" chip per row: the menu trigger is a labelled text control.
+    expect(screen.getByRole('button', { name: 'Change review for 10.9.0.43' })).toHaveClass('opacity-0');
+  });
+
+  it('names the test-workflow state instead of colouring the row border', async () => {
+    const { container } = renderHosts();
+    await screen.findByText('10.9.0.41');
+    expect(screen.getByText('Planned')).toHaveAttribute('title', '2 tests approved but not yet executed');
+    expect(screen.getByText('Tested')).toBeInTheDocument();
+    expect(container.querySelector('tr.border-l-warning, tr.border-l-info')).toBeNull();
+  });
+
+  it('one attention line, the other reasons spelled out rather than "+N"', async () => {
+    renderHosts();
+    await screen.findByText('10.9.0.41');
+    expect(screen.getByText('2 critical')).toBeInTheDocument();
+    expect(screen.getByText('1 conflict · 1 high')).toBeInTheDocument();
+    expect(screen.queryByText('+2')).toBeNull();
+  });
+
+  it('counts open ports in words, explains a guessed service once, and has no card', async () => {
+    const { container } = renderHosts();
+    await screen.findByText('10.9.0.41');
+    expect(screen.getAllByText((_, el) => el?.tagName === 'DIV' && el.textContent === '2 open ports').length).toBeGreaterThan(0);
+    expect(screen.getByText(/guessed from its port number/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Review status filter' })).toBeInTheDocument();
+    expect(container.querySelector('.rounded-panel.border.bg-card')).toBeNull();
   });
 });

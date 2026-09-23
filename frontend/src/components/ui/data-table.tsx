@@ -240,6 +240,9 @@ export interface DataTableShellProps<TData> {
   maxHeight?: string;
   /** Rendered when `table.getRowModel().rows.length === 0`. */
   emptyState?: React.ReactNode;
+  /** A table on the page itself (UI_STYLE_GUIDE §7): a top rule instead of a
+   *  bordered, rounded card panel. */
+  bare?: boolean;
 }
 
 export function DataTableShell<TData>({
@@ -254,6 +257,7 @@ export function DataTableShell<TData>({
   tableClassName,
   maxHeight,
   emptyState,
+  bare = false,
 }: DataTableShellProps<TData>) {
   const rows = table.getRowModel().rows;
   // Live-region announcement when sort changes.  Screen readers
@@ -276,7 +280,10 @@ export function DataTableShell<TData>({
   }, [sorting, table]);
   return (
     <div
-      className={cn('relative rounded-panel border border-border bg-card', className)}
+      className={cn(
+        bare ? 'relative border-t border-border' : 'relative rounded-panel border border-border bg-card',
+        className,
+      )}
       style={maxHeight ? { maxHeight, overflowY: 'auto' } : undefined}
     >
       <div role="status" aria-live="polite" className="sr-only">
@@ -286,7 +293,7 @@ export function DataTableShell<TData>({
         <thead
           className={cn(
             '[&_tr]:border-b [&_tr]:border-border',
-            stickyHeader && 'sticky top-0 z-10 bg-card',
+            stickyHeader && cn('sticky top-0 z-10', bare ? 'bg-background' : 'bg-card'),
           )}
         >
           {table.getHeaderGroups().map((headerGroup) => (
