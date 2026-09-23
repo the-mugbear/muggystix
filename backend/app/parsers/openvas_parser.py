@@ -78,6 +78,11 @@ class OpenVASParser:
             project_id=project_id,
         )
 
+        # Counted, so a file where nothing could be recorded fails instead of
+        # "succeeding" empty — which also stopped the dispatcher's fallback
+        # chain on a mis-routed file (review 2026-09-23 R6; R13 of 09-21).
+        seen = recorded = failed = 0
+        saw_report = False
         try:
             context = iterparse_safe(file_path, events=("end",))
             processed = 0
@@ -89,18 +94,24 @@ class OpenVASParser:
                 if tag in ("scan_start", "scan_end"):
                     _observe_report_time(clock, elem.text)
                     continue
+                if tag == "report":
+                    saw_report = True
+                    continue
                 if tag != "result":
                     continue
+                seen += 1
                 # Per-result savepoint so one malformed <result> (a dedup
                 # flush failure, over-long field, etc.) is skipped rather than
                 # rolling back the entire upload.  Mirrors nmap/gnmap/nessus.
                 sp = self.db.begin_nested()
                 try:
-                    self._process_result(elem, scan.id, project_id)
+                    if self._process_result(elem, scan.id, project_id):
+                        recorded += 1
                     sp.commit()
                     processed += 1
                 except Exception as exc:  # noqa: BLE001 — isolate one bad row
                     sp.rollback()
+                    failed += 1
                     logger.warning("Skipping malformed OpenVAS result: %s", exc)
                 finally:
                     # Free memory and prune predecessors so the document
@@ -111,6 +122,24 @@ class OpenVASParser:
         except (ET.ParseError, XMLSyntaxError) as exc:
             raise ValueError(f"Invalid or truncated OpenVAS XML: {exc}") from exc
 
+        if not saw_report and seen == 0:
+            raise ValueError("Not an OpenVAS / Greenbone report: no <report> and no <result> elements.")
+        if seen and not recorded:
+            raise ValueError(
+                f"None of the {seen} OpenVAS result(s) could be recorded "
+                f"({failed} failed, {seen - failed} had no usable host address)."
+            )
+        unusable = seen - recorded
+        self.last_parse_stats = {
+            "skipped": unusable,
+            "warnings": (
+                f"{unusable} of {seen} OpenVAS result(s) not recorded "
+                f"({failed} malformed, {unusable - failed} without a usable host address)"
+                if unusable else None
+            ),
+            "summary": f"{recorded} result{'s' if recorded != 1 else ''}",
+        }
+
         clock.apply(scan)
         correlate_scan(self.db, scan.id)
         return scan
@@ -120,8 +149,8 @@ class OpenVASParser:
         result,  # lxml.etree._Element — compatible with ET.Element API
         scan_id: int,
         project_id: Optional[int],
-    ) -> None:
-        """Handle one ``<result>`` element.
+    ) -> bool:
+        """Handle one ``<result>`` element; True when it was recorded.
 
         Extracted from the previous inline body so the iterparse loop
         stays tidy.  Behaviour is identical to the pre-v2.86.11
@@ -131,7 +160,7 @@ class OpenVASParser:
         host_text = self._find_text(result, "host")
         ip_address = extract_first_ip(host_text)
         if not ip_address:
-            return
+            return False
 
         port_number, protocol = self._parse_port(self._find_text(result, "port"))
         ports = []
@@ -228,6 +257,7 @@ class OpenVASParser:
             references=references or None,
             plugin_output=evidence,
         )
+        return True
 
     def _find_text(self, element, path: str) -> Optional[str]:
         child = element.find(path)

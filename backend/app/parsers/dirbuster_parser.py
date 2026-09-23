@@ -225,31 +225,19 @@ class DirBusterParser:
         # dirsearch emit top-level arrays.  The streaming helper picks
         # the right shape and avoids loading huge directory-busting
         # exports (millions of URLs is realistic) into memory.
-        records = list(
-            iter_json_records(
-                file_path,
-                array_keys=("results",),
-                tool_label="Directory-buster JSON",
-            )
+        # Iterated lazily — ``list(...)`` materialised the whole export,
+        # defeating the streaming helper — and each record's own field names
+        # are read.  Probing records[0] picked the columns for the whole file,
+        # which is wrong for feroxbuster (a configuration record comes first,
+        # then ``status`` / ``content_length``) and dirsearch
+        # (``contentLength``), so every size came out None (review 2026-09-23
+        # R5; R16 of 09-21).
+        records = iter_json_records(
+            file_path,
+            array_keys=("results",),
+            tool_label="Directory-buster JSON",
         )
-        if not records:
-            return {}
-
-        # feroxbuster's per-entry shape uses ``status_code``; dirsearch
-        # uses ``status``; ffuf (already unwrapped from ``{"results":…}``)
-        # uses ``status``.  Probe the first record to pick the column
-        # set, then apply uniformly to the whole batch.
-        if "status_code" in records[0]:
-            return self._parse_entries(
-                records, url_key="url", status_key="status_code", size_key="content_length",
-            )
-        # ffuf JSON nests size under ``length``; dirsearch under
-        # ``content-length``.  Try ffuf's name first since the helper
-        # already collapsed ``{"results": …}`` for us.
-        size_key = "length" if "length" in records[0] else "content-length"
-        return self._parse_entries(
-            records, url_key="url", status_key="status", size_key=size_key,
-        )
+        return self._parse_entries(records)
 
     # ------------------------------------------------------------------
     # CSV parsing (dirsearch CSV, ffuf CSV)
@@ -329,25 +317,33 @@ class DirBusterParser:
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def _parse_entries(
-        self,
-        entries: list,
-        url_key: str,
-        status_key: str,
-        size_key: str,
-    ) -> Dict[HostKey, List[dict]]:
+    # The same fact under each tool's name: feroxbuster, ffuf, dirsearch.
+    _STATUS_KEYS = ("status_code", "status")
+    _SIZE_KEYS = ("content_length", "length", "content-length", "contentLength", "size")
+
+    @staticmethod
+    def _first(entry: dict, keys) -> object:
+        for k in keys:
+            if entry.get(k) is not None:
+                return entry[k]
+        return None
+
+    def _parse_entries(self, entries) -> Dict[HostKey, List[dict]]:
         hosts: Dict[HostKey, List[dict]] = {}
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            raw_url = str(entry.get(url_key) or "")
+            # feroxbuster's first line describes the run, not a path.
+            if entry.get("type") not in (None, "response"):
+                continue
+            raw_url = str(entry.get("url") or "")
             parsed = _parse_url(raw_url)
             if not parsed:
                 continue
             host, port, scheme, path = parsed
             ip = normalize_ip(host) or host
-            status = self._coerce_int(entry.get(status_key))
-            size = self._coerce_int(entry.get(size_key))
+            status = self._coerce_int(self._first(entry, self._STATUS_KEYS))
+            size = self._coerce_int(self._first(entry, self._SIZE_KEYS))
             key: HostKey = (ip, port, scheme)
             hosts.setdefault(key, []).append({
                 "path": path,

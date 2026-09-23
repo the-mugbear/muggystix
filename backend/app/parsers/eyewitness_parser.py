@@ -140,6 +140,17 @@ def _eyewitness_parse_stats(skipped: int) -> Dict[str, Any]:
     }
 
 
+def _refuse_if_all_skipped(written: int, skipped: int, filename: str) -> None:
+    """Rows were there and none could be used: that is a misread file, not an
+    empty report — it completed "successfully" with nothing (review
+    2026-09-23 R6).  Raised before the commit, so no empty scan is left."""
+    if written == 0 and skipped > 0:
+        raise ValueError(
+            f"EyeWitness report {filename}: all {skipped} row(s) were unusable (no URL or no "
+            "resolvable address) — nothing was imported. Check it is EyeWitness output."
+        )
+
+
 class EyewitnessParser:
     def __init__(self, db: Session):
         self.db = db
@@ -291,6 +302,7 @@ class EyewitnessParser:
                 "EyeWitness writes (or a .json report) beside the screenshots"
             )
 
+        _refuse_if_all_skipped(written, skipped, filename)
         self.db.commit()
         self._finalize(scan)
         logger.info(
@@ -307,9 +319,10 @@ class EyewitnessParser:
         scan = self._build_scan(filename)
         self.db.add(scan)
         self.db.flush()
-        _written, skipped = self._load_and_write_json(
+        written, skipped = self._load_and_write_json(
             Path(file_path), scan, screenshot_dir_rel=None,
         )
+        _refuse_if_all_skipped(written, skipped, filename)
         self.db.commit()
         self._finalize(scan)
         self.last_parse_stats = _eyewitness_parse_stats(skipped)
@@ -326,6 +339,7 @@ class EyewitnessParser:
         self.db.flush()
 
         written, skipped = self._load_and_write_csv(Path(file_path), scan, screenshot_dir_rel=None)
+        _refuse_if_all_skipped(written, skipped, filename)
         self.db.commit()
         self._finalize(scan)
         logger.info("EyeWitness CSV %s: %d rows written, %d skipped", filename, written, skipped)

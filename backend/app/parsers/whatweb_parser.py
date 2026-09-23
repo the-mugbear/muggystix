@@ -146,6 +146,14 @@ class WhatwebParser:
         # query joins through host_scan_history, not web_interfaces).
         record_hosts_in_scan(self.db, scan.id, self._observed)
 
+        # Refuse BEFORE committing: raised after the commit, the empty scan
+        # row stayed behind (review 2026-09-23 R6; R14 of 09-21).
+        if written == 0:
+            raise ValueError(
+                f"whatweb parser found 0 usable records in {filename}; every "
+                f"record was missing a target URL or a resolvable IP, or the "
+                f"file isn't whatweb --log-json output."
+            )
         self.db.commit()
 
         try:
@@ -158,12 +166,6 @@ class WhatwebParser:
             "whatweb %s: %d web_interfaces written, %d skipped in %.2fs",
             filename, written, skipped, elapsed,
         )
-        if written == 0:
-            raise ValueError(
-                f"whatweb parser found 0 usable records in {filename}; every "
-                f"record was missing a target URL or a resolvable IP, or the "
-                f"file isn't whatweb --log-json output."
-            )
         self.last_parse_stats = {
             "skipped": skipped,
             "warnings": (

@@ -117,6 +117,26 @@ def test_nikto_scanned_by_address_names_no_host(db_session, test_project):
     assert host.hostname is None
 
 
+def test_nikto_25_single_host_json_records_its_findings(db_session, test_project, tmp_path):
+    """Review 2026-09-23 R6 (R01 of 09-21): Nikto 2.5 writes ONE host object;
+    the findings lost their parent's ip and the job succeeded with none."""
+    import json
+    from app.parsers.nikto_parser import NiktoParser
+    p = tmp_path / "nikto.json"
+    p.write_text(json.dumps({
+        "host": "10.9.9.8", "ip": "10.9.9.8", "port": "8080", "banner": "",
+        "vulnerabilities": [
+            {"id": "999100", "method": "GET", "url": "/", "msg": "X-Frame-Options missing"},
+            {"id": "999103", "method": "GET", "url": "/", "msg": "X-Content-Type-Options missing"},
+        ],
+    }))
+    scan = NiktoParser(db_session).parse_file(str(p), "nikto.json", project_id=test_project.id)
+    vulns = db_session.query(Vulnerability).filter_by(scan_id=scan.id).all()
+    assert sorted(v.title for v in vulns) == ["X-Content-Type-Options missing", "X-Frame-Options missing"]
+    port = db_session.query(models.Port).filter_by(id=vulns[0].port_id).one()
+    assert port.port_number == 8080
+
+
 OPENVAS_GMP = """<report id="r1"><report id="r1"><results>
 <result id="a"><name>OpenSSH Multiple Vulnerabilities</name><host>10.9.9.9</host><port>22/tcp</port>
 <nvt oid="1.3.6.1.4.1.25623.1.0.1"><name>x</name><tags>summary=bad|insight=worse</tags>
@@ -153,6 +173,76 @@ def test_no_parser_can_store_an_address_as_a_host_name(db_session, test_project)
     assert host.hostname is None
     assert apply_hostname_candidate(host, "web01.lab", "scanner") is True
     assert apply_hostname_candidate(host, "10.9.9.11", "operator") is True
+
+
+def test_openvas_with_nothing_recordable_fails_instead_of_succeeding_empty(db_session, test_project, tmp_path):
+    """Review 2026-09-23 R6 (R13 of 09-21)."""
+    import pytest
+    from app.parsers.openvas_parser import OpenVASParser
+    bad_hosts = tmp_path / "bad.xml"
+    bad_hosts.write_text("<report><results><result><name>n</name><host>not-an-ip</host></result>"
+                         "</results></report>")
+    with pytest.raises(ValueError, match="None of the 1 OpenVAS result"):
+        OpenVASParser(db_session).parse_file(str(bad_hosts), "bad.xml", project_id=test_project.id)
+    not_openvas = tmp_path / "other.xml"
+    not_openvas.write_text("<nmaprun><host/></nmaprun>")
+    with pytest.raises(ValueError, match="Not an OpenVAS"):
+        OpenVASParser(db_session).parse_file(str(not_openvas), "other.xml", project_id=test_project.id)
+
+
+def test_openvas_clean_report_and_partial_results_are_said(db_session, test_project, tmp_path):
+    from app.parsers.openvas_parser import OpenVASParser
+    clean = tmp_path / "clean.xml"
+    clean.write_text("<report id='r'><results></results></report>")
+    OpenVASParser(db_session).parse_file(str(clean), "clean.xml", project_id=test_project.id)
+
+    mixed = tmp_path / "mixed.xml"
+    mixed.write_text(OPENVAS_GMP.replace(
+        "</results>", "<result><name>n</name><host>not-an-ip</host></result></results>"))
+    parser = OpenVASParser(db_session)
+    parser.parse_file(str(mixed), "mixed.xml", project_id=test_project.id)
+    assert parser.last_parse_stats["skipped"] == 1
+    assert "1 of 2 OpenVAS result(s) not recorded" in parser.last_parse_stats["warnings"]
+
+
+def test_whatweb_with_no_usable_record_leaves_no_scan(db_session, test_project, tmp_path):
+    import pytest
+    from app.parsers.whatweb_parser import WhatwebParser
+    p = tmp_path / "ww.json"
+    p.write_text('[{"target": "", "plugins": {}}]')
+    before = db_session.query(models.Scan).count()
+    with pytest.raises(ValueError, match="0 usable records"):
+        WhatwebParser(db_session).parse_file(str(p), "ww.json", project_id=test_project.id)
+    db_session.rollback()
+    assert db_session.query(models.Scan).count() == before
+
+
+def test_eyewitness_with_every_row_unusable_fails(db_session, test_project, tmp_path):
+    import pytest
+    from app.parsers.eyewitness_parser import EyewitnessParser
+    p = tmp_path / "Requests.csv"
+    p.write_text("Protocol,Port,Domain,Request Status,Screenshot Path, Source Path\n"
+                 ",,,,,\n,,,,,\n")
+    with pytest.raises(ValueError, match="all 2 row"):
+        EyewitnessParser(db_session).parse_file(str(p), "Requests.csv", project_id=test_project.id)
+
+
+def test_directory_buster_json_reads_each_records_own_fields(db_session, test_project, tmp_path):
+    """Review 2026-09-23 R5: the column names came from the first record, so
+    feroxbuster (configuration line first) and dirsearch (`contentLength`)
+    lost every size."""
+    import json
+    from app.parsers.dirbuster_parser import DirBusterParser
+    p = tmp_path / "ferox.json"
+    p.write_text("\n".join(json.dumps(r) for r in (
+        {"type": "configuration", "target_url": "http://10.9.9.20/", "threads": 50},
+        {"type": "response", "url": "http://10.9.9.20/admin", "status": 301, "content_length": 178},
+        {"type": "response", "url": "http://10.9.9.20/login", "status": 200, "content_length": 5120},
+    )))
+    DirBusterParser(db_session).parse_file(str(p), "ferox.json", project_id=test_project.id)
+    rows = {w.path: (w.status_code, w.size) for w in db_session.query(models.WebPath)
+            .join(models.Host).filter(models.Host.ip_address == "10.9.9.20")}
+    assert rows == {"/admin": (301, 178), "/login": (200, 5120)}
 
 
 def test_a_reobservation_without_a_score_keeps_the_stored_one(db_session, test_project):

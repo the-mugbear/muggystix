@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +54,10 @@ BRACKET_ID_PATTERN = re.compile(r"^\[(\d+)\]\s+(.*)$")
 OSVDB_ID_PATTERN = re.compile(r"^(OSVDB-\d+):\s*(.*)$", re.IGNORECASE)
 
 
+# A top-level JSON OBJECT below this size is read whole (see _parse_json).
+_WHOLE_OBJECT_LIMIT = 200 * 1024 * 1024
+
+
 def _target_of(host_entry: dict) -> dict:
     """The target fields of a Nikto JSON host object, for its findings."""
     return {k: host_entry[k] for k in ("ip", "host", "hostname", "port") if host_entry.get(k) is not None}
@@ -88,6 +94,23 @@ class NiktoParser:
         return scan
 
     def _parse_json(self, file_path: str, scan: models.Scan) -> None:
+        # Nikto 2.5 writes ONE host object ({ip, port, …, vulnerabilities:
+        # [...]}) for a single target.  Streamed with the array keys below,
+        # the reader unwrapped ``vulnerabilities`` and dropped the parent's
+        # ip/port, so every finding was skipped and the job "succeeded" with
+        # nothing (review 2026-09-23 R6; R01 of 09-21).  A top-level object is
+        # read whole (one host's findings are small) and keeps its target.
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            head = handle.read(4096).lstrip()
+        if head.startswith("{") and os.path.getsize(file_path) < _WHOLE_OBJECT_LIMIT:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+                try:
+                    payload = json.load(handle)
+                except json.JSONDecodeError:
+                    payload = None
+            if isinstance(payload, dict):
+                self._record_json_entries(scan, [payload])
+                return
         # Stream the records — Nikto JSON exports for large scopes are
         # dominated by per-finding ``description``/``msg`` bodies and
         # can easily reach several hundred MB.
@@ -96,7 +119,17 @@ class NiktoParser:
             array_keys=("vulnerabilities", "findings"),
             tool_label="Nikto JSON",
         )
+        self._record_json_entries(scan, entries)
+
+    def _record_json_entries(self, scan: models.Scan, entries) -> None:
         for entry in entries:
+            # A wrapper object carrying the findings under "findings".
+            wrapped = entry.get("findings")
+            if isinstance(wrapped, list) and not entry.get("msg"):
+                self._record_json_entries(scan, [
+                    {**_target_of(entry), **item} for item in wrapped if isinstance(item, dict)
+                ])
+                continue
             # v2.387.0 — Nikto's own ``-Format json`` is a list of HOST
             # objects, each holding its findings under ``vulnerabilities``
             # ({id, msg, url, method, references}) with the target on the
