@@ -1178,7 +1178,13 @@ export default function Scans() {
               {/* v5.271.0 — fixed layout with an Actions column wide enough
                   for its buttons: at w-24 a staged row's "Review and import"
                   was cut to "Review and ir". */}
-              <Table className="min-w-[60rem] table-fixed">
+              {/* v5.271.1 — Message is the only column without a width, so it
+                  gets what the others leave; with Tool and Duration as
+                  columns that was ~80px at a normal window ("Pro…", one word
+                  per line).  Both are now second lines of File and Submitted:
+                  Tool is "-" on nearly every queue row, Duration on every
+                  staged or queued one. */}
+              <Table className="min-w-[64rem] table-fixed">
                 <TableHeader>
                   <TableRow>
                     {/* w-12 (48px) — the expand chevron is a 40px icon
@@ -1188,11 +1194,9 @@ export default function Scans() {
                     <TableHead className="w-12" />
                     <TableHead className="w-36">Status</TableHead>
                     <TableHead className="w-1/5">File</TableHead>
-                    <TableHead className="w-24">Tool</TableHead>
                     <TableHead className="w-20 text-right">Size</TableHead>
                     <TableHead>Message</TableHead>
-                    <TableHead className="w-32">Submitted</TableHead>
-                    <TableHead className="w-24">Duration</TableHead>
+                    <TableHead className="w-44">Submitted</TableHead>
                     <TableHead className="w-44 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1225,7 +1229,7 @@ export default function Scans() {
                     const displayMessage = isFailure
                       ? job.error_message || job.message || 'Unknown error'
                       : job.status === 'staged'
-                        ? 'Stored, not imported. Review its format to import it.'
+                        ? 'Not imported yet'
                         // Prefer the import-count summary ("6 DNS records") over
                         // the generic "<tool> processed successfully" so the row
                         // actually shows how much was ingested.
@@ -1323,10 +1327,12 @@ export default function Scans() {
                               />
                             )}
                           </TableCell>
-                          <TableCell className="truncate" title={job.original_filename}>
-                            {job.original_filename}
+                          <TableCell className="min-w-0">
+                            <p className="truncate" title={job.original_filename}>{job.original_filename}</p>
+                            {job.tool_name && (
+                              <p className="truncate text-caption text-muted-foreground">{job.tool_name}</p>
+                            )}
                           </TableCell>
-                          <TableCell className="truncate">{job.tool_name || '-'}</TableCell>
                           <TableCell className="text-right font-mono">{fileSize}</TableCell>
                           <TableCell>
                             <div
@@ -1385,9 +1391,11 @@ export default function Scans() {
                             )}
                           </TableCell>
                           <TableCell className="text-caption">
-                            {new Date(job.created_at).toLocaleString()}
+                            <p>{new Date(job.created_at).toLocaleString()}</p>
+                            {elapsed !== '-' && (
+                              <p className="font-mono text-muted-foreground" title="How long the parse ran">ran {elapsed}</p>
+                            )}
                           </TableCell>
-                          <TableCell className="font-mono text-caption">{elapsed}</TableCell>
                           <TableCell className="text-right">
                             {job.scan_id && (
                               <Button
@@ -1509,7 +1517,7 @@ export default function Scans() {
                         </TableRow>
                         {isFailure && isExpanded && (
                           <TableRow>
-                            <TableCell colSpan={9} className="bg-accent p-md">
+                            <TableCell colSpan={7} className="bg-accent p-md">
                               <p className="mb-xxs text-metadata font-semibold text-destructive">
                                 Full error message
                               </p>
