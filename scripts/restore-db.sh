@@ -120,7 +120,12 @@ key_fingerprint() {
     printf 'networkmapper-keyfp-v1:%s' "$src" | _sha256_hex | cut -c1-16
 }
 
-BACKUP_DIR="$PROJECT_ROOT/backups"
+# The same default as backup-db.sh and deploy.sh: a sibling directory outside
+# the project folder.  This read ./backups, where backup-db.sh stopped writing
+# long ago, so the picker listed only old backups (review 2026-09-23 R9).
+# The legacy ./backups is still offered when it holds dumps.
+BACKUP_DIR="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
+LEGACY_BACKUP_DIR="$PROJECT_ROOT/backups"
 
 # --- Resolve the EXACT postgres volume for this stack ---
 # A loose `--filter name=postgres_data` + `head -1` can pick another
@@ -159,9 +164,11 @@ echo "=============================================="
 # --- Pick the backup file ---
 BACKUP_FILE="${1:-}"
 if [[ -z "$BACKUP_FILE" ]]; then
-    mapfile -t files < <(ls -1t "$BACKUP_DIR"/nm-*.dump "$BACKUP_DIR"/nm-*.tar.gz 2>/dev/null || true)
+    # Database backups only: nm-uploads-*.tar.gz is restored WITH its dump.
+    mapfile -t files < <(ls -1t "$BACKUP_DIR"/nm-*.dump "$BACKUP_DIR"/nm-pgdata-*.tar.gz \
+        "$LEGACY_BACKUP_DIR"/nm-*.dump "$LEGACY_BACKUP_DIR"/nm-pgdata-*.tar.gz 2>/dev/null || true)
     if [[ ${#files[@]} -eq 0 ]]; then
-        print_error "No backups found in $BACKUP_DIR"
+        print_error "No backups found in $BACKUP_DIR (or $LEGACY_BACKUP_DIR)"
         exit 1
     fi
     echo ""
@@ -185,6 +192,9 @@ fi
 
 [[ -f "$BACKUP_FILE" ]] || { print_error "Backup file not found: $BACKUP_FILE"; exit 1; }
 print_info "Selected: $BACKUP_FILE"
+# Everything that belongs with the selected backup (its uploads archive; the
+# volume tar itself) is read from the directory it is IN.
+BACKUP_FILE_DIR="$(cd "$(dirname "$BACKUP_FILE")" && pwd)"
 
 # --- Credential-encryption key check ---------------------------------------
 # If the backup was taken under a different CREDENTIAL_ENCRYPTION_KEY/SECRET_KEY
@@ -281,7 +291,13 @@ fi
 
 case "$BACKUP_FILE" in
   *.dump)
-    print_info "Logical restore — bringing up the database container only..."
+    # The app containers are STOPPED first.  Left running, their pools
+    # reconnected the moment the database was recreated, and the worker's
+    # LISTEN loop or an API write (session activity, an audit row) could land
+    # in half-restored tables or claim a restored queued job (review
+    # 2026-09-23 R9).  `up -d` below brings them back.
+    print_info "Logical restore — stopping the app containers, keeping the database up..."
+    $DC stop backend worker report-worker frontend >/dev/null 2>&1 || true
     $DC up -d db
     print_info "Waiting for PostgreSQL to accept connections..."
     ready=0
@@ -297,7 +313,7 @@ case "$BACKUP_FILE" in
     $DC exec -T db psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 <<SQL
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity
   WHERE datname = '$PG_DB' AND pid <> pg_backend_pid();
-DROP DATABASE IF EXISTS "$PG_DB";
+DROP DATABASE IF EXISTS "$PG_DB" WITH (FORCE);
 CREATE DATABASE "$PG_DB" OWNER "$PG_USER";
 SQL
 
@@ -322,7 +338,7 @@ SQL
     print_info "Replacing the contents of volume '$vol'..."
     docker run --rm \
         -v "$vol":/data \
-        -v "$BACKUP_DIR":/backup:ro \
+        -v "$BACKUP_FILE_DIR":/backup:ro \
         alpine sh -c "rm -rf /data/* 2>/dev/null; tar xzf /backup/$(basename "$BACKUP_FILE") -C /data"
     print_success "Volume contents replaced."
     ;;
@@ -332,6 +348,32 @@ SQL
     exit 1
     ;;
 esac
+
+# --- The files the restored rows point at (backups since v2.392.1) ---------
+# Extracted OVER ./uploads while the app is stopped: files in the archive
+# replace their namesakes; anything newer is left in place (an orphan file is
+# harmless, a deleted one is not).  ingestion_queue is never in the archive.
+uploads_archive=""
+[[ -f "${BACKUP_FILE}.meta" ]] && \
+    uploads_archive="$(grep -E '^uploads_archive=' "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
+    print_info "Restoring uploads/ (evidence images, issued reports, screenshots) from $uploads_archive..."
+    mkdir -p "$PROJECT_ROOT/uploads"
+    if docker run --rm \
+        -v "$PROJECT_ROOT/uploads":/uploads \
+        -v "$BACKUP_FILE_DIR":/backup:ro \
+        alpine tar xzf "/backup/$uploads_archive" -C /uploads; then
+        print_success "Uploads restored."
+    else
+        print_error "Restoring uploads/ failed — evidence images and issued report files may be missing."
+    fi
+elif [[ -n "$uploads_archive" ]]; then
+    print_warning "The backup names $uploads_archive, but it is not in $BACKUP_FILE_DIR —"
+    print_warning "evidence images and issued report files are NOT restored."
+else
+    print_warning "This backup has no uploads archive (made before v2.392.1): evidence"
+    print_warning "images and issued report files in ./uploads are left as they are."
+fi
 
 # --- Bring the full stack up; the backend runs `alembic upgrade head` ---
 echo ""

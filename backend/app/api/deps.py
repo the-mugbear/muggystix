@@ -645,6 +645,16 @@ def enforce_agent_operator_access(
     is_write = method not in _READ_METHODS
     is_project_write = is_write and (method, path) not in AGENT_SESSION_METADATA_WRITES
 
+    # An archived project is closed to its agents as it is to its people
+    # (``get_current_project`` answers 410): a key minted before the archive
+    # kept reading and writing it (review 2026-09-23 R12).  Session metadata
+    # writes — ending the session among them — still go through, so a
+    # session can be wrapped up.
+    if is_project_write or not is_write:
+        archived = db.query(Project.is_archived).filter(Project.id == agent.project_id).scalar()
+        if archived:
+            raise HTTPException(status_code=410, detail="Project is archived")
+
     # Prefer the session's own starter; fall back to the agent's owner.
     #
     # These are the same person in practice — an Agent is unique per

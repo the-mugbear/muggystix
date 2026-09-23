@@ -33,7 +33,10 @@ _RECONNECT_MAX_DELAY = 30.0
 def install_signal_handlers(logger: logging.Logger) -> None:
     def _handle(signum: int, _frame: object) -> None:
         global _shutdown
-        logger.info("Received signal %s — shutting down after current job", signum)
+        logger.info(
+            "Received signal %s — shutting down (a job in progress is handed back to the "
+            "queue at its next progress update)", signum,
+        )
         _shutdown = True
 
     signal.signal(signal.SIGINT, _handle)
@@ -42,6 +45,20 @@ def install_signal_handlers(logger: logging.Logger) -> None:
 
 def is_shutting_down() -> bool:
     return _shutdown
+
+
+# The running loop's heartbeat file, so a long job can keep it fresh from its
+# own progress callbacks (``touch_heartbeat``).  It used to be written only
+# between jobs, and a parse longer than WORKER_HEARTBEAT_TIMEOUT marked a
+# perfectly healthy worker unhealthy (review 2026-09-23 R3).
+_heartbeat_path: Optional[str] = None
+_heartbeat_logger: Optional[logging.Logger] = None
+
+
+def touch_heartbeat() -> None:
+    """Refresh the liveness file from inside a job (no-op outside a worker)."""
+    if _heartbeat_path and _heartbeat_logger is not None:
+        write_heartbeat(_heartbeat_path, _heartbeat_logger)
 
 
 def write_heartbeat(path: str, logger: logging.Logger) -> None:
@@ -96,6 +113,8 @@ def run_listen_loop(
     Wrapped in an outer reconnect loop so a Postgres restart / blip doesn't kill
     the worker — DB errors close the connection, log, back off, and retry.
     """
+    global _heartbeat_path, _heartbeat_logger
+    _heartbeat_path, _heartbeat_logger = heartbeat_path, logger
     periodic = periodic or []
     backoff = _RECONNECT_INITIAL_DELAY
     # Write one heartbeat immediately so the file exists from the start (the

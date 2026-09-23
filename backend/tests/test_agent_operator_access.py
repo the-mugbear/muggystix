@@ -108,6 +108,22 @@ def test_an_analysts_agent_can_read_and_write(client, db_session, test_project):
     assert wrote.status_code in (200, 201), wrote.text
 
 
+def test_an_archived_project_is_closed_to_its_agents(client, db_session, test_project):
+    """Review 2026-09-23 R12: people get 410 on an archived project; a key
+    minted before the archive kept reading and writing it."""
+    user = _member(db_session, test_project, ProjectRole.ANALYST.value)
+    raw, _ = _assist_key(db_session, test_project, user)
+    host = _host(db_session, test_project, "10.90.9.1")
+    headers = {"X-API-Key": raw}
+    assert client.get("/api/v1/agent/identity", headers=headers).status_code == 200
+
+    test_project.is_archived = True
+    db_session.commit()
+    assert client.get("/api/v1/agent/identity", headers=headers).status_code == 410
+    wrote = client.post(f"/api/v1/agent/hosts/{host.id}/notes", headers=headers, json={"body": "x"})
+    assert wrote.status_code == 410
+
+
 def test_a_demotion_reaches_a_live_key_immediately(
     client, db_session, test_project
 ):

@@ -174,3 +174,32 @@ def test_cancel_before_start_is_fenced_on_the_token(db_session, test_project):
         assert (row.retry_count or 0) == 0  # a cancel is not an attempt
     finally:
         svc._cancelled.discard(job.id)
+
+
+def test_a_stopping_worker_hands_the_job_back_to_the_queue(db_session, test_project, monkeypatch):
+    """Review 2026-09-23 R3: a SIGTERM mid-parse became a SIGKILL after the
+    grace period, and the job sat 'processing' until the reaper's window.
+    Now the parser's next heartbeat stops it and the job is re-queued — not
+    failed, and not counted as a failed attempt."""
+    from app import worker_loop
+    from app.services.ingestion_service import ShutdownRequested
+
+    claim = _recent(30)
+    job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)
+    svc = IngestionService()
+    touched = []
+    monkeypatch.setattr(worker_loop, "_shutdown", True)
+    monkeypatch.setattr(worker_loop, "touch_heartbeat", lambda: touched.append(True))
+
+    def parse_until_the_next_heartbeat(db, j):
+        svc.update_heartbeat(db, j.id, "40%", claimed_at=claim)
+        raise AssertionError("the heartbeat should have stopped the parse")
+
+    monkeypatch.setattr(svc, "_process_job", parse_until_the_next_heartbeat)
+    svc._run_job(job.id, claimed_at=claim)
+
+    row = _fresh(db_session, job.id)
+    assert touched  # the liveness file was refreshed from inside the job
+    assert (row.status, row.started_at, row.completed_at) == ("queued", None, None)
+    assert (row.retry_count or 0) == 0
+    assert issubclass(ShutdownRequested, ParseFailure)

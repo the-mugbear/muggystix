@@ -118,7 +118,7 @@ async def trust_cert_script():
 
 
 @router.get("/references/sbom")
-def sbom():
+def sbom(current_user: User = Depends(get_current_user)):
     """Software bill of materials for the deployed app.
 
     Returns every package installed in the running backend venv plus every
@@ -126,8 +126,10 @@ def sbom():
     with ``direct: bool`` so a user can tell the things we chose apart
     from the things our direct deps pulled in.
 
-    Public surface (no auth), same stance as ``/agents-guide`` and
-    ``/preflight-script``: this is documentation, not sensitive data.
+    Signed-in users only (v2.392.1).  It was public, like ``/agents-guide``,
+    but unlike the guide it lists the EXACT version of every dependency —
+    a ready-made CVE shopping list for anyone who can reach port 443
+    (review 2026-09-23 R12).  The in-app page sends the user's token.
     Cached by manifest mtimes; the first call after a redeploy walks the
     installed packages, subsequent calls return the memoised result.
 

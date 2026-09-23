@@ -744,21 +744,29 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             db.close()
 
 
-def purge_older_than(db: Session, days: int) -> int:
-    """Delete agent_api_call rows older than ``days``.
+PURGE_BATCH = 10_000
 
-    Returns the row count for the operator's records.  Run via a
-    daily cron / manual CLI invocation — there is no automatic
-    schedule yet, on the principle that the table grows slowly
-    relative to disk and we want operators to see the volume before
-    we silently prune.
-    """
+
+def purge_rows_older_than(db: Session, model, column, days: int, *, batch: int = PURGE_BATCH) -> int:
+    """Delete ``model`` rows whose ``column`` is older than ``days``, in
+    batches of ``batch`` with a commit after each — one unbatched DELETE of a
+    months-old backlog held its locks and its worker for the whole statement
+    (review 2026-09-23 R10).  Returns the total deleted."""
     from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    deleted = (
-        db.query(AgentApiCall)
-        .filter(AgentApiCall.created_at < cutoff)
-        .delete(synchronize_session=False)
-    )
-    db.commit()
-    return deleted
+    total = 0
+    while True:
+        ids = select(model.id).where(column < cutoff).limit(batch).scalar_subquery()
+        deleted = db.query(model).filter(model.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        total += deleted
+        if deleted < batch:
+            return total
+
+
+def purge_older_than(db: Session, days: int) -> int:
+    """Delete agent_api_call rows older than ``days`` (batched).  Run by the
+    retention loop in ``app.startup``; returns the row count."""
+    return purge_rows_older_than(db, AgentApiCall, AgentApiCall.created_at, days)

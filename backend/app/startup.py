@@ -137,6 +137,32 @@ async def expired_session_cleanup_loop() -> None:
 # want unbounded retention or who manage retention out-of-band).
 
 AGENT_API_CALL_PURGE_INTERVAL_SECONDS = 24 * 3600  # 1 day
+# The first pass runs this long after boot, not a full interval later: the
+# loop slept 24 h BEFORE its first purge, and a stack rebuilt more often than
+# daily never purged at all (review 2026-09-23 R10).
+AGENT_API_CALL_FIRST_PURGE_DELAY_SECONDS = 300
+
+
+def _purge_retained(retention_days: int, audit_days: int) -> tuple:
+    """One retention pass (runs in a thread — the batched DELETEs must not
+    block the event loop): agent API calls, then — only when an operator
+    opted in with AUDIT_LOG_RETENTION_DAYS — audit log rows."""
+    from app.db.models_auth import AuditLog
+    from app.db.session import SessionLocal
+    from app.services.agent_api_log_service import purge_older_than, purge_rows_older_than
+
+    with SessionLocal() as db:
+        if not _try_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION):
+            return None  # another worker is the leader this pass
+        try:
+            calls = purge_older_than(db, days=retention_days) if retention_days > 0 else 0
+            audits = (
+                purge_rows_older_than(db, AuditLog, AuditLog.timestamp, audit_days)
+                if audit_days > 0 else 0
+            )
+            return calls, audits
+        finally:
+            _release_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION)
 
 
 async def agent_api_call_retention_loop() -> None:
@@ -154,40 +180,37 @@ async def agent_api_call_retention_loop() -> None:
     DELETE-WHERE-older-than-cutoff is naturally idempotent (a row only
     matches once).
     """
-    from app.db.session import SessionLocal
-    from app.services.agent_api_log_service import purge_older_than
-
     retention_days = int(os.getenv("AGENT_API_CALL_RETENTION_DAYS", "90"))
-    if retention_days <= 0:
+    # Audit rows are kept forever unless an operator sets a window: deleting
+    # security audit data is a policy decision, not a default.
+    audit_days = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "0"))
+    if retention_days <= 0 and audit_days <= 0:
         logger.info(
-            "Agent API call retention loop disabled "
-            "(AGENT_API_CALL_RETENTION_DAYS=%s)",
-            retention_days,
+            "Retention loop disabled (AGENT_API_CALL_RETENTION_DAYS=%s, AUDIT_LOG_RETENTION_DAYS=%s)",
+            retention_days, audit_days,
         )
         return
 
     logger.info(
-        "Agent API call retention loop active "
-        "(window=%d days, interval=%ds)",
-        retention_days,
+        "Retention loop active (agent API calls: %s, audit log: %s; first pass in %ds, then every %ds)",
+        f"{retention_days} days" if retention_days > 0 else "kept",
+        f"{audit_days} days" if audit_days > 0 else "kept",
+        AGENT_API_CALL_FIRST_PURGE_DELAY_SECONDS,
         AGENT_API_CALL_PURGE_INTERVAL_SECONDS,
     )
 
+    delay = AGENT_API_CALL_FIRST_PURGE_DELAY_SECONDS
     while True:
         try:
-            await asyncio.sleep(AGENT_API_CALL_PURGE_INTERVAL_SECONDS)
-            with SessionLocal() as db:
-                if not _try_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION):
-                    continue  # another worker is the leader this pass
-                try:
-                    deleted = purge_older_than(db, days=retention_days)
-                finally:
-                    _release_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION)
-                if deleted:
+            await asyncio.sleep(delay)
+            delay = AGENT_API_CALL_PURGE_INTERVAL_SECONDS
+            result = await asyncio.to_thread(_purge_retained, retention_days, audit_days)
+            if result:
+                calls, audits = result
+                if calls or audits:
                     logger.info(
-                        "Agent API call retention: purged %d rows older than %d days",
-                        deleted,
-                        retention_days,
+                        "Retention: purged %d agent API call row(s) and %d audit log row(s)",
+                        calls, audits,
                     )
         except asyncio.CancelledError:
             raise

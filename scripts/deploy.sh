@@ -165,20 +165,57 @@ select_ip() {
 # ------------------------------------------------------------------
 # Generate .env from .env.example with the selected IP
 # ------------------------------------------------------------------
+# A URL-safe random secret (it may end up inside DATABASE_URL).
+random_secret() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+    else
+        openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+    fi
+}
+
+# Whether this stack's Postgres volume already exists (then it was initialised
+# with some password, and a new one in .env would lock the app out).
+postgres_volume_exists() {
+    local project
+    project="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -z "$project" ]] && project="$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+    docker volume ls -q 2>/dev/null | grep -qx "${project}_postgres_data"
+}
+
+# Point an EXISTING .env at a new address: only HOST_IP, REACT_APP_API_URL
+# and CORS_ORIGINS change.  Reconfigure used to re-render .env from
+# .env.example with a NEW SECRET_KEY — which signed everyone out and, with
+# credential encryption keyed off SECRET_KEY by default, made every stored
+# TOTP secret and integration/LLM credential undecryptable; it also dropped
+# every setting the operator had added (review 2026-09-23).
+update_env_address() {
+    local ip="$1" cors="$2" tmp
+    tmp="$(mktemp ".env.tmp.XXXXXX")"
+    if ! sed \
+        -e "s|^HOST_IP=.*|HOST_IP=${ip}|" \
+        -e "s|^REACT_APP_API_URL=.*|REACT_APP_API_URL=https://${ip}|" \
+        -e "s|^CORS_ORIGINS=.*|CORS_ORIGINS=${cors}|" \
+        .env > "$tmp" || [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        print_error "Failed to update .env"
+        return 1
+    fi
+    # Keys the file did not have yet.
+    grep -q '^HOST_IP=' "$tmp" || echo "HOST_IP=${ip}" >> "$tmp"
+    grep -q '^REACT_APP_API_URL=' "$tmp" || echo "REACT_APP_API_URL=https://${ip}" >> "$tmp"
+    grep -q '^CORS_ORIGINS=' "$tmp" || echo "CORS_ORIGINS=${cors}" >> "$tmp"
+    chmod --reference=.env "$tmp" 2>/dev/null || chmod 600 "$tmp"
+    mv "$tmp" .env
+    print_success "Updated .env for $ip (secrets and other settings kept)"
+}
+
 generate_env() {
     local ip="$1"
 
     if [[ ! -f ".env.example" ]]; then
         print_error ".env.example not found"
         exit 1
-    fi
-
-    # Generate a secret key
-    local secret_key
-    if command -v python3 >/dev/null 2>&1; then
-        secret_key=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
-    else
-        secret_key=$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)
     fi
 
     # Build CORS origins — always include both localhost and 127.0.0.1
@@ -193,6 +230,27 @@ generate_env() {
         cors="https://${ip},https://${ip}:3000,https://localhost,https://localhost:3000,https://127.0.0.1,https://127.0.0.1:3000"
     fi
 
+    # An existing .env keeps its secrets and settings; only the address moves.
+    if [[ -f ".env" ]]; then
+        update_env_address "$ip" "$cors"
+        return $?
+    fi
+
+    # A NEW deployment gets its own secrets: the JWT secret, a credential-
+    # encryption key of its own (so rotating SECRET_KEY never destroys stored
+    # TOTP secrets and credentials), and a database password instead of the
+    # compose default — unless a database volume already exists, which was
+    # initialised with some other password.
+    local secret_key cred_key pg_password=""
+    secret_key="$(random_secret)"
+    cred_key="$(random_secret)"
+    if postgres_volume_exists; then
+        print_warning "A database volume already exists — keeping its password (the compose default"
+        print_warning "unless you set POSTGRES_PASSWORD before). Set it in .env if it was changed."
+    else
+        pg_password="$(random_secret)"
+    fi
+
     # Write to a temp file first so a sed/IO failure can't leave a
     # half-written .env on disk.  Atomic rename only after sed exits 0.
     local tmp
@@ -202,6 +260,8 @@ generate_env() {
         -e "s|^REACT_APP_API_URL=.*|REACT_APP_API_URL=https://${ip}|" \
         -e "s|^CORS_ORIGINS=.*|CORS_ORIGINS=${cors}|" \
         -e "s|^SECRET_KEY=.*|SECRET_KEY=${secret_key}|" \
+        -e "s|^# CREDENTIAL_ENCRYPTION_KEY=.*|CREDENTIAL_ENCRYPTION_KEY=${cred_key}|" \
+        ${pg_password:+-e "s|^# POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${pg_password}|"} \
         .env.example > "$tmp"
     then
         rm -f "$tmp"
@@ -213,6 +273,7 @@ generate_env() {
         print_error ".env render produced empty output — refusing to overwrite"
         return 1
     fi
+    chmod 600 "$tmp"   # it holds the secrets
     mv "$tmp" .env
 
     print_success "Generated .env for $ip"
@@ -761,9 +822,10 @@ case $DEPLOY_CHOICE in
 
         # Best-effort backup BEFORE destroying the database.  backup-db.sh
         # auto-selects: a logical pg_dump if the db container is up, or a
-        # raw volume snapshot if Postgres is down.  Backups land in
-        # ./backups/ — a host directory the teardown below does NOT touch,
-        # so the artifact survives the nuke.  Failure is non-fatal: the
+        # raw volume snapshot if Postgres is down.  Backups land in the
+        # sibling <project>-db-backups directory — outside the project, which
+        # the teardown below does NOT touch — with an archive of uploads/, so
+        # the artifact survives the nuke.  Failure is non-fatal: the
         # user explicitly asked to destroy everything.
         if [[ -x "scripts/backup-db.sh" ]]; then
             print_info "Backing up the database before teardown..."

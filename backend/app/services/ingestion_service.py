@@ -226,6 +226,13 @@ class ParseFailure(RuntimeError):
         self.underlying_error = underlying_error
 
 
+class ShutdownRequested(ParseFailure):
+    """The worker was asked to stop mid-job.  A ParseFailure so every parser
+    and the dispatcher stop exactly as for a cancellation (no fallback parser,
+    partial scan deleted); ``_run_job`` re-queues the job instead of failing
+    it."""
+
+
 class IngestionService:
     """Coordinate file storage, job tracking, and background parsing.
 
@@ -588,6 +595,19 @@ class IngestionService:
             raise ParseFailure(
                 "Job cancelled",
                 user_message="Cancelled by user",
+            )
+
+        # A long parse keeps the container's liveness file fresh, and a worker
+        # asked to stop hands the job back NOW instead of being SIGKILLed
+        # mid-parse (review 2026-09-23 R3: the job then sat 'processing' until
+        # the reaper's 45-minute window, and its committed partial scan was
+        # orphaned when the requeue parsed into a second one).
+        from app import worker_loop
+        worker_loop.touch_heartbeat()
+        if worker_loop.is_shutting_down():
+            raise ShutdownRequested(
+                "Worker shutting down",
+                user_message="Interrupted by a worker restart — re-queued",
             )
 
         now = datetime.now(timezone.utc)
@@ -1032,6 +1052,19 @@ class IngestionService:
                             _scan_id, exc_info=True,
                         )
                         db.rollback()
+        except ShutdownRequested:
+            # The worker is stopping.  The parser's partial scan was already
+            # deleted on the way out (_execute_parser); the job goes back to
+            # the queue for the next worker, fenced like every other write.
+            db.rollback()
+            released = _transitions.release(
+                db, job_id, claimed_at, message="Re-queued: the worker restarted during the import",
+            )
+            db.commit()
+            logger.info(
+                "Ingestion job %s handed back to the queue on shutdown%s",
+                job_id, "" if released else " (no longer this attempt's — left as is)",
+            )
         except ParseFailure as exc:
             db.rollback()
             # Audit finding H4: populate the retry_count + last_error

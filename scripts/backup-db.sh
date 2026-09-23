@@ -163,6 +163,38 @@ do_pgdump() {
 
     print_success "Backup written: $out ($(du -h "$out" | cut -f1))"
     print_info    "Schema revision: $rev"
+    META_FILE="$meta"
+}
+
+# --- The files the database points at ---------------------------------------
+# Evidence images (note_attachments), issued client reports (client_reports)
+# and EyeWitness screenshots (web_screenshots) live under ./uploads, not in
+# the database.  A database-only backup restored note_attachments rows and
+# issued reports whose files were gone (review 2026-09-23 R9).  Left out on
+# purpose: ingestion_queue (retained scan inputs, re-uploadable, often GBs),
+# report_artifacts (download artifacts that expire anyway) and the one-time
+# initial-admin-password.txt.  tar runs in a container because the files are
+# written by the app's user, not the operator's.
+backup_uploads() {
+    local meta="$1"
+    if [[ ! -d "$PROJECT_ROOT/uploads" ]]; then
+        print_warning "No uploads/ directory — nothing but the database to back up."
+        return 0
+    fi
+    local out="nm-uploads-$TS.tar.gz"
+    print_info "Archiving uploads/ (evidence images, issued reports, screenshots)..."
+    if ! docker run --rm \
+        -v "$PROJECT_ROOT/uploads":/uploads:ro \
+        -v "$BACKUP_DIR":/backup \
+        alpine tar czf "/backup/$out" -C /uploads \
+            --exclude=./ingestion_queue --exclude=./report_artifacts \
+            --exclude=./initial-admin-password.txt . ; then
+        print_error "Archiving uploads/ failed — the database backup is kept, but evidence files are NOT backed up."
+        rm -f "$BACKUP_DIR/$out"
+        return 1
+    fi
+    echo "uploads_archive=$out" >> "$meta"
+    print_success "Uploads archived: $BACKUP_DIR/$out ($(du -h "$BACKUP_DIR/$out" | cut -f1))"
 }
 
 do_volume_tar() {
@@ -188,6 +220,7 @@ do_volume_tar() {
         echo "volume=$vol"
         echo "key_fingerprint=$(key_fingerprint || echo unknown)"
     } > "$BACKUP_DIR/$out.meta"
+    META_FILE="$BACKUP_DIR/$out.meta"
     print_success "Backup written: $BACKUP_DIR/$out ($(du -h "$BACKUP_DIR/$out" | cut -f1))"
     print_warning "Raw volume snapshots restore only into the same PostgreSQL major version."
 }
@@ -203,6 +236,11 @@ elif db_is_ready; then
 else
     print_warning "Database container is not running/ready — falling back to a raw volume snapshot."
     do_volume_tar
+fi
+
+# Only after a database backup succeeded (set -e stops on a failed one).
+if [[ -n "${META_FILE:-}" ]]; then
+    backup_uploads "$META_FILE" || true
 fi
 
 echo ""

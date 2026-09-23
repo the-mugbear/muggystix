@@ -17,7 +17,7 @@ The previous static table aged the moment any dependency was added or bumped. A 
 ## How to view the SBOM
 
 - **In-app:** click **Reference → Software Bill of Materials**. The page supports search, a Backend / Frontend / All segment, a Direct-only toggle, paging up to 250 rows per page, and a "Download JSON" button if you need an offline snapshot.
-- **Raw API:** `curl -k https://<host>/api/v1/references/sbom` returns the structured JSON envelope (`{app_version, generated_at, summary, components[]}`).
+- **Raw API:** `curl -k -H "Authorization: Bearer <token>" https://<host>/api/v1/references/sbom` (signed-in users only since v2.392.1) returns the structured JSON envelope (`{app_version, generated_at, summary, components[]}`).
 
 ## Important caveat (the page repeats this)
 

@@ -191,6 +191,21 @@ class JobTransitions:
         res = db.execute(update(m).where(*self._fenced(job_id, claimed_at)).values(**values))
         return res.rowcount
 
+    def release(
+        self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
+    ) -> int:
+        """processing → queued for THIS attempt only: the worker is stopping
+        and hands the job back (the reaper's requeue, without waiting out its
+        stale window).  ``retry_count`` is not touched — being interrupted by
+        a restart is not a failed attempt."""
+        m = self.model
+        values: Dict[str, Any] = {
+            "status": "queued", "started_at": None, "last_heartbeat": None, "completed_at": None,
+        }
+        values.update(cols)
+        res = db.execute(update(m).where(*self._fenced(job_id, claimed_at)).values(**values))
+        return res.rowcount
+
     # ------------------------------------------------------------------
     # locked read-check-write transitions (operator actions)
     # ------------------------------------------------------------------

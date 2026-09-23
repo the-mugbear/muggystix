@@ -1132,6 +1132,24 @@ def test_purge_older_than_drops_old_rows(db_session, execution_session_with_key,
     assert remaining == 1  # the 5-day-old row survives
 
 
+def test_purge_runs_in_batches_until_nothing_old_is_left(db_session, test_user):
+    """Review 2026-09-23 R10: the purge deletes in batches (one unbatched
+    DELETE of a long backlog held its worker), and the same helper serves the
+    opt-in audit-log retention."""
+    from datetime import datetime, timedelta, timezone
+    from app.db.models_auth import AuditLog
+    from app.services.agent_api_log_service import purge_rows_older_than
+
+    old = datetime.now(timezone.utc) - timedelta(days=400)
+    for i in range(7):
+        db_session.add(AuditLog(user_id=test_user.id, action="login_failed", timestamp=old))
+    db_session.add(AuditLog(user_id=test_user.id, action="login_success", timestamp=datetime.now(timezone.utc)))
+    db_session.commit()
+
+    assert purge_rows_older_than(db_session, AuditLog, AuditLog.timestamp, 365, batch=3) == 7
+    assert [a.action for a in db_session.query(AuditLog).filter_by(user_id=test_user.id)] == ["login_success"]
+
+
 # ---------------------------------------------------------------------------
 # v2.25.0 — review-driven hardening pass.  Each test pins a specific
 # finding from the cross-functional code review so it can't drift back.
