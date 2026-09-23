@@ -12,7 +12,7 @@
  * Hover or arrow keys move ONE crosshair across all three; the readout above
  * lists every value at that bucket.  Every value is also in the table view.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { OversightGrowthPoint } from '../../services/api/oversight';
 
@@ -32,17 +32,29 @@ const niceMax = (v: number): number => {
 const unitLabel = (unit: string, start: string) =>
   unit === 'week' ? `Week of ${start}` : unit === 'month' ? start.slice(0, 7) : start;
 
-/** Container width, with a fallback where ResizeObserver is missing (tests). */
-function useWidth(): [React.RefObject<HTMLDivElement>, number] {
-  const ref = useRef<HTMLDivElement>(null);
+/** Container width, with a fallback where ResizeObserver is missing (tests).
+ *
+ *  A CALLBACK ref, re-observing whenever the container mounts (v5.265.0):
+ *  the charts' container is replaced by the "no targets" line when a filter
+ *  leaves no points, and an observer attached once on first render kept
+ *  watching the detached element — it reported 0 (clamped to 280 px), and the
+ *  charts stayed that narrow after the filter was cleared.  A zero width
+ *  (a detached or hidden element) is ignored rather than trusted. */
+export function useWidth(): [(el: HTMLDivElement | null) => void, number] {
   const [w, setW] = useState(640);
-  useEffect(() => {
-    const el = ref.current;
+  const observer = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((el: HTMLDivElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(([entry]) => setW(Math.max(280, Math.floor(entry.contentRect.width))));
+    const ro = new ResizeObserver(([entry]) => {
+      const width = Math.floor(entry.contentRect.width);
+      if (width > 0) setW(Math.max(280, width));
+    });
     ro.observe(el);
-    return () => ro.disconnect();
+    observer.current = ro;
   }, []);
+  useEffect(() => () => observer.current?.disconnect(), []);
   return [ref, w];
 }
 
