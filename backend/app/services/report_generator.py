@@ -2457,6 +2457,9 @@ class ReportGenerator:
             "last_seen": self._iso(vuln.last_seen),
             "solution": vuln.solution,
             "references": references,
+            # v2.390.0 — the per-host scanner evidence, which the export
+            # (like the inspector) had left out.
+            "plugin_output": vuln.plugin_output,
         }
 
     def _serialize_note_for_export(self, note: models.Annotation) -> Dict[str, Any]:

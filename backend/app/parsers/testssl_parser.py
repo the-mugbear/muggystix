@@ -23,13 +23,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+import re
+
 from app.db import models
+from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
     resolve_port_cached,
+    upsert_vulnerability,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.cert_fields import parse_cert_not_after, _classify_tls_version
@@ -119,6 +123,42 @@ def _flatten_pretty(rec: Any):
                     yield {**finding, "ip": where, "port": target.get("port")}
 
 
+_RATED = {
+    "LOW": VulnerabilitySeverity.LOW,
+    "MEDIUM": VulnerabilitySeverity.MEDIUM,
+    "HIGH": VulnerabilitySeverity.HIGH,
+    "CRITICAL": VulnerabilitySeverity.CRITICAL,
+}
+
+# Names for the checks an analyst meets most; any other id reads "TLS check: <id>".
+_CHECK_TITLES = {
+    "SSLv2": "SSLv2 offered", "SSLv3": "SSLv3 offered",
+    "TLS1": "TLS 1.0 offered", "TLS1_1": "TLS 1.1 offered",
+    "heartbleed": "Heartbleed", "CCS": "OpenSSL CCS injection", "ticketbleed": "Ticketbleed",
+    "ROBOT": "ROBOT (Bleichenbacher oracle)", "secure_renego": "Secure renegotiation not supported",
+    "secure_client_renego": "Client-initiated renegotiation", "CRIME_TLS": "CRIME (TLS compression)",
+    "BREACH": "BREACH (HTTP compression)", "POODLE_SSL": "POODLE (SSLv3)", "SWEET32": "SWEET32 (64-bit block ciphers)",
+    "FREAK": "FREAK (export RSA)", "DROWN": "DROWN", "LOGJAM": "LOGJAM (weak DH)", "BEAST": "BEAST",
+    "LUCKY13": "LUCKY13", "RC4": "RC4 ciphers offered", "HSTS": "HSTS not set",
+    "cert_chain_of_trust": "Certificate chain not trusted", "cert_expirationStatus": "Certificate expiry",
+    "cert_trust": "Certificate name mismatch", "cert_signatureAlgorithm": "Weak certificate signature algorithm",
+    "cert_keySize": "Weak certificate key size", "cipherlist_NULL": "NULL ciphers offered",
+    "cipherlist_aNULL": "Anonymous ciphers offered", "cipherlist_EXPORT": "Export ciphers offered",
+    "cipherlist_LOW": "Low-strength ciphers offered", "cipherlist_3DES_IDEA": "3DES / IDEA ciphers offered",
+    "cipherlist_OBSOLETED": "Obsoleted CBC ciphers offered",
+}
+
+
+# Rated rows that are not a weakness of their own: the letter grade and its
+# cap reasons (summaries of the checks below), and one row per cipher suite /
+# preference (the cipherlist_* family rows already name the weak kinds).
+_NOT_WEAKNESSES = ("overall_grade", "grade_cap", "cipher-", "cipher_order", "cipherorder_")
+
+
+def _check_title(check_id: str) -> str:
+    return _CHECK_TITLES.get(check_id) or f"TLS check: {check_id}"
+
+
 def _split_ip(raw_ip: str) -> Tuple[str, Optional[str]]:
     """testssl serialises the target as ``hostname/1.2.3.4`` (or a bare IP).
     Return ``(ip, hostname)``."""
@@ -146,6 +186,33 @@ class TestsslParser:
         self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         self._name_cache = ObservationCache()
+
+    def _record_observations(
+        self, findings: List[Dict[str, Any]], host_id: int, scan_id: int,
+        port_id: Optional[int], name_id: Optional[int],
+    ) -> int:
+        """One scanner observation per rated check (severity LOW or worse).
+        OK / INFO / WARN are facts or client-side notes, not weaknesses."""
+        count = 0
+        for rec in findings:
+            severity = _RATED.get(str(rec.get("severity") or "").upper())
+            check_id = str(rec.get("id") or "").strip()
+            if severity is None or not check_id or check_id.startswith(_NOT_WEAKNESSES):
+                continue
+            cves = re.findall(r"CVE-\d{4}-\d{4,}", str(rec.get("cve") or ""), re.IGNORECASE)
+            upsert_vulnerability(
+                db=self.db, host_id=host_id, scan_id=scan_id,
+                source=VulnerabilitySource.TESTSSL,
+                title=_check_title(check_id),
+                severity=severity,
+                plugin_id=check_id,
+                port_id=port_id,
+                description=str(rec.get("finding") or "") or None,
+                cve_id=cves[0].upper() if cves else None,
+                name_id=name_id,
+            )
+            count += 1
+        return count
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -205,6 +272,7 @@ class TestsslParser:
         self.db.flush()
 
         written = 0
+        observations = 0
         # v2.332.0 — a target whose savepoint rolled back was logged and then
         # reported as a clean import ("skipped": 0).  Count it.
         skipped_targets: list = []
@@ -262,6 +330,13 @@ class TestsslParser:
                     raw={"findings": t["raw"]},
                 ))
                 self.db.flush()
+                # v2.390.0 — every rated check (LOW … CRITICAL) is a scanner
+                # observation on this host:port.  Only three facts were
+                # promoted (weak protocol, expiry, self-signed); Heartbleed,
+                # ROBOT, SWEET32, missing HSTS … lived in `raw`, unread.
+                observations += self._record_observations(
+                    t["raw"], host_row.id, scan.id, port_row.id if port_row else None, name_id,
+                )
                 sp.commit()
                 written += 1
                 # Only a COMMITTED target is an observation (v2.332.2).  Noting
@@ -303,7 +378,10 @@ class TestsslParser:
                 if skipped_targets
                 else None
             ),
-            "summary": f"{written} TLS target{'s' if written != 1 else ''}",
+            "summary": (
+                f"{written} TLS target{'s' if written != 1 else ''}"
+                + (f"; {observations} scanner observation{'s' if observations != 1 else ''}" if observations else "")
+            ),
             "partial": bool(skipped_targets),
         }
         return scan

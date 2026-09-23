@@ -81,6 +81,8 @@ export interface HostVulnerability {
   description?: string | null;
   references?: string[];
   source_plugin_name?: string | null;
+  /** v5.276.0 — what the scanner saw on THIS host (Nessus plugin_output). */
+  plugin_output?: string | null;
 }
 
 /** Where a host's netblock is registered and hosted (RDAP / prefix lists).

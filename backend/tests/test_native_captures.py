@@ -271,6 +271,32 @@ def test_eyewitness_report_directory_zipped(db_session, test_project, tmp_path, 
 
 # --- testssl ---------------------------------------------------------------------
 
+def test_testssl_rated_checks_are_scanner_observations(db_session, test_project):
+    """v2.390.0 — only three TLS facts were promoted; every rated check
+    (Heartbleed, ROBOT, missing HSTS, a self-signed chain …) stayed in
+    web_interfaces.raw, which nothing reads."""
+    import json
+    from app.db.models_vulnerability import VulnerabilitySource
+    from app.parsers.testssl_parser import TestsslParser
+
+    records = json.loads((NATIVE / "testssl-full.json").read_text())
+    scan = TestsslParser(db_session).parse_file(
+        str(NATIVE / "testssl-full.json"), "testssl-full.json", project_id=test_project.id)
+    vulns = _vulns(db_session, scan)
+    # The weaknesses; not the letter grade, and not one row per cipher suite
+    # (the cipherlist_* families already say which kinds are offered).
+    assert {v.plugin_id for v in vulns} == {
+        "cipherlist_OBSOLETED", "cert_trust", "cert_chain_of_trust", "cert_revocation", "LUCKY13",
+    }
+    by_id = {v.plugin_id: v for v in vulns}
+    assert by_id["cert_chain_of_trust"].severity.value == "critical"
+    assert by_id["cert_chain_of_trust"].title == "Certificate chain not trusted"
+    assert all(v.source == VulnerabilitySource.TESTSSL for v in vulns)
+    # An OK / INFO check is a fact, not an observation.
+    ok_ids = {r["id"] for r in records if str(r.get("severity", "")).upper() in {"OK", "INFO"}}
+    assert not ok_ids & {v.plugin_id for v in vulns}
+
+
 def test_testssl_pretty_json_records_its_target(db_session, test_project):
     """``--jsonfile-pretty`` nests findings under scanResult: "0 TLS targets"."""
     from app.parsers.testssl_parser import TestsslParser

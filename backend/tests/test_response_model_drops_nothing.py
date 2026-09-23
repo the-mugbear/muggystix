@@ -67,6 +67,7 @@ def furnished_host(db_session, test_project):
         host_id=host.id, scan_id=scan.id, port_id=port.id,
         title="Some issue", severity=VulnerabilitySeverity.HIGH,
         source="nessus", cve_id="CVE-2024-9999", plugin_id="12345",
+        plugin_output="Message signing required: false",
     ))
 
     attr = NetworkAttribution(
@@ -154,6 +155,8 @@ def test_nested_vulnerability_rows_carry_every_key_too(
     assert not dropped, (
         f"HostVulnerability dropped serializer output: {dropped}"
     )
+    # v2.390.0 — the per-host evidence reaches the inspector.
+    assert returned["plugin_output"] == "Message signing required: false"
 
 
 def test_provenance_collections_are_not_empty_in_this_fixture(

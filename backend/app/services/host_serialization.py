@@ -523,6 +523,11 @@ def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None
         "description": vuln.description,
         "references": references,
         "source_plugin_name": vuln.source_plugin_name,
+        # v2.390.0 — the per-host scanner evidence (Nessus plugin_output,
+        # e.g. "Message signing required: false").  Stored since the parser
+        # was written but served only to agents: an analyst could not see
+        # WHY the scanner flagged this host.
+        "plugin_output": vuln.plugin_output,
     }
 
 

@@ -293,6 +293,8 @@ class HostVulnerability(BaseModel):
     description: Optional[str] = None
     references: List[str] = []
     source_plugin_name: Optional[str] = None
+    # v2.390.0 — per-host scanner evidence (Nessus plugin_output).
+    plugin_output: Optional[str] = None
 
     @field_validator("references", mode="before")
     @classmethod
