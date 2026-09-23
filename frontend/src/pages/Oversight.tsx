@@ -40,6 +40,7 @@ import PostureLead from '../components/posture/PostureLead';
 import GrowthCharts from '../components/oversight/GrowthCharts';
 import JudgmentBySeverity from '../components/oversight/JudgmentBySeverity';
 import ShareSummaryDialog from '../components/oversight/ShareSummaryDialog';
+import ProjectMultiSelect from '../components/oversight/ProjectMultiSelect';
 import { Input } from '../components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -49,6 +50,7 @@ import {
 } from '../components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatStatusLabel } from '../utils/statusMeta';
+import { describeProjects, parseProjectIds, serializeProjectIds } from '../utils/oversightProjects';
 import { formatApiError } from '../utils/apiErrors';
 import { formatRelativeTime } from '../utils/relativeTime';
 import {
@@ -357,7 +359,9 @@ const Oversight: React.FC = () => {
 
   const preset = (params.get('range') as DatePreset) || DEFAULT_PRESET;
   const tab = params.get('tab') || 'overview';
-  const projectFilter = params.get('project') || ALL;
+  // The project subset (`?projects=1,4,9`); empty = every project.
+  const projectKey = params.get('projects') ?? params.get('project') ?? '';
+  const projectIds = useMemo(() => parseProjectIds(new URLSearchParams({ projects: projectKey })), [projectKey]);
   const statusFilter = params.get('status') || ALL;
   const testerFilter = params.get('tester') || ALL;
   const overlap = params.get('overlap') === '1';
@@ -377,12 +381,12 @@ const Oversight: React.FC = () => {
   const query: OversightQuery = useMemo(() => ({
     start: range.start,
     end: range.end,
-    project_id: projectFilter !== ALL ? [Number(projectFilter)] : [],
+    project_id: projectIds,
     status: statusFilter !== ALL ? [statusFilter] : [],
     tester_id: testerFilter !== ALL ? Number(testerFilter) : undefined,
     window_overlap: overlap,
     severity_basis: basis,
-  }), [range.start, range.end, projectFilter, statusFilter, testerFilter, overlap, basis]);
+  }), [range.start, range.end, projectIds, statusFilter, testerFilter, overlap, basis]);
 
   const [data, setData] = useState<OversightResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -447,10 +451,19 @@ const Oversight: React.FC = () => {
   const throughLabel = range.end ? `Through ${range.end}` : 'Through today';
   // The filters in words, for the copied summary (a pasted figure travels
   // without the page's filter row).
+  const projectNames = useMemo(
+    () => new Map((data?.project_options ?? []).map((o) => [o.id, o.name] as const)),
+    [data],
+  );
+  // The subset in words, for the lead sentence and the copied summary.
+  const projectScope = projectIds.length === 0
+    ? null
+    : `${projectIds.length === 1 ? 'Project' : `${projectIds.length} of ${projectNames.size || '?'} projects`}: ${describeProjects(projectIds, projectNames, 3)}`;
   const filterLabels = useMemo(() => {
     const out: string[] = [];
-    if (projectFilter !== ALL) {
-      out.push(`Project: ${data?.project_options.find((o) => String(o.id) === projectFilter)?.name ?? `#${projectFilter}`}`);
+    if (projectIds.length) {
+      const all = projectIds.map((id) => projectNames.get(id) ?? `#${id}`).join(', ');
+      out.push(projectIds.length === 1 ? `Project: ${all}` : `Projects (${projectIds.length}): ${all}`);
     }
     if (statusFilter !== ALL) out.push(`Status: ${formatStatusLabel(statusFilter)}`);
     if (testerFilter !== ALL) {
@@ -458,8 +471,8 @@ const Oversight: React.FC = () => {
     }
     if (overlap) out.push('Engagement window overlaps the period');
     return out;
-  }, [data, projectFilter, statusFilter, testerFilter, overlap]);
-  const activeFilters = projectFilter !== ALL || statusFilter !== ALL || testerFilter !== ALL || overlap || preset !== DEFAULT_PRESET || !!attn;
+  }, [data, projectIds, projectNames, statusFilter, testerFilter, overlap]);
+  const activeFilters = projectIds.length > 0 || statusFilter !== ALL || testerFilter !== ALL || overlap || preset !== DEFAULT_PRESET || !!attn;
 
   const s = data?.summary;
   const pageRows = filteredProjects.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -524,18 +537,18 @@ const Oversight: React.FC = () => {
                 <Button size="sm" disabled={!!draftError} onClick={() => setParam({ start: draftStart, end: draftEnd })}>Apply</Button>
               </>
             )}
-            <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
-              Project
-              <Select value={projectFilter} onValueChange={(v) => setParam({ project: v === ALL ? null : v })}>
-                <SelectTrigger className="w-52" aria-label="Project"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL}>All projects</SelectItem>
-                  {(data?.project_options ?? []).map((o) => (
-                    <SelectItem key={o.id} value={String(o.id)}><span className="block max-w-[16rem] truncate">{o.name}</span></SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
+            <div className="flex flex-col gap-xxs text-caption text-muted-foreground">
+              Projects
+              <ProjectMultiSelect
+                options={data?.project_options ?? []}
+                value={projectIds}
+                onChange={(ids) => setParam({
+                  projects: serializeProjectIds(ids, data?.project_options.length ?? 0),
+                  project: null,
+                })}
+                disabled={!data && loading}
+              />
+            </div>
             <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
               Status
               <Select value={statusFilter} onValueChange={(v) => setParam({ status: v === ALL ? null : v })}>
@@ -600,6 +613,7 @@ const Oversight: React.FC = () => {
                 scanner observations not yet judged.
               </>}
             >
+              {projectScope && <>These figures cover {projectScope}.{' '}</>}
               {n(s.projects_in_progress)} project{s.projects_in_progress === 1 ? '' : 's'} in progress.{' '}
               {n(s.targets_tested)} of {n(s.targets_current)} targets tested ({pct(s.targets_tested, s.targets_current)}).
             </PostureLead>

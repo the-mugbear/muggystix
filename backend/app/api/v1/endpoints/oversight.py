@@ -41,6 +41,8 @@ from app.services.project_signals_service import IN_PROGRESS_STATUSES, project_s
 router = APIRouter()
 
 COMPLETE_STATUSES = ("completed", "archived")
+# The project multi-select's cap (the page sends the chosen ids; none = all).
+MAX_PROJECT_FILTER = 500
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +270,14 @@ def _overlaps(p: Project, w: Window) -> bool:
 def get_oversight_dashboard(
     start: Optional[date] = Query(None, description="First UTC day of the period (inclusive)"),
     end: Optional[date] = Query(None, description="Last UTC day of the period (inclusive)"),
-    project_id: List[int] = Query([], description="Limit to these projects"),
+    project_id: List[int] = Query(
+        [],
+        description=(
+            f"Limit to these projects (repeat the parameter; at most {MAX_PROJECT_FILTER}). "
+            "An id naming no project is ignored — it covers nothing; the response's "
+            "summary.projects_total counts the projects actually covered."
+        ),
+    ),
     status: List[str] = Query([], description="Limit to these project statuses"),
     tester_id: Optional[int] = Query(None, description="Limit to one tester's work"),
     window_overlap: bool = Query(False, description="Only projects whose engagement window overlaps the dates"),
@@ -279,7 +288,16 @@ def get_oversight_dashboard(
 ):
     now = datetime.now(timezone.utc)
     window = _window(start, end, now.date())
+    if len(project_id) > MAX_PROJECT_FILTER:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Select at most {MAX_PROJECT_FILTER} projects, or none for every project.",
+        )
+    if any(pid <= 0 for pid in project_id):
+        raise HTTPException(status_code=422, detail="Project ids are positive integers.")
 
+    # Every figure below reads `ids` — the cohort after these filters — so a
+    # subset of projects scopes the whole page at once.
     all_projects = db.query(Project).order_by(Project.name).all()
     cohort = all_projects
     if project_id:

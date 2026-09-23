@@ -344,3 +344,93 @@ def test_rows_carry_every_scanner_observation_and_the_judged_split(client, db_se
     assert row["observations"] == {"critical": 1, "high": 1, "medium": 1, "low": 0}  # info left out
     for k in ("critical", "high", "medium", "low"):
         assert row["observations_judged"][k] + row["observations_unjudged"][k] == row["observations"][k]
+
+
+# ---------------------------------------------------------------------------
+# A subset of projects (the page's project multi-select)
+# ---------------------------------------------------------------------------
+
+_ADDITIVE = ("projects_total", "projects_in_progress", "projects_complete", "targets_current",
+             "targets_through_end", "targets_added", "targets_tested", "targets_in_review",
+             "targets_reviewed", "reviews_concluded", "imports")
+
+
+def _seed_three(db):
+    """Three projects with different inventories, testing, findings and
+    tester work — so a wrong subset cannot add up by accident."""
+    ana, ben = _user(db, "subset-ana"), _user(db, "subset-ben")
+    a, b, c = (_project(db, n, s) for n, s in
+               (("Subset A", "active"), ("Subset B", "in_progress"), ("Subset C", "completed")))
+    ha = [_host(db, a, f"10.60.0.{i}", first_seen=NOW) for i in range(1, 4)]
+    hb = [_host(db, b, f"10.61.0.{i}", first_seen=NOW) for i in range(1, 6)]
+    hc = [_host(db, c, f"10.62.0.{i}", first_seen=NOW) for i in range(1, 3)]
+    _follow(db, ana, ha[0], FollowStatus.REVIEWED, reviewed_at=NOW)
+    _follow(db, ana, hb[0], FollowStatus.IN_REVIEW)
+    _follow(db, ben, hb[1], FollowStatus.REVIEWED, reviewed_at=NOW)
+    _follow(db, ben, hc[0], FollowStatus.REVIEWED, reviewed_at=NOW)
+    _finding(db, a, "critical", [ha[0]])
+    _finding(db, b, "high", [hb[0], hb[1]])
+    _finding(db, b, "medium", [hb[2]])
+    _finding(db, c, "low", [hc[0]])
+    db.commit()
+    return (a, b, c), (ana, ben)
+
+
+def _merged(*severities):
+    return {k: sum(s[k] for s in severities) for k in severities[0]}
+
+
+def test_a_subset_of_projects_adds_up_to_exactly_those_projects(client, db_session, test_project):
+    (a, b, c), (ana, ben) = _seed_three(db_session)
+    one = {p.id: client.get(URL, params={"project_id": [p.id]}).json() for p in (a, b, c)}
+    both = client.get(URL, params={"project_id": [a.id, b.id]}).json()
+
+    assert {r["id"] for r in both["projects"]} == {a.id, b.id}
+    for key in _ADDITIVE:
+        assert both["summary"][key] == one[a.id]["summary"][key] + one[b.id]["summary"][key], key
+    sev, sa, sb = both["summary"]["severity"], one[a.id]["summary"]["severity"], one[b.id]["summary"]["severity"]
+    for key in ("findings", "observations", "observations_unjudged", "defect_targets"):
+        assert sev[key] == _merged(sa[key], sb[key]), key
+    assert sev["tested_targets"] == sa["tested_targets"] + sb["tested_targets"]
+    assert both["attention"]["critical_projects"] == 1   # A's critical; C (the low) is not in it
+    # Testers: only work inside the subset — Ben's review in C is not counted.
+    rows = {t["user_id"]: t for t in both["testers"]}
+    assert rows[ben.id]["reviewed"] == 1
+    assert {p["project_id"] for p in rows[ben.id]["projects"]} == {b.id}
+    assert rows[ana.id]["tested"] == 2
+    # Growth covers the subset too.
+    assert sum(pt["targets_added"] for pt in both["growth"]["points"]) == 3 + 5
+    # The option list still offers every project, so the subset can be changed.
+    assert {o["id"] for o in both["project_options"]} >= {a.id, b.id, c.id, test_project.id}
+
+
+def test_no_project_filter_is_every_project(client, db_session, test_project):
+    (a, b, c), _ = _seed_three(db_session)
+    every = client.get(URL).json()
+    listed = client.get(URL, params={"project_id": [a.id, b.id, c.id, test_project.id]}).json()
+    assert every["summary"] == listed["summary"]
+    assert every["summary"]["projects_total"] == 4
+
+
+def test_project_filter_validation(client, db_session, test_project):
+    # An id naming no project covers nothing; the rest still apply.
+    body = client.get(URL, params={"project_id": [test_project.id, 999_999]}).json()
+    assert [r["id"] for r in body["projects"]] == [test_project.id]
+    assert body["summary"]["projects_total"] == 1
+    # Only unknown ids: an empty cohort, never silently every project.
+    assert client.get(URL, params={"project_id": [999_999]}).json()["summary"]["projects_total"] == 0
+    assert client.get(URL, params={"project_id": [0]}).status_code == 422
+    assert client.get(URL, params={"project_id": ["x"]}).status_code == 422
+    assert client.get(URL, params={"project_id": list(range(1, 502))}).status_code == 422
+    assert client.get(URL, params={"project_id": list(range(1, 501))}).status_code == 200
+
+
+def test_a_project_subset_stays_admin_only(client, db_session, test_project):
+    member = _user(db_session, "subset-member")
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=member.id, role="admin"))
+    db_session.commit()
+    try:
+        app.dependency_overrides[get_current_user] = lambda: db_session.merge(member)
+        assert client.get(URL, params={"project_id": [test_project.id]}).status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
