@@ -5,9 +5,11 @@
  * fields.  The team is picked from project members (name and role editable).
  */
 import React from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Users } from 'lucide-react';
 
-import type { EngagementSettings, ProjectMember } from '../../services/api';
+import { getProjectReportTeam, type EngagementSettings, type ProjectMember } from '../../services/api';
+import { useToast } from '../../contexts/ToastContext';
+import { formatApiError } from '../../utils/apiErrors';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -19,6 +21,7 @@ import { Textarea } from '../ui/textarea';
 export const emptySettings = (): EngagementSettings => ({
   client_name: null, classification: null, engagement_type: null,
   testers: [], distribution: [], system_description: null,
+  applications: null, thick_clients: null, other_targets: null,
 });
 
 interface Props {
@@ -40,6 +43,24 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, d
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => set(key, e.target.value || null);
 
   const available = members.filter((m) => !value.testers.some((t) => t.user_id === m.user_id));
+
+  // The project's analysts and admins (name, role line, email) — added once
+  // each; whoever is already listed keeps what was written for them.
+  const toast = useToast();
+  const [addingTeam, setAddingTeam] = React.useState(false);
+  const addProjectTeam = async () => {
+    setAddingTeam(true);
+    try {
+      const team = await getProjectReportTeam();
+      const fresh = team.filter((t) => !value.testers.some((x) => x.user_id != null && x.user_id === t.user_id));
+      if (fresh.length === 0) toast.info('Everyone on the project is already listed.');
+      else set('testers', [...value.testers, ...fresh]);
+    } catch (err) {
+      toast.error(formatApiError(err, "Could not load the project's members."));
+    } finally {
+      setAddingTeam(false);
+    }
+  };
 
   return (
     <div className="space-y-md">
@@ -89,6 +110,12 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, d
             <span className="text-caption text-muted-foreground">
               This project has no members to pick from — add people by name.
             </span>
+          )}
+          {members.length > 0 && (
+            <Button type="button" variant="outline" size="sm" disabled={disabled || addingTeam}
+              onClick={() => void addProjectTeam()}>
+              <Users className="size-4" aria-hidden /> Add the project&apos;s members
+            </Button>
           )}
           {available.length > 0 && (
             <Select value="" disabled={disabled}
@@ -147,6 +174,26 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, d
         <Textarea id={`${idPrefix}-system`} rows={5} maxLength={32768} value={text('system_description')}
           onChange={onText('system_description')} disabled={disabled} />
       </div>
+
+      <fieldset className="min-w-0 space-y-xs">
+        <legend className="text-body font-medium">Other targets</legend>
+        <p className="text-caption text-muted-foreground">
+          If applicable — each list appears in the report only when written. Markdown; one target per line works well.
+        </p>
+        <div className="grid gap-md md:grid-cols-3">
+          {([
+            ['applications', 'Application URLs and API endpoints'],
+            ['thick_clients', 'Thick client applications'],
+            ['other_targets', 'Other targets'],
+          ] as const).map(([key, label]) => (
+            <div key={key} className="min-w-0 space-y-xxs">
+              <Label htmlFor={`${idPrefix}-${key}`}>{label}</Label>
+              <Textarea id={`${idPrefix}-${key}`} rows={3} maxLength={32768} value={value[key] ?? ''}
+                onChange={(e) => set(key, e.target.value || null)} disabled={disabled} />
+            </div>
+          ))}
+        </div>
+      </fieldset>
     </div>
   );
 };

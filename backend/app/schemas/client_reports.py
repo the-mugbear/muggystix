@@ -27,8 +27,16 @@ class EngagementSettings(BaseModel):
     testers: List[Tester] = Field(default_factory=list, max_length=50)
     distribution: List[Recipient] = Field(default_factory=list, max_length=100)
     system_description: Optional[str] = Field(None, max_length=32768)
+    # v2.382.0 — the template's other target lists ("if applicable"; Markdown).
+    # Networks and domains come from the project's scope.
+    applications: Optional[str] = Field(None, max_length=32768)
+    thick_clients: Optional[str] = Field(None, max_length=32768)
+    other_targets: Optional[str] = Field(None, max_length=32768)
 
-    @field_validator("client_name", "classification", "engagement_type", "system_description")
+    @field_validator(
+        "client_name", "classification", "engagement_type", "system_description",
+        "applications", "thick_clients", "other_targets",
+    )
     @classmethod
     def _blank_is_none(cls, v):
         if v is None:
@@ -43,6 +51,9 @@ class ReportProfileBody(EngagementSettings):
 
 class ReportProfileOut(ReportProfileBody):
     updated_at: Optional[datetime] = None
+    # v2.382.0 — no team is saved, so `testers` is the project's analysts and
+    # admins: what a new draft will list.
+    testers_from_project: bool = False
 
 
 class ReportTemplateOut(BaseModel):

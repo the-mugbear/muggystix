@@ -23,6 +23,7 @@ vi.mock('../../services/api', () => ({
   saveReportProfile: vi.fn(),
   downloadClientReportFile: vi.fn(),
   listProjectMembers: vi.fn(),
+  getProjectReportTeam: vi.fn(),
   getReportJob: vi.fn(),
   downloadReportJob: vi.fn(),
   draftReportWithAI: vi.fn(),
@@ -211,5 +212,46 @@ describe('Report detail — unsaved changes (v5.261.1)', () => {
     expect(screen.getByText(/save them to preview them/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Preview PDF' })).toBeDisabled();
     expect(screen.getByText(/no members to pick from/)).toBeInTheDocument();
+  });
+});
+
+describe('Report detail — TODOs and the team (v5.263.0)', () => {
+  it('lists the empty report details as TODOs before issuing', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      summary: { ...report().summary, missing_details: ['executive summary', 'project dates'] },
+    }));
+    renderDetail();
+    expect(await screen.findByText(/Report details still empty/)).toHaveTextContent(
+      'Report details still empty: executive summary, project dates (project dates are set in Project settings).',
+    );
+    expect(screen.getByRole('link', { name: 'Project settings' })).toHaveAttribute('href', '/project-settings');
+  });
+
+  it("adds the project's members to the team once each", async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      settings: { ...settings, testers: [{ user_id: 1, name: 'Ana (edited)', role: 'Lead', email: null }] },
+    }));
+    mocked.listProjectMembers.mockResolvedValue([
+      { id: 1, project_id: 1, user_id: 1, username: 'ana', full_name: 'Ana', role: 'admin', created_at: '' },
+      { id: 2, project_id: 1, user_id: 2, username: 'ben', full_name: 'Ben', role: 'analyst', created_at: '' },
+    ]);
+    mocked.getProjectReportTeam.mockResolvedValue([
+      { user_id: 1, name: 'Ana', role: 'Engagement lead', email: 'ana@example.com' },
+      { user_id: 2, name: 'Ben', role: 'Tester', email: 'ben@example.com' },
+    ]);
+    mocked.updateClientReport.mockResolvedValue(report());
+    renderDetail();
+    await screen.findByDisplayValue('Ana (edited)');
+    fireEvent.click(screen.getByRole('button', { name: /Add the project's members/ }));
+    // Ben is added; Ana keeps what was written for her.
+    await waitFor(() => expect(screen.getByDisplayValue('Ben')).toBeInTheDocument());
+    expect(screen.queryByDisplayValue('Ana')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(5, expect.objectContaining({
+      settings: expect.objectContaining({ testers: [
+        { user_id: 1, name: 'Ana (edited)', role: 'Lead', email: null },
+        { user_id: 2, name: 'Ben', role: 'Tester', email: 'ben@example.com' },
+      ] }),
+    })));
   });
 });

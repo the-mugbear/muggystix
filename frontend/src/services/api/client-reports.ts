@@ -30,11 +30,17 @@ export interface EngagementSettings {
   testers: ReportTester[];
   distribution: ReportRecipient[];
   system_description: string | null;
+  /** v5.263.0 — the other target lists ("if applicable"; Markdown). */
+  applications?: string | null;
+  thick_clients?: string | null;
+  other_targets?: string | null;
 }
 
 export interface ReportProfile extends EngagementSettings {
   template: string | null;
   updated_at?: string | null;
+  /** No team is saved: `testers` is the project's analysts and admins. */
+  testers_from_project?: boolean;
 }
 
 export interface ReportTemplate {
@@ -66,6 +72,8 @@ export interface ReportSummary {
   findings_shown?: number;
   under_investigation?: number;
   missing_text?: Array<{ id: number; ref: string; title: string; missing: string[] }>;
+  /** v5.263.0 — report details still empty (printed as a highlighted TODO). */
+  missing_details?: string[];
   images?: number;
   images_skipped?: number;
   delta?: { new_findings: number; findings_with_new_endpoints: number; withdrawn: number } | null;
@@ -149,6 +157,10 @@ export const reviseClientReport = async (id: number): Promise<ClientReport> =>
 
 export const listReportTemplates = async (): Promise<ReportTemplate[]> =>
   (await api.get<ReportTemplate[]>(`${base()}/templates`)).data;
+
+/** The project's analysts and admins as an assessment team (name, role, email). */
+export const getProjectReportTeam = async (): Promise<ReportTester[]> =>
+  (await api.get<ReportTester[]>(`${base()}/team`)).data;
 
 export const getReportProfile = async (): Promise<ReportProfile> =>
   (await api.get<ReportProfile>(`${base()}/profile`)).data;

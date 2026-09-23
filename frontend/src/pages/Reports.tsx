@@ -277,7 +277,12 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
           <dt className="text-muted-foreground">Classification</dt><dd className="truncate">{safeFallback(profile.classification, 'Not set')}</dd>
           <dt className="text-muted-foreground">Engagement type</dt><dd className="truncate">{safeFallback(profile.engagement_type, 'Not set')}</dd>
           <dt className="text-muted-foreground">Team</dt>
-          <dd className="break-words">{profile.testers.length ? profile.testers.map((t) => t.name).join(', ') : 'Nobody listed'}</dd>
+          <dd className="break-words">
+            {profile.testers.length ? profile.testers.map((t) => t.name).join(', ') : 'Nobody listed'}
+            {profile.testers_from_project && profile.testers.length > 0 && (
+              <span className="text-caption text-muted-foreground"> — the project&apos;s analysts and admins, until a team is saved</span>
+            )}
+          </dd>
           <dt className="text-muted-foreground">Distribution</dt>
           <dd className="break-words">{profile.distribution.length ? profile.distribution.map((r) => r.name).join(', ') : 'Nobody listed'}</dd>
           <dt className="text-muted-foreground">Template</dt><dd className="truncate">{templateTitle(profile.template)}</dd>

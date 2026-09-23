@@ -77,8 +77,24 @@ STATUS_WORDS = {
 REQUIRED_TEXT = ("description", "impact", "recommendation")
 SETTINGS_KEYS = (
     "client_name", "classification", "engagement_type", "testers", "distribution",
-    "system_description",
+    "system_description", "applications", "thick_clients", "other_targets",
 )
+# v2.382.0 — report details the template prints as a highlighted TODO when
+# empty; the report page lists the same ones before issuing.  (The three
+# optional target lists are "if applicable" and never a TODO.)
+REQUIRED_DETAILS = (
+    ("executive_summary", "executive summary"),
+    ("client_name", "client"),
+    ("classification", "classification"),
+    ("engagement_type", "engagement type"),
+    ("system_description", "system description"),
+    ("testers", "assessment team"),
+    ("distribution", "distribution list"),
+    ("project_dates", "project dates"),
+)
+# Project roles that make someone part of the assessment team by default, and
+# the role line they start with (editable per report).
+TEAM_ROLES = {"admin": "Engagement lead", "analyst": "Tester"}
 # Formats every renderer can place (Word, Typst and HTML alike).
 REPORT_IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif"}
 
@@ -127,18 +143,43 @@ class ClientReportService:
     def get_profile(self, project_id: int) -> Optional[ReportProfile]:
         return self.db.query(ReportProfile).filter(ReportProfile.project_id == project_id).first()
 
+    def project_team(self, project_id: int) -> List[dict]:
+        """The project's analysts and admins as an assessment team — what a
+        report lists when nobody has written a team yet.  Leads first."""
+        from app.db.models_auth import User
+        from app.db.models_project import ProjectMembership
+
+        rows = (
+            self.db.query(User.id, User.full_name, User.username, User.email, ProjectMembership.role)
+            .join(ProjectMembership, ProjectMembership.user_id == User.id)
+            .filter(ProjectMembership.project_id == project_id, User.is_active.is_(True))
+            .all()
+        )
+        team = []
+        for uid, full_name, username, email, role in rows:
+            role = getattr(role, "value", role)
+            if role not in TEAM_ROLES:
+                continue
+            team.append({
+                "user_id": uid, "name": full_name or username, "role": TEAM_ROLES[role], "email": email or None,
+                "_order": 0 if role == "admin" else 1,
+            })
+        team.sort(key=lambda t: (t.pop("_order"), (t["name"] or "").lower()))
+        return team
+
     def settings_from_profile(self, project_id: int) -> Dict[str, Any]:
+        """A new draft's engagement details: the profile's, with the project's
+        analysts and admins as the team when the profile names nobody."""
         profile = self.get_profile(project_id)
         if profile is None:
-            return {k: ([] if k in ("testers", "distribution") else None) for k in SETTINGS_KEYS}
-        return {
-            "client_name": profile.client_name,
-            "classification": profile.classification,
-            "engagement_type": profile.engagement_type,
-            "testers": list(profile.testers or []),
-            "distribution": list(profile.distribution or []),
-            "system_description": profile.system_description,
-        }
+            settings: Dict[str, Any] = {k: ([] if k in ("testers", "distribution") else None) for k in SETTINGS_KEYS}
+        else:
+            settings = {k: getattr(profile, k, None) for k in SETTINGS_KEYS}
+            settings["testers"] = list(profile.testers or [])
+            settings["distribution"] = list(profile.distribution or [])
+        if not settings["testers"]:
+            settings["testers"] = self.project_team(project_id)
+        return settings
 
     # ------------------------------------------------------------------
     # Live state
@@ -406,6 +447,8 @@ class ClientReportService:
                 "date": _date(issued_at) if issued_at else datetime.now(timezone.utc).date().isoformat(),
                 "issued_at": _iso(issued_at or report.issued_at),
                 "template": report.template,
+                # The title block's authors: the assessment team.
+                "authors": [t.get("name") for t in settings["testers"] if t.get("name")],
                 "baseline": {
                     "number": baseline.number, "title": baseline.title,
                     "date": _date(baseline.issued_at),
@@ -442,6 +485,8 @@ class ClientReportService:
                 for item in items
                 if any(not (item.get(k) or "").strip() for k in REQUIRED_TEXT)
             ],
+            # Report details still empty — printed as a highlighted TODO.
+            "missing_details": self._missing_details(dataset),
             "images": sum(len(i["evidence"]) for i in items),
             "images_skipped": skipped_images,
             "delta": {
@@ -451,6 +496,24 @@ class ClientReportService:
             } if delta else None,
         }
         return dataset, reported, summary
+
+    @staticmethod
+    def _missing_details(dataset: dict) -> List[str]:
+        engagement = dataset["engagement"]
+        project = dataset["project"]
+        values = {
+            **engagement,
+            "executive_summary": dataset.get("executive_summary"),
+            "project_dates": project.get("start_date") and project.get("end_date"),
+        }
+        missing = []
+        for key, label in REQUIRED_DETAILS:
+            value = values.get(key)
+            if isinstance(value, str):
+                value = value.strip()
+            if not value:
+                missing.append(label)
+        return missing
 
     def _withdrawn(self, project_id: int, baseline: Dict[str, dict], current: Dict[str, dict]) -> List[dict]:
         out = []

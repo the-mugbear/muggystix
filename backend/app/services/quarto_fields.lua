@@ -34,7 +34,7 @@ local function load_data()
   return data
 end
 
-local function resolve(key)
+local function resolve_any(key)
   local node = load_data()
   for part in key:gmatch("[^%.]+") do
     if type(node) ~= "table" then return nil end
@@ -45,6 +45,11 @@ local function resolve(key)
       node = node[part]
     end
   end
+  return node
+end
+
+local function resolve(key)
+  local node = resolve_any(key)
   if type(node) == "string" then return node end
   return nil
 end
@@ -95,9 +100,16 @@ function Meta(meta)
   for key, path in pairs(map) do
     local p = pandoc.utils.stringify(path)
     if type(key) == "string" and key:match("^[%a][%w-]*$") and p:match("^[%a_][%w_%.]*$") then
-      local text = resolve(p)
-      if text ~= nil and not text:match("^%s*$") then
-        meta[key] = pandoc.Inlines(text)
+      local value = resolve_any(p)
+      if type(value) == "string" and not value:match("^%s*$") then
+        meta[key] = pandoc.Inlines(value)
+      elseif type(value) == "table" and #value > 0 then
+        -- A list of strings (the authors): each one plain text.
+        local items = pandoc.List()
+        for _, v in ipairs(value) do
+          if type(v) == "string" and not v:match("^%s*$") then items:insert(pandoc.Inlines(v)) end
+        end
+        meta[key] = #items > 0 and pandoc.MetaList(items) or nil
       else
         meta[key] = nil
       end
@@ -105,6 +117,36 @@ function Meta(meta)
   end
   meta["bluestick-meta"] = nil
   return meta
+end
+
+--[[
+TODO placeholders (v2.382.0): the template's `todo("…")` prints
+`[TODO: …]{.bs-todo}` for a report detail nobody has written.  Highlighted in
+every format so it cannot be missed, and always starting with "TODO:" so a
+reviewer can search the document for it.  The text is the TEMPLATE's (never
+database text), and it is escaped for each format anyway.
+]]
+local function xml_escape(s)
+  return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
+end
+
+local function typst_escape(s)
+  return (s:gsub("([\\#%[%]%*_`%$<>@=~/])", "\\%1"))
+end
+
+function Span(el)
+  if not el.classes:includes("bs-todo") then return nil end
+  local text = pandoc.utils.stringify(el.content)
+  if FORMAT:match("docx") then
+    return pandoc.RawInline("openxml",
+      '<w:r><w:rPr><w:b/><w:highlight w:val="yellow"/></w:rPr><w:t xml:space="preserve">'
+      .. xml_escape(text) .. "</w:t></w:r>")
+  elseif FORMAT:match("typst") then
+    return pandoc.RawInline("typst", '#highlight(fill: rgb("#ffe066"))[*' .. typst_escape(text) .. "*]")
+  elseif FORMAT:match("html") then
+    return pandoc.RawInline("html", '<mark class="bs-todo"><strong>' .. xml_escape(text) .. "</strong></mark>")
+  end
+  return pandoc.Strong(el.content)
 end
 
 function Div(el)

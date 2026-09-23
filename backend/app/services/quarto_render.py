@@ -95,9 +95,59 @@ def _finalize(value: Any) -> str:
     return escape_md(value)
 
 
+TODO_PREFIX = "TODO:"
+
+
+def todo(text: str, block: bool = False) -> Markup:
+    """A highlighted, searchable placeholder for something the report still
+    needs (v2.382.0).  Always starts with ``TODO:`` so a reviewer can search
+    the document for it; ``_bluestick/fields.lua`` renders it highlighted in
+    every format.  ``block`` puts it in its own paragraph."""
+    span = f"[{escape_md(f'{TODO_PREFIX} {text}')}]{{.bs-todo}}"
+    return Markup(f"\n\n{span}\n\n" if block else span)
+
+
+def _lookup(dataset: dict, key: str) -> Any:
+    node: Any = dataset
+    for part in key.split("."):
+        if isinstance(node, list) and part.isdigit():
+            idx = int(part)
+            node = node[idx] if idx < len(node) else None
+        elif isinstance(node, dict):
+            node = node.get(part)
+        else:
+            return None
+    return node
+
+
+def _md_factory(dataset: dict):
+    def md(obj: Any, field: Optional[str] = None, todo_text: Optional[str] = None, **kwargs) -> Markup:
+        """A placeholder the Lua filter fills with the written Markdown at
+        ``obj._path + "." + field`` (or the dotted path ``obj``) in data.json.
+        With ``todo=`` (or ``todo_text=``), an empty value prints that TODO
+        instead."""
+        todo_text = kwargs.pop("todo", todo_text)
+        if kwargs:
+            raise RenderError(f"md(): unknown argument(s) {', '.join(kwargs)}.")
+        if isinstance(obj, dict):
+            base = obj.get("_path")
+            if not isinstance(base, str) or not field:
+                raise RenderError("md() needs a finding (or other item) and a field name.")
+            key = f"{base}.{field}"
+        else:
+            key = str(obj)
+        if not _KEY.match(key):
+            raise RenderError(f"md(): '{key}' is not a data path.")
+        value = _lookup(dataset, key)
+        if not (isinstance(value, str) and value.strip()):
+            return todo(todo_text, block=True) if todo_text else Markup("")
+        return Markup(f'\n\n::: {{.bs-md key="{key}"}}\n:::\n\n')
+    return md
+
+
 def md(obj: Any, field: Optional[str] = None) -> Markup:
-    """A placeholder the Lua filter fills with the written Markdown at
-    ``obj._path + "." + field`` (or the dotted path ``obj``) in data.json."""
+    """The placeholder alone, without the empty check (kept for callers that
+    have no dataset)."""
     if isinstance(obj, dict):
         base = obj.get("_path")
         if not isinstance(base, str) or not field:
@@ -129,7 +179,7 @@ def plain(value: Any) -> Markup:
     return Markup(text)
 
 
-def jinja_environment(template_dir: Path) -> SandboxedEnvironment:
+def jinja_environment(template_dir: Path, dataset: Optional[dict] = None) -> SandboxedEnvironment:
     """Includes resolve inside the template folder only (FileSystemLoader
     refuses ``..``).  Use includes, not macros, for reusable parts: a macro's
     result is printed through ``<< >>`` and so escaped like data."""
@@ -141,12 +191,12 @@ def jinja_environment(template_dir: Path) -> SandboxedEnvironment:
         undefined=StrictUndefined, finalize=_finalize, autoescape=False,
         trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
     )
-    env.globals.update(md=md, image=image, plain=plain)
+    env.globals.update(md=_md_factory(dataset) if dataset is not None else md, image=image, plain=plain, todo=todo)
     return env
 
 
 def render_source(template_dir: Path, entry: str, dataset: dict) -> str:
-    env = jinja_environment(template_dir)
+    env = jinja_environment(template_dir, dataset)
     try:
         # Quarto reads the YAML front matter only at the very top.
         return env.get_template(entry).render(**dataset).lstrip()

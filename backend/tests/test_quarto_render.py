@@ -96,7 +96,15 @@ def test_the_pentest_template_fills_for_both_kinds():
     sample = json.loads((TEMPLATE / "sample-data.json").read_text())
     full = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
     assert full.startswith("---\n")
-    assert "# Executive summary" in full and "# Appendix: informational findings" in full
+    # The original template's sections, in its order.
+    order = ["# Project information", "**Penetration testers**", "**Distribution list**", "# Executive summary",
+             "**Summary of findings**", "**Severity count with remediation timeline (days)**",
+             "# System description", "# Findings", "# Appendix", "## Appendix A: informational findings",
+             "## Disclaimer"]
+    positions = [full.index(h) for h in order]
+    assert positions == sorted(positions)
+    # A finding heading carries its severity, as in the original.
+    assert "(Critical) {#finding-11}" in full
 
     addendum = _addendum(sample)
     out = quarto_render.render_source(TEMPLATE, "report.qmd", addendum)
@@ -208,3 +216,39 @@ def test_evidence_images_are_placed_and_missing_ones_skipped(tmp_path):
     html = files["html"].read_text(encoding="utf-8")
     assert "Listing" in html and "Gone" not in html
     assert "data:image/png;base64" in html
+
+
+# --- v2.382.0: TODO placeholders -------------------------------------------------
+
+def test_an_empty_field_prints_a_searchable_todo(tmp_path):
+    (tmp_path / "t.qmd").write_text(
+        '<< md("executive_summary", todo="Write the summary") >>|'
+        '<< md(findings[0], "impact", todo="State the impact") >>|'
+        '<< md(findings[0], "description", todo="Describe it") >>|'
+        '<< engagement.client_name or todo("Client name") >>'
+    )
+    out = quarto_render.render_source(tmp_path, "t.qmd", {
+        "executive_summary": "  ", "engagement": {"client_name": None},
+        "findings": [{"_path": "findings.0", "impact": None, "description": "Written."}],
+    })
+    parts = out.split("|")
+    assert r"[TODO\: Write the summary]{.bs-todo}" in parts[0]
+    assert r"[TODO\: State the impact]{.bs-todo}" in parts[1]
+    assert 'key="findings.0.description"' in parts[2]
+    assert parts[3] == r"[TODO\: Client name]{.bs-todo}"
+
+
+@needs_template
+@needs_quarto
+def test_todos_are_highlighted_in_every_format(tmp_path):
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    data["executive_summary"] = None
+    data["engagement"]["classification"] = None
+    files = quarto_render.render(TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path, timeout=240,
+                                 postprocess=json.loads((TEMPLATE / "template.json").read_text()).get("postprocess"))
+    html = files["html"].read_text(encoding="utf-8")
+    assert '<mark class="bs-todo"><strong>TODO: Classification</strong></mark>' in html
+    assert "TODO: Write the executive summary" in html
+    with zipfile.ZipFile(files["docx"]) as z:
+        docx = z.read("word/document.xml").decode("utf-8")
+    assert '<w:highlight w:val="yellow"' in docx and "TODO: Classification" in docx

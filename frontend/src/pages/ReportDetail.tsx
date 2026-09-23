@@ -179,6 +179,9 @@ const ReportDetail: React.FC = () => {
           {!!s?.missing_text?.length && (
             <p className="mt-xs">{s.missing_text.length} finding{s.missing_text.length === 1 ? ' is' : 's are'} missing report text.</p>
           )}
+          {!!s?.missing_details?.length && (
+            <p className="mt-xs">Still empty, and issued as TODO: {s.missing_details.join(', ')}.</p>
+          )}
         </>
       ),
       confirmLabel: 'Issue report',
@@ -339,10 +342,20 @@ const ReportDetail: React.FC = () => {
         </div>
       )}
 
-      {isDraft && !!s.missing_text?.length && (
-        <PostureSection title="Before issuing" description="These findings will show “Not written” where their text is missing.">
+      {isDraft && (!!s.missing_text?.length || !!s.missing_details?.length) && (
+        <PostureSection title="Before issuing"
+          description="Anything empty prints in the report as a highlighted TODO — search the preview for TODO to find each one.">
+          {!!s.missing_details?.length && (
+            <p className="mb-sm break-words text-body">
+              <span className="mr-xs rounded bg-warning/20 px-xxs text-caption font-semibold text-foreground">TODO</span>
+              Report details still empty: <span className="font-medium">{s.missing_details.join(', ')}</span>
+              {s.missing_details.includes('project dates') && (
+                <> (project dates are set in <Link to="/project-settings" className="text-info hover:underline">Project settings</Link>)</>
+              )}.
+            </p>
+          )}
           <ul className="space-y-xxs">
-            {s.missing_text.map((m) => (
+            {(s.missing_text ?? []).map((m) => (
               <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
                 <span className="tabular-nums text-muted-foreground">{m.ref}</span>
                 <Link to={`/findings/${m.id}`} className="min-w-0 truncate text-info hover:underline" title={m.title}>{m.title}</Link>

@@ -28,7 +28,7 @@ from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatu
 from app.db.session import get_db
 from app.schemas.client_reports import (
     EngagementSettings, PreviewRequest, ReportCreate, ReportFileOut, ReportListOut, ReportOut,
-    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateOut, ReportUpdate,
+    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import ClientReportService, ReportStateError
@@ -169,15 +169,25 @@ def list_report_templates():
     return [ReportTemplateOut(**t.as_dict()) for t in templates.list_templates()]
 
 
-def _profile_out(profile: Optional[ReportProfile]) -> ReportProfileOut:
+def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile]) -> ReportProfileOut:
+    """The defaults a new draft starts from — with the project's analysts and
+    admins as the team when none is saved, flagged as such."""
+    team = list(profile.testers or []) if profile is not None else []
+    from_project = not team
+    if from_project:
+        team = ClientReportService(db).project_team(project_id)
     if profile is None:
-        return ReportProfileOut(template=templates.default_template_name())
+        return ReportProfileOut(
+            template=templates.default_template_name(), testers=team, testers_from_project=True,
+        )
     return ReportProfileOut(
         client_name=profile.client_name, classification=profile.classification,
-        engagement_type=profile.engagement_type, testers=profile.testers or [],
+        engagement_type=profile.engagement_type, testers=team,
         distribution=profile.distribution or [], system_description=profile.system_description,
+        applications=profile.applications, thick_clients=profile.thick_clients,
+        other_targets=profile.other_targets,
         template=profile.template or templates.default_template_name(),
-        updated_at=profile.updated_at,
+        updated_at=profile.updated_at, testers_from_project=from_project,
     )
 
 
@@ -186,7 +196,17 @@ def get_report_profile(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    return _profile_out(ClientReportService(db).get_profile(project.id))
+    return _profile_out(db, project.id, ClientReportService(db).get_profile(project.id))
+
+
+@router.get("/team", response_model=List[Tester])
+def get_project_team(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The project's analysts and admins as an assessment team (name, role
+    line, email) — what "Add the project's members" fills in."""
+    return [Tester(**t) for t in ClientReportService(db).project_team(project.id)]
 
 
 @router.put(
@@ -214,11 +234,14 @@ def put_report_profile(
     profile.testers = data["testers"]
     profile.distribution = data["distribution"]
     profile.system_description = data["system_description"]
+    profile.applications = data["applications"]
+    profile.thick_clients = data["thick_clients"]
+    profile.other_targets = data["other_targets"]
     profile.template = data["template"]
     profile.updated_by_id = current_user.id
     db.commit()
     db.refresh(profile)
-    return _profile_out(profile)
+    return _profile_out(db, project.id, profile)
 
 
 # ---------------------------------------------------------------------------

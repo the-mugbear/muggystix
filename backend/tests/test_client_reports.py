@@ -323,3 +323,40 @@ def test_only_images_marked_for_the_report_go_in(client, db_session, test_projec
     captions = [e["caption"] for e in dataset["findings"][0]["evidence"]]
     assert captions == ["listing.png", "upload.jpg"]
     assert dataset["findings"][0]["evidence"][0]["file"].startswith("evidence/")
+
+
+# --- v2.382.0: the team from the project, and what is still empty -------------
+
+def test_a_new_draft_lists_the_projects_analysts_and_admins_as_the_team(client, test_project, people):
+    report = _create(client, test_project)
+    team = report["settings"]["testers"]
+    # Analysts and admins are the team (leads first); auditors are not.
+    assert [t["name"] for t in team] == ["Adm", "Ana", "Ben"]
+    assert team[0]["role"] == "Engagement lead" and team[1]["role"] == "Tester"
+    assert team[0]["email"] == "adm@example.com"
+    # The defaults say where the team came from until one is saved.
+    profile = client.get(f"{_base(test_project)}/profile").json()
+    assert profile["testers_from_project"] is True and len(profile["testers"]) == 3
+    assert [t["name"] for t in client.get(f"{_base(test_project)}/team").json()] == ["Adm", "Ana", "Ben"]
+    # A saved team wins.
+    client.put(f"{_base(test_project)}/profile", json={"testers": [{"name": "Contractor"}]})
+    assert [t["name"] for t in _create(client, test_project)["settings"]["testers"]] == ["Contractor"]
+    assert client.get(f"{_base(test_project)}/profile").json()["testers_from_project"] is False
+
+
+def test_the_summary_names_the_report_details_still_empty(client, test_project):
+    report = _create(client, test_project)
+    missing = report["summary"]["missing_details"]
+    assert missing == [
+        "executive summary", "client", "classification", "engagement type",
+        "system description", "assessment team", "distribution list", "project dates",
+    ]
+    r = client.patch(f"{_base(test_project)}/{report['id']}", json={
+        "executive_summary": "Summary.",
+        "settings": {"client_name": "Example Corp", "classification": "Confidential",
+                     "testers": [{"name": "Ana"}], "applications": "- https://app.example.com"},
+    })
+    assert r.json()["summary"]["missing_details"] == [
+        "engagement type", "system description", "distribution list", "project dates",
+    ]
+    assert r.json()["settings"]["applications"] == "- https://app.example.com"

@@ -63,6 +63,10 @@ class ReportProfile(Base):
     # [{name, email}]
     distribution = Column(JSON, nullable=True)
     system_description = Column(Text, nullable=True)   # Markdown
+    # v2.382.0 — the other target lists (Markdown, "if applicable").
+    applications = Column(Text, nullable=True)
+    thick_clients = Column(Text, nullable=True)
+    other_targets = Column(Text, nullable=True)
     template = Column(String(100), nullable=True)      # report-templates/<name>
     updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
