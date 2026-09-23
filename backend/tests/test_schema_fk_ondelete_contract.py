@@ -27,6 +27,7 @@ from app.db import (  # noqa: F401
     models_integrations,
     models_llm,
     models_project,
+    models_reports,
     models_vulnerability,
 )
 
@@ -198,6 +199,17 @@ EXPECTED_ONDELETE = {
     ('recon_sessions', 'started_by_id'): 'SET NULL',
     ('report_jobs', 'project_id'): 'CASCADE',
     ('report_jobs', 'requested_by_id'): 'SET NULL',
+    # v2.380.0 — client reports die with their project; an issued report's
+    # files die with it; the people and the reports it points at may go
+    # without taking the report with them.
+    ('report_files', 'report_id'): 'CASCADE',
+    ('report_profiles', 'project_id'): 'CASCADE',
+    ('report_profiles', 'updated_by_id'): 'SET NULL',
+    ('reports', 'baseline_report_id'): 'SET NULL',
+    ('reports', 'created_by_id'): 'SET NULL',
+    ('reports', 'issued_by_id'): 'SET NULL',
+    ('reports', 'project_id'): 'CASCADE',
+    ('reports', 'revision_of_id'): 'SET NULL',
     # v2.335.0 — an upload batch dies with its project; its scans outlive
     # it (their pointer goes NULL) and so does it outlive its creator/session.
     ('scan_batches', 'created_by_id'): 'SET NULL',

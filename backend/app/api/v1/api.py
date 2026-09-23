@@ -3,7 +3,8 @@ from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
     host_queries, findings, findings_bulk, dns_names,
     webhooks, dashboard, upload,
-    scopes, subnet_labels, export, parse_errors, reports, report_drafts, auth, two_factor,
+    scopes, subnet_labels, export, parse_errors, reports, report_drafts, client_reports,
+    auth, two_factor,
     audit, users, projects, notifications,
     portfolio, oversight, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
@@ -225,6 +226,8 @@ project_router.include_router(reports.router, prefix="/reports", tags=["reports"
 # /reports prefix; separate file keeps the non-deterministic LLM concern out of
 # the deterministic export renderers.
 project_router.include_router(report_drafts.router, prefix="/reports", tags=["reports"])
+# v2.380.0 — the client report (Quarto): drafts, issued reports, addenda.
+project_router.include_router(client_reports.router, prefix="/client-reports", tags=["client-reports"])
 # v2.295.0 — the /agents CRUD surface is gone.  It existed to mint and manage
 # the *unscoped* global agent key, the one credential that reached every plan
 # in a project with full write authority.  Agent rows are auto-provisioned by

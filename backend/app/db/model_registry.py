@@ -35,6 +35,7 @@ from app.db import (  # noqa: F401
     models_integrations,
     models_llm,
     models_project,
+    models_reports,
     models_tools,
     models_vulnerability,
 )

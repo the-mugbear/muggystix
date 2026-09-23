@@ -210,10 +210,15 @@ def list_report_jobs(
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Recent report jobs for this project (newest first), excluding dismissed."""
+    """Recent report jobs for this project (newest first), excluding dismissed.
+    Client-report renders (``report_type='client'``) belong to the Reports
+    page, not this export tray."""
     return (
         db.query(ReportJob)
-        .filter(ReportJob.project_id == project.id, ReportJob.dismissed_at.is_(None))
+        .filter(
+            ReportJob.project_id == project.id, ReportJob.dismissed_at.is_(None),
+            ReportJob.report_type != "client",
+        )
         .order_by(ReportJob.created_at.desc())
         .limit(limit)
         .all()

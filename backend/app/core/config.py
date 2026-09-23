@@ -179,6 +179,21 @@ class Settings:
     # re-queued/failed by the reaper. Generous — must exceed the worst-case
     # render time for a capped report so a still-rendering job isn't re-queued.
     REPORT_JOB_TIMEOUT_SECONDS: int = int(os.getenv("REPORT_JOB_TIMEOUT_SECONDS", "900"))
+    # v2.380.0 — client reports.  Issued reports' rendered files are kept
+    # (not TTL'd like report_artifacts) for as long as the report exists.
+    REPORT_FILES_DIR: str = os.getenv(
+        "REPORT_FILES_DIR",
+        os.path.join(os.getcwd(), "uploads", "client_reports")
+    )
+    # The Quarto templates (the root report-templates/ folder, mounted
+    # read-only into the backend and the report worker).
+    REPORT_TEMPLATES_DIR: str = os.getenv(
+        "REPORT_TEMPLATES_DIR",
+        os.path.join(os.getcwd(), "report-templates")
+    )
+    REPORT_DEFAULT_TEMPLATE: str = os.getenv("REPORT_DEFAULT_TEMPLATE", "pentest")
+    # One Quarto render (one format) may take at most this long.
+    REPORT_RENDER_TIMEOUT_SECONDS: int = int(os.getenv("REPORT_RENDER_TIMEOUT_SECONDS", "300"))
     # v2.91.1 (code review NEW F) — INGESTION_WORKERS setting removed.
     # It was read nowhere in the codebase, but operators saw the env
     # var documented and reasonably assumed setting it would scale
