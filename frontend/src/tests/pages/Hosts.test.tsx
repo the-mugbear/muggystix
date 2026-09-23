@@ -274,6 +274,40 @@ describe('Hosts', () => {
     expect(screen.getByRole('button', { name: 'View: Critical observations' })).toBeInTheDocument();
   });
 
+  // The project default is usually a colleague's view — not in THIS user's
+  // saved list — so once the filters were cleared nothing led back to it.
+  it('the project default stays reachable after the filters are cleared', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    mockedApi.getProjectDefaultView.mockResolvedValue({
+      id: 9, name: 'Web tier', filter_json: { filters: { ports: ['443'] } },
+      is_project_default: true, created_at: '2026-09-01T00:00:00Z', updated_at: null,
+    });
+    const lastParams = () => {
+      const calls = mockedApi.getHosts.mock.calls;
+      return calls[calls.length - 1][0];
+    };
+    renderHosts();
+
+    await screen.findByText(/Project default view applied/);
+    await waitFor(() => expect(lastParams()).toMatchObject({ ports: '443' }));
+
+    await user.click(screen.getByRole('button', { name: 'Show all hosts' }));
+    await waitFor(() => expect(lastParams().ports).toBeUndefined());
+    expect(screen.queryByText(/Project default view applied/)).not.toBeInTheDocument();
+
+    // The way back: the picker offers it, marked…
+    await user.click(screen.getByRole('button', { name: /^View: All hosts/ }));
+    expect(await screen.findByRole('menuitem', { name: /Web tier.*project default/ })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    // …and one click beside the conditions restores it, the clearing being undone for the session.
+    await user.click(await screen.findByRole('button', { name: 'Back to default view' }));
+    await waitFor(() => expect(lastParams()).toMatchObject({ ports: '443' }));
+    expect(await screen.findByText(/Project default view applied/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Back to default view' })).not.toBeInTheDocument();
+    expect(sessionStorage.getItem(projectScopedKey('projectDefaultDismissed'))).toBeNull();
+  });
+
   it('forwards a command-bar query as the q param to getHosts', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();

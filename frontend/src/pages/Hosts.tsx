@@ -170,6 +170,11 @@ export default function Hosts() {
   // refresh (the restored filters ARE the default) — without it an analyst on a
   // restored session saw a filtered list with no hint a default was hiding hosts.
   const [appliedProjectDefault, setAppliedProjectDefault] = useState<string | null>(null);
+  // The project default view itself, kept for the whole visit.  It is usually
+  // an admin's view, so it is NOT in this user's saved list: holding it here is
+  // what lets "Back to default view" and the picker reach it again after the
+  // filters were cleared (they used to be the only path, and clearing emptied it).
+  const [projectDefaultView, setProjectDefaultView] = useState<HostFilterView | null>(null);
   // Set the banner AND persist it (or clear both). The init effect restores it.
   const setProjectDefaultBanner = (name: string | null) => {
     setAppliedProjectDefault(name);
@@ -626,10 +631,12 @@ export default function Hosts() {
       if (view.is_project_default) {
         await clearProjectDefaultView();
         setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: false })));
+        setProjectDefaultView(null);
         toast.info('Cleared the project default view.', { autoHideMs: 2000 });
       } else {
         await promoteProjectDefaultView(view.id);
         setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: v.id === view.id })));
+        setProjectDefaultView({ ...view, is_project_default: true });
         toast.success(`"${view.name}" is now the project default.`, { autoHideMs: 2500 });
       }
     } catch (err: unknown) {
@@ -637,22 +644,22 @@ export default function Hosts() {
     }
   };
 
-  // Auto-apply the project default on a bare /hosts visit (no URL/saved-session
-  // filter, not dismissed this session). One-shot per mount.
+  // Load the project default once per mount and keep it; auto-apply it only on
+  // a bare /hosts visit (no URL/saved-session filter, not dismissed this session).
   const defaultCheckedRef = useRef(false);
   useEffect(() => {
     if (!isInitialized || defaultCheckedRef.current) return;
     defaultCheckedRef.current = true;
     // Only when the user has no filter context of their own.
-    if (Object.keys(filters).length > 0) return;
-    let dismissed = false;
+    let autoApply = Object.keys(filters).length === 0;
     try {
-      dismissed = sessionStorage.getItem(projectScopedKey('projectDefaultDismissed')) === '1';
+      if (sessionStorage.getItem(projectScopedKey('projectDefaultDismissed')) === '1') autoApply = false;
     } catch { /* ignore */ }
-    if (dismissed) return;
     getProjectDefaultView()
       .then((view) => {
-        if (view && view.filter_json) {
+        if (!view || !view.filter_json) return;
+        setProjectDefaultView(view);
+        if (autoApply) {
           applyViewFilters(view, { quiet: true });
           setProjectDefaultBanner(view.name);
         }
@@ -660,6 +667,20 @@ export default function Hosts() {
       .catch(() => { /* non-fatal */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isInitialized]);
+
+  // Choosing the default again (after clearing or editing): apply it as the
+  // auto-apply does, and lift this session's "show everything" so a refresh
+  // keeps it.
+  const applyProjectDefault = () => {
+    if (!projectDefaultView) return;
+    applyViewFilters(projectDefaultView, { quiet: true });
+    setProjectDefaultBanner(projectDefaultView.name);
+    try {
+      sessionStorage.removeItem(projectScopedKey('projectDefaultDismissed'));
+    } catch { /* ignore */ }
+  };
+  const projectDefaultActive = projectDefaultView !== null
+    && (appliedProjectDefault !== null || activeViewId === projectDefaultView.id);
 
   useEffect(() => {
     if (skipActiveClearRef.current) {
@@ -1327,6 +1348,9 @@ export default function Hosts() {
             hasConditions={activeFilterChips.length > 0}
             projectDefaultApplied={appliedProjectDefault !== null}
             canSetProjectDefault={canSetProjectDefault}
+            projectDefaultName={projectDefaultView?.name ?? null}
+            projectDefaultActive={projectDefaultActive}
+            onApplyProjectDefault={applyProjectDefault}
             onAllHosts={clearAllFilters}
             onApplyBuiltIn={handleApplyBuiltIn}
             onApplyView={handleApplyView}
@@ -1422,6 +1446,19 @@ export default function Hosts() {
             </span>
             <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
               Show all hosts
+            </Button>
+          </div>
+        )}
+        {/* …and the way back is one click too, once the filters were cleared
+            or changed. */}
+        {projectDefaultView && !projectDefaultActive && (
+          <div className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
+            <Star className="size-3.5 shrink-0 text-warning" aria-hidden />
+            <span className="truncate">
+              Project default view: <strong className="text-foreground">{projectDefaultView.name}</strong>
+            </span>
+            <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={applyProjectDefault}>
+              Back to default view
             </Button>
           </div>
         )}
